@@ -577,8 +577,10 @@ class KrakenProvider(MarketDataProvider):
             res = self._client().query_orders(order_id) or {}
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"order_status {order_id}: {e}") from e
+        if not isinstance(res, dict):
+            raise ProviderError(f"order_status {order_id}: invalid Kraken response")
         info = res.get(order_id)
-        if info is None:
+        if not isinstance(info, dict):
             raise ProviderError(f"order_status: the order {order_id} was not found")
         raw_status = str(info.get("status") or "").strip()
         status_map = {
@@ -628,10 +630,16 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"order_by_client_id({symbol},{client_order_id}): {e}") from e
         for orders in groups:
-            for order_id, raw in dict(orders or {}).items():
+            if not isinstance(orders, dict):
+                continue
+            for order_id, raw in orders.items():
+                if not isinstance(raw, dict):
+                    continue
                 if str(raw.get("cl_ord_id") or "").lower() != wanted:
                     continue
-                descr = raw.get("descr") or {}
+                descr = raw.get("descr")
+                if not isinstance(descr, dict):
+                    descr = {}
                 pair = str(descr.get("pair") or raw.get("pair") or "")
                 if pair and not _kraken_pair_matches(symbol, pair):
                     continue

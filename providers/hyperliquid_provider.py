@@ -261,7 +261,13 @@ class HyperliquidProvider(MarketDataProvider):
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             if not addr:
                 return None
-            for b in c.info.spot_user_state(addr).get("balances", []):
+            user_state = c.info.spot_user_state(addr)
+            if not isinstance(user_state, dict):
+                return None
+            balances = user_state.get("balances")
+            if not isinstance(balances, list):
+                return None
+            for b in balances:
                 if not isinstance(b, dict):
                     continue
                 if b.get("coin") == asset:
@@ -713,13 +719,20 @@ class HyperliquidProvider(MarketDataProvider):
                     "The Hyperliquid SDK lacks authoritative CLOID lookup")
             from hyperliquid.utils.types import Cloid
             raw = query(addr, Cloid.from_str(cloid)) or {}
+            if not isinstance(raw, dict):
+                raise ProviderError(
+                    f"order_by_client_id({symbol}): invalid response {raw!r}")
             if raw.get("status") == "unknownOid":
                 return None
             if raw.get("status") != "order":
                 raise ProviderError(
                     f"order_by_client_id({symbol}): indeterminate status {raw}")
-            payload = raw.get("order") or {}
-            order = payload.get("order") or {}
+            payload = raw.get("order")
+            if not isinstance(payload, dict):
+                payload = {}
+            order = payload.get("order")
+            if not isinstance(order, dict):
+                order = {}
             oid = order.get("oid", payload.get("oid"))
             if oid is None:
                 raise ProviderError(
@@ -759,13 +772,21 @@ class HyperliquidProvider(MarketDataProvider):
                     "The Hyperliquid SDK is too old: query_order_by_oid is missing"
                 )
             raw_status = query(addr, oid) or {}
-            if raw_status.get("status") != "order":
+            if not isinstance(raw_status, dict) or raw_status.get("status") != "order":
                 raise ProviderError(
                     f"order_status({order_id}): indeterminate status ({raw_status})"
                 )
-            status_payload = raw_status.get("order") or {}
+            status_payload = raw_status.get("order")
+            if not isinstance(status_payload, dict):
+                raise ProviderError(
+                    f"order_status({order_id}): invalid order payload ({raw_status})"
+                )
             venue_status = str(status_payload.get("status") or "")
-            order_payload = status_payload.get("order") or {}
+            order_payload = status_payload.get("order")
+            if not isinstance(order_payload, dict):
+                raise ProviderError(
+                    f"order_status({order_id}): invalid inner order payload ({raw_status})"
+                )
 
             # user_fills is the cumulative source for quantity, cost, and fee. Read
             # it while an order is open so partial fills are not lost.

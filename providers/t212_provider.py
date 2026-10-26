@@ -114,10 +114,12 @@ class T212Provider(MarketDataProvider):
         """Return the portfolio position for the ticker, or None."""
         try:
             port = self._client().get_portfolio()
-            if port is None:
+            if port is None or not isinstance(port, list):
                 raise ProviderError("the T212 portfolio is unavailable")
             target_sym = str(symbol or "").strip().upper()
             for p in port:
+                if not isinstance(p, dict):
+                    continue
                 if str(p.get("ticker", "")).strip().upper() == target_sym:
                     return p
             return None
@@ -404,9 +406,10 @@ class T212Provider(MarketDataProvider):
         if not all(math.isfinite(v) for v in (filled_qty, cost, fee)) or fee < 0:
             raise ProviderError(f"order_status({order_id}): invalid fill values")
 
+        raw_fee_cur = raw.get("_feeCurrencies")
         fee_currencies = {
             str(currency).strip().upper()
-            for currency in (raw.get("_feeCurrencies") or [])
+            for currency in (raw_fee_cur if isinstance(raw_fee_cur, (list, tuple, set)) else [])
             if str(currency).strip()
         }
         order_currency = str(raw.get("currency") or "").strip().upper()

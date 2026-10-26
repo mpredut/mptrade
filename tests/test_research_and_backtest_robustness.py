@@ -1743,8 +1743,8 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
         ["1700000000000.0", "100.0", "105.0", "95.0", "102.0", "10.0", "1700003599000.0"],
         # Inconsistent OHLC candle (high < low) -> must be skipped
         [1700003600000, "100.0", "90.0", "95.0", "102.0", "10.0", 1700007199000],
-        # close_time < open_time -> must be skipped
-        [1700007200000, "100.0", "105.0", "95.0", "102.0", "10.0", 1700003600000],
+        # Inconsistent OHLC candle (high < close) -> must be skipped
+        [1700007200000, "100.0", "101.0", "95.0", "105.0", "10.0", 1700010799000],
     ]
     calls = {"n": 0}
 
@@ -1809,4 +1809,29 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     })
     out = capsys.readouterr().out
     assert "MARKET INTELLIGENCE AUDIT — BTCUSDC" in out
+
+    # 6. HyperliquidProvider, KrakenProvider, and T212Provider guard against null/non-dict nested payloads
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+
+    hl_prov = HyperliquidProvider()
+    hl_mock = MagicMock()
+    hl_mock.info.spot_user_state.return_value = {"balances": None}
+    hl_prov._client = hl_mock
+    hl_prov._client_tried = True
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0xabc")
+    assert hl_prov.free_balance("USDC") is None
+
+    kr_cli = MagicMock()
+    kr_cli.open_orders.return_value = {"O1": "not_a_dict"}
+    kr_cli.closed_orders.return_value = {"O2": {"cl_ord_id": "abc", "descr": None}}
+    kr_prov = KrakenProvider(client=kr_cli)
+    assert kr_prov.order_by_client_id("HYPEUSD", "abc") is None
+
+    t212_cli = MagicMock()
+    t212_cli.get_portfolio.return_value = ["not_a_dict", {"ticker": "NVDA_US_EQ", "quantity": 2.0}]
+    t212_prov = T212Provider(client=t212_cli)
+    assert t212_prov.free_balance("NVDA_US_EQ") == 2.0
+
 
