@@ -46,20 +46,24 @@ class MacroAnalyzer:
         from order_guard import _load_margins
         conf_margins = _load_margins()
 
-        if macro_llm_interval_sec is not None:
-            self.macro_llm_interval_sec = float(macro_llm_interval_sec)
-        else:
-            self.macro_llm_interval_sec = float(conf_margins["macro_llm_interval_sec"])
+        def _clean_pos_interval(val: Any, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                vf = float(val)
+                return vf if math.isfinite(vf) and vf > 0.0 else default
+            except (TypeError, ValueError, OverflowError):
+                return default
 
-        if advisor_interval_sec is not None:
-            self.advisor_interval_sec = float(advisor_interval_sec)
-        else:
-            self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_sec"])
+        default_macro_itv = _clean_pos_interval(conf_margins.get("macro_llm_interval_sec"), 16200.0)
+        default_adv_itv = _clean_pos_interval(conf_margins.get("macro_advisor_interval_sec"), 1800.0)
+        self.macro_llm_interval_sec = _clean_pos_interval(macro_llm_interval_sec, default_macro_itv)
+        self.advisor_interval_sec = _clean_pos_interval(advisor_interval_sec, default_adv_itv)
 
         self.shadow_notify = str(conf_margins["shadow_notify"]).strip().lower() in (
             "1", "1.0", "true", "yes", "on"
         )
-        self.thread_prune_interval_sec = thread_prune_interval_sec
+        self.thread_prune_interval_sec = _clean_pos_interval(thread_prune_interval_sec, 10800.0)
         self.symbols = symbols or ["BTCUSDC"]
         self.running = False
 

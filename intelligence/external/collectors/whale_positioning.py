@@ -92,9 +92,20 @@ class WhalePositioningCollector:
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 300.0,
     ) -> None:
-        self.cache_ttl_sec = cache_ttl_sec
+        import math
+
+        def _clean_ttl(val: Any, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                vf = float(val)
+                return vf if math.isfinite(vf) and vf >= 0.0 else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        self.cache_ttl_sec = _clean_ttl(cache_ttl_sec, 120.0)
         self.cache_dir = cache_dir
-        self.disk_ttl_sec = disk_ttl_sec
+        self.disk_ttl_sec = _clean_ttl(disk_ttl_sec, 300.0)
         self._cache: Dict[str, tuple[float, WhalePositioningSnapshot]] = {}
 
     def _effective_cache_dir(self) -> Optional[str]:
@@ -127,7 +138,7 @@ class WhalePositioningCollector:
                 if not isinstance(data, dict):
                     continue
                 snapshot = WhalePositioningSnapshot.from_dict(data)
-                if 0.0 <= (now - snapshot.ts) < max_age:
+                if snapshot.ts > 0.0 and 0.0 <= (now - snapshot.ts) < max_age:
                     self._cache[symbol.upper()] = (snapshot.ts, snapshot)
                     return snapshot
                 if ignore_ttl:

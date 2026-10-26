@@ -120,11 +120,31 @@ class OrderbookDepthCollector:
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 60.0,
     ) -> None:
-        self.cache_ttl_sec = cache_ttl_sec
-        self.depth_band_pct = depth_band_pct
-        self.whale_wall_usd = whale_wall_usd
+        import math
+
+        def _clean_nonneg(val: Any, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                vf = float(val)
+                return vf if math.isfinite(vf) and vf >= 0.0 else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        def _clean_pos(val: Any, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                vf = float(val)
+                return vf if math.isfinite(vf) and vf > 0.0 else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        self.cache_ttl_sec = _clean_nonneg(cache_ttl_sec, 5.0)
+        self.depth_band_pct = _clean_pos(depth_band_pct, 1.5)
+        self.whale_wall_usd = _clean_pos(whale_wall_usd, 500_000.0)
         self.cache_dir = cache_dir
-        self.disk_ttl_sec = disk_ttl_sec
+        self.disk_ttl_sec = _clean_nonneg(disk_ttl_sec, 60.0)
         self._cache: Dict[str, tuple[float, OrderbookSnapshot]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
@@ -152,7 +172,7 @@ class OrderbookDepthCollector:
                 if not isinstance(data, dict):
                     continue
                 snapshot = OrderbookSnapshot.from_dict(data)
-                if 0.0 <= (now - snapshot.ts) < max_age:
+                if snapshot.ts > 0.0 and 0.0 <= (now - snapshot.ts) < max_age:
                     self._cache[symbol.upper()] = (snapshot.ts, snapshot)
                     return snapshot
             except Exception as e:

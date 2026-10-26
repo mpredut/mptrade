@@ -7855,3 +7855,79 @@ def test_iteration52_binance_market_data_and_kraken_modules_nan_bool_safety(monk
     assert loaded_bars == [(1700000000, 20.0, 21.0, 19.5, 20.5)]
 
 
+def test_iteration53_t212_order_manager_hl_shadow_and_intelligence_collectors_nan_bool_safety(monkeypatch, tmp_path):
+    import os
+    import sys
+    from types import SimpleNamespace
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.macro_analyzer import MacroAnalyzer
+
+    # 1. 212trading/order_manager: _portfolio_qty, _matching_active_orders, _reconcile_record
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "order_manager")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import order_manager as t212_om
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    cli_nan_pf = SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": float("nan")}])
+    assert t212_om._portfolio_qty(cli_nan_pf, "NVDA_US_EQ") is None
+    cli_bool_pf = SimpleNamespace(get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": True}])
+    assert t212_om._portfolio_qty(cli_bool_pf, "NVDA_US_EQ") is None
+
+    cli_orders = SimpleNamespace(
+        list_active_orders=lambda: [
+            {"ticker": "NVDA_US_EQ", "quantity": True, "limitPrice": 100.0},
+            {"ticker": "NVDA_US_EQ", "quantity": 1.0, "limitPrice": float("nan")},
+        ]
+    )
+    assert t212_om._matching_active_orders(cli_orders, {"ticker": "NVDA_US_EQ", "qty": 1.0, "limit_price": 100.0}) == []
+    assert t212_om._matching_active_orders(cli_orders, {"ticker": "NVDA_US_EQ", "qty": True, "limit_price": 100.0}) is None
+
+    # 2. Intelligence collectors & MacroAnalyzer sanitize bool/NaN/Inf TTL & retention parameters
+    blc = BybitLiquidationCollector(retention_sec=True)
+    assert blc._retention == 3600.0
+    blc_nan = BybitLiquidationCollector(retention_sec=float("nan"))
+    assert blc_nan._retention == 3600.0
+
+    dtc = DerivativesTelemetryCollector(cache_ttl_sec=True, disk_ttl_sec=float("nan"), cache_dir=str(tmp_path))
+    assert dtc.cache_ttl_sec == 60.0
+    assert dtc.disk_ttl_sec == 120.0
+
+    obc = OrderbookDepthCollector(
+        cache_ttl_sec=True, depth_band_pct=float("nan"), whale_wall_usd=-1.0, disk_ttl_sec=float("inf"), cache_dir=str(tmp_path)
+    )
+    assert obc.cache_ttl_sec == 5.0
+    assert obc.depth_band_pct == 1.5
+    assert obc.whale_wall_usd == 500_000.0
+    assert obc.disk_ttl_sec == 60.0
+
+    wpc = WhalePositioningCollector(cache_ttl_sec=True, disk_ttl_sec=float("nan"), cache_dir=str(tmp_path))
+    assert wpc.cache_ttl_sec == 120.0
+    assert wpc.disk_ttl_sec == 300.0
+
+    ma = MacroAnalyzer(
+        cache_dir=str(tmp_path),
+        macro_llm_interval_sec=True,
+        advisor_interval_sec=float("nan"),
+        thread_prune_interval_sec=-5.0,
+    )
+    assert ma.macro_llm_interval_sec > 1.0
+    assert ma.advisor_interval_sec > 1.0
+    assert ma.thread_prune_interval_sec == 10800.0
+
+
+

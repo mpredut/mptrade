@@ -64,7 +64,15 @@ class BybitLiquidationCollector:
         retention_sec: float = MAX_RETENTION_SEC,
     ) -> None:
         self._symbols = [s.upper() for s in (symbols or DEFAULT_SYMBOLS)]
-        self._retention = retention_sec
+        ret_sec = MAX_RETENTION_SEC
+        if retention_sec is not None and not isinstance(retention_sec, bool):
+            try:
+                rf = float(retention_sec)
+                if math.isfinite(rf) and rf > 0.0:
+                    ret_sec = rf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self._retention = ret_sec
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
         self._lock = threading.Lock()

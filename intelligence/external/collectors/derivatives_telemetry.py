@@ -70,9 +70,20 @@ class DerivativesTelemetryCollector:
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 120.0,
     ) -> None:
-        self.cache_ttl_sec = cache_ttl_sec
+        import math
+
+        def _clean_ttl(val: Any, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                vf = float(val)
+                return vf if math.isfinite(vf) and vf >= 0.0 else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        self.cache_ttl_sec = _clean_ttl(cache_ttl_sec, 60.0)
         self.cache_dir = cache_dir
-        self.disk_ttl_sec = disk_ttl_sec
+        self.disk_ttl_sec = _clean_ttl(disk_ttl_sec, 120.0)
         self._cache: Dict[str, tuple[float, DerivativesTelemetry]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
@@ -100,7 +111,7 @@ class DerivativesTelemetryCollector:
                 if not isinstance(data, dict):
                     continue
                 telemetry = DerivativesTelemetry.from_dict(data)
-                if 0.0 <= (now - telemetry.ts) < max_age:
+                if telemetry.ts > 0.0 and 0.0 <= (now - telemetry.ts) < max_age:
                     self._cache[symbol.upper()] = (telemetry.ts, telemetry)
                     return telemetry
             except Exception as e:

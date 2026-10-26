@@ -174,8 +174,13 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
     fp = info.get("fillPrice") or info.get("limitPrice", 0)
     if st == "FILLED":
         log(f"  [ORDER] ✓ FILLED: {fq} @ {fp} USD")
+        try:
+            fp_f = 0.0 if isinstance(fp, bool) else float(fp or 0.0)
+            notify_px = fp_f if math.isfinite(fp_f) and fp_f > 0 else 0.0
+        except (TypeError, ValueError, OverflowError):
+            notify_px = 0.0
         notify(title=f"✓ Order filled: {ticker}", body=f"q{fq} @ {fp}",
-               source="T212 order", price=float(fp or 0), desktop=desktop)
+               source="T212 order", price=notify_px, desktop=desktop)
     else:
         log(f"  [ORDER] ✗ {st}")
         notify(title=f"✗ Order {st}: {ticker}", body=f"id={order_id}",
@@ -188,11 +193,19 @@ def _portfolio_qty(client: T212Client, ticker: str) -> float | None:
     if portfolio is None:
         return None
     for position in portfolio:
+        if not isinstance(position, dict):
+            continue
         if str(position.get("ticker") or "").upper() == ticker.upper():
+            raw_q = position.get("quantity")
+            if isinstance(raw_q, bool):
+                return None
             try:
-                return float(position.get("quantity") or 0.0)
+                q_val = float(raw_q or 0.0)
             except (TypeError, ValueError, OverflowError):
                 return None
+            if not math.isfinite(q_val) or q_val < 0.0:
+                return None
+            return q_val
     return 0.0
 
 
@@ -200,20 +213,37 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
     orders = client.list_active_orders()
     if orders is None:
         return None
-    expected_qty = float(record["qty"])
-    expected_limit = float(record["limit_price"])
+    raw_exp_qty = record.get("qty")
+    raw_exp_lim = record.get("limit_price")
+    if isinstance(raw_exp_qty, bool) or isinstance(raw_exp_lim, bool):
+        return None
+    try:
+        expected_qty = float(raw_exp_qty)
+        expected_limit = float(raw_exp_lim)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (math.isfinite(expected_qty) and expected_qty > 0 and math.isfinite(expected_limit) and expected_limit > 0):
+        return None
     matches = []
     for order in orders:
+        if not isinstance(order, dict):
+            continue
         instrument = order.get("instrument")
         nested_ticker = instrument.get("ticker") if isinstance(instrument, dict) else None
         ticker = str(order.get("ticker") or nested_ticker or "").upper()
-        if ticker != str(record["ticker"]).upper():
+        if ticker != str(record.get("ticker") or "").upper():
+            continue
+        raw_sq = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
+        raw_lim = order.get("limitPrice", order.get("limit"))
+        if isinstance(raw_sq, bool) or isinstance(raw_lim, bool):
             continue
         try:
-            signed_qty = float(order.get("quantity", order.get("orderedQuantity", order.get("qty"))))
+            signed_qty = float(raw_sq)
             qty = abs(signed_qty)
-            limit = float(order.get("limitPrice", order.get("limit")))
+            limit = float(raw_lim)
         except (TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(qty) and math.isfinite(limit)):
             continue
         side = str(order.get("side") or "").upper()
         if not side:
@@ -242,16 +272,28 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
             current_qty = _portfolio_qty(client, record["ticker"])
             if current_qty is None:
                 return "waiting"
-            if before_qty is not None and current_qty > float(before_qty) + 1e-6:
+            before_f = None
+            if before_qty is not None and not isinstance(before_qty, bool):
+                try:
+                    cand_b = float(before_qty)
+                    if math.isfinite(cand_b) and cand_b >= 0.0:
+                        before_f = cand_b
+                except (TypeError, ValueError, OverflowError):
+                    before_f = None
+            if before_f is not None and current_qty > before_f + 1e-6:
                 record.update({
                     "lifecycle": "filled", "portfolio_fill_observed": True,
-                    "filled_qty": current_qty - float(before_qty),
+                    "filled_qty": current_qty - before_f,
                     "lookup_misses": 0, "last_observed_at": now,
                 })
                 _persist_marker(record, marker_path)
                 log("  [ORDER] accepted order vanished from history; fill confirmed from portfolio")
                 return "complete"
-            misses = int(record.get("lookup_misses") or 0) + 1
+            raw_m = record.get("lookup_misses")
+            try:
+                misses = (0 if isinstance(raw_m, bool) else max(0, int(raw_m or 0))) + 1
+            except (TypeError, ValueError, OverflowError):
+                misses = 1
             record["lookup_misses"] = misses
             record["last_observed_at"] = now
             if misses >= ABSENCE_CONFIRMATIONS:
@@ -310,21 +352,36 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
     current_qty = _portfolio_qty(client, record["ticker"])
     if current_qty is None:
         return "waiting"
-    if (before_qty is not None and current_qty is not None
-            and current_qty > float(before_qty) + 1e-6):
+    before_f = None
+    if before_qty is not None and not isinstance(before_qty, bool):
+        try:
+            cand_b = float(before_qty)
+            if math.isfinite(cand_b) and cand_b >= 0.0:
+                before_f = cand_b
+        except (TypeError, ValueError, OverflowError):
+            before_f = None
+    if before_f is not None and current_qty is not None and current_qty > before_f + 1e-6:
         record.update({
             "lifecycle": "filled", "portfolio_fill_observed": True,
-            "filled_qty": current_qty - float(before_qty),
+            "filled_qty": current_qty - before_f,
             "last_observed_at": now,
         })
         _persist_marker(record, marker_path)
         log("  [ORDER] the submit was recovered from the growth of the T212 position")
         return "complete"
 
-    misses = int(record.get("lookup_misses") or 0) + 1
+    raw_m = record.get("lookup_misses")
+    try:
+        misses = (0 if isinstance(raw_m, bool) else max(0, int(raw_m or 0))) + 1
+    except (TypeError, ValueError, OverflowError):
+        misses = 1
     record["lookup_misses"] = misses
     record["last_observed_at"] = now
-    next_retry_at = float(record.get("next_retry_at") or 0.0)
+    raw_nra = record.get("next_retry_at")
+    try:
+        next_retry_at = 0.0 if isinstance(raw_nra, bool) else float(raw_nra or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        next_retry_at = 0.0
     if not math.isfinite(next_retry_at) or next_retry_at > now + max(float(retry_delay), 0.0) + 60.0:
         next_retry_at = now + max(float(retry_delay), 0.0)
         record["next_retry_at"] = next_retry_at
@@ -403,10 +460,19 @@ def place_order_with_retry(
                 _persist_marker(record, marker_path)
             log("  [ORDER] an existing legacy marker — not duplicating the order")
             return True
+        raw_rec_qty = record.get("qty")
+        raw_rec_lim = record.get("limit_price")
+        try:
+            rec_qty_f = -1.0 if isinstance(raw_rec_qty, bool) else float(raw_rec_qty or 0.0)
+            rec_lim_f = -1.0 if isinstance(raw_rec_lim, bool) else float(raw_rec_lim or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            rec_qty_f, rec_lim_f = -1.0, -1.0
         same_intent = (
             str(record.get("ticker") or "").upper() == ticker.upper()
-            and abs(float(record.get("qty") or 0.0) - qty_r) <= 0.011
-            and abs(float(record.get("limit_price") or 0.0) - price_r) <= 0.011
+            and math.isfinite(rec_qty_f) and rec_qty_f > 0
+            and math.isfinite(rec_lim_f) and rec_lim_f > 0
+            and abs(rec_qty_f - qty_r) <= 0.011
+            and abs(rec_lim_f - price_r) <= 0.011
         )
         if not same_intent:
             log("  ! [ORDER] another intent already exists in the marker — NOT overwriting")

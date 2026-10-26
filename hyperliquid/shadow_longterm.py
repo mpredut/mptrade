@@ -94,10 +94,15 @@ def _fetch_with_ts(_pair: str, interval: int):
     for item in candles or []:
         if not isinstance(item, dict):
             continue
+        if any(isinstance(item.get(k), bool) for k in ("t", "o", "h", "l", "c")):
+            continue
         try:
-            ts = int(item["t"]) // 1000
+            t_f = float(item["t"])
+            if not math.isfinite(t_f):
+                continue
+            ts = int(t_f) // 1000
             o_v, h_v, l_v, c_v = float(item["o"]), float(item["h"]), float(item["l"]), float(item["c"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
         if ts > 0 and all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
             parsed.append((ts, o_v, h_v, l_v, c_v))
