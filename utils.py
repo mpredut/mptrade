@@ -87,18 +87,28 @@ def are_close(value1, value2, target_tolerance_percent=1.0):
 
 
 def timestampToTime(timestamp_ms):
-    # Convert milliseconds to seconds.
-    timestamp_sec = timestamp_ms / 1000.0
-    
-    # Convert to datetime.
-    human_readable_time = datetime.fromtimestamp(timestamp_sec)
-    
-    # Return a human-readable timestamp.
-    return human_readable_time.strftime('%Y-%m-%d %H:%M:%S')
+    if timestamp_ms is None or isinstance(timestamp_ms, bool):
+        return "N/A"
+    try:
+        timestamp_sec = float(timestamp_ms) / 1000.0
+        if not math.isfinite(timestamp_sec) or timestamp_sec < 0:
+            return "N/A"
+        human_readable_time = datetime.fromtimestamp(timestamp_sec)
+        return human_readable_time.strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "N/A"
 
 
 def timeMsToHMS(timestamp_ms):
-    return timeToHMS(timestamp_ms / 1000.0)
+    if timestamp_ms is None or isinstance(timestamp_ms, bool):
+        return "N/A"
+    try:
+        ts_f = float(timestamp_ms)
+        if not math.isfinite(ts_f) or ts_f < 0:
+            return "N/A"
+        return timeToHMS(ts_f / 1000.0)
+    except (TypeError, ValueError, OverflowError):
+        return "N/A"
 
 
 from functools import lru_cache
@@ -106,8 +116,16 @@ from functools import lru_cache
 
 @lru_cache(maxsize=256)
 def timeToHMS(timestamp_sec):
-    human_readable_time = datetime.fromtimestamp(timestamp_sec)
-    return human_readable_time.strftime('%H:%M:%S')
+    if timestamp_sec is None or isinstance(timestamp_sec, bool):
+        return "N/A"
+    try:
+        ts_f = float(timestamp_sec)
+        if not math.isfinite(ts_f) or ts_f < 0:
+            return "N/A"
+        human_readable_time = datetime.fromtimestamp(ts_f)
+        return human_readable_time.strftime('%H:%M:%S')
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "N/A"
 
 
 # Convert seconds to days.
@@ -155,21 +173,39 @@ def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_dura
     :param half_life_duration: The default value after which the percentage is halved (24 hours in seconds)
     :return: The adjusted percentage based on `passs`
     """
-    if half_life_duration <= 0:
+    if any(isinstance(v, bool) or v is None for v in (initial_procent, expired_duration, passs, half_life_duration)):
         return 0.0
-    if expired_duration <= 0 or passs <= 0:
-        return initial_procent
-    k = expired_duration / half_life_duration  # Calculate the constant k
-    return initial_procent / (1 + k * passs)  # Asymptotic decrease formula
+    try:
+        init_f = float(initial_procent)
+        exp_f = float(expired_duration)
+        pass_f = float(passs)
+        hl_f = float(half_life_duration)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not all(math.isfinite(v) for v in (init_f, exp_f, pass_f, hl_f)) or hl_f <= 0:
+        return 0.0
+    if exp_f <= 0 or pass_f <= 0:
+        return init_f
+    k = exp_f / hl_f  # Calculate the constant k
+    return init_f / (1 + k * pass_f)  # Asymptotic decrease formula
 
 
 def exponential_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     """Decreases the percentage exponentially as `passs` increases."""
-    if half_life_duration <= 0:
+    if any(isinstance(v, bool) or v is None for v in (initial_procent, expired_duration, passs, half_life_duration)):
         return 0.0
-    if expired_duration <= 0 or passs <= 0:
-        return initial_procent
-    return initial_procent * math.exp(-(expired_duration * passs) / half_life_duration)
+    try:
+        init_f = float(initial_procent)
+        exp_f = float(expired_duration)
+        pass_f = float(passs)
+        hl_f = float(half_life_duration)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not all(math.isfinite(v) for v in (init_f, exp_f, pass_f, hl_f)) or hl_f <= 0:
+        return 0.0
+    if exp_f <= 0 or pass_f <= 0:
+        return init_f
+    return init_f * math.exp(-(exp_f * pass_f) / hl_f)
     
 def decrese_value_by_increment_exp(increment_factor, value, coeficient=0.05):
     adjustment_v0 = value / (increment_factor + 1)

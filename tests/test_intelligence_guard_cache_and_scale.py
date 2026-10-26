@@ -10847,3 +10847,76 @@ def test_iteration98_market_regime_and_instrument_safety():
     assert inst.param("mt", "bool_val", default=3.5, cast=float) == pytest.approx(3.5)
     assert inst.param(True, "gain", default=4.5, cast=float) == pytest.approx(4.5)
 
+
+def test_iteration99_state_io_botcore_utils_and_alertnotifiers_safety(tmp_path, monkeypatch):
+    """Iteration 99: Verify state_io.py, botcore.py, utils.py, and notify_engine/alertnotifiers.py edge cases."""
+    import state_io
+    import botcore
+    import utils
+    from notify_engine import alertnotifiers
+
+    # 1. state_io.read_tail_lines / _positive_chunk_size / prune_rotated_archives
+    # Passing bool or int as path must not treat file descriptors (e.g. stdout=1) as paths!
+    assert state_io.read_tail_lines(True, 10) == []
+    assert state_io.read_tail_lines(1, 10) == []
+    assert state_io.read_tail_lines(None, 10) == []
+
+    sample_file = tmp_path / "sample.jsonl"
+    sample_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    assert state_io.read_tail_lines(str(sample_file), 2) == [b"line2", b"line3"]
+    assert state_io.read_tail_lines(str(sample_file), 2.5) == []
+    assert state_io.read_tail_lines(str(sample_file), True) == []
+    assert state_io._positive_chunk_size(4096.5, 65536) == 65536
+    assert state_io._positive_chunk_size(True, 65536) == 65536
+    assert state_io.prune_rotated_archives(str(sample_file), keep_count=2.5) == []
+    assert state_io.prune_rotated_archives(True, keep_count=2) == []
+
+    # 2. botcore.http_request fail-closed on malformed method/url
+    assert botcore.http_request(None, "https://example.com") == (0, b"")
+    assert botcore.http_request(True, "https://example.com") == (0, b"")
+    assert botcore.http_request("GET", None) == (0, b"")
+    assert botcore.http_request("GET", True) == (0, b"")
+    assert botcore.http_request("GET", "not-a-valid-url") == (0, b"")
+
+    # 3. utils timestamp & decay helpers
+    assert utils.timestampToTime(None) == "N/A"
+    assert utils.timestampToTime(True) == "N/A"
+    assert utils.timestampToTime(-100) == "N/A"
+    assert utils.timestampToTime(float("nan")) == "N/A"
+    assert utils.timeMsToHMS(None) == "N/A"
+    assert utils.timeMsToHMS(True) == "N/A"
+    assert utils.timeMsToHMS(-1) == "N/A"
+    assert utils.timeToHMS(None) == "N/A"
+    assert utils.timeToHMS(False) == "N/A"
+    assert utils.timeToHMS(-5) == "N/A"
+    assert utils.timeToHMS(65).endswith(":01:05")
+
+    assert utils.asymptotic_decrease(True, 1.0, 10) == 0.0
+    assert utils.asymptotic_decrease(5.0, False, 10) == 0.0
+    assert utils.asymptotic_decrease(float("nan"), 1.0, 10) == 0.0
+    assert utils.exponential_decrease(True, 1.0, 10) == 0.0
+    assert utils.exponential_decrease(5.0, 1.0, float("inf")) == 0.0
+
+    # 4. notify_engine.alertnotifiers._positive_int_env, _safe_pos_int, format_bot_event
+    monkeypatch.setenv("MP_TEST_POS_INT", "-5")
+    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    monkeypatch.setenv("MP_TEST_POS_INT", "3.5")
+    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 42
+    monkeypatch.setenv("MP_TEST_POS_INT", "15")
+    assert alertnotifiers._positive_int_env("MP_TEST_POS_INT", 42) == 15
+
+    assert alertnotifiers._safe_pos_int(True, 7) == 7
+    assert alertnotifiers._safe_pos_int(-3, 7) == 7
+    assert alertnotifiers._safe_pos_int(2.5, 7) == 7
+    assert alertnotifiers._safe_pos_int("12", 7) == 12
+
+    msg = alertnotifiers.AlertNotifier.format_bot_event(
+        {"name": "Started", "source": "BTC_bot", "added_at": 1700000000}
+    )
+    assert "Started" in msg and "BTC_bot" in msg and "11-1" in msg
+    msg_bool = alertnotifiers.AlertNotifier.format_bot_event(
+        {"name": "Started", "source": "BTC_bot", "added_at": True}
+    )
+    assert msg_bool == "Started · BTC_bot"
+
+

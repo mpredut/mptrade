@@ -264,11 +264,15 @@ def http_request(
             "Content-Type", "application/x-www-form-urlencoded"
         )
 
-    verb = method.upper()
-    req = urllib.request.Request(
-        url, data=data, headers=request_headers, method=verb,
-    )
+    if not method or isinstance(method, bool) or not isinstance(method, str) or not method.strip():
+        return 0, b""
+    if not url or isinstance(url, bool) or not isinstance(url, str) or not url.strip():
+        return 0, b""
+    verb = method.strip().upper()
     try:
+        req = urllib.request.Request(
+            url.strip(), data=data, headers=request_headers, method=verb,
+        )
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:

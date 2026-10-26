@@ -66,9 +66,9 @@ def _positive_int_env(name: str, default: int) -> int:
         return default
     try:
         f = float(s)
-        if not math.isfinite(f):
+        if not math.isfinite(f) or not f.is_integer() or int(f) < 0:
             return default
-        return max(0, int(f))
+        return int(f)
     except (TypeError, ValueError, OverflowError):
         return default
 
@@ -84,9 +84,16 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
 
 
 def _safe_pos_int(val: Any, default: int = 1) -> int:
-    f = _safe_float(val, float(default))
-    i = int(f)
-    return i if i >= 1 else default
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        if not math.isfinite(f) or not f.is_integer():
+            return default
+        i = int(f)
+        return i if i >= 1 else default
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _delivery_state_path() -> Path:
@@ -685,15 +692,23 @@ class AlertNotifier:
         The event name (the action) becomes the ntfy title. The platform is plain text
         because its meaning is implicit. Use the short timestamp format ``MM-DD HH:MM``.
         """
-        body = (alert.get("body") or "").strip()
-        head = body or alert.get("name", alert.get("symbol", "?"))
+        body = str(alert.get("body") or "").strip()
+        head = body or str(alert.get("name", alert.get("symbol", "?")))
         parts = [head, str(alert.get("source", "?"))]
         ts = alert.get("added_at")
-        if ts is not None:
-            try:
-                parts.append(ts.strftime("%m-%d %H:%M"))   # Omit the year.
-            except Exception:  # noqa: BLE001
-                pass
+        if ts is not None and not isinstance(ts, bool):
+            if hasattr(ts, "strftime"):
+                try:
+                    parts.append(ts.strftime("%m-%d %H:%M"))   # Omit the year.
+                except Exception:  # noqa: BLE001
+                    pass
+            elif isinstance(ts, (int, float)):
+                try:
+                    ts_f = float(ts)
+                    if math.isfinite(ts_f) and ts_f > 0:
+                        parts.append(datetime.fromtimestamp(ts_f).strftime("%m-%d %H:%M"))
+                except Exception:  # noqa: BLE001
+                    pass
         return " · ".join(parts)
 
     @staticmethod

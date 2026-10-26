@@ -257,7 +257,10 @@ def _positive_chunk_size(chunk_size: Any, default: int) -> int:
     if chunk_size is None or isinstance(chunk_size, bool):
         return default
     try:
-        val = int(chunk_size)
+        cf = float(chunk_size)
+        if not (cf == int(cf)):
+            return default
+        val = int(cf)
         return val if val > 0 else default
     except (TypeError, ValueError, OverflowError):
         return default
@@ -291,10 +294,15 @@ def read_tail_lines(
     chunk_size: int = 65536,
 ) -> list[bytes]:
     """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
+    if not path or isinstance(path, (bool, int)):
+        return []
     if limit is None or isinstance(limit, bool):
         return []
     try:
-        limit = int(limit)
+        lf = float(limit)
+        if not (lf == int(lf)):
+            return []
+        limit = int(lf)
     except (TypeError, ValueError, OverflowError):
         return []
     if limit <= 0 or not os.path.isfile(path):
@@ -347,7 +355,13 @@ def prune_rotated_archives(
     keep_count: int,
 ) -> list[str]:
     """Retain the newest ``keep_count`` ``<base_filename>.*.archive*`` files."""
-    pattern = f"{glob.escape(os.fspath(base_filename))}.*.archive*"
+    if not base_filename or isinstance(base_filename, (bool, int)):
+        return []
+    try:
+        base_fspath = os.fspath(base_filename)
+    except TypeError:
+        return []
+    pattern = f"{glob.escape(base_fspath)}.*.archive*"
     candidates: list[tuple[float, str]] = []
     for path in glob.glob(pattern):
         if path.endswith(".tmp"):
@@ -362,7 +376,8 @@ def prune_rotated_archives(
         keep = 0
     else:
         try:
-            keep = max(0, int(keep_count))
+            kf = float(keep_count)
+            keep = max(0, int(kf)) if (kf == int(kf)) else 0
         except (TypeError, ValueError, OverflowError):
             keep = 0
     for old_archive in archives[keep:]:
