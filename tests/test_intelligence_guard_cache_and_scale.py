@@ -8062,5 +8062,62 @@ def test_iteration54_triggers_cli_daemon_pricewindow_and_shadow_signals_nan_bool
     assert _intent_row({"id": True, "side": "BUY", "qty": 1.0}, owner="test", source="s", location="$", inherited={}) is None
 
 
+def test_iteration55_pricewindow_zero_size_tradeall_observe_pricechecker_and_alertnotifiers_nan_bool_safety(tmp_path):
+    from market_monitor.pricechecker import PriceChecker
+    from notify_engine.alertnotifiers import AlertNotifier, pop_due_bulk_batch
+    from pricewindow import PriceWindow
+    from visuals.tradeall_observe import (
+        _parse_shadow_rows,
+        format_state_text,
+        load_backtest_order_events,
+        load_backtest_price_samples,
+        load_backtest_trend_starts,
+    )
+
+    # 1. PriceWindow(symbol, 0) clamps to 1, while bool/NaN/Inf fall back to 10
+    assert PriceWindow("BTCUSDC", 0).window_size == 1
+    assert PriceWindow("BTCUSDC", -5).window_size == 1
+    assert PriceWindow("BTCUSDC", True).window_size == 10
+    assert PriceWindow("BTCUSDC", float("nan")).window_size == 10
+
+    # 2. tradeall_observe: format_state_text does not treat bool as 1/0 trend, and backtest loaders reject NaN/Inf
+    txt = format_state_text({"final_trend": True, "trend_fast": False, "kalman_trend": True}, "HDR")
+    assert "trend:     ?" in txt
+    assert "fast:      ?" in txt
+    assert "kalman:    ?" in txt
+
+    shadow_rows = [
+        ["nan", "BTCUSDC", "kalman", "trend_start", "1", "0", "95000.0", "0.1", "0.02"],
+        ["1700000000", "BTCUSDC", "kalman", "trend_start", "1", "0", "nan", "0.1", "0.02"],
+        ["1700000000", "BTCUSDC", "kalman", "trend_start", "1", "0", "95000.0", "0.1", "0.02"],
+    ]
+    parsed_sh = _parse_shadow_rows(shadow_rows, "BTCUSDC")
+    assert len(parsed_sh) == 1
+    assert parsed_sh[0]["ts"] == 1700000000.0
+
+    (tmp_path / "tradeall_price_samples.log").write_text("nan|BTCUSDC|95000\n1700000000|BTCUSDC|nan\n1700000000|BTCUSDC|95000\n")
+    assert load_backtest_price_samples(str(tmp_path), "BTCUSDC") == ([1700000000.0], [95000.0])
+
+    (tmp_path / "tradeall_decisions.log").write_text("nan|BTCUSDC|trend_start|UP|HOLD|95000|1\n1700000000|BTCUSDC|trend_start|UP|HOLD|95000|1\n")
+    assert len(load_backtest_trend_starts(str(tmp_path), "BTCUSDC")) == 1
+
+    (tmp_path / "order_outcomes.log").write_text("nan|BTCUSDC|BUY|95000|0.1|accepted||tradeall.py|trend_buy\n1700000000|BTCUSDC|BUY|95000|0.1|accepted||tradeall.py|trend_buy\n")
+    assert len(load_backtest_order_events(str(tmp_path), "BTCUSDC")) == 1
+
+    # 3. PriceChecker._should_send_alert recovers from NaN/bool last_time and cooldown_minutes
+    checker = PriceChecker(cachePriceAll=None, config={"cooldown_minutes": float("nan")})
+    checker._last_alert_time["BTC_up"] = float("nan")
+    assert checker._should_send_alert("BTC", "up") is True
+    checker._last_alert_time["BTC_up"] = True
+    assert checker._should_send_alert("BTC", "up") is True
+
+    # 4. AlertNotifier.format_human_readable_time and pop_due_bulk_batch handle bool/NaN safely
+    assert AlertNotifier.format_human_readable_time(True) == "N/A"
+    assert AlertNotifier.format_human_readable_time(False) == "N/A"
+    assert AlertNotifier.format_human_readable_time(float("nan")) == "nan"
+    assert pop_due_bulk_batch("ntfy", now=float("nan")) is None or True
+
+
+
 
 

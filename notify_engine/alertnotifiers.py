@@ -4,6 +4,7 @@ from __future__ import annotations
 import requests
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -367,7 +368,14 @@ def pass_common_gate(
     3. Synthesizes & concatenates buffered distinct messages into a single bulk payload
        once the 5-minute gate opens.
     """
-    now_ts = float(now if now is not None else time.time())
+    now_ts = time.time()
+    if now is not None and not isinstance(now, bool):
+        try:
+            nf = float(now)
+            if math.isfinite(nf) and nf > 0.0:
+                now_ts = nf
+        except (TypeError, ValueError, OverflowError):
+            pass
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -514,7 +522,14 @@ def pop_due_bulk_batch(
     force: bool = False,
 ) -> Optional[tuple[str, str, str, str]]:
     """Pop and synthesize buffered distinct notifications once the 5-minute gate opens."""
-    now_ts = float(now if now is not None else time.time())
+    now_ts = time.time()
+    if now is not None and not isinstance(now, bool):
+        try:
+            nf = float(now)
+            if math.isfinite(nf) and nf > 0.0:
+                now_ts = nf
+        except (TypeError, ValueError, OverflowError):
+            pass
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     if not path.exists():
@@ -597,11 +612,14 @@ class AlertNotifier:
     
     @staticmethod
     def format_human_readable_time(value) -> str:
-        if value is None:
+        if value is None or isinstance(value, bool):
             return "N/A"
         if isinstance(value, (int, float)):
             try:
-                return datetime.fromtimestamp(value).strftime("%m-%d %H:%M:%S")
+                vf = float(value)
+                if not math.isfinite(vf) or vf <= 0.0:
+                    return str(value)
+                return datetime.fromtimestamp(vf).strftime("%m-%d %H:%M:%S")
             except Exception:
                 return str(value)
         if hasattr(value, "strftime"):

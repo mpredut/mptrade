@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import logging
+import math
 import re
 import time
 import requests
@@ -290,7 +291,8 @@ class NotificationServer:
                 retry_after = getattr(resp, "headers", {}).get("Retry-After")
                 if retry_after:
                     try:
-                        time.sleep(float(retry_after))
+                        ra_f = float(retry_after)
+                        time.sleep(min(ra_f, 30.0) if (math.isfinite(ra_f) and ra_f >= 0.0) else 1.0)
                     except (ValueError, TypeError):
                         time.sleep(1)
                     resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)

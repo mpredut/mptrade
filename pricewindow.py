@@ -382,7 +382,7 @@ class PriceWindow:
         if window_size is not None and not isinstance(window_size, bool):
             try:
                 wf = float(window_size)
-                if math.isfinite(wf) and wf >= 1.0:
+                if math.isfinite(wf):
                     ws_int = max(1, int(wf))
             except (TypeError, ValueError, OverflowError):
                 pass

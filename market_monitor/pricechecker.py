@@ -232,11 +232,29 @@ class PriceChecker:
         """Check whether we can send a new alert (spam prevention)."""
         key = f"{symbol}_{alert_type}"
         now = time.time()
-        last_time = self._last_alert_time.get(key, 0)
-        if last_time > now:
-            last_time = 0.0
+        raw_last = self._last_alert_time.get(key, 0.0)
+        last_time = 0.0
+        if raw_last is not None and not isinstance(raw_last, bool):
+            try:
+                lf = float(raw_last)
+                if math.isfinite(lf) and 0.0 <= lf <= now:
+                    last_time = lf
+                else:
+                    self._last_alert_time[key] = 0.0
+            except (TypeError, ValueError, OverflowError):
+                self._last_alert_time[key] = 0.0
+        else:
             self._last_alert_time[key] = 0.0
-        cooldown_seconds = self.config["cooldown_minutes"] * 60
+        raw_cd = self.config.get("cooldown_minutes", 30)
+        cd_min = 30.0
+        if raw_cd is not None and not isinstance(raw_cd, bool):
+            try:
+                cf = float(raw_cd)
+                if math.isfinite(cf) and cf >= 0.0:
+                    cd_min = cf
+            except (TypeError, ValueError, OverflowError):
+                cd_min = 30.0
+        cooldown_seconds = cd_min * 60.0
 
         return (now - last_time) >= cooldown_seconds
 

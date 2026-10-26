@@ -368,10 +368,14 @@ def load_trend_starts(symbol, days_back):
             if sym_ != symbol or event != "trend_start":
                 continue
             try:
-                events.append({"ts": float(ts), "state": state, "old_state": old_state,
-                                "price": float(price), "prev_confirm_count": prev_confirm})
+                t_val = float(ts)
+                p_val = float(price)
             except ValueError:
                 continue
+            if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
+                continue
+            events.append({"ts": t_val, "state": state, "old_state": old_state,
+                            "price": p_val, "prev_confirm_count": prev_confirm})
     events.sort(key=lambda e: e["ts"])
     return events
 
@@ -395,12 +399,16 @@ def load_order_events(symbol, days_back):
             if sym_ != symbol or not _is_tradeall_order(caller, motivation):
                 continue
             try:
-                events.append({
-                    "ts": float(ts), "side": side, "price": float(price),
-                    "outcome": outcome, "reason": motivation or refuse_reason,
-                })
+                t_val = float(ts)
+                p_val = float(price)
             except ValueError:
                 continue
+            if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
+                continue
+            events.append({
+                "ts": t_val, "side": side, "price": p_val,
+                "outcome": outcome, "reason": motivation or refuse_reason,
+            })
     events.sort(key=lambda e: e["ts"])
     return events
 
@@ -413,11 +421,17 @@ def _parse_shadow_rows(rows, symbol):
         if sym_ != symbol or event != "trend_start":
             continue
         try:
-            events.append({"ts": float(ts), "signal": signal, "state": int(state),
-                            "old_state": int(old_state), "price": float(price),
-                            "vel": vel, "vel_std": vel_std})
+            t_val = float(ts)
+            p_val = float(price)
+            st_val = int(state)
+            ost_val = int(old_state)
         except ValueError:
             continue
+        if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
+            continue
+        events.append({"ts": t_val, "signal": signal, "state": st_val,
+                        "old_state": ost_val, "price": p_val,
+                        "vel": vel, "vel_std": vel_std})
     events.sort(key=lambda e: e["ts"])
     return events
 
@@ -452,10 +466,13 @@ def load_backtest_price_samples(directory, symbol):
         if sym_ != symbol:
             continue
         try:
-            ts_list.append(float(ts))
-            px_list.append(float(price))
+            t_val = float(ts)
+            p_val = float(price)
         except ValueError:
             continue
+        if math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0:
+            ts_list.append(t_val)
+            px_list.append(p_val)
     return ts_list, px_list
 
 
@@ -466,10 +483,14 @@ def load_backtest_trend_starts(directory, symbol):
         if sym_ != symbol or event != "trend_start":
             continue
         try:
-            events.append({"ts": float(ts), "state": state, "old_state": old_state,
-                            "price": float(price), "prev_confirm_count": prev_confirm})
+            t_val = float(ts)
+            p_val = float(price)
         except ValueError:
             continue
+        if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
+            continue
+        events.append({"ts": t_val, "state": state, "old_state": old_state,
+                        "price": p_val, "prev_confirm_count": prev_confirm})
     events.sort(key=lambda e: e["ts"])
     return events
 
@@ -482,12 +503,16 @@ def load_backtest_order_events(directory, symbol):
         if sym_ != symbol:
             continue
         try:
-            events.append({
-                "ts": float(ts), "side": side, "price": float(price),
-                "outcome": outcome, "reason": motivation or refuse_reason,
-            })
+            t_val = float(ts)
+            p_val = float(price)
         except ValueError:
             continue
+        if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
+            continue
+        events.append({
+            "ts": t_val, "side": side, "price": p_val,
+            "outcome": outcome, "reason": motivation or refuse_reason,
+        })
     events.sort(key=lambda e: e["ts"])
     return events
 
@@ -713,10 +738,16 @@ def format_state_text(entry, header, pending=None, exposure=None):
     if not isinstance(entry, dict):
         entry = {}
     trend_map = {1: "UP", -1: "DOWN", 0: "FLAT"}
+
+    def _t_label(val):
+        if val is None or isinstance(val, bool):
+            return "?"
+        return trend_map.get(val, "?")
+
     text = (
         f"{header}\n"
         f"price:     {entry.get('current_price', '?')}\n"
-        f"trend:     {trend_map.get(entry.get('final_trend'), '?')}\n"
+        f"trend:     {_t_label(entry.get('final_trend'))}\n"
         f"grad rec:  {_safe_float(entry.get('gradient_recent')):+.4f}\n"
         f"slope short:{_safe_float(entry.get('slope_small')):+.3f}\n"
         f"slope long: {_safe_float(entry.get('slope_big')):+.3f}\n"
@@ -724,10 +755,10 @@ def format_state_text(entry, header, pending=None, exposure=None):
     )
     fast_trend = entry.get("trend_fast")
     if fast_trend is not None:
-        text += f"\nfast:      {trend_map.get(fast_trend, '?')} (grad: {_safe_float(entry.get('gradient_recent_fast')):+.4f})"
+        text += f"\nfast:      {_t_label(fast_trend)} (grad: {_safe_float(entry.get('gradient_recent_fast')):+.4f})"
     # Add shadow rows only when their keys exist in the snapshot.
     if entry.get("kalman_trend") is not None:
-        text += (f"\nkalman:    {trend_map.get(entry.get('kalman_trend'), '?')} "
+        text += (f"\nkalman:    {_t_label(entry.get('kalman_trend'))} "
                  f"(v={_safe_float(entry.get('kalman_vel')):+.3f}%/min ±{_safe_float(entry.get('kalman_vel_std')):.3f})")
     v1h = entry.get("vol_1h_pct")
     if v1h is not None and not isinstance(v1h, bool):
