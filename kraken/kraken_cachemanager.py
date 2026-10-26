@@ -106,8 +106,8 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
-    side = extract_order_side(tr) or "SELL"
-    is_buyer = side == "BUY"
+    side = extract_order_side(tr) or None
+    is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
     qty = extract_order_qty(tr, default=0.0)
     price = extract_order_price(tr, default=0.0)
     order_id = tr.get("ordertxid", tr.get("orderId"))
@@ -221,6 +221,8 @@ def _ledger_to_fills(ledger):
         quote_ccy = _QUOTE[str(quote["asset"]).upper()]
         raw_symbol = raw_base + quote_ccy
         ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
+        if ts_ms <= 0:
+            continue
         is_buyer = ba > 0
         px = abs(qa) / abs(ba)
         if not math.isfinite(px) or px <= 0.0:
@@ -295,7 +297,10 @@ def poll_loop(client):
 # Enable with KRAKEN_CACHE_MODE=ws; requires `websocket-client`.
 def _ws_token(client):
     """Return a short-lived private-WS token, refreshed on every reconnect."""
-    return client._private("GetWebSocketsToken", fresh=True)["token"]
+    res = client._private("GetWebSocketsToken", fresh=True)
+    if not isinstance(res, dict) or isinstance(res.get("token"), bool) or not str(res.get("token") or "").strip():
+        raise RuntimeError("Kraken GetWebSocketsToken returned no token")
+    return str(res["token"]).strip()
 
 
 def _merge_rest_into(client, cache):
@@ -382,7 +387,7 @@ def ws_loop(client):
                 if not isinstance(tr, dict):
                     continue
                 n = _normalize(txid, tr)
-                if n["price"] <= 0 or n["qty"] <= 0:
+                if n.get("side") not in {"BUY", "SELL"} or n["price"] <= 0 or n["qty"] <= 0 or n["time"] <= 0:
                     continue
                 sym = _match_configured_pair(n.get("symbol"))
                 if sym is None:

@@ -308,14 +308,24 @@ class KrakenClient:
             raise ValueError(f"invalid Kraken order volume: {volume!r}") from exc
         if not math.isfinite(vol_f) or vol_f <= 0.0:
             raise ValueError(f"invalid Kraken order volume: {volume!r}")
+        s_norm = str(side or "").strip().lower() if not isinstance(side, bool) else ""
+        if s_norm in {"buy", "b"}:
+            side_val = "buy"
+        elif s_norm in {"sell", "s"}:
+            side_val = "sell"
+        else:
+            raise ValueError(f"invalid Kraken order side: {side!r}")
+        ot_norm = str(ordertype or "").strip().lower() if not isinstance(ordertype, bool) else ""
+        if ot_norm not in {"limit", "market"}:
+            raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")
         data = {
             "pair": pair,
-            "type": side,
-            "ordertype": ordertype,
+            "type": side_val,
+            "ordertype": ot_norm,
             "volume": f"{vol_f}",
         }
-        if ordertype == "limit" and price is not None:
-            if isinstance(price, bool):
+        if ot_norm == "limit":
+            if price is None or isinstance(price, bool):
                 raise ValueError(f"invalid Kraken limit price: {price!r}")
             try:
                 px_f = float(price)
@@ -326,9 +336,9 @@ class KrakenClient:
             price = round(px_f, self.price_decimals(pair))
             data["price"] = f"{price}"
         if cl_ord_id is not None:
-            if not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id)):
+            if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
-            data["cl_ord_id"] = str(cl_ord_id).lower()
+            data["cl_ord_id"] = str(cl_ord_id).strip().lower()
         if validate:
             data["validate"] = "true"
         return self._private("AddOrder", data)

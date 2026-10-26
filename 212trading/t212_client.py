@@ -35,7 +35,9 @@ class T212Client:
                  order_min_gap_sec: float | None = None):
         self.api_key = api_key
         self.api_secret = api_secret
-        self.env = (env if env is not None else required_env("T212_ENV")).lower()
+        if isinstance(env, bool):
+            raise ValueError(f"Invalid T212 environment: {env!r}; expected live or demo")
+        self.env = (str(env).strip() if env is not None else required_env("T212_ENV")).lower()
         if self.env not in {"live", "demo"}:
             raise ValueError(f"Invalid T212 environment: {env!r}; expected live or demo")
         self.base = DEMO_BASE if self.env == "demo" else LIVE_BASE
@@ -212,8 +214,13 @@ class T212Client:
         validity: str = "DAY",
     ) -> tuple[int, dict]:
         """Place a limit order and return HTTP status with response payload."""
+        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+            raise ValueError(f"invalid T212 ticker: {ticker!r}")
         if isinstance(quantity, bool) or isinstance(limit_price, bool):
             raise ValueError("place_limit_order quantity and limit_price cannot be bool")
+        val_u = str(validity or "").strip().upper() if not isinstance(validity, bool) else ""
+        if val_u not in {"DAY", "GOOD_TILL_CANCEL"}:
+            raise ValueError(f"invalid T212 timeValidity: {validity!r}")
         try:
             qty_f = float(quantity)
             price_f = float(limit_price)
@@ -226,10 +233,10 @@ class T212Client:
         if qty_r == 0.0 or price_r <= 0.0:
             raise ValueError("place_limit_order rounded quantity must be non-zero and limit_price positive")
         return self._place_order("limit", {
-            "ticker": ticker,
+            "ticker": str(ticker).strip(),
             "quantity": qty_r,   # Positive buys and negative sells.
             "limitPrice": price_r,
-            "timeValidity": validity,
+            "timeValidity": val_u,
         })
 
     def place_market_order(
@@ -239,6 +246,8 @@ class T212Client:
         extended_hours: bool = False,
     ) -> tuple[int, dict]:
         """Place a market order, using quantity sign for direction as with limits."""
+        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+            raise ValueError(f"invalid T212 ticker: {ticker!r}")
         if isinstance(quantity, bool):
             raise ValueError("place_market_order quantity cannot be bool")
         try:
@@ -251,7 +260,7 @@ class T212Client:
         if qty_r == 0.0:
             raise ValueError("place_market_order rounded quantity must be non-zero")
         return self._place_order("market", {
-            "ticker": ticker,
+            "ticker": str(ticker).strip(),
             "quantity": qty_r,
             "extendedHours": bool(extended_hours),
         })
@@ -264,6 +273,9 @@ class T212Client:
         when history is unavailable or not yet updated so strict reconciliation retries
         without assuming a fill.
         """
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            return None
+        target_oid = str(order_id).strip()
         status, body = http_get(
             f"{self.base}/equity/history/orders?limit=50",
             headers=self._headers(),
@@ -284,7 +296,8 @@ class T212Client:
             if not isinstance(item, dict):
                 continue
             order = item.get("order") if isinstance(item.get("order"), dict) else item
-            if str(order.get("id")) == str(order_id):
+            raw_oid = order.get("id")
+            if raw_oid is not None and not isinstance(raw_oid, bool) and str(raw_oid).strip() == target_oid:
                 matches.append((order, item.get("fill")))
         if not matches:
             return False

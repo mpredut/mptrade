@@ -10158,6 +10158,41 @@ def test_iteration89_retry_worker_digest_botcore_dotenv_credentials_and_state_io
     assert state_io._positive_chunk_size(True, 4096) == 4096
 
 
+def test_iteration90_kraken_client_cachemanager_and_t212_client_safety(monkeypatch):
+    """Verify Iteration 90 KrakenClient.add_order side/ordertype/limit-price validation, kraken_cachemanager._normalize side safety, and T212Client ticker/order_id validation."""
+    import importlib
+    import pytest
+    from kraken.kraken_client import KrakenClient
+    import kraken.kraken_cachemanager as kcm
+
+    # 1. KrakenClient.add_order validates side, ordertype, and mandatory limit price
+    kc = KrakenClient("key", "c2VjcmV0")
+    with pytest.raises(ValueError, match="invalid Kraken order side"):
+        kc.add_order("HYPEUSD", "HOLD", 1.0, price=25.0)
+    with pytest.raises(ValueError, match="invalid Kraken ordertype"):
+        kc.add_order("HYPEUSD", "buy", 1.0, price=25.0, ordertype="stop")
+    with pytest.raises(ValueError, match="invalid Kraken limit price"):
+        kc.add_order("HYPEUSD", "buy", 1.0, price=None, ordertype="limit")
+
+    # 2. kraken_cachemanager._normalize does not fabricate SELL when trade side is missing
+    norm = kcm._normalize("T1", {"pair": "HYPEUSD", "price": "25.0", "vol": "1.0", "time": 1700000000})
+    assert norm["side"] is None
+    assert norm["isBuyer"] is None
+
+    # 3. T212Client validates env/ticker/timeValidity and get_historical_order rejects None order_id
+    t212_mod = importlib.import_module("212trading.t212_client")
+    T212Client = t212_mod.T212Client
+    tc = T212Client("k", "s", env=" DEMO ", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    assert tc.env == "demo"
+    with pytest.raises(ValueError, match="invalid T212 ticker"):
+        tc.place_limit_order("   ", 1.0, 100.0, validity="DAY")
+    with pytest.raises(ValueError, match="invalid T212 timeValidity"):
+        tc.place_limit_order("AAPL_US_EQ", 1.0, 100.0, validity="GTC")
+    assert tc.get_historical_order(None) is None
+    assert tc.get_historical_order(True) is None
+
+
+
 
 
 
