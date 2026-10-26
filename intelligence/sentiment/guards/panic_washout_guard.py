@@ -36,9 +36,12 @@ class PanicWashoutGuard:
         panic_advance_threshold: float = 0.10,
         downscale_factor: float = 0.50,
     ) -> None:
-        self.severe_panic_fng_threshold = severe_panic_fng_threshold
-        self.panic_advance_threshold = panic_advance_threshold
-        self.downscale_factor = downscale_factor
+        fng_f = _safe_float(severe_panic_fng_threshold, 12.0)
+        self.severe_panic_fng_threshold = int(round(fng_f)) if (fng_f is not None and 0.0 <= fng_f <= 100.0) else 12
+        adv_f = _safe_float(panic_advance_threshold, 0.10)
+        self.panic_advance_threshold = adv_f if (adv_f is not None and 0.0 <= adv_f <= 1.0) else 0.10
+        df = _safe_float(downscale_factor, 0.50)
+        self.downscale_factor = df if (df is not None and 0.0 < df <= 1.0) else 0.50
 
     def check(
         self,

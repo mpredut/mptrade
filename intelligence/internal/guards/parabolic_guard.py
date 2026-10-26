@@ -22,10 +22,21 @@ class ParabolicSurgeGuard:
         window_seconds: float = 7200.0,  # 2 hours
         vol_multiplier: float = 3.0,
     ):
-        self.surge_threshold_pct = float(surge_threshold_pct)
-        self.pullback_required_pct = float(pullback_required_pct)
-        self.window_seconds = float(window_seconds)
-        self.vol_multiplier = float(vol_multiplier)
+        def _pos_float(val, default: float, allow_zero: bool = False) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+            except (TypeError, ValueError):
+                return default
+            if not math.isfinite(f) or (f < 0.0 if allow_zero else f <= 0.0):
+                return default
+            return f
+
+        self.surge_threshold_pct = _pos_float(surge_threshold_pct, 4.0)
+        self.pullback_required_pct = _pos_float(pullback_required_pct, 1.5, allow_zero=True)
+        self.window_seconds = _pos_float(window_seconds, 7200.0)
+        self.vol_multiplier = _pos_float(vol_multiplier, 3.0, allow_zero=True)
 
         # symbol -> {"peak": float, "surge_active": bool, "surge_start_px": float, "ts": float}
         self._states: Dict[str, dict] = {}

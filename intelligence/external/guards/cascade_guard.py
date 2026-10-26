@@ -27,6 +27,11 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
         return default
 
 
+def _safe_pos_float(val: Any, default: float) -> float:
+    f = _safe_float(val, default)
+    return f if f > 0.0 else default
+
+
 class LiquidationCascadeGuard:
     """Blocks or defers orders during active real-time liquidation storms."""
 
@@ -42,8 +47,8 @@ class LiquidationCascadeGuard:
             active_window_sec: Window for instantaneous cascade velocity (default 60s).
         """
         self.collector = collector
-        self.max_active_cascade_usd = max_active_cascade_usd
-        self.active_window_sec = active_window_sec
+        self.max_active_cascade_usd = _safe_pos_float(max_active_cascade_usd, 500_000.0)
+        self.active_window_sec = _safe_pos_float(active_window_sec, 60.0)
 
     def check(
         self,

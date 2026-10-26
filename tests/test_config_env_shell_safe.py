@@ -1199,6 +1199,50 @@ def test_cooldown_bool_ttl_and_nan_meta_hardening(tmp_path):
     assert saved is not None and saved["price"] is None and saved["extra"]["spread"] is None
 
 
+def test_external_sentiment_parabolic_and_composite_guards_hardening():
+    from types import SimpleNamespace
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.composite import CompositeMarketIntelligence
+
+    pg = ParabolicSurgeGuard(surge_threshold_pct=float("nan"), pullback_required_pct=True, window_seconds=0.0, vol_multiplier=None)
+    assert pg.surge_threshold_pct == 4.0 and pg.pullback_required_pct == 1.5 and pg.window_seconds == 7200.0 and pg.vol_multiplier == 3.0
+
+    cg = LiquidationCascadeGuard(max_active_cascade_usd=float("nan"), active_window_sec=True)
+    assert cg.max_active_cascade_usd == 500_000.0 and cg.active_window_sec == 60.0
+
+    fcg = FundingCrowdingGuard(max_long_funding_rate=0.0, min_short_funding_rate=1.0, crowding_policy="invalid", crowded_scale=float("nan"))
+    assert fcg.max_long_funding_rate == 0.0005 and fcg.min_short_funding_rate == -0.0005 and fcg.crowding_policy == "downscale" and fcg.crowded_scale == 0.50
+
+    owg = OrderbookWallGuard(min_buy_imbalance=float("nan"), max_sell_imbalance=2.0, whale_wall_usd_limit=0.0)
+    assert owg.min_buy_imbalance == 0.25 and owg.max_sell_imbalance == 0.75 and owg.whale_wall_usd_limit == 1_000_000.0
+
+    wdg = WhaleDivergenceGuard(severe_cascade_oi_pct=float("nan"), min_taker_ratio=0.0, taker_downscale_threshold=True, taker_downscaled_scale=float("inf"))
+    assert wdg.severe_cascade_oi_pct == -5.0 and wdg.min_taker_ratio == 0.75 and wdg.taker_downscale_threshold == 0.90 and wdg.taker_downscaled_scale == 0.50
+
+    egg = ExtremeGreedGuard(downscale_threshold=float("nan"), hard_veto_threshold=True, downscale_factor=0.0)
+    assert egg.downscale_threshold == 80 and egg.hard_veto_threshold == 90 and egg.downscale_factor == 0.35
+
+    pwg = PanicWashoutGuard(severe_panic_fng_threshold=True, panic_advance_threshold=2.0, downscale_factor=float("nan"))
+    assert pwg.severe_panic_fng_threshold == 12 and pwg.panic_advance_threshold == 0.10 and pwg.downscale_factor == 0.50
+
+    cmi = CompositeMarketIntelligence()
+    ev = cmi.evaluate(
+        "BTCUSDC",
+        85000.0,
+        fear_greed_snapshot=SimpleNamespace(),
+        market_breadth_snapshot=SimpleNamespace(),
+        geopolitical_assessment=SimpleNamespace(),
+    )
+    assert ev.metrics["fear_greed"] is None and ev.metrics["market_regime"] is None and ev.metrics["geopolitical_threat"] is None
+
+
+
 
 
 

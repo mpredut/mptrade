@@ -41,13 +41,16 @@ class WhaleDivergenceGuard:
         taker_downscaled_scale: float = 0.50,
     ) -> None:
         self.collector = collector
-        self.block_short_covering_fakeout = block_short_covering_fakeout
-        self.block_aggressive_shorting = block_aggressive_shorting
-        self.block_liquidation_cascade = block_liquidation_cascade
-        self.severe_cascade_oi_pct = severe_cascade_oi_pct
-        self.min_taker_ratio = min_taker_ratio
-        self.taker_downscale_threshold = taker_downscale_threshold
-        self.taker_downscaled_scale = taker_downscaled_scale
+        self.block_short_covering_fakeout = bool(block_short_covering_fakeout)
+        self.block_aggressive_shorting = bool(block_aggressive_shorting)
+        self.block_liquidation_cascade = bool(block_liquidation_cascade)
+        self.severe_cascade_oi_pct = _safe_float(severe_cascade_oi_pct, -5.0)
+        min_tr = _safe_float(min_taker_ratio, 0.75)
+        self.min_taker_ratio = min_tr if min_tr > 0.0 else 0.75
+        down_tr = _safe_float(taker_downscale_threshold, 0.90)
+        self.taker_downscale_threshold = down_tr if down_tr > 0.0 else 0.90
+        scale_f = _safe_float(taker_downscaled_scale, 0.50)
+        self.taker_downscaled_scale = scale_f if 0.0 < scale_f <= 1.0 else 0.50
 
     def check(
         self,

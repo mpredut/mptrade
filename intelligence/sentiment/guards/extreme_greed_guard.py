@@ -25,9 +25,27 @@ class ExtremeGreedGuard:
         hard_veto_threshold: int = 90,
         downscale_factor: float = 0.35,
     ) -> None:
-        self.downscale_threshold = downscale_threshold
-        self.hard_veto_threshold = hard_veto_threshold
-        self.downscale_factor = downscale_factor
+        def _safe_thresh(val, default: int) -> int:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+            except (TypeError, ValueError):
+                return default
+            if not math.isfinite(f) or not (0.0 <= f <= 100.0):
+                return default
+            return int(round(f))
+
+        self.downscale_threshold = _safe_thresh(downscale_threshold, 80)
+        self.hard_veto_threshold = _safe_thresh(hard_veto_threshold, 90)
+        if downscale_factor is None or isinstance(downscale_factor, bool):
+            self.downscale_factor = 0.35
+        else:
+            try:
+                df = float(downscale_factor)
+                self.downscale_factor = df if (math.isfinite(df) and 0.0 < df <= 1.0) else 0.35
+            except (TypeError, ValueError):
+                self.downscale_factor = 0.35
 
     def check(
         self,

@@ -24,8 +24,19 @@ class SentimentContrarianTrigger:
         extreme_fear_entry: int = 22,
         extreme_greed_exit: int = 85,
     ) -> None:
-        self.extreme_fear_entry = extreme_fear_entry
-        self.extreme_greed_exit = extreme_greed_exit
+        def _safe_thresh(v, default: int) -> int:
+            if v is None or isinstance(v, bool):
+                return default
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return default
+            if not math.isfinite(f) or not (0.0 <= f <= 100.0):
+                return default
+            return int(round(f))
+
+        self.extreme_fear_entry = _safe_thresh(extreme_fear_entry, 22)
+        self.extreme_greed_exit = _safe_thresh(extreme_greed_exit, 85)
 
     def evaluate(
         self,
@@ -57,14 +68,23 @@ class SentimentContrarianTrigger:
                     now = tf
             except (TypeError, ValueError):
                 pass
-        val = snapshot.value
-        if val is None or isinstance(val, bool) or not math.isfinite(float(val)):
+        raw_val = getattr(snapshot, "value", None)
+        if raw_val is None or isinstance(raw_val, bool):
             return None, None
+        try:
+            val_f = float(raw_val)
+        except (TypeError, ValueError):
+            return None, None
+        if not math.isfinite(val_f):
+            return None, None
+        val = int(round(val_f)) if float(val_f).is_integer() else val_f
+        cls_label = getattr(snapshot, "classification", None) or "Unknown"
+        trend_7d = getattr(snapshot, "trend_7d_change", None)
 
         # 1. Contrarian ENTRY BUY during Extreme Fear
         if val <= self.extreme_fear_entry:
             # Check for stabilization if history exists: avoid buying if sentiment is in free-fall (>10 pt drop today)
-            history = snapshot.historical_values
+            history = getattr(snapshot, "historical_values", None)
             if isinstance(history, (list, tuple)) and len(history) >= 2:
                 h0, h1 = history[0], history[1]
                 if (
@@ -90,11 +110,11 @@ class SentimentContrarianTrigger:
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"extreme_fear_contrarian_dip_buy (F&G={val}, {snapshot.classification})",
+                reason=f"extreme_fear_contrarian_dip_buy (F&G={val}, {cls_label})",
                 metadata={
                     "fear_greed_value": val,
-                    "fear_greed_classification": snapshot.classification,
-                    "trend_7d_change": snapshot.trend_7d_change,
+                    "fear_greed_classification": cls_label,
+                    "trend_7d_change": trend_7d,
                 },
             )
             return "CONTRARIAN_BUY", event
@@ -110,11 +130,11 @@ class SentimentContrarianTrigger:
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"extreme_greed_contrarian_distribution (F&G={val}, {snapshot.classification})",
+                reason=f"extreme_greed_contrarian_distribution (F&G={val}, {cls_label})",
                 metadata={
                     "fear_greed_value": val,
-                    "fear_greed_classification": snapshot.classification,
-                    "trend_7d_change": snapshot.trend_7d_change,
+                    "fear_greed_classification": cls_label,
+                    "trend_7d_change": trend_7d,
                 },
             )
             return "CONTRARIAN_SELL", event

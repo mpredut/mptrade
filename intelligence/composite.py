@@ -149,8 +149,17 @@ class CompositeMarketIntelligence:
 
         def _record_downscale(dec: GuardDecision) -> None:
             nonlocal effective_scale, downscale_dec
-            if dec.suggested_scale < effective_scale or downscale_dec is None:
-                effective_scale = min(effective_scale, dec.suggested_scale)
+            raw_scale = getattr(dec, "suggested_scale", 1.0)
+            if raw_scale is None or isinstance(raw_scale, bool):
+                s_val = 1.0
+            else:
+                try:
+                    sf = float(raw_scale)
+                    s_val = sf if (math.isfinite(sf) and 0.0 <= sf <= 1.0) else 1.0
+                except (TypeError, ValueError):
+                    s_val = 1.0
+            if s_val < effective_scale or downscale_dec is None:
+                effective_scale = min(effective_scale, s_val)
                 downscale_dec = GuardDecision.downscale(
                     dec.guard_name,
                     scale=effective_scale,
@@ -286,8 +295,8 @@ class CompositeMarketIntelligence:
             and not _is_bypassed("GLLM1", "gemini_guard", "highstakeguard")
         ):
             telemetry_ctx = {
-                "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
-                "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
+                "fear_greed": getattr(fear_greed_snapshot, "value", None) if fear_greed_snapshot else None,
+                "breadth_regime": getattr(market_breadth_snapshot, "regime", None) if market_breadth_snapshot else None,
             }
             eff_price = price_finite if price_finite is not None else price
             eff_qty = qty_finite if qty_finite is not None else 1.0
@@ -449,8 +458,8 @@ class CompositeMarketIntelligence:
                 "volatility_1h": vol1h,
                 "gradient": gradient,
                 "epsilon": epsilon,
-                "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
-                "market_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
-                "geopolitical_threat": geopolitical_assessment.threat_level if geopolitical_assessment else None,
+                "fear_greed": getattr(fear_greed_snapshot, "value", None) if fear_greed_snapshot else None,
+                "market_regime": getattr(market_breadth_snapshot, "regime", None) if market_breadth_snapshot else None,
+                "geopolitical_threat": getattr(geopolitical_assessment, "threat_level", None) if geopolitical_assessment else None,
             },
         )

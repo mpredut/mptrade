@@ -39,10 +39,14 @@ class FundingCrowdingGuard:
         crowded_scale: float = 0.50,
     ) -> None:
         self.collector = collector
-        self.max_long_funding_rate = max_long_funding_rate
-        self.min_short_funding_rate = min_short_funding_rate
-        self.crowding_policy = crowding_policy
-        self.crowded_scale = crowded_scale
+        max_long = _safe_float(max_long_funding_rate, 0.0005)
+        self.max_long_funding_rate = max_long if max_long > 0.0 else 0.0005
+        min_short = _safe_float(min_short_funding_rate, -0.0005)
+        self.min_short_funding_rate = min_short if min_short < 0.0 else -0.0005
+        pol_norm = str(crowding_policy or "downscale").strip().lower()
+        self.crowding_policy = pol_norm if pol_norm in ("downscale", "defer") else "downscale"
+        scale_f = _safe_float(crowded_scale, 0.50)
+        self.crowded_scale = scale_f if 0.0 < scale_f <= 1.0 else 0.50
 
     def check(
         self,
