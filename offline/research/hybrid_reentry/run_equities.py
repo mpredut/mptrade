@@ -7,8 +7,6 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 T212_DIR = os.path.join(ROOT, "212trading")
-if T212_DIR not in sys.path:
-    sys.path.insert(0, T212_DIR)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 

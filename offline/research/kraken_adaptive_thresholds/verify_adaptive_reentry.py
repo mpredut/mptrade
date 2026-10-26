@@ -31,8 +31,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import numpy as np
-from backtest import fetch_candles, simulate as simulate_with_reentry_gate
-from backtest_adaptive import trailing_vol_series, report
+from kraken.backtest import fetch_candles, simulate as simulate_with_reentry_gate
+from kraken.backtest_adaptive import trailing_vol_series, report
 import shadow_signals as ss
 
 PAIR = "HYPEUSD"

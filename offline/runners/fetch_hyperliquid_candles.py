@@ -15,13 +15,19 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 HL_DIR = ROOT / "hyperliquid"
-sys.path.insert(0, str(HL_DIR))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import importlib.util
-_spec = importlib.util.spec_from_file_location("local_hl_market_data", str(HL_DIR / "market_data.py"))
-_hl_md = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_hl_md)
+_orig_sys_path = list(sys.path)
+try:
+    sys.path.insert(0, str(HL_DIR))
+    _spec = importlib.util.spec_from_file_location("local_hl_market_data", str(HL_DIR / "market_data.py"))
+    _hl_md = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = _hl_md
+    _spec.loader.exec_module(_hl_md)
+finally:
+    sys.path[:] = _orig_sys_path
 API_URL = _hl_md.API_URL
 INTERVALS = _hl_md.INTERVALS
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles

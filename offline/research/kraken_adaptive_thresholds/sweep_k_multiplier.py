@@ -22,11 +22,16 @@ if os.path.join(ROOT, "offline", "research", "kraken_adaptive_thresholds") not i
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import math
 import numpy as np
-from backtest import fetch_candles
-from backtest_adaptive import trailing_vol_series, simulate_variant
-from verify_adaptive_reentry import simulate_with_reentry_gate, REAL as REAL_REENTRY, REENTRY_TOLERANCE_PCT
-from verify_adaptive_dca import REAL as REAL_DCA
+from kraken.backtest import fetch_candles
+from kraken.backtest_adaptive import trailing_vol_series, simulate_variant
+from offline.research.kraken_adaptive_thresholds.verify_adaptive_reentry import (
+    simulate_with_reentry_gate,
+    REAL as REAL_REENTRY,
+    REENTRY_TOLERANCE_PCT,
+)
+from offline.research.kraken_adaptive_thresholds.verify_adaptive_dca import REAL as REAL_DCA
 
 PAIR = "HYPEUSD"
 INTERVAL = 60
@@ -39,7 +44,8 @@ def _run_k_sweep(section_title, k_label, ohlc, vol_trail, params, fallback_key, 
     print(f"--- {section_title} (fix live = {params[fallback_key]}%) ---")
     fixed_arr = np.full(len(ohlc), params[fallback_key])
     m_fix = sim_fn(ohlc, params, fixed_arr)
-    tot_fix = m_fix["total"] / params["budget"] * 100
+    budget = float(params.get("budget") or 0.0)
+    tot_fix = (m_fix["total"] / budget * 100) if budget > 0 else 0.0
     print(f"  FIX               TOTAL {tot_fix:+7.2f}%  realizat ${m_fix['realized']:+8.2f}  "
           f"cicluri={m_fix['cycles']:<3} maxDD=${m_fix['maxdd']:.2f}")
     best_k, best_tot = None, -1e18
@@ -47,13 +53,13 @@ def _run_k_sweep(section_title, k_label, ohlc, vol_trail, params, fallback_key, 
     for k in k_values:
         arr = np.array([k * v if not np.isnan(v) else np.nan for v in vol_trail])
         m = sim_fn(ohlc, params, arr)
-        tot = m["total"] / params["budget"] * 100
+        tot = (m["total"] / budget * 100) if budget > 0 else 0.0
         marker = f" <- curent ({current_k})" if k == current_k else ""
         valid = arr[~np.isnan(arr)]
         mean_thresh = float(np.mean(valid)) if len(valid) > 0 else float("nan")
         print(f"  {k_label}={k:<{pad}} TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
               f"cicluri={m['cycles']:<3} maxDD=${m['maxdd']:.2f}  medie_prag={mean_thresh:.2f}%{marker}")
-        if tot > best_tot:
+        if math.isfinite(tot) and (best_k is None or tot > best_tot):
             best_k, best_tot = k, tot
     print(f"  => the best {k_label} in the sweep: {best_k} (TOTAL {best_tot:+.2f}%)")
     return tot_fix, best_k, best_tot

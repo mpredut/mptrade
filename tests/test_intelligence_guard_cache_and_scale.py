@@ -9488,3 +9488,45 @@ def test_iteration75_walk_forward_runners_grid_reports_and_backtest_ranges_safet
     assert sys.path == path_before
 
 
+def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
+    """Verify Iteration 76 explicit kraken.backtest imports and sys.path restoration across offline runners."""
+    import importlib
+    import sys
+    from offline.runners import hyperliquid_walk_forward_baseline as hl_wf
+    from offline.runners import t212_walk_forward_baseline as t212_wf
+    from offline.runners import fetch_hyperliquid_candles as fhc
+    from offline.research.kraken_adaptive_thresholds import (
+        verify_adaptive_dca,
+        verify_adaptive_reentry,
+        sweep_k_multiplier,
+    )
+
+    while str(hl_wf.HL_DIR) in sys.path:
+        sys.path.remove(str(hl_wf.HL_DIR))
+    while str(t212_wf.T212_DIR) in sys.path:
+        sys.path.remove(str(t212_wf.T212_DIR))
+    importlib.reload(hl_wf)
+    importlib.reload(t212_wf)
+    importlib.reload(fhc)
+    assert str(hl_wf.HL_DIR) not in sys.path
+    assert str(t212_wf.T212_DIR) not in sys.path
+    assert str(fhc.HL_DIR) not in sys.path
+    assert hasattr(verify_adaptive_dca, "run")
+    assert hasattr(verify_adaptive_reentry, "run")
+    assert hasattr(sweep_k_multiplier, "main")
+
+    # Even if sys.modules["backtest"] is polluted, reloading verify_adaptive_dca still succeeds via kraken.backtest
+    orig_bt = sys.modules.get("backtest")
+    try:
+        sys.modules["backtest"] = object()  # type: ignore[assignment]
+        importlib.reload(verify_adaptive_dca)
+        importlib.reload(verify_adaptive_reentry)
+        importlib.reload(sweep_k_multiplier)
+    finally:
+        if orig_bt is None:
+            sys.modules.pop("backtest", None)
+        else:
+            sys.modules["backtest"] = orig_bt
+
+
+

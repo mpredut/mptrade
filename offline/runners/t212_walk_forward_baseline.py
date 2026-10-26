@@ -23,28 +23,33 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 T212_DIR = ROOT / "212trading"
-sys.path.insert(0, str(T212_DIR))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import importlib.util
 
 from botcore import parse_dotenv  # noqa: E402
-_replay_spec = importlib.util.spec_from_file_location(
-    "t212_wf_replay", str(T212_DIR / "replay.py")
-)
-t212_replay = importlib.util.module_from_spec(_replay_spec)
-sys.modules[_replay_spec.name] = t212_replay
-_replay_spec.loader.exec_module(t212_replay)
-StratParams = t212_replay._strat.StratParams
+_orig_sys_path = list(sys.path)
+try:
+    sys.path.insert(0, str(T212_DIR))
+    _replay_spec = importlib.util.spec_from_file_location(
+        "t212_wf_replay", str(T212_DIR / "replay.py")
+    )
+    t212_replay = importlib.util.module_from_spec(_replay_spec)
+    sys.modules[_replay_spec.name] = t212_replay
+    _replay_spec.loader.exec_module(t212_replay)
+    StratParams = t212_replay._strat.StratParams
 
-_md_spec = importlib.util.spec_from_file_location(
-    "t212_wf_market_data", str(T212_DIR / "market_data.py")
-)
-_t212_md = importlib.util.module_from_spec(_md_spec)
-sys.modules[_md_spec.name] = _t212_md
-_md_spec.loader.exec_module(_t212_md)
-fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
-parse_interval_minutes = _t212_md.parse_interval_minutes
+    _md_spec = importlib.util.spec_from_file_location(
+        "t212_wf_market_data", str(T212_DIR / "market_data.py")
+    )
+    _t212_md = importlib.util.module_from_spec(_md_spec)
+    sys.modules[_md_spec.name] = _t212_md
+    _md_spec.loader.exec_module(_t212_md)
+    fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
+    parse_interval_minutes = _t212_md.parse_interval_minutes
+finally:
+    sys.path[:] = _orig_sys_path
 
 from offline.backtests.datasets import (  # noqa: E402
     align_previous_values,
