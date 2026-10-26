@@ -5000,6 +5000,147 @@ def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_o
     assert loaded_q[0]["place_kwargs"]["bypass_guards"] == ["g_prof", "gllm1"]
 
 
+def test_iteration24_survival_clock_skew_composite_bypass_guards_and_market_regime_slash_symbol(tmp_path, monkeypatch):
+    """Iteration 24 regression tests:
+    1. survival.estimate_T rejects None/NaN/future (clock-skewed) cache timestamps and normalizes cache keys;
+       get_trend_survival_metrics guards against None/NaN trend_duration_seconds and non-positive cached metrics.
+    2. CompositeMarketIntelligence.evaluate_guards honors bypass_guards across G_QLIMIT2, GI_FUNDING, GLLM1, GLLM2, GLLM3,
+       and GeopoliticalShockGuard.check tolerates None threat_level / recommended_brake.
+    3. OrderbookWallGuard, WhaleDivergenceGuard, and FundingCrowdingGuard safely handle snapshot objects with None/NaN attributes.
+    4. MarketRegimeContext.is_valid_for matches same-venue Kraken slash vs non-slash symbols (TAO/USD vs TAOUSD).
+    """
+    from types import SimpleNamespace
+    import intelligence.internal.state.survival as survival
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from market_regime import MarketRegimeContext, MarketRegimeDecision
+
+    # 1. survival.get_trend_survival_metrics & estimate_T safety
+    t_cache = tmp_path / "cache_T_trend.json"
+    now_curr = time.time()
+    t_cache.write_text(
+        json.dumps({
+            "BTCUSDC": {
+                "T": -10.0,
+                "median_d": float("nan"),
+                "p90_d": None,
+                "ts": now_curr + 86400.0,  # clock-skewed future ts
+            }
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(survival, "T_CACHE_FILE", str(t_cache))
+    metrics = survival.get_trend_survival_metrics("BTCUSDC", trend_duration_seconds=None)
+    assert metrics["duration_days"] == 0.0
+    assert metrics["median_days"] == 3.0
+    assert metrics["p90_days"] == 7.0
+    assert metrics["T"] == 8.0
+    assert metrics["gaussian_horizon_days"] is None
+
+    # Future ts in cache does not short-circuit estimate_T before fetch_klines
+    fetch_called = []
+    monkeypatch.setattr(
+        survival,
+        "fetch_klines",
+        lambda sym, days: (fetch_called.append(sym) or ([], [])),
+    )
+    est = survival.estimate_T("tao/usd")
+    assert len(fetch_called) >= 1
+    assert est is not None
+
+    # 2. CompositeMarketIntelligence.evaluate_guards honors bypass_guards & GeopoliticalShockGuard tolerates None fields
+    geo_guard = GeopoliticalShockGuard()
+    dec_null_geo = geo_guard.check(
+        "BTCUSDC",
+        "BUY",
+        SimpleNamespace(threat_level=None, recommended_brake=None, summary="none", risk_score=0.0),
+    )
+    assert dec_null_geo.allowed is True
+
+    cmi = CompositeMarketIntelligence()
+    shock_assessment = SimpleNamespace(
+        threat_level="CRITICAL_SHOCK",
+        recommended_brake="HARD_VETO_NEW_BUYS",
+        summary="crisis",
+        risk_score=0.95,
+    )
+    dec_blocked = cmi.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        85000.0,
+        geopolitical_assessment=shock_assessment,
+    )
+    assert dec_blocked.allowed is False
+    dec_bypassed = cmi.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        85000.0,
+        geopolitical_assessment=shock_assessment,
+        bypass_guards={"GLLM3"},
+    )
+    assert dec_bypassed.allowed is True
+
+    # 3. External guards tolerate None/NaN attributes on synthetic snapshots
+    ob_guard = OrderbookWallGuard()
+    ob_dec = ob_guard.check(
+        "BTCUSDC",
+        "BUY",
+        snapshot=SimpleNamespace(
+            imbalance_ratio=None,
+            largest_ask_wall_usd=float("nan"),
+            largest_ask_wall_price=None,
+            largest_bid_wall_usd=None,
+            largest_bid_wall_price=None,
+        ),
+    )
+    assert ob_dec.allowed is True
+
+    whale_guard = WhaleDivergenceGuard()
+    whale_dec = whale_guard.check(
+        "BTCUSDC",
+        "SELL",
+        snapshot=SimpleNamespace(
+            divergence_regime=None,
+            open_interest_1h_change_pct=float("nan"),
+            taker_buy_sell_ratio=None,
+            top_traders_long_pct=float("nan"),
+        ),
+    )
+    assert whale_dec.allowed is True
+
+    fund_guard = FundingCrowdingGuard()
+    fund_dec = fund_guard.check(
+        "BTCUSDC",
+        "BUY",
+        telemetry=SimpleNamespace(funding_rate=float("nan")),
+    )
+    assert fund_dec.allowed is True
+
+    # 4. MarketRegimeContext.is_valid_for matches TAO/USD and TAOUSD on same venue
+    dec = MarketRegimeDecision(
+        regime="bull",
+        gradient=0.01,
+        epsilon=0.002,
+        strength=5.0,
+        fresh=True,
+        reason="directional_signal",
+    )
+    ctx = MarketRegimeContext.from_decision(
+        dec,
+        evaluated_at=now_curr,
+        symbol="TAO/USD",
+        provider="kraken",
+        trend_duration_seconds=300.0,
+    )
+    assert ctx.is_valid_for(symbol="TAOUSD", provider="kraken", now=now_curr) is True
+    assert ctx.is_valid_for(symbol="TAO/USD", provider="kraken", now=now_curr) is True
+    assert ctx.is_valid_for(symbol="ETHUSD", provider="kraken", now=now_curr) is False
+
+
+
 
 
 

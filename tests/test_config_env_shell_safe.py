@@ -144,3 +144,45 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
         anchored_exit_price("SELL", 100.0, float("nan"), 0.01, 0.01)
 
 
+def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
+    import json
+    import pytest
+    import order_outcomes_log
+    import shadow_runtime
+    import shadow_signals
+
+    monkeypatch.setenv("TEST_SHADOW_FLOAT", "nan")
+    assert shadow_signals._f_env("TEST_SHADOW_FLOAT", 15.0) == 15.0
+    monkeypatch.setenv("TEST_SHADOW_FLOAT", "-1")
+    assert shadow_signals._f_env("TEST_SHADOW_FLOAT", 15.0) == 15.0
+
+    tracker = shadow_signals.KalmanStateTracker(state_path=str(tmp_path / "kalman.json"))
+    tracker._last_state_write = 9999999999.0
+    tracker._last_fed["BTCUSDC"] = 9999999999.0
+    tracker._last_vol_time["BTCUSDC"] = 9999999999.0
+    tracker.update("BTCUSDC", 1000.0, 50000.0, 0.01, [50000.0], 1.0)
+    assert tracker._last_fed["BTCUSDC"] == 1000.0
+    assert tracker._last_state_write == 1000.0
+
+    with pytest.raises(ValueError):
+        shadow_runtime.require_shadow_interval(True, 1.0, "test")
+
+    outcomes_file = tmp_path / "outcomes.jsonl"
+    monkeypatch.setattr(order_outcomes_log, "_OUTCOMES_PATH", str(outcomes_file))
+    order_outcomes_log.log_order_outcome(
+        venue="binance",
+        symbol="BTCUSDC",
+        side="BUY",
+        qty=0.01,
+        price=50000.0,
+        decision="ALLOWED",
+        source="test",
+        regime_context={"regime": "BULL", "strength": "invalid_float"},
+    )
+    rows = [json.loads(line) for line in outcomes_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["regime"] == "BULL"
+    assert rows[0]["regime_strength"] is None
+
+
+

@@ -26,7 +26,10 @@ import numpy as np
 def _f_env(name: str, default: float) -> float:
     try:
         raw = os.environ.get(name, "").strip()
-        return float(raw) if raw else default
+        if not raw:
+            return default
+        val = float(raw)
+        return val if math.isfinite(val) and val > 0 else default
     except ValueError:
         return default
 
@@ -137,6 +140,8 @@ class KalmanStateTracker:
             print(f"[shadow_signals] error loading initial kalman state: {e}")
 
     def _write_state(self, now: float) -> None:
+        if self._last_state_write > now:
+            self._last_state_write = 0.0
         if not self.state_path or (now - self._last_state_write) < self.state_min_interval:
             return
         try:
@@ -167,6 +172,8 @@ class KalmanStateTracker:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
         last_fed = self._last_fed.get(symbol, -1e18)
+        if last_fed > ts:
+            last_fed = -1e18
         if ts - last_fed >= KALMAN_SAMPLE_SEC:
             kf = self._kalman.get(symbol)
             if kf is None:
@@ -200,6 +207,8 @@ class KalmanStateTracker:
         if self.compute_vol:
             # Throttle heavy volatility & log-return computation on big_prices (thousands of points)
             last_vol_t = self._last_vol_time.get(symbol, -1e18)
+            if last_vol_t > ts:
+                last_vol_t = -1e18
             if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
                 v1h = vol_1h_pct(big_prices, big_sample_rate)
                 adapt_re, adapt_dca = adaptive_thresholds(v1h, k_reentry=K_REENTRY, k_dca=K_DCA)

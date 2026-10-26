@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -171,6 +172,16 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
     return None
 
 
+def _pos_float(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if (math.isfinite(f) and f > 0.0) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def estimate_T(
     symbol: str,
     days: int = 540,
@@ -184,8 +195,20 @@ def estimate_T(
     cache = loaded_cache if isinstance(loaded_cache, dict) else {}
 
     ent = _lookup_t_cache_entry(cache, symbol)
-    if ent and time.time() - ent.get("ts", 0) < ttl_days * 86400:
-        return ent
+    if ent:
+        raw_ts = ent.get("ts")
+        if raw_ts is not None and not isinstance(raw_ts, bool):
+            try:
+                ts_val = float(raw_ts)
+                now_curr = time.time()
+                if (
+                    math.isfinite(ts_val)
+                    and ts_val > 0.0
+                    and -60.0 <= (now_curr - ts_val) < float(ttl_days) * 86400.0
+                ):
+                    return ent
+            except (TypeError, ValueError):
+                pass
 
     sym_u = (symbol or "").upper().strip()
     base = _extract_base_symbol(sym_u)
@@ -236,7 +259,8 @@ def estimate_T(
     res["p_cont"] = p_cont
     res["source_symbol"] = used
     res["ts"] = time.time()
-    cache[symbol] = res
+    cache_key = sym_u.replace("/", "") if sym_u else str(symbol or "")
+    cache[cache_key] = res
     try:
         save_json_state(T_CACHE_FILE, cache, indent=2)
     except OSError:
@@ -251,7 +275,15 @@ def get_trend_survival_metrics(
     allow_network: bool = False,
 ) -> Dict[str, Any]:
     """Retrieve or compute empirical trend survival metrics for a symbol."""
-    duration_days = max(0.0, float(trend_duration_seconds) / 86400.0)
+    dur_sec = 0.0
+    if trend_duration_seconds is not None and not isinstance(trend_duration_seconds, bool):
+        try:
+            f_dur = float(trend_duration_seconds)
+            if math.isfinite(f_dur) and f_dur > 0.0:
+                dur_sec = f_dur
+        except (TypeError, ValueError):
+            dur_sec = 0.0
+    duration_days = max(0.0, dur_sec / 86400.0)
     median_d = 3.0
     p90_d = 7.0
     T_val = 8.0
@@ -266,19 +298,21 @@ def get_trend_survival_metrics(
         cached_entry = None
 
     if cached_entry:
-        median_d = float(cached_entry.get("median_d") or median_d)
-        p90_d = float(cached_entry.get("p90_d") or p90_d)
-        if cached_entry.get("T"):
-            T_val = float(cached_entry["T"])
+        median_d = _pos_float(cached_entry.get("median_d"), median_d)
+        p90_d = _pos_float(cached_entry.get("p90_d"), p90_d)
+        t_cand = _pos_float(cached_entry.get("T"), 0.0)
+        if t_cand > 0.0:
+            T_val = t_cand
             cached_t = T_val
     elif allow_network:
         try:
             est = estimate_T(symbol)
             if est:
-                median_d = float(est.get("median_d") or median_d)
-                p90_d = float(est.get("p90_d") or p90_d)
-                if est.get("T") and est.get("n", 0) > 0:
-                    T_val = float(est["T"])
+                median_d = _pos_float(est.get("median_d"), median_d)
+                p90_d = _pos_float(est.get("p90_d"), p90_d)
+                t_cand = _pos_float(est.get("T"), 0.0)
+                if t_cand > 0.0 and _pos_float(est.get("n"), 0.0) > 0:
+                    T_val = t_cand
                     cached_t = T_val
         except Exception:
             pass

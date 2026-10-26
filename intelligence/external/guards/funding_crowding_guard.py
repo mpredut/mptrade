@@ -7,13 +7,24 @@ Extreme negative funding (< -0.05% / 8h) warns of crowded short squeeze risk.
 
 from __future__ import annotations
 
-from typing import Optional
+import math
+from typing import Any, Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.external.collectors.derivatives_telemetry import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )
+
+
+def _safe_float(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
 
 
 class FundingCrowdingGuard:
@@ -54,7 +65,7 @@ class FundingCrowdingGuard:
                 reason="no_telemetry_data",
             )
 
-        fr = telemetry.funding_rate
+        fr = _safe_float(getattr(telemetry, "funding_rate", None), 0.0)
 
         # 1. Entering BUY when market is hyper-crowded long
         if side_norm == "BUY" and fr >= self.max_long_funding_rate:

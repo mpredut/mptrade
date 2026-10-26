@@ -149,9 +149,9 @@ class MarketRegimeContext:
                 return False
 
         if symbol is not None:
-            target_sym = str(symbol).strip().upper()
+            target_sym = str(symbol).strip().upper().replace("/", "")
             if self.symbol is not None:
-                if self.symbol.strip().upper() != target_sym:
+                if self.symbol.strip().upper().replace("/", "") != target_sym:
                     return False
             elif require_identity:
                 return False

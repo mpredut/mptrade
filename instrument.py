@@ -456,6 +456,8 @@ class Instrument:
         retry_price_tolerance = None
         try:
             if retry_constraint_supplied:
+                if isinstance(retry_requested_price_raw, bool) or isinstance(retry_price_tolerance_raw, bool):
+                    raise SubmissionRefused("invalid_retry_price_constraint")
                 try:
                     retry_requested_price = float(retry_requested_price_raw)
                     retry_price_tolerance = float(retry_price_tolerance_raw)
@@ -721,7 +723,15 @@ class Instrument:
                     raw_mt_scale = kwargs.get("medium_trend_scale")
                     if raw_mt_scale is None and hasattr(self, "params") and isinstance(self.params, dict):
                         raw_mt_scale = self.params.get("medium_trend_scale")
-                    scale_factor = float(0.5 if raw_mt_scale is None else raw_mt_scale)
+                    if raw_mt_scale is None or isinstance(raw_mt_scale, bool):
+                        scale_factor = 0.5
+                    else:
+                        try:
+                            scale_factor = float(raw_mt_scale)
+                            if not math.isfinite(scale_factor):
+                                scale_factor = 0.5
+                        except (TypeError, ValueError):
+                            scale_factor = 0.5
                     if scale_factor <= 0.0:
                         reason = "medium_trend_qty_zero"
                         return None

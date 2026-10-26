@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
+
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
@@ -118,6 +121,7 @@ class CompositeMarketIntelligence:
         qty: Optional[float] = None,
         notional_eur: Optional[float] = None,
         now: Optional[float] = None,
+        bypass_guards: Optional[object] = None,
     ) -> GuardDecision:
         """Run all protection guards (brakes) across all pillars in sequence.
 
@@ -125,6 +129,21 @@ class CompositeMarketIntelligence:
         """
         effective_scale = 1.0
         downscale_dec: Optional[GuardDecision] = None
+        bypassed = normalize_bypassed_guards(bypass_guards)
+
+        def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
+            if not bypassed:
+                return False
+            if code:
+                spec = GUARD_REGISTRY.get(code)
+                if spec is not None and spec.is_bypassed(bypassed):
+                    return True
+                if code.lower() in bypassed:
+                    return True
+            for ln in legacy_names:
+                if ln.lower() in bypassed:
+                    return True
+            return False
 
         def _record_downscale(dec: GuardDecision) -> None:
             nonlocal effective_scale, downscale_dec
@@ -137,29 +156,55 @@ class CompositeMarketIntelligence:
                     **dec.metadata,
                 )
 
+        grad_finite: Optional[float] = None
+        if gradient is not None and not isinstance(gradient, bool):
+            try:
+                gf = float(gradient)
+                if math.isfinite(gf):
+                    grad_finite = gf
+            except (TypeError, ValueError):
+                pass
+        eps_finite: Optional[float] = None
+        if epsilon is not None and not isinstance(epsilon, bool):
+            try:
+                ef = float(epsilon)
+                if math.isfinite(ef):
+                    eps_finite = ef
+            except (TypeError, ValueError):
+                pass
+
         # 1. Noise Floor Guard
-        if gradient is not None and epsilon is not None:
-            noise_dec = self.noise_guard.check(symbol, side, gradient, epsilon)
+        if grad_finite is not None and eps_finite is not None and not _is_bypassed(None, "noise_guard", "noisefloorguard"):
+            noise_dec = self.noise_guard.check(symbol, side, grad_finite, eps_finite)
             if not noise_dec.allowed:
                 return noise_dec
 
         # 2. Parabolic Surge Guard (Anti-FOMO)
-        parabolic_dec = self.parabolic_guard.check(
-            symbol, side, price, price_history=price_history,
-            volatility_1h_pct=volatility_1h_pct, now=now,
-        )
-        if not parabolic_dec.allowed:
-            return parabolic_dec
+        if not _is_bypassed(None, "parabolic_guard", "parabolicsurgeguard"):
+            parabolic_dec = self.parabolic_guard.check(
+                symbol, side, price, price_history=price_history,
+                volatility_1h_pct=volatility_1h_pct, now=now,
+            )
+            if not parabolic_dec.allowed:
+                return parabolic_dec
 
-        # 3. Weibull Trend Exhaustion Guard
-        if trend_duration_seconds > 0:
-            surv = get_trend_survival_metrics(symbol, trend_duration_seconds)
+        # 3. Weibull Trend Exhaustion Guard (G_QLIMIT2)
+        dur_sec = 0.0
+        if trend_duration_seconds is not None and not isinstance(trend_duration_seconds, bool):
+            try:
+                df = float(trend_duration_seconds)
+                if math.isfinite(df) and df > 0.0:
+                    dur_sec = df
+            except (TypeError, ValueError):
+                dur_sec = 0.0
+        if dur_sec > 0.0 and not _is_bypassed("G_QLIMIT2", "exhaustion_guard", "weibullexhaustionguard"):
+            surv = get_trend_survival_metrics(symbol, dur_sec)
             inferred_trend_dir = (
-                "bull" if (gradient is not None and gradient > 0)
-                else ("bear" if (gradient is not None and gradient < 0) else None)
+                "bull" if (grad_finite is not None and grad_finite > 0)
+                else ("bear" if (grad_finite is not None and grad_finite < 0) else None)
             )
             exh_dec = self.exhaustion_guard.check(
-                symbol, side, trend_duration_seconds,
+                symbol, side, dur_sec,
                 p90_days=surv.get("p90_days"),
                 median_days=surv.get("median_days"),
                 gaussian_horizon_days=surv.get("gaussian_horizon_days"),
@@ -171,29 +216,29 @@ class CompositeMarketIntelligence:
                 _record_downscale(exh_dec)
 
         # 4. External Liquidation Cascade Guard (Active Falling Knife)
-        if liquidation_summary is not None:
+        if liquidation_summary is not None and not _is_bypassed(None, "cascade_guard", "liquidationcascadeguard"):
             cascade_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
             if not cascade_dec.allowed:
                 return cascade_dec
 
-        # 5. External Funding Rate Crowding Guard
-        if derivatives_telemetry is not None:
+        # 5. External Funding Rate Crowding Guard (GI_FUNDING)
+        if derivatives_telemetry is not None and not _is_bypassed("GI_FUNDING", "funding_guard", "fundingcrowdingguard"):
             fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
             if not fund_dec.allowed:
                 return fund_dec
             if fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 _record_downscale(fund_dec)
 
-        # 6. Sentiment Extreme Greed Guard (Anti-Euphoria / Anti-Top Buying)
-        if fear_greed_snapshot is not None:
+        # 6. Sentiment Extreme Greed Guard (GLLM2)
+        if fear_greed_snapshot is not None and not _is_bypassed("GLLM2", "greed_guard", "extremegreedguard"):
             greed_dec = self.greed_guard.check(symbol, side, fear_greed_snapshot)
             if not greed_dec.allowed:
                 return greed_dec
             if greed_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 _record_downscale(greed_dec)
 
-        # 7. Sentiment Panic Washout Guard (Falling Knife / Market-Wide Panic)
-        if market_breadth_snapshot is not None or fear_greed_snapshot is not None:
+        # 7. Sentiment Panic Washout Guard (GLLM2)
+        if (market_breadth_snapshot is not None or fear_greed_snapshot is not None) and not _is_bypassed("GLLM2", "panic_guard", "panicwashoutguard"):
             panic_dec = self.panic_guard.check(
                 symbol,
                 side,
@@ -206,11 +251,16 @@ class CompositeMarketIntelligence:
             if panic_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 _record_downscale(panic_dec)
 
-        # 8. Google Gemini High-Stake Guard (> 1000 EUR purchases)
+        # 8. Google Gemini High-Stake Guard (GLLM1)
         computed_notional = notional_eur
         if computed_notional is None and qty is not None and price > 0:
             computed_notional = price * qty
-        if computed_notional is not None and computed_notional >= self.gemini_guard.min_notional_eur:
+        if (
+            computed_notional is not None
+            and math.isfinite(float(computed_notional))
+            and float(computed_notional) >= self.gemini_guard.min_notional_eur
+            and not _is_bypassed("GLLM1", "gemini_guard", "highstakeguard")
+        ):
             telemetry_ctx = {
                 "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
                 "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
@@ -223,7 +273,7 @@ class CompositeMarketIntelligence:
                     qty if qty is not None else 1.0,
                     notional_eur=computed_notional,
                     telemetry=telemetry_ctx,
-                    dur_sec=trend_duration_seconds if trend_duration_seconds > 0 else None,
+                    dur_sec=dur_sec if dur_sec > 0 else None,
                     now=now,
                 )
             except TypeError:
@@ -240,8 +290,8 @@ class CompositeMarketIntelligence:
             if gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 _record_downscale(gemini_dec)
 
-        # 9. Geopolitical & Energy Shock Guard (Black Swan Shield)
-        if geopolitical_assessment is not None:
+        # 9. Geopolitical & Energy Shock Guard (GLLM3)
+        if geopolitical_assessment is not None and not _is_bypassed("GLLM3", "geopolitical_guard", "geopoliticalshockguard"):
             geo_dec = self.geopolitical_guard.check(symbol, side, geopolitical_assessment)
             if not geo_dec.allowed:
                 return geo_dec

@@ -48,7 +48,12 @@ def log_order_outcome(
                 refuse_reason or "", caller or "", motivation or ""]
         if regime_context is not None:
             strength_val = getattr(regime_context, "strength", None)
-            strength_str = f"{float(strength_val):.4f}" if strength_val is not None else ""
+            strength_str = ""
+            if strength_val is not None and not isinstance(strength_val, bool):
+                try:
+                    strength_str = f"{float(strength_val):.4f}"
+                except (TypeError, ValueError):
+                    strength_str = ""
             cols.extend([
                 getattr(regime_context, "regime", "") or "",
                 strength_str,

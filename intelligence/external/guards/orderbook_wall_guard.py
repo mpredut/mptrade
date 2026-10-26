@@ -6,13 +6,24 @@ into massive whale buy walls (support).
 
 from __future__ import annotations
 
-from typing import Optional
+import math
+from typing import Any, Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.external.collectors.orderbook_depth import (
     OrderbookDepthCollector,
     OrderbookSnapshot,
 )
+
+
+def _safe_float(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
 
 
 class OrderbookWallGuard:
@@ -51,7 +62,11 @@ class OrderbookWallGuard:
                 reason="no_orderbook_snapshot",
             )
 
-        imb = snapshot.imbalance_ratio
+        imb = _safe_float(getattr(snapshot, "imbalance_ratio", None), 0.5)
+        ask_wall_usd = _safe_float(getattr(snapshot, "largest_ask_wall_usd", None), 0.0)
+        ask_wall_px = _safe_float(getattr(snapshot, "largest_ask_wall_price", None), 0.0)
+        bid_wall_usd = _safe_float(getattr(snapshot, "largest_bid_wall_usd", None), 0.0)
+        bid_wall_px = _safe_float(getattr(snapshot, "largest_bid_wall_price", None), 0.0)
 
         # 1. Evaluate BUY side against ask walls and heavy ask imbalance
         if side_norm == "BUY":
@@ -61,12 +76,12 @@ class OrderbookWallGuard:
                     reason=f"orderbook_heavily_ask_dominated (imbalance={imb:.2f} < {self.min_buy_imbalance:.2f})",
                     imbalance=imb,
                 )
-            if snapshot.largest_ask_wall_usd >= self.whale_wall_usd_limit:
+            if ask_wall_usd >= self.whale_wall_usd_limit:
                 return GuardDecision.defer(
                     guard_name="OrderbookWallGuard",
-                    reason=f"whale_sell_wall_blocking (${snapshot.largest_ask_wall_usd:,.0f} @ {snapshot.largest_ask_wall_price:.2f})",
-                    wall_usd=snapshot.largest_ask_wall_usd,
-                    wall_price=snapshot.largest_ask_wall_price,
+                    reason=f"whale_sell_wall_blocking (${ask_wall_usd:,.0f} @ {ask_wall_px:.2f})",
+                    wall_usd=ask_wall_usd,
+                    wall_price=ask_wall_px,
                 )
 
         # 2. Evaluate SELL side against bid walls and heavy bid imbalance
@@ -77,12 +92,12 @@ class OrderbookWallGuard:
                     reason=f"orderbook_heavily_bid_supported (imbalance={imb:.2f} > {self.max_sell_imbalance:.2f})",
                     imbalance=imb,
                 )
-            if snapshot.largest_bid_wall_usd >= self.whale_wall_usd_limit:
+            if bid_wall_usd >= self.whale_wall_usd_limit:
                 return GuardDecision.defer(
                     guard_name="OrderbookWallGuard",
-                    reason=f"whale_buy_wall_supporting (${snapshot.largest_bid_wall_usd:,.0f} @ {snapshot.largest_bid_wall_price:.2f})",
-                    wall_usd=snapshot.largest_bid_wall_usd,
-                    wall_price=snapshot.largest_bid_wall_price,
+                    reason=f"whale_buy_wall_supporting (${bid_wall_usd:,.0f} @ {bid_wall_px:.2f})",
+                    wall_usd=bid_wall_usd,
+                    wall_price=bid_wall_px,
                 )
 
         return GuardDecision.allow(
