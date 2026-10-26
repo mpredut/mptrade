@@ -125,7 +125,13 @@ def check_qlimit2_order_guards(
     if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
         return True, "stop_loss_exempt", 1.0
 
-    order_side = (side or "").upper()
+    if not isinstance(side, str):
+        return True, "not_supported_side", 1.0
+    order_side = side.strip().upper()
+    if order_side == "B":
+        order_side = "BUY"
+    elif order_side == "S":
+        order_side = "SELL"
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -206,9 +212,7 @@ def check_qlimit2_order_guards(
         p90_d = None
         median_d = None
         if not explicit_duration_override:
-            from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
-            bp = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
-            qlimit1_active = not GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bp)
+            qlimit1_active = not GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed)
             p90_d, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
             if qlimit1_active and cached_gauss_h:
                 gauss_horizon_d = cached_gauss_h

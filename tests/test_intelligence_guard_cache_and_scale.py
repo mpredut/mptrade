@@ -10920,3 +10920,73 @@ def test_iteration99_state_io_botcore_utils_and_alertnotifiers_safety(tmp_path, 
     assert msg_bool == "Started · BTC_bot"
 
 
+def test_iteration100_core_guard_hierarchy_qlimit_external_llm_and_order_guard_safety(monkeypatch):
+    """Iteration 100: Verify guard_hierarchy, qlimit_order_guard, external_order_guard, llm_order_guard, and order_guard edge cases."""
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    import qlimit_order_guard
+    import external_order_guard
+    import llm_order_guard
+    import order_guard
+
+    # 1. guard_hierarchy.is_bypassed & normalize_bypassed_guards with bool, str, and category shortcuts
+    assert GUARD_REGISTRY["GO1"].is_bypassed(True) is True
+    assert GUARD_REGISTRY["GO1"].is_bypassed(False) is False
+    assert GUARD_REGISTRY["GO1"].is_bypassed("go1") is True
+    assert GUARD_REGISTRY["GO1"].is_bypassed("go") is True
+    assert GUARD_REGISTRY["GI_WHALE"].is_bypassed("gi") is True
+    assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed("profit_guard") is True
+    assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed("profit_guard") is False
+    assert GUARD_REGISTRY["GLLM1"].is_bypassed("gllm1") is True
+    assert GUARD_REGISTRY["GLLM2"].is_bypassed("gllm1") is False
+    assert GUARD_REGISTRY["GLLM2"].is_bypassed("llm") is True
+    assert "all" in normalize_bypassed_guards([True])
+    assert "go1" in normalize_bypassed_guards(["go1, gt_m"]) and "gt_m" in normalize_bypassed_guards(["go1, gt_m"])
+
+    # 2. qlimit_order_guard.check_qlimit2_order_guards side normalization & bool rejection
+    assert qlimit_order_guard.check_qlimit2_order_guards("BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
+    assert qlimit_order_guard.check_qlimit2_order_guards("BTCUSDC", None, 100.0) == (True, "not_supported_side", 1.0)
+    assert qlimit_order_guard.check_qlimit2_order_guards(
+        "BTCUSDC", " b ", 100.0, margins={"intelligence_guards_mode": "off"}
+    ) == (True, "intelligence_guards_off", 1.0)
+
+    # 3. external_order_guard.check_external_order_guards side normalization & bool rejection
+    assert external_order_guard.check_external_order_guards("BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
+    assert external_order_guard.check_external_order_guards("BTCUSDC", None, 100.0) == (True, "not_supported_side", 1.0)
+    assert external_order_guard.check_external_order_guards(
+        "BTCUSDC", " s ", 100.0, margins={"intelligence_guards_mode": "off"}
+    ) == (True, "intelligence_guards_off", 1.0)
+
+    # 4. llm_order_guard side normalization, bool rejection, and _clean_scale
+    assert llm_order_guard._clean_scale(True) == 1.0
+    assert llm_order_guard._clean_scale(float("nan")) == 1.0
+    assert llm_order_guard._clean_scale(-0.5) == 1.0
+    assert llm_order_guard._clean_scale(0.5) == pytest.approx(0.5)
+    assert llm_order_guard.check_geopolitical_order_guards("BTCUSDC", True) == (True, "not_buy_side", 1.0)
+    assert llm_order_guard.check_geopolitical_order_guards("BTCUSDC", " s ") == (True, "not_buy_side", 1.0)
+    assert llm_order_guard.check_geopolitical_order_guards(
+        "BTCUSDC", " b ", margins={"intelligence_guards_mode": "off"}
+    ) == (True, "intelligence_guards_off", 1.0)
+    assert llm_order_guard.check_llm_order_guards("binance", "BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
+    assert llm_order_guard.check_llm_order_guards(
+        "binance", "BTCUSDC", " s ", 100.0, margins={"intelligence_guards_mode": "off"}
+    ) == (True, "intelligence_guards_off", 1.0)
+
+    # 5. order_guard side normalization, daily_limit_guard, weight_limit, and _read_cached_price_history
+    assert order_guard.opposite_side(" b ") == "SELL"
+    assert order_guard.opposite_side(" s ") == "BUY"
+    with pytest.raises(ValueError):
+        order_guard.opposite_side(True)
+    with pytest.raises(ValueError):
+        order_guard.get_dynamic_window_sec_cfg("BTCUSDC", order_type=True)
+
+    assert order_guard.daily_limit_guard("binance", "BTCUSDC", True) == (False, "invalid_side")
+    assert order_guard.daily_limit_guard("binance", "BTCUSDC", "HOLD") == (False, "invalid_side")
+    assert order_guard.check_intelligence_guards("binance", "BTCUSDC", True, 100.0) == (True, "not_supported_side", 1.0)
+    assert order_guard._read_cached_price_history(True) is None
+    assert order_guard._read_cached_price_history("BTCUSDC", window_seconds=True, now=True) is None or isinstance(
+        order_guard._read_cached_price_history("BTCUSDC", window_seconds=True, now=True), list
+    )
+    assert order_guard.active_cycle_window_ref([{"price": 100.0, "qty": 1.0, "time": 1000}], order_type=True) is None
+
+
+

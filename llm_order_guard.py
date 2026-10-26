@@ -36,6 +36,27 @@ def _pos_float(val: Any, default: float = 0.0) -> float:
         return default
 
 
+def _clean_scale(val: Any) -> float:
+    if val is None or isinstance(val, bool):
+        return 1.0
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    return f if (math.isfinite(f) and 0.0 <= f <= 1.0) else 1.0
+
+
+def _normalize_side(val: Any) -> str:
+    if not isinstance(val, str):
+        return ""
+    s = val.strip().upper()
+    if s == "B":
+        return "BUY"
+    if s == "S":
+        return "SELL"
+    return s
+
+
 def _resolve_now_ts(now: Any) -> float:
     if now is not None and not isinstance(now, bool):
         try:
@@ -73,6 +94,10 @@ def evaluate_high_stake_order_guard(
     from intelligence.internal.guards.guard_decision import BrakeAction
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
     from order_guard import resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
+
+    side = _normalize_side(side)
+    if side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     if "intelligence_guards_mode" in margins:
         if validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
@@ -139,9 +164,10 @@ def evaluate_high_stake_order_guard(
                 qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
             )
+        g_scale = _clean_scale(getattr(g_dec, "suggested_scale", 1.0))
         if valid_context:
             try:
-                g_tuple = (g_dec.allowed, g_dec.reason, g_dec.suggested_scale)
+                g_tuple = (bool(g_dec.allowed), g_dec.reason, g_scale)
                 if not isinstance(decisions_map, dict):
                     decisions_map = {}
                 entry = decisions_map.get(cache_key, {})
@@ -159,7 +185,7 @@ def evaluate_high_stake_order_guard(
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
                 f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} "
-                f"(brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})"
+                f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
             )
 
         if notify_on_eval:
@@ -172,7 +198,7 @@ def evaluate_high_stake_order_guard(
                     from orchestratorOS.agy.topics import topic_spec
 
                     hs_tag = topic_spec("guard_high_stake").bracket_tag
-                    scale_pct = int(g_dec.suggested_scale * 100)
+                    scale_pct = int(g_scale * 100)
                     if not g_dec.allowed:
                         g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
                     elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -187,8 +213,10 @@ def evaluate_high_stake_order_guard(
                         g_dec.reason,
                     )).strip()
 
-                    price_str = f"${price:,.2f}" if price else ""
-                    qty_str = f"{qty:g} " if qty else ""
+                    px_clean = _pos_float(price, 0.0)
+                    qty_clean = _pos_float(qty, 0.0)
+                    price_str = f"${px_clean:,.2f}" if px_clean > 0.0 else ""
+                    qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                     order_header = f"Order: {side} {qty_str}{symbol}"
                     if price_str:
                         order_header += f" @ {price_str}"
@@ -203,10 +231,10 @@ def evaluate_high_stake_order_guard(
                     pass
 
         if llm_mode == "enforce":
-            if not g_dec.allowed:
+            if not g_dec.allowed or g_scale <= 0.0:
                 return False, g_dec.reason, 0.0
-            if g_dec.suggested_scale < 1.0:
-                return True, g_dec.reason, g_dec.suggested_scale
+            if g_scale < 1.0:
+                return True, g_dec.reason, g_scale
         return True, "ok", 1.0
 
     if "gemini_decision" in entry_for_key:
@@ -215,9 +243,10 @@ def evaluate_high_stake_order_guard(
         cached_g_dec = getattr(regime_context, "_gemini_decision", None)
     else:
         cached_g_dec = None
-    if cached_g_dec is not None and llm_mode == "enforce":
-        g_allowed, g_reason, g_scale = cached_g_dec
-        if not g_allowed:
+    if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
+        g_allowed, g_reason, raw_g_scale = cached_g_dec
+        g_scale = _clean_scale(raw_g_scale)
+        if not g_allowed or g_scale <= 0.0:
             return False, g_reason, 0.0
         if g_scale < 1.0:
             return True, g_reason, g_scale
@@ -240,7 +269,7 @@ def check_geopolitical_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    order_side = (side or "").upper()
+    order_side = _normalize_side(side)
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
@@ -260,11 +289,16 @@ def check_geopolitical_order_guards(
     if geo_mode == "off":
         return True, "geopolitical_guard_off", 1.0
 
-    raw_shadow_notify = m["shadow_notify"]
+    raw_shadow_notify = m.get("shadow_notify", False)
     if isinstance(raw_shadow_notify, str):
         shadow_notify = raw_shadow_notify.strip().lower() in ("1", "1.0", "true", "yes", "on")
+    elif raw_shadow_notify is None:
+        shadow_notify = False
     else:
-        shadow_notify = bool(float(raw_shadow_notify))
+        try:
+            shadow_notify = bool(float(raw_shadow_notify))
+        except (TypeError, ValueError):
+            shadow_notify = False
 
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
@@ -274,9 +308,10 @@ def check_geopolitical_order_guards(
         if cached_geo is not None:
             geo_guard = GeopoliticalShockGuard()
             geo_dec = geo_guard.check(symbol, order_side, cached_geo)
+            geo_scale = _clean_scale(getattr(geo_dec, "suggested_scale", 1.0))
             if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
-                print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
+                print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_scale})")
                 if geo_mode == "shadow" and shadow_notify:
                     cd_key = (str(symbol or "").strip().upper().replace("/", ""), order_side)
                     now_ts = _resolve_now_ts(now)
@@ -287,7 +322,7 @@ def check_geopolitical_order_guards(
                             from orchestratorOS.agy.topics import topic_spec
 
                             geo_tag = topic_spec("macro_geopolitical").bracket_tag
-                            scale_pct = int(geo_dec.suggested_scale * 100)
+                            scale_pct = int(geo_scale * 100)
                             if not geo_dec.allowed:
                                 geo_title = f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
                             else:
@@ -307,9 +342,9 @@ def check_geopolitical_order_guards(
                         except Exception:
                             pass
                 if geo_mode == "enforce":
-                    if not geo_dec.allowed:
+                    if not geo_dec.allowed or geo_scale <= 0.0:
                         return False, geo_dec.reason, 0.0
-                    return True, geo_dec.reason, geo_dec.suggested_scale
+                    return True, geo_dec.reason, geo_scale
     except Exception as e:
         logger.debug("Geopolitical guard evaluation exception: %s", e)
 
@@ -343,7 +378,7 @@ def check_llm_order_guards(
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
-    side = (order_type or "").upper()
+    side = _normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 

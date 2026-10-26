@@ -345,9 +345,20 @@ def resolve_caller_module(
         return None
 
 
+def _normalize_side_token(order_type: Any) -> str:
+    if order_type is None or isinstance(order_type, bool) or not isinstance(order_type, str):
+        return ""
+    s = order_type.strip().upper()
+    if s == "B":
+        return "BUY"
+    if s == "S":
+        return "SELL"
+    return s
+
+
 def opposite_side(order_type: str) -> str:
     """Return the opposite order side ('SELL' for 'BUY', 'BUY' for 'SELL')."""
-    side = str(order_type or "").strip().upper()
+    side = _normalize_side_token(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     return "SELL" if side == "BUY" else "BUY"
@@ -355,7 +366,7 @@ def opposite_side(order_type: str) -> str:
 
 def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
-    side = str(order_type or "").strip().upper()
+    side = _normalize_side_token(order_type)
     if side == "BUY":
         return u.value_diff_to_percent(ref_price, price)
     if side == "SELL":
@@ -365,7 +376,7 @@ def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
 
 def select_extreme_reference(prices, order_type: str, *, strict: bool = True) -> float:
     """Select the directional extreme reference symmetrically for BUY and SELL."""
-    side = str(order_type or "").strip().upper()
+    side = _normalize_side_token(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     clean_prices: List[float] = []
@@ -398,7 +409,7 @@ def get_profit_guard_mode_cfg(
     if reference_mode is not None:
         return validate_profit_guard_mode_cfg(reference_mode)
 
-    side_u = str(order_type or "").strip().upper()
+    side_u = _normalize_side_token(order_type)
     if side_u not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     side_l = side_u.lower()
@@ -643,7 +654,7 @@ def get_dynamic_window_sec_cfg(
     - Adverse trend (BUY in bear / SELL in bull): 48h - 168h (configured via dynamic_window_adverse_h)
     - Flat / unknown trend: 12h - 48h (configured via dynamic_window_flat_h)
     """
-    side = str(order_type or "BUY").strip().upper()
+    side = "BUY" if (order_type is None or order_type == "") else _normalize_side_token(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
 
@@ -701,7 +712,7 @@ def get_window_cfg(
     """
     name = _provider_name(provider_name)
     m = _load_margins()
-    side = (order_type or "").upper()
+    side = _normalize_side_token(order_type)
 
     if side in ("BUY", "SELL"):
         mode = get_profit_guard_mode_cfg(
@@ -792,7 +803,9 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL", *, 
     cycles that were already closed by subsequent same-side fills within the window."""
     if not opp_orders:
         return None
-    side = (order_type or "").upper()
+    side = _normalize_side_token(order_type)
+    if side not in ("BUY", "SELL"):
+        return None
     mode = validate_profit_guard_mode_cfg(reference_mode or "strict")
     if mode == "off":
         return None
@@ -869,7 +882,7 @@ def window_reference(
         return None
     if not math.isfinite(window_s_f) or window_s_f <= 0:
         return None
-    side = (order_type or "").upper()
+    side = _normalize_side_token(order_type)
     eff_mode = get_profit_guard_mode_cfg(
         provider, side, module=module, reference_mode=reference_mode
     )
@@ -985,9 +998,12 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     provider.get_orders supplies 24-hour traded value. The shared quantity decision must
     supply the side-aware balance, which this guard does not re-read. Return the smaller
     of requested and permitted quantity. Errors propagate so the caller fails closed."""
-    provider_name = getattr(provider, "name", "")
-    weight = resolve_trade_weight(symbol, order_type, provider_name)
-    recent = provider.get_orders(symbol, order_type, 86400)
+    side = _normalize_side_token(order_type)
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    provider_name = _provider_name(provider)
+    weight = resolve_trade_weight(symbol, side, provider_name)
+    recent = provider.get_orders(symbol, side, 86400)
     if recent is None:
         raise ProviderError(f"weight_limit({symbol}): order history unavailable")
     traded_value = sum(
@@ -995,14 +1011,16 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
         for o in recent
         for _ts, qty, px in (_order_ts_qty_price(o),)
     )
-    available = float(available_qty)
-    adjusted = compute_weight_capped_qty(weight, price, required_qty, available, traded_value)
-    total_ref = traded_value + available * price
+    available = _clean_pos_float(available_qty, 0.0)
+    px_clean = _clean_pos_float(price, 0.0)
+    req_clean = _clean_pos_float(required_qty, 0.0)
+    adjusted = compute_weight_capped_qty(weight, px_clean, req_clean, available, traded_value)
+    total_ref = traded_value + available * px_clean
     max_trade_value = total_ref * weight
     remaining_value = max(0.0, max_trade_value - traded_value)
-    print(f"[WEIGHT] {order_type} {symbol}: weight={weight} traded24h={traded_value:.2f} "
+    print(f"[WEIGHT] {side} {symbol}: weight={weight} traded24h={traded_value:.2f} "
           f"avail={available:.6f} max={max_trade_value:.2f} remaining={remaining_value:.2f} "
-          f"cerut={required_qty:.6f} -> {adjusted:.6f}")
+          f"cerut={req_clean:.6f} -> {adjusted:.6f}")
     return adjusted
 
 
@@ -1043,12 +1061,14 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         if GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
     name = _provider_name(provider)
-    order_type = (order_type or "").upper()
+    order_type = _normalize_side_token(order_type)
+    if order_type not in ("BUY", "SELL"):
+        return False, "invalid_side"
     resolved_max_trades = None
     if max_daily_trades is not None and not isinstance(max_daily_trades, bool):
         try:
             mt_f = float(max_daily_trades)
-            if math.isfinite(mt_f) and mt_f >= 0:
+            if math.isfinite(mt_f) and mt_f >= 0 and mt_f == int(mt_f):
                 resolved_max_trades = int(mt_f)
         except (TypeError, ValueError, OverflowError):
             resolved_max_trades = None
@@ -1192,15 +1212,17 @@ def _read_cached_trend_duration(symbol: str) -> float:
 
 def _resolve_trend_duration(symbol: str) -> float:
     """Resolve trend duration in seconds from memory/cache files once."""
-    if not symbol:
+    if not symbol or not isinstance(symbol, str):
         return 0.0
     try:
         import cacheManager as cm
         trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
         if trend_meta and "duration_seconds" in trend_meta:
-            dur = float(trend_meta["duration_seconds"] or 0.0)
-            if math.isfinite(dur) and dur > 0:
-                return dur
+            raw_dur = trend_meta["duration_seconds"]
+            if not isinstance(raw_dur, bool):
+                dur = float(raw_dur or 0.0)
+                if math.isfinite(dur) and dur > 0:
+                    return dur
     except Exception:
         pass
     return _read_cached_trend_duration(symbol)
@@ -1266,10 +1288,22 @@ def _read_cached_price_history(
     with exact normalized base-symbol matching for cross-venue assets (e.g. HYPE on Kraken).
     Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
     """
-    su = (symbol or "").strip().upper()
+    if not symbol or not isinstance(symbol, str):
+        return None
+    su = symbol.strip().upper()
+    if not su:
+        return None
+    win_sec = _clean_pos_float(window_seconds, 7200.0)
+    now_ts = time.time()
+    if now is not None and not isinstance(now, bool):
+        try:
+            nf = float(now)
+            if math.isfinite(nf) and nf > 0.0:
+                now_ts = nf
+        except (TypeError, ValueError, OverflowError):
+            pass
     cachedb_dir = _resolve_cachedb_dir()
-    now_ts = float(now) if now is not None else time.time()
-    cutoff_ts = now_ts - window_seconds
+    cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
 
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
@@ -1408,7 +1442,7 @@ def check_intelligence_guards(
     if mode == "off":
         return True, "intelligence_guards_off", 1.0
 
-    side = (order_type or "").upper()
+    side = _normalize_side_token(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -1470,7 +1504,7 @@ def check_intelligence_guards(
         cached_res = _evaluate_intelligence_guards_raw(
             provider,
             symbol,
-            order_type,
+            side,
             price,
             price_history=price_history,
             trend_duration_seconds=explicit_dur_sec,
@@ -1608,8 +1642,12 @@ def check_intelligence_guards(
             if internal_mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
-                if e_dec.suggested_scale < 1.0 and e_dec.suggested_scale <= effective_scale:
-                    effective_scale = e_dec.suggested_scale
+                s_val = _clean_pos_float(getattr(e_dec, "suggested_scale", None), 0.0)
+                if s_val <= 0.0:
+                    return False, e_dec.reason, 0.0
+                s_val = min(1.0, s_val)
+                if s_val < 1.0 and s_val <= effective_scale:
+                    effective_scale = s_val
                     active_reason = e_dec.reason
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
@@ -1660,7 +1698,7 @@ def _evaluate_intelligence_guards_raw(
     if mode == "off":
         return True, "intelligence_guards_off", 1.0
 
-    side = (order_type or "").upper()
+    side = _normalize_side_token(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -1736,7 +1774,7 @@ def _evaluate_intelligence_guards_raw(
         intel_ok, intel_reason, intel_scale = check_llm_order_guards(
             provider=provider,
             symbol=symbol,
-            order_type=order_type,
+            order_type=side,
             price=price,
             qty=qty,
             notional_eur=computed_notional,
@@ -1771,8 +1809,8 @@ def check_math_profit_reference(
 
     Pure mathematical calculation (0 tokens, deterministic, no AI or macro push alerts).
     """
-    side = (order_type or "").upper()
-    opp_side = opposite_side(side)
+    side = _normalize_side_token(order_type)
+    opp_side = opposite_side(order_type)
     provider_name = _provider_name(provider)
     mode = get_profit_guard_mode_cfg(
         provider_name, side, module=module, reference_mode=reference_mode
@@ -1977,7 +2015,7 @@ def profit_guard(
 
     if regime_context is not None and suggested_scale < 1.0:
         try:
-            side_norm = (order_type or "").upper()
+            side_norm = _normalize_side_token(order_type)
             scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
             if not isinstance(scales_by_side, dict):
                 scales_by_side = {}

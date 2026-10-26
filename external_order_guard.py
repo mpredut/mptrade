@@ -81,7 +81,13 @@ def check_external_order_guards(
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
-    order_side = str(side or "").strip().upper()
+    if not isinstance(side, str):
+        return True, "not_supported_side", 1.0
+    order_side = side.strip().upper()
+    if order_side == "B":
+        order_side = "BUY"
+    elif order_side == "S":
+        order_side = "SELL"
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -194,7 +200,7 @@ def check_external_order_guards(
                     scale_pct = int(w_scale * 100) if w_scale < 1.0 else None
                     _send_micro_shadow_notify("whale", f"🛡 [GI_WHALE] {w_dec.brake_action.value} {order_side} {symbol}", w_dec.reason, scale_pct=scale_pct)
                 if whale_mode == "enforce":
-                    if not w_dec.allowed:
+                    if not w_dec.allowed or w_scale <= 0.0:
                         return False, w_dec.reason, 0.0
                     if w_scale < 1.0:
                         effective_scale = min(effective_scale, w_scale)
@@ -232,7 +238,7 @@ def check_external_order_guards(
                     action_str = f"SCALE {scale_pct}%" if (ob_dec.allowed and scale_pct is not None) else "DEFER"
                     _send_micro_shadow_notify("orderbook", f"🛡 [GI_OBOOK] {action_str} {order_side} {symbol}", ob_dec.reason, scale_pct=scale_pct)
                 if ob_mode == "enforce":
-                    if not ob_dec.allowed:
+                    if not ob_dec.allowed or ob_scale <= 0.0:
                         return False, ob_dec.reason, 0.0
                     if ob_scale < 1.0 and ob_scale <= effective_scale:
                         effective_scale = ob_scale
@@ -274,7 +280,7 @@ def check_external_order_guards(
                         scale_pct = int(f_sval * 100)
                         _send_micro_shadow_notify("funding", f"🛡 [GI_FUNDING] SCALE {scale_pct}% {order_side} {symbol}", f_dec.reason, scale_pct=scale_pct)
                 if funding_mode == "enforce":
-                    if not f_dec.allowed:
+                    if not f_dec.allowed or f_sval <= 0.0:
                         return False, f_dec.reason, 0.0
                     if f_sval < 1.0 and f_sval <= effective_scale:
                         effective_scale = f_sval

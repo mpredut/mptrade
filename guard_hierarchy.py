@@ -27,15 +27,49 @@ class BaseGuard(ABC):
     aliases: set[str]
     description: str
 
+    @staticmethod
+    def _coerce_bypass_set(bypassed_guards: Any) -> set[str]:
+        if not bypassed_guards:
+            return set()
+        if bypassed_guards is True:
+            return {"all"}
+        if isinstance(bypassed_guards, str):
+            return {p.strip().lower() for p in bypassed_guards.split(",") if p.strip()}
+        if isinstance(bypassed_guards, (set, frozenset, list, tuple)):
+            out: set[str] = set()
+            for x in bypassed_guards:
+                if x is True:
+                    out.add("all")
+                elif x and not isinstance(x, bool):
+                    for p in str(x).split(","):
+                        ps = p.strip().lower()
+                        if ps:
+                            out.add(ps)
+            return out
+        return set()
+
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
         """Return whether this guard is bypassed by the given set of active bypass keys."""
-        if not bypassed_guards:
+        low = self._coerce_bypass_set(bypassed_guards)
+        if not low:
             return False
-        low = {str(x).strip().lower() for x in bypassed_guards if x}
+        cat_aliases = {self.category}
+        if self.category == "operational":
+            cat_aliases.add("go")
+        elif self.category == "trend":
+            cat_aliases.add("gt")
+        elif self.category == "profit":
+            cat_aliases.update({"g_prof", "gf", "financial", "profit_guard"})
+        elif self.category == "qlimit":
+            cat_aliases.update({"g_qlimit", "gf", "financial"})
+            if self.code == "G_QLIMIT1":
+                cat_aliases.add("profit_guard")
+        elif self.category == "intelligence":
+            cat_aliases.update({"gi", "microstructure"})
         return bool(
             "all" in low
             or "*" in low
-            or self.category in low
+            or bool(low.intersection(cat_aliases))
             or self.code.lower() in low
             or self.canonical in low
             or bool(low.intersection(self.aliases))
@@ -179,13 +213,15 @@ class LLMGuard(BaseGuard):
     category = "llm"
 
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
-        if not bypassed_guards:
+        low = self._coerce_bypass_set(bypassed_guards)
+        if not low:
             return False
-        low = {str(x).strip().lower() for x in bypassed_guards if x}
+        gllm1_specific = {"gllm1", "llm_high_stake", "high_stake", "ai"}
+        llm_cat = "gllm" in low or ("llm" in low and not bool(low.intersection(gllm1_specific)))
         return bool(
             "all" in low
             or "*" in low
-            or "gllm" in low
+            or llm_cat
             or self.code.lower() in low
             or self.canonical in low
             or bool(low.intersection(self.aliases))
@@ -298,9 +334,13 @@ def normalize_bypassed_guards(
                     raw_tokens.append(p)
         elif isinstance(bypass_guards, (set, frozenset, list, tuple)):
             for item in bypass_guards:
-                p = str(item).strip().lower()
-                if p and p not in ("none", "off", "false", "no", "0"):
-                    raw_tokens.append(p)
+                if item is True:
+                    raw_tokens.append("all")
+                elif item and not isinstance(item, bool):
+                    for part in str(item).split(","):
+                        p = part.strip().lower()
+                        if p and p not in ("none", "off", "false", "no", "0"):
+                            raw_tokens.append(p)
 
     for token in raw_tokens:
         if token in _ALL_GUARD_ALIASES:
