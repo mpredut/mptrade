@@ -1967,9 +1967,13 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
         vol_pct_to_ratio,
         vol_ratio_to_pct,
     )
+    import numpy as np
     noisy_prices = [None, True] + [100.0 + (i % 3) * 0.5 for i in range(25)] + ["bad", False]
     v1h = calculate_volatility_1h(noisy_prices, 60.0)
     assert v1h is not None and v1h > 0.0
+    np_prices = np.asarray([100.0 + (i % 3) * 0.5 for i in range(25)], dtype=float)
+    assert calculate_volatility_1h(np_prices, 60.0) == v1h
+    assert calculate_volatility_1h(np.asarray([True] * 25, dtype=bool), 60.0) is None
     assert vol_pct_to_ratio(True) == 0.0
     assert vol_pct_to_ratio(None) == 0.0
     assert vol_ratio_to_pct(True) == 0.0

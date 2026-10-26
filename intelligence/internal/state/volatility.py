@@ -30,7 +30,12 @@ _VOL_MEMO_MAX_ENTRIES = 128
 
 def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> Optional[float]:
     """Estimate one-sigma hourly volatility percentage from scaled log returns."""
-    if not prices or sample_rate_sec is None or isinstance(sample_rate_sec, bool):
+    if (
+        prices is None
+        or isinstance(prices, (bool, str, bytes))
+        or sample_rate_sec is None
+        or isinstance(sample_rate_sec, bool)
+    ):
         return None
     try:
         sr_f = float(sample_rate_sec)
@@ -43,7 +48,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
 
     p0 = None
     pn = None
-    if not isinstance(prices[0], bool) and not isinstance(prices[-1], bool):
+    if not isinstance(prices[0], (bool, np.bool_)) and not isinstance(prices[-1], (bool, np.bool_)):
         try:
             cand0 = float(prices[0])
             candn = float(prices[-1])
@@ -77,23 +82,31 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
         if cached is not None:
             return cached
 
-    try:
-        if any(isinstance(x, bool) for x in prices):
-            raise TypeError("bool in prices")
-        p = np.asarray(prices, dtype=float)
-    except (TypeError, ValueError):
-        clean_p = []
-        for x in prices:
-            if x is None or isinstance(x, bool):
-                continue
-            try:
-                xf = float(x)
-                if math.isfinite(xf) and xf > 0:
-                    clean_p.append(xf)
-            except (TypeError, ValueError):
-                continue
-        p = np.asarray(clean_p, dtype=float)
-        cache_key = None
+    if isinstance(prices, np.ndarray):
+        if prices.dtype == bool or prices.ndim != 1:
+            return None
+        try:
+            p = prices.astype(float, copy=False)
+        except (TypeError, ValueError):
+            return None
+    else:
+        try:
+            if any(isinstance(x, (bool, np.bool_)) for x in prices):
+                raise TypeError("bool in prices")
+            p = np.asarray(prices, dtype=float)
+        except (TypeError, ValueError):
+            clean_p = []
+            for x in prices:
+                if x is None or isinstance(x, (bool, np.bool_)):
+                    continue
+                try:
+                    xf = float(x)
+                    if math.isfinite(xf) and xf > 0:
+                        clean_p.append(xf)
+                except (TypeError, ValueError):
+                    continue
+            p = np.asarray(clean_p, dtype=float)
+            cache_key = None
     p = p[np.isfinite(p) & (p > 0)]
     if len(p) < 20:
         return None
