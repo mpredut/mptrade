@@ -87,8 +87,18 @@ class PriceTrendAnalyzer:
 
     def exponential_moving_average(self, span=5):
         prices_list = list(self.prices)
+        if not prices_list:
+            return []
+        span_f = 5.0
+        if span is not None and not isinstance(span, bool):
+            try:
+                sf = float(span)
+                if math.isfinite(sf) and sf > 0:
+                    span_f = sf
+            except (TypeError, ValueError, OverflowError):
+                pass
         ema = [prices_list[0]]
-        alpha = 2 / (span + 1)
+        alpha = 2.0 / (span_f + 1.0)
         for price in prices_list[1:]:
             ema.append(alpha * price + (1 - alpha) * ema[-1])
         return ema
@@ -101,6 +111,21 @@ class PriceTrendAnalyzer:
         gradient = np.gradient(y)
         avg_gradient = np.mean(gradient)
         return gradient, avg_gradient
+
+
+def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
+    if sample_rate_sec is None or isinstance(sample_rate_sec, bool):
+        return 2
+    try:
+        sr = float(sample_rate_sec)
+        if not math.isfinite(sr) or sr <= 0:
+            return 2
+        ratio = float(recent_sec) / sr
+        if not math.isfinite(ratio):
+            return 2
+        return max(2, int(ratio))
+    except (TypeError, ValueError, OverflowError):
+        return 2
 
 
 def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
@@ -120,11 +145,7 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
         slope_full = 0.0
     gradient_lst, _ = analyzer.calculate_gradient()
     recent_sec = effective_recent_gradient_seconds(window_seconds)
-    recent_n = (
-        max(2, int(recent_sec / sample_rate_sec))
-        if sample_rate_sec and sample_rate_sec > 0
-        else 2
-    )
+    recent_n = _safe_recent_n(recent_sec, sample_rate_sec)
     if len(gradient_lst) >= recent_n:
         gradient_recent = float(np.mean(gradient_lst[-recent_n:]))
     else:
@@ -313,11 +334,7 @@ class IncrementalTrendBuffer:
             slope_full = float((12.0 * cov_xy) / (n * (n * n - 1)))
 
         recent_sec = effective_recent_gradient_seconds(window_seconds)
-        recent_n = (
-            max(2, int(recent_sec / sample_rate_sec))
-            if sample_rate_sec and sample_rate_sec > 0
-            else 2
-        )
+        recent_n = _safe_recent_n(recent_sec, sample_rate_sec)
         sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
         if n > recent_n:
             r = recent_n

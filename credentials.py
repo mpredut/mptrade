@@ -33,8 +33,10 @@ def resolve_credential_pair(
     """Return the first complete profile, rejecting every partial profile."""
     source = os.environ if values is None else values
     for label, key_name, secret_name in profiles:
-        key = str(source.get(key_name, "") or "").strip()
-        secret = str(source.get(secret_name, "") or "").strip()
+        raw_k = source.get(key_name, "")
+        raw_s = source.get(secret_name, "")
+        key = "" if (raw_k is None or isinstance(raw_k, bool)) else str(raw_k).strip()
+        secret = "" if (raw_s is None or isinstance(raw_s, bool)) else str(raw_s).strip()
         if bool(key) != bool(secret):
             missing = secret_name if key else key_name
             raise CredentialConfigurationError(

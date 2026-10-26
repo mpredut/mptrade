@@ -8693,8 +8693,67 @@ def test_iteration62_active_intents_rtrade_store_shadow_signals_and_rollback_saf
     assert tracker.current_trend("BTCUSDC") == (1, 0.0)
 
 
+def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safety(monkeypatch):
+    """Iteration 63: liquidation_signal OverflowError/start-lock safety, credentials boolean rejection, pricewindow EMA/recent_n guards, and assetguardian non-negative budget clamping."""
+    import json
+    import assetguardian
+    from credentials import CredentialProfileMissingError, resolve_credential_pair
+    from liquidation_signal import LiquidationSignal, _safe_pos_float
+    from pricewindow import PriceTrendAnalyzer, instant_trend_from_prices
 
+    # 1. liquidation_signal _safe_pos_float & _ingest handle OverflowError and start() has _start_lock
+    assert _safe_pos_float(10**400, 42.0) == 42.0
+    sig = LiquidationSignal(symbols=["BTCUSDT"])
+    assert hasattr(sig, "_start_lock")
+    sig._ingest(json.dumps({
+        "topic": "allLiquidation.BTCUSDT",
+        "data": [
+            {"s": "BTCUSDT", "S": "Buy", "v": 10**400, "p": "70000"},
+            {"s": "BTCUSDT", "S": "Buy", "v": "0.1", "p": "70000"},
+        ],
+    }))
+    out = sig.get_signal("BTCUSDT", window_sec=60.0)
+    assert out["long_count"] == 1
+    assert out["long_liq_usd"] == pytest.approx(7000.0)
 
+    # 2. credentials.resolve_credential_pair rejects boolean values instead of stringifying True -> "True"
+    with pytest.raises(CredentialProfileMissingError):
+        resolve_credential_pair(
+            (("Test", "K", "S"),),
+            values={"K": True, "S": True},
+        )
 
+    # 3. PriceTrendAnalyzer.exponential_moving_average handles empty prices and invalid span;
+    #    instant_trend_from_prices handles bool/inf/tiny sample_rate_sec
+    assert PriceTrendAnalyzer([]).exponential_moving_average() == []
+    assert len(PriceTrendAnalyzer([10.0, 12.0, 14.0]).exponential_moving_average(span=-1)) == 3
+    for bad_sr in (True, float("inf"), float("nan"), 1e-309, -1.0):
+        t, gc, sf, gr = instant_trend_from_prices([10.0, 11.0, 12.0], bad_sr)
+        assert t == 1 and sf > 0
+
+    # 4. assetguardian._buy_remaining_cash & _record_terminal_buy clamp negative corrupted prior_spent / fee
+    rem, target, prior = assetguardian._buy_remaining_cash(
+        {"initial_cash": 1000.0, "spent_quote_by_tier": {"5": -500.0}},
+        5.0,
+        0.2,
+    )
+    assert prior == 0.0
+    assert rem == pytest.approx(target)
+
+    saved = {}
+    monkeypatch.setattr(assetguardian, "_save_symbol_campaign", lambda sym, kind, st: saved.update(st))
+    from types import SimpleNamespace
+    updated = assetguardian._record_terminal_buy(
+        "BTCUSDC",
+        {
+            "initial_cash": 1000.0,
+            "pending": {"threshold": 5.0, "allocation": 0.2, "order_id": "1", "client_order_id": "c1"},
+            "spent_quote_by_tier": {"5": -100.0},
+            "total_spent_quote": -200.0,
+        },
+        SimpleNamespace(status="canceled", filled_qty=1.0, cost=50.0, fee=-20.0),
+    )
+    assert updated["spent_quote_by_tier"]["5"] == pytest.approx(50.0)
+    assert updated["total_spent_quote"] == pytest.approx(50.0)
 
 

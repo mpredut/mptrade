@@ -70,7 +70,7 @@ def _safe_pos_float(val, default: float) -> float:
         return default
     try:
         f = float(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return f if (math.isfinite(f) and f > 0.0) else default
 
@@ -88,17 +88,19 @@ class LiquidationSignal:
         # symbol -> deque[(ts, LONG|SHORT, notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._retry = WS_RETRY_INITIAL
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self, name: str = "LiquidationWS", daemon: bool = True) -> "LiquidationSignal":
-        if self._thread and self._thread.is_alive():
-            return self
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon)
-        self._thread.start()
+        with self._start_lock:
+            if self._thread and self._thread.is_alive():
+                return self
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon)
+            self._thread.start()
         logger.info("liquidation signal started (%s)", ",".join(self._symbols))
         return self
 
@@ -146,6 +148,8 @@ class LiquidationSignal:
             last_ping = time.time()
             while not self._stop.is_set():
                 now = time.time()
+                if now < last_ping:
+                    last_ping = now
                 if now - last_ping >= WS_APP_PING_SEC:
                     await ws.send(json.dumps({"op": "ping"}))
                     last_ping = now
@@ -171,7 +175,7 @@ class LiquidationSignal:
         # Subscribe acks / pongs are ignored (no "allLiquidation." topic).
         try:
             msg = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             return
         if not isinstance(msg, dict):
             return
@@ -203,7 +207,7 @@ class LiquidationSignal:
                 notional = vol * px
                 if not math.isfinite(notional) or notional <= 0:
                     continue
-            except (KeyError, ValueError, TypeError):
+            except (KeyError, ValueError, TypeError, OverflowError):
                 continue
             with self._lock:
                 dq = self._events.setdefault(symbol, deque())

@@ -906,9 +906,9 @@ def _buy_remaining_cash(state, threshold, allocation):
     target_cash = initial_cash * BUY_USE_CASH_RATIO * float(allocation)
     raw_spent_map = state.get("spent_quote_by_tier")
     spent_map = dict(raw_spent_map) if isinstance(raw_spent_map, dict) else {}
-    prior_spent = _finite_float(
+    prior_spent = max(0.0, _finite_float(
         spent_map.get(
-            _tier_key(threshold))) or 0.0
+            _tier_key(threshold))) or 0.0)
     return max(0.0, target_cash - prior_spent), target_cash, prior_spent
 
 
@@ -936,17 +936,17 @@ def _record_terminal_buy(symbol, state, status):
 
     key = _tier_key(threshold)
     spent_by_tier = dict(state.get("spent_quote_by_tier") or {})
-    prior_spent = _finite_float(spent_by_tier.get(key)) or 0.0
+    prior_spent = max(0.0, _finite_float(spent_by_tier.get(key)) or 0.0)
     filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
-    cost_val = _finite_float(status.cost) or 0.0
-    fee_val = _finite_float(status.fee) or 0.0
+    cost_val = max(0.0, _finite_float(status.cost) or 0.0)
+    fee_val = max(0.0, _finite_float(status.fee) or 0.0)
     executed_quote = max(0.0, cost_val + fee_val)
     spent_by_tier[key] = prior_spent + executed_quote
 
     state = dict(state)
     state["spent_quote_by_tier"] = spent_by_tier
     state["total_spent_quote"] = (
-        (_finite_float(state.get("total_spent_quote")) or 0.0)
+        max(0.0, _finite_float(state.get("total_spent_quote")) or 0.0)
         + executed_quote)
     allocation = _finite_float(pending.get("allocation"), positive=True)
     initial_cash = _finite_float(state.get("initial_cash"), positive=True)
@@ -997,14 +997,14 @@ def _record_terminal_sell(symbol, state, status):
 
     key = _tier_key(threshold)
     filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
-    prior_filled = _finite_float(filled_by_tier.get(key)) or 0.0
+    prior_filled = max(0.0, _finite_float(filled_by_tier.get(key)) or 0.0)
     filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
     filled_by_tier[key] = prior_filled + filled_qty
 
     state = dict(state)
     state["filled_qty_by_tier"] = filled_by_tier
     state["total_filled_qty"] = (
-        (_finite_float(state.get("total_filled_qty")) or 0.0)
+        max(0.0, _finite_float(state.get("total_filled_qty")) or 0.0)
         + filled_qty)
     allocation = _finite_float(pending.get("allocation"), positive=True)
     if allocation is None:
@@ -1033,8 +1033,8 @@ def _record_terminal_sell(symbol, state, status):
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
 
-    cost_val = _finite_float(status.cost) or 0.0
-    fee_val = _finite_float(status.fee) or 0.0
+    cost_val = max(0.0, _finite_float(status.cost) or 0.0)
+    fee_val = max(0.0, _finite_float(status.fee) or 0.0)
     terminal = list(state.get("terminal_orders") or [])[-19:]
     terminal.append({
         "order_id": pending.get("order_id"),
@@ -1311,7 +1311,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             return None, {}, growth
         expected_remaining = max(
             0.0,
-            initial_qty - (_finite_float(state.get("total_filled_qty")) or 0.0),
+            initial_qty - max(0.0, _finite_float(state.get("total_filled_qty")) or 0.0),
         )
         balance_tolerance = max(1e-12, initial_qty * 1e-6)
         if free_qty > expected_remaining + balance_tolerance:
@@ -1364,8 +1364,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         if growth < trigger_thr or threshold in completed:
             continue
         tier_target_qty = initial_qty * allocation
-        already_filled = _finite_float(
-            filled_by_tier.get(_tier_key(threshold))) or 0.0
+        already_filled = max(0.0, _finite_float(
+            filled_by_tier.get(_tier_key(threshold))) or 0.0)
         unfilled_tier_qty = max(0.0, tier_target_qty - already_filled)
         remaining_qty = min(free_qty, unfilled_tier_qty)
         if remaining_qty <= max(1e-12, tier_target_qty * 0.02):
