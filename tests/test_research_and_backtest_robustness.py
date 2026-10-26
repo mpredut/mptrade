@@ -2655,6 +2655,51 @@ def test_monitortrades_agy_paths_and_external_collectors_robustness(tmp_path, mo
     monkeypatch.setitem(mt._SL_BOUNCE_STATE, "BTCUSDC", {"peak_bounce_price": "corrupt", "started_at": "corrupt"})
     mt._log_tp_hold_state("BTCUSDC", pos_snap, dec, 0.05)
     mt._log_sl_hold_state("BTCUSDC", pos_snap, dec, 0.05)
+    assert mt._summarize_orders(["not_a_dict"]) == (0.0, 0.0, (1, 0.0, 0.0, 0, 0))
+
+
+def test_monitororder_tradeall_and_assetguardian_edge_cases(monkeypatch):
+    """Verify monitororder, tradeall, and assetguardian handle bool TTLs/quantities, string initial_prices, and whitespace symbols."""
+    import monitororder as mo
+    import tradeall as ta
+    import assetguardian as ag
+
+    # 1. monitororder.resolve_effective_order_ttl ignores boolean custom_ttl
+    ttl = mo.resolve_effective_order_ttl("o1", "cid1", owner="tradeall", custom_ttl_map={"o1": True})
+    assert ttl == min(mo.MODULE_ORDER_TTLS["tradeall"], mo.MAX_GLOBAL_ORDER_TTL_SEC)
+
+    # 2. monitororder.monitor_open_orders_by_type handles non-dict order items, string initial_prices, and boolean origQty
+    mo.reset_monitororder_state_for_test()
+    mo.initial_sell_prices["o_str_px"] = "100.0"
+    mo.initial_sell_prices["o_corrupt_px"] = "not_a_float"
+    monkeypatch.setattr(
+        mo.api,
+        "get_open_orders",
+        lambda side, sym: {
+            "bad_item": "not_a_dict",
+            "o_str_px": {"price": "100.0", "origQty": True, "clientOrderId": "TA_1"},
+            "o_corrupt_px": {"price": "100.0", "origQty": "0.0", "clientOrderId": "TA_2"},
+        },
+    )
+    monkeypatch.setattr(mo.api, "get_current_price", lambda sym: 100.0)
+    mo.monitor_open_orders_by_type("BTCUSDC", "SELL")
+    assert mo.initial_sell_prices["o_str_px"] == 100.0
+    assert mo.initial_sell_prices["o_corrupt_px"] == 100.0
+
+    # 3. tradeall._kalman_gate_blocks normalizes whitespace/lowercase symbols for configured coins
+    if ta.KALMAN_MODES:
+        sample_sym = next(iter(ta.KALMAN_MODES))
+        monkeypatch.setattr(ta, "_kalman_ref", None)
+        assert ta._kalman_gate_blocks(f" {sample_sym.lower()} ", "BUY")[0] is False
+
+    # 4. assetguardian._complete_campaign_tier ignores invalid threshold and evaluate_symbol normalizes symbol
+    saved_calls = []
+    monkeypatch.setattr(ag, "_save_symbol_campaign", lambda s, k, st: saved_calls.append((s, k, st)))
+    ag._complete_campaign_tier("BTCUSDC", "buy", {}, True)
+    ag._complete_campaign_tier("BTCUSDC", "buy", {}, -5.0)
+    assert saved_calls == []
+    assert ag.evaluate_symbol(" unconfigured_sym ") is False
+
 
 
 
