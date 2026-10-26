@@ -161,7 +161,8 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
     if isinstance(sym, bool) or not isinstance(sym, str) or not sym.strip():
         return None, []
     sym_clean = sym.strip()
-    status, body = http_get(YAHOO_CHART.format(sym=sym_clean) + f"?range={rng}&interval={interval}",
+    qs = urllib.parse.urlencode({"range": str(rng or "1d").strip(), "interval": str(interval or "5m").strip()})
+    status, body = http_get(YAHOO_CHART.format(sym=urllib.parse.quote(sym_clean, safe="")) + f"?{qs}",
                             headers=_UA)
     if status != 200 or not body:
         return None, []

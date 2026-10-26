@@ -104,8 +104,18 @@ class KrakenTrailing:
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
         self.client = client
         self.log = log
-        self.enabled = required_bool_env("KRAKEN_TRAILING_ENABLED") if enabled is None else enabled
-        self.trailing_market = TRAILING_MARKET if trailing_market is None else bool(trailing_market)
+        if enabled is None:
+            self.enabled = required_bool_env("KRAKEN_TRAILING_ENABLED")
+        elif isinstance(enabled, str):
+            self.enabled = enabled.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            self.enabled = bool(enabled)
+        if trailing_market is None:
+            self.trailing_market = TRAILING_MARKET
+        elif isinstance(trailing_market, str):
+            self.trailing_market = trailing_market.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            self.trailing_market = bool(trailing_market)
         self.state_file = state_file
         self._tick_balances: dict | None = None
         self._retry_counts: dict[tuple[str, str], int] = {}
@@ -330,16 +340,20 @@ class KrakenTrailing:
         )
 
     def reconcile_pending(self, pending, persist):
+        if not isinstance(pending, dict):
+            return None
         result = self.order_lifecycle.reconcile(pending, persist=persist)
-        pair = str(pending.get("symbol") or "")
-        raw_meta = pending.get("metadata")
+        raw_pair = pending.get("symbol") if isinstance(pending, dict) else None
+        pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
+        raw_meta = pending.get("metadata") if isinstance(pending, dict) else None
         meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-        action = str(pending.get("action") or meta_dict.get("action") or "").upper()
+        raw_act = (pending.get("action") if isinstance(pending, dict) else None) or meta_dict.get("action")
+        action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
         retry_key = (pair, action)
         st = getattr(persist, "st", None)
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
         raw_rc_act = rc.get(action, 0)
-        raw_att = pending.get("attempt")
+        raw_att = pending.get("attempt") if isinstance(pending, dict) else None
         try:
             rc_act_f = float(raw_rc_act or 0)
             rc_act = 0 if isinstance(raw_rc_act, bool) or not math.isfinite(rc_act_f) else max(0, int(rc_act_f))
@@ -363,7 +377,7 @@ class KrakenTrailing:
                 persist(None)
         elif result.outcome == "terminal":
             raw_filled = getattr(result.status, "filled_qty", 0.0)
-            raw_req = pending.get("submitted_qty") or pending.get("requested_qty") or 0.0
+            raw_req = (pending.get("submitted_qty") or pending.get("requested_qty") or 0.0) if isinstance(pending, dict) else 0.0
             try:
                 filled_f = float(0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else raw_filled)
                 filled = filled_f if (math.isfinite(filled_f) and filled_f >= 0.0) else 0.0

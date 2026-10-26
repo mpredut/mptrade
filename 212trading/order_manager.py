@@ -156,10 +156,11 @@ def _persist_marker(record: dict, path: str) -> None:
 
 def _write_marker(ticker: str, result: dict) -> None:
     """Backward-compatible accepted-order marker writer."""
+    res_dict = result if isinstance(result, dict) else {}
     _persist_marker({
         "version": 2, "at": now_str(), "ticker": ticker,
-        "lifecycle": "accepted", "order_id": result.get("id"),
-        "venue_status": result.get("status"), "order": result,
+        "lifecycle": "accepted", "order_id": res_dict.get("id"),
+        "venue_status": res_dict.get("status"), "order": res_dict,
     }, _marker_path(ticker))
     log(f"  [ORDER] marker written: {_marker_path(ticker)}")
 
@@ -302,7 +303,8 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                 return "complete"
             raw_m = record.get("lookup_misses")
             try:
-                misses = (0 if isinstance(raw_m, bool) else max(0, int(raw_m or 0))) + 1
+                m_f = float(raw_m or 0)
+                misses = (0 if isinstance(raw_m, bool) or not math.isfinite(m_f) else max(0, int(m_f))) + 1
             except (TypeError, ValueError, OverflowError):
                 misses = 1
             record["lookup_misses"] = misses
@@ -384,7 +386,8 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
 
     raw_m = record.get("lookup_misses")
     try:
-        misses = (0 if isinstance(raw_m, bool) else max(0, int(raw_m or 0))) + 1
+        m_f = float(raw_m or 0)
+        misses = (0 if isinstance(raw_m, bool) or not math.isfinite(m_f) else max(0, int(m_f))) + 1
     except (TypeError, ValueError, OverflowError):
         misses = 1
     record["lookup_misses"] = misses
@@ -478,7 +481,8 @@ def place_order_with_retry(
         # second order whose identity cannot be reconstructed.
         raw_ver = record.get("version")
         try:
-            ver_i = 1 if (raw_ver is None or isinstance(raw_ver, bool)) else int(raw_ver)
+            ver_f = float(raw_ver) if raw_ver is not None and not isinstance(raw_ver, bool) else 1.0
+            ver_i = int(ver_f) if math.isfinite(ver_f) else 1
         except (TypeError, ValueError, OverflowError):
             ver_i = 1
         if ver_i < 2:
@@ -558,7 +562,8 @@ def place_order_with_retry(
 
     raw_att = record.get("attempts")
     try:
-        att_i = 0 if (raw_att is None or isinstance(raw_att, bool)) else max(0, int(raw_att))
+        att_f = float(raw_att or 0)
+        att_i = 0 if (raw_att is None or isinstance(raw_att, bool) or not math.isfinite(att_f)) else max(0, int(att_f))
     except (TypeError, ValueError, OverflowError):
         att_i = 0
     record["attempts"] = att_i + 1

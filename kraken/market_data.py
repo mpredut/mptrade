@@ -37,10 +37,10 @@ def fetch_ohlc_candles(
     if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
         raise ValueError(f"invalid pair: {pair!r}")
     pair = pair.strip()
-    if isinstance(interval, (bool, float)) or isinstance(timeout, bool):
-        raise ValueError("interval must be an integer and timeout must not be boolean")
+    if isinstance(interval, bool) or isinstance(timeout, bool):
+        raise ValueError("interval and timeout must not be boolean")
     try:
-        if isinstance(interval, str) and "." in interval.strip():
+        if isinstance(interval, float) or (isinstance(interval, str) and "." in interval.strip()):
             raise ValueError(f"invalid interval={interval!r}")
         itv_f = float(interval)
         to_f = float(timeout)

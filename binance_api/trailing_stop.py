@@ -448,6 +448,8 @@ class TrailingStop:
                 self._retry_counts[retry_key] = persisted
 
     def reconcile_pending(self, pending, persist):
+        if not isinstance(pending, dict):
+            return None
         result = self.order_lifecycle.reconcile(pending, persist=persist)
         raw_pair = pending.get("symbol") if isinstance(pending, dict) else None
         pair = raw_pair.strip() if isinstance(raw_pair, str) else ""

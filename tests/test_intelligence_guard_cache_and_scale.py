@@ -12203,3 +12203,131 @@ def test_iteration116_kraken_hl_and_t212_client_safety(monkeypatch):
     hist = tc.get_historical_order("O1")
     assert "_feeCurrencies" not in hist
 
+
+def test_iteration117_venue_trailing_ws_and_replay_safety(monkeypatch, tmp_path):
+    """Iteration 117: Verify kraken.market_data float interval, kraken.trailing_stop bool/pending safety, bapi_ws timeout/keepalive, bapi_ws_normalize orderId, and 212trading market_data/order_manager/replay safety."""
+    import importlib
+    import os
+    import sys
+    import pytest
+    import kraken.market_data as k_md
+    from kraken.trailing_stop import KrakenTrailing
+    from binance_api.bapi_ws import (
+        BinanceAccountStream,
+        BinancePriceStream,
+        WS_USERDATA_KEEPALIVE_SEC,
+        WS_USERDATA_LOSS_TIMEOUT_SEC,
+    )
+    from binance_api.bapi_ws_normalize import parse_order_execution_report
+
+    # 1. kraken.market_data.fetch_ohlc_candles rejects float interval with "invalid interval"
+    with pytest.raises(ValueError, match="invalid interval"):
+        k_md.fetch_ohlc_candles("XXBTZUSD", 1.5)
+
+    # 2. KrakenTrailing string enabled / trailing_market and reconcile_pending safety
+    kt = KrakenTrailing(
+        client=object(),
+        enabled="false",
+        trailing_market="0",
+        state_file=str(tmp_path / "kt_state.json"),
+    )
+    assert kt.enabled is False
+    assert kt.trailing_market is False
+    assert kt.reconcile_pending(None, lambda _p: None) is None
+    assert kt.reconcile_pending("not-a-dict", lambda _p: None) is None
+    from types import SimpleNamespace
+    kt.order_lifecycle = SimpleNamespace(
+        reconcile=lambda _p, persist: SimpleNamespace(outcome="absent", status=None)
+    )
+    kt.reconcile_pending({"symbol": " XXBTZUSD ", "action": " sell "}, lambda _p: None)
+    assert kt._retry_counts.get(("XXBTZUSD", "SELL")) == 1
+
+    # 3. BinanceWSBase.stop timeout and BinanceAccountStream keepalive_sec / loss_timeout_sec
+    ps = BinancePriceStream(["BTCUSDC"])
+    ps.stop(timeout=float("nan"))
+    ps.stop(timeout=True)
+    acc_stream = BinanceAccountStream(
+        on_event=lambda *a: None,
+        keepalive_sec=True,
+        loss_timeout_sec=-5.0,
+    )
+    assert acc_stream.keepalive_sec == float(WS_USERDATA_KEEPALIVE_SEC)
+    assert acc_stream.loss_timeout_sec == float(WS_USERDATA_LOSS_TIMEOUT_SEC)
+
+    # 4. parse_order_execution_report rejects None or <= 0 orderId
+    base_exec = {
+        "e": "executionReport",
+        "s": "BTCUSDC",
+        "x": "TRADE",
+        "X": "FILLED",
+        "t": 101,
+        "S": "BUY",
+        "l": "1.0",
+        "z": "1.0",
+        "L": "50000.0",
+        "Z": "50000.0",
+        "T": 1700000000000,
+    }
+    assert parse_order_execution_report({**base_exec, "i": None}) is None
+    assert parse_order_execution_report({**base_exec, "i": 0}) is None
+    assert parse_order_execution_report({**base_exec, "i": "-5"}) is None
+    parsed_exec = parse_order_execution_report({**base_exec, "i": 42})
+    assert parsed_exec is not None and parsed_exec[1]["orderId"] == 42
+
+    # 5. 212trading.market_data._chart URL-encodes symbol, range, and interval
+    t212_md = importlib.import_module("212trading.market_data")
+    called_urls = []
+    monkeypatch.setattr(t212_md, "http_get", lambda url, **_kw: called_urls.append(url) or (0, b""))
+    t212_md._chart("BRK/B?x=1", rng="5d&foo=1", interval="5m#bar")
+    assert len(called_urls) == 1
+    assert "BRK%2FB%3Fx%3D1" in called_urls[0]
+    assert "range=5d%26foo%3D1" in called_urls[0]
+    assert "interval=5m%23bar" in called_urls[0]
+
+    # 6. 212trading.order_manager._write_marker and integer sanitization
+    t212_om = importlib.import_module("212trading.order_manager")
+    marker_path = tmp_path / "marker.json"
+    monkeypatch.setattr(t212_om, "_marker_path", lambda _t, test=False: str(marker_path))
+    t212_om._write_marker("SPCX_US_EQ", "non-dict-result")
+    assert marker_path.exists()
+
+    # 7. 212trading.replay.run_replay validates non-sequence ohlc and full OHLC envelope
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    t212_mods = ("strategy", "signals", "price_analysis", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in t212_mods}
+    try:
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+        import replay as t212_replay
+        sp = t212_strat.StratParams(
+            currency="USD",
+            entry_amount=100.0,
+            entry_discount_pct=1.0,
+            dca_amount=100.0,
+            dca_drop_pct=2.0,
+            check_minutes=5.0,
+            takeprofit_pct=2.0,
+            max_budget=1000.0,
+            max_dca_buys=5,
+            validity="GOOD_TILL_CANCEL",
+            enable_takeprofit=True,
+            order_ttl_min=60.0,
+            stop_loss_pct=5.0,
+        )
+        with pytest.raises(ValueError, match="ohlc cannot be empty"):
+            t212_replay.run_replay("not-a-sequence", sp)
+        with pytest.raises(ValueError, match="invalid OHLC bar at index 0"):
+            # high (101) < open (105) even though high >= low (99)
+            t212_replay.run_replay([(105.0, 101.0, 99.0, 100.0, 1000)], sp)
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+

@@ -90,10 +90,18 @@ class BinanceWSBase:
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         self._stop_event.set()
+        eff_timeout = WS_STOP_TIMEOUT
+        if timeout is not None and not isinstance(timeout, bool):
+            try:
+                t_f = float(timeout)
+                if math.isfinite(t_f) and t_f >= 0.0:
+                    eff_timeout = t_f
+            except (TypeError, ValueError, OverflowError):
+                pass
         if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
-            self._thread.join(timeout=timeout)
+            self._thread.join(timeout=eff_timeout)
             if self._thread.is_alive():
-                logger.warning("WS thread did not stop within %.1fs", timeout)
+                logger.warning("WS thread did not stop within %.1fs", eff_timeout)
                 return False
         return True
 
@@ -432,8 +440,16 @@ class BinanceAccountStream(BinanceWSBase):
         self.on_available = on_available or (lambda *_: None)
         self.on_healthy = on_healthy or (lambda: None)
         self.on_unhealthy = on_unhealthy or (lambda: None)
-        self.keepalive_sec = keepalive_sec
-        self.loss_timeout_sec = loss_timeout_sec
+        def _pos_float(val, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0.0) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+        self.keepalive_sec = _pos_float(keepalive_sec, float(WS_USERDATA_KEEPALIVE_SEC))
+        self.loss_timeout_sec = _pos_float(loss_timeout_sec, float(WS_USERDATA_LOSS_TIMEOUT_SEC))
         self._signing_key = u._load_ed25519_signing_key()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._health_lock = threading.Lock()

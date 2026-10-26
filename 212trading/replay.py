@@ -118,7 +118,7 @@ def run_replay(
     ``fx_to_usd`` may be scalar or one historical value per bar. The live DCA gate
     reads five-minute Yahoo bars and rejects other cadences.
     """
-    if not ohlc:
+    if not isinstance(ohlc, (list, tuple)) or not ohlc:
         raise ValueError("ohlc cannot be empty")
     if bar_minutes is not None:
         try:
@@ -143,7 +143,12 @@ def run_replay(
             o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
-        if not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
+        if (
+            not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f))
+            or h_f < l_f
+            or h_f < max(o_f, c_f)
+            or l_f > min(o_f, c_f)
+        ):
             raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError(

@@ -75,6 +75,8 @@ def parse_order_execution_report(
             raw_i = int(raw_i)
         elif isinstance(raw_i, str):
             raw_i = raw_i.strip() or None
+        if raw_i is None or (isinstance(raw_i, int) and raw_i <= 0) or (isinstance(raw_i, str) and raw_i.startswith("-")):
+            raise ValueError("missing or invalid Binance order ID")
         fill_id = int(raw_t)
         if fill_id < 0:
             raise ValueError("missing Binance trade ID")
