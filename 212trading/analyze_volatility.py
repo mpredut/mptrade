@@ -9,6 +9,7 @@ Reusable for any new asset.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import sys
 import urllib.request
@@ -29,7 +30,15 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
     out = []
     for i, t in enumerate(ts):
         if i < n_ohlc and None not in (o[i], h[i], l[i], c[i]):
-            out.append((t, o[i], h[i], l[i], c[i], (v[i] if i < len(v) and v[i] else 0)))
+            if any(isinstance(val, bool) for val in (o[i], h[i], l[i], c[i])):
+                continue
+            try:
+                of, hf, lf, cf = float(o[i]), float(h[i]), float(l[i]), float(c[i])
+                vf = float(v[i]) if i < len(v) and v[i] is not None and not isinstance(v[i], bool) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if all(math.isfinite(val) and val > 0 for val in (of, hf, lf, cf)):
+                out.append((t, of, hf, lf, cf, vf if math.isfinite(vf) and vf > 0 else 0))
     return out, res.get("meta", {})
 
 

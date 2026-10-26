@@ -128,8 +128,10 @@ def main() -> int:
         print(f"! data error: {e}"); return 1
     if len(ohlc) < 20:
         print(f"! not enough data ({len(ohlc)})"); return 1
+    if args.budget <= 0:
+        print("! budget must be > 0"); return 1
     closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100
+    bh = (closes[-1] - closes[0]) / closes[0] * 100 if closes[0] > 0 else 0.0
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,
                 sl=args.sl, interval=args.interval)

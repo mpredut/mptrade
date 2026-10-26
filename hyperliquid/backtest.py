@@ -79,7 +79,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
             res = detect_long_term_trend(ts[:i+1], closes[:i+1], win_h, step_h)
             out[i] = res["direction"] if res else "neutral"
         else:  # builtin
-            if i + 1 >= slow:
+            if fast > 0 and slow > 0 and i + 1 >= max(fast, slow):
                 mf = statistics.mean(closes[i+1-fast:i+1]); ms = statistics.mean(closes[i+1-slow:i+1])
                 diff = (mf - ms) / ms if ms else 0
                 out[i] = "up" if diff > band else "down" if diff < -band else "neutral"
@@ -93,7 +93,7 @@ def simulate(ohlc, ts, fund, sig, P, direction):
 
 def run(coin, ohlc, ts, fund, sig, P, direction, budget):
     m = simulate(ohlc, ts, fund, sig, P, direction)
-    total_pct = m["total"]/budget*100          # TRUE result: realized + funding + open position
+    total_pct = m["total"]/budget*100 if budget > 0 else 0.0  # TRUE result: realized + funding + open position
     wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
     return total_pct, m, wr
 
@@ -142,9 +142,11 @@ def main() -> int:
     closes = [x[3] for x in ohlc]
     if len(ohlc) < 50:
         log("! prea putine lumanari"); return 1
+    if budget <= 0:
+        log("! budget must be > 0"); return 1
     fund = fetch_funding(coin, ts[0])
     sig = precompute_signal(closes, [t/1000 for t in ts], args.signal, args.fast, args.slow, args.band/100, args.win, args.step)
-    bh = (closes[-1]-closes[0])/closes[0]*100
+    bh = (closes[-1]-closes[0])/closes[0]*100 if closes[0] > 0 else 0.0
 
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop, tp=tp,
                 maxdca=maxdca, budget=budget, fee=fee, sl=sl)

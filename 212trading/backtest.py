@@ -203,8 +203,10 @@ def main() -> int:
     ohlc = fetch_candles(sym, args.range, args.interval)
     if len(ohlc) < 20:
         print(f"! not enough data ({len(ohlc)})"); return 1
+    if budget <= 0:
+        print("! budget must be > 0"); return 1
     closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100
+    bh = (closes[-1] - closes[0]) / closes[0] * 100 if closes[0] > 0 else 0.0
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=interval_minutes(args.interval),

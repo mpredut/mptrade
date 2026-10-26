@@ -68,6 +68,8 @@ def chronos_forecast_series(vol_trail: np.ndarray, refresh: int, horizon: int) -
     """
     from chronos import ChronosPipeline
     import torch
+    refresh_eff = max(1, int(refresh))
+    horizon_eff = max(1, int(horizon))
     print("  incarc amazon/chronos-t5-tiny...")
     pipe = ChronosPipeline.from_pretrained("amazon/chronos-t5-tiny", device_map="cpu",
                                             torch_dtype=torch.float32)
@@ -76,12 +78,12 @@ def chronos_forecast_series(vol_trail: np.ndarray, refresh: int, horizon: int) -
     for i in range(len(vol_trail)):
         if np.isnan(vol_trail[i]):
             continue
-        if last is None or i % refresh == 0:
+        if last is None or i % refresh_eff == 0:
             ctx = vol_trail[max(0, i - 511):i + 1]
             ctx = ctx[~np.isnan(ctx)]
             if len(ctx) < 8:
                 continue
-            fc = pipe.predict([torch.tensor(ctx, dtype=torch.float32)], prediction_length=horizon)
+            fc = pipe.predict([torch.tensor(ctx, dtype=torch.float32)], prediction_length=horizon_eff)
             last = float(np.median(fc[0].numpy()))
         out[i] = last
     return out
@@ -108,7 +110,7 @@ def simulate_variant(ohlc, P, drop_arr):
 
 
 def report(name, m, budget):
-    tot = m["total"]/budget*100
+    tot = m["total"]/budget*100 if budget > 0 else 0.0
     wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
     print(f"  [{name:16s}] TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
           f"cicluri={m['cycles']:<3} win-rate={wr:3.0f}%  maxDD=${m['maxdd']:.2f}  "

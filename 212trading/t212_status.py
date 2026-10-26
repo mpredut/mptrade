@@ -8,6 +8,7 @@ positions, and PENDING orders. Explains invested, available, and blocked amounts
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
@@ -57,12 +58,22 @@ def main() -> int:
         except ValueError:
             return None
 
+    def _sf(obj: dict, key: str, default: float = 0.0) -> float:
+        raw = obj.get(key)
+        if raw is None or isinstance(raw, bool):
+            return default
+        try:
+            val = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return val if math.isfinite(val) else default
+
     cash = _retry(get_cash)
     print("============ TRADING 212 ACCOUNT ============")
-    if cash:
-        free = float(cash.get("free") or 0.0); inv = float(cash.get("invested") or 0.0)
-        blk = float(cash.get("blocked") or 0.0); tot = float(cash.get("total") or 0.0)
-        ppl = float(cash.get("ppl") or 0.0); pie = float(cash.get("pieCash") or 0.0)
+    if isinstance(cash, dict) and cash:
+        free = _sf(cash, "free"); inv = _sf(cash, "invested")
+        blk = _sf(cash, "blocked"); tot = _sf(cash, "total")
+        ppl = _sf(cash, "ppl"); pie = _sf(cash, "pieCash")
         print(f"  INVESTED (cost)   : {inv:>10.2f}")
         print(f"  AVAILABLE (free)  : {free:>10.2f}   <- this is what you can place new orders with")
         print(f"  BLOCKED           : {blk:>10.2f}   <- locked in pending or in-flight orders")
@@ -73,33 +84,30 @@ def main() -> int:
         print("  ! cannot read the cash (rate limit or auth?)")
 
     # --- POSITIONS ---
-    pf = _retry(c.get_portfolio) or []
+    pf = [p for p in (_retry(c.get_portfolio) or []) if isinstance(p, dict)]
     print(f"\n  --- POSITIONS ({len(pf)}) ---")
     inv_sum = 0.0
     for p in pf:
-        q = float(p.get("quantity") or 0.0); avg = float(p.get("averagePrice") or 0.0)
-        cur = float(p.get("currentPrice") or 0.0); ppl = float(p.get("ppl") or 0.0)
+        q = _sf(p, "quantity"); avg = _sf(p, "averagePrice")
+        cur = _sf(p, "currentPrice"); ppl = _sf(p, "ppl")
         val = q * cur; inv_sum += q * avg
-        print(f"    {p.get('ticker',''):<14} qty {q:<8.3f} avg {avg:<9.2f} price {cur:<9.2f} "
+        print(f"    {str(p.get('ticker') or ''):<14} qty {q:<8.3f} avg {avg:<9.2f} price {cur:<9.2f} "
               f"value {val:>9.2f}  P&L {ppl:>+8.2f}")
     if pf:
         print(f"    (positions cost sum: {inv_sum:.2f})")
 
     # --- PENDING ORDERS that block cash ---
-    orders = _retry(c.list_active_orders) or []
+    orders = [o for o in (_retry(c.list_active_orders) or []) if isinstance(o, dict)]
     print(f"\n  --- PENDING ORDERS ({len(orders)}) ---  <- THESE lock up free cash")
     if not orders:
         print("    (none — the cash is not locked by orders)")
     for o in orders:
-        try:
-            q = float(o.get("quantity") or 0.0)
-        except (TypeError, ValueError):
-            q = 0.0
+        q = _sf(o, "quantity")
         lp = o.get("limitPrice", o.get("price"))
         side = "BUY" if q > 0 else "SELL"
         inst = o.get("instrument") if isinstance(o.get("instrument"), dict) else {}
         ticker = o.get("ticker") or inst.get("ticker") or ""
-        print(f"    {ticker:<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={o.get('id','')}")
+        print(f"    {str(ticker):<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={o.get('id','')}")
     print("==========================================")
     return 0
 

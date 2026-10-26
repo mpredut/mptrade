@@ -69,7 +69,7 @@ def base_params(budget=3000):
 
 
 def bh(ohlc):
-    return (ohlc[-1][3] - ohlc[0][3]) / ohlc[0][3] * 100
+    return (ohlc[-1][3] - ohlc[0][3]) / ohlc[0][3] * 100 if ohlc and ohlc[0][3] > 0 else 0.0
 
 
 def run_compare(pairs, intervals):
@@ -97,6 +97,7 @@ def run_compare(pairs, intervals):
 
 
 def run_wf(pair, interval, segments=4):
+    segments = max(1, int(segments))
     P = {**base_params(), "interval": interval}
     try:
         ohlc = fetch_candles(pair, interval)

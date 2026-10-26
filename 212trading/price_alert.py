@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -57,9 +58,19 @@ def main() -> int:
         log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"); return 1
     if args.below is None and args.above is None:
         log("! give at least --below or --above"); return 1
+    if args.below is not None and (not math.isfinite(args.below) or args.below <= 0):
+        log("! --below must be a finite positive price"); return 1
+    if args.above is not None and (not math.isfinite(args.above) or args.above <= 0):
+        log("! --above must be a finite positive price"); return 1
 
-    price = get_price_usd(args.symbol)
-    if price is None:
+    raw_price = get_price_usd(args.symbol)
+    if raw_price is None or isinstance(raw_price, bool):
+        log(f"  [{args.symbol}] price unavailable — skipping"); return 0
+    try:
+        price = float(raw_price)
+    except (TypeError, ValueError, OverflowError):
+        log(f"  [{args.symbol}] price unavailable — skipping"); return 0
+    if not math.isfinite(price) or price <= 0:
         log(f"  [{args.symbol}] price unavailable — skipping"); return 0
 
     state_path = args.state or os.path.join(_HERE, f".alert_{args.symbol}.json")
