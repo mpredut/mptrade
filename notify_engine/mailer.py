@@ -120,8 +120,9 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     cfg = _config()
     if cfg is None:
         return False
-    subject = (subject or "Alert").strip() or "Alert"
-    body = body or ""
+    subj_str = "" if isinstance(subject, bool) else str(subject or "")
+    subject = subj_str.strip() or "Alert"
+    body = "" if isinstance(body, bool) else str(body or "")
     if dedup:
         from notify_engine.alertnotifiers import pass_common_gate
         identity = [{"type": "email", "name": subject, "body": body, "source": "mailer"}]

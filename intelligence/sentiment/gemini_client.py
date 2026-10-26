@@ -99,7 +99,7 @@ class GeminiClient:
         if self._custom_runner is not None:
             try:
                 res = self._custom_runner(prompt, selected_model, timeout_sec)
-                if cache_ttl_sec > 0:
+                if cache_ttl_sec > 0 and res:
                     self._cache[prompt] = (now, res)
                 return res
             except Exception as e:
@@ -359,10 +359,12 @@ class GeminiClient:
         )
         if not raw_text:
             return None
+        if isinstance(raw_text, dict):
+            return raw_text
 
-        parsed = extract_json_object(raw_text)
+        parsed = extract_json_object(str(raw_text))
         if parsed is None:
-            logger.warning("Failed to decode JSON from Gemini output (raw text: %s)", raw_text[:200])
+            logger.warning("Failed to decode JSON from Gemini output (raw text: %s)", str(raw_text)[:200])
         return parsed
 
 

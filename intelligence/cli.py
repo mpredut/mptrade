@@ -74,7 +74,7 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     try:
         pid = _safe_int(data.get("pid", 0), 0)
         ts = _safe_float(data.get("ts", 0.0), 0.0)
-        age = (time.time() - ts) if ts > 0.0 else float("inf")
+        age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
 
         is_alive = False
         if pid > 0:
@@ -117,7 +117,7 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
             return {"running": False, "reason": "no_heartbeat_file"}
         pid = _safe_int(data.get("pid", 0), 0)
         ts = _safe_float(data.get("ts", 0.0), 0.0)
-        age = (time.time() - ts) if ts > 0.0 else float("inf")
+        age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
 
         is_alive = False
         if pid > 0:

@@ -364,8 +364,9 @@ class NotificationServer:
             return f"New Coins Discovered ({count})"
 
     def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
-        if not alerts:
+        if not isinstance(alerts, (list, tuple)) or not alerts:
             return False
+        bot_name = "" if isinstance(bot_name, bool) else str(bot_name or "")
 
         first = alerts[0]
         # Resolve title, body, and source intelligently based on alert payload type
@@ -395,13 +396,13 @@ class NotificationServer:
                 source = first.get("source") or "price_alert"
             elif alert_type == "bot_event":
                 if len(alerts) == 1:
-                    title = first.get("name", "Alert")
-                    body = first.get("body", "")
+                    title = first.get("name") or "Alert"
+                    body = first.get("body") or ""
                 else:
-                    title = f"{first.get('name', 'Alert')} ({len(alerts)})"
+                    title = f"{first.get('name') or 'Alert'} ({len(alerts)})"
                     from notify_engine.alertnotifiers import AlertNotifier
                     body = AlertNotifier.format_batch_message(alerts)
-                source = first.get("source", "")
+                source = first.get("source") or ""
             else:
                 if len(alerts) == 1:
                     title = first.get("name") or first.get("title") or "Alert"
@@ -410,10 +411,10 @@ class NotificationServer:
                     title = f"{first.get('name') or first.get('title') or 'Alert'} ({len(alerts)})"
                     from notify_engine.alertnotifiers import AlertNotifier
                     body = AlertNotifier.format_batch_message(alerts)
-                source = first.get("source", "")
+                source = first.get("source") or ""
         elif isinstance(first, str):
             title = "Alert" if len(alerts) == 1 else f"Alerts ({len(alerts)})"
-            body = "\n".join(alerts)
+            body = "\n".join(str(a) for a in alerts)
             source = "price_alert" if "price" in body.lower() else "system"
         else:
             if hasattr(first, "alert_type"):
@@ -438,6 +439,10 @@ class NotificationServer:
                     from notify_engine.alertnotifiers import AlertNotifier
                     body = AlertNotifier.format_batch_message(alerts)
                 source = getattr(first, "source", "")
+
+        title = "" if isinstance(title, bool) else str(title or "Alert")
+        body = "" if isinstance(body, bool) else str(body or "")
+        source = "" if isinstance(source, bool) else str(source or "")
 
         topic = None
         if webhook_url:
@@ -711,16 +716,22 @@ class NotificationServer:
                 read_count = len(lines)
                 remaining = []
                 success_count = 0
+                queue_dirty = False
                 failed_intents: set[str] = set()
                 
                 for line in lines:
                     line = line.strip()
                     if not line:
+                        queue_dirty = True
                         continue
                     
                     try:
                         payload = json.loads(line)
                     except Exception:
+                        queue_dirty = True
+                        continue
+                    if not isinstance(payload, dict):
+                        queue_dirty = True
                         continue
                     
                     intent = payload.get("__orchestrator_intent__")
@@ -764,14 +775,17 @@ class NotificationServer:
                             
                         if success:
                             success_count += 1
+                            queue_dirty = True
                         elif intent == "email" and last_error_is_auth_failure():
                             failed_intents.add(intent)
+                            queue_dirty = True
                             logging.warning(
                                 f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
                             )
                         else:
                             from notify_engine.alertnotifiers import _safe_float
                             failed_intents.add(intent)
+                            queue_dirty = True
                             retries = max(0, int(_safe_float(payload.get("retry_count", 0), 0.0))) + 1
                             if retries >= _MAX_QUEUE_RETRIES:
                                 logging.warning(
@@ -781,13 +795,14 @@ class NotificationServer:
                                 payload["retry_count"] = retries
                                 remaining.append(json.dumps(payload))
                     elif intent == "email" and last_error_is_auth_failure():
+                        queue_dirty = True
                         logging.warning(
                             f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
                         )
                     else:
                         remaining.append(line)
                         
-                if success_count > 0 or len(remaining) != len(lines):
+                if queue_dirty or success_count > 0 or len(remaining) != len(lines):
                     # Preserve any notifications appended concurrently while network I/O ran
                     newly_appended = []
                     if os.path.exists(self.queue_file):

@@ -631,4 +631,54 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertEqual(bulk_msg["priority"], "urgent")
             self.assertEqual(bulk_msg["topic"], "ntfy-error-test")
 
+    def test_queue_retry_count_persistence_and_edge_cases(self):
+        import asyncio
+        from notify_engine.alertnotifiers import AlertNotifier
+        from orchestratorOS.lib import watchdog_common
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        # 1. format_new_coin_message rejects NaN/non-positive prices
+        msg_nan = AlertNotifier.format_new_coin_message({"symbol": "ABC", "price": float("nan")})
+        self.assertIn("Price: N/A", msg_nan)
+        msg_neg = AlertNotifier.format_new_coin_message({"symbol": "ABC", "price": -5.0})
+        self.assertIn("Price: N/A", msg_neg)
+
+        # 2. dispatch_alerts handles non-list alerts and None fields without raising
+        self.assertFalse(self.server.dispatch_alerts(123))  # type: ignore[arg-type]
+        self.server.dispatch_alerts([{"type": "bot_event", "name": None, "body": None, "source": None}], bot_name=True)  # type: ignore[arg-type]
+
+        # 3. flush_queue_loop persists incremented retry_count when single queued item fails
+        with open(self.server.queue_file, "w", encoding="utf-8") as f:
+            f.write('["not_a_dict"]\n')
+            f.write(json.dumps({"__orchestrator_intent__": "ntfy_webhook", "title": "FailAlert", "message": "m", "topic": "t"}) + "\n")
+
+        async def _run_one_flush():
+            with mock.patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError()]), \
+                 mock.patch.object(self.server, "flush_pending_bulk", return_value=False), \
+                 mock.patch.object(self.server, "_send_ntfy", return_value=False):
+                try:
+                    await self.server.flush_queue_loop()
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(_run_one_flush())
+        with open(self.server.queue_file, "r", encoding="utf-8") as f:
+            queued_lines = [ln.strip() for ln in f if ln.strip()]
+        self.assertEqual(len(queued_lines), 1)
+        saved_item = json.loads(queued_lines[0])
+        self.assertEqual(saved_item["retry_count"], 1)
+
+        # 4. watchdog_common.load_state recovers from .previous
+        prev_file = os.path.join(self._temp_dir.name, "wd_state.json")
+        with open(prev_file + ".previous", "w", encoding="utf-8") as f:
+            json.dump({"ok": 1}, f)
+        self.assertEqual(watchdog_common.load_state(prev_file), {"ok": 1})
+
+        # 5. GeminiClient custom_runner does not cache None/empty and query_json accepts dict
+        calls = []
+        cli = GeminiClient(custom_runner=lambda p, m, t: calls.append(1) or (None if len(calls) == 1 else '{"a": 1}'))
+        self.assertIsNone(cli.query_json("p1", cache_ttl_sec=60.0))
+        self.assertEqual(cli.query_json("p1", cache_ttl_sec=60.0), {"a": 1})
+
+
 

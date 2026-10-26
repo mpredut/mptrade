@@ -598,6 +598,9 @@ def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple
 def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:
     """Block the channel with a rolling cooldown and request one alternate warning."""
     now = time.time()
+    cd_sec = _safe_float(cooldown_seconds, 900.0)
+    if cd_sec <= 0.0:
+        cd_sec = 900.0
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -606,7 +609,7 @@ def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) ->
         channel_state = state["channels"].setdefault(channel, {})
         first = not bool(channel_state.get("budget_warning_sent"))
         channel_state["blocked"] = True
-        channel_state["blocked_until"] = now + cooldown_seconds
+        channel_state["blocked_until"] = now + cd_sec
         channel_state["budget_warning_sent"] = True
         _save_delivery_state(path, state)
         return first
@@ -671,8 +674,10 @@ class AlertNotifier:
         price_str = "Price: N/A"
         if raw_price is not None and not isinstance(raw_price, bool):
             try:
-                price_str = f"Price: ${float(raw_price):.4f}"
-            except (TypeError, ValueError):
+                px_val = float(raw_price)
+                if math.isfinite(px_val) and px_val > 0.0:
+                    price_str = f"Price: ${px_val:.4f}"
+            except (TypeError, ValueError, OverflowError):
                 price_str = f"Price: {raw_price}"
         lines = [
             f"🆕: {alert.get('symbol', 'N/A')} - {alert.get('name', alert.get('symbol', 'N/A'))}",
