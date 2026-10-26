@@ -585,7 +585,9 @@ class Strategy:
             # Cancel every pending order, including DCA, so the position cannot refill.
             for o in list(self.s["orders"]):
                 if not self.dry_run and not self.replay_mode and not str(o["oid"]).startswith("PAPER"):
-                    self.client.cancel(self.coin, o["oid"])
+                    if self.client.cancel(self.coin, o["oid"]) is False:
+                        log(f"  ! [STRAT] failed to cancel {o['oid']} before SL — keeping tracked")
+                        continue
                 self._remove(o)
             if self.replay_mode:
                 self._apply_close(avg, price, self.s["qty"])
@@ -681,18 +683,25 @@ class Strategy:
         log(f"      DCA        : {self.p.dca_amount} {self.ccy} la {self.p.dca_drop_pct}% contra (max {self.p.max_dca_buys})")
         log(f"      take-profit: {self.p.takeprofit_pct}% in favoare" if self.p.enable_takeprofit else "      TP: off")
         log(f"      PLAFON     : {self.p.max_budget} {self.ccy} / ciclu  |  fee HL ~{fee_hl}%/leg")
+        sleep_sec = max(1.0, float(self.p.check_minutes) * 60.0) if math.isfinite(float(self.p.check_minutes)) else 60.0
         try:
             while True:
-                price = get_price(self.client, self.coin)
-                if price is None:
-                    log("  [STRAT] price unavailable"); time.sleep(self.p.check_minutes*60); continue
-                if self.reconcile(price) is False:
-                    time.sleep(self.p.check_minutes*60); continue
-                self.step(price); self._save()
-                avg = self._avg()
-                pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
-                log(f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
-                    f"NET={self.s['realized_net']:+.2f} (brut {self.s['realized_gross']:+.2f}, fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
-                time.sleep(self.p.check_minutes*60)
+                try:
+                    price = get_price(self.client, self.coin)
+                    if price is None:
+                        log("  [STRAT] price unavailable"); time.sleep(sleep_sec); continue
+                    if self.reconcile(price) is False:
+                        time.sleep(sleep_sec); continue
+                    self.step(price); self._save()
+                    avg = self._avg()
+                    pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
+                    log(f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
+                        f"NET={self.s['realized_net']:+.2f} (brut {self.s['realized_gross']:+.2f}, fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    log(f"  ! [STRAT] cycle failed ({e.__class__.__name__}: {e}) — retrying on next check")
+                    self._save()
+                time.sleep(sleep_sec)
         except KeyboardInterrupt:
             log("  [STRAT] stopped manually."); self._save()

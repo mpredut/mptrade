@@ -397,7 +397,7 @@ class PriceChecker:
                     print(f"[Checker] Error in main loop: {e}")
 
                 print(f"[Checker] Waiting {interval_seconds} seconds until next check...")
-                for _ in range(max(1, int(interval_seconds))):
+                for _ in range(max(1, int(math.ceil(iv_f)))):
                     if not self._running:
                         break
                     time.sleep(1)

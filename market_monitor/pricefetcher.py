@@ -823,7 +823,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 px_val = float(raw_px)
                 if not (math.isfinite(ts_val) and ts_val > 0 and math.isfinite(px_val) and px_val > 0):
                     continue
-                readable = datetime.fromtimestamp(ts_val / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                ts_sec = ts_val / 1000.0 if ts_val >= 10_000_000_000 else ts_val
+                readable = datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d %H:%M:%S")
             except (TypeError, ValueError, OverflowError, OSError):
                 continue
             history.append(

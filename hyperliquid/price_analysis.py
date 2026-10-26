@@ -174,16 +174,14 @@ def signal(client, coin: str) -> dict:
     # Confidence combines relative hourly slope and trend duration.
     last_px = None
     try:
-        last_px = client.mid(coin)
+        raw_mid = client.mid(coin)
+        if raw_mid is not None and not isinstance(raw_mid, bool):
+            px_f = float(raw_mid)
+            if math.isfinite(px_f) and px_f > 0:
+                last_px = px_f
     except Exception:  # noqa: BLE001
         pass
-    has_valid_px = (
-        last_px is not None
-        and not isinstance(last_px, bool)
-        and math.isfinite(float(last_px))
-        and float(last_px) > 0
-    )
-    slope_pct_h = abs(res["current_slope_h"]) / float(last_px) * 100 if has_valid_px else 0.0
+    slope_pct_h = abs(res["current_slope_h"]) / last_px * 100 if last_px is not None else 0.0
     dur_h = res["duration_seconds"] / 3600.0
     conf = round(min(1.0, slope_pct_h / 0.3 * 0.6 + min(dur_h / 48.0, 1.0) * 0.4), 2)
     return {

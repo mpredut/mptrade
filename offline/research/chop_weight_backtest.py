@@ -379,6 +379,9 @@ def run_chop_benchmark(
     step_seconds: int = 900,
 ) -> Dict[str, List[ChopBacktestStats]]:
     """Run full comparative benchmark across all chop weight policies for given symbols."""
+    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
+        raise ValueError("step_seconds must be finite and > 0")
+    step_seconds = max(1, int(round(float(step_seconds))))
     # Policies to test
     policies = [
         "CHOP_0.00",  # Skip / 0%

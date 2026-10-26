@@ -1241,3 +1241,98 @@ def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp
         assert res["trend"] == "neutral"
 
 
+def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comment(tmp_path, monkeypatch):
+    """Verify HL price_analysis non-numeric mid safety, HL Strategy.run exception resilience, backtest_ranges section comments, and chop_benchmark step validation."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from offline.research import backtest_ranges as br
+    from offline.research import chop_weight_backtest as cwb
+    import market_monitor.pricefetcher as pf
+
+    # 1. backtest_ranges section header with inline comment
+    conf_p = tmp_path / "ranges.conf"
+    conf_p.write_text(
+        "[BINANCE_BTC] ; inline comment\n"
+        "# BACKTEST: 5.0, 6.0, 7.0\n"
+        "mt.gain = 6.0\n",
+        encoding="utf-8",
+    )
+    assert br.scan_backtest_ranges(str(conf_p)) == {"BINANCE_BTC.mt.gain": ["5.0", "6.0", "7.0"]}
+
+    # 2. chop_weight_backtest.run_chop_benchmark rejects invalid step_seconds immediately
+    with pytest.raises(ValueError, match="step_seconds"):
+        cwb.run_chop_benchmark(symbols=[], step_seconds=0)
+    with pytest.raises(ValueError, match="step_seconds"):
+        cwb.run_chop_benchmark(symbols=[], step_seconds=True)
+
+    # 3. pricefetcher.get_price_history formats both seconds and ms timestamps accurately
+    with patch.object(pf, "PricePlatformFactory"):
+        pf_mgr = pf.CacheAllPriceFetcherManager(60, ["BTC"], str(tmp_path / "pf.json"), read_only=True)
+    pf_mgr.cache["BTC"] = [[1700000000, 50000.0], [1700000000000, 50100.0]]
+    hist = pf_mgr.get_price_history("BTC", limit=5)
+    assert len(hist) == 2
+    assert hist[0]["timestamp_readable"].startswith("2023-11-")
+    assert hist[1]["timestamp_readable"].startswith("2023-11-")
+
+    # 4. hyperliquid/price_analysis.signal handles non-numeric client.mid() without ValueError
+    root_dir = Path(br.__file__).resolve().parents[2]
+    with monkeypatch.context() as m:
+        m.setattr(sys, "path", list(sys.path))
+        spec_pa = importlib.util.spec_from_file_location("hl_pa_mid_test", root_dir / "hyperliquid/price_analysis.py")
+        mod_pa = importlib.util.module_from_spec(spec_pa)
+        spec_pa.loader.exec_module(mod_pa)
+        m.setattr(
+            mod_pa,
+            "analyze",
+            lambda _c, _coin: {
+                "direction": "up",
+                "start_timestamp": 1000.0,
+                "duration_seconds": 36000.0,
+                "estimated_future_hours": 5.0,
+                "current_slope_h": 0.5,
+            },
+        )
+
+        class _BadMidClient:
+            def mid(self, _coin):
+                return "N/A"
+
+        sig = mod_pa.signal(_BadMidClient(), "HYPE")
+        assert sig["trend"] == "up"
+        assert sig["source"] == "analysis"
+
+        # 5. hyperliquid/strategy.py _check_stop_loss keeps uncancelled orders tracked & run() survives step error
+        spec_st = importlib.util.spec_from_file_location("hl_strat_run_test", root_dir / "hyperliquid/strategy.py")
+        mod_st = importlib.util.module_from_spec(spec_st)
+        m.setitem(sys.modules, spec_st.name, mod_st)
+        spec_st.loader.exec_module(mod_st)
+
+        class _FailCancelClient:
+            exchange = None
+
+            def sz_decimals(self, _coin):
+                return 2
+
+            def cancel(self, _coin, _oid):
+                return False
+
+            def place_limit(self, _coin, _is_buy, _sz, _px, reduce_only=False):
+                return True, "SL-1", "ok"
+
+        strat = mod_st.Strategy(
+            client=_FailCancelClient(),
+            coin="HYPE",
+            params=mod_st.StratParams(direction="long", stop_loss_pct=5.0),
+            dry_run=False,
+            replay_mode=False,
+            initial_state={"qty": 1.0, "cost": 100.0, "spent": 100.0, "orders": [{"oid": "DCA-1", "role": "open", "px": 98.0, "sz": 1.0}]},
+        )
+        strat._save = lambda: None
+        m.setattr(mod_st, "notify", lambda **_kw: None)
+        assert strat._check_stop_loss(94.0) is True
+        oids = [o["oid"] for o in strat.s["orders"]]
+        assert "DCA-1" in oids and "SL-1" in oids
+

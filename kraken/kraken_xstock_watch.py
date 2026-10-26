@@ -418,7 +418,10 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             except (OSError, TypeError, ValueError):
                 pass
         if trial_pair:                                           # remove the bot's paper state
-            from strategy import state_path_for
+            try:
+                from kraken.strategy import state_path_for
+            except ImportError:
+                from strategy import state_path_for
             sp = state_path_for(trial_pair)
             if os.path.exists(sp):
                 os.remove(sp)
@@ -491,7 +494,7 @@ def main() -> int:
         beats += 1                       # keep-alive pulse: one tail-visible dot per cycle
         sys.stdout.write("." if beats % 60 else ".\n")
         sys.stdout.flush()
-        time.sleep(args.interval * 60)
+        time.sleep(max(1.0, float(args.interval) * 60.0) if math.isfinite(float(args.interval)) else 60.0)
 
 
 if __name__ == "__main__":

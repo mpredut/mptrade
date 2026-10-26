@@ -32,7 +32,7 @@ import os
 import re
 from typing import Dict, List, Optional
 
-_SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*$')
+_SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$')
 _BACKTEST_RE = re.compile(r'^\s*#\s*BACKTEST:\s*(.+?)\s*$')
 _KEY_RE = re.compile(r'^\s*([A-Za-z0-9_.]+)\s*=\s*(.+?)\s*$')
 
