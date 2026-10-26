@@ -197,6 +197,7 @@ def _load_hl_replay():
     hl_dir = ROOT / "hyperliquid"
     spec = importlib.util.spec_from_file_location("hl_wf_replay", str(hl_dir / "replay.py"))
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["hl_wf_replay"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -206,6 +207,7 @@ def _load_t212_replay():
     t212_dir = ROOT / "212trading"
     spec = importlib.util.spec_from_file_location("t212_wf_replay", str(t212_dir / "replay.py"))
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["t212_wf_replay"] = mod
     spec.loader.exec_module(mod)
     return mod
 

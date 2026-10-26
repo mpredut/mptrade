@@ -83,12 +83,18 @@ def main():
             continue
         fk, section, key = p.get("full_key"), p.get("section"), p.get("key")
         symbol, raw_winner = p.get("symbol"), p.get("winner_value")
-        if not fk or not section or not key or not symbol or raw_winner is None or isinstance(raw_winner, bool):
+        if (
+            not isinstance(fk, str) or not fk.strip()
+            or not isinstance(section, str) or not section.strip()
+            or not isinstance(key, str) or not key.strip()
+            or not isinstance(symbol, str) or not symbol.strip()
+            or raw_winner is None or isinstance(raw_winner, bool)
+        ):
             continue
         try:
             winner = float(raw_winner)
             current = float(sp._current_value(section, key))   # LIVE from prod (authoritative)
-        except (TypeError, ValueError, KeyError):
+        except (TypeError, ValueError, KeyError, OverflowError):
             continue
         if not (math.isfinite(winner) and winner > 0 and math.isfinite(current) and current > 0):
             continue

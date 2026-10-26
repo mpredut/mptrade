@@ -87,6 +87,9 @@ def _precompute_intelligence_tape(
     parabolic_surge_pct: float,
 ) -> List[dict]:
     """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
+    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
+        raise ValueError("step_seconds must be finite and > 0")
+    step_seconds = max(1, int(round(float(step_seconds))))
     kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
     mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
@@ -152,6 +155,15 @@ def run_intelligence_backtest(
     fee_pct: float = 0.001,  # 0.1% taker fee
 ) -> Dict[str, BacktestStats]:
     """Run comparative backtest across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite."""
+    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
+        raise ValueError("step_seconds must be finite and > 0")
+    if isinstance(initial_balance, bool) or not isinstance(initial_balance, (int, float)) or not math.isfinite(initial_balance) or initial_balance <= 0:
+        raise ValueError("initial_balance must be finite and > 0")
+    if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(fee_pct) or not (0.0 <= float(fee_pct) < 1.0):
+        raise ValueError("fee_pct must be in [0, 1)")
+    step_seconds = max(1, int(round(float(step_seconds))))
+    initial_balance = float(initial_balance)
+    fee_pct = float(fee_pct)
     if cache_path is None:
         cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
 
@@ -288,8 +300,10 @@ def run_intelligence_backtest(
                 if use_p1:
                     # 1. Noise Floor Guard (Defers momentum/trend buys during dead chop)
                     if not is_mean_reversion:
-                        vel = float(k_out.get("vel", 0.0))
-                        vel_std = max(float(k_out.get("vel_std", 1.0)), 1e-4)
+                        raw_vel = k_out.get("vel")
+                        raw_vstd = k_out.get("vel_std")
+                        vel = float(raw_vel) if raw_vel is not None and not isinstance(raw_vel, bool) else 0.0
+                        vel_std = max(float(raw_vstd) if raw_vstd is not None and not isinstance(raw_vstd, bool) else 1.0, 1e-4)
                         n_dec = noise_guard.check(symbol, "BUY", gradient=vel, epsilon=vel_std)
                         if not n_dec.allowed:
                             noise_vetoes += 1

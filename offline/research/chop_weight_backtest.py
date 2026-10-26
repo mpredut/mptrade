@@ -62,13 +62,22 @@ class ChopBacktestStats:
 
 def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str, float]:
     """Detect local trend regime from price window using linear slope and Mann-Kendall test."""
-    if len(prices) < 10:
+    if prices is None:
         return "CHOP", 0.0
-    x = np.arange(len(prices), dtype=float)
-    slope, _ = np.polyfit(x, prices, 1)
-    norm_slope = slope / prices[-1] if prices[-1] > 0 else 0.0
+    p_arr = np.asarray(prices, dtype=float)
+    p_arr = p_arr[np.isfinite(p_arr) & (p_arr > 0)]
+    if len(p_arr) < 10:
+        return "CHOP", 0.0
+    x = np.arange(len(p_arr), dtype=float)
+    try:
+        slope, _ = np.polyfit(x, p_arr, 1)
+    except Exception:
+        return "CHOP", 0.0
+    if not math.isfinite(float(slope)):
+        return "CHOP", 0.0
+    norm_slope = float(slope) / float(p_arr[-1]) if p_arr[-1] > 0 else 0.0
 
-    _, _, p_mk = calculate_mann_kendall(prices)
+    _, _, p_mk = calculate_mann_kendall(p_arr)
     if p_mk > mk_alpha:
         return "CHOP", norm_slope
     if norm_slope > 1e-4:
@@ -85,6 +94,9 @@ def _precompute_chop_bar_tape(
     step_seconds: int,
 ) -> List[Dict[str, Any]]:
     """Precompute policy-independent regime, volatility, and trigger signals once per symbol."""
+    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
+        raise ValueError("step_seconds must be finite and > 0")
+    step_seconds = max(1, int(round(float(step_seconds))))
     if not sampled:
         return []
 
@@ -173,6 +185,15 @@ def run_single_simulation(
     precomputed_tape: Optional[List[Dict[str, Any]]] = None,
 ) -> ChopBacktestStats:
     """Run a single backtest simulation under a specific chop allocation policy."""
+    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
+        raise ValueError("step_seconds must be finite and > 0")
+    if isinstance(initial_balance, bool) or not isinstance(initial_balance, (int, float)) or not math.isfinite(initial_balance) or initial_balance <= 0:
+        raise ValueError("initial_balance must be finite and > 0")
+    if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(fee_pct) or not (0.0 <= float(fee_pct) < 1.0):
+        raise ValueError("fee_pct must be in [0, 1)")
+    step_seconds = max(1, int(round(float(step_seconds))))
+    initial_balance = float(initial_balance)
+    fee_pct = float(fee_pct)
     usd = initial_balance
     asset_qty = 0.0
     entry_price = 0.0

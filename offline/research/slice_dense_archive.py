@@ -27,16 +27,22 @@ def ts_of(r) -> float:
         return 0.0
     try:
         val = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
     return val if math.isfinite(val) and val > 0 else 0.0
 
 
 def main():
+    if len(sys.argv) < 3:
+        print("Usage: slice_dense_archive.py <symbol> <days> [out_path]", file=sys.stderr)
+        sys.exit(1)
     symbol = sys.argv[1]
-    days = float(sys.argv[2])
+    try:
+        days = float(sys.argv[2])
+    except (TypeError, ValueError, OverflowError):
+        days = -1.0
     if not (math.isfinite(days) and days > 0):
-        print(f"[slice] invalid days={days}", file=sys.stderr)
+        print(f"[slice] invalid days={sys.argv[2]!r}", file=sys.stderr)
         sys.exit(1)
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
         ROOT, "cachedb", f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
@@ -56,7 +62,9 @@ def main():
         sys.exit(1)
 
     rows.sort(key=ts_of)
-    cutoff = ts_of(rows[-1]) - days * 86400 * 1000
+    last_ts = ts_of(rows[-1])
+    ts_scale = 1000.0 if last_ts > 1e11 else 1.0
+    cutoff = last_ts - days * 86400.0 * ts_scale
     sliced = [r for r in rows if ts_of(r) >= cutoff]
 
     with open(out, "w", encoding="utf-8") as f:

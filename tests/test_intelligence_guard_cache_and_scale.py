@@ -9292,6 +9292,65 @@ def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety
         log.configure(check_every=10.5)
 
 
+def test_iteration72_offline_research_and_runners_safety():
+    """Verify Iteration 72 hardening across offline/research and offline/runners."""
+    import math
+    import pytest
+    import numpy as np
+    from offline.research import intelligence_backtest as ibt
+    from offline.research import chop_weight_backtest as cwb
+    from offline.research import slice_dense_archive as sda
+    from offline.research import comprehensive_strategy_sweep as css
+    from offline.runners import fetch_hyperliquid_candles as fhc
+    from offline.runners import walk_forward_compare as wfc
+
+    # 1. intelligence_backtest validates step_seconds, initial_balance, fee_pct
+    with pytest.raises(ValueError):
+        ibt._precompute_intelligence_tape("BTCUSDC", [], 0, 3.5)
+    with pytest.raises(ValueError):
+        ibt.run_intelligence_backtest("BTCUSDC", step_seconds=0)
+    with pytest.raises(ValueError):
+        ibt.run_intelligence_backtest("BTCUSDC", initial_balance=0.0)
+    with pytest.raises(ValueError):
+        ibt.run_intelligence_backtest("BTCUSDC", fee_pct=1.0)
+
+    # 2. chop_weight_backtest filters non-finite/non-positive prices and validates params
+    reg, slp = cwb.detect_regime_slope(np.array([float("nan"), -5.0, 100.0, 101.0]))
+    assert reg == "CHOP" and slp == 0.0
+    with pytest.raises(ValueError):
+        cwb._precompute_chop_bar_tape("BTCUSDC", [], None, 0)
+    with pytest.raises(ValueError):
+        cwb.run_single_simulation("BTCUSDC", [], None, "CHOP_0.03", initial_balance=0.0)
+    with pytest.raises(ValueError):
+        cwb.run_single_simulation("BTCUSDC", [], None, "CHOP_0.03", fee_pct=-0.1)
+
+    # 3. slice_dense_archive.ts_of handles OverflowError
+    assert sda.ts_of({"t": 10**400}) == 0.0
+    assert sda.ts_of({"i": [1700000000000, 100.0]}) == 1700000000000.0
+
+    # 4. comprehensive_strategy_sweep._summarize_replay handles NaN/bool/non-positive budget
+    summary = css._summarize_replay({"net": 50.0, "total": 60.0}, float("nan"))
+    assert math.isfinite(summary["net_pct"])
+
+    # 5. fetch_hyperliquid_candles.resolve_spot_pair & validate_continuity
+    with pytest.raises(ValueError):
+        fhc.resolve_spot_pair("HYPE", "USDC", "not-a-dict")
+    meta = {
+        "tokens": ["bad-item", {"name": "HYPE", "index": 1}, {"name": "USDC", "index": 0}],
+        "universe": ["bad-item", {"tokens": [1, 0], "name": "@107"}],
+    }
+    assert fhc.resolve_spot_pair("hype", "usdc", meta) == "@107"
+    with pytest.raises(ValueError):
+        fhc.validate_continuity([], 0)
+
+    # 6. walk_forward_compare._load_hl_replay and _load_t212_replay register sys.modules before exec_module
+    hl_mod = wfc._load_hl_replay()
+    t212_mod = wfc._load_t212_replay()
+    assert hasattr(hl_mod, "run_replay")
+    assert hasattr(t212_mod, "run_replay")
+
+
+
 
 
 

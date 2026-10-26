@@ -196,7 +196,11 @@ def define_candidate_grid() -> dict[str, dict]:
 
 def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     """Compute normalized percentage and risk-adjusted replay metrics safely."""
-    safe_budget = max(float(budget), 1e-9)
+    try:
+        b_f = float(budget) if budget is not None and not isinstance(budget, bool) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        b_f = 0.0
+    safe_budget = b_f if math.isfinite(b_f) and b_f > 1e-9 else 1e-9
     net_pct = (float(m.get("net") or 0.0) / safe_budget) * 100.0
     total_pct = (float(m.get("total") or 0.0) / safe_budget) * 100.0
     max_dd = float(m.get("max_drawdown_pct") or 0.0)
@@ -338,14 +342,16 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     if anchor_path.exists():
         try:
             with open(anchor_path, encoding="utf-8") as f:
-                anchor_ts = int(float(f.read().strip()))
-        except ValueError:
+                raw_anchor = float(f.read().strip())
+                anchor_ts = int(raw_anchor) if math.isfinite(raw_anchor) else 0
+        except (OSError, ValueError, OverflowError):
             anchor_ts = 0
 
     valid_bars = [
         b for b in full_bars
         if isinstance(b, (list, tuple)) and len(b) >= 5
         and all(isinstance(b[i], (int, float)) and not isinstance(b[i], bool) and math.isfinite(float(b[i])) for i in range(5))
+        and all(float(b[i]) > 0 for i in range(1, 5))
     ]
     fwd_bars = [b for b in valid_bars if float(b[0]) >= anchor_ts]
     full_ohlc = [(float(b[1]), float(b[2]), float(b[3]), float(b[4])) for b in valid_bars]

@@ -35,16 +35,21 @@ _post = _hl_md._post_info
 
 def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
     """Resolve the ``@index`` API name from ``spotMeta``, with no hardcoded index."""
+    if not isinstance(spot_meta, dict):
+        raise ValueError("spot_meta must be a dict")
+    raw_tokens = spot_meta.get("tokens")
     token_indices = {
         str(item.get("name", "")).upper(): item.get("index")
-        for item in spot_meta.get("tokens", [])
+        for item in (raw_tokens if isinstance(raw_tokens, list) else [])
+        if isinstance(item, dict)
     }
-    base_index = token_indices.get(token.upper())
-    quote_index = token_indices.get(quote.upper())
+    base_index = token_indices.get(str(token or "").upper())
+    quote_index = token_indices.get(str(quote or "").upper())
     if base_index is None or quote_index is None:
         raise ValueError(f"spot token not found: {token}/{quote}")
-    for market in spot_meta.get("universe", []):
-        if market.get("tokens") == [base_index, quote_index]:
+    raw_universe = spot_meta.get("universe")
+    for market in (raw_universe if isinstance(raw_universe, list) else []):
+        if isinstance(market, dict) and market.get("tokens") == [base_index, quote_index]:
             name = market.get("name")
             if name:
                 return str(name)
@@ -53,6 +58,8 @@ def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
 
 def validate_continuity(records: list[dict], interval_minutes: int) -> None:
     """The replay assumes evenly spaced bars; it refuses datasets with gaps."""
+    if isinstance(interval_minutes, bool) or not isinstance(interval_minutes, int) or interval_minutes <= 0:
+        raise ValueError("interval_minutes must be a positive integer")
     expected_seconds = interval_minutes * 60
     for previous, current in zip(records, records[1:]):
         actual_seconds = current["timestamp"] - previous["timestamp"]
