@@ -121,7 +121,10 @@ class MacroAnalyzer:
                 cand_path = os.path.join(self.cache_dir, fname)
                 if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
                     nc = NewsFeedCollector(history_file=cand_path)
-                    if nc._history:
+                    pool = getattr(nc, "_aggregated_pool", None)
+                    if pool is None:
+                        pool = getattr(nc, "_history", None)
+                    if pool:
                         news_snap = nc.get_pool_snapshot()
                         break
                     if news_snap is None:

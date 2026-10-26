@@ -1121,6 +1121,71 @@ def test_liquidation_kalman_mean_reversion_and_breadth_triggers_hardening():
     assert mbc.cache_ttl_sec == 60.0 and mbc.min_volume_usd == 5_000_000.0
 
 
+def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
+    import json
+    import time
+    from types import SimpleNamespace
+    import pytest
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from market_monitor.pricechecker import PriceChecker
+
+    # 1. NewsFeedCollector._history alias and MacroAnalyzer.assess_geopolitical_threat with news_feed_collect.json
+    now_ts = time.time()
+    nf_path = tmp_path / "news_feed_collect.json"
+    nf_path.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Minor market update",
+                    "source": "Test",
+                    "pub_date": "",
+                    "url": "",
+                    "matched_keywords": [],
+                    "is_high_severity": False,
+                    "first_seen_ts": now_ts - 10.0,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    nc = NewsFeedCollector(history_file=str(nf_path), cache_ttl_sec=float("nan"), rolling_window_sec=True)
+    assert nc.cache_ttl_sec == 60.0 and nc.rolling_window_sec == 14400.0
+    assert len(nc._history) == 1 and nc._history is nc._aggregated_pool
+
+    ma = MacroAnalyzer(cache_dir=str(tmp_path))
+    ma.shadow_notify = False
+    assert ma.assess_geopolitical_threat(force=True, now=now_ts) is True
+
+    # 2. GeopoliticalShockGuard handles missing summary/risk_score and non-finite downscale_factor
+    gsg = GeopoliticalShockGuard(downscale_factor=float("nan"))
+    assert gsg.downscale_factor == 0.50
+    dec_g = gsg.check("BTCUSDC", "BUY", SimpleNamespace(threat_level="ELEVATED", recommended_brake="DOWNSCALE_50"))
+    assert dec_g.suggested_scale == 0.50 and dec_g.metadata["risk_score"] == 0.0
+
+    # 3. PriceChecker handles bool/NaN hours, current_price, and interval_seconds
+    class _DummyCache:
+        original_symbols = ["BTC"]
+
+        def get_latest_price(self, _sym):
+            return True
+
+        def get_price_history(self, _sym, limit=1000):
+            return [{"timestamp": True, "price": 100.0}, {"timestamp": now_ts * 1000, "price": True}]
+
+    pc = PriceChecker(_DummyCache())
+    assert pc._get_price_history_last_hours("BTC", float("nan")) == []
+    assert pc._get_price_history_last_hours("BTC", True) == []
+    assert pc._get_price_history_last_hours("BTC", 24.0) == []
+    assert pc._calculate_24h_stats("BTC")["has_data"] is False
+    with pytest.raises(ValueError):
+        pc.start_monitoring(interval_seconds=True)
+    with pytest.raises(ValueError):
+        pc.start_monitoring(interval_seconds=float("nan"))
+
+
+
 
 
 

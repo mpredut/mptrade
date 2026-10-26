@@ -144,7 +144,13 @@ class PriceChecker:
 
     def _get_price_history_last_hours(self, symbol: str, hours: float):
         """Return compact validated (timestamp_ms, price, readable_time) tuples."""
-        if hours <= 0:
+        if hours is None or isinstance(hours, bool):
+            return []
+        try:
+            hours = float(hours)
+        except (TypeError, ValueError):
+            return []
+        if not math.isfinite(hours) or hours <= 0:
             return []
         history_limit = max(1000, int(math.ceil(hours * 60)) + 2)
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
@@ -154,10 +160,14 @@ class PriceChecker:
         for entry in history or ():
             if not isinstance(entry, dict):
                 continue
+            raw_ts = entry.get("timestamp")
+            raw_px = entry.get("price")
+            if raw_ts is None or raw_px is None or isinstance(raw_ts, bool) or isinstance(raw_px, bool):
+                continue
             try:
-                timestamp = float(entry["timestamp"])
-                price = float(entry["price"])
-            except (KeyError, TypeError, ValueError):
+                timestamp = float(raw_ts)
+                price = float(raw_px)
+            except (TypeError, ValueError):
                 continue
             if not math.isfinite(timestamp) or not math.isfinite(price) or price <= 0:
                 continue
@@ -176,10 +186,13 @@ class PriceChecker:
     def _calculate_24h_stats(self, symbol: str) -> Dict:
         """Calculate price extremes and time bounds in one O(n) pass."""
         current_price = self.cachePriceAll.get_latest_price(symbol)
-        try:
-            current_price = float(current_price)
-        except (TypeError, ValueError):
+        if current_price is None or isinstance(current_price, bool):
             current_price = math.nan
+        else:
+            try:
+                current_price = float(current_price)
+            except (TypeError, ValueError):
+                current_price = math.nan
         if not math.isfinite(current_price) or current_price <= 0:
             return {"has_data": False, "error": "No current price available"}
 
@@ -328,7 +341,12 @@ class PriceChecker:
         Args:
             interval_seconds: How often to check (for example 60 seconds).
         """
-        if interval_seconds <= 0:
+        if (
+            interval_seconds is None
+            or isinstance(interval_seconds, bool)
+            or not math.isfinite(float(interval_seconds))
+            or float(interval_seconds) <= 0
+        ):
             raise ValueError("interval_seconds must be greater than zero")
         if self._running:
             print("[Checker] Already running!")

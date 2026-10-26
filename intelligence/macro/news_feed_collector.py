@@ -61,14 +61,35 @@ class NewsFeedCollector:
         rolling_window_sec: float = 14400.0,  # 4 hours aggregation horizon
     ) -> None:
         self.rss_url = rss_url
-        self.cache_ttl_sec = cache_ttl_sec
+        ttl = 60.0
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                tf = float(cache_ttl_sec)
+                if math.isfinite(tf) and tf >= 0.0:
+                    ttl = tf
+            except (TypeError, ValueError):
+                pass
+        rw = 14400.0
+        if rolling_window_sec is not None and not isinstance(rolling_window_sec, bool):
+            try:
+                rf = float(rolling_window_sec)
+                if math.isfinite(rf) and rf > 0.0:
+                    rw = rf
+            except (TypeError, ValueError):
+                pass
+        self.cache_ttl_sec = ttl
         self.history_file = history_file
-        self.rolling_window_sec = rolling_window_sec
+        self.rolling_window_sec = rw
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
         # Map of normalized title -> (first_seen_ts, NewsHeadline)
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
         self._load_history()
+
+    @property
+    def _history(self) -> Dict[str, Tuple[float, NewsHeadline]]:
+        """Backward-compatible alias for _aggregated_pool."""
+        return self._aggregated_pool
 
     def _normalize_title(self, title: str) -> str:
         return re.sub(r"\s+", " ", title.strip().lower())
