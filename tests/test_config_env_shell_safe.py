@@ -740,6 +740,79 @@ def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatc
     assert len(called) == 1 and called[0]["amount"] == 200.0
 
 
+def test_spot_engine_trailing_core_and_pricewindow_hardening():
+    import pricewindow as pw
+    import trailing_core as tc
+    from providers.strategy_executor import PairPrecision
+    from strategies import spot_engine as se
+
+    # 1. spot_engine._qty_for, _dust_safe_qty, _place, and step reject NaN/bool/<=0 safely
+    class _DummyClient:
+        def pair_precision(self, _pair):
+            return PairPrecision(2, 4, 0.01, "BTC")
+
+        def free_balance(self, _asset):
+            return 1000.0
+
+    params = se.StratParams(
+        currency="EUR",
+        entry_amount=100.0,
+        entry_discount_pct=1.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=3.0,
+        max_budget=500.0,
+        max_dca_buys=3,
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+    )
+    strat = se.Strategy(_DummyClient(), "BTCEUR", params, dry_run=True, initial_state=se._new_state(), replay_mode=True)
+    assert strat._qty_for(float("nan"), 100.0) == 0.0
+    assert strat._qty_for(100.0, float("inf")) == 0.0
+    assert strat._dust_safe_qty(float("nan")) == 0.0
+    assert strat._dust_safe_qty(True) == 0.0
+    assert strat._place("buy", float("nan"), 100.0, kind="ENTRY") is False
+    assert strat._place("buy", 1.0, 0.0, kind="ENTRY") is False
+    strat.step(float("nan"))
+    strat.step(0.0)
+    assert len(strat._shadow_prices) == 0
+
+    # 2. trailing_core handles free_qty=None/NaN and corrupted rebuy low/qty safely
+    class _DummyAdapter:
+        def free_qty(self, _asset):
+            return None
+
+        def price(self, _pair):
+            return 100.0
+
+        def trend(self, _pair):
+            return 0.0
+
+        def log_hold(self, *_a):
+            pass
+
+    core = tc.TrailingCore(
+        _DummyAdapter(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file="dummy.json",
+        min_notional=10.0,
+        rebuy_enabled=True,
+        rebuy_bounce_pct=2.0,
+        rebuy_skip_if_trend_down=False,
+    )
+    state = {"BTC": {"peak": 110.0, "rebuy": {"low": None, "qty": float("nan")}}}
+    core._process("BTC", "BTC", "BTCEUR", 5.0, state)
+    assert "rebuy" not in state["BTC"]
+
+    # 3. pricewindow.calculate_acceleration handles non-finite window_sec and sample_rate_sec
+    w = pw.PriceWindow("BTCUSDC", 20, sample_rate_sec=1.0, initial_prices=[100.0, 101.0, 102.0, 103.0])
+    assert w.calculate_acceleration(window_sec=float("inf")) != (float("nan"), float("nan"))
+    assert w.calculate_acceleration(window_sec=True) != (float("nan"), float("nan"))
+
+
+
 
 
 

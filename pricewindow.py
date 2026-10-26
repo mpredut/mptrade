@@ -480,7 +480,8 @@ class PriceWindow:
                 if timestamps_sec[i+1] > timestamps_sec[i]]
         if not gaps:
             return DEFAULT_SAMPLE_RATE_SEC
-        return float(np.median(gaps))
+        med = float(np.median(gaps))
+        return med if math.isfinite(med) and med > 0 else DEFAULT_SAMPLE_RATE_SEC
 
     @classmethod
     def from_cache24(cls, symbol: str, window_seconds: float, cache24) -> "PriceWindow":
@@ -745,8 +746,23 @@ class PriceWindow:
           velocity: dy/dt at the end of the window (in % / min)
           acceleration: d^2y/dt^2 = 2*a (in % / min^2)
         """
-        rate = max(float(self.sample_rate_sec or 1.0), 0.1)
-        n_samples = max(int(round(window_sec / rate)), 3) if (window_sec is not None and window_sec > 0) else None
+        raw_rate = self.sample_rate_sec
+        if isinstance(raw_rate, bool) or raw_rate is None:
+            rate = 1.0
+        else:
+            try:
+                rf = float(raw_rate)
+                rate = max(rf, 0.1) if math.isfinite(rf) and rf > 0 else 1.0
+            except (TypeError, ValueError):
+                rate = 1.0
+        n_samples = None
+        if window_sec is not None and not isinstance(window_sec, bool):
+            try:
+                wf = float(window_sec)
+                if math.isfinite(wf) and wf > 0:
+                    n_samples = max(int(round(wf / rate)), 3)
+            except (TypeError, ValueError, OverflowError):
+                n_samples = None
         with self._lock:
             n_win = len(self.prices)
             blen = len(self._trend_buf.prices)
@@ -779,6 +795,8 @@ class PriceWindow:
             t_end = t_minutes[-1]
             velocity = float(2.0 * a * t_end + b)
             acceleration = float(2.0 * a)
+            if not (math.isfinite(velocity) and math.isfinite(acceleration)):
+                return 0.0, 0.0
             return velocity, acceleration
         except Exception:
             return 0.0, 0.0

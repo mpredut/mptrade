@@ -103,6 +103,16 @@ class TrailingCore:
                 return asset
         return default
 
+    def _safe_free_qty(self, asset: str) -> float:
+        raw_free = self.a.free_qty(asset)
+        if isinstance(raw_free, bool) or raw_free is None:
+            return 0.0
+        try:
+            val = float(raw_free)
+            return val if math.isfinite(val) and val >= 0 else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
     def _remaining_qty(self, asset: str) -> float:
         if not asset:
             return 0.0
@@ -115,23 +125,30 @@ class TrailingCore:
                     return float(tot)
             except Exception:
                 pass
-        raw_free = self.a.free_qty(asset)
-        if isinstance(raw_free, bool) or raw_free is None:
-            return 0.0
-        try:
-            val = float(raw_free)
-            return val if math.isfinite(val) and val >= 0 else 0.0
-        except (TypeError, ValueError):
-            return 0.0
+        return self._safe_free_qty(asset)
 
     def _finish_pending(self, st: dict, result, price: float, pair) -> None:
         """Apply one terminal fill exactly once, then acknowledge pending state."""
         status = result.status
         pending = result.intent
         action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
-        filled = float(status.filled_qty or 0.0)
-        avg = (float(status.cost) / filled
-               if filled > 0 and float(status.cost or 0.0) > 0 else price)
+        try:
+            raw_filled = status.filled_qty
+            filled = 0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else float(raw_filled)
+            if not math.isfinite(filled) or filled < 0.0:
+                filled = 0.0
+        except (TypeError, ValueError):
+            filled = 0.0
+        try:
+            raw_cost = status.cost
+            cost_val = 0.0 if (raw_cost is None or isinstance(raw_cost, bool)) else float(raw_cost)
+            if not math.isfinite(cost_val) or cost_val < 0.0:
+                cost_val = 0.0
+        except (TypeError, ValueError):
+            cost_val = 0.0
+        avg = cost_val / filled if filled > 0 and cost_val > 0 else price
+        if not math.isfinite(avg) or avg <= 0:
+            avg = price
         if action == "SELL" and filled > 0:
             asset = pending.get("asset") or (pending.get("metadata") or {}).get("asset")
             if not asset:
@@ -230,17 +247,35 @@ class TrailingCore:
         """Re-buy after a crash stop-loss once price bounces rebuy_bounce_pct%
         from the post-sale low, confirming the fall has stopped before entry."""
         rb = st.get("rebuy")
-        if not rb:
+        if not isinstance(rb, dict) or not rb:
             return
-        rb["low"] = min(rb.get("low", price), price)          # track the post-sale low
+        raw_low = rb.get("low")
+        if (
+            isinstance(raw_low, bool)
+            or not isinstance(raw_low, (int, float))
+            or not math.isfinite(float(raw_low))
+            or float(raw_low) <= 0
+        ):
+            rb["low"] = price
+        else:
+            rb["low"] = min(float(raw_low), price)          # track the post-sale low
+        raw_qty = rb.get("qty", 0)
+        if (
+            isinstance(raw_qty, bool)
+            or not isinstance(raw_qty, (int, float))
+            or not math.isfinite(float(raw_qty))
+            or float(raw_qty) <= 0
+        ):
+            st.pop("rebuy", None)
+            return
+        qty = round(float(raw_qty), 8)                        # one tranche equals the full quantity sold
+        if qty <= 0:
+            st.pop("rebuy", None)
+            return
         if price < rb["low"] * (1 + self.rebuy_bounce_pct / 100.0):
             return                                            # bounce is not confirmed yet; wait
         if self.rebuy_skip_if_trend_down and self.a.trend(pair) < 0:
             self.a.log_skip_rebuy_trend(asset)
-            return
-        qty = round(float(rb.get("qty", 0)), 8)               # one tranche equals the full quantity sold
-        if qty <= 0:
-            st.pop("rebuy", None)
             return
         if self.enabled:
             if qty * price < self.min_notional:
@@ -256,7 +291,7 @@ class TrailingCore:
 
     # -- one asset ------------------------------------------------------------
     def _process(self, key, asset, pair, trail, state) -> None:
-        free = self.a.free_qty(asset)
+        free = self._safe_free_qty(asset)
         price = self.a.price(pair)
         if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
             return
@@ -301,10 +336,19 @@ class TrailingCore:
 
         if self._reconcile_pending(state, st, price, pair):
             return
-        if st.get("rebuy") and not st.get("exit_sold_qty"):
+        if isinstance(st.get("rebuy"), dict) and st.get("rebuy") and not st.get("exit_sold_qty"):
             # Keep the low while a dynamic gate is closed, so later recovery can
             # resume the existing intent without forgetting the intervening dip.
-            st["rebuy"]["low"] = min(st["rebuy"].get("low", price), price)
+            raw_low = st["rebuy"].get("low")
+            if (
+                isinstance(raw_low, bool)
+                or not isinstance(raw_low, (int, float))
+                or not math.isfinite(float(raw_low))
+                or float(raw_low) <= 0
+            ):
+                st["rebuy"]["low"] = price
+            else:
+                st["rebuy"]["low"] = min(float(raw_low), price)
             if self._rebuy_for(pair):
                 self._handle_rebuy(key, asset, pair, st, price, state)
                 if st.get("pending_order"):
@@ -333,7 +377,7 @@ class TrailingCore:
                 if unlock_getter is not None and callable(unlock_getter):
                     try:
                         if unlock_getter(pair):
-                            free = self.a.free_qty(asset)
+                            free = self._safe_free_qty(asset)
                     except Exception:
                         pass
                 if free * price < self.min_notional:

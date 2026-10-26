@@ -657,7 +657,18 @@ class Strategy:
         return self.s["cost"] / self.s["qty"] if self.s["qty"] > 1e-12 else None
 
     def _qty_for(self, amount: float, price: float) -> float:
-        return round(amount / price, self.vol_dec) if price > 0 else 0.0
+        if (
+            isinstance(amount, bool)
+            or isinstance(price, bool)
+            or not isinstance(amount, (int, float))
+            or not isinstance(price, (int, float))
+            or not math.isfinite(amount)
+            or not math.isfinite(price)
+            or amount <= 0
+            or price <= 0
+        ):
+            return 0.0
+        return round(amount / price, self.vol_dec)
 
     def _dust_safe_qty(self, qty: float) -> float:
         """Leave one volume tick to tolerate a venue's rounded balance.
@@ -666,10 +677,18 @@ class Strategy:
         cause permanent insufficient-funds retries. Preserve historical high-precision
         behavior without magnifying dust on low-precision venues.
         """
+        if isinstance(qty, bool) or qty is None:
+            return 0.0
+        try:
+            qty_f = float(qty)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(qty_f) or qty_f <= 0:
+            return 0.0
         dust_decimals = self.vol_dec if self.vol_dec <= 2 else self.vol_dec - 1
         step = 10.0 ** -max(dust_decimals, 1)
         # Epsilon prevents floating-point division from leaving two ticks after floor.
-        ticks = math.floor((float(qty) + step * 1e-9) / step) - 1
+        ticks = math.floor((qty_f + step * 1e-9) / step) - 1
         return round(max(ticks, 0) * step, self.vol_dec)
 
     def _has_open(self, side: str) -> bool:
@@ -742,8 +761,21 @@ class Strategy:
                market: bool = False) -> bool:
         # A market trailing/stop exit executes immediately instead of risking a missed
         # sharp drop with a limit order. Backtests fill it at the next bar's open.
+        if (
+            isinstance(vol, bool)
+            or isinstance(price, bool)
+            or not isinstance(vol, (int, float))
+            or not isinstance(price, (int, float))
+            or not math.isfinite(vol)
+            or not math.isfinite(price)
+        ):
+            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
+            return False
         vol = round(vol, self.vol_dec)
         price = round(price, self.price_dec)
+        if price <= 0:
+            log(f"  ! [STRAT] price {price} <= 0 — skipping")
+            return False
         if vol <= 0 or (self.ordermin and vol < self.ordermin):
             log(f"  ! [STRAT] volume {vol} < minimum order {self.ordermin} — skipping")
             return False
@@ -1053,6 +1085,14 @@ class Strategy:
                     total_fee = float(status.fee or 0.0)
                     reported_price = total_cost / total_vol if total_vol > 0 else float(o["price"])
                 except (TypeError, ValueError):
+                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
+                    continue
+                if (
+                    not (math.isfinite(total_vol) and total_vol >= 0.0)
+                    or not (math.isfinite(total_cost) and total_cost >= 0.0)
+                    or not math.isfinite(total_fee)
+                    or not (math.isfinite(reported_price) and reported_price > 0.0)
+                ):
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
 
@@ -2147,6 +2187,19 @@ class Strategy:
         high: float | None = None,
         low: float | None = None,
     ) -> None:
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not math.isfinite(price)
+            or price <= 0
+        ):
+            log("  ! [STRAT] invalid price — deferring step")
+            return
+        if (
+            high is not None
+            and (isinstance(high, bool) or not isinstance(high, (int, float)) or not math.isfinite(high) or high <= 0)
+        ):
+            high = None
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
@@ -2586,7 +2639,13 @@ class Strategy:
         try:
             while True:
                 price = self.client.get_current_price(self.pair)
-                if price is None:
+                if (
+                    price is None
+                    or isinstance(price, bool)
+                    or not isinstance(price, (int, float))
+                    or not math.isfinite(price)
+                    or price <= 0
+                ):
                     log("  [STRAT] price unavailable — retrying")
                     time.sleep(self.p.check_minutes * 60)
                     continue
