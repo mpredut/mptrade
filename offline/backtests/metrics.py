@@ -27,10 +27,12 @@ def calculate_performance_metrics(
     Sharpe/Sortino/Calmar are ``None`` without the real bar frequency; that choice
     prevents falsely comparing 1h series with 4h/1d ones.
     """
-    if initial_capital <= 0:
+    if isinstance(initial_capital, bool) or not math.isfinite(initial_capital) or initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
-    if not 0 < cvar_confidence < 1:
+    if isinstance(cvar_confidence, bool) or not math.isfinite(cvar_confidence) or not 0 < cvar_confidence < 1:
         raise ValueError("cvar_confidence must be between 0 and 1")
+    if isinstance(turnover_notional, bool) or not math.isfinite(turnover_notional) or turnover_notional < 0:
+        raise ValueError("turnover_notional must be non-negative")
 
     curve = [float(value) for value in equity_curve]
     if not curve:
@@ -63,7 +65,11 @@ def calculate_performance_metrics(
         periodic_returns.append(current / previous - 1.0)
 
     annualized_return = sharpe = sortino = calmar = None
-    if periods_per_year is not None and periods_per_year <= 0:
+    if periods_per_year is not None and (
+        isinstance(periods_per_year, bool)
+        or not math.isfinite(periods_per_year)
+        or periods_per_year <= 0
+    ):
         raise ValueError("periods_per_year must be positive")
     if periods_per_year and periodic_returns and returns_valid:
         periods = len(periodic_returns)
@@ -166,13 +172,13 @@ def validate_replay_metrics(result: dict) -> None:
             if not isinstance(val, str) or not val:
                 raise AssertionError(f"account_currency must be a non-empty string, got {val!r}")
         elif key in ("cycles", "fills"):
-            if not isinstance(val, int) or val < 0:
+            if isinstance(val, bool) or not isinstance(val, int) or val < 0:
                 raise AssertionError(f"{key} must be a non-negative int, got {val!r}")
         else:
-            if not isinstance(val, (int, float)) or not math.isfinite(val):
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
                 raise AssertionError(f"{key} must be a finite number, got {val!r}")
     if "ambiguous_bars" in result:
         val = result["ambiguous_bars"]
-        if not isinstance(val, int) or val < 0:
+        if isinstance(val, bool) or not isinstance(val, int) or val < 0:
             raise AssertionError(f"ambiguous_bars must be a non-negative int, got {val!r}")
 

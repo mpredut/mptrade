@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -55,7 +56,8 @@ def _read_proposals():
     if out.returncode != 0:
         return []
     try:
-        return json.loads(out.stdout or "[]")
+        data = json.loads(out.stdout or "[]")
+        return data if isinstance(data, list) else []
     except json.JSONDecodeError:
         return []
 
@@ -77,9 +79,19 @@ def main():
 
     applied_count = 0
     for p in proposals:
-        fk, section, key = p["full_key"], p["section"], p["key"]
-        symbol, winner = p["symbol"], float(p["winner_value"])
-        current = sp._current_value(section, key)   # LIVE from prod (authoritative)
+        if not isinstance(p, dict):
+            continue
+        fk, section, key = p.get("full_key"), p.get("section"), p.get("key")
+        symbol, raw_winner = p.get("symbol"), p.get("winner_value")
+        if not fk or not section or not key or not symbol or raw_winner is None or isinstance(raw_winner, bool):
+            continue
+        try:
+            winner = float(raw_winner)
+            current = float(sp._current_value(section, key))   # LIVE from prod (authoritative)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not (math.isfinite(winner) and winner > 0 and math.isfinite(current) and current > 0):
+            continue
         rec = {"full_key": fk, "symbol": symbol, "source": "apply_proposals",
                "winner_value": winner, "current_value": current, "dev_commit": p.get("dev_commit")}
 
@@ -91,14 +103,19 @@ def main():
             continue
 
         last = sp._last_change_for(fk)
-        if last:
-            last_ts = datetime.fromisoformat(last["ts"])
-            if datetime.now() - last_ts < timedelta(days=sp.MIN_DAYS_BETWEEN_CHANGES):
-                rec["action"] = "rate_limited"
-                rec["reason"] = f"last changed at {last['ts']} (< {sp.MIN_DAYS_BETWEEN_CHANGES} days)"
-                sp._append_audit(rec)
-                print(f"[apply] {fk}: rate_limited (the last change was {last['ts']})")
-                continue
+        if last and isinstance(last, dict) and last.get("ts"):
+            try:
+                last_ts = datetime.fromisoformat(str(last["ts"]))
+                if last_ts.tzinfo is not None:
+                    last_ts = last_ts.replace(tzinfo=None)
+                if datetime.now() - last_ts < timedelta(days=sp.MIN_DAYS_BETWEEN_CHANGES):
+                    rec["action"] = "rate_limited"
+                    rec["reason"] = f"last changed at {last['ts']} (< {sp.MIN_DAYS_BETWEEN_CHANGES} days)"
+                    sp._append_audit(rec)
+                    print(f"[apply] {fk}: rate_limited (the last change was {last['ts']})")
+                    continue
+            except (TypeError, ValueError):
+                pass
 
         new_value = round((current + winner) / 2, 4)
         rec["proposed_new_value"] = new_value

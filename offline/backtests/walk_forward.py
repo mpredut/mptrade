@@ -28,11 +28,11 @@ def walk_forward_splits(
     the start stays at 0 and the train window grows at every step.
     """
     sizes = (sample_count, train_size, validation_size, test_size)
-    if any(not isinstance(value, int) or value <= 0 for value in sizes):
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in sizes):
         raise ValueError("sample_count and the window sizes must be positive integers")
     if step_size is None:
         step_size = test_size
-    if not isinstance(step_size, int) or step_size <= 0:
+    if isinstance(step_size, bool) or not isinstance(step_size, int) or step_size <= 0:
         raise ValueError("step_size must be a positive integer")
 
     required = train_size + validation_size + test_size

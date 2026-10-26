@@ -1391,3 +1391,45 @@ def test_tradeall_observe_topics_and_watch_hardening(tmp_path):
     assert wtd._f("12.5", 0.0) == 12.5
 
 
+def test_backtest_metrics_walk_forward_and_execution_hardening():
+    import pytest
+    from offline.backtests import metrics as bm
+    from offline.backtests import walk_forward as bwf
+    from offline.backtests import execution as bex
+
+    with pytest.raises(ValueError):
+        bm.calculate_performance_metrics([1.0], initial_capital=True)
+    with pytest.raises(ValueError):
+        bm.calculate_performance_metrics([100.0, 105.0], initial_capital=100.0, periods_per_year=True)
+
+    valid_res = {
+        "return_pct": 1.5,
+        "max_drawdown_pct": 0.5,
+        "cycles": 1,
+        "fills": 2,
+        "initial_capital": 1000.0,
+        "account_currency": "USD",
+        "net_pnl": 15.0,
+        "realized": 15.0,
+        "total": 15.0,
+        "fees": 0.5,
+    }
+    bm.validate_replay_metrics(valid_res)
+    with pytest.raises(AssertionError):
+        bm.validate_replay_metrics({**valid_res, "cycles": True})
+    with pytest.raises(AssertionError):
+        bm.validate_replay_metrics({**valid_res, "return_pct": False})
+
+    with pytest.raises(ValueError):
+        bwf.walk_forward_splits(100, train_size=True, validation_size=10, test_size=10)
+    with pytest.raises(ValueError):
+        bwf.walk_forward_splits(100, train_size=20, validation_size=10, test_size=10, step_size=True)
+
+    with pytest.raises(ValueError):
+        bex.FeeModel(limit_fee_pct=True, market_fee_pct=0.1)
+    with pytest.raises(ValueError):
+        bex.ExecutionModel(partial_fill_ratio=True)
+    with pytest.raises(ValueError):
+        bex.ExecutionModel(spread_bps=True)
+
+

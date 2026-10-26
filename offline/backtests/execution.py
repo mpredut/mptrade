@@ -27,7 +27,7 @@ class FeeModel:
             ("limit_fee_pct", self.limit_fee_pct),
             ("market_fee_pct", self.market_fee_pct),
         ):
-            if not math.isfinite(value) or value < 0 or value >= 100:
+            if isinstance(value, bool) or not math.isfinite(value) or value < 0 or value >= 100:
                 raise ValueError(f"{name} must be within [0, 100)")
 
     def rate_pct(self, *, market: bool) -> float:
@@ -44,11 +44,11 @@ class ExecutionModel:
     intrabar_policy: str = "buy_first"
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.spread_bps) or self.spread_bps < 0:
+        if isinstance(self.spread_bps, bool) or not math.isfinite(self.spread_bps) or self.spread_bps < 0:
             raise ValueError("spread_bps cannot be negative")
-        if not math.isfinite(self.market_slippage_bps) or self.market_slippage_bps < 0:
+        if isinstance(self.market_slippage_bps, bool) or not math.isfinite(self.market_slippage_bps) or self.market_slippage_bps < 0:
             raise ValueError("market_slippage_bps cannot be negative")
-        if not math.isfinite(self.partial_fill_ratio) or not 0 < self.partial_fill_ratio <= 1:
+        if isinstance(self.partial_fill_ratio, bool) or not math.isfinite(self.partial_fill_ratio) or not 0 < self.partial_fill_ratio <= 1:
             raise ValueError("partial_fill_ratio must be within (0, 1]")
         if self.spread_bps >= 20_000:
             raise ValueError("spread_bps must be below 20,000")
