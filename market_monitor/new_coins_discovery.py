@@ -66,9 +66,10 @@ def _safe_num(val, default: float = 0.0) -> float:
 def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
     if not symbol or not isinstance(symbol, str):
         return False
-    if not symbol.isalnum():
+    sym_clean = symbol.strip().upper()
+    if not sym_clean or not sym_clean.isalnum():
         return False
-    if symbol in EXCLUDED_SYMBOLS:
+    if sym_clean in EXCLUDED_SYMBOLS or symbol.strip() in EXCLUDED_SYMBOLS:
         return False
     searchable_name = f"{name or ''} {slug or ''}".lower()
     return not any(keyword in searchable_name for keyword in EXCLUDED_ASSET_NAME_KEYWORDS)
@@ -134,13 +135,13 @@ class CoinMarketCapSource(NewCoinsSource):
             response = requests.get("https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest", headers=self.headers, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
-            if 'data' in data:
+            if isinstance(data, dict) and isinstance(data.get('data'), list):
                 self._cache = []
                 self._supported_symbols.clear()
                 for coin in data['data']:
                     if not isinstance(coin, dict):
                         continue
-                    symbol = str(coin.get('symbol') or '')
+                    symbol = str(coin.get('symbol') or '').strip().upper()
                     name = coin.get('name') or symbol
                     slug = coin.get('slug') or ''
                     if is_trackable_symbol(symbol, name=name, slug=slug):
@@ -276,12 +277,15 @@ class BinanceNewListingsSource(NewCoinsSource):
             data = response.json()
             current_symbols = set()
             symbol_details = {}
-            for symbol_info in data.get('symbols', []):
-                symbol = symbol_info.get('symbol')
-                base_asset = symbol_info.get('baseAsset')
-                quote_asset = symbol_info.get('quoteAsset')
-                status = symbol_info.get('status')
-                if quote_asset == 'USDC' and status == 'TRADING':
+            raw_symbols = data.get('symbols', []) if isinstance(data, dict) else []
+            for symbol_info in (raw_symbols if isinstance(raw_symbols, list) else []):
+                if not isinstance(symbol_info, dict):
+                    continue
+                symbol = str(symbol_info.get('symbol') or '').strip().upper()
+                base_asset = str(symbol_info.get('baseAsset') or '').strip().upper()
+                quote_asset = str(symbol_info.get('quoteAsset') or '').strip().upper()
+                status = str(symbol_info.get('status') or '').strip().upper()
+                if symbol and base_asset and quote_asset == 'USDC' and status == 'TRADING':
                     current_symbols.add(symbol)
                     symbol_details[symbol] = {"symbol": base_asset, "full_symbol": symbol, "quote": quote_asset}
             if self._historical_symbols:
@@ -401,11 +405,14 @@ class NewCoinsFactory:
             "binance": BinanceNewListingsSource,
             "dexscreener": DexScreenerSource,
         }
-        selected_names = (
-            [name for name in enabled_sources if name in builders]
-            if enabled_sources
-            else list(builders.keys())
-        )
+        if enabled_sources:
+            selected_names = []
+            for name in enabled_sources:
+                norm_n = str(name or "").strip().lower()
+                if norm_n in builders and norm_n not in selected_names:
+                    selected_names.append(norm_n)
+        else:
+            selected_names = list(builders.keys())
         self._all_sources: Dict[str, NewCoinsSource] = {
             name: builders[name]() for name in selected_names
         }

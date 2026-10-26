@@ -184,8 +184,8 @@ def _publish_locked() -> None:
 def record_successful_sync(cache_name: str, data_version: str, *,
                            now_ms: Optional[int] = None) -> bool:
     """Publish one complete, persisted Order or Trade reconciliation success."""
-    fields = _SYNC_FIELDS.get(str(cache_name))
-    version = str(data_version or "")
+    fields = _SYNC_FIELDS.get(str(cache_name or "").strip())
+    version = str(data_version or "").strip()
     if fields is None or not version:
         return False
     sync_timestamp = _clean_now_ms(now_ms)
@@ -206,8 +206,8 @@ def record_successful_sync(cache_name: str, data_version: str, *,
 def record_persisted_version(cache_name: str, data_version: str, *,
                              now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
-    fields = _SYNC_FIELDS.get(str(cache_name))
-    version = str(data_version or "")
+    fields = _SYNC_FIELDS.get(str(cache_name or "").strip())
+    version = str(data_version or "").strip()
     if fields is None or not version:
         return False
     _sync_field, version_field = fields

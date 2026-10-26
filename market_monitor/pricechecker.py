@@ -46,12 +46,21 @@ class PriceAlert:
     def __init__(self, symbol: str, alert_type: str, current_price: float,
                  reference_price: float, percent_change: float, threshold: float,
                  url: Optional[str] = None, reference_time: Optional[str] = None):
-        self.symbol = symbol
-        self.alert_type = alert_type  # "up" or "down"
-        self.current_price = current_price
-        self.reference_price = reference_price
-        self.percent_change = percent_change
-        self.threshold = threshold
+        def _sf(val, default: float = 0.0) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+                return f if math.isfinite(f) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        self.symbol = str(symbol or "").strip() or "N/A"
+        self.alert_type = str(alert_type or "down").strip().lower()  # "up" or "down"
+        self.current_price = _sf(current_price, 0.0)
+        self.reference_price = _sf(reference_price, 0.0)
+        self.percent_change = _sf(percent_change, 0.0)
+        self.threshold = _sf(threshold, 0.0)
         self.timestamp = time.time()
         self.url = url or ""
         self.reference_time = reference_time
@@ -247,7 +256,7 @@ class PriceChecker:
 
     def _should_send_alert(self, symbol: str, alert_type: str) -> bool:
         """Check whether we can send a new alert (spam prevention)."""
-        key = f"{symbol}_{alert_type}"
+        key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
         now = time.time()
         raw_last = self._last_alert_time.get(key, 0.0)
         last_time = 0.0
@@ -288,12 +297,18 @@ class PriceChecker:
         per_coin = self.config.get("per_coin")
         chosen = None
         if isinstance(per_coin, dict):
-            if isinstance(per_coin.get(symbol), dict):
-                chosen = per_coin[symbol]
+            sym_str = str(symbol or "").strip()
+            sym_up = sym_str.upper()
+            if isinstance(per_coin.get(sym_str), dict):
+                chosen = per_coin[sym_str]
+            elif isinstance(per_coin.get(sym_up), dict):
+                chosen = per_coin[sym_up]
             else:
-                base = get_base_symbol(symbol)
+                base = get_base_symbol(sym_up) or get_base_symbol(sym_str)
                 if base and isinstance(per_coin.get(base), dict):
                     chosen = per_coin[base]
+                elif base and isinstance(per_coin.get(base.upper()), dict):
+                    chosen = per_coin[base.upper()]
         raw = chosen if isinstance(chosen, dict) else fallback
 
         def _pos_float(val, default_val: float) -> float:
@@ -314,7 +329,7 @@ class PriceChecker:
 
     def _record_alert_sent(self, symbol: str, alert_type: str):
         """Record that an alert was sent."""
-        key = f"{symbol}_{alert_type}"
+        key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
         self._last_alert_time[key] = time.time()
 
     def check_symbol(self, symbol: str) -> List[PriceAlert]:

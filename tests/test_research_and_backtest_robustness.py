@@ -2526,4 +2526,22 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
     )
     assert psg_cfg.mode == "shadow" and psg_cfg.notify_enabled is False
 
+    from market_monitor.new_coins_discovery import is_trackable_symbol
+    from market_monitor.pricechecker import PriceAlert, PriceChecker
+
+    assert is_trackable_symbol("usdc") is False
+    assert is_trackable_symbol(" btc ") is False
+    assert is_trackable_symbol("NEWCOIN") is True
+
+    pa = PriceAlert(" BTCUSDC ", " UP ", "100.5", "95.0", "5.78", "4.1")  # type: ignore[arg-type]
+    assert pa.symbol == "BTCUSDC" and pa.alert_type == "up" and pa.current_price == 100.5
+    assert "$100.5000" in str(pa)
+
+    pc = PriceChecker(
+        SimpleNamespace(symbol_added_time={}),
+        config={"per_coin": {"BTC": {"up_percent": 9.5, "down_percent": 11.5}}},
+    )
+    th = pc._get_thresholds_for_symbol(" btcusdc ")
+    assert th["up_percent"] == 9.5 and th["down_percent"] == 11.5
+
 
