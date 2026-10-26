@@ -495,6 +495,8 @@ def _load_mt_state(now_curr: float | None = None):
         if not isinstance(data, dict):
             return
         now_curr = float(now_curr) if now_curr is not None else time.time()
+        if not math.isfinite(now_curr) or now_curr <= 0:
+            now_curr = time.time()
         for key, target in (
             ("sl_bounce_state", _SL_BOUNCE_STATE),
             ("sl_episode_state", _SL_EPISODE_STATE),
@@ -502,8 +504,29 @@ def _load_mt_state(now_curr: float | None = None):
         ):
             for sym, state in (data.get(key) or {}).items():
                 if isinstance(state, dict):
-                    started = float(state.get("started_at", 0))
-                    if started > 0 and (now_curr - started) < 86400:
+                    raw_started = state.get("started_at", 0)
+                    if isinstance(raw_started, bool):
+                        continue
+                    try:
+                        started = float(raw_started)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(started) or started <= 0:
+                        continue
+                    if started > now_curr:
+                        state = dict(state)
+                        state["started_at"] = now_curr
+                        started = now_curr
+                    if "last_peak_time" in state:
+                        raw_lpt = state.get("last_peak_time")
+                        try:
+                            lpt = float(raw_lpt) if not isinstance(raw_lpt, bool) else float("nan")
+                        except (TypeError, ValueError):
+                            lpt = float("nan")
+                        if not math.isfinite(lpt) or lpt <= 0 or lpt > now_curr:
+                            state = dict(state)
+                            state["last_peak_time"] = now_curr
+                    if 0 <= (now_curr - started) < 86400:
                         target[str(sym).upper()] = state
         for sym, state in (data.get("reentry_state") or {}).items():
             if isinstance(state, dict):
@@ -513,20 +536,36 @@ def _load_mt_state(now_curr: float | None = None):
                 _LAST_EXIT_KIND[str(sym).upper()] = kind
         for sym, s_ts in (data.get("reentry_done_sell_time") or {}).items():
             try:
+                if isinstance(s_ts, bool):
+                    continue
                 s_ts_val = float(s_ts)
-                if s_ts_val > 0 and (now_curr - s_ts_val) < 7 * 86400:
+                if math.isfinite(s_ts_val) and s_ts_val > 0 and 0 <= (now_curr - s_ts_val) < 7 * 86400:
                     _REENTRY_DONE_SELL_TIME[str(sym).upper()] = s_ts_val
             except (TypeError, ValueError):
                 pass
         for sym, state in (data.get("pending_stop_exit") or {}).items():
             if isinstance(state, dict):
-                p_ts = float(state.get("time", 0))
-                if p_ts > 0 and (now_curr - p_ts) < 300:
+                raw_pts = state.get("time", 0)
+                if isinstance(raw_pts, bool):
+                    continue
+                try:
+                    p_ts = float(raw_pts)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(p_ts) or p_ts <= 0:
+                    continue
+                if p_ts > now_curr:
+                    state = dict(state)
+                    state["time"] = now_curr
+                    p_ts = now_curr
+                if 0 <= (now_curr - p_ts) < 300:
                     _PENDING_STOP_EXIT[str(sym).upper()] = state
         for sym, h_ts in (data.get("hard_tp_last") or {}).items():
             try:
+                if isinstance(h_ts, bool):
+                    continue
                 h_ts_val = float(h_ts)
-                if h_ts_val > 0 and (now_curr - h_ts_val) < 86400:
+                if math.isfinite(h_ts_val) and h_ts_val > 0 and 0 <= (now_curr - h_ts_val) < 86400:
                     _hard_tp_last[str(sym).upper()] = h_ts_val
             except (TypeError, ValueError):
                 pass
@@ -964,7 +1003,15 @@ def _is_pending_exit_active(
                 pass
 
     pending_ts = extract_timestamp_s(pending_stop, default=current_time_s) or current_time_s
-    elapsed = current_time_s - int(pending_ts)
+    try:
+        pending_ts_f = float(pending_ts)
+    except (TypeError, ValueError):
+        pending_ts_f = float(current_time_s)
+    if not math.isfinite(pending_ts_f) or pending_ts_f <= 0 or pending_ts_f > current_time_s:
+        pending_ts_f = float(current_time_s)
+        if isinstance(pending_stop, dict):
+            pending_stop["time"] = current_time_s
+    elapsed = current_time_s - int(pending_ts_f)
     if active_sell_exists or elapsed < 60:
         print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")
         return True
@@ -1052,9 +1099,15 @@ def _evaluate_hard_take_profit(
         return False
     current_time_s = snapshot.current_time_s
     last_hard = _hard_tp_last.get(symbol, 0)
-    if last_hard > 0 and current_time_s - last_hard < hard_tp_cd:
+    try:
+        last_hard_f = float(last_hard) if not isinstance(last_hard, bool) else 0.0
+    except (TypeError, ValueError):
+        last_hard_f = 0.0
+    if not math.isfinite(last_hard_f) or last_hard_f > current_time_s:
+        last_hard_f = 0.0
+    if last_hard_f > 0 and current_time_s - last_hard_f < hard_tp_cd:
         print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one "
-              f"{u.secondsToHours(current_time_s - last_hard):.1f}h)")
+              f"{u.secondsToHours(current_time_s - last_hard_f):.1f}h)")
         return False
     if _is_trend_gate_deferred(symbol, inst):
         print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% deferred by trend gate (trend up)")
@@ -1243,21 +1296,32 @@ def _execute_stop_loss(
     bounce_started_at = (prev_sl_state or {}).get("started_at")
     if bounce_started_at is None:
         bounce_started_at = episode_started_at
+    bounce_started_f = None
+    if bounce_started_at is not None and not isinstance(bounce_started_at, bool):
+        try:
+            cand_bs = float(bounce_started_at)
+            if math.isfinite(cand_bs) and cand_bs > 0:
+                bounce_started_f = min(cand_bs, float(current_time_s))
+        except (TypeError, ValueError):
+            bounce_started_f = None
     sl_timer_expired = bool(
         sl_decision.metadata.get("sub_reason") == "timeout"
         or sl_decision.metadata.get("sl_timer_expired")
         or (
-            bounce_started_at is not None
-            and (current_time_s - float(bounce_started_at)) >= MT_SL_TREND_DEFER_MAX_SEC
+            bounce_started_f is not None
+            and (current_time_s - bounce_started_f) >= MT_SL_TREND_DEFER_MAX_SEC
         )
     )
     if not sl_timer_expired and _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
         if prev_sl_state:
+            if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
+                prev_sl_state = dict(prev_sl_state)
+                prev_sl_state["started_at"] = bounce_started_f
             _SL_BOUNCE_STATE[symbol] = prev_sl_state
         else:
             _SL_BOUNCE_STATE[symbol] = {
-                "started_at": bounce_started_at if bounce_started_at is not None else current_time_s,
+                "started_at": bounce_started_f if bounce_started_f is not None else current_time_s,
                 "entry_loss": snapshot.loss_ratio,
                 "lowest_price": current_price,
                 "peak_bounce_price": current_price,

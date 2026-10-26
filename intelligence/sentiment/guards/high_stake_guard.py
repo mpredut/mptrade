@@ -166,15 +166,22 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_orderbook_collector
         ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
         if ob_snap is not None:
-            bid_pct = int(ob_snap.imbalance_ratio * 100)
-            ask_pct = int((1.0 - ob_snap.imbalance_ratio) * 100)
-            telemetry["Orderbook Depth Imbalance"] = f"{ob_snap.imbalance_ratio:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
-            if ob_snap.largest_ask_wall_usd > 100_000.0:
-                telemetry["Orderbook Ask Wall Ahead"] = f"${ob_snap.largest_ask_wall_usd:,.0f} @ ${ob_snap.largest_ask_wall_price:,.2f}"
+            imb_raw = getattr(ob_snap, "imbalance_ratio", None)
+            if imb_raw is not None and not isinstance(imb_raw, bool) and math.isfinite(float(imb_raw)):
+                imb_f = float(imb_raw)
+                bid_pct = int(imb_f * 100)
+                ask_pct = int((1.0 - imb_f) * 100)
+                telemetry["Orderbook Depth Imbalance"] = f"{imb_f:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
+            ask_wall_usd = getattr(ob_snap, "largest_ask_wall_usd", 0.0) or 0.0
+            ask_wall_px = getattr(ob_snap, "largest_ask_wall_price", 0.0) or 0.0
+            if math.isfinite(float(ask_wall_usd)) and float(ask_wall_usd) > 100_000.0:
+                telemetry["Orderbook Ask Wall Ahead"] = f"${float(ask_wall_usd):,.0f} @ ${float(ask_wall_px):,.2f}"
             else:
                 telemetry["Orderbook Ask Wall Ahead"] = "None detected within 2%"
-            if getattr(ob_snap, "largest_bid_wall_usd", 0.0) > 100_000.0:
-                telemetry["Orderbook Bid Wall Ahead"] = f"${ob_snap.largest_bid_wall_usd:,.0f} @ ${ob_snap.largest_bid_wall_price:,.2f}"
+            bid_wall_usd = getattr(ob_snap, "largest_bid_wall_usd", 0.0) or 0.0
+            bid_wall_px = getattr(ob_snap, "largest_bid_wall_price", 0.0) or 0.0
+            if math.isfinite(float(bid_wall_usd)) and float(bid_wall_usd) > 100_000.0:
+                telemetry["Orderbook Bid Wall Ahead"] = f"${float(bid_wall_usd):,.0f} @ ${float(bid_wall_px):,.2f}"
             else:
                 telemetry["Orderbook Bid Wall Ahead"] = "None detected within 2%"
     except Exception:
@@ -266,9 +273,21 @@ def collect_pretrade_telemetry(
                     break
             if isinstance(tinfo, dict):
                 dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
-                s37 = (dyn.get("222") or {}).get("slope_full", 0.0)
-                s15 = (dyn.get("900") or {}).get("slope_full", 0.0)
-                s25h = (dyn.get("9000") or {}).get("slope_full", 0.0)
+                def _safe_slope(w_key: str) -> float:
+                    w_obj = dyn.get(w_key)
+                    if not isinstance(w_obj, dict):
+                        return 0.0
+                    raw_s = w_obj.get("slope_full", 0.0)
+                    if raw_s is None or isinstance(raw_s, bool):
+                        return 0.0
+                    try:
+                        val_s = float(raw_s)
+                        return val_s if math.isfinite(val_s) else 0.0
+                    except (TypeError, ValueError):
+                        return 0.0
+                s37 = _safe_slope("222")
+                s15 = _safe_slope("900")
+                s25h = _safe_slope("9000")
                 telemetry["Dynamic Multi-Window Slopes"] = f"3.7m={s37:+.5f}, 15m={s15:+.5f}, 2.5h={s25h:+.5f}"
     except Exception:
         pass
@@ -306,11 +325,12 @@ def collect_pretrade_telemetry(
             m_path = os.path.join(cachedb_dir, m_file)
             m_data = read_recovering_previous(m_path, json.loads, default=None)
             if isinstance(m_data, dict):
-                bias = m_data.get("market_bias", "")
-                risk = m_data.get("risk_level", "")
-                action = m_data.get("recommended_action", "")
-                telemetry["Macro Sentiment Bias"] = f"{bias} (Risk: {risk}, Recommendation: {action})"
-                break
+                bias = str(m_data.get("market_bias") or "").strip()
+                risk = str(m_data.get("risk_level") or "").strip()
+                action = str(m_data.get("recommended_action") or "").strip()
+                if bias or risk or action:
+                    telemetry["Macro Sentiment Bias"] = f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
+                    break
     except Exception:
         pass
 

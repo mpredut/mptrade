@@ -936,10 +936,11 @@ def _is_gi_whale_enforced(bypass_guards=None) -> bool:
         for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
             if str(m.get(mode_key, "enforce")).strip().lower() != "enforce":
                 return False
-        bg_raw = bypass_guards
-        if bg_raw is None:
-            bg_raw = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
-        bypassed = normalize_bypassed_guards(bypass_guards=bg_raw)
+        venue_bg = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
+        bypassed = (
+            normalize_bypassed_guards(bypass_guards=bypass_guards)
+            | normalize_bypassed_guards(bypass_guards=venue_bg)
+        )
         if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed) or "all" in bypassed or "*" in bypassed:
             return False
     except Exception:

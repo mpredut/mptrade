@@ -269,9 +269,9 @@ class Instrument:
 
         medium_trend_action_cfg = kwargs.get("medium_trend_action")
         medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
+        inst_bypass_raw = None
         if hasattr(self, "params") and isinstance(self.params, dict):
-            if not bypass_guards_raw:
-                bypass_guards_raw = self.params.get("bypass_guards")
+            inst_bypass_raw = self.params.get("bypass_guards")
             if profit_reference_mode is None:
                 profit_reference_mode = self.params.get(
                     f"{side.strip().lower()}_reference_mode",
@@ -289,12 +289,15 @@ class Instrument:
                 prefix=kwargs.get("prefix"),
                 client_order_id=kwargs.get("client_order_id"),
             )
-        if not bypass_guards_raw:
-            m = order_guard._load_margins()
-            venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
-            bypass_guards_raw = m.get(venue_key, m["default_bypass_guards"])
+        m = order_guard._load_margins()
+        venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
+        venue_bypass_raw = m.get(venue_key, m["default_bypass_guards"])
 
-        bypassed_guards = normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
+        bypassed_guards = (
+            normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
+            | normalize_bypassed_guards(bypass_guards=inst_bypass_raw)
+            | normalize_bypassed_guards(bypass_guards=venue_bypass_raw)
+        )
         bypass_all = "all" in bypassed_guards
         bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
         bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard

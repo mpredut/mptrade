@@ -4694,4 +4694,189 @@ def test_iteration21_assetguardian_partial_sell_tier_category_revocation_and_tra
     assert kt_inst._trend_value("HYPE/USD") == pytest.approx(0.42)
 
 
+def test_iteration22_guard_bypass_union_mt_state_clock_skew_kraken_cache_and_telemetry(tmp_path, monkeypatch):
+    """Iteration 22 regression tests:
+    1. Instrument.place, bapi_placeorder.if_place_safe_order, and rtrade._is_gi_whale_enforced
+       union caller bypass_guards with instrument-level and venue-level bypass_guards.
+    2. monitortrades._load_mt_state, _is_pending_exit_active, _evaluate_hard_take_profit,
+       and _execute_stop_loss clamp/reject non-finite or future (clock-skewed) timestamps.
+    3. KrakenProvider._fills_from_cache rejects NaN/bool/future timestamps and normalizes seconds.
+    4. collect_pretrade_telemetry handles non-finite orderbook imbalance, non-numeric slopes,
+       and empty macro sentiment dictionaries gracefully.
+    """
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    from providers.kraken_provider import KrakenProvider
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+    import binance_api.bapi_placeorder as bapi_placeorder
+    import rtrade
+    import monitortrades as mt
+
+    # 1A. Instrument.place unions caller bypass_guards with instrument params and venue bypass_guards
+    pg_bypasses = []
+
+    class FakeKrakenProvider:
+        name = "kraken"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 10000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            return None
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=float(qty or 1.0),
+                scale_applied=False,
+                applied_scale=1.0,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-22", "qty": qty}
+
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {**orig_margins, "kraken_bypass_guards": {"GLLM3"}, "binance_bypass_guards": {"GI_WHALE"}},
+    )
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+
+    fake_api = MagicMock()
+    fake_api.provider_by_name.return_value = FakeKrakenProvider()
+    fake_api.market_regime_context.return_value = None
+    inst = Instrument(
+        name="TAO",
+        provider="kraken",
+        symbol="TAOUSD",
+        base="TAO",
+        quote="USD",
+        enabled=True,
+        params={"bypass_guards": "GI_OBOOK"},
+        api=fake_api,
+    )
+    res = inst.place(
+        "BUY", 100.0, 1.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"G_PROF"},
+    )
+    assert res is not None
+    assert len(pg_bypasses) == 1
+    assert {"g_prof", "gi_obook", "gllm3"}.issubset(pg_bypasses[0])
+
+    # 1B. bapi_placeorder.if_place_safe_order unions caller bypass_guards with binance_bypass_guards
+    pg_bapi = []
+    monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda s: 85000.0)
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bapi.append(set(k.get("bypass_guards") or set())) or True),
+    )
+    ok_b, _ = bapi_placeorder.if_place_safe_order(
+        "BUY", "BTCUSDC", 85000.0, 0.01, 3600,
+        bypass_guards={"G_PROF"},
+    )
+    assert ok_b is True
+    assert len(pg_bapi) == 1
+    assert {"g_prof", "gi_whale"}.issubset(pg_bapi[0])
+
+    # 1C. rtrade._is_gi_whale_enforced unions caller bypass_guards with binance_bypass_guards
+    assert rtrade._is_gi_whale_enforced(bypass_guards={"G_PROF"}) is False
+
+    # 2. monitortrades._load_mt_state re-anchors clock-skewed future timestamps and rejects NaN
+    mt_state_file = tmp_path / "mt_state.json"
+    now_s = 10_000.0
+    mt_state_file.write_text(
+        json.dumps({
+            "sl_bounce_state": {
+                "BTCUSDC": {"started_at": now_s + 5000.0, "buy_price": 100.0},
+            },
+            "tp_ride_state": {
+                "ETHUSDC": {"started_at": now_s - 50.0, "last_peak_time": now_s + 9000.0, "buy_price": 200.0},
+            },
+            "pending_stop_exit": {
+                "SOLUSDC": {"time": now_s + 3000.0, "kind": "SL"},
+            },
+            "hard_tp_last": {
+                "ADAUSDC": now_s + 7000.0,
+                "XRPUSDC": now_s - 100.0,
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
+    monkeypatch.setattr(mt, "_MT_STATE_FILE", str(mt_state_file))
+    mt._SL_BOUNCE_STATE.clear()
+    mt._TP_RIDE_STATE.clear()
+    mt._PENDING_STOP_EXIT.clear()
+    mt._hard_tp_last.clear()
+    mt._load_mt_state(now_curr=now_s)
+    assert mt._SL_BOUNCE_STATE["BTCUSDC"]["started_at"] == pytest.approx(now_s)
+    assert mt._TP_RIDE_STATE["ETHUSDC"]["last_peak_time"] == pytest.approx(now_s)
+    assert mt._PENDING_STOP_EXIT["SOLUSDC"]["time"] == pytest.approx(now_s)
+    assert "ADAUSDC" not in mt._hard_tp_last
+    assert mt._hard_tp_last["XRPUSDC"] == pytest.approx(now_s - 100.0)
+
+    # 3. KrakenProvider._fills_from_cache rejects NaN and future timestamps, accepts seconds
+    kp = KrakenProvider()
+    cache_path = tmp_path / "cache_trade_kraken.json"
+    monkeypatch.setattr("providers.kraken_provider._KRAKEN_CACHE_FILE", str(cache_path))
+    now_curr = time.time()
+    # Future timestamp -> rejected
+    cache_path.write_text(
+        json.dumps({
+            "items": {"TAOUSD": [{"price": 400.0, "vol": 1.0, "type": "buy", "time": now_curr}]},
+            "fetchtime": {"TAOUSD": (now_curr + 3600.0) * 1000.0},
+        }),
+        encoding="utf-8",
+    )
+    assert kp._fills_from_cache("TAOUSD") is None
+    # Seconds timestamp -> normalized to ms and accepted
+    cache_path.write_text(
+        json.dumps({
+            "items": {"TAOUSD": [{"price": 400.0, "vol": 1.0, "type": "buy", "time": now_curr}]},
+            "fetchtime": {"TAOUSD": now_curr - 5.0},
+        }),
+        encoding="utf-8",
+    )
+    fills_ok = kp._fills_from_cache("TAOUSD")
+    assert isinstance(fills_ok, list) and len(fills_ok) == 1
+
+    # 4. collect_pretrade_telemetry handles non-numeric slopes and empty macro dicts
+    (tmp_path / "cache_short_trend.json").write_text(
+        json.dumps({"items": {"TAOUSDC": {"dynamic": {"222": {"slope_full": None}, "900": {"slope_full": "bad"}}}}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sentiment_advisor_eval.json").write_text(json.dumps({}), encoding="utf-8")
+    telem = collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(tmp_path))
+    assert telem.get("Dynamic Multi-Window Slopes") == "3.7m=+0.00000, 15m=+0.00000, 2.5h=+0.00000"
+    assert "Macro Sentiment Bias" not in telem
+
+
+
 

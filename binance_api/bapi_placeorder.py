@@ -487,11 +487,11 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
     allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
-    bypass_guards_raw = bypass_guards
-    if not bypass_guards_raw:
-        m = order_guard._load_margins()
-        bypass_guards_raw = m.get("binance_bypass_guards", m["default_bypass_guards"])
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
+    m = order_guard._load_margins()
+    venue_bypass = normalize_bypassed_guards(
+        bypass_guards=m.get("binance_bypass_guards", m["default_bypass_guards"])
+    )
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) | venue_bypass
     bypass_all = "all" in bypassed or "*" in bypassed
     bypass_profit_guard = "profit_guard" in bypassed or bypass_all
     skip_math_profit_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed) or bypass_profit_guard
@@ -616,7 +616,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             )
             if caller_module is not None:
                 pg_kwargs["module"] = caller_module
-            if g_prof_revoked:
+            if g_prof_revoked or venue_bypass:
                 pg_kwargs["bypass_guards"] = bypassed
             elif bypass_guards is not None:
                 pg_kwargs["bypass_guards"] = bypass_guards

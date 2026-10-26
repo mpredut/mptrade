@@ -334,12 +334,20 @@ class KrakenProvider(MarketDataProvider):
             key = next((k for k in items if su in k.upper() or k.upper() in su), None)
         if key is None or not isinstance(items.get(key), list):
             return None
+        raw_ft = ft.get(key)
+        if raw_ft is None or isinstance(raw_ft, bool):
+            return None
         try:
-            ft_val = float(ft.get(key, 0) or 0)
+            ft_val = float(raw_ft)
         except (TypeError, ValueError):
             return None
-        if (time.time() * 1000.0 - ft_val) > _CACHE_MAX_STALE_S * 1000.0:
-            return None                                       # Stale cachemanager data.
+        if not math.isfinite(ft_val) or ft_val <= 0.0:
+            return None
+        if ft_val < 1e11:
+            ft_val *= 1000.0
+        age_ms = time.time() * 1000.0 - ft_val
+        if age_ms < -5000.0 or age_ms > _CACHE_MAX_STALE_S * 1000.0:
+            return None                                       # Stale or clock-skewed cachemanager data.
         return [
             _normalize_kraken_fill(t)
             for t in items[key]
