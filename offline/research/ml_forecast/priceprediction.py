@@ -41,20 +41,26 @@ class PricePrediction:
         lr: float = 0.01,
         epochs: int = 30,
     ) -> None:
-        self.window_size = max(2, int(window_size))
+        ws_f = float(window_size) if not isinstance(window_size, bool) and window_size is not None else 10.0
+        hs_f = float(hidden_size) if not isinstance(hidden_size, bool) and hidden_size is not None else 32.0
+        lr_f = float(lr) if not isinstance(lr, bool) and lr is not None else 0.01
+        ep_f = float(epochs) if not isinstance(epochs, bool) and epochs is not None else 30.0
+        self.window_size = max(2, int(ws_f)) if np.isfinite(ws_f) else 10
+        safe_hidden = max(1, int(hs_f)) if np.isfinite(hs_f) else 32
+        safe_lr = lr_f if np.isfinite(lr_f) and lr_f > 0 else 0.01
         self.prices: list[float] = []
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         self._fallback_weights: np.ndarray | None = None
         if torch is not None and _LSTMNet is not None:
-            self.model = _LSTMNet(input_size=1, hidden_size=max(1, int(hidden_size)))
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+            self.model = _LSTMNet(input_size=1, hidden_size=safe_hidden)
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=safe_lr)
             self.criterion = nn.MSELoss()
         else:
             self.model = None
             self.optimizer = None
             self.criterion = None
         self.trained = False
-        self.epochs = max(1, int(epochs))
+        self.epochs = max(1, int(ep_f)) if np.isfinite(ep_f) else 30
 
     @staticmethod
     def _valid_price(price: object) -> float | None:

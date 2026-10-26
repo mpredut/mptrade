@@ -3404,4 +3404,43 @@ def test_batch7_hardening():
     assert list(sys.path) == orig_path
 
 
+def test_batch8_hardening():
+    import numpy as np
+    from offline.research.ml_forecast import forecast as ml_forecast
+    from offline.research.ml_forecast.priceprediction import PricePrediction
+    from offline.research.monitortrades_backtest.replay_trend_source import DynamicReplayTrendSource
+
+    # 1. ml_forecast.walk_forward and live_forecast handle empty and single-class datasets
+    empty_X = np.empty((0, len(ml_forecast.FEATURES)), dtype=float)
+    empty_y_dir = np.empty(0, dtype=int)
+    empty_y_mag = np.empty(0, dtype=float)
+    wf_empty = ml_forecast.walk_forward(empty_X, empty_y_dir, empty_y_mag)
+    assert wf_empty["n_test"] == 0
+    lf_empty = ml_forecast.live_forecast(np.array([100.0, 101.0]), empty_X, empty_y_dir, empty_y_mag, wf_empty, "BTCUSDC")
+    assert lf_empty["proba_up"] == 0.5
+
+    single_X = np.ones((20, len(ml_forecast.FEATURES)), dtype=float)
+    single_y_dir = np.ones(20, dtype=int)
+    single_y_mag = np.full(20, 0.01, dtype=float)
+    wf_single = ml_forecast.walk_forward(single_X, single_y_dir, single_y_mag, train_frac=0.5, refit_every=10)
+    assert wf_single["logit"] == 1.0
+    assert wf_single["boost"] == 1.0
+    lf_single = ml_forecast.live_forecast(np.linspace(100.0, 120.0, 300), single_X, single_y_dir, single_y_mag, wf_single, "BTCUSDC")
+    assert lf_single["proba_up"] == 1.0
+    assert lf_single["trend"] == "up"
+
+    # 2. PricePrediction sanitizes invalid/NaN/bool constructor args
+    pp = PricePrediction(window_size=float("nan"), hidden_size=True, lr=-1.0, epochs=False)  # type: ignore[arg-type]
+    assert pp.window_size == 10
+    assert pp.epochs == 30
+
+    # 3. DynamicReplayTrendSource handles bool/NaN min_agree and epsilon_k
+    dr = DynamicReplayTrendSource(["BTCUSDC"])
+    for idx, px in enumerate([100.0, 101.0, 102.0, 103.0]):
+        dr.advance("BTCUSDC", 1000.0 + idx * 10.0, px)
+    assert isinstance(dr.is_trend_up_confirmed("BTCUSDC", [30.0, 60.0], min_agree=float("nan")), bool)  # type: ignore[arg-type]
+    assert isinstance(dr.should_wait("BTCUSDC", "BUY", 60.0, use_noise_gate=True, epsilon_k=float("nan")), bool)
+
+
+
 

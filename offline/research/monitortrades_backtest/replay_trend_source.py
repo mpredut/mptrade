@@ -232,7 +232,14 @@ class DynamicReplayTrendSource:
         if not timeouts_sec:
             return False
         votes = [self.is_trend_up_at(symbol, t) for t in timeouts_sec]
-        threshold = max(1, int(min_agree)) if min_agree is not None else len(timeouts_sec)
+        if min_agree is None or isinstance(min_agree, bool):
+            threshold = len(timeouts_sec)
+        else:
+            try:
+                ma_f = float(min_agree)
+                threshold = max(1, int(ma_f)) if math.isfinite(ma_f) else len(timeouts_sec)
+            except (TypeError, ValueError, OverflowError):
+                threshold = len(timeouts_sec)
         return sum(votes) >= threshold
 
     def should_wait(self, symbol: str, side: str, timeout_sec: float,
@@ -260,7 +267,15 @@ class DynamicReplayTrendSource:
         g = growth_coefficient
         if use_noise_gate:
             arr = np.array(prices)
-            eps = float(epsilon_k * np.std(np.gradient(arr)))
+            ek = 1.0
+            if not isinstance(epsilon_k, bool) and epsilon_k is not None:
+                try:
+                    cand_ek = float(epsilon_k)
+                    if math.isfinite(cand_ek) and cand_ek >= 0:
+                        ek = cand_ek
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            eps = float(ek * np.std(np.gradient(arr)))
             if abs(g) <= eps:
                 return True
         side_str = "" if isinstance(side, bool) or side is None else str(side).strip().upper()

@@ -101,7 +101,11 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     dir_actual = (actuals - bases) > 0
     dir_pred = (preds - bases) > 0
     dir_acc = float(np.mean(dir_actual == dir_pred))
-    corr = float(np.corrcoef(preds, actuals)[0, 1]) if len(preds) > 2 else float("nan")
+    if len(preds) > 2 and float(np.std(preds)) > 0.0 and float(np.std(actuals)) > 0.0:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr = float(np.corrcoef(preds, actuals)[0, 1])
+    else:
+        corr = float("nan")
     return {
         "n_test": len(preds),
         "mae_model": mae_model,

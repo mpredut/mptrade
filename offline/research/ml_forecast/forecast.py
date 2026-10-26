@@ -78,8 +78,17 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
     from sklearn.preprocessing import StandardScaler
 
     n = len(X)
-    refit_every = max(1, int(refit_every))
-    frac = float(train_frac) if np.isfinite(train_frac) else 0.7
+    if n == 0:
+        return {
+            "lindy": 0.0,
+            "logit": 0.0,
+            "boost": 0.0,
+            "n_test": 0,
+            "mae_move_pct": 0.0,
+            "mae_baseline_pct": 0.0,
+        }
+    refit_every = max(1, int(refit_every)) if not isinstance(refit_every, bool) and np.isfinite(refit_every) else 168
+    frac = float(train_frac) if not isinstance(train_frac, bool) and np.isfinite(train_frac) else 0.7
     frac = min(max(frac, 0.05), 0.95)
     start = min(max(1, int(n * frac)), n)
     acc = {"lindy": [], "logit": [], "boost": []}
@@ -87,14 +96,21 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
     i = start
     while i < n:
         j = min(i + refit_every, n)
-        clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X[:i], y_dir[:i])
-        reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X[:i], y_mag[:i])
-        logit = make_pipeline(StandardScaler(),
-                              LogisticRegression(max_iter=1000)).fit(X[:i], y_dir[:i])
         sl = slice(i, j)
+        y_train = y_dir[:i]
+        unique_classes = np.unique(y_train)
+        reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X[:i], y_mag[:i])
         acc["lindy"] += list((X[sl, 3] > 0).astype(int) == y_dir[sl])
-        acc["logit"] += list(logit.predict(X[sl]) == y_dir[sl])
-        acc["boost"] += list(clf.predict(X[sl]) == y_dir[sl])
+        if len(unique_classes) >= 2:
+            clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X[:i], y_train)
+            logit = make_pipeline(StandardScaler(),
+                                  LogisticRegression(max_iter=1000)).fit(X[:i], y_train)
+            acc["logit"] += list(logit.predict(X[sl]) == y_dir[sl])
+            acc["boost"] += list(clf.predict(X[sl]) == y_dir[sl])
+        else:
+            const_pred = int(unique_classes[0]) if len(unique_classes) == 1 else 0
+            acc["logit"] += list(const_pred == y_dir[sl])
+            acc["boost"] += list(const_pred == y_dir[sl])
         pm = reg.predict(X[sl])
         mag_err += list(np.abs(pm - y_mag[sl]))
         mag_base += list(np.abs(y_mag[sl]))
@@ -116,18 +132,29 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     logit_acc = rep.get("logit") if isinstance(rep, dict) else None
     lindy_acc = rep.get("lindy") if isinstance(rep, dict) else None
     use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
-    if use_boost:
-        clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X, y_dir)
-    else:
-        clf = make_pipeline(StandardScaler(),
-                            LogisticRegression(max_iter=1000)).fit(X, y_dir)
-    reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X, y_mag)
     px_arr = np.asarray(px, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(px_arr > 0, np.log(px_arr), np.nan)
-    row = np.array([_feat_row(len(px_arr) - 1, logp, px_arr)])
-    proba_up = float(clf.predict_proba(row)[0][1])
-    move = float(reg.predict(row)[0])
+    raw_row = _feat_row(len(px_arr) - 1, logp, px_arr) if len(px_arr) > WARMUP else [0.0] * len(FEATURES)
+    clean_row = [float(v) if np.isfinite(v) else 0.0 for v in raw_row]
+    row = np.array([clean_row], dtype=float)
+    unique_classes = np.unique(y_dir) if len(y_dir) > 0 else np.array([], dtype=int)
+    if len(X) > 0 and len(unique_classes) >= 2:
+        if use_boost:
+            clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X, y_dir)
+        else:
+            clf = make_pipeline(StandardScaler(),
+                                LogisticRegression(max_iter=1000)).fit(X, y_dir)
+        proba_up = float(clf.predict_proba(row)[0][1])
+    elif len(unique_classes) == 1:
+        proba_up = 1.0 if int(unique_classes[0]) == 1 else 0.0
+    else:
+        proba_up = 0.5
+    if len(X) > 0:
+        reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X, y_mag)
+        move = float(reg.predict(row)[0])
+    else:
+        move = 0.0
     if boost_acc is not None and logit_acc is not None:
         best_acc = max(boost_acc, logit_acc)
     else:
