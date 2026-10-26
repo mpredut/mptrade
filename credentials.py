@@ -74,8 +74,9 @@ _KRAKEN_PROFILES = {
 
 def kraken_credentials(role: str, *, values=None) -> CredentialPair:
     """Resolve an approved Kraken role and its explicitly ordered fallbacks."""
+    role_key = str(role or "").strip().lower() if not isinstance(role, bool) else ""
     try:
-        profiles = _KRAKEN_PROFILES[role]
+        profiles = _KRAKEN_PROFILES[role_key]
     except KeyError as exc:
         raise ValueError(f"Unknown Kraken credential role: {role}") from exc
     return resolve_credential_pair(profiles, values=values)

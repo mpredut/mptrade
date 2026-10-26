@@ -253,6 +253,16 @@ def atomic_file_path(
         raise
 
 
+def _positive_chunk_size(chunk_size: Any, default: int) -> int:
+    if chunk_size is None or isinstance(chunk_size, bool):
+        return default
+    try:
+        val = int(chunk_size)
+        return val if val > 0 else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def atomic_gzip_file(
     source: str,
     destination: str | None = None,
@@ -261,7 +271,7 @@ def atomic_gzip_file(
     chunk_size: int = 1024 * 1024,
 ) -> str:
     """Compress ``source`` into ``destination`` (default ``<source>.gz``) atomically."""
-    eff_chunk = 1024 * 1024 if isinstance(chunk_size, bool) or int(chunk_size) <= 0 else int(chunk_size)
+    eff_chunk = _positive_chunk_size(chunk_size, 1024 * 1024)
     source_path = os.path.abspath(os.fspath(source))
     target_path = os.path.abspath(
         os.fspath(destination) if destination is not None else f"{source_path}.gz"
@@ -289,7 +299,7 @@ def read_tail_lines(
         return []
     if limit <= 0 or not os.path.isfile(path):
         return []
-    eff_chunk = 65536 if isinstance(chunk_size, bool) or int(chunk_size) <= 0 else int(chunk_size)
+    eff_chunk = _positive_chunk_size(chunk_size, 65536)
     chunks: list[bytes] = []
     newline_count = 0
     with open(path, "rb") as handle:
@@ -317,10 +327,17 @@ def read_tail_lines(
 
 def truncate_file_bytes(path: str, size: int) -> None:
     """Durably truncate ``path`` back to ``size`` bytes."""
-    if isinstance(size, bool) or int(size) < 0:
+    if isinstance(size, bool):
+        raise ValueError("size must be a non-negative integer")
+    try:
+        size_f = float(size)
+        size_i = int(size)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("size must be a non-negative integer") from exc
+    if not (size_f == size_i and size_i >= 0):
         raise ValueError("size must be a non-negative integer")
     with open(path, "r+b") as handle:
-        handle.truncate(int(size))
+        handle.truncate(size_i)
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -341,7 +358,13 @@ def prune_rotated_archives(
             continue
     candidates.sort(key=lambda item: item[0], reverse=True)
     archives = [path for _, path in candidates]
-    keep = 0 if isinstance(keep_count, bool) else max(0, int(keep_count))
+    if keep_count is None or isinstance(keep_count, bool):
+        keep = 0
+    else:
+        try:
+            keep = max(0, int(keep_count))
+        except (TypeError, ValueError, OverflowError):
+            keep = 0
     for old_archive in archives[keep:]:
         discard_generation_file(old_archive)
     return archives[:keep]

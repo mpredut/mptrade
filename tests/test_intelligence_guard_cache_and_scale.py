@@ -10112,6 +10112,53 @@ def test_iteration88_market_regime_context_and_order_retry_enqueue_safety(monkey
     assert order_retry.resolve(" btcusdc ", " b ") == 1
 
 
+def test_iteration89_retry_worker_digest_botcore_dotenv_credentials_and_state_io(tmp_path):
+    """Verify Iteration 89 order_retry_worker bypass/digest safety, botcore quoted inline comments, credentials role normalization, and state_io truncate/chunk validation."""
+    import pytest
+    import order_retry_worker as orw
+    import botcore
+    from credentials import kraken_credentials
+    import state_io
+
+    # 1. order_retry_worker._normalize_bypass_set and IncidentDigest boolean/missing key rejection
+    assert orw._normalize_bypass_set(True) == set()
+    assert orw._normalize_bypass_set([" G_PROF ", None, False, ""]) == {"G_PROF"}
+    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    with pytest.raises(ValueError, match="invalid notification digest event"):
+        digest.collect([{"labels": {"a": "b"}, "quantity": True, "sample_id": "1"}], now=1000.0)
+
+    # 2. botcore._dotenv_pairs strips trailing inline comments after quoted values while preserving # inside quotes
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        'A="val_a" # trailing comment\n'
+        "B='val#b' # another comment\n"
+        'C="val#c"\n',
+        encoding="utf-8",
+    )
+    parsed = botcore.parse_dotenv(str(env_file))
+    assert parsed == {"A": "val_a", "B": "val#b", "C": "val#c"}
+
+    # 3. credentials.kraken_credentials normalizes role case/whitespace and rejects boolean role
+    pair = kraken_credentials(
+        " BOT ",
+        values={"KRAKEN_API_KEY_BOT": "k1", "KRAKEN_API_SECRET_BOT": "s1"},
+    )
+    assert pair.key == "k1"
+    with pytest.raises(ValueError, match="Unknown Kraken credential role"):
+        kraken_credentials(True, values={})
+
+    # 4. state_io.truncate_file_bytes rejects fractional/non-finite sizes and _positive_chunk_size falls back safely
+    f_path = tmp_path / "data.bin"
+    f_path.write_bytes(b"0123456789")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        state_io.truncate_file_bytes(str(f_path), 4.5)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        state_io.truncate_file_bytes(str(f_path), float("inf"))
+    assert state_io._positive_chunk_size("invalid", 4096) == 4096
+    assert state_io._positive_chunk_size(True, 4096) == 4096
+
+
+
 
 
 

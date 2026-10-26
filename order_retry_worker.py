@@ -149,6 +149,18 @@ _ALERTED_RECONCILIATION_QUARANTINES = _PersistentQuarantineSet("reconciliation")
 _ALERTED_TERMINALS = _PersistentQuarantineSet("terminal")
 
 
+def _normalize_bypass_set(raw_bg) -> set[str]:
+    if isinstance(raw_bg, str):
+        return {s.strip() for s in raw_bg.split(",") if s.strip()}
+    if isinstance(raw_bg, (list, tuple, set, frozenset)):
+        return {
+            str(s).strip()
+            for s in raw_bg
+            if s is not None and not isinstance(s, bool) and str(s).strip()
+        }
+    return set()
+
+
 def _accepted_order(order):
     return oq.order_id_from_response(order) is not None
 
@@ -644,18 +656,17 @@ def process_once(mkt, now=None):
             if hasattr(oq, "resolve_record_ttl")
             else float(oq.RETRY_TTL_SEC)
         )
-        total_ttl = effective_ttl if effective_ttl > 0 else 302400.0
+        total_ttl = (
+            effective_ttl
+            if (isinstance(effective_ttl, (int, float)) and not isinstance(effective_ttl, bool) and math.isfinite(effective_ttl) and effective_ttl > 0)
+            else 302400.0
+        )
         age_progress = min(1.0, max(0.0, age_sec / total_ttl))
         side_u = str(r.get("side") or "").upper()
 
         retry_stage = "standard"
         if r.get("kind") == "monitor_order_replace":
-            raw_bg = kwargs.get("bypass_guards")
-            existing_bypasses = (
-                {s.strip() for s in raw_bg.split(",") if s.strip()}
-                if isinstance(raw_bg, str)
-                else set(raw_bg or [])
-            )
+            existing_bypasses = _normalize_bypass_set(kwargs.get("bypass_guards"))
             existing_bypasses.update({"G_PROF", "math_reference"})
             kwargs["bypass_guards"] = sorted(list(existing_bypasses))
             if side_u == "SELL":
@@ -679,12 +690,7 @@ def process_once(mkt, now=None):
             if age_progress >= 0.75:
                 retry_stage = "salvage"
                 if side_u == "SELL":
-                    raw_bg = kwargs.get("bypass_guards")
-                    existing_bypasses = (
-                        {s.strip() for s in raw_bg.split(",") if s.strip()}
-                        if isinstance(raw_bg, str)
-                        else set(raw_bg or [])
-                    )
+                    existing_bypasses = _normalize_bypass_set(kwargs.get("bypass_guards"))
                     existing_bypasses.update({"G_PROF", "math_reference"})
                     kwargs["bypass_guards"] = sorted(list(existing_bypasses))
                     kwargs["allow_math_reference_sell"] = True
@@ -1068,17 +1074,32 @@ class IncidentDigest:
             groups = state["groups"]
             changed = False
             for key, group in list(groups.items()):
-                if (not isinstance(group["count"], int) or group["count"] < 0
+                if (not isinstance(group, dict)
+                        or isinstance(group.get("count"), bool)
+                        or not isinstance(group.get("count"), int) or group["count"] < 0
+                        or isinstance(group.get("next_at"), bool)
+                        or not isinstance(group.get("next_at"), (int, float))
                         or not math.isfinite(group["next_at"]) or group["next_at"] <= 0
+                        or isinstance(group.get("quantity"), bool)
+                        or not isinstance(group.get("quantity"), (int, float))
                         or not math.isfinite(group["quantity"]) or group["quantity"] < 0
+                        or isinstance(group.get("attempts", 0), bool)
                         or not isinstance(group.get("attempts", 0), int) or group.get("attempts", 0) < 0):
                     raise ValueError("invalid notification digest group")
                 if group["count"] == 0 and group["next_at"] <= now:
                     del groups[key]
                     changed = True
             for event in events:
+                if (not isinstance(event, dict)
+                        or "labels" not in event
+                        or "quantity" not in event
+                        or isinstance(event.get("quantity"), bool)):
+                    raise ValueError("invalid notification digest event")
                 labels = event["labels"]
-                quantity = float(event["quantity"])
+                try:
+                    quantity = float(event["quantity"])
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("invalid notification digest event") from exc
                 if (not isinstance(labels, dict) or not labels
                         or not all(isinstance(k, str) and isinstance(v, str)
                                    for k, v in labels.items())

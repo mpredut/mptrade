@@ -66,10 +66,20 @@ def _dotenv_pairs(path: str) -> tuple[list[tuple[str, str]], bool]:
                 key, _, val = line.partition("=")
                 key = key.strip()
                 val = val.strip()
-                # Strip inline comments from unquoted values (VALUE=x  # comment).
-                if not (val.startswith('"') or val.startswith("'")):
+                # Strip inline comments and outer quotes safely.
+                if val.startswith(('"', "'")):
+                    q = val[0]
+                    close_idx = val.find(q, 1)
+                    if close_idx != -1:
+                        tail = val[close_idx + 1:].strip()
+                        if not tail or tail.startswith("#"):
+                            val = val[1:close_idx]
+                        else:
+                            val = val.strip('"').strip("'")
+                    else:
+                        val = val.strip('"').strip("'")
+                else:
                     val = val.split("#")[0].strip()
-                val = val.strip('"').strip("'")
                 pairs.append((key, val))
         return pairs, True
     except OSError as e:
