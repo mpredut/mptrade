@@ -113,8 +113,16 @@ def prewarm_trend_series(
     if cached is not None:
         return cached
     import pricewindow as pw
+    import math
     buf = pw.IncrementalTrendBuffer()
-    win_sec = float(trend_window_seconds)
+    win_sec = DEFAULT_WINDOW_SECONDS
+    if trend_window_seconds is not None and not isinstance(trend_window_seconds, bool):
+        try:
+            cand_w = float(trend_window_seconds)
+            if math.isfinite(cand_w) and cand_w > 0:
+                win_sec = cand_w
+        except (TypeError, ValueError, OverflowError):
+            pass
     win_size = 200
     sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
     cur_len = 0
@@ -123,9 +131,9 @@ def prewarm_trend_series(
     for ts, px in series:
         if prev_ts is not None and ts > prev_ts:
             rate = ts - prev_ts
-            if rate > 0:
+            if rate > 0 and math.isfinite(rate):
                 sample_rate = rate
-                new_size = max(10, int(win_sec / rate))
+                new_size = min(100000, max(10, int(win_sec / rate)))
                 if new_size != win_size:
                     win_size = new_size
                     if cur_len > new_size:

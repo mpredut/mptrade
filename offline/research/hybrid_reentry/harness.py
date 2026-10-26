@@ -55,9 +55,13 @@ def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
                 h = float(line[h_idx])
                 l = float(line[l_idx])
                 c = float(line[c_idx])
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, OverflowError):
                 continue
-            if all(math.isfinite(x) and x > 0 for x in (o, h, l, c)):
+            if (
+                all(math.isfinite(x) and x > 0 for x in (o, h, l, c))
+                and h >= max(o, l, c)
+                and l <= min(o, h, c)
+            ):
                 rows.append((o, h, l, c))
     return rows
 
@@ -128,7 +132,13 @@ def format_ablation_result(
 ) -> dict[str, Any]:
     """Format a replay result dict into the canonical ablation summary row."""
     total_usd = float(res.get("total") or 0.0)
-    ret_pct = (total_usd / capital * 100.0) if capital > 0 else 0.0
+    valid_cap = (
+        isinstance(capital, (int, float))
+        and not isinstance(capital, bool)
+        and math.isfinite(float(capital))
+        and float(capital) > 0
+    )
+    ret_pct = (total_usd / float(capital) * 100.0) if valid_cap else 0.0
     max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
     exposure_pct = float(res.get("exposure_pct") or 0.0)
     cycles = int(res.get("cycles") or 0)

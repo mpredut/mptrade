@@ -277,7 +277,7 @@ def _win_move_at_ts(
     ts: float,
     w_hours: float,
 ) -> float | None:
-    if not (math.isfinite(ts) and math.isfinite(w_hours) and w_hours > 0):
+    if not (math.isfinite(ts) and ts >= 0 and math.isfinite(w_hours) and w_hours > 0):
         return None
     bar_idx = int(round(ts / (240.0 * 60.0)))
     nb = max(1, round(w_hours / 4.0))

@@ -163,9 +163,16 @@ _RUN_ONE_DIAG_CACHE: dict[tuple, dict] = {}
 def _norm_params_key(params: dict) -> tuple:
     items = []
     for k, v in sorted(params.items()):
+        if isinstance(v, bool):
+            items.append((k, ("bool", v)))
+            continue
         try:
-            items.append((k, float(v)))
-        except (TypeError, ValueError):
+            fv = float(v)
+            if math.isfinite(fv):
+                items.append((k, fv))
+            else:
+                items.append((k, str(v)))
+        except (TypeError, ValueError, OverflowError):
             items.append((k, str(v)))
     return tuple(items)
 
@@ -417,7 +424,7 @@ def _apply_config_change(section, key, old_value, new_value):
     for i, line in enumerate(lines):
         sm = re.match(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$', line)
         if sm:
-            in_section = (sm.group(1) == section)
+            in_section = (sm.group(1).strip() == str(section).strip())
             continue
         if in_section:
             m = key_re.match(line)

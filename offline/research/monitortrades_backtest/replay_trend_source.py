@@ -60,8 +60,15 @@ class ReplayTrendSource:
     use SEPARATE instances (do not reuse one across horizons)."""
 
     def __init__(self, symbols, window_seconds: float = DEFAULT_WINDOW_SECONDS):
-        w_sec = float(window_seconds) if window_seconds is not None else DEFAULT_WINDOW_SECONDS
-        self.window_seconds = w_sec if (math.isfinite(w_sec) and w_sec > 0) else DEFAULT_WINDOW_SECONDS
+        w_sec = DEFAULT_WINDOW_SECONDS
+        if window_seconds is not None and not isinstance(window_seconds, bool):
+            try:
+                cand = float(window_seconds)
+                if math.isfinite(cand) and cand > 0:
+                    w_sec = cand
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.window_seconds = w_sec
         self._windows: Dict[str, pw.PriceWindow] = {
             s: pw.PriceWindow(s, window_size=200, window_seconds=self.window_seconds)
             for s in symbols
@@ -81,7 +88,7 @@ class ReplayTrendSource:
         try:
             ts_f = float(ts)
             px_f = float(price)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return
         if not (math.isfinite(ts_f) and math.isfinite(px_f) and px_f > 0):
             return
@@ -156,8 +163,15 @@ class DynamicReplayTrendSource:
     (not precomputed) — any timeout in the range, not just fixed buckets."""
 
     def __init__(self, symbols, max_timeout_sec: float = SMALL_TIMEOUT_RANGE_SEC[1]):
-        m_sec = float(max_timeout_sec) if max_timeout_sec is not None else SMALL_TIMEOUT_RANGE_SEC[1]
-        self.max_timeout_sec = m_sec if (math.isfinite(m_sec) and m_sec > 0) else SMALL_TIMEOUT_RANGE_SEC[1]
+        m_sec = SMALL_TIMEOUT_RANGE_SEC[1]
+        if max_timeout_sec is not None and not isinstance(max_timeout_sec, bool):
+            try:
+                cand = float(max_timeout_sec)
+                if math.isfinite(cand) and cand > 0:
+                    m_sec = cand
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.max_timeout_sec = m_sec
         self._buf: Dict[str, deque] = {s: deque() for s in symbols}   # [(ts, price), ...] crescator
 
     def advance(self, symbol: str, ts: float, price: float) -> None:
@@ -169,7 +183,7 @@ class DynamicReplayTrendSource:
         try:
             ts_f = float(ts)
             px_f = float(price)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return
         if not (math.isfinite(ts_f) and math.isfinite(px_f) and px_f > 0):
             return
@@ -180,9 +194,15 @@ class DynamicReplayTrendSource:
 
     def _slice(self, symbol: str, timeout_sec: float) -> List[Tuple[float, float]]:
         buf = self._buf.get(symbol)
-        if not buf:
+        if not buf or timeout_sec is None or isinstance(timeout_sec, bool):
             return []
-        cutoff = buf[-1][0] - timeout_sec
+        try:
+            t_sec = float(timeout_sec)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not (math.isfinite(t_sec) and t_sec > 0):
+            return []
+        cutoff = buf[-1][0] - t_sec
         return [(t, p) for t, p in buf if t >= cutoff]
 
     def _prices_and_rate(self, symbol: str, timeout_sec: float) -> Tuple[List[float], float]:
@@ -243,9 +263,9 @@ class DynamicReplayTrendSource:
             eps = float(epsilon_k * np.std(np.gradient(arr)))
             if abs(g) <= eps:
                 return True
-        side = side.upper()
-        if side == "BUY":
+        side_str = "" if isinstance(side, bool) or side is None else str(side).strip().upper()
+        if side_str == "BUY":
             return g < 0
-        if side == "SELL":
+        if side_str == "SELL":
             return g > 0
         return False

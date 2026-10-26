@@ -9350,6 +9350,53 @@ def test_iteration72_offline_research_and_runners_safety():
     assert hasattr(t212_mod, "run_replay")
 
 
+def test_iteration73_monitortrades_backtest_hybrid_reentry_and_surge_sweep_safety(tmp_path):
+    """Verify Iteration 73 hardening across monitortrades_backtest, hybrid_reentry, and run_deep_surge_sweep."""
+    from offline.research.monitortrades_backtest import replay_trend_source as rts
+    from offline.research.monitortrades_backtest import run_replay_backtest as rrb
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+    from offline.research.hybrid_reentry import harness as hrh
+    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as rdss
+
+    # 1. ReplayTrendSource and DynamicReplayTrendSource reject bool/invalid window_seconds and OverflowError
+    src = rts.ReplayTrendSource(["BTCUSDC"], window_seconds=True)
+    assert src.window_seconds == rts.DEFAULT_WINDOW_SECONDS
+    src.advance("BTCUSDC", 10**400, 100.0)
+    assert src.is_trend_up("BTCUSDC") is False
+
+    dsrc = rts.DynamicReplayTrendSource(["BTCUSDC"], max_timeout_sec=True)
+    assert dsrc.max_timeout_sec == rts.SMALL_TIMEOUT_RANGE_SEC[1]
+    dsrc.advance("BTCUSDC", 1000.0, 100.0)
+    dsrc.advance("BTCUSDC", 1005.0, 101.0)
+    dsrc.advance("BTCUSDC", 1010.0, 102.0)
+    assert dsrc._slice("BTCUSDC", True) == []
+    assert dsrc.should_wait("BTCUSDC", None, 60.0) is False
+
+    # 2. run_replay_backtest.prewarm_trend_series handles non-finite/bool trend_window_seconds
+    tape = rrb.prewarm_trend_series("BTCUSDC", [(1000.0, 100.0), (1005.0, 101.0)], trend_window_seconds=float("nan"))
+    assert len(tape) == 2
+
+    # 3. scheduled_pilot._norm_params_key distinguishes bool from float and handles NaN deterministically
+    k_bool = sp._norm_params_key({"a": True})
+    k_float = sp._norm_params_key({"a": 1.0})
+    assert k_bool != k_float
+    k_nan1 = sp._norm_params_key({"a": float("nan")})
+    k_nan2 = sp._norm_params_key({"a": float("nan")})
+    assert k_nan1 == k_nan2
+
+    # 4. hybrid_reentry.harness.load_ohlc_csv rejects inverted high < low bars and format_ablation_result guards capital
+    csv_f = tmp_path / "ohlc.csv"
+    csv_f.write_text("timestamp,open,high,low,close\n1,100,90,95,92\n2,100,105,98,103\n", encoding="utf-8")
+    loaded_rows = hrh.load_ohlc_csv(str(csv_f))
+    assert loaded_rows == [(100.0, 105.0, 98.0, 103.0)]
+    fmt_res = hrh.format_ablation_result("BTC", "Test 0", "Control", {"total": 100.0}, float("inf"))
+    assert fmt_res["total_return_pct"] == 0.0
+
+    # 5. run_deep_surge_sweep._win_move_at_ts rejects negative timestamps
+    assert rdss._win_move_at_ts([100.0] * 50, 30, -14400.0, 48.0) is None
+
+
+
 
 
 
