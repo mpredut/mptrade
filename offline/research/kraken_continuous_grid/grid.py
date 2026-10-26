@@ -116,12 +116,23 @@ _TASK_CACHE: dict = {}
 
 
 def load(path):
+    import math
     cached = _LOAD_CACHE.get(path)
     if cached is not None:
         return cached
-    with open(path) as fh:
-        rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
-                 float(r["close"])) for r in csv.DictReader(fh)]
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            try:
+                ts_val = int(float(r["timestamp"]))
+                o = float(r["open"])
+                h = float(r["high"])
+                l = float(r["low"])
+                c = float(r["close"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if ts_val > 0 and all(math.isfinite(x) and x > 0 for x in (o, h, l, c)):
+                rows.append((ts_val, o, h, l, c))
     _LOAD_CACHE[path] = rows
     return rows
 

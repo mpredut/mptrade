@@ -239,9 +239,12 @@ class LongTrendTracker:
     """Multi-hour linear-regression regime tracker evaluated at fixed intervals."""
 
     def __init__(self, stats: dict, window_hours: float, reeval_sec: float, min_points: int = 30):
-        self.window_sec = max(60.0, float(window_hours) * 3600.0)
-        self.reeval_sec = max(1.0, float(reeval_sec))
-        self.min_points = max(2, int(min_points))
+        wh_f = float(window_hours) if not isinstance(window_hours, bool) and window_hours is not None else 1.0
+        re_f = float(reeval_sec) if not isinstance(reeval_sec, bool) and reeval_sec is not None else 60.0
+        mp_f = float(min_points) if not isinstance(min_points, bool) and min_points is not None else 30.0
+        self.window_sec = max(60.0, wh_f * 3600.0) if math.isfinite(wh_f) and wh_f > 0 else 3600.0
+        self.reeval_sec = max(1.0, re_f) if math.isfinite(re_f) and re_f > 0 else 60.0
+        self.min_points = max(2, int(mp_f)) if math.isfinite(mp_f) and mp_f >= 2 else 30
         self.buf = deque()
         self.last_eval_ts: Optional[float] = None
         self.sign = 0
@@ -249,9 +252,16 @@ class LongTrendTracker:
         self.fired_down = False
         self.last_attempt_up_ts: Optional[float] = None
         self.last_attempt_down_ts: Optional[float] = None
-        self.stats = stats
+        self.stats = stats if isinstance(stats, dict) else {}
 
     def update(self, ts: float, price: float) -> int:
+        if isinstance(ts, bool) or isinstance(price, bool) or ts is None or price is None:
+            return self.sign
+        try:
+            ts = float(ts)
+            price = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return self.sign
         if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
             return self.sign
         self.buf.append((ts, price))
@@ -265,7 +275,7 @@ class LongTrendTracker:
                 analyzer = ta.PriceTrendAnalyzer(prices)
                 _, slope, _ = analyzer.linear_regression_trend()
                 new_sign = 0
-                if slope is not None:
+                if slope is not None and not isinstance(slope, bool) and math.isfinite(float(slope)):
                     new_sign = 1 if slope > 0 else (-1 if slope < 0 else 0)
                 if new_sign != self.sign:
                     self.sign = new_sign
@@ -301,7 +311,7 @@ def make_tracker_logic(
                     stats["fire_skipped_cooldown_up"] += 1
             else:
                 tr.last_attempt_up_ts = ts
-                stats["fire_attempts_up"] += 1
+                stats["fire_attempts_up"] = stats.get("fire_attempts_up", 0) + 1
                 if enable:
                     result = ta._fire_order(
                         symbol, "BUY", current_price, f"{tag}_{up_reason}",
@@ -309,9 +319,9 @@ def make_tracker_logic(
                     )
                     if result is not None:
                         tr.fired_up, tr.fired_down = True, False
-                        stats["fire_confirmed_up"] += 1
+                        stats["fire_confirmed_up"] = stats.get("fire_confirmed_up", 0) + 1
                     else:
-                        stats["fire_blocked_up"] += 1
+                        stats["fire_blocked_up"] = stats.get("fire_blocked_up", 0) + 1
 
         if sign < 0 and not tr.fired_down:
             can_retry = (
@@ -323,7 +333,7 @@ def make_tracker_logic(
                     stats["fire_skipped_cooldown_down"] += 1
             else:
                 tr.last_attempt_down_ts = ts
-                stats["fire_attempts_down"] += 1
+                stats["fire_attempts_down"] = stats.get("fire_attempts_down", 0) + 1
                 if enable:
                     result = ta._fire_order(
                         symbol, "SELL", current_price, f"{tag}_{down_reason}",
@@ -331,9 +341,9 @@ def make_tracker_logic(
                     )
                     if result is not None:
                         tr.fired_down, tr.fired_up = True, False
-                        stats["fire_confirmed_down"] += 1
+                        stats["fire_confirmed_down"] = stats.get("fire_confirmed_down", 0) + 1
                     else:
-                        stats["fire_blocked_down"] += 1
+                        stats["fire_blocked_down"] = stats.get("fire_blocked_down", 0) + 1
 
     return logic_variant
 
@@ -390,6 +400,11 @@ def execute_tradeall_variant(
         if ORIG_LOGIC_SMALL is not None:
             ta.logic_small = ORIG_LOGIC_SMALL
             tb.ta.logic_small = ORIG_LOGIC_SMALL
+        elif disable_small:
+            if hasattr(ta, "logic_small"):
+                delattr(ta, "logic_small")
+            if hasattr(tb.ta, "logic_small"):
+                delattr(tb.ta, "logic_small")
         ta.WindowAnalyzer = ORIG_WINDOW_ANALYZER
         tb.ta.WindowAnalyzer = ORIG_WINDOW_ANALYZER
         ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = ORIG_BIG_THRESHOLD

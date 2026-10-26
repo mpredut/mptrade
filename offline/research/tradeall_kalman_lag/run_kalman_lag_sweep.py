@@ -60,6 +60,9 @@ SAMPLE_SEC_SWEEP = [20.0, 60.0, 90.0, 150.0]
 
 
 def run_variant(symbol, start_ts, end_ts, sample_sec, run_id):
+    import math
+    if isinstance(sample_sec, bool) or not isinstance(sample_sec, (int, float)) or not math.isfinite(float(sample_sec)) or float(sample_sec) <= 0:
+        raise ValueError("sample_sec must be finite and > 0")
     sample_sec = max(1.0, float(sample_sec))
     orig_sample_sec = shadow_signals.KALMAN_SAMPLE_SEC
     shadow_signals.KALMAN_SAMPLE_SEC = sample_sec

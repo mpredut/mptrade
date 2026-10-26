@@ -28,22 +28,34 @@ def _load_jsonl_dicts(path: str) -> list[dict]:
 
 
 def q(xs, p):
-    xs = sorted(xs)
-    return xs[min(len(xs) - 1, max(0, int(p * (len(xs) - 1))))] if xs else float("nan")
+    clean = sorted(
+        float(x) for x in (xs or [])
+        if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(float(x))
+    )
+    return clean[min(len(clean) - 1, max(0, int(p * (len(clean) - 1))))] if clean else float("nan")
 
 
 def win_stats(r, key):
     w = r.get(key) or []
-    valid = [
-        x for x in w
-        if isinstance(x, (list, tuple)) and len(x) >= 3 and x[0] is not None and x[2] is not None
-    ]
-    rets = [float(x[0]) for x in valid]
+    valid = []
+    for x in w:
+        if not isinstance(x, (list, tuple)) or len(x) < 3:
+            continue
+        if x[0] is None or x[2] is None or isinstance(x[0], bool) or isinstance(x[2], bool):
+            continue
+        try:
+            r0 = float(x[0])
+            r2 = float(x[2])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(r0) and math.isfinite(r2):
+            valid.append((r0, r2))
+    rets = [x[0] for x in valid]
     if not rets:
         return {"mean": float("nan"), "pos": float("nan"), "p10": float("nan"),
                 "down": float("nan"), "up": float("nan")}
-    down_vals = [float(x[0]) for x in valid if float(x[2]) < -10]
-    up_vals = [float(x[0]) for x in valid if float(x[2]) > 10]
+    down_vals = [x[0] for x in valid if x[1] < -10]
+    up_vals = [x[0] for x in valid if x[1] > 10]
     return {"mean": st.mean(rets), "pos": 100.0 * sum(x > 0 for x in rets) / len(rets),
             "p10": q(rets, 0.10),
             "down": st.mean(down_vals) if down_vals else float("nan"),

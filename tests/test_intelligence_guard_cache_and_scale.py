@@ -9396,10 +9396,60 @@ def test_iteration73_monitortrades_backtest_hybrid_reentry_and_surge_sweep_safet
     assert rdss._win_move_at_ts([100.0] * 50, 30, -14400.0, 48.0) is None
 
 
+def test_iteration74_tradeall_trigger_gate_adaptive_kalman_and_continuous_grid_safety(tmp_path):
+    """Verify Iteration 74 hardening across tradeall_trigger_gate, tradeall_adaptive_thresholds, tradeall_kalman_lag, and continuous_grid."""
+    from offline.research.tradeall_trigger_gate import common as ttg_common
+    from offline.research.tradeall_adaptive_thresholds import run_backtest_adaptive as rba
+    from offline.research.tradeall_kalman_lag import run_kalman_lag_sweep as rkls
+    from offline.research.kraken_continuous_grid import grid as k_grid
+    from offline.research.kraken_continuous_grid import report as k_rep
+    from offline.research.t212_continuous_grid import grid as t_grid
 
+    # 1. LongTrendTracker handles bool/invalid args and empty stats dict without KeyError
+    tracker = ttg_common.LongTrendTracker(stats={}, window_hours=True, reeval_sec=False, min_points=True)
+    assert tracker.window_sec == 3600.0
+    assert tracker.reeval_sec == 60.0
+    assert tracker.min_points == 30
+    tracker.update(float("nan"), 100.0)
+    tracker.update(1000.0, -5.0)
+    assert len(tracker.buf) == 0
+    for i in range(31):
+        tracker.update(1000.0 + i * 10.0, 100.0 + i * 1.0)
+    assert tracker.sign == 1
+    assert tracker.stats.get("sign_changes") == 1
 
+    # 2. run_backtest_adaptive.run_adaptive rejects bool/non-positive k_small
+    with pytest.raises(ValueError, match="k_small must be finite and > 0"):
+        rba.run_adaptive("BTCUSDC", 0, 100, True, "test_id")
+    with pytest.raises(ValueError, match="k_small must be finite and > 0"):
+        rba.run_adaptive("BTCUSDC", 0, 100, -1.5, "test_id")
 
+    # 3. run_kalman_lag_sweep.run_variant rejects bool/non-positive sample_sec
+    with pytest.raises(ValueError, match="sample_sec must be finite and > 0"):
+        rkls.run_variant("BTCUSDC", 0, 100, True, "test_id")
+    with pytest.raises(ValueError, match="sample_sec must be finite and > 0"):
+        rkls.run_variant("BTCUSDC", 0, 100, 0.0, "test_id")
 
+    # 4. kraken/t212 continuous_grid.load handles float timestamps and skips non-positive/NaN OHLC
+    k_csv = tmp_path / "XXBTZUSD.csv"
+    k_csv.write_text("timestamp,open,high,low,close,volume\n1000.0,100,105,95,102,1\n1060.0,0,105,95,102,1\n", encoding="utf-8")
+    assert len(k_grid.load(str(k_csv))) == 1
 
+    t_csv = tmp_path / "VUSA_EQ_1h.csv"
+    t_lines = ["timestamp,open,high,low,close,volume"] + [
+        f"{2000 + i * 60}.0,50,55,48,52,1" for i in range(35)
+    ] + ["5000.0,50,nan,48,52,1"]
+    t_csv.write_text("\n".join(t_lines) + "\n", encoding="utf-8")
+    orig_t_dir = t_grid.DATA
+    try:
+        t_grid.DATA = str(tmp_path)
+        t_grid._LOAD_CACHE.pop(("VUSA_EQ", "1h"), None)
+        assert len(t_grid.load("VUSA_EQ", "1h")) == 35
+    finally:
+        t_grid.DATA = orig_t_dir
 
+    # 5. kraken_continuous_grid.report.q and win_stats filter NaN and bool
+    assert k_rep.q([float("nan"), True, 10.0, 20.0], 0.5) == 10.0
+    st = k_rep.win_stats({"w30": [(float("nan"), 0.0, 5.0), (5.0, 1.0, 15.0)]}, "w30")
+    assert st["mean"] == 5.0 and st["pos"] == 100.0
 

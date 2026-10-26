@@ -12,6 +12,7 @@ if t212_dir not in sys.path:
 import importlib.util
 _spec = importlib.util.spec_from_file_location("t212_md", os.path.join(t212_dir, "market_data.py"))
 _t212_md = importlib.util.module_from_spec(_spec)
+sys.modules["t212_md"] = _t212_md
 _spec.loader.exec_module(_t212_md)
 fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
 

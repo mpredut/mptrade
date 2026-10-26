@@ -69,6 +69,10 @@ def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
     threshold_provider that returns K*vol_1h_pct (adaptive) instead of the fixed threshold,
     falling back to FIXED_SMALL/FIXED_BIG during the warm-up. k_small=None => a control
     run with the FIXED thresholds (equivalent to a normal run_backtest(), without the hook)."""
+    if k_small is not None:
+        if isinstance(k_small, bool) or not isinstance(k_small, (int, float)) or not math.isfinite(float(k_small)) or float(k_small) <= 0:
+            raise ValueError("k_small must be finite and > 0")
+        k_small = float(k_small)
     k_big = None if k_small is None else k_small * RATIO
     warmup = {"n": 0}
 

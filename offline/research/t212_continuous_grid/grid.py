@@ -95,9 +95,20 @@ def load(asset, itv):
         _LOAD_CACHE[key] = None
         _SPLIT_CACHE[key] = (None, None)
         return None
-    with open(path) as fh:
-        rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
-                 float(r["close"])) for r in csv.DictReader(fh)]
+    import math
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            try:
+                ts_val = int(float(r["timestamp"]))
+                o = float(r["open"])
+                h = float(r["high"])
+                l = float(r["low"])
+                c = float(r["close"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if ts_val > 0 and all(math.isfinite(x) and x > 0 for x in (o, h, l, c)):
+                rows.append((ts_val, o, h, l, c))
     res = rows if len(rows) > WARM + 20 else None
     _LOAD_CACHE[key] = res
     if res is not None:
