@@ -74,10 +74,13 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
             return ts1
         return ts0
 
+    pending_unstamped: List[str] = []
     for line in reversed(lines):
         ts: Optional[float] = None
+        has_stamp_token = False
         m = _FULL_TS_RE.search(line)
         if m:
+            has_stamp_token = True
             try:
                 dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
                 day = dt.date()
@@ -89,6 +92,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
             g = _GLOG_TS_RE.match(line)
             c = None if g else _CLOCK_TS_RE.match(line)
             if g:
+                has_stamp_token = True
                 try:
                     dt = datetime(ref.year, int(g.group(1)), int(g.group(2)),
                                   int(g.group(3)), int(g.group(4)), int(g.group(5)))
@@ -101,6 +105,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 except ValueError:
                     pass
             elif c and int(c.group(1)) < 24 and int(c.group(2)) < 60 and int(c.group(3)) < 60:
+                has_stamp_token = True
                 secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
                 dt_same = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
                 ts0 = dt_same.replace(fold=0).timestamp()
@@ -116,7 +121,16 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 prev_ts = ts
         if ts is not None and ts < cutoff_ts:
             break
-        picked.append(line)
+        if has_stamp_token:
+            if pending_unstamped:
+                picked.extend(pending_unstamped)
+                pending_unstamped.clear()
+            picked.append(line)
+        else:
+            pending_unstamped.append(line)
+    else:
+        if pending_unstamped:
+            picked.extend(pending_unstamped)
     picked.reverse()
     return picked
 

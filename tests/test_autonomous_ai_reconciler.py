@@ -1017,6 +1017,20 @@ def test_recent_log_lines_handles_invalid_glog_and_year_wrap():
     assert "E1231 23:50:00 [ERROR] recent dec 31 error\n" in picked
     assert "E1231 20:00:00 [ERROR] old dec 31 error\n" not in picked
 
+    # Un-timestamped continuation lines belonging to an expired entry (< cutoff) must not leak
+    # into the lookback window when a newer entry (>= cutoff) is appended later.
+    multiline_old = [
+        "[2026-10-26 10:30:06] [manage_agy] ERROR: Failed to recover daemon.\n",
+        "W1026 10:30:02.942368 1 composite_token_storage.go:419] Failed to load token\n",
+        "Error: failed to start service: exit status 1\n",
+        "See systemctl --user status antigravity-cli-daemon.service for details.\n",
+        "[2026-10-26 11:33:01] [manage_agy] ui-sync: restarting to surface threads.\n",
+        "Remote-control daemon started.\n",
+    ]
+    noon_mtime = datetime(2026, 10, 26, 12, 0, 0).timestamp()
+    picked_multi = recent_log_lines(multiline_old, noon_mtime, noon_mtime - 0.6 * 3600.0)
+    assert picked_multi == multiline_old[4:]
+
 
 def test_monitor_check_processes_requires_all_heartbeat_files_fresh(tmp_path, monkeypatch):
     (tmp_path / "procs.conf").write_text(

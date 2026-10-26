@@ -115,15 +115,15 @@ do_watchdog() {
 
     if ! is_active; then
         log "WARNING: Daemon is DOWN/INACTIVE. Triggering auto-recovery as '${INSTANCE_NAME}'..."
-        local start_out
+        local start_out start_out_single
         start_out="$("$AGY_BIN" remote-control start --name "$INSTANCE_NAME" 2>&1 || true)"
-        echo "$start_out"
+        start_out_single="$(printf '%s' "$start_out" | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
         sleep 2
         if is_active; then
-            log "SUCCESS: Daemon successfully recovered as '${INSTANCE_NAME}'."
+            log "SUCCESS: Daemon successfully recovered as '${INSTANCE_NAME}'. Output: ${start_out_single}"
             send_alert "Antigravity remote-control daemon was found down and successfully revived as '${INSTANCE_NAME}'."
         else
-            log "ERROR: Failed to recover daemon. Output: $start_out" >&2
+            log "ERROR: Failed to recover daemon. Output: ${start_out_single}" >&2
             send_alert "CRITICAL: Failed to revive Antigravity daemon (${INSTANCE_NAME}) on $(hostname)."
             exit 2
         fi
