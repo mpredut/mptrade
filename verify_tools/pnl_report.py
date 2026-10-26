@@ -5,7 +5,8 @@ not the incomplete cache) and Kraken/HL state. Binance uses a 120-day window, so
 cost basis is approximate. Run with: ./myenv/bin/python verify_tools/pnl_report.py"""
 import sys, os, time, json, math
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT); os.chdir(ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 from binance_api import bapi_allorders as ao
 from binance_api import bapi
 from instrument_registry import symbols_for
@@ -31,12 +32,16 @@ def _safe_float(val, default: float = 0.0) -> float:
 
 def binance_symbol(symbol):
     st = int((time.time() - WINDOW_D * 24 * 3600) * 1000)
-    fills = ao.get_filled_orders(None, symbol, st) or []
+    fills = [f for f in (ao.get_filled_orders(None, symbol, st) or []) if isinstance(f, dict)]
     fills.sort(key=lambda t: extract_timestamp_ms(t, default=0) or 0)
     qty = cost = realized = 0.0
     buys = sells = 0
     for t in fills:
-        p = extract_order_price(t); q = extract_order_qty(t); side = extract_order_side(t)
+        p = _safe_float(extract_order_price(t), 0.0)
+        q = _safe_float(extract_order_qty(t), 0.0)
+        if p <= 0 or q <= 0:
+            continue
+        side = extract_order_side(t)
         if side == "BUY":
             qty += q; cost += q * p; buys += 1
         elif side == "SELL":
@@ -84,6 +89,9 @@ def per_bot(symbol):
         if eq <= 0:
             continue
         cqq = _safe_float(o.get("cummulativeQuoteQty", 0), 0.0)
+        if cqq <= 0:
+            op = _safe_float(o.get("price", 0), 0.0)
+            cqq = eq * op if op > 0 else 0.0
         a = g[_bot(o.get("clientOrderId", ""))]
         side = str(o.get("side") or "").upper()
         if side == "BUY":
@@ -116,7 +124,7 @@ def main():
 
     # Kraken HYPE (kraken_bot)
     try:
-        with open("kraken/.state_HYPEUSD.json", encoding="utf-8") as _kf:
+        with open(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), encoding="utf-8") as _kf:
             k = json.load(_kf)
         hy = 54.77  # Latest price from trail_k.
         k_qty = _safe_float(k.get("qty") if isinstance(k, dict) else 0, 0.0)
@@ -130,7 +138,7 @@ def main():
 
     # Hyperliquid dn_bot (delta-neutral: profit = funding - fees, price-independent)
     try:
-        with open("hyperliquid/.state_dn_HYPE.json", encoding="utf-8") as _hf:
+        with open(os.path.join(ROOT, "hyperliquid/.state_dn_HYPE.json"), encoding="utf-8") as _hf:
             h = json.load(_hf)
         h_fund = _safe_float(h.get("funding_accrued") if isinstance(h, dict) else 0, 0.0)
         h_fees = _safe_float(h.get("fees_paid") if isinstance(h, dict) else 0, 0.0)

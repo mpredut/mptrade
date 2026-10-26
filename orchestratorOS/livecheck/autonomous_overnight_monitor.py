@@ -201,22 +201,31 @@ class AutonomousOvernightMonitor:
                     pass
             return None
 
+        def _finite_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+                return f if math.isfinite(f) else default
+            except (TypeError, ValueError):
+                return default
+
         # 1. Geopolitical Threat Sensor
         geo = _read("geopolitical_threat_eval.json")
         if geo:
             sensors["geopolitical_threat"] = {
-                "threat_level": geo.get("threat_level", "NORMAL"),
-                "risk_score": geo.get("risk_score", 0.0),
-                "summary": geo.get("summary", ""),
+                "threat_level": str(geo.get("threat_level") or "NORMAL"),
+                "risk_score": _finite_float(geo.get("risk_score"), 0.0),
+                "summary": str(geo.get("summary") or ""),
             }
 
         # 2. Macro Sentiment Advisor
         macro = _read("sentiment_advisor_eval.json") or _read("macro_advisor_eval.json")
         if macro:
             sensors["sentiment_advisor"] = {
-                "market_bias": macro.get("market_bias", "NEUTRAL"),
-                "risk_level": macro.get("risk_level", "MODERATE"),
-                "action": macro.get("recommended_action", "HOLD"),
+                "market_bias": str(macro.get("market_bias") or "NEUTRAL"),
+                "risk_level": str(macro.get("risk_level") or "MODERATE"),
+                "action": str(macro.get("recommended_action") or "HOLD"),
             }
 
         # 3. Autonomous AI Supervisor State
@@ -225,20 +234,20 @@ class AutonomousOvernightMonitor:
             raw_dec = sup.get("market_trading_decision")
             dec = raw_dec if isinstance(raw_dec, dict) else {}
             sensors["supervisor_eval"] = {
-                "mode": sup.get("mode", "enforce"),
-                "decision": dec.get("decision", "HOLD"),
-                "confidence": dec.get("confidence", 0.0),
-                "summary": sup.get("summary", ""),
+                "mode": str(sup.get("mode") or "enforce"),
+                "decision": str(dec.get("decision") or "HOLD"),
+                "confidence": _finite_float(dec.get("confidence"), 0.0),
+                "summary": str(sup.get("summary") or ""),
             }
 
         # 4. Fear & Greed & Market Breadth
         fg = _read("fear_greed_collect.json") or _read("fear_greed_cache.json")
         if fg:
-            sensors["fear_greed"] = fg.get("value")
+            sensors["fear_greed"] = _finite_float(fg.get("value"), None)
 
         mb = _read("market_breadth_collect.json") or _read("market_breadth_cache.json")
         if mb:
-            sensors["market_breadth"] = mb.get("advance_ratio")
+            sensors["market_breadth"] = _finite_float(mb.get("advance_ratio"), None)
 
         return sensors
 
@@ -257,7 +266,7 @@ class AutonomousOvernightMonitor:
                         if not line or "=" not in line:
                             continue
                         k, v = line.split("=", 1)
-                        modes[k.strip().lower()] = v.strip().lower()
+                        modes[k.strip().lower()] = v.strip().strip("\"'").lower()
         if "supervisor_mode" not in modes:
             raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
         return modes
@@ -276,19 +285,23 @@ class AutonomousOvernightMonitor:
                 "-p", str(self.dev_port),
                 f"{self.dev_user}@{self.dev_host}",
                 "pgrep -f run_overnight_master_suite.sh >/dev/null && echo 'RUNNING' || echo 'STOPPED'; "
-                "tail -n 2 ~/mptrade/logs/overnight_runs/master_suite_current.log 2>/dev/null",
+                "tail -n 5 ~/mptrade/logs/overnight_runs/latest_overnight.log ~/mptrade/logs/overnight_runs/master_suite_current.log 2>/dev/null",
             ]
             res = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=8)
             if res.returncode == 0:
                 status["reachable"] = True
-                lines = [l.strip() for l in res.stdout.strip().split("\n") if l.strip()]
+                lines = [
+                    l.strip()
+                    for l in res.stdout.strip().split("\n")
+                    if l.strip() and not (l.strip().startswith("==>") and l.strip().endswith("<=="))
+                ]
                 if lines:
                     status["running"] = lines[0] == "RUNNING"
                     if len(lines) > 1:
                         status["last_log_line"] = lines[-1]
                         # Extract step if present
                         for l in reversed(lines):
-                            if "[STEP " in l:
+                            if "[STEP " in l or "[STAGE " in l:
                                 status["current_step"] = l
                                 break
         except Exception as e:
@@ -342,7 +355,17 @@ class AutonomousOvernightMonitor:
             try:
                 os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
                 from state_io import atomic_write_json
-                atomic_write_json(self.status_file, asdict(report), indent=2)
+
+                def _clean_json(val: Any) -> Any:
+                    if isinstance(val, float) and not math.isfinite(val):
+                        return None
+                    if isinstance(val, dict):
+                        return {str(k): _clean_json(v) for k, v in val.items()}
+                    if isinstance(val, (list, tuple)):
+                        return [_clean_json(v) for v in val]
+                    return val
+
+                atomic_write_json(self.status_file, _clean_json(asdict(report)), indent=2)
             except Exception as e:
                 logger.warning("Could not persist overnight status: %s", e)
 

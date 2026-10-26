@@ -142,16 +142,15 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
-    topic = os.environ.get("NTFY_TOPIC")
+    topic = (os.environ.get("NTFY_TOPIC") or "").strip()
     if not topic:
         # Read from kraken/config.env when it is not in the environment.
         cfg = os.path.join(KRAKEN_DIR, "config.env")
         if os.path.exists(cfg):
-            with open(cfg, encoding="utf-8") as fh:
-                for ln in fh:
-                    if ln.startswith("NTFY_TOPIC="):
-                        topic = ln.split("=", 1)[1].strip()
-                        break
+            try:
+                topic = (parse_dotenv(cfg).get("NTFY_TOPIC") or "").strip()
+            except OSError:
+                topic = ""
     if not topic:
         return
     import urllib.request
@@ -177,7 +176,7 @@ def _alert_state() -> dict:
 def _save_alert_state(st: dict) -> None:
     try:
         atomic_write_json(ALERT_STATE, st)
-    except OSError:
+    except (OSError, ValueError, TypeError):
         pass
 
 
@@ -193,33 +192,39 @@ def run_alerts(kr: list[dict]) -> list[str]:
     st = _alert_state()
     fired = []
     for r in kr:
-        if r["paper"] or r["qty"] <= 1e-9:
+        if not isinstance(r, dict):
             continue
-        dd = r["dd_pct"]  # Negative means a loss.
+        engine = str(r.get("engine") or "").strip()
+        if not engine or bool(r.get("paper")) or _f(r.get("qty"), 0.0) <= 1e-9:
+            continue
+        dd = _f(r.get("dd_pct"), 0.0)  # Negative means a loss.
         if dd > -threshold:
-            st.pop(r["engine"], None)  # Back under the threshold -> reset.
+            st.pop(engine, None)  # Back under the threshold -> reset.
             continue
-        prev = st.get(r["engine"], {})
+        prev = st.get(engine, {})
         prev = prev if isinstance(prev, dict) else {}
         prev_dd = _f(prev.get("dd"), 0.0)
         prev_ts = prev.get("ts")
         stale = True
-        if prev_ts:
+        if prev_ts and not isinstance(prev_ts, bool):
             try:
                 parsed_ts = datetime.fromisoformat(str(prev_ts))
                 if parsed_ts.tzinfo is None:
                     parsed_ts = parsed_ts.replace(tzinfo=timezone.utc)
-                stale = (now - parsed_ts).total_seconds() > realert_hours * 3600
+                elapsed_s = (now - parsed_ts).total_seconds()
+                stale = elapsed_s < 0 or elapsed_s > realert_hours * 3600
             except (TypeError, ValueError):
                 stale = True
         if stale or dd <= prev_dd - worsen_pct:
+            unreal = _f(r.get("unrealized"), 0.0)
+            cost = _f(r.get("cost"), 0.0)
             _ntfy(
-                f"⚠️ Risc {r['engine']}: DD {dd:.1f}%",
-                f"{r['engine']} drawdown nerealizat {dd:.1f}% "
-                f"(nereal ${r['unrealized']:.0f} pe cost ${r['cost']:.0f}, "
+                f"⚠️ Risc {engine}: DD {dd:.1f}%",
+                f"{engine} drawdown nerealizat {dd:.1f}% "
+                f"(nereal ${unreal:.0f} pe cost ${cost:.0f}, "
                 f"threshold {threshold:.0f}%). Check the position.")
-            st[r["engine"]] = {"dd": dd, "ts": now.isoformat(timespec="seconds")}
-            fired.append(f"{r['engine']} DD {dd:.1f}%")
+            st[engine] = {"dd": dd, "ts": now.isoformat(timespec="seconds")}
+            fired.append(f"{engine} DD {dd:.1f}%")
     _save_alert_state(st)
     return fired
 

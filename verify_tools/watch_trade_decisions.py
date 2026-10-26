@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binance_api import bapi as api  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
+from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
 import symbols as sym  # noqa: E402
 
 SYMBOLS = [sym.taosymbol, sym.btcsymbol]
@@ -51,13 +52,19 @@ def free_qty(symbol):
 
 
 def position(symbol, maxage=17 * 24 * 3600):
-    buys = [o for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or []) if isinstance(o, dict)]
-    sells = [o for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or []) if isinstance(o, dict)]
-    tq = sum(_f(o.get("qty"), 0.0) for o in buys)
-    tv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in buys)
-    sq = sum(_f(o.get("qty"), 0.0) for o in sells)
+    buys = [
+        o for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or [])
+        if isinstance(o, dict) and extract_order_qty(o) > 0 and extract_order_price(o) > 0
+    ]
+    sells = [
+        o for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or [])
+        if isinstance(o, dict) and extract_order_qty(o) > 0
+    ]
+    tq = sum(extract_order_qty(o) for o in buys)
+    tv = sum(extract_order_price(o) * extract_order_qty(o) for o in buys)
+    sq = sum(extract_order_qty(o) for o in sells)
     last_buy = (
-        _f(max(buys, key=lambda o: _f(o.get("timestamp") if o.get("timestamp") is not None else o.get("time"), 0.0)).get("price"), 0.0)
+        extract_order_price(max(buys, key=lambda o: extract_timestamp_ms(o)))
         if buys else 0.0
     )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells), last_buy

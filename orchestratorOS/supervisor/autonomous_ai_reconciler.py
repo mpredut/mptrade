@@ -168,12 +168,7 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     def _sort_key(d: Dict[str, Any]) -> Tuple[int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
-        try:
-            conf = float(d.get("confidence") or 0.0)
-            if not math.isfinite(conf):
-                conf = 0.0
-        except (ValueError, TypeError):
-            conf = 0.0
+        conf = _parse_finite_float(d.get("confidence"), 0.0)
         return (-is_action, -conf)
 
     decisions.sort(key=_sort_key)
@@ -242,6 +237,13 @@ class AutonomousAIReconciler:
     ) -> None:
         self.workspace_dir = workspace_dir or os.getcwd()
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
+        if (
+            isinstance(lookback_hours, bool)
+            or not isinstance(lookback_hours, (int, float))
+            or not math.isfinite(float(lookback_hours))
+            or float(lookback_hours) <= 0
+        ):
+            raise ValueError("lookback_hours must be a positive finite number")
         self.lookback_hours = float(lookback_hours)
         self.logs_dirs = [os.path.join(self.workspace_dir, d) for d in (logs_dirs or ["logs", "logger"])]
         self.gemini_auditor = gemini_auditor or GeminiClient()
@@ -250,6 +252,8 @@ class AutonomousAIReconciler:
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = self._load_decoupled_conf()
         if mode is not None:
+            if isinstance(mode, bool):
+                raise ValueError(f"Invalid supervisor_mode {mode!r}; must be one of ['enforce', 'off', 'shadow']")
             raw_mode = mode
         else:
             if "supervisor_mode" not in conf:
@@ -264,7 +268,16 @@ class AutonomousAIReconciler:
         else:
             if "supervisor_notify" not in conf:
                 raise KeyError("Missing required 'supervisor_notify' in order_guard.conf")
-            self.notify_enabled = bool(int(float(conf["supervisor_notify"])))
+            raw_notify = str(conf["supervisor_notify"]).strip().lower()
+            if raw_notify in ("1", "true", "yes", "on"):
+                self.notify_enabled = True
+            elif raw_notify in ("0", "false", "no", "off"):
+                self.notify_enabled = False
+            else:
+                notify_num = _parse_finite_float(raw_notify, float("nan"))
+                if not math.isfinite(notify_num):
+                    raise ValueError(f"Invalid supervisor_notify {conf['supervisor_notify']!r}")
+                self.notify_enabled = bool(int(notify_num))
 
         self.ntfy_url = conf.get("phone_alert_url", "")
         if "ntfy_topic_guard" not in conf:
@@ -414,10 +427,12 @@ class AutonomousAIReconciler:
         price_map: Dict[str, float] = {}
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
             for sym, item in prices_data["items"].items():
-                if isinstance(item, list) and item and isinstance(item[0], list) and len(item[0]) > 1:
-                    px_val = _parse_finite_float(item[0][1], 0.0)
-                    if px_val > 0:
-                        price_map[sym] = px_val
+                if isinstance(item, list) and item:
+                    last_pt = item[-1] if isinstance(item[-1], list) and len(item[-1]) > 1 else item[0]
+                    if isinstance(last_pt, list) and len(last_pt) > 1:
+                        px_val = _parse_finite_float(last_pt[1], 0.0)
+                        if px_val > 0:
+                            price_map[sym] = px_val
 
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
@@ -698,14 +713,15 @@ class AutonomousAIReconciler:
             if isinstance(multi_items, dict):
                 m_series = next((multi_items[ck] for ck in cand_keys if isinstance(multi_items.get(ck), list) and len(multi_items[ck]) >= 2), None)
                 if isinstance(m_series, list) and len(m_series) >= 2:
-                    try:
-                        vals = [float(pt[1]) for pt in m_series if isinstance(pt, list) and len(pt) > 1 and float(pt[1]) > 0]
-                        if len(vals) >= 2:
-                            entry["chg_7d_pct"] = round(((vals[-1] - vals[0]) / vals[0]) * 100.0, 2)
-                            entry["low_7d"] = min(vals)
-                            entry["high_7d"] = max(vals)
-                    except (ValueError, TypeError):
-                        pass
+                    vals = [
+                        _parse_finite_float(pt[1], 0.0)
+                        for pt in m_series
+                        if isinstance(pt, list) and len(pt) > 1 and _parse_finite_float(pt[1], 0.0) > 0
+                    ]
+                    if len(vals) >= 2:
+                        entry["chg_7d_pct"] = round(((vals[-1] - vals[0]) / vals[0]) * 100.0, 2)
+                        entry["low_7d"] = min(vals)
+                        entry["high_7d"] = max(vals)
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         for sym in list(snapshot.prices_and_trends.keys()):
@@ -801,7 +817,7 @@ class AutonomousAIReconciler:
             if m24:
                 snapshot.prices_and_trends[sym].update(m24)
                 if snapshot.prices_and_trends[sym].get("trend", 0) == 0 and "chg_1h_pct" in m24:
-                    c1h = float(m24.get("chg_1h_pct") or 0.0)
+                    c1h = _parse_finite_float(m24.get("chg_1h_pct"), 0.0)
                     if c1h >= 0.25:
                         snapshot.prices_and_trends[sym]["trend"] = 1
                     elif c1h <= -0.25:
@@ -1032,50 +1048,50 @@ class AutonomousAIReconciler:
             if not isinstance(pos, dict):
                 continue
             p_sym = str(pos.get("symbol") or "").upper()
-            pos_px = pos.get("price")
+            pos_px_f = _parse_finite_float(pos.get("price"), 0.0)
             ro = recent_orders.get(p_sym)
             if isinstance(ro, dict):
-                avg_b = ro.get("active_avg_buy_px")
-                if isinstance(avg_b, (int, float)) and float(avg_b) > 0:
+                avg_b = _parse_finite_float(ro.get("active_avg_buy_px"), 0.0)
+                if avg_b > 0:
                     pos["active_avg_buy_px"] = avg_b
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["pnl_vs_avg_pct"] = round(((float(pos_px) - float(avg_b)) / float(avg_b)) * 100.0, 2)
+                    if pos_px_f > 0:
+                        pos["pnl_vs_avg_pct"] = round(((pos_px_f - avg_b) / avg_b) * 100.0, 2)
                 lb = ro.get("last_buy")
-                if isinstance(lb, dict) and isinstance(lb.get("price"), (int, float)) and float(lb["price"]) > 0:
-                    lb_px = float(lb["price"])
+                lb_px = _parse_finite_float(lb.get("price") if isinstance(lb, dict) else None, 0.0)
+                if lb_px > 0:
                     pos["last_buy_px"] = lb_px
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["pnl_vs_last_buy_pct"] = round(((float(pos_px) - lb_px) / lb_px) * 100.0, 2)
+                    if pos_px_f > 0:
+                        pos["pnl_vs_last_buy_pct"] = round(((pos_px_f - lb_px) / lb_px) * 100.0, 2)
                 ls = ro.get("last_sell")
-                if isinstance(ls, dict) and isinstance(ls.get("price"), (int, float)) and float(ls["price"]) > 0:
-                    ls_px = float(ls["price"])
+                ls_px = _parse_finite_float(ls.get("price") if isinstance(ls, dict) else None, 0.0)
+                if ls_px > 0:
                     pos["last_sell_px"] = ls_px
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["chg_vs_last_sell_pct"] = round(((float(pos_px) - ls_px) / ls_px) * 100.0, 2)
+                    if pos_px_f > 0:
+                        pos["chg_vs_last_sell_pct"] = round(((pos_px_f - ls_px) / ls_px) * 100.0, 2)
             for cyc_map in (kraken_cycles, hyperliquid_cycles, t212_cycles):
                 cyc = cyc_map.get(p_sym)
                 if not isinstance(cyc, dict):
                     continue
-                if "active_avg_buy_px" not in pos and isinstance(cyc.get("avg_cost_px"), (int, float)) and float(cyc["avg_cost_px"]) > 0:
-                    avg_c = float(cyc["avg_cost_px"])
+                avg_c = _parse_finite_float(cyc.get("avg_cost_px"), 0.0)
+                if "active_avg_buy_px" not in pos and avg_c > 0:
                     pos["active_avg_buy_px"] = avg_c
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["pnl_vs_avg_pct"] = round(((float(pos_px) - avg_c) / avg_c) * 100.0, 2)
-                if "last_buy_px" not in pos and isinstance(cyc.get("last_buy_price"), (int, float)) and float(cyc["last_buy_price"]) > 0:
-                    lb_c = float(cyc["last_buy_price"])
+                    if pos_px_f > 0:
+                        pos["pnl_vs_avg_pct"] = round(((pos_px_f - avg_c) / avg_c) * 100.0, 2)
+                lb_c = _parse_finite_float(cyc.get("last_buy_price"), 0.0)
+                if "last_buy_px" not in pos and lb_c > 0:
                     pos["last_buy_px"] = lb_c
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["pnl_vs_last_buy_pct"] = round(((float(pos_px) - lb_c) / lb_c) * 100.0, 2)
-                if "last_sell_px" not in pos and isinstance(cyc.get("last_sell_price"), (int, float)) and float(cyc["last_sell_price"]) > 0:
-                    ls_c = float(cyc["last_sell_price"])
+                    if pos_px_f > 0:
+                        pos["pnl_vs_last_buy_pct"] = round(((pos_px_f - lb_c) / lb_c) * 100.0, 2)
+                ls_c = _parse_finite_float(cyc.get("last_sell_price"), 0.0)
+                if "last_sell_px" not in pos and ls_c > 0:
                     pos["last_sell_px"] = ls_c
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["chg_vs_last_sell_pct"] = round(((float(pos_px) - ls_c) / ls_c) * 100.0, 2)
-                if pos.get("trailing_peak") is None and isinstance(cyc.get("pos_peak"), (int, float)) and float(cyc["pos_peak"]) > 0:
-                    pk = float(cyc["pos_peak"])
+                    if pos_px_f > 0:
+                        pos["chg_vs_last_sell_pct"] = round(((pos_px_f - ls_c) / ls_c) * 100.0, 2)
+                pk = _parse_finite_float(cyc.get("pos_peak"), 0.0)
+                if pos.get("trailing_peak") is None and pk > 0:
                     pos["trailing_peak"] = pk
-                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
-                        pos["dd_from_peak_pct"] = round(((float(pos_px) - pk) / pk) * 100.0, 2)
+                    if pos_px_f > 0:
+                        pos["dd_from_peak_pct"] = round(((pos_px_f - pk) / pk) * 100.0, 2)
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -2110,18 +2126,8 @@ class AutonomousAIReconciler:
             if m_decision in ("BUY", "SELL"):
                 m_sym = m_dec.get("symbol", "")
                 m_venue = m_dec.get("venue", "")
-                try:
-                    m_conf = float(m_dec.get("confidence") or 0.0)
-                    if not math.isfinite(m_conf):
-                        m_conf = 0.0
-                except (TypeError, ValueError, OverflowError):
-                    m_conf = 0.0
-                try:
-                    m_usd = float(m_dec.get("suggested_notional_usd") or 0.0)
-                    if not math.isfinite(m_usd):
-                        m_usd = 0.0
-                except (TypeError, ValueError, OverflowError):
-                    m_usd = 0.0
+                m_conf = _parse_finite_float(m_dec.get("confidence"), 0.0)
+                m_usd = _parse_finite_float(m_dec.get("suggested_notional_usd"), 0.0)
                 venue_sfx = f" ({m_venue})" if m_venue else ""
                 body_lines.append(f"Trading Intent: {m_decision} {m_sym}{venue_sfx} ${m_usd:.0f} (conf={m_conf:.2f})")
 
@@ -2176,10 +2182,20 @@ class AutonomousAIReconciler:
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
             from state_io import atomic_write_json
-            report_dict = asdict(report)
+
+            def _clean_json(val: Any) -> Any:
+                if isinstance(val, float) and not math.isfinite(val):
+                    return None
+                if isinstance(val, dict):
+                    return {str(k): _clean_json(v) for k, v in val.items()}
+                if isinstance(val, (list, tuple)):
+                    return [_clean_json(v) for v in val]
+                return val
+
+            report_dict = _clean_json(asdict(report))
             atomic_write_json(self.state_file, report_dict, indent=2)
 
-            hb = {
+            hb = _clean_json({
                 "status": "alive",
                 "ts": report.ts,
                 "mode": report.mode,
@@ -2188,7 +2204,7 @@ class AutonomousAIReconciler:
                 "venue_actions_count": len(report.venue_actions),
                 "market_trading_decision": report.market_trading_decision,
                 "market_trading_decisions": report.market_trading_decisions,
-            }
+            })
             atomic_write_json(self.heartbeat_file, hb, indent=2)
             if os.path.basename(self.state_file) == "auto_cryptotrade_executor_eval.json":
                 atomic_write_json(os.path.join(self.cache_dir, "auto_trade_executor_eval.json"), report_dict, indent=2)

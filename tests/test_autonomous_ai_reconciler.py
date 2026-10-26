@@ -1318,12 +1318,132 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     assert [r["venue"] for r in cr_snap.portfolio_summary.get("active_retry_queue", [])] == ["binance"]
 
 
+def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_env, tmp_path, monkeypatch):
+    import subprocess
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import _normalize_trading_decisions
+    from verify_tools import pnl_report, portfolio_snapshot, watch_trade_decisions
 
+    workspace, cache_dir, _ = temp_env
 
+    # 1. AutonomousAIReconciler constructor validates lookback_hours, mode, and string supervisor_notify
+    for bad_lb in (True, False, 0, -5, float("nan"), float("inf")):
+        try:
+            AutonomousAIReconciler(workspace_dir=workspace, lookback_hours=bad_lb)
+            raise AssertionError(f"Expected ValueError for lookback_hours={bad_lb!r}")
+        except ValueError:
+            pass
+    try:
+        AutonomousAIReconciler(workspace_dir=workspace, mode=True)
+        raise AssertionError("Expected ValueError for boolean mode")
+    except ValueError:
+        pass
 
+    with open(os.path.join(workspace, "order_guard.conf"), "w", encoding="utf-8") as f:
+        f.write("supervisor_mode = \"shadow\"\nsupervisor_notify = true\n")
+    rec_str_notify = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    assert rec_str_notify.mode == "shadow"
+    assert rec_str_notify.notify_enabled is True
 
+    # 2. _normalize_trading_decisions ignores boolean confidence when sorting
+    decs = _normalize_trading_decisions({
+        "market_trading_decisions": [
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "BUY", "confidence": True},
+            {"venue": "binance", "symbol": "TAOUSDC", "decision": "BUY", "confidence": 0.91},
+        ]
+    })
+    assert [d["symbol"] for d in decs] == ["TAOUSDC", "BTCUSDC"]
 
+    # 3. cache_current_price.json picks the latest sample item[-1] and write_audit_artifact sanitizes NaN
+    with open(os.path.join(cache_dir, "cache_current_price.json"), "w", encoding="utf-8") as f:
+        json.dump({"items": {"TAOUSDC": [[1000, 200.0], [2000, 265.5]]}}, f)
+    snap = rec_str_notify.harvest_sensors_telemetry()
+    assert snap.prices_and_trends["TAOUSDC"]["price"] == 265.5
 
+    rec_str_notify.state_file = os.path.join(cache_dir, "auto_cryptotrade_executor_eval.json")
+    rec_str_notify.heartbeat_file = os.path.join(cache_dir, "auto_cryptotrade_executor.heartbeat")
+    nan_report = SupervisorAuditReport(
+        ts=time.time(),
+        mode="shadow",
+        summary="NaN guard test",
+        market_trading_decision={"symbol": "TAOUSDC", "confidence": float("nan")},
+    )
+    rec_str_notify.write_audit_artifact(nan_report)
+    with open(rec_str_notify.state_file, "r", encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert persisted["market_trading_decision"]["confidence"] is None
 
+    # 4. AutonomousOvernightMonitor sanitizes sensor floats, strips quotes in order_guard.conf, and parses latest_overnight.log
+    with open(os.path.join(cache_dir, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
+        json.dump({"threat_level": None, "risk_score": True, "summary": None}, f)
+    with open(os.path.join(cache_dir, "fear_greed_cache.json"), "w", encoding="utf-8") as f:
+        json.dump({"value": "bad_val"}, f)
+    mon = AutonomousOvernightMonitor(workspace_dir=workspace)
+    assert mon.get_autonomous_modes()["supervisor_mode"] == "shadow"
+    s_stat = mon.gather_sensor_status()
+    assert s_stat["geopolitical_threat"] == {"threat_level": "NORMAL", "risk_score": 0.0, "summary": ""}
+    assert s_stat["fear_greed"] is None
+
+    fake_ssh_out = (
+        "RUNNING\n"
+        "==> /home/predut/mptrade/logs/overnight_runs/latest_overnight.log <==\n"
+        "[2026-10-26 23:10:00] [STAGE 5A] Running Core Strategy Unit Tests\n"
+        "1876 passed in 14.2s\n"
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=fake_ssh_out, stderr=""),
+    )
+    dev_prog = mon.check_dev_backtest_progress()
+    assert dev_prog["running"] is True
+    assert dev_prog["current_step"] == "[2026-10-26 23:10:00] [STAGE 5A] Running Core Strategy Unit Tests"
+    assert dev_prog["last_log_line"] == "1876 passed in 14.2s"
+
+    # 5. verify_tools: portfolio_snapshot.run_alerts, pnl_report.binance_symbol, and watch_trade_decisions.position
+    alert_state_file = tmp_path / "alert_state.json"
+    alert_state_file.write_text(
+        json.dumps({"Kraken:HYPEUSD": {"dd": -12.0, "ts": "2099-01-01T00:00:00+00:00"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(portfolio_snapshot, "ALERT_STATE", str(alert_state_file))
+    alerts_Sent = []
+    monkeypatch.setattr(portfolio_snapshot, "_ntfy", lambda title, body: alerts_Sent.append((title, body)))
+    fired = portfolio_snapshot.run_alerts([
+        "not_a_dict",
+        {"engine": "Binance:TAOUSDC", "qty": True, "dd_pct": -50.0},
+        {"engine": "Kraken:HYPEUSD", "qty": 2.0, "dd_pct": -25.0, "unrealized": -50.0, "cost": 200.0},
+    ])
+    assert len(alerts_Sent) == 1
+    assert fired == ["Kraken:HYPEUSD DD -25.0%"]
+
+    monkeypatch.setattr(
+        pnl_report.ao,
+        "get_filled_orders",
+        lambda side, sym, st: [
+            "bad",
+            {"side": "BUY", "price": "200.0", "qty": "1.5", "time": 1000},
+            {"side": "BUY", "price": "-5.0", "qty": "1.0", "time": 1500},
+            {"side": "SELL", "price": "220.0", "qty": "0.5", "time": 2000},
+        ],
+    )
+    monkeypatch.setattr(pnl_report.bapi, "get_current_price", lambda sym: "230.0")
+    res_pnl = pnl_report.binance_symbol("TAOUSDC")
+    assert res_pnl["realized"] == 10.0
+    assert res_pnl["pos"] == 1.0
+    assert res_pnl["unreal"] == 30.0
+
+    raw_orders = [
+        {"executedQty": "2.0", "cummulativeQuoteQty": "500.0", "time": 1000},
+        {"executedQty": "1.0", "price": "280.0", "updateTime": 2000},
+    ]
+    monkeypatch.setattr(
+        watch_trade_decisions.apiorders,
+        "get_trade_orders",
+        lambda side, sym, maxage: raw_orders if side == "BUY" else [],
+    )
+    avg_w, net_w, sells_w, last_w = watch_trade_decisions.position("TAOUSDC")
+    assert round(avg_w, 2) == 260.0
+    assert net_w == 3.0
+    assert last_w == 280.0
 
 
