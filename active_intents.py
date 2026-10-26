@@ -138,33 +138,26 @@ def _path_context(path: str) -> dict:
     return {}
 
 
+def _finite_float(val, default: float | None = 0.0) -> float | None:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        import math
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 def _extract_exposure(payload: dict, *, owner: str, source: str,
                       inherited: dict) -> dict | None:
     if not isinstance(payload, dict):
         return None
-    qty = payload.get("qty")
-    if qty is None:
+    qty_val = _finite_float(payload.get("qty"), default=None)
+    if qty_val is None or abs(qty_val) < 1e-9:
         return None
-    try:
-        qty_val = float(qty)
-    except (ValueError, TypeError):
-        return None
-    if abs(qty_val) < 1e-9:
-        return None
-    cost = _first(payload, "cost_usd", "cost", "spent_cash", "spent")
-    cost_val = None
-    if cost is not None:
-        try:
-            cost_val = float(cost)
-        except (ValueError, TypeError):
-            pass
-    entry_price = payload.get("entry_price")
-    entry_price_val = None
-    if entry_price is not None:
-        try:
-            entry_price_val = float(entry_price)
-        except (ValueError, TypeError):
-            pass
+    cost_val = _finite_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None)
+    entry_price_val = _finite_float(payload.get("entry_price"), default=None)
     symbol = (_first(payload, "symbol", "ticker", "pair")
               or _first(inherited, "symbol", "ticker", "pair"))
     venue = (_first(payload, "provider_name", "venue") or inherited.get("venue")
@@ -188,11 +181,11 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
     for it in intents:
         sym = it.get("symbol") or "UNKNOWN"
         side = (it.get("side") or "").upper()
-        req_qty = float(it.get("requested_qty") or 0.0)
-        exec_qty = float(it.get("executed_qty") or 0.0)
+        req_qty = _finite_float(it.get("requested_qty"), default=0.0) or 0.0
+        exec_qty = _finite_float(it.get("executed_qty"), default=0.0) or 0.0
         unfilled = max(0.0, req_qty - exec_qty)
-        price = it.get("requested_price")
-        notional = (unfilled * float(price)) if price is not None else 0.0
+        price_val = _finite_float(it.get("requested_price"), default=None)
+        notional = (unfilled * price_val) if (price_val is not None and price_val > 0) else 0.0
 
         entry = notional_by_sym.setdefault(sym, {"buy": 0.0, "sell": 0.0})
         if side == "BUY":

@@ -42,11 +42,17 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("s") != symbol:
+            if not isinstance(rec, dict) or rec.get("s") != symbol:
                 continue
             try:
                 ts_ms, price = rec["i"]
-                out.append((ts_ms / 1000.0, float(price)))
+                if isinstance(ts_ms, bool) or isinstance(price, bool):
+                    continue
+                ts_sec = float(ts_ms) / 1000.0
+                px_val = float(price)
+                if not (ts_sec == ts_sec and abs(ts_sec) != float("inf") and px_val == px_val and abs(px_val) != float("inf") and px_val > 0):
+                    continue
+                out.append((ts_sec, px_val))
             except (KeyError, TypeError, ValueError):
                 continue
     out.sort(key=lambda x: x[0])
@@ -222,10 +228,14 @@ class ReplayMarketDataProvider(MarketDataProvider):
         Update position quantity/average cost and order history. See the module
         documentation for fidelity limitations.
         """
-        side = side.upper()
+        side = str(side or "").upper()
+        if side not in ("BUY", "SELL") or isinstance(price, bool) or isinstance(qty, bool):
+            return None
         price = float(price)
+        if not (price == price and abs(price) != float("inf") and price > 0):
+            return None
         qty = self.round_quantity(symbol, float(qty))
-        if qty <= 0:
+        if not (qty == qty and abs(qty) != float("inf") and qty > 0):
             return None
         ts_ms = int(self.now(symbol) * 1000)
         pos_qty, pos_cost = self._positions.get(symbol, (0.0, 0.0))

@@ -181,6 +181,8 @@ class StratParams:
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
+            if isinstance(value, bool):
+                raise ValueError(f"{name} must be finite")
             try:
                 parsed = float(value)
             except (TypeError, ValueError) as exc:

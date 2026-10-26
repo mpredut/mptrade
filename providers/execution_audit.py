@@ -29,7 +29,17 @@ except ImportError:  # pragma: no cover - Windows/import tooling
 
 _WRITE_LOCK = threading.Lock()
 _UUID_HEX_SUFFIX = re.compile(r"([0-9a-fA-F]{32})$")
-_CACHE_MAX = max(100, int(os.environ.get("EXECUTION_AUDIT_CACHE_MAX", "10000")))
+
+
+def _parse_cache_max() -> int:
+    raw = str(os.environ.get("EXECUTION_AUDIT_CACHE_MAX", "10000") or "").split("#", 1)[0].strip()
+    try:
+        return max(100, int(raw))
+    except ValueError:
+        return 10000
+
+
+_CACHE_MAX = _parse_cache_max()
 
 
 def _slug(value: object) -> str:

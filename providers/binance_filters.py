@@ -143,4 +143,6 @@ class BinanceOrderRules:
 
 def decimal_places(step: Decimal) -> int:
     """Return display precision implied by a positive tick or step."""
-    return max(0, -step.normalize().as_tuple().exponent)
+    if not isinstance(step, Decimal) or not step.is_finite() or step <= 0:
+        raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
+    return max(0, -int(step.normalize().as_tuple().exponent))

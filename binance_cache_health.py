@@ -25,6 +25,8 @@ load_dotenv(os.path.join(_ROOT, "config.env"))
 
 
 def _positive_finite(value: float, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be finite and positive")
     value = float(value)
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive")

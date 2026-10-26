@@ -161,18 +161,32 @@ class LiquidationSignal:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return
-        topic = msg.get("topic", "")
+        if not isinstance(msg, dict):
+            return
+        topic = str(msg.get("topic") or "")
         if not topic.startswith("allLiquidation."):
             return
         now = time.time()
         for item in msg.get("data", []) or []:
+            if not isinstance(item, dict):
+                continue
             try:
                 symbol = str(item["s"]).strip().upper()
                 if not symbol:
                     continue
                 # Bybit: "Buy" = long liquidated, "Sell" = short liquidated.
-                side = _LONG if item["S"] == "Buy" else _SHORT
-                notional = float(item["v"]) * float(item["p"])
+                raw_side = str(item["S"]).strip()
+                if raw_side == "Buy":
+                    side = _LONG
+                elif raw_side == "Sell":
+                    side = _SHORT
+                else:
+                    continue
+                vol = float(item["v"])
+                px = float(item["p"])
+                if not (math.isfinite(vol) and vol > 0 and math.isfinite(px) and px > 0):
+                    continue
+                notional = vol * px
                 if not math.isfinite(notional) or notional <= 0:
                     continue
             except (KeyError, ValueError, TypeError):
@@ -217,7 +231,7 @@ class LiquidationSignal:
             "long_count": long_n,
             "short_count": short_n,
             "net_usd": short_usd - long_usd,
-            "age_sec": (now - last_ts) if last_ts else float("inf"),
+            "age_sec": max(0.0, now - last_ts) if last_ts else float("inf"),
         }
 
     def capitulation_ratio(self, symbol: str,

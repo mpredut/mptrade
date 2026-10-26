@@ -669,14 +669,14 @@ class PositionExitManager:
                     lowest_px = current_price
                 if not math.isfinite(lowest_px) or lowest_px <= 0:
                     lowest_px = current_price
-                    bounce_state["lowest_price"] = current_price
+                bounce_state["lowest_price"] = lowest_px
                 try:
                     peak_px = float(bounce_state.get("peak_bounce_price") or current_price)
                 except (TypeError, ValueError):
                     peak_px = current_price
                 if not math.isfinite(peak_px) or peak_px <= 0:
                     peak_px = current_price
-                    bounce_state["peak_bounce_price"] = current_price
+                bounce_state["peak_bounce_price"] = peak_px
                 bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
                 bounce_attempted = bounce_recovery >= self.config.sl_bounce_min_recovery_pct
 
@@ -948,7 +948,12 @@ class PositionExitManager:
         if snapshot.gain_ratio <= 0:
             if symbol in self.tp_ride_state:
                 ride_state = self.tp_ride_state.pop(symbol)
-                peak_px = ride_state.get("peak_price", current_price)
+                try:
+                    peak_px = float(ride_state.get("peak_price") or current_price)
+                    if not math.isfinite(peak_px) or peak_px <= 0:
+                        peak_px = current_price
+                except (TypeError, ValueError):
+                    peak_px = current_price
                 reason = (
                     f"mdhtp_profit_floor_breached (price {current_price:.4f} dropped below cost "
                     f"under floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
@@ -1009,16 +1014,14 @@ class PositionExitManager:
                 cur_peak_px = current_price
             if not math.isfinite(cur_peak_px) or cur_peak_px <= 0:
                 cur_peak_px = current_price
-                ride_state["peak_price"] = current_price
+            ride_state["peak_price"] = cur_peak_px
             try:
                 cur_peak_gain = float(ride_state.get("peak_gain", price_increase))
             except (TypeError, ValueError):
                 cur_peak_gain = price_increase
             if not math.isfinite(cur_peak_gain) or cur_peak_gain < 0:
                 cur_peak_gain = price_increase
-                ride_state["peak_gain"] = price_increase
-            else:
-                ride_state["peak_gain"] = cur_peak_gain
+            ride_state["peak_gain"] = cur_peak_gain
             if current_price > cur_peak_px:
                 ride_state["peak_price"] = current_price
                 ride_state["peak_gain"] = price_increase
@@ -1028,13 +1031,15 @@ class PositionExitManager:
             pullback_from_peak = snapshot.pullback_ratio(peak_px)
             last_peak_t = ride_state.get("last_peak_time", now)
             if (
-                not isinstance(last_peak_t, (int, float))
+                isinstance(last_peak_t, bool)
+                or not isinstance(last_peak_t, (int, float))
                 or not math.isfinite(float(last_peak_t))
                 or float(last_peak_t) <= 0
                 or float(last_peak_t) > now
             ):
-                ride_state["last_peak_time"] = now
-            stagnation_elapsed = now - float(ride_state["last_peak_time"])
+                last_peak_t = now
+            ride_state["last_peak_time"] = float(last_peak_t)
+            stagnation_elapsed = now - ride_state["last_peak_time"]
 
             # Optional Advanced Guard: Fast profit reversal
             if self.config.fast_profit_guard_enabled:

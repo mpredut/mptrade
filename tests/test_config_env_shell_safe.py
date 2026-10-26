@@ -187,4 +187,64 @@ def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     assert "|BULL||" in lines[0]
 
 
+def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
+    from decimal import Decimal
+    import pytest
+    import active_intents
+    import binance_cache_health
+    from liquidation_signal import LiquidationSignal
+    from providers import binance_filters, execution_audit
+    from strategies.position_exit_manager import (
+        PositionExitManager,
+        PositionSnapshot,
+        ReentrySnapshot,
+    )
+
+    monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "5000 # inline comment")
+    assert execution_audit._parse_cache_max() == 5000
+    monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "bad_int")
+    assert execution_audit._parse_cache_max() == 10000
+
+    with pytest.raises(binance_filters.BinanceFilterError):
+        binance_filters.decimal_places(Decimal("NaN"))
+    with pytest.raises(ValueError):
+        binance_cache_health._positive_finite(True, "test")
+
+    summary = active_intents._build_summary(
+        intents=[{"symbol": "BTCUSDC", "side": "BUY", "requested_qty": "bad", "executed_qty": None, "requested_price": "nan"}],
+        exposures=[],
+    )
+    assert summary["pending_notional"]["total_buy"] == 0.0
+
+    mgr = PositionExitManager()
+    mgr.bind_state({
+        "sl_episode_state": {"BTCUSDC": {"started_at": 1000.0, "buy_price": 100.0, "disaster_floor": "0.0"}},
+        "sl_bounce_state": {"BTCUSDC": {"started_at": 1000.0, "buy_price": 100.0, "lowest_price": None, "peak_bounce_price": None}},
+        "tp_ride_state": {"ETHUSDC": {"started_at": 1000.0, "buy_price": 100.0, "peak_price": None, "peak_gain": None}},
+        "reentry_state": {"BTCUSDC": {"trough": None, "peak": None, "peak_bounce": None, "started_at": 1000.0}},
+    })
+    sl_dec = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1010.0, trend_up=True)
+    )
+    assert sl_dec.should_exit is False
+
+    tp_dec = mgr.evaluate_take_profit(
+        PositionSnapshot(symbol="ETHUSDC", current_price=108.0, avg_buy_price=100.0, current_time_s=1010.0, trend_up=True)
+    )
+    assert tp_dec.should_exit is False
+
+    re_dec = mgr.evaluate_reentry(
+        ReentrySnapshot(symbol="BTCUSDC", current_price=95.0, last_sell_price=100.0, last_exit_kind="STOP", current_time_s=1010.0)
+    )
+    assert re_dec.should_enter is False
+
+    sig = LiquidationSignal(symbols=["BTCUSDT"])
+    sig._ingest("[]")
+    sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Unknown","v":"1","p":"50000"}]}')
+    sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"-1","p":"-50000"}]}')
+    assert sig.get_signal("BTCUSDT")["long_count"] == 0
+    assert sig.get_signal("BTCUSDT")["short_count"] == 0
+
+
+
 
