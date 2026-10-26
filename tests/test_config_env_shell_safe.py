@@ -812,6 +812,35 @@ def test_spot_engine_trailing_core_and_pricewindow_hardening():
     assert w.calculate_acceleration(window_sec=True) != (float("nan"), float("nan"))
 
 
+def test_shadow_signals_utils_and_volatility_hardening():
+    import math
+    import shadow_signals as ss
+    import utils as u
+    from intelligence.internal.state import volatility as vol
+
+    # 1. shadow_signals.KalmanStateTracker.current_trend and update handle None/NaN/bool safely
+    tracker = ss.KalmanStateTracker(state_path=None, compute_vol=False)
+    tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": None}
+    assert tracker.current_trend("BTCUSDC") == (None, 1e18)
+    out = tracker.update("BTCUSDC", 100.0, 85000.0, float("nan"), [], float("nan"))
+    assert math.isfinite(out["kalman_vel"]) and math.isfinite(out["kalman_vel_std"])
+    out_bad = tracker.update("BTCUSDC", 200.0, float("nan"), 1.0, [], 1.0)
+    assert out_bad["kalman_trend"] == out["kalman_trend"]
+
+    # 2. utils.gaussian_weights_from_idx handles non-finite T/idx and negative idx
+    t_arr, w_arr = u.gaussian_weights_from_idx(float("inf"), 0)
+    assert len(t_arr) == 0 and len(w_arr) == 0
+    t_arr2, w_arr2 = u.gaussian_weights_from_idx(10, -3)
+    assert len(t_arr2) == 10 and abs(float(w_arr2.sum()) - 1.0) < 1e-9
+
+    # 3. volatility.calculate_volatility_1h and adaptive_thresholds handle non-finite/bool args
+    assert vol.calculate_volatility_1h([100.0] * 25, float("nan")) is None
+    assert vol.calculate_volatility_1h([100.0] * 25, True) is None
+    assert vol.adaptive_thresholds(2.5, k_reentry=float("nan"), k_dca=1.0) == (None, None)
+    assert vol.adaptive_thresholds(2.5, k_reentry=True, k_dca=1.0) == (None, None)
+
+
+
 
 
 

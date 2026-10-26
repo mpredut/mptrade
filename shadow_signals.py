@@ -153,9 +153,19 @@ class KalmanStateTracker:
     def current_trend(self, symbol: str) -> tuple:
         """Return Kalman trend and state age for tradeall's live order gate."""
         st = self._state.get(symbol)
-        if not st:
+        if not isinstance(st, dict) or not st:
             return None, 1e18
-        return st.get("kalman_trend"), self._now() - st.get("ts", 0)
+        raw_ts = st.get("ts")
+        if isinstance(raw_ts, bool) or raw_ts is None:
+            return None, 1e18
+        try:
+            ts_f = float(raw_ts)
+            now_f = float(self._now())
+        except (TypeError, ValueError):
+            return None, 1e18
+        if not (math.isfinite(ts_f) and ts_f > 0 and math.isfinite(now_f)):
+            return None, 1e18
+        return st.get("kalman_trend"), now_f - ts_f
 
     @staticmethod
     def _grad_std(fed: list[float]) -> float:
@@ -171,6 +181,69 @@ class KalmanStateTracker:
                big_prices, big_sample_rate: float) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
+        if (
+            ts is None
+            or price is None
+            or isinstance(ts, bool)
+            or isinstance(price, bool)
+        ):
+            k = self._last_kfields.get(
+                symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
+            )
+            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            return {
+                "kalman_vel": k["vel"],
+                "kalman_vel_std": k["vel_std"],
+                "kalman_trend": k["trend"],
+                "vol_1h_pct": v1h,
+                "adapt_reentry_pct": adapt_re,
+                "adapt_dca_pct": adapt_dca,
+            }
+        try:
+            ts = float(ts)
+            price = float(price)
+        except (TypeError, ValueError):
+            k = self._last_kfields.get(
+                symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
+            )
+            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            return {
+                "kalman_vel": k["vel"],
+                "kalman_vel_std": k["vel_std"],
+                "kalman_trend": k["trend"],
+                "vol_1h_pct": v1h,
+                "adapt_reentry_pct": adapt_re,
+                "adapt_dca_pct": adapt_dca,
+            }
+        if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
+            k = self._last_kfields.get(
+                symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
+            )
+            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            return {
+                "kalman_vel": k["vel"],
+                "kalman_vel_std": k["vel_std"],
+                "kalman_trend": k["trend"],
+                "vol_1h_pct": v1h,
+                "adapt_reentry_pct": adapt_re,
+                "adapt_dca_pct": adapt_dca,
+            }
+        sr_val = 1.0
+        if big_sample_rate is not None and not isinstance(big_sample_rate, bool):
+            try:
+                sr_f = float(big_sample_rate)
+                if math.isfinite(sr_f) and sr_f > 0:
+                    sr_val = sr_f
+            except (TypeError, ValueError):
+                sr_val = 1.0
+        eps_val = 0.0
+        if epsilon is not None and not isinstance(epsilon, bool):
+            try:
+                eps_f = float(epsilon)
+                if math.isfinite(eps_f) and eps_f >= 0:
+                    eps_val = eps_f
+            except (TypeError, ValueError):
+                eps_val = 0.0
         last_fed = self._last_fed.get(symbol, -1e18)
         if last_fed > ts:
             last_fed = -1e18
@@ -188,8 +261,8 @@ class KalmanStateTracker:
             if len(fed) >= 5:
                 eps_eff = self._grad_std(fed)
             else:
-                step_scale = math.sqrt(KALMAN_SAMPLE_SEC / max(float(big_sample_rate or 1.0), 0.1))
-                base_eps = max(float(epsilon or 0.0) * step_scale, price * 0.0008)
+                step_scale = math.sqrt(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))
+                base_eps = max(eps_val * step_scale, price * 0.0008)
                 if len(fed) >= 2:
                     eps_eff = max(base_eps, self._grad_std(fed))
                 else:

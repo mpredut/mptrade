@@ -182,8 +182,17 @@ def gaussian_weights_from_idx(T, idx: int):
     """
     Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights.
     """
-    t_steps = max(1, int(round(T))) if T and T > 0 else 0
-    idx_int = int(idx)
+    if T is None or idx is None or isinstance(T, bool) or isinstance(idx, bool):
+        return np.array([]), np.array([])
+    try:
+        t_f = float(T)
+        idx_f = float(idx)
+    except (TypeError, ValueError):
+        return np.array([]), np.array([])
+    if not (math.isfinite(t_f) and math.isfinite(idx_f)):
+        return np.array([]), np.array([])
+    t_steps = max(1, int(round(t_f))) if t_f > 0 else 0
+    idx_int = max(0, int(idx_f))
     if idx_int >= t_steps or t_steps <= 0:
         return np.array([]), np.array([])
 

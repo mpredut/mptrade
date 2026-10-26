@@ -30,9 +30,16 @@ _VOL_MEMO_MAX_ENTRIES = 128
 
 def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> Optional[float]:
     """Estimate one-sigma hourly volatility percentage from scaled log returns."""
-    n = len(prices)
-    if n < 20 or sample_rate_sec <= 0:
+    if not prices or sample_rate_sec is None or isinstance(sample_rate_sec, bool):
         return None
+    try:
+        sr_f = float(sample_rate_sec)
+        n = len(prices)
+    except (TypeError, ValueError):
+        return None
+    if n < 20 or not math.isfinite(sr_f) or sr_f <= 0:
+        return None
+    sample_rate_sec = sr_f
 
     p0 = float(prices[0])
     pn = float(prices[-1])
@@ -117,14 +124,20 @@ class RollingVolatilityTracker:
 
         self._prices.append(price)
 
-        if self._count < 20 or sample_rate_sec <= 0:
+        if sample_rate_sec is None or isinstance(sample_rate_sec, bool):
+            return None
+        try:
+            sr_f = float(sample_rate_sec)
+        except (TypeError, ValueError):
+            return None
+        if self._count < 20 or not math.isfinite(sr_f) or sr_f <= 0:
             return None
 
         variance = self._m2 / self._count
         std = math.sqrt(variance)
         if std == 0.0:
             return 0.0
-        return round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
+        return round(std * math.sqrt(3600.0 / sr_f) * 100.0, 4)
 
 
 def adaptive_thresholds(
@@ -133,15 +146,31 @@ def adaptive_thresholds(
     k_dca: float = K_DCA_DEFAULT,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Return adaptive reentry and DCA percentages as multipliers of hourly volatility."""
-    if vol1h is None or isinstance(vol1h, bool):
+    if (
+        vol1h is None
+        or isinstance(vol1h, bool)
+        or k_reentry is None
+        or k_dca is None
+        or isinstance(k_reentry, bool)
+        or isinstance(k_dca, bool)
+    ):
         return None, None
     try:
         vol_f = float(vol1h)
+        kr_f = float(k_reentry)
+        kd_f = float(k_dca)
     except (TypeError, ValueError):
         return None, None
-    if not math.isfinite(vol_f) or vol_f < 0:
+    if not (
+        math.isfinite(vol_f)
+        and vol_f >= 0
+        and math.isfinite(kr_f)
+        and kr_f >= 0
+        and math.isfinite(kd_f)
+        and kd_f >= 0
+    ):
         return None, None
-    return round(k_reentry * vol_f, 3), round(k_dca * vol_f, 3)
+    return round(kr_f * vol_f, 3), round(kd_f * vol_f, 3)
 
 
 # Direct backwards-compatible alias
