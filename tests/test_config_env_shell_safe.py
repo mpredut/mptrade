@@ -679,12 +679,19 @@ def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatc
     from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
     from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
 
-    # 1. external_order_guard.check_external_order_guards works with partial margins dict without KeyError
+    # 1. external_order_guard.check_external_order_guards fails fast on empty margins and works with explicit keys
+    with pytest.raises(KeyError):
+        eog.check_external_order_guards("BTCUSDC", "BUY", 85000.0, margins={})
     ok, reason, scale = eog.check_external_order_guards(
         "BTCUSDC",
         "BUY",
         85000.0,
-        margins={"whale_guard_mode": "off", "orderbook_wall_guard_mode": "off", "funding_guard_mode": "off"},
+        margins={
+            "shadow_notify": False,
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+        },
     )
     assert (ok, reason, scale) == (True, "ok", 1.0)
 

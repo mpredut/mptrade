@@ -126,7 +126,7 @@ def check_external_order_guards(
                 now_ts = nf
         except (TypeError, ValueError):
             pass
-    shadow_notify_enabled = str(m.get("shadow_notify", False)).strip().lower() in ("1", "1.0", "true", "yes", "on")
+    shadow_notify_enabled = str(m["shadow_notify"]).strip().lower() in ("1", "1.0", "true", "yes", "on")
 
     def _send_micro_shadow_notify(
         guard_key: str,
@@ -155,7 +155,7 @@ def check_external_order_guards(
             pass
 
     # 1. GI_WHALE: Whale Flow & Open Interest Divergence Guard
-    whale_mode = validate_guard_mode_cfg(m.get("whale_guard_mode", "enforce"), "whale_guard_mode")
+    whale_mode = validate_guard_mode_cfg(m["whale_guard_mode"], "whale_guard_mode")
     if ext_mode == "shadow" and whale_mode == "enforce":
         whale_mode = "shadow"
     if whale_mode != "off" and not GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
@@ -193,7 +193,7 @@ def check_external_order_guards(
             pass
 
     # 2. GI_OBOOK: Orderbook Depth & Whale Limit Wall Guard
-    ob_mode = validate_guard_mode_cfg(m.get("orderbook_wall_guard_mode", "enforce"), "orderbook_wall_guard_mode")
+    ob_mode = validate_guard_mode_cfg(m["orderbook_wall_guard_mode"], "orderbook_wall_guard_mode")
     if ext_mode == "shadow" and ob_mode == "enforce":
         ob_mode = "shadow"
     if ob_mode != "off" and not GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed):
@@ -230,7 +230,7 @@ def check_external_order_guards(
             pass
 
     # 3. GI_FUNDING (GI_CROWD): Perpetual Derivatives Funding Rate Crowding Guard
-    funding_mode = validate_guard_mode_cfg(m.get("funding_guard_mode", "enforce"), "funding_guard_mode")
+    funding_mode = validate_guard_mode_cfg(m["funding_guard_mode"], "funding_guard_mode")
     if ext_mode == "shadow" and funding_mode == "enforce":
         funding_mode = "shadow"
     if funding_mode != "off" and not GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed):
