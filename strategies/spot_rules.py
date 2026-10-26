@@ -15,18 +15,38 @@ from __future__ import annotations
 import math
 
 
+def _finite_float(val, default=None):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def diff_percent(v1: float, v2: float) -> float:
     """Return symmetric percentage difference relative to the absolute mean.
     Identical to botcore.diff_percent but self-contained for isolated backtests."""
-    if v1 == v2:
+    f1 = _finite_float(v1)
+    f2 = _finite_float(v2)
+    if f1 is None or f2 is None:
+        return float("inf")
+    if f1 == f2:
         return 0.0
-    return abs(v1 - v2) / ((abs(v1) + abs(v2)) / 2) * 100
+    denom = (abs(f1) + abs(f2)) / 2
+    if denom <= 0:
+        return float("inf")
+    return abs(f1 - f2) / denom * 100
 
 
 def are_close(v1: float, v2: float, tol_pct: float) -> bool:
     """Return whether v1 is within tol_pct%% of v2, matching botcore.are_close.
     Treat near-threshold prices as reached to avoid missing entries by a few cents."""
-    return diff_percent(v1, v2) <= tol_pct
+    tol_f = _finite_float(tol_pct)
+    if tol_f is None or tol_f < 0:
+        return False
+    return diff_percent(v1, v2) <= tol_f
 
 
 def entry_price(close: float, disc_pct: float) -> float:
@@ -42,19 +62,12 @@ def tp_price(avg: float, tp_pct: float) -> float:
 def hit_stop(avg: float, price: float, sl_pct: float) -> bool:
     """Return whether unrealized long loss reaches stop loss.
     A non-positive sl_pct or missing average disables the stop."""
-    if sl_pct <= 0 or not avg:
+    avg_f = _finite_float(avg)
+    px_f = _finite_float(price)
+    sl_f = _finite_float(sl_pct)
+    if avg_f is None or avg_f <= 0 or px_f is None or px_f <= 0 or sl_f is None or sl_f <= 0:
         return False
-    return (avg - price) / avg * 100 >= sl_pct
-
-
-def _finite_float(val, default=None):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if math.isfinite(f) else default
+    return (avg_f - px_f) / avg_f * 100 >= sl_f
 
 
 def reentry_stop_blocked(price: float, sl_low: float, bounce_pct: float, tol_pct: float) -> bool:
@@ -90,10 +103,13 @@ def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float
     """Return whether price is `drop_pct`%% below the latest buy, including tolerance.
     This checks PRICE only; the caller retains DCA-count, budget, and open-order caps.
     A zero tolerance requires price to be at or below the threshold."""
-    if not last_buy:
+    px_f = _finite_float(price)
+    lb_f = _finite_float(last_buy)
+    drop_f = _finite_float(drop_pct)
+    if px_f is None or px_f <= 0 or lb_f is None or lb_f <= 0 or drop_f is None:
         return False
-    prag = last_buy * (1 - drop_pct / 100)
-    return price <= prag or are_close(price, prag, tol_pct)
+    prag = lb_f * (1 - drop_f / 100)
+    return px_f <= prag or are_close(px_f, prag, tol_pct)
 
 
 def progressive_dca_drop_pct(
@@ -107,9 +123,12 @@ def progressive_dca_drop_pct(
     non-negative values so a bad configuration cannot compress levels and accelerate
     exposure during a decline.
     """
-    growth = max(0.0, float(growth_pct))
-    completed = max(0, int(completed_dca_buys))
-    return max(0.0, float(base_drop_pct)) + growth * completed
+    base_f = _finite_float(base_drop_pct, 0.0)
+    growth_f = _finite_float(growth_pct, 0.0)
+    comp_f = _finite_float(completed_dca_buys, 0.0)
+    growth = max(0.0, growth_f)
+    completed = max(0, int(comp_f))
+    return max(0.0, base_f) + growth * completed
 
 
 def reentry_hybrid_blocked(
@@ -325,11 +344,11 @@ def check_fast_profit_reversal(
     recent = [p for t, p in valid_shadows if t >= cutoff]
     if not recent:
         recent = [valid_shadows[-1][1]]
-    local_peak = max(max(recent), current_price)
+    local_peak = max(max(recent), px_f)
     if local_peak <= 0:
         return False, current_gain_pct, 0.0
-    micro_drop_pct = (local_peak - current_price) / local_peak * 100.0
-    triggered = bool(micro_drop_pct >= drop_pct)
+    micro_drop_pct = (local_peak - px_f) / local_peak * 100.0
+    triggered = bool(micro_drop_pct >= drop_f)
     return triggered, current_gain_pct, micro_drop_pct
 
 
@@ -339,7 +358,10 @@ def parabolic_surge_profit_floor_pct(
     min_profit_pct: float = 1.0,
 ) -> float:
     """Return the gross profit floor shared by surge signals and pending exits."""
-    return max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)
+    sg_f = _finite_float(surge_gain_pct, 25.0)
+    ep_f = _finite_float(exit_pullback_pct, 3.2)
+    mp_f = _finite_float(min_profit_pct, 1.0)
+    return max(mp_f, sg_f - ep_f * 1.5)
 
 
 def check_parabolic_surge_exhaustion(
@@ -458,8 +480,8 @@ def check_slow_grind_exhaustion(
     if not (current_gain_pct >= mg_f):
         return False, ""
     # Check flash drop
-    win_s = float(flash_window_sec) if (flash_window_sec is not None and not isinstance(flash_window_sec, bool) and math.isfinite(float(flash_window_sec))) else 0.0
-    cutoff = current_ts - max(0.0, win_s)
+    win_s = _finite_float(flash_window_sec, 0.0)
+    cutoff = cur_t_f - max(0.0, win_s)
     recent = [
         float(p)
         for t, p in (shadow_prices or ())
@@ -472,27 +494,24 @@ def check_slow_grind_exhaustion(
         and float(p) > 0
         and float(t) >= cutoff
     ]
-    if math.isfinite(float(flash_drop_pct)) and flash_drop_pct > 0 and recent:
-        local_flash_peak = max(max(recent), current_price)
+    fd_f = _finite_float(flash_drop_pct)
+    if fd_f is not None and fd_f > 0 and recent:
+        local_flash_peak = max(max(recent), px_f)
         if local_flash_peak > 0:
-            flash_drop = (local_flash_peak - current_price) / local_flash_peak * 100.0
-            if flash_drop >= flash_drop_pct:
-                return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{flash_drop_pct:.2f}%"
+            flash_drop = (local_flash_peak - px_f) / local_flash_peak * 100.0
+            if flash_drop >= fd_f:
+                return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{fd_f:.2f}%"
     # Check structural drop
-    if (
-        math.isfinite(float(structural_drop_pct))
-        and structural_drop_pct > 0
-        and recent_peak is not None
-        and not isinstance(recent_peak, bool)
-        and math.isfinite(float(recent_peak))
-        and recent_peak > 0
-    ):
-        struct_drop = (recent_peak - current_price) / recent_peak * 100.0
-        if struct_drop >= structural_drop_pct:
-            return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{structural_drop_pct:.2f}%"
+    sd_f = _finite_float(structural_drop_pct)
+    rp_f = _finite_float(recent_peak)
+    if sd_f is not None and sd_f > 0 and rp_f is not None and rp_f > 0:
+        struct_drop = (rp_f - px_f) / rp_f * 100.0
+        if struct_drop >= sd_f:
+            return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{sd_f:.2f}%"
     # Check SMA break
-    if sma_value is not None and not isinstance(sma_value, bool) and math.isfinite(float(sma_value)) and current_price < sma_value:
-        return True, f"slow_grind_sma_break_{current_price:.4f}_lt_{sma_value:.4f}"
+    sma_f = _finite_float(sma_value)
+    if sma_f is not None and px_f < sma_f:
+        return True, f"slow_grind_sma_break_{px_f:.4f}_lt_{sma_f:.4f}"
     return False, ""
 
 

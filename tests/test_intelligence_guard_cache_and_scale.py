@@ -7176,5 +7176,63 @@ def test_iteration44_trailing_core_and_order_retry_nan_bool_safety(monkeypatch, 
     assert order_retry.get_accepted_order_ids_for_owner(True, "tradeall") == []
 
 
+def test_iteration45_spot_rules_and_order_retry_worker_nan_bool_safety(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import pytest
+    from strategies import spot_rules as sr
+    import order_retry as oq
+    import order_retry_worker as orw
+
+    # 1. spot_rules: hit_stop and dca_price_hit reject 0.0 / False / True / NaN prices
+    assert sr.hit_stop(100.0, 0.0, 5.0) is False
+    assert sr.hit_stop(100.0, False, 5.0) is False
+    assert sr.hit_stop(100.0, True, 5.0) is False
+    assert sr.hit_stop(100.0, float("nan"), 5.0) is False
+    assert sr.hit_stop(100.0, 94.0, 5.0) is True
+
+    assert sr.dca_price_hit(0.0, 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(False, 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(True, 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(float("nan"), 100.0, 5.0, 0.05) is False
+    assert sr.dca_price_hit(95.0, 100.0, 5.0, 0.05) is True
+
+    assert sr.are_close(1.0, True, 0.05) is False
+    assert sr.are_close(100.0, 100.0, float("nan")) is False
+    assert sr.progressive_dca_drop_pct(float("nan"), True, float("nan")) == 0.0
+    assert sr.parabolic_surge_profit_floor_pct(float("nan"), True, float("nan")) == pytest.approx(20.2)
+
+    # 2. order_retry_worker: awaiting_cancel with NaN filled_qty must NOT resolve/delete the replacement record
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "q45.jsonl"))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "q45.lock"))
+    rid = oq.enqueue(
+        "BTCUSDC",
+        "SELL",
+        1.0,
+        lifecycle="awaiting_cancel",
+        replaces_order_id="ORD-999",
+        replaces_original_qty=1.0,
+        now=1000.0,
+        created_ts=1000.0,
+    )
+    assert rid is not None
+    fake_mkt = SimpleNamespace(
+        order_status=lambda sym, oid, provider_name=None: SimpleNamespace(
+            status="canceled",
+            venue_status="CANCELED",
+            filled_qty=float("nan"),
+            terminal=True,
+        ),
+    )
+    stats = orw.process_once(fake_mkt, now=2000.0)
+    rec_after = oq.get(rid)
+    assert rec_after is not None
+    assert rec_after["lifecycle"] == "awaiting_cancel"
+    assert rec_after.get("status_error") == "cancel_activation_failed"
+    assert orw._format_ts(True) == "N/A"
+    with pytest.raises(ValueError):
+        orw.IncidentDigest(tmp_path / "dig.json", True)
+
+
+
 
 

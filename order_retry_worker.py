@@ -237,8 +237,10 @@ def _not_found_reliability_status(mkt, record, now, provider_name):
     if capabilities is None or not capabilities.lookup_by_client_order_id:
         return False, "lookup_unavailable"
     raw_venue_horizon = getattr(capabilities, "not_found_reliable_for_seconds", None)
-    if raw_venue_horizon is None:
+    if raw_venue_horizon is None or isinstance(raw_venue_horizon, bool):
         return False, "missing_reconciliation_horizon"
+    if isinstance(now, bool) or isinstance(record.get("created_ts"), bool) or isinstance(record.get("last_attempt_ts"), bool):
+        return False, "invalid_reference_timestamp"
     try:
         venue_horizon = float(raw_venue_horizon)
         configured_horizon = float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC)
@@ -295,7 +297,7 @@ def process_once(mkt, now=None):
     open/partial orders stay tracked, fills are removed, and only explicit
     rejection/expiry can create a remainder revision. Return processing statistics.
     """
-    now = now if now is not None else time.time()
+    now = oq._clean_now_sec(now)
     snapshot = oq.load_validated(now)
 
     to_retry = []       # due pending records; reconciliation precedes price gating
@@ -439,12 +441,25 @@ def process_once(mkt, now=None):
             venue_status = str(status.venue_status or "").upper()
             canceled = venue_status in {"CANCELED", "CANCELLED"}
             if canceled:
-                try:
-                    original_qty = float(r.get("replaces_original_qty"))
-                    replacement_qty = max(
-                        0.0, original_qty - float(status.filled_qty or 0.0))
-                except (TypeError, ValueError, OverflowError):
+                raw_orig_qty = r.get("replaces_original_qty")
+                raw_filled_qty = getattr(status, "filled_qty", 0.0)
+                if isinstance(raw_orig_qty, bool) or isinstance(raw_filled_qty, bool):
                     replacement_qty = -1.0
+                else:
+                    try:
+                        original_qty = float(raw_orig_qty)
+                        filled_qty_val = float(raw_filled_qty or 0.0)
+                        if (
+                            math.isfinite(original_qty)
+                            and original_qty > 0
+                            and math.isfinite(filled_qty_val)
+                            and filled_qty_val >= 0
+                        ):
+                            replacement_qty = max(0.0, original_qty - filled_qty_val)
+                        else:
+                            replacement_qty = -1.0
+                    except (TypeError, ValueError, OverflowError):
+                        replacement_qty = -1.0
                 activation = oq.activate_claimed_replacement(
                     r, replacement_qty, now)
                 if activation == "activated":
@@ -803,6 +818,8 @@ def _resolve_display_assets(symbol):
 
 def _format_ts(ts):
     """Format a POSIX timestamp in local YYYY-MM-DD HH:MM:SS, or N/A."""
+    if ts is None or isinstance(ts, bool):
+        return "N/A"
     try:
         val = float(ts or 0.0)
         if not math.isfinite(val) or val <= 0:
@@ -1025,13 +1042,15 @@ class IncidentDigest:
 
     def __init__(self, path, interval_seconds):
         self.path = os.fspath(path)
+        if isinstance(interval_seconds, bool):
+            raise ValueError("digest interval must be finite and positive")
         self.interval = float(interval_seconds)
         if not math.isfinite(self.interval) or self.interval <= 0:
             raise ValueError("digest interval must be finite and positive")
 
     def collect(self, events, *, now):
         """Return due summaries of events with labels, quantity and sample ID."""
-        if not math.isfinite(now) or now <= 0:
+        if isinstance(now, bool) or not math.isfinite(now) or now <= 0:
             raise ValueError("digest time must be finite and positive")
         if (
             not events
