@@ -46,8 +46,11 @@ def parse_order_execution_report(
     """
     if not isinstance(event, dict):
         return None
-    symbol = event.get("s")
-    if not symbol or not isinstance(symbol, str):
+    raw_symbol = event.get("s")
+    if not raw_symbol or not isinstance(raw_symbol, str):
+        return None
+    symbol = raw_symbol.strip().upper()
+    if not symbol:
         return None
 
     # Cache only executed orders, matching get_filled_orders. NEW or terminal orders
@@ -89,6 +92,9 @@ def parse_order_execution_report(
                 if cum_quote > 0 and cum_qty > 0:
                     last_price = cum_quote / cum_qty
         fallback_ms = _clean_now_ms(now_ms)
+        ts_ms = extract_timestamp_ms(event, default=None)
+        if ts_ms is None or ts_ms <= 0:
+            ts_ms = fallback_ms
         order_item = {
             "orderId": event.get("i"),
             # Store one immutable fill. A cumulative Z/z aggregate cannot name all
@@ -96,9 +102,7 @@ def parse_order_execution_report(
             # older fills twice. L/l plus t is exactly deduplicable across both paths.
             "price": last_price,
             "quantity": last_quantity,
-            "timestamp": int(
-                extract_timestamp_ms(event, default=None) or fallback_ms
-            ),
+            "timestamp": int(ts_ms),
             "side": extract_order_side(event) or event.get("S"),
             "status": event.get("X"),
             "symbol": symbol,
@@ -125,8 +129,11 @@ def parse_trade_execution_report(
     """
     if not isinstance(event, dict) or event.get("x") != "TRADE":
         return None
-    symbol = event.get("s")
-    if not symbol or not isinstance(symbol, str):
+    raw_symbol = event.get("s")
+    if not raw_symbol or not isinstance(raw_symbol, str):
+        return None
+    symbol = raw_symbol.strip().upper()
+    if not symbol:
         return None
 
     side = extract_order_side(event)
@@ -137,12 +144,17 @@ def parse_trade_execution_report(
     if isinstance(raw_trade_id, bool) or isinstance(event.get("i"), bool):
         builtins.print("[cacheManager][WS] rejected Trade report with boolean ID")
         return None
+    if isinstance(raw_trade_id, str):
+        raw_trade_id = raw_trade_id.strip() or None
     try:
         if raw_trade_id is not None and int(raw_trade_id) < 0:
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
             return None
     except (TypeError, ValueError, OverflowError):
         pass
+    if raw_trade_id is None and event.get("i") is None:
+        builtins.print("[cacheManager][WS] rejected Trade report with missing trade and order ID")
+        return None
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
         else f"{event.get('i')}-{event.get('T')}"

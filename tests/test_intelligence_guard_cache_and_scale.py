@@ -9762,3 +9762,39 @@ def test_iteration81_protobuf_self_heal_agy_store_fix_and_config_safety(monkeypa
     assert config._parse_bool("unknown_token", default=False) is False
 
 
+def test_iteration82_topics_extract_json_ws_normalize_and_resources_watchdog():
+    """Verify Iteration 82 topics.extract_json_object hybrid fence/trailing JSON handling, bapi_ws_normalize symbol/timestamp validation, and os_resources_watchdog stat parsing."""
+    import pytest
+    from orchestratorOS.agy import topics
+    from binance_api import bapi_ws_normalize
+    from orchestratorOS.livecheck import os_resources_watchdog
+
+    # 1. topics.extract_json_object preserves trailing JSON outside non-JSON code fences and skips broken fences
+    hybrid = "Analysis:\n```python\nprint('hello')\n```\nFinal decision:\n{\"decision\": \"ALLOW\", \"confidence\": 0.9}"
+    assert topics.extract_json_object(hybrid) == {"decision": "ALLOW", "confidence": 0.9}
+    multi_fence = "```json\n{\"decision\": \"VETO\"}\n```\n```text\n{not_json}\n```"
+    assert topics.extract_json_object(multi_fence) == {"decision": "VETO"}
+
+    # 2. bapi_ws_normalize strips/uppercases symbols, rejects whitespace symbols, and replaces negative timestamps with fallback
+    assert bapi_ws_normalize.parse_order_execution_report({"s": "   ", "x": "TRADE", "X": "FILLED", "t": 1}) is None
+    res_order = bapi_ws_normalize.parse_order_execution_report(
+        {"s": " btcusdc ", "x": "TRADE", "X": "FILLED", "t": 42, "i": 100, "L": "65000", "l": "0.01", "T": -50},
+        now_ms=1700000000000,
+    )
+    assert res_order is not None
+    sym, order_item = res_order
+    assert sym == "BTCUSDC"
+    assert order_item["symbol"] == "BTCUSDC"
+    assert order_item["timestamp"] == 1700000000000
+
+    assert bapi_ws_normalize.parse_trade_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "t": "   ", "i": None}
+    ) is None
+
+    # 3. os_resources_watchdog._parse_proc_stat raises ValueError on truncated stat lines and _managed_script handles malformed proc dicts
+    with pytest.raises(ValueError, match="malformed /proc/stat line"):
+        os_resources_watchdog._parse_proc_stat("123 (python) S 1 2 3")
+    assert os_resources_watchdog._managed_script(None) is None
+    assert os_resources_watchdog._managed_script({"command": "python tradeall.py", "pid": False}) is None
+
+

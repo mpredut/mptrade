@@ -136,7 +136,8 @@ def handle_binance_ws_event(
     getter = cache_getter or _default_cache_getter
 
     if event_type == "executionReport":
-        symbol = event.get("s")
+        raw_sym = event.get("s")
+        symbol = raw_sym.strip().upper() if isinstance(raw_sym, str) else ""
         if should_log:
             print(
                 "[cacheManager][WS] executionReport "

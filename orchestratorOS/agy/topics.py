@@ -274,7 +274,10 @@ def prepare_topic_session(
         sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
         if exists:
-            since = step_count - _safe_int(entry.get("compacted_at_step"), 0)
+            compacted_at = _safe_int(entry.get("compacted_at_step"), 0)
+            if compacted_at < 0 or compacted_at > step_count:
+                compacted_at = 0
+            since = step_count - compacted_at
             return TopicSession(cid, "", since >= compact_steps_i)
         # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
         logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
@@ -308,12 +311,14 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
         fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
         for block in reversed(fences):
             cand = block.strip()
-            if cand.startswith("{") and cand.endswith("}"):
-                cleaned = cand
-                break
-        else:
-            if fences:
-                cleaned = fences[-1].strip()
+            if not cand:
+                continue
+            try:
+                obj = json.loads(cand)
+                if isinstance(obj, dict):
+                    return obj
+            except ValueError:
+                pass
     try:
         obj = json.loads(cleaned)
         if isinstance(obj, dict):
@@ -383,7 +388,10 @@ def record_topic_turn(
     if max_history_entries is None or isinstance(max_history_entries, bool):
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
     else:
-        max_history_entries = _safe_int(max_history_entries, required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES"))
+        parsed_max = _safe_int(max_history_entries, -1)
+        max_history_entries = (
+            parsed_max if parsed_max >= 0 else required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
+        )
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(resolved)
@@ -409,7 +417,7 @@ def record_topic_turn(
     condensed = condense_decision(response_text)
     if condensed:
         history.append({"utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "summary": condensed})
-    entry["rolling_history"] = history[-max_history_entries:] if max_history_entries > 0 else history
+    entry["rolling_history"] = history[-max_history_entries:] if max_history_entries > 0 else []
     reg[resolved] = entry
     save_topic_registry(reg, registry_path)
     if active_cid:

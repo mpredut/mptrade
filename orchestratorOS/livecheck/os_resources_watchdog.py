@@ -43,20 +43,28 @@ def _fleet_scripts():
                 continue
             fields = line.split("|")
             if len(fields) >= 7 and fields[6].strip() == "fleet":
-                scripts.add(fields[0].strip())
+                raw_pat = fields[0].strip().rstrip("$")
+                token = raw_pat.split()[0] if raw_pat else ""
+                if token:
+                    scripts.add(os.path.basename(token))
     except OSError:
         pass
     return scripts
 
 
 def _managed_script(proc):
-    parts = proc["command"].split()
+    if not isinstance(proc, dict):
+        return None
+    parts = str(proc.get("command") or "").split()
     scripts = _fleet_scripts()
+    pid = proc.get("pid")
+    if pid is None or isinstance(pid, bool):
+        return None
     for part in parts[1:]:
         name = os.path.basename(part)
         if name in scripts:
             try:
-                if Path(f"/proc/{proc['pid']}/cwd").resolve() == ROOT.resolve():
+                if Path(f"/proc/{pid}/cwd").resolve() == ROOT.resolve():
                     return name
             except (FileNotFoundError, OSError):
                 return None
@@ -136,6 +144,8 @@ def _parse_proc_stat(stat_text: str) -> tuple[str, int, int, int]:
         raise ValueError("malformed /proc/stat line")
     comm = stat_text[lparen + 1:rparen]
     after = stat_text[rparen + 1:].split()
+    if len(after) <= 21:
+        raise ValueError("malformed /proc/stat line")
     start_time = int(after[19])
     ticks = int(after[11]) + int(after[12])
     rss_pages = int(after[21])
