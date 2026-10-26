@@ -419,6 +419,18 @@ class KrakenProvider(MarketDataProvider):
         market = bool(kwargs.get("market", False) or kwargs.get("force", False))
         ordertype = "market" if market else "limit"
         submit_price = None if market else price
+        if not market:
+            if submit_price is None or isinstance(submit_price, bool):
+                print(f"[Kraken] place_order {symbol}: refused invalid price={submit_price!r}")
+                return None
+            try:
+                px_f = float(submit_price)
+            except (TypeError, ValueError, OverflowError):
+                print(f"[Kraken] place_order {symbol}: refused invalid price={submit_price!r}")
+                return None
+            if not math.isfinite(px_f) or px_f <= 0:
+                print(f"[Kraken] place_order {symbol}: refused non-positive price={submit_price!r}")
+                return None
         client_order_id = kwargs.get("client_order_id")
         try:
             cl_ord_id = (
@@ -478,6 +490,15 @@ class KrakenProvider(MarketDataProvider):
                      client_order_id: Optional[str] = None) -> str:
         s = "buy" if (side or "").lower().startswith("b") else "sell"
         ordertype = "market" if (market or price is None) else "limit"
+        if ordertype == "limit":
+            if isinstance(price, bool):
+                raise ProviderError(f"submit_order {symbol} {s}: invalid price={price!r}")
+            try:
+                px_f = float(price)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ProviderError(f"submit_order {symbol} {s}: invalid price={price!r}") from exc
+            if not math.isfinite(px_f) or px_f <= 0:
+                raise ProviderError(f"submit_order {symbol} {s}: non-positive price={price!r}")
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order {symbol} {s}: non-positive qty={qty}")

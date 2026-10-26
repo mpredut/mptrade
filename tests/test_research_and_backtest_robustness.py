@@ -1543,3 +1543,62 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     assert ps_ws.get_price("BTCUSDC") == 75000.5
 
 
+def test_provider_env_value_and_order_price_validation(tmp_path):
+    from providers.base import bool_env, env_value
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+
+    # 1. providers.base.env_value strips export prefix and unquoted inline comments
+    cfg_dir = tmp_path / "venue_cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.env").write_text(
+        "export VENUE_FLAG=true   # inline comment\n"
+        'QUOTED_HASH="abc#def"\n',
+        encoding="utf-8",
+    )
+    assert env_value(str(cfg_dir), "VENUE_FLAG") == "true"
+    assert bool_env("VENUE_FLAG", str(cfg_dir)) is True
+    assert env_value(str(cfg_dir), "QUOTED_HASH") == "abc#def"
+
+    # 2. HyperliquidProvider.round_price and submit_order/place_order reject invalid prices
+    hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+    hl._client_tried = True
+    hl._spot_pair = "@107"
+    assert hl.round_price("HYPE", None) == 0.0
+    assert hl.round_price("HYPE", True) == 0.0
+    assert hl.round_price("HYPE", float("nan")) == 0.0
+    assert hl.round_price("HYPE", -5.0) == 0.0
+    assert hl.place_order("HYPE", "SELL", 0.0, 1.0) is None
+    assert hl.place_order("HYPE", "SELL", True, 1.0) is None
+    try:
+        hl.submit_order("HYPE", "sell", 1.0, price=0.0)
+        raise AssertionError("Expected ProviderError for zero limit price")
+    except ProviderError:
+        pass
+    try:
+        hl.submit_order("HYPE", "sell", 1.0, price=True)
+        raise AssertionError("Expected ProviderError for bool limit price")
+    except ProviderError:
+        pass
+
+    # 3. KrakenProvider.place_order and submit_order reject invalid limit prices
+    kr = KrakenProvider()
+    assert kr.place_order("HYPEUSD", "SELL", 0.0, 1.0) is None
+    assert kr.place_order("HYPEUSD", "SELL", True, 1.0) is None
+    try:
+        kr.submit_order("HYPEUSD", "sell", 1.0, price=-1.0)
+        raise AssertionError("Expected ProviderError for negative limit price")
+    except ProviderError:
+        pass
+
+    # 4. T212Provider._signed_qty rejects non-positive quantities
+    try:
+        T212Provider._signed_qty("BUY", -1.0)
+        raise AssertionError("Expected ProviderError for negative T212 quantity")
+    except ProviderError:
+        pass
+
+
+

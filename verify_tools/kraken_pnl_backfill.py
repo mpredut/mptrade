@@ -43,7 +43,10 @@ def env_value(folder, name):
                 if k.startswith('export') and (len(k) == 6 or k[6].isspace()):
                     k = k[6:].strip()
                 if k == name:
-                    return v.strip().strip('"').strip("'") or None
+                    val = v.strip()
+                    if not (val.startswith('"') or val.startswith("'")):
+                        val = val.split('#', 1)[0].strip()
+                    return val.strip('"').strip("'") or None
     return None
 
 

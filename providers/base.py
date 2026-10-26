@@ -18,9 +18,14 @@ def env_value(folder: str, key: str) -> Optional[str]:
                     line = line.strip()
                     if not line or line.startswith("#") or "=" not in line:
                         continue
+                    if line.startswith("export") and (len(line) == 6 or line[6].isspace()):
+                        line = line[6:].strip()
                     name, _, value = line.partition("=")
                     if name.strip() == key:
-                        return value.strip().strip('"').strip("'") or None
+                        val = value.strip()
+                        if not (val.startswith('"') or val.startswith("'")):
+                            val = val.split("#", 1)[0].strip()
+                        return val.strip('"').strip("'") or None
         except OSError:
             continue
     return None

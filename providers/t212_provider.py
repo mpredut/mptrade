@@ -264,8 +264,11 @@ class T212Provider(MarketDataProvider):
         if isinstance(qty, bool):
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         try:
-            qty_f = round(abs(float(qty)), _VOLUME_DECIMALS)
-        except (TypeError, ValueError) as e:
+            raw_f = float(qty)
+            if not math.isfinite(raw_f) or raw_f <= 0:
+                raise ProviderError(f"invalid T212 quantity: {qty!r}")
+            qty_f = round(raw_f, _VOLUME_DECIMALS)
+        except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(f"invalid T212 quantity: {qty!r}") from e
         if not math.isfinite(qty_f) or qty_f < _ORDER_MIN:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")

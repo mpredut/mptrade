@@ -387,6 +387,14 @@ class HyperliquidProvider(MarketDataProvider):
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to Hyperliquid rules: max 5 significant figures and (8 - szDecimals) decimals for spot."""
         self.validate_symbol(symbol)
+        if price is None or isinstance(price, bool):
+            return 0.0
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not math.isfinite(price_f) or price_f <= 0.0:
+            return 0.0
         try:
             pp = self.pair_precision(symbol)
             sz_dec = int(getattr(pp, "volume_decimals", 2)) if pp is not None else 2
@@ -396,9 +404,9 @@ class HyperliquidProvider(MarketDataProvider):
             sys.path.insert(0, _HL_DIR)
         from hl_client import _round_px
         try:
-            return _round_px(float(price), sz_decimals=sz_dec, is_perp=False)
+            return _round_px(price_f, sz_decimals=sz_dec, is_perp=False)
         except Exception:
-            return float(price)
+            return price_f
 
     # -- Spot order placement, dry by default due to wallet co-mingling. --------
     def place_order(self, symbol: str, side: str, price: float, qty: float,
@@ -443,7 +451,13 @@ class HyperliquidProvider(MarketDataProvider):
             submit_px = self.round_price(symbol, aggressive_px)
             order_tif = "Ioc"
         else:
+            if price is None or isinstance(price, bool):
+                print(f"[HL] place_order {side} {symbol}: refused invalid price={price!r}")
+                return None
             submit_px = self.round_price(symbol, price)
+            if submit_px <= 0:
+                print(f"[HL] place_order {side} {symbol}: refused non-positive price={price!r}")
+                return None
             order_tif = "Gtc"
 
         if not live:
@@ -587,7 +601,11 @@ class HyperliquidProvider(MarketDataProvider):
             if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
                 raise ProviderError(f"submit_order({symbol}) market: price unavailable")
             px = float(mid) * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
+        elif isinstance(px, bool):
+            raise ProviderError(f"submit_order({symbol}): invalid price={px!r}")
         px = self.round_price(symbol, px)
+        if px <= 0:
+            raise ProviderError(f"submit_order({symbol}): non-positive price={price!r}")
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
