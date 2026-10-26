@@ -133,7 +133,8 @@ class KrakenTrailing:
         self.core.save(st)
 
     def trail_pct_for(self, asset: str) -> float:
-        return TRAIL_PCT.get(asset, DEFAULT_TRAIL_PCT)
+        asset_norm = str(asset or "").strip().upper()
+        return TRAIL_PCT.get(asset, TRAIL_PCT.get(asset_norm, DEFAULT_TRAIL_PCT))
 
     def _balance_ex_map(self) -> dict | None:
         if self._tick_balances is not None:

@@ -2374,6 +2374,11 @@ class CacheTradeManager(CacheManagerInterface):
             or isinstance(trade["time"], bool)
         ):
             return False
+        if any(
+            isinstance(trade.get(k), float) and not trade[k].is_integer()
+            for k in ("time", "id", "orderId")
+        ):
+            return False
         try:
             price = float(trade["price"])
             quantity = float(trade["qty"])
@@ -2545,6 +2550,11 @@ class CacheOrderManager(CacheManagerInterface):
             or isinstance(trade["timestamp"], bool)
         ):
             return False
+        if any(
+            isinstance(trade.get(k), float) and not trade[k].is_integer()
+            for k in ("orderId", "timestamp", "_legacyCoveredThrough")
+        ):
+            return False
         try:
             order_id = int(trade["orderId"])
             price = float(trade["price"])
@@ -2572,6 +2582,7 @@ class CacheOrderManager(CacheManagerInterface):
                     isinstance(trade["_fillIds"], list)
                     and all(
                         not isinstance(fill_id, bool)
+                        and str(fill_id).strip().isascii()
                         and str(fill_id).strip().isdigit()
                         and int(str(fill_id).strip()) >= 0
                         for fill_id in trade["_fillIds"]
@@ -2684,6 +2695,7 @@ class CacheOrderManager(CacheManagerInterface):
                 )
                 if raw_fill_id is not None and (
                     isinstance(raw_fill_id, bool)
+                    or not fill_id.isascii()
                     or not fill_id.isdigit()
                     or int(fill_id) < 0
                 ):
@@ -3630,7 +3642,10 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         """Return a fresh cached timestamp and price without fetching."""
         if isinstance(max_age_sec, bool):
             raise ValueError("max_age_sec must be finite and positive")
-        max_age = float(max_age_sec)
+        try:
+            max_age = float(max_age_sec)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("max_age_sec must be finite and positive") from exc
         if not math.isfinite(max_age) or max_age <= 0:
             raise ValueError("max_age_sec must be finite and positive")
         sym_u = str(symbol or "").strip().upper()

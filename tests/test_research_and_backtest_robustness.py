@@ -2777,6 +2777,53 @@ def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
         assert ts_dummy.trail_pct_for(f" {sample_sym.lower()} ") == TRAIL_PCT[sample_sym]
 
 
+def test_cache_manager_item_validation_and_kraken_trailing_hardening():
+    """Verify CacheTradeManager, CacheOrderManager, CacheCurrentPriceManager, and KrakenTrailing handle malformed inputs safely."""
+    import pytest
+    from cacheManager import CacheCurrentPriceManager, CacheOrderManager, CacheTradeManager
+    from kraken.trailing_stop import TRAIL_PCT as KRAKEN_TRAIL_PCT, KrakenTrailing
+
+    trade_mgr = object.__new__(CacheTradeManager)
+    valid_trade = {
+        "symbol": "BTCUSDC",
+        "id": 101,
+        "orderId": 202,
+        "price": "50000.0",
+        "qty": "0.01",
+        "time": 1700000000000,
+        "isBuyer": True,
+    }
+    assert trade_mgr._is_valid_item(valid_trade) is True
+    assert trade_mgr._is_valid_item({**valid_trade, "id": 101.5}) is False
+    assert trade_mgr._is_valid_item({**valid_trade, "orderId": 202.25}) is False
+    assert trade_mgr._is_valid_item({**valid_trade, "time": 1700000000000.5}) is False
+
+    order_mgr = object.__new__(CacheOrderManager)
+    valid_order = {
+        "orderId": 202,
+        "price": 50000.0,
+        "quantity": 0.01,
+        "timestamp": 1700000000000,
+        "side": "BUY",
+        "_fillIds": ["101"],
+    }
+    assert order_mgr._is_valid_item(valid_order) is True
+    assert order_mgr._is_valid_item({**valid_order, "orderId": 202.5}) is False
+    assert order_mgr._is_valid_item({**valid_order, "timestamp": 1700000000000.5}) is False
+    # Non-ASCII superscript digit "²" (\u00b2) must return False rather than raising ValueError
+    assert order_mgr._is_valid_item({**valid_order, "_fillIds": ["\u00b2"]}) is False
+
+    px_mgr = object.__new__(CacheCurrentPriceManager)
+    with pytest.raises(ValueError, match="max_age_sec must be finite and positive"):
+        px_mgr.get_cached_price_observation("BTCUSDC", None)  # type: ignore[arg-type]
+
+    if KRAKEN_TRAIL_PCT:
+        sample_asset = next(iter(KRAKEN_TRAIL_PCT))
+        kt_dummy = object.__new__(KrakenTrailing)
+        assert kt_dummy.trail_pct_for(f" {sample_asset.lower()} ") == KRAKEN_TRAIL_PCT[sample_asset]
+
+
+
 
 
 
