@@ -64,7 +64,12 @@ class MacroAnalyzer:
             "1", "1.0", "true", "yes", "on"
         )
         self.thread_prune_interval_sec = _clean_pos_interval(thread_prune_interval_sec, 10800.0)
-        self.symbols = symbols or ["BTCUSDC"]
+        cleaned_symbols = [
+            str(s).strip().upper()
+            for s in (symbols or [])
+            if s is not None and not isinstance(s, bool) and str(s).strip()
+        ]
+        self.symbols = cleaned_symbols or ["BTCUSDC"]
         self.running = False
 
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
@@ -454,8 +459,20 @@ class MacroAnalyzer:
 
         # 1. Geopolitical Threat assessment (Pillar 4)
         cached_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", None)
+        raw_retry_ttl = getattr(self.geopolitical_analyzer, "fallback_retry_ttl_sec", 120.0)
+        try:
+            retry_ttl = (
+                float(raw_retry_ttl)
+                if raw_retry_ttl is not None
+                and not isinstance(raw_retry_ttl, bool)
+                and math.isfinite(float(raw_retry_ttl))
+                and float(raw_retry_ttl) > 0.0
+                else 120.0
+            )
+        except (TypeError, ValueError, OverflowError):
+            retry_ttl = 120.0
         geo_interval = (
-            getattr(self.geopolitical_analyzer, "fallback_retry_ttl_sec", 120.0)
+            retry_ttl
             if getattr(cached_geo, "is_fallback", False)
             else self.macro_llm_interval_sec
         )
@@ -524,6 +541,15 @@ class MacroAnalyzer:
 
     def start(self, poll_interval_sec: float = 5.0) -> None:
         """Run the main analysis loop continuously."""
+        if (
+            isinstance(poll_interval_sec, bool)
+            or not isinstance(poll_interval_sec, (int, float))
+            or not math.isfinite(float(poll_interval_sec))
+            or float(poll_interval_sec) <= 0.0
+        ):
+            poll_interval_sec = 5.0
+        else:
+            poll_interval_sec = float(poll_interval_sec)
         self.running = True
 
         def _handle_exit(signum, frame):

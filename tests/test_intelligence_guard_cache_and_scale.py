@@ -9798,3 +9798,52 @@ def test_iteration82_topics_extract_json_ws_normalize_and_resources_watchdog():
     assert os_resources_watchdog._managed_script({"command": "python tradeall.py", "pid": False}) is None
 
 
+def test_iteration83_composite_trigger_priority_sell_scale_and_daemon_symbols(tmp_path):
+    """Verify Iteration 83 CompositeMarketIntelligence executable trigger prioritization, SELL scale preservation, and daemon symbol sanitization."""
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from intelligence.internal.guards.guard_decision import GuardDecision
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+
+    # 1. CompositeMarketIntelligence prioritizes executable triggers with highest strength and keeps SELL effective_scale at 1.0
+    comp = CompositeMarketIntelligence()
+    non_exec = TriggerEvent(
+        source="Kalman",
+        symbol="BTCUSDC",
+        side=TriggerSide.HOLD,
+        action=TriggerAction.NEUTRAL,
+        strength=0.95,
+        price=65000.0,
+        ts=1000.0,
+        reason="idle",
+    )
+    exec_sell = TriggerEvent(
+        source="Gradient",
+        symbol="BTCUSDC",
+        side=TriggerSide.SELL,
+        action=TriggerAction.EXIT,
+        strength=0.80,
+        price=65000.0,
+        ts=1000.0,
+        reason="exit_signal",
+    )
+    comp._get_kalman("BTCUSDC").evaluate = lambda *a, **k: (None, non_exec)
+    comp._get_gradient("BTCUSDC").evaluate = lambda *a, **k: (None, exec_sell)
+    comp.evaluate_guards = lambda *a, **k: GuardDecision.downscale("MockGuard", scale=0.4, reason="downscale_test")
+
+    eval_res = comp.evaluate("BTCUSDC", 65000.0, ts=1000.0, gradient=-1.5, epsilon=0.5, sample_rate_sec=False)
+    assert eval_res.active_trigger == exec_sell
+    assert eval_res.can_execute is True
+    assert eval_res.effective_scale == 1.0
+
+    # 2. MacroAnalyzer, GlobalTelemetryCollector, and IntelligenceTelemetryDaemon sanitize symbols lists
+    ma = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["  btcusdc  ", "", True, None])
+    assert ma.symbols == ["BTCUSDC"]
+    gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols=["   ", False])
+    assert len(gtc.symbols) >= 1 and all(isinstance(s, str) and s.strip() == s and s.isupper() for s in gtc.symbols)
+    itd = IntelligenceTelemetryDaemon(cache_dir=str(tmp_path), symbols=[" taousdc ", ""])
+    assert itd.symbols == ["TAOUSDC"]
+
+

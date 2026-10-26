@@ -410,11 +410,33 @@ class CompositeMarketIntelligence:
 
         # Calculate volatility if prices given
         vol1h: Optional[float] = None
+        sr_sec = (
+            float(sample_rate_sec)
+            if sample_rate_sec is not None
+            and not isinstance(sample_rate_sec, bool)
+            and isinstance(sample_rate_sec, (int, float))
+            and math.isfinite(float(sample_rate_sec))
+            and float(sample_rate_sec) > 0.0
+            else 60.0
+        )
         if prices_for_vol and len(prices_for_vol) >= 20:
-            vol1h = calculate_volatility_1h(prices_for_vol, sample_rate_sec)
+            vol1h = calculate_volatility_1h(prices_for_vol, sr_sec)
 
-        # Select primary active trigger (prioritize highest strength or first actionable)
-        active_trigger = triggered_events[0] if triggered_events else None
+        # Select primary active trigger (prioritize highest strength among executable triggers)
+        executable_triggers = [t for t in triggered_events if t.is_executable()]
+        if executable_triggers:
+            active_trigger = max(
+                executable_triggers,
+                key=lambda t: (
+                    float(t.strength)
+                    if isinstance(getattr(t, "strength", None), (int, float))
+                    and not isinstance(getattr(t, "strength", None), bool)
+                    and math.isfinite(float(t.strength))
+                    else 0.0
+                ),
+            )
+        else:
+            active_trigger = triggered_events[0] if triggered_events else None
         side = active_trigger.side.value if active_trigger else "HOLD"
 
         # Evaluate guards against active side
@@ -442,7 +464,7 @@ class CompositeMarketIntelligence:
             guard_dec = GuardDecision.allow("NoActiveOrder", "idle")
 
         can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
-        scale = guard_dec.suggested_scale if can_exec else 0.0
+        scale = (1.0 if side == "SELL" else guard_dec.suggested_scale) if can_exec else 0.0
 
         return MarketIntelligenceEvaluation(
             symbol=symbol,

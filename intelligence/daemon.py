@@ -72,8 +72,13 @@ class IntelligenceTelemetryDaemon:
         self.running = False
 
         # Resolve target symbols
-        if symbols:
-            self.symbols = [str(s).strip().upper() for s in symbols if str(s or "").strip()]
+        cleaned_symbols = [
+            str(s).strip().upper()
+            for s in (symbols or [])
+            if s is not None and not isinstance(s, bool) and str(s).strip()
+        ]
+        if cleaned_symbols:
+            self.symbols = cleaned_symbols
         else:
             self.symbols = self._detect_active_symbols()
 
@@ -294,6 +299,7 @@ class IntelligenceTelemetryDaemon:
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main daemon loop continuously."""
+        poll_interval_sec = _safe_pos_interval(poll_interval_sec, 1.0)
         self.running = True
 
         def _handle_exit(signum, frame):
