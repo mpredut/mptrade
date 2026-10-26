@@ -2211,26 +2211,31 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     df_new_bool, *_ = d_news.find_common_coins_and_sort(True, df_cmc_sample, {"BTC": 60010.0})
     assert list(df_new_bool["symbol"]) == ["BTC"]
 
-    with pytest.raises(RuntimeError):
-        require_shadow_interval(60, expected=True, context="TEST_BOT")
+    with pytest.raises(ValueError):
+        require_shadow_interval(1, True, "TEST_BOT")
 
     spec_inst = InstrumentSpec(
-        section="BINANCE_BTC",
+        name="BINANCE_BTC",
         provider="binance",
         symbol="BTCUSDC",
-        base_asset="BTC",
-        quote_asset="USDC",
-        roles=("monitor", "rtrade"),
-        settings={"gain": "3.5"},
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="24x7",
+        params={"role.mt": "yes", "role.rtrade": "yes", "gain": "3.5"},
     )
-    assert spec_inst.has_role("  MONITOR ") is True
-    assert spec_inst.has_role(True) is False
+    assert spec_inst.has_role("  MT ") is True
+    with pytest.raises(ValueError):
+        spec_inst.has_role(True)
     assert spec_inst.setting(" GAIN ") == "3.5"
-    assert spec_inst.setting(True, "fallback") == "fallback"
-    registry_map = {"BINANCE_BTC": spec_inst}
-    assert len(select_instruments(role=" RTRADE ", provider=" BINANCE ", registry=registry_map)) == 1
-    assert select_instruments(role=True, registry=registry_map) == []
-    assert select_instruments(provider=True, registry=registry_map) == []
+    with pytest.raises(ValueError):
+        spec_inst.setting(True)
+    assert len(select_instruments(role=" MT ", provider=" BINANCE ")) >= 1
+    with pytest.raises(ValueError):
+        select_instruments(role=True)
+    with pytest.raises(ValueError):
+        select_instruments(provider=True)
 
     monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path / "bot_home"))
     monkeypatch.setenv("AGY_UI_CLI_BASE", str(tmp_path / "ui_cli"))
