@@ -87,6 +87,10 @@ class PairPolicy:
         if not self.shock_hard_stop_fraction <= self.hard_stop_fraction < 1:
             raise ValueError(
                 "hard_stop_fraction must be >= shock_hard_stop_fraction and < 1")
+        if (isinstance(self.price_decimals, bool)
+                or not isinstance(self.price_decimals, int)
+                or self.price_decimals < 0):
+            raise ValueError("price_decimals must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,10 @@ def quote_prices(mid: float, adjustment_fraction: float,
     """Return bid/ask quotes symmetric around the same market snapshot."""
     if isinstance(mid, bool) or not math.isfinite(float(mid)) or mid <= 0:
         raise ValueError("mid must be positive")
+    if (isinstance(adjustment_fraction, bool)
+            or not math.isfinite(float(adjustment_fraction))
+            or not 0 < float(adjustment_fraction) < 1):
+        raise ValueError("adjustment_fraction must be in (0, 1)")
     return (
         round(mid * (1 - adjustment_fraction), decimals),
         round(mid * (1 + adjustment_fraction), decimals),
@@ -166,6 +174,14 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
             or not math.isfinite(float(current_price))
             or fill_price <= 0 or current_price <= 0):
         raise ValueError("the prices must be positive")
+    if (isinstance(adjustment_fraction, bool)
+            or not math.isfinite(float(adjustment_fraction))
+            or not 0 < float(adjustment_fraction) < 1):
+        raise ValueError("adjustment_fraction must be in (0, 1)")
+    if (isinstance(min_edge_fraction, bool)
+            or not math.isfinite(float(min_edge_fraction))
+            or not 0 <= float(min_edge_fraction) < 1):
+        raise ValueError("min_edge_fraction must be in [0, 1)")
     if side == "SELL":
         market_target = current_price * (1 + adjustment_fraction)
         floor = fill_price / (1 - min_edge_fraction)
@@ -225,7 +241,10 @@ class PairCoordinator:
         buy_price, sell_price = quote_prices(
             mid, self.policy.adjustment_fraction, self.policy.price_decimals)
         self.pair_id = pair_id or self.pair_id_factory()
-        self.started_at = self.clock()
+        raw_started = self.clock()
+        if isinstance(raw_started, bool) or not math.isfinite(float(raw_started)):
+            raise ValueError("the rtrade clock must be finite")
+        self.started_at = float(raw_started)
         self.first_fill_at = None
         self.first_fill_side = None
         self.shock = False
@@ -820,7 +839,10 @@ class PairCoordinator:
             return self.outcome()
         if self.phase == "idle":
             raise RuntimeError("start() must be called before step()")
-        now = self.clock() if now is None else float(now)
+        raw_now = self.clock() if now is None else now
+        if isinstance(raw_now, bool) or not math.isfinite(float(raw_now)):
+            raise ValueError("the rtrade clock must be finite")
+        now = float(raw_now)
         self._refresh()
         bq, bc, _bf, sq, sc, _sf = self._totals()
         self._record_first_fill(now, bq, sq)

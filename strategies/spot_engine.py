@@ -56,6 +56,26 @@ _REGIME_BAR_SETTLE_MAX_SEC = 900.0
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 
+def _clean_pos_float(val: object) -> float | None:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) and f > 0.0 else None
+
+
+def _clean_nonneg_float(val: object) -> float | None:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) and f >= 0.0 else None
+
+
 def state_path_for(pair: str, state_dir: str | None = None) -> str:
     """Return the state path, retaining the Kraken fallback for live compatibility."""
     safe = "".join(c for c in pair if c.isalnum() or c in "._-")
@@ -545,7 +565,7 @@ class Strategy:
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
-        self._simulated_ts = float(ts) if ts is not None else None
+        self._simulated_ts = _clean_nonneg_float(ts)
 
     def _emit(self, **event) -> None:
         """Send an event through the venue sink or legacy compatibility wrapper."""
@@ -1079,12 +1099,15 @@ class Strategy:
                     continue
                 st = status.status
                 terminal = st in ("closed", "canceled", "expired")
+                if any(isinstance(v, bool) for v in (status.filled_qty, status.cost, status.fee)):
+                    log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
+                    continue
                 try:
                     total_vol = float(status.filled_qty or 0.0)
                     total_cost = float(status.cost or total_vol * o["price"])
                     total_fee = float(status.fee or 0.0)
                     reported_price = total_cost / total_vol if total_vol > 0 else float(o["price"])
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
                 if (
@@ -1096,9 +1119,14 @@ class Strategy:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
 
-                applied_vol = float(o.get("applied_vol") or 0.0)
-                applied_cost = float(o.get("applied_cost") or 0.0)
-                applied_fee = float(o.get("applied_fee") or 0.0)
+                applied_vol = _clean_nonneg_float(o.get("applied_vol")) or 0.0
+                applied_cost = _clean_nonneg_float(o.get("applied_cost")) or 0.0
+                raw_af = o.get("applied_fee")
+                try:
+                    af_val = 0.0 if raw_af is None or isinstance(raw_af, bool) else float(raw_af)
+                except (TypeError, ValueError, OverflowError):
+                    af_val = 0.0
+                applied_fee = af_val if math.isfinite(af_val) else 0.0
                 eps = max(1e-12, float(o["vol"]) * 1e-12)
                 if total_vol + eps < applied_vol or total_cost + eps < applied_cost:
                     log(f"  ! [STRAT] status {o['txid']} regressed cumulatively "
@@ -1464,15 +1492,23 @@ class Strategy:
                 or self.s["cycle"] != 1 or self.s["spent"] > 0):
             log("  [STRAT] adopt: the state is not fresh — NOT adopting (cycle in progress)")
             return
-        qty = self.p.adopt_qty
+        qty = _clean_nonneg_float(self.p.adopt_qty) or 0.0
         if qty <= 0:  # Read quantity from the pair's base-asset balance.
             try:
                 precision = self.client.pair_precision(self.pair)
                 base = precision.base_asset if precision else ""
-                qty = float(self.client.free_balance(base) or 0.0)
+                raw_bal = self.client.free_balance(base)
             except ProviderError as e:
                 log(f"  ! [STRAT] adopt: cannot read the balance ({e})")
                 return
+            if raw_bal is None:
+                qty = 0.0
+            else:
+                clean_bal = _clean_nonneg_float(raw_bal)
+                if clean_bal is None:
+                    log("  ! [STRAT] adopt: invalid balance on the base asset")
+                    return
+                qty = clean_bal
         if qty <= 1e-12:
             log("  [STRAT] adopt: balance 0 on the base asset — waiting for the allocation")
             return
@@ -1880,17 +1916,18 @@ class Strategy:
         self, price: float, regime: MarketRegimeDecision | None, tick_time: float
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across trend overlay and DCA entries."""
-        lsp = self.s.get("last_sell_price") or self.s.get("last_sell")
+        lsp = _clean_pos_float(self.s.get("last_sell_price")) or _clean_pos_float(self.s.get("last_sell"))
         if not lsp:
             return True, "no_last_sell"
 
-        cur_peak = self.s.get("post_sell_peak") or lsp
+        cur_peak = _clean_pos_float(self.s.get("post_sell_peak")) or lsp
         self.s["post_sell_peak"] = max(cur_peak, price)
-        cur_trough = self.s.get("post_sell_trough") or lsp
+        cur_trough = _clean_pos_float(self.s.get("post_sell_trough")) or lsp
         self.s["post_sell_trough"] = min(cur_trough, price)
         last_kind = self.s.get("last_exit_kind")
         if last_kind == "STOP":
-            self.s["sl_low"] = min(self.s.get("sl_low") or price, price)
+            cur_sl_low = _clean_pos_float(self.s.get("sl_low")) or price
+            self.s["sl_low"] = min(cur_sl_low, price)
 
         # Symmetrical Re-entry Evaluation via PositionExitManager
         if self.exit_manager is None:
@@ -1992,7 +2029,7 @@ class Strategy:
 
         # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
         if self.p.surge_guard:
-            surge_peak = max(self.s.get("surge_peak") or price, price)
+            surge_peak = max(_clean_pos_float(self.s.get("surge_peak")) or price, price)
             self.s["surge_peak"] = surge_peak
             peak_gain = (surge_peak - avg) / avg * 100.0
             is_armed = bool(self.s.get("surge_active"))
@@ -2070,7 +2107,7 @@ class Strategy:
 
         # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
         if self.p.slow_grind_guard:
-            slow_peak = max(self.s.get("slow_grind_peak") or price, price)
+            slow_peak = max(_clean_pos_float(self.s.get("slow_grind_peak")) or price, price)
             self.s["slow_grind_peak"] = slow_peak
             entry_ts = self.s.get("entry_ts")
             if entry_ts is not None and current_gain >= self.p.slow_grind_min_gain_pct:
@@ -2112,7 +2149,7 @@ class Strategy:
                 return True
 
             # 4. Dynamic Profit Ratchet Trailing (Horizon 2)
-            peak = max(self.s.get("trend_peak") or price, price)
+            peak = max(_clean_pos_float(self.s.get("trend_peak")) or price, price)
             self.s["trend_peak"] = peak
             if self.p.trend_trail_dynamic and avg:
                 peak_gain = (peak - avg) / avg * 100.0
@@ -2203,8 +2240,9 @@ class Strategy:
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
+        clean_ts = _clean_nonneg_float(timestamp)
         if self.observe_only:
-            tick_time = float(timestamp) if timestamp is not None else self._now()
+            tick_time = clean_ts if clean_ts is not None else self._now()
             self._shadow_prices.append((tick_time, price))
             if not self.dry_run and not self.s.get("orders") and self.s.get("qty", 0.0) > 1e-12:
                 self.s["ledger_reconcile_required"] = True
@@ -2220,7 +2258,10 @@ class Strategy:
                 if ledger_val is None:
                     log("  ! [STRAT] ledger reconciliation unavailable (balance query returned None); decisions blocked")
                     return
-                ledger_qty = float(ledger_val)
+                ledger_qty = _clean_nonneg_float(ledger_val)
+                if ledger_qty is None:
+                    log("  ! [STRAT] ledger reconciliation unavailable (invalid balance); decisions blocked")
+                    return
             except (ProviderError, TypeError, ValueError, OverflowError) as exc:
                 log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
                 return
@@ -2276,9 +2317,9 @@ class Strategy:
         # Live uses wall time while replay injects bar time. Without this distinction, a
         # backtest processing hundreds of bars per second produces meaningless hourly
         # volatility and changes the adaptive threshold.
-        if timestamp is not None:
-            self.set_simulated_time(timestamp)
-            tick_time = float(timestamp)
+        if clean_ts is not None:
+            self.set_simulated_time(clean_ts)
+            tick_time = clean_ts
         else:
             tick_time = self._now()
         self._shadow_prices.append((tick_time, price))
@@ -2384,7 +2425,7 @@ class Strategy:
                 base_tp_pct=self.p.takeprofit_pct,
             )
 
-        trail_armed = self.s.get("trail_peak") is not None
+        trail_armed = _clean_pos_float(self.s.get("trail_peak")) is not None
         trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
         tp_ref_price = high if high is not None else price
         if (self.p.enable_takeprofit and avg and trend_hold_active
@@ -2473,7 +2514,7 @@ class Strategy:
 
             # Arm trailing at the first TP crossing and keep it armed through exit, even
             # if price later falls below TP, so the target pullback does not reset the peak.
-            peak = max(self.s.get("trail_peak") or tp_ref_price, tp_ref_price)
+            peak = max(_clean_pos_float(self.s.get("trail_peak")) or tp_ref_price, tp_ref_price)
             self.s["trail_peak"] = peak
 
             if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
@@ -2483,7 +2524,7 @@ class Strategy:
             candidate_stop = peak * (1 - eff_trail / 100)
             # A trailing stop ratchets one way: volatility may widen distance for future
             # peaks but cannot surrender profit already protected by the current stop.
-            previous_stop = self.s.get("trail_stop")
+            previous_stop = _clean_pos_float(self.s.get("trail_stop"))
             trail_stop = max(candidate_stop, previous_stop or candidate_stop)
             self.s["trail_stop"] = trail_stop
             # Use the same conservative reference as the MARKET order. Apply the floor

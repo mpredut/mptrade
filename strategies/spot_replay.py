@@ -48,6 +48,11 @@ class _ReplayClient:
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
     if not ohlc:
         raise ValueError("ohlc cannot be empty")
+    if bar_minutes is not None:
+        if (isinstance(bar_minutes, bool)
+                or not math.isfinite(float(bar_minutes))
+                or float(bar_minutes) <= 0):
+            raise ValueError("bar_minutes must be finite and positive")
     surge_window_enabled = (
         params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
     )
@@ -222,14 +227,22 @@ def _run_once(
             strategy.set_simulated_time(replay_time)
             if dca_drop_series is not None and bar_index < len(dca_drop_series):
                 drop_val = dca_drop_series[bar_index]
-                if drop_val is not None and not (isinstance(drop_val, float) and math.isnan(drop_val)):
-                    strategy.p.dca_drop_pct = float(drop_val)
+                try:
+                    drop_f = None if drop_val is None or isinstance(drop_val, bool) else float(drop_val)
+                except (TypeError, ValueError, OverflowError):
+                    drop_f = None
+                if drop_f is not None and math.isfinite(drop_f) and drop_f > 0.0:
+                    strategy.p.dca_drop_pct = drop_f
                 else:
                     strategy.p.dca_drop_pct = default_dca_drop
             if reentry_series is not None and bar_index < len(reentry_series):
                 re_val = reentry_series[bar_index]
-                if re_val is not None and not (isinstance(re_val, float) and math.isnan(re_val)):
-                    strategy.p.reentry_drop_pct = float(re_val)
+                try:
+                    re_f = None if re_val is None or isinstance(re_val, bool) else float(re_val)
+                except (TypeError, ValueError, OverflowError):
+                    re_f = None
+                if re_f is not None and math.isfinite(re_f) and re_f >= 0.0:
+                    strategy.p.reentry_drop_pct = re_f
                 else:
                     strategy.p.reentry_drop_pct = default_reentry_drop
 
@@ -420,9 +433,15 @@ def make_spot_replay_adapter(
 
 def align_spot_interval_params(params, bar_minutes: float | int | None):
     """Return a copy of params with trend/volatility intervals and regime sample cap aligned to bar_minutes."""
-    if bar_minutes is None:
+    if bar_minutes is None or isinstance(bar_minutes, bool):
         return params
-    itv = int(bar_minutes)
+    try:
+        bm_f = float(bar_minutes)
+    except (TypeError, ValueError, OverflowError):
+        return params
+    if not math.isfinite(bm_f) or bm_f <= 0:
+        return params
+    itv = int(bm_f)
     cap = _strat.MarketRegimeService.horizon_sample_capacity("long", itv)
     cur_min_samples = int(getattr(params, "regime_min_samples", 20))
     clamped_min_samples = max(3, min(cur_min_samples, cap))

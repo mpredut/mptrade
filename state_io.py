@@ -85,6 +85,10 @@ def atomic_snapshot_file(source: str, destination: str) -> None:
             pass
 
 
+def _reject_json_constant(constant: str) -> Any:
+    raise ValueError(f"non-standard JSON constant {constant!r}")
+
+
 def load_json_state(path: str, *, default_factory, fail_closed: bool,
                     label: str, root_type: type = dict):
     """Load JSON state with an explicit live-versus-observational failure policy.
@@ -101,7 +105,7 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 
     def _read_and_validate(candidate_path: str):
         with open(candidate_path, "r", encoding="utf-8") as handle:
-            value = json.load(handle)
+            value = json.load(handle, parse_constant=_reject_json_constant)
         if not isinstance(value, root_type):
             raise ValueError(
                 f"expected {root_type.__name__}, got {type(value).__name__}"
@@ -152,6 +156,7 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
         json.dump(
             value, handle, indent=indent, sort_keys=sort_keys,
             separators=separators, ensure_ascii=ensure_ascii,
+            allow_nan=False,
         )
 
 
@@ -318,9 +323,10 @@ def prune_rotated_archives(
         key=os.path.getmtime,
         reverse=True,
     )
-    for old_archive in archives[max(0, int(keep_count)):]:
+    keep = 0 if isinstance(keep_count, bool) else max(0, int(keep_count))
+    for old_archive in archives[keep:]:
         discard_generation_file(old_archive)
-    return archives[:max(0, int(keep_count))]
+    return archives[:keep]
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +451,9 @@ def read_recovering_previous(
     if read_fn is json.loads:
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:
-                return json.loads(handle.read())
+                return json.loads(
+                    handle.read(), parse_constant=_reject_json_constant
+                )
     else:
         _invoke = read_fn
     try:

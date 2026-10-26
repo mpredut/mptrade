@@ -7233,6 +7233,110 @@ def test_iteration45_spot_rules_and_order_retry_worker_nan_bool_safety(monkeypat
         orw.IncidentDigest(tmp_path / "dig.json", True)
 
 
+def test_iteration46_spot_engine_rtrade_pair_spot_replay_and_state_io_nan_bool_safety(tmp_path):
+    from types import SimpleNamespace
+    import math
+    import pytest
+    from providers.strategy_executor import PairPrecision
+    from strategies import spot_engine as se
+    from strategies import rtrade_pair as rp
+    from strategies import spot_replay as srep
+    import state_io as sio
+
+    # 1. spot_engine: set_simulated_time, _evaluate_reentry_gate, ledger reconciliation, and peak tracking
+    fake_client = SimpleNamespace(
+        pair_precision=lambda _pair: PairPrecision(2, 4, 0.001, "BTC"),
+        free_balance=lambda _asset: float("nan"),
+        order_status=lambda _pair, _txid: SimpleNamespace(
+            status="open", filled_qty=True, cost=100.0, fee=0.0
+        ),
+    )
+    params = se.StratParams(
+        currency="USDC",
+        entry_amount=100.0,
+        entry_discount_pct=0.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=2.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=15.0,
+        stop_loss_pct=10.0,
+        surge_guard=True,
+        slow_grind_guard=True,
+    )
+    strat = se.Strategy(
+        fake_client,
+        "BTCUSDC",
+        params,
+        dry_run=True,
+        initial_state=se._new_state(),
+        replay_mode=True,
+        state_dir=str(tmp_path),
+    )
+    strat.set_simulated_time(1234.5)
+    assert strat._now() == 1234.5
+    strat.set_simulated_time(True)
+    assert strat._simulated_ts is None
+    strat.set_simulated_time(float("nan"))
+    assert strat._simulated_ts is None
+
+    # Corrupted NaN/bool in reentry state does not poison post_sell_peak / post_sell_trough / sl_low
+    strat.s["last_sell_price"] = 100.0
+    strat.s["post_sell_peak"] = float("nan")
+    strat.s["post_sell_trough"] = True
+    strat.s["last_exit_kind"] = "STOP"
+    strat.s["sl_low"] = float("nan")
+    strat._evaluate_reentry_gate(98.0, None, 1000.0)
+    assert math.isfinite(strat.s["post_sell_peak"]) and strat.s["post_sell_peak"] == 100.0
+    assert math.isfinite(strat.s["post_sell_trough"]) and strat.s["post_sell_trough"] == 98.0
+    assert math.isfinite(strat.s["sl_low"]) and strat.s["sl_low"] == 98.0
+
+    # Corrupted NaN in surge_peak / slow_grind_peak does not poison peak tracking
+    strat.s["surge_peak"] = float("nan")
+    strat.s["slow_grind_peak"] = float("nan")
+    strat._check_advanced_profit_guards(105.0, 100.0, 1.0, closes=[100.0] * 25, tick_time=1000.0)
+    assert strat.s["surge_peak"] == 105.0
+    assert strat.s["slow_grind_peak"] == 105.0
+
+    # Ledger reconciliation with NaN/bool balance fails closed without clearing ledger_reconcile_required
+    strat.dry_run = False
+    strat.s["qty"] = 1.0
+    strat.s["cost"] = 100.0
+    strat.s["spent"] = 100.0
+    strat.s["ledger_reconcile_required"] = True
+    strat.step(100.0, timestamp=1000.0)
+    assert strat.s["ledger_reconcile_required"] is True
+    assert strat.s["qty"] == 1.0
+
+    # 2. rtrade_pair: PairPolicy, quote_prices, anchored_exit_price, and clock/step NaN/bool rejection
+    with pytest.raises(ValueError):
+        rp.PairPolicy(adjustment_fraction=0.01, price_decimals=True)
+    with pytest.raises(ValueError):
+        rp.quote_prices(100.0, True)
+    with pytest.raises(ValueError):
+        rp.anchored_exit_price("SELL", 100.0, 101.0, 0.01, float("nan"))
+
+    # 3. spot_replay: _validate_replay and align_spot_interval_params NaN/bool protection
+    with pytest.raises(ValueError):
+        srep.run_replay([(100, 101, 99, 100)], params, bar_minutes=True)
+    with pytest.raises(ValueError):
+        srep.run_replay([(100, 101, 99, 100)], params, bar_minutes=float("nan"))
+    assert srep.align_spot_interval_params(params, True) is params
+    assert srep.align_spot_interval_params(params, float("nan")) is params
+
+    # 4. state_io: atomic_write_json and load_json_state reject NaN/Infinity
+    state_file = tmp_path / "sio_test.json"
+    with pytest.raises(ValueError):
+        sio.atomic_write_json(str(state_file), {"x": float("nan")})
+    state_file.write_text('{"x": NaN}', encoding="utf-8")
+    with pytest.raises(sio.StateReadError):
+        sio.load_json_state(str(state_file), default_factory=dict, fail_closed=True, label="test")
+
+
+
 
 
 
