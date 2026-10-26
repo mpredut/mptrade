@@ -221,6 +221,15 @@ def format_topic_history_prefix(
     return "\n".join(lines) + "\n\n"
 
 
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
@@ -233,7 +242,13 @@ def prepare_topic_session(
     base = resolve_bot_cli_base(cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
-    if compact_steps <= 0:
+    if isinstance(compact_steps, bool):
+        raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
+    try:
+        compact_steps_i = int(compact_steps)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}") from exc
+    if compact_steps_i <= 0:
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
 
     reg = load_topic_registry(registry_path)
@@ -248,8 +263,8 @@ def prepare_topic_session(
         sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
         if exists:
-            since = step_count - int(entry.get("compacted_at_step") or 0)
-            return TopicSession(cid, "", since >= compact_steps)
+            since = step_count - _safe_int(entry.get("compacted_at_step"), 0)
+            return TopicSession(cid, "", since >= compact_steps_i)
         # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
         logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
         entry["conversation_id"] = None
@@ -331,7 +346,7 @@ def condense_decision(response_text: str, max_len: int = 220) -> str:
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)
-    max_len = max(4, int(max_len))
+    max_len = max(4, _safe_int(max_len, 220))
     return condensed if len(condensed) <= max_len else condensed[: max_len - 3] + "..."
 
 
@@ -354,8 +369,10 @@ def record_topic_turn(
     spec = topic_spec(topic_key)
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
-    if max_history_entries is None:
+    if max_history_entries is None or isinstance(max_history_entries, bool):
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
+    else:
+        max_history_entries = _safe_int(max_history_entries, required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES"))
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(resolved)
@@ -371,9 +388,9 @@ def record_topic_turn(
         entry["step_count"] = step_count
         if compacted and active_cid == conversation_id:
             entry["compacted_at_step"] = step_count
-            entry["compaction_count"] = int(entry.get("compaction_count") or 0) + 1
+            entry["compaction_count"] = _safe_int(entry.get("compaction_count"), 0) + 1
     entry["topic_key"] = resolved
-    entry["turn_count"] = int(entry.get("turn_count") or 0) + 1
+    entry["turn_count"] = _safe_int(entry.get("turn_count"), 0) + 1
     entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
     entry["title"] = spec.title
 

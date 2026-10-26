@@ -12,6 +12,7 @@ It also shows the thresholds: HARD-TP (+18%) and the normal sell (gain>9.2% AND 
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -31,22 +32,32 @@ import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 _base = utils.base_asset
 
 
+def _f(val, default=0.0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+    except (TypeError, ValueError):
+        return default
+    return res if math.isfinite(res) else default
+
+
 def free_qty(symbol):
     base = _base(symbol)
     for b in (api.get_account_assets_balances() or []):
-        if b.get("asset") == base:
-            return float(b.get("free", 0) or 0)
+        if isinstance(b, dict) and b.get("asset") == base:
+            return _f(b.get("free", 0), 0.0)
     return 0.0
 
 
 def position(symbol, maxage=17 * 24 * 3600):
-    buys = apiorders.get_trade_orders("BUY", symbol, maxage) or []
-    sells = apiorders.get_trade_orders("SELL", symbol, maxage) or []
-    tq = sum(float(o["qty"]) for o in buys)
-    tv = sum(float(o["price"]) * float(o["qty"]) for o in buys)
-    sq = sum(float(o["qty"]) for o in sells)
+    buys = [o for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or []) if isinstance(o, dict)]
+    sells = [o for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or []) if isinstance(o, dict)]
+    tq = sum(_f(o.get("qty"), 0.0) for o in buys)
+    tv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in buys)
+    sq = sum(_f(o.get("qty"), 0.0) for o in sells)
     last_buy = (
-        float(max(buys, key=lambda o: float(o.get("timestamp") or o.get("time") or 0))["price"])
+        _f(max(buys, key=lambda o: _f(o.get("timestamp") if o.get("timestamp") is not None else o.get("time"), 0.0)).get("price"), 0.0)
         if buys else 0.0
     )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells), last_buy
@@ -57,8 +68,10 @@ def main():
     print(f"==== TRADE WATCH {time.strftime('%Y-%m-%d %H:%M:%S')} ====")
     for s in SYMBOLS:
         snap = mgr.get_snapshot(s) or {}
-        px = snap.get("current_price") or api.get_current_price(s) or 0.0
-        gr = float(snap.get("gradient_recent", 0.0) or 0.0)
+        if not isinstance(snap, dict):
+            snap = {}
+        px = _f(snap.get("current_price"), 0.0) or _f(api.get_current_price(s), 0.0) or 0.0
+        gr = _f(snap.get("gradient_recent", 0.0), 0.0)
         avg, net, n_sells, last_buy = position(s)
         free = free_qty(s)
         ref = last_buy or avg   # The bot uses the LAST buy as its reference (TP_REFERENCE="last").

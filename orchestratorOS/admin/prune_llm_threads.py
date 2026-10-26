@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -147,6 +148,15 @@ def prune_old_cli_threads(
     finally:
         conn.close()
 
+    if retention_days is None or isinstance(retention_days, bool):
+        retention_days = DEFAULT_RETENTION_DAYS
+    else:
+        try:
+            rd_val = float(retention_days)
+            retention_days = rd_val if math.isfinite(rd_val) and rd_val >= 0.0 else DEFAULT_RETENTION_DAYS
+        except (TypeError, ValueError, OverflowError):
+            retention_days = DEFAULT_RETENTION_DAYS
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     candidates: Set[str] = set()
     kept: List[Tuple[datetime, str]] = []
@@ -154,7 +164,11 @@ def prune_old_cli_threads(
         cid, proj = row["conversation_id"], row["project_id"]
         if cid in protected:
             continue
-        steps = int(row["step_count"] or 0) if "step_count" in row.keys() else 0
+        raw_steps = row["step_count"] if "step_count" in row.keys() else 0
+        try:
+            steps = int(raw_steps) if raw_steps is not None and not isinstance(raw_steps, bool) else 0
+        except (TypeError, ValueError, OverflowError):
+            steps = 0
         automated = is_automated_thread(row["title"] or "", row["preview"] or "")
         if not automated and steps > INTERACTIVE_MIN_STEPS:
             continue   # multi-turn interactive conversation: never pruned, even with --all
@@ -168,9 +182,15 @@ def prune_old_cli_threads(
             kept.append((dt, cid))
 
     # Hard count cap so autonomous threads never approach agy's conversation eviction limit
-    if max_threads is not None and 0 <= max_threads < len(kept):
+    max_threads_i: Optional[int] = None
+    if max_threads is not None and not isinstance(max_threads, bool):
+        try:
+            max_threads_i = int(max_threads)
+        except (TypeError, ValueError, OverflowError):
+            max_threads_i = None
+    if max_threads_i is not None and 0 <= max_threads_i < len(kept):
         kept.sort(reverse=True)
-        candidates.update(cid for _, cid in kept[max_threads:])
+        candidates.update(cid for _, cid in kept[max_threads_i:])
     if not candidates:
         logger.info("No candidate threads older than %.1f days found in %s.", retention_days, sorted(targets))
         return (0, 0)

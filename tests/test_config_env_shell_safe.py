@@ -1354,3 +1354,40 @@ def test_log_configure_and_verify_tools_hardening():
     assert ps._f("42.5", 0.0) == 42.5
 
 
+def test_tradeall_observe_topics_and_watch_hardening(tmp_path):
+    import pytest
+    from visuals import tradeall_observe as tobs
+    from orchestratorOS.agy import topics as top_mod
+    from verify_tools import watch_trade_decisions as wtd
+
+    txt = tobs.format_state_text(
+        {
+            "current_price": 85000.0,
+            "final_trend": 1,
+            "gradient_recent": "bad",
+            "slope_small": float("nan"),
+            "slope_big": True,
+            "epsilon": None,
+            "trend_fast": -1,
+            "gradient_recent_fast": "bad",
+            "kalman_trend": 0,
+            "kalman_vel": "bad",
+            "kalman_vel_std": float("inf"),
+            "vol_1h_pct": "bad",
+        },
+        "HEADER",
+    )
+    assert "HEADER" in txt and "grad rec:  +0.0000" in txt and "vol 1h:" not in txt
+
+    with pytest.raises(ValueError):
+        top_mod.prepare_topic_session("macro_geopolitical", cli_base=str(tmp_path), compact_steps=True)
+    with pytest.raises(ValueError):
+        top_mod.prepare_topic_session("macro_geopolitical", cli_base=str(tmp_path), compact_steps="bad")
+    assert len(top_mod.condense_decision('{"decision": "HOLD", "summary": "ok"}', max_len=True)) > 10
+    assert len(top_mod.condense_decision('{"decision": "HOLD", "summary": "ok"}', max_len=float("nan"))) > 10
+
+    assert wtd._f(True, 0.0) == 0.0
+    assert wtd._f(float("nan"), 0.0) == 0.0
+    assert wtd._f("12.5", 0.0) == 12.5
+
+

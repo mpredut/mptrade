@@ -24,6 +24,7 @@ import argparse
 import ctypes
 import gc
 import json
+import math
 import os
 import tempfile
 import time
@@ -157,6 +158,16 @@ def _log_dates(days_back):
 _LAST_SAMPLED_TS = {}
 
 
+def _safe_float(val, default=0.0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+    except (TypeError, ValueError):
+        return default
+    return res if math.isfinite(res) else default
+
+
 def sample_current_prices(symbols):
     if not os.path.exists(CACHE_TREND_PATH):
         return
@@ -166,21 +177,30 @@ def sample_current_prices(symbols):
     except (OSError, json.JSONDecodeError) as e:
         print(f"[tradeall_observe] error reading cache_short_trend.json: {e}")
         return
+    if not isinstance(snapshot, dict):
+        return
 
     pending = []
     for symbol in symbols:
         entry = snapshot.get(symbol)
-        if not entry or "current_price" not in entry:
+        if not isinstance(entry, dict) or "current_price" not in entry:
+            continue
+        raw_ts = entry.get("ts", time.time())
+        raw_px = entry["current_price"]
+        if isinstance(raw_ts, bool) or isinstance(raw_px, bool):
             continue
         try:
-            sample_ts = float(entry.get("ts", time.time()))
+            sample_ts = float(raw_ts)
+            px_val = float(raw_px)
         except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(sample_ts) and sample_ts > 0 and math.isfinite(px_val) and px_val > 0):
             continue
         # The loop runs every two seconds, but the source may publish less often.
         # Avoid recording the same tick repeatedly and inflating the log and RAM cache.
         if sample_ts <= _LAST_SAMPLED_TS.get(symbol, float("-inf")):
             continue
-        pending.append((symbol, sample_ts, entry["current_price"]))
+        pending.append((symbol, sample_ts, raw_px))
     if not pending:
         return
 
@@ -206,10 +226,13 @@ def load_price_samples(symbol, days_back):
             if sym_ != symbol:
                 continue
             try:
-                ts_list.append(float(ts))
-                px_list.append(float(price))
+                t_val = float(ts)
+                p_val = float(price)
             except ValueError:
                 continue
+            if math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
+                ts_list.append(t_val)
+                px_list.append(p_val)
     return ts_list, px_list
 
 
@@ -302,8 +325,11 @@ def load_price_series_live(symbol, days_back, include_history=True):
     if include_history:
         for entry in _load_history_jsonl_tail(symbol):
             try:
-                points[int(entry[0] / 1000.0)] = float(entry[1])
-            except (TypeError, ValueError, IndexError):
+                t_val = float(entry[0]) / 1000.0
+                p_val = float(entry[1])
+                if not isinstance(entry[0], bool) and not isinstance(entry[1], bool) and math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
+                    points[int(t_val)] = p_val
+            except (TypeError, ValueError, IndexError, OverflowError):
                 continue
     # The unbounded long-term archive grows continuously. Parsing it every
     # two-second live cycle was wasteful because the live file already provides
@@ -312,16 +338,23 @@ def load_price_series_live(symbol, days_back, include_history=True):
     if include_history:
         for entry in _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol):
             try:
-                points[int(entry[0] / 1000.0)] = float(entry[1])
-            except (TypeError, ValueError, IndexError):
+                t_val = float(entry[0]) / 1000.0
+                p_val = float(entry[1])
+                if not isinstance(entry[0], bool) and not isinstance(entry[1], bool) and math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
+                    points[int(t_val)] = p_val
+            except (TypeError, ValueError, IndexError, OverflowError):
                 continue
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
-        points[int(t)] = p
+        if math.isfinite(t) and math.isfinite(p) and p > 0:
+            points[int(t)] = p
     for entry in _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol):
         try:
-            points[int(entry[0] / 1000.0)] = float(entry[1])
-        except (TypeError, ValueError, IndexError):
+            t_val = float(entry[0]) / 1000.0
+            p_val = float(entry[1])
+            if not isinstance(entry[0], bool) and not isinstance(entry[1], bool) and math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
+                points[int(t_val)] = p_val
+        except (TypeError, ValueError, IndexError, OverflowError):
             continue
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
@@ -677,27 +710,34 @@ def _get_active_summary():
 
 
 def format_state_text(entry, header, pending=None, exposure=None):
+    if not isinstance(entry, dict):
+        entry = {}
     trend_map = {1: "UP", -1: "DOWN", 0: "FLAT"}
     text = (
         f"{header}\n"
         f"price:     {entry.get('current_price', '?')}\n"
         f"trend:     {trend_map.get(entry.get('final_trend'), '?')}\n"
-        f"grad rec:  {(entry.get('gradient_recent') or 0):+.4f}\n"
-        f"slope short:{(entry.get('slope_small') or 0):+.3f}\n"
-        f"slope long: {(entry.get('slope_big') or 0):+.3f}\n"
-        f"epsilon:   {(entry.get('epsilon') or 0):.4f}"
+        f"grad rec:  {_safe_float(entry.get('gradient_recent')):+.4f}\n"
+        f"slope short:{_safe_float(entry.get('slope_small')):+.3f}\n"
+        f"slope long: {_safe_float(entry.get('slope_big')):+.3f}\n"
+        f"epsilon:   {_safe_float(entry.get('epsilon')):.4f}"
     )
     fast_trend = entry.get("trend_fast")
     if fast_trend is not None:
-        text += f"\nfast:      {trend_map.get(fast_trend, '?')} (grad: {(entry.get('gradient_recent_fast') or 0):+.4f})"
+        text += f"\nfast:      {trend_map.get(fast_trend, '?')} (grad: {_safe_float(entry.get('gradient_recent_fast')):+.4f})"
     # Add shadow rows only when their keys exist in the snapshot.
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {trend_map.get(entry.get('kalman_trend'), '?')} "
-                 f"(v={(entry.get('kalman_vel') or 0):+.3f}%/min ±{(entry.get('kalman_vel_std') or 0):.3f})")
+                 f"(v={_safe_float(entry.get('kalman_vel')):+.3f}%/min ±{_safe_float(entry.get('kalman_vel_std')):.3f})")
     v1h = entry.get("vol_1h_pct")
-    if v1h is not None:
-        text += (f"\nvol 1h:    {v1h:.2f}% → re:{entry.get('adapt_reentry_pct', '?')}% "
-                 f"dca:{entry.get('adapt_dca_pct', '?')}%")
+    if v1h is not None and not isinstance(v1h, bool):
+        try:
+            v1h_f = float(v1h)
+        except (TypeError, ValueError):
+            v1h_f = float("nan")
+        if math.isfinite(v1h_f):
+            text += (f"\nvol 1h:    {v1h_f:.2f}% → re:{entry.get('adapt_reentry_pct', '?')}% "
+                     f"dca:{entry.get('adapt_dca_pct', '?')}%")
     if pending:
         text += f"\npending:   {pending}"
     if exposure:
@@ -713,36 +753,47 @@ def build_analysis_state_text(symbol, active_summary=None):
     """
     try:
         with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
-            entry = json.load(f).get(symbol)
+            raw_trend = json.load(f)
+            entry = raw_trend.get(symbol) if isinstance(raw_trend, dict) else None
     except (OSError, json.JSONDecodeError):
         entry = None
-    if not entry:
+    if not isinstance(entry, dict) or not entry:
         return None
     try:
         with open(get_kalman_state_path(), "r", encoding="utf-8") as f:
-            sh = json.load(f).get(symbol)
-        if sh:
+            raw_sh = json.load(f)
+            sh = raw_sh.get(symbol) if isinstance(raw_sh, dict) else None
+        if isinstance(sh, dict) and sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
     except (OSError, json.JSONDecodeError):
         pass
-    age = time.time() - entry.get("ts", 0)
+    age = max(0.0, time.time() - _safe_float(entry.get("ts"), 0.0))
 
     pending_info = None
     exposure_info = None
-    if active_summary:
-        pending_map = active_summary.get("pending_notional", {}).get("by_symbol", {}).get(symbol)
-        if pending_map:
+    if isinstance(active_summary, dict):
+        notional_root = active_summary.get("pending_notional")
+        by_sym_pending = notional_root.get("by_symbol") if isinstance(notional_root, dict) else None
+        pending_map = by_sym_pending.get(symbol) if isinstance(by_sym_pending, dict) else None
+        if isinstance(pending_map, dict):
             parts = []
-            if pending_map.get("buy"):
-                parts.append(f"BUY ${pending_map['buy']:.2f}")
-            if pending_map.get("sell"):
-                parts.append(f"SELL ${pending_map['sell']:.2f}")
+            buy_val = _safe_float(pending_map.get("buy"), 0.0)
+            sell_val = _safe_float(pending_map.get("sell"), 0.0)
+            if buy_val > 0:
+                parts.append(f"BUY ${buy_val:.2f}")
+            if sell_val > 0:
+                parts.append(f"SELL ${sell_val:.2f}")
             if parts:
                 pending_info = ", ".join(parts)
-        exp_map = active_summary.get("net_exposures", {}).get("by_symbol", {}).get(symbol)
-        if exp_map and abs(exp_map.get("qty", 0.0)) > 1e-9:
-            cost_str = f" (${exp_map['cost']:.2f})" if exp_map.get("cost") is not None else ""
-            exposure_info = f"{exp_map['qty']}{cost_str}"
+        exposures_root = active_summary.get("net_exposures")
+        by_sym_exp = exposures_root.get("by_symbol") if isinstance(exposures_root, dict) else None
+        exp_map = by_sym_exp.get(symbol) if isinstance(by_sym_exp, dict) else None
+        if isinstance(exp_map, dict):
+            qty_val = _safe_float(exp_map.get("qty"), 0.0)
+            if abs(qty_val) > 1e-9:
+                raw_cost = exp_map.get("cost")
+                cost_str = f" (${_safe_float(raw_cost, 0.0):.2f})" if raw_cost is not None else ""
+                exposure_info = f"{qty_val}{cost_str}"
 
     return format_state_text(
         entry, f"ANALYSIS NOW ({age:.0f}s ago)",
@@ -755,12 +806,13 @@ def build_backtest_state_text(directory, symbol):
     path = os.path.join(directory, "analysis_state.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
-            entry = json.load(f).get(symbol)
+            raw_state = json.load(f)
+            entry = raw_state.get(symbol) if isinstance(raw_state, dict) else None
     except (OSError, json.JSONDecodeError):
         entry = None
-    if not entry:
+    if not isinstance(entry, dict) or not entry:
         return None
-    sim_time = datetime.fromtimestamp(entry.get("ts", 0)).strftime("%m-%d %H:%M:%S")
+    sim_time = datetime.fromtimestamp(_safe_float(entry.get("ts"), 0.0)).strftime("%m-%d %H:%M:%S")
     return format_state_text(entry, f"SIMULATED ANALYSIS ({sim_time})")
 
 
@@ -897,14 +949,14 @@ def write_html(symbols, live_minutes=60, active_summary=None):
   </div>''')
 
     summary_html = ""
-    if active_summary:
-        notional = active_summary.get("pending_notional", {})
-        exposures = active_summary.get("net_exposures", {})
+    if isinstance(active_summary, dict) and active_summary:
+        notional = active_summary.get("pending_notional") if isinstance(active_summary.get("pending_notional"), dict) else {}
+        exposures = active_summary.get("net_exposures") if isinstance(active_summary.get("net_exposures"), dict) else {}
         summary_html = f'''
 <div class="summary-bar">
-  <span><strong>Fleet Pending BUY:</strong> ${notional.get("total_buy", 0.0):.2f}</span>
-  <span><strong>Fleet Pending SELL:</strong> ${notional.get("total_sell", 0.0):.2f}</span>
-  <span><strong>Open Cost Basis:</strong> ${exposures.get("total_cost", 0.0):.2f}</span>
+  <span><strong>Fleet Pending BUY:</strong> ${_safe_float(notional.get("total_buy"), 0.0):.2f}</span>
+  <span><strong>Fleet Pending SELL:</strong> ${_safe_float(notional.get("total_sell"), 0.0):.2f}</span>
+  <span><strong>Open Cost Basis:</strong> ${_safe_float(exposures.get("total_cost"), 0.0):.2f}</span>
 </div>'''
 
     html = f"""<!doctype html>
