@@ -406,11 +406,11 @@ def generation_lock_path(path: str) -> str:
 
 def discard_generation_file(path: str | None) -> None:
     """Best-effort removal of a staged or temporary generation file."""
-    if not path:
+    if not path or isinstance(path, (bool, int)):
         return
     try:
         os.remove(path)
-    except OSError:
+    except (OSError, TypeError):
         pass
 
 

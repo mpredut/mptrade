@@ -11887,3 +11887,63 @@ def test_iteration112_market_api_spot_rules_and_spot_replay_safety(monkeypatch):
     assert srep.align_spot_interval_params(dummy_params, 0.5) is dummy_params
 
 
+def test_iteration113_order_retry_execution_audit_and_state_io_safety(tmp_path, monkeypatch):
+    """Iteration 113: Verify order_retry, StrategyExecutorLifecycleApi, execution_audit, and state_io safety."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.strategy_executor import OrderReconciliationCapabilities, ProviderError
+    from providers.execution_audit import AuditedStrategyExecutor
+    import order_retry as oret
+    import state_io as sio
+
+    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "order_retry_queue.jsonl"))
+    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
+    monkeypatch.setattr(oret, "RETRY_ENABLED", True)
+
+    # 1. order_retry.enqueue rejects bool replaces_order_id, bool metadata fields, and fractional attempts
+    assert oret.enqueue(
+        "BTCUSDC", "BUY", 1.0,
+        lifecycle="awaiting_cancel", replaces_order_id=True, replaces_original_qty=1.0,
+    ) is None
+    assert oret.enqueue("BTCUSDC", "BUY", 1.0, intent_id=True) is None
+    assert oret.enqueue("BTCUSDC", "BUY", 1.0, provider_name=True) is None
+    assert oret.enqueue("BTCUSDC", "BUY", 1.0, kind=True) is None
+    assert oret.enqueue("BTCUSDC", "BUY", 1.0, failure_reason=True) is None
+    assert oret.enqueue("BTCUSDC", "BUY", 1.0, attempts=1.5) is None
+
+    # 2. order_retry.get, resolve_record, and claim input validation
+    assert oret.get(True) is None
+    assert oret.resolve_record(True) is False
+    with pytest.raises(ValueError):
+        oret.claim(["id1"], lease_sec="bad")
+
+    # 3. StrategyExecutorLifecycleApi rejects bool/None/blank order_id and client_order_id before str()
+    exec_stub = SimpleNamespace(
+        reconciliation_capabilities=lambda: OrderReconciliationCapabilities(
+            lookup_by_client_order_id=True, status_by_order_id=True, cancel_by_order_id=True
+        ),
+        order_by_client_id=lambda _s, cid: {"orderId": cid},
+        order_status=lambda _s, oid: oid,
+        cancel_order=lambda _s, oid: oid,
+    )
+    api_adapter = oret.StrategyExecutorLifecycleApi(exec_stub)
+    with pytest.raises(ProviderError):
+        api_adapter.order_by_client_id("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        api_adapter.order_status("BTCUSDC", None)
+    with pytest.raises(ProviderError):
+        api_adapter.cancel_order("BTCUSDC", "   ")
+
+    # 4. AuditedStrategyExecutor.ohlc_series rejects bool/invalid interval_min
+    audited = AuditedStrategyExecutor(SimpleNamespace(name="Stub", ohlc_closes=lambda _s, _i: [100.0]))
+    with pytest.raises(ProviderError):
+        audited.ohlc_series("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        audited.ohlc_series("BTCUSDC", 0)
+
+    # 5. state_io.discard_generation_file safely ignores bool/int
+    sio.discard_generation_file(True)
+    sio.discard_generation_file(123)
+
+
+

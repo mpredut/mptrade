@@ -513,7 +513,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     if lifecycle not in {"submit_pending", "awaiting_cancel"}:
         return None
     if (lifecycle == "awaiting_cancel"
-            and not str(replaces_order_id or "").strip()):
+            and (isinstance(replaces_order_id, bool) or not str(replaces_order_id or "").strip())):
         return None
     if lifecycle == "awaiting_cancel":
         if isinstance(replaces_original_qty, bool):
@@ -557,6 +557,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         or isinstance(created_ts, bool)
         or isinstance(attempts, bool)
         or isinstance(last_attempt_ts, bool)
+        or isinstance(intent_id, bool)
+        or isinstance(provider_name, bool)
+        or isinstance(kind, bool)
+        or isinstance(failure_reason, bool)
     ):
         return None
     symbol = symbol.strip()
@@ -577,7 +581,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         return None
     try:
         cts = float(created_ts) if created_ts is not None else now
-        attempts = int(attempts)
+        att_f = float(attempts)
+        if not math.isfinite(att_f) or not att_f.is_integer():
+            return None
+        attempts = int(att_f)
         last_attempt_ts = float(last_attempt_ts)
     except (TypeError, ValueError, OverflowError):
         return None
@@ -1165,7 +1172,7 @@ def consolidate_deferred_streams():
 
 def get(record_id):
     """Return one current queue record by ID under lock, or ``None``."""
-    if not record_id:
+    if not record_id or isinstance(record_id, bool):
         return None
     _ensure_dir()
     with FileLock(LOCK_FILE):
@@ -1298,7 +1305,7 @@ def resolve_record(record_id, *, client_order_id=None):
     tracker. This prevents an old caller from turning acceptance into an implicit
     fill acknowledgement.
     """
-    if not record_id:
+    if not record_id or isinstance(record_id, bool):
         return False
     removed = False
     _ensure_dir()
@@ -1334,7 +1341,10 @@ def claim(ids, now=None, lease_sec=None):
         raise ValueError("claim lease must be finite and positive")
     _ensure_dir()
     now = _clean_now_sec(now)
-    lease_sec = float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec)
+    try:
+        lease_sec = float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("claim lease must be finite and positive") from exc
     if not math.isfinite(lease_sec) or lease_sec <= 0:
         raise ValueError("claim lease must be finite and positive")
     claimed = []
@@ -1969,14 +1979,20 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: "
                 "order_by_client_id is unsupported")
+        if client_order_id is None or isinstance(client_order_id, bool) or not str(client_order_id).strip():
+            raise ProviderError("invalid client_order_id")
         return method(symbol, str(client_order_id))
 
     def order_status(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("status_by_order_id", "order_status")
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            raise ProviderError("invalid order_id")
         return self.executor.order_status(symbol, str(order_id))
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("cancel_by_order_id", "cancel_order")
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            raise ProviderError("invalid order_id")
         return self.executor.cancel_order(symbol, str(order_id))
 
 
@@ -2281,7 +2297,12 @@ class TrackedOrderLifecycle:
 
         symbol = pending["symbol"]
         client_order_id = pending["client_order_id"]
-        order_id = pending.get("order_id")
+        raw_order_id = pending.get("order_id")
+        order_id = (
+            str(raw_order_id).strip()
+            if raw_order_id is not None and not isinstance(raw_order_id, bool) and str(raw_order_id).strip()
+            else None
+        )
         if not order_id:
             try:
                 native = self.market_api.order_by_client_id(
@@ -2300,7 +2321,16 @@ class TrackedOrderLifecycle:
                 return TrackedOrderResult("active", pending)
             fields = self._order_fields(native)
             if not fields.get("order_id"):
-                misses = int(pending.get("lookup_misses") or 0) + 1
+                raw_misses = pending.get("lookup_misses")
+                prev_misses = 0
+                if raw_misses is not None and not isinstance(raw_misses, bool):
+                    try:
+                        mf = float(raw_misses)
+                        if math.isfinite(mf) and mf >= 0:
+                            prev_misses = int(mf)
+                    except (TypeError, ValueError, OverflowError):
+                        prev_misses = 0
+                misses = prev_misses + 1
                 pending["lookup_misses"] = misses
                 persist(dict(pending))
                 self._audit(
