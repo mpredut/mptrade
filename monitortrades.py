@@ -1181,16 +1181,21 @@ def _evaluate_hard_take_profit(
 
 def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, gain_threshold: float):
     ride_state = _TP_RIDE_STATE.get(symbol, {})
-    peak_px = ride_state.get("peak_price", snapshot.current_price)
+    raw_peak = ride_state.get("peak_price")
+    peak_px = float(raw_peak) if (raw_peak is not None and not isinstance(raw_peak, bool) and math.isfinite(float(raw_peak)) and float(raw_peak) > 0) else snapshot.current_price
     pullback_from_peak = snapshot.pullback_ratio(peak_px)
-    stagnation_elapsed = snapshot.current_time_s - ride_state.get("last_peak_time", snapshot.current_time_s)
+    raw_lpt = ride_state.get("last_peak_time")
+    lpt = float(raw_lpt) if (raw_lpt is not None and not isinstance(raw_lpt, bool) and math.isfinite(float(raw_lpt))) else snapshot.current_time_s
+    stagnation_elapsed = snapshot.current_time_s - lpt
+    raw_pg = ride_state.get("peak_gain")
+    peak_gain = float(raw_pg) if (raw_pg is not None and not isinstance(raw_pg, bool) and math.isfinite(float(raw_pg))) else 0.0
     profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
     if decision.metadata.get("state") == "initiated":
         print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={snapshot.gain_pct:.2f}%, "
               f"floor={profit_floor*100:.2f}%, starting {MT_TP_STAGNATION_MAX_SEC:.0f}s stagnation timer")
     else:
         print(f"[{symbol}] Take-Profit deferred by upward trend (riding peak={peak_px:.4f} "
-              f"[+ {ride_state.get('peak_gain', 0.0)*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
+              f"[+ {peak_gain*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
               f"stagnation={stagnation_elapsed:.0f}s/{MT_TP_STAGNATION_MAX_SEC:.0f}s)")
 
 
@@ -1290,9 +1295,13 @@ def _execute_take_profit(
 
 def _log_sl_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, lost_threshold: float):
     bounce_state = _SL_BOUNCE_STATE.get(symbol, {})
-    peak_px = bounce_state.get("peak_bounce_price", snapshot.current_price)
-    elapsed = snapshot.current_time_s - bounce_state.get("started_at", snapshot.current_time_s)
-    disaster_floor = decision.metadata.get("disaster_floor", lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
+    raw_peak = bounce_state.get("peak_bounce_price")
+    peak_px = float(raw_peak) if (raw_peak is not None and not isinstance(raw_peak, bool) and math.isfinite(float(raw_peak)) and float(raw_peak) > 0) else snapshot.current_price
+    raw_st = bounce_state.get("started_at")
+    st_f = float(raw_st) if (raw_st is not None and not isinstance(raw_st, bool) and math.isfinite(float(raw_st))) else snapshot.current_time_s
+    elapsed = snapshot.current_time_s - st_f
+    raw_df = decision.metadata.get("disaster_floor")
+    disaster_floor = float(raw_df) if (raw_df is not None and not isinstance(raw_df, bool) and math.isfinite(float(raw_df))) else (lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
     if decision.metadata.get("state") == "initiated":
         print(f"[{symbol}] Stop-Loss entered bounce watch (trend up): dip={snapshot.loss_pct:.2f}%, "
               f"disaster_floor={disaster_floor*100:.2f}%, starting {MT_SL_TREND_DEFER_MAX_SEC:.0f}s timer")
@@ -1833,7 +1842,7 @@ def _execute_reentry_buy(
     )
     if placed or reentry_outcome_ctx.get("state") == "unknown":
         sell_t = prev_reentry_state.get("sell_time") if isinstance(prev_reentry_state, dict) else None
-        if isinstance(sell_t, (int, float)) and sell_t > 0:
+        if not isinstance(sell_t, bool) and isinstance(sell_t, (int, float)) and math.isfinite(float(sell_t)) and sell_t > 0:
             _REENTRY_DONE_SELL_TIME[symbol] = float(sell_t)
         _REENTRY_STATE.pop(symbol, None)
         _LAST_EXIT_KIND.pop(symbol, None)
@@ -1942,19 +1951,34 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if _verbose:
             print(f"POSITION (referinta SELL=AVG) for {symbol} : {position}")
     # 2. Fetch current price through the facade for the instrument's provider.
-    current_price = inst.price()
-    if current_price is None or not math.isfinite(float(current_price)) or current_price <= 0:
+    raw_current_price = inst.price()
+    if raw_current_price is None or isinstance(raw_current_price, bool):
+        if _verbose:
+            print(f"No current price for {symbol} (market closed / unavailable) — skip")
+        return
+    try:
+        current_price = float(raw_current_price)
+    except (TypeError, ValueError):
+        if _verbose:
+            print(f"No current price for {symbol} (market closed / unavailable) — skip")
+        return
+    if not math.isfinite(current_price) or current_price <= 0:
         if _verbose:
             print(f"No current price for {symbol} (market closed / unavailable) — skip")
         return
     if _verbose:
         print(f"Current price for {symbol}: {current_price}")
     avail_qty = inst.free()
-    if avail_qty is None:
+    if avail_qty is None or isinstance(avail_qty, bool):
         if _verbose:
             print(f"No available balance snapshot for {symbol} — skip")
         return
-    avail_qty = float(avail_qty)
+    try:
+        avail_qty = float(avail_qty)
+    except (TypeError, ValueError):
+        if _verbose:
+            print(f"Invalid available balance for {symbol}: {avail_qty} — skip")
+        return
     if not math.isfinite(avail_qty) or avail_qty < 0:
         if _verbose:
             print(f"Invalid available balance for {symbol}: {avail_qty} — skip")
@@ -1991,10 +2015,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         _TP_RIDE_STATE.pop(symbol, None)
         _save_mt_state()
     if trade_orders_buy and not position_closed_by_sell:
-        if not buy_price:
+        if (
+            buy_price is None
+            or isinstance(buy_price, bool)
+            or not math.isfinite(float(buy_price))
+            or float(buy_price) <= 0
+        ):
             if _verbose:
                 print(f"No buy_price !!!!!")
             return
+        buy_price = float(buy_price)
 
         snapshot = PositionSnapshot(
             symbol=symbol,
@@ -2088,10 +2118,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
     # 4. Evaluate SELL history (only when the latest SELL is at least as recent as any BUY).
     if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
-        if not sell_price:
+        if (
+            sell_price is None
+            or isinstance(sell_price, bool)
+            or not math.isfinite(float(sell_price))
+            or float(sell_price) <= 0
+        ):
             if _verbose:
                 print(f"No sell_price !!!!!")
             return
+        sell_price = float(sell_price)
         if (
             sell_time
             and symbol not in _LAST_EXIT_KIND

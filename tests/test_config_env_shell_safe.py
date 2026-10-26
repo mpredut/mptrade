@@ -672,6 +672,55 @@ def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
     assert sr.check_slow_grind_exhaustion(None, 100.0, 1000.0, 900000.0, 7.0, 15.0, 120.0, [], 900.0, 1.5, 2.5) == (False, "")
 
 
+def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatch):
+    import pytest
+    import external_order_guard as eog
+    import monitortrades as mt
+    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+    from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
+
+    # 1. external_order_guard.check_external_order_guards works with partial margins dict without KeyError
+    ok, reason, scale = eog.check_external_order_guards(
+        "BTCUSDC",
+        "BUY",
+        85000.0,
+        margins={"whale_guard_mode": "off", "orderbook_wall_guard_mode": "off", "funding_guard_mode": "off"},
+    )
+    assert (ok, reason, scale) == (True, "ok", 1.0)
+
+    # 2. PairCoordinator rejects bool qty/mid/checkpoint fields and derives fallback cost from ticket.price
+    policy = PairPolicy(adjustment_fraction=0.01)
+    with pytest.raises(ValueError):
+        PairCoordinator(None, qty=True, policy=policy)
+    pc = PairCoordinator(None, qty=1.0, policy=policy)
+    with pytest.raises(ValueError):
+        pc.start(mid=True)
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            None,
+            policy,
+            {
+                "pair_id": "p1",
+                "qty": 1.0,
+                "start_side": "BUY",
+                "phase": "quoting",
+                "tickets": [],
+                "hard_stop_revision": -1,
+            },
+        )
+    pc.tickets = [OrderTicket(order_id="o1", side="BUY", price=100.0, qty=2.0)]
+    pc.snapshots = {"o1": OrderSnapshot(status="closed", filled_qty=2.0, cost=0.0, fee=0.0)}
+    assert pc._side_totals("BUY") == (2.0, 200.0, 0.0)
+
+    # 3. monitortrades._log_tp_hold_state and _log_sl_hold_state handle None values in state dicts safely
+    snap = PositionSnapshot(symbol="BTCUSDC", current_price=108.0, avg_buy_price=100.0, current_time_s=1000.0)
+    monkeypatch.setitem(mt._TP_RIDE_STATE, "BTCUSDC", {"peak_price": None, "last_peak_time": None, "peak_gain": None})
+    mt._log_tp_hold_state("BTCUSDC", snap, ExitDecision(ExitAction.HOLD, False, "riding"), 0.07)
+    monkeypatch.setitem(mt._SL_BOUNCE_STATE, "BTCUSDC", {"peak_bounce_price": None, "started_at": None})
+    mt._log_sl_hold_state("BTCUSDC", snap, ExitDecision(ExitAction.HOLD, False, "bounce", metadata={"disaster_floor": None}), 0.05)
+
+
+
 
 
 

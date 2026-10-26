@@ -186,6 +186,8 @@ class PairCoordinator:
                  sleeper: Callable[[float], None] = time.sleep,
                  pair_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex):
         self.venue = venue
+        if isinstance(qty, bool):
+            raise ValueError("rtrade qty must be finite and positive")
         self.qty = float(qty)
         if not math.isfinite(self.qty) or self.qty <= 0:
             raise ValueError("rtrade qty must be finite and positive")
@@ -214,7 +216,10 @@ class PairCoordinator:
               pair_id: Optional[str] = None) -> PairOutcome:
         if self.phase not in {"idle", "complete", "expired", "failed", "hard_stop"}:
             raise RuntimeError("the existing round is not terminal")
-        mid = float(mid if mid is not None else (self.venue.current_price() or 0.0))
+        raw_mid = mid if mid is not None else (self.venue.current_price() or 0.0)
+        if isinstance(raw_mid, bool):
+            raise ValueError("the rtrade mid must be finite")
+        mid = float(raw_mid)
         if not math.isfinite(mid):
             raise ValueError("the rtrade mid must be finite")
         buy_price, sell_price = quote_prices(
@@ -346,10 +351,23 @@ class PairCoordinator:
         obj.phase = str(state["phase"])
         obj.reason = state.get("reason")
         obj.shock = bool(state.get("shock", False))
-        obj.started_at = clock() - max(0.0, float(state.get("elapsed_sec", 0.0)))
+        raw_elapsed = state.get("elapsed_sec")
+        if raw_elapsed is None:
+            elapsed_f = 0.0
+        else:
+            if isinstance(raw_elapsed, bool):
+                raise ValueError("invalid rtrade checkpoint elapsed_sec")
+            elapsed_f = float(raw_elapsed)
+            if not math.isfinite(elapsed_f):
+                raise ValueError("invalid rtrade checkpoint elapsed_sec")
+        obj.started_at = clock() - max(0.0, elapsed_f)
         ff_elapsed = state.get("first_fill_elapsed_sec")
-        obj.first_fill_at = (None if ff_elapsed is None
-                             else obj.started_at + max(0.0, float(ff_elapsed)))
+        if ff_elapsed is None:
+            obj.first_fill_at = None
+        else:
+            if isinstance(ff_elapsed, bool) or not math.isfinite(float(ff_elapsed)):
+                raise ValueError("invalid rtrade checkpoint first_fill_elapsed_sec")
+            obj.first_fill_at = obj.started_at + max(0.0, float(ff_elapsed))
         obj.first_fill_side = state.get("first_fill_side")
         obj.tickets = [OrderTicket(**ticket) for ticket in state.get("tickets", [])]
         obj.snapshots = {
@@ -367,12 +385,20 @@ class PairCoordinator:
         stored_limit_revisions = state.get("limit_revisions") or {}
         obj.limit_revisions = {}
         for side in ("BUY", "SELL"):
-            revision = int(stored_limit_revisions.get(side, 0) or 0)
+            raw_rev = stored_limit_revisions.get(side, 0)
+            if isinstance(raw_rev, bool):
+                raise ValueError(f"invalid {side} limit revision: {raw_rev}")
+            revision = int(raw_rev or 0)
             if not 0 <= revision <= _MAX_LIMIT_REVISION:
                 raise ValueError(f"invalid {side} limit revision: {revision}")
             obj.limit_revisions[side] = revision
-        obj.hard_stop_revision = max(
-            0, int(state.get("hard_stop_revision", 0) or 0))
+        raw_hs_rev = state.get("hard_stop_revision", 0)
+        if isinstance(raw_hs_rev, bool):
+            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}")
+        hs_revision = int(raw_hs_rev or 0)
+        if not 0 <= hs_revision <= _MAX_LIMIT_REVISION:
+            raise ValueError(f"invalid hard-stop revision: {hs_revision}")
+        obj.hard_stop_revision = hs_revision
         obj.hard_stop_reason = state.get("hard_stop_reason")
         return obj
 
@@ -512,8 +538,9 @@ class PairCoordinator:
             if ticket.side.upper() != side.upper():
                 continue
             snap = self.snapshots.get(ticket.order_id, OrderSnapshot())
-            qty += max(0.0, snap.filled_qty)
-            cost += max(0.0, snap.cost)
+            fq = max(0.0, snap.filled_qty)
+            qty += fq
+            cost += max(0.0, snap.cost) if snap.cost > 0 else (fq * ticket.price if fq > 0 else 0.0)
             fee += max(0.0, snap.fee)
         return qty, cost, fee
 
