@@ -556,7 +556,7 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now = time.time()
+        now: Optional[float] = None
         if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
             try:
                 tf = float(snapshot.current_time_s)
@@ -564,6 +564,8 @@ class PositionExitManager:
                     now = tf
             except (TypeError, ValueError):
                 pass
+        if now is None:
+            now = time.time()
         lost_threshold = custom_threshold if custom_threshold is not None else self.config.lost_threshold
 
         if not snapshot.is_valid_price:
@@ -804,7 +806,7 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         if self.config.smart_sl_enabled and not sl_episode_expired and not episode_state.get("smart_sl_done"):
             eval_fn = self.smart_sl_evaluator
-            if eval_fn is None:
+            if eval_fn is None and getattr(self.config, "allow_external_cache", True):
                 try:
                     from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
                     eval_fn = evaluate_smart_stop_loss
@@ -938,7 +940,7 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now = time.time()
+        now: Optional[float] = None
         if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
             try:
                 tf = float(snapshot.current_time_s)
@@ -946,6 +948,8 @@ class PositionExitManager:
                     now = tf
             except (TypeError, ValueError):
                 pass
+        if now is None:
+            now = time.time()
         gain_threshold = custom_threshold if custom_threshold is not None else self.config.gain_threshold
 
         if not snapshot.is_valid_price:
@@ -1221,7 +1225,7 @@ class PositionExitManager:
         current_price = snapshot.current_price
         last_sell = snapshot.last_sell_price
         last_kind = snapshot.last_exit_kind or "SELL"
-        now = time.time()
+        now: Optional[float] = None
         if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
             try:
                 tf = float(snapshot.current_time_s)
@@ -1229,6 +1233,8 @@ class PositionExitManager:
                     now = tf
             except (TypeError, ValueError):
                 pass
+        if now is None:
+            now = time.time()
 
         if not snapshot.is_valid_price:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")
