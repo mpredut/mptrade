@@ -6896,3 +6896,62 @@ def test_iteration40_kraken_hyperliquid_rollback_outcomes_nan_bool_safety(monkey
     with pytest.raises(ProviderError):
         hp.cancel_order("HYPEUSDC", True)
 
+
+def test_iteration41_t212_provider_bapi_and_bapi_allorders_nan_bool_safety(monkeypatch):
+    from types import SimpleNamespace
+    import time
+    import pytest
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+    from binance_api import bapi, bapi_allorders
+
+    # 1. T212Provider rejects boolean qty/price/order_id/fill fields
+    tp = T212Provider(
+        client=SimpleNamespace(
+            get_portfolio=lambda: [{"ticker": "AAPL_US_EQ", "averagePrice": True, "quantity": 1.0, "currentPrice": True}],
+            get_cash=lambda: {"free": True},
+            get_order_status=lambda oid: {"ticker": "AAPL_US_EQ", "status": "FILLED", "filledQuantity": True, "filledValue": 100.0},
+        ),
+        live_enabled=True,
+        order_validity="DAY",
+    )
+    assert tp.free_balance("RON") is None
+    assert tp.free_balance("AAPL_US_EQ") == 1.0
+    with pytest.raises(ProviderError):
+        tp.get_orders("AAPL_US_EQ", "BUY", 3600.0)
+    with pytest.raises(ProviderError):
+        tp._signed_qty("BUY", True)
+    with pytest.raises(ProviderError):
+        tp._send_order("AAPL_US_EQ", "BUY", 1.0, True, market=False)
+    with pytest.raises(ProviderError):
+        tp.order_status("AAPL_US_EQ", True)
+    with pytest.raises(ProviderError):
+        tp.order_status("AAPL_US_EQ", "OID1")
+    with pytest.raises(ProviderError):
+        tp.cancel_order("AAPL_US_EQ", True)
+
+    # 2. bapi.get_current_price ignores NaN/bool cached values and cancel_order/check_order_filled reject bool order_id
+    monkeypatch.setitem(bapi.cprice, "BTCUSDC", float("nan"))
+    monkeypatch.setitem(bapi.cprice_time, "BTCUSDC", time.time())
+    monkeypatch.setattr(bapi, "update_price", lambda sym: 61234.5)
+    assert bapi.get_current_price("BTCUSDC") == pytest.approx(61234.5)
+    assert bapi.cancel_order("BTCUSDC", True) is False
+    assert bapi.check_order_filled(True, "BTCUSDC") is False
+    assert bapi._convert_to_usdc("USDC", True) == 0.0
+
+    # 3. bapi_allorders.get_total_traded_stats ignores malformed/NaN/bool trades and get_filled_orders keeps unkeyed fills separate
+    monkeypatch.setattr(
+        bapi_allorders,
+        "get_trade_orders",
+        lambda order_type, symbol, max_age_seconds: [
+            {"side": "BUY", "price": 100.0, "quantity": 2.0},
+            {"side": "BUY", "price": float("nan"), "quantity": 5.0},
+            {"side": "SELL", "price": True, "quantity": 3.0},
+            "malformed",
+        ],
+    )
+    st = bapi_allorders.get_total_traded_stats("BTCUSDC", period_seconds=True)
+    assert st["BUY"]["total_quantity"] == pytest.approx(2.0)
+    assert st["BUY"]["total_value"] == pytest.approx(200.0)
+    assert st["SELL"]["trade_count"] == 0
+

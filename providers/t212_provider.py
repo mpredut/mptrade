@@ -133,18 +133,20 @@ class T212Provider(MarketDataProvider):
     def get_current_price(self, symbol: str) -> Optional[float]:
         p = self._position(symbol)
         if p:
-            try:
-                px = float(p.get("currentPrice"))
-                if math.isfinite(px) and px > 0:
-                    return px
-            except (TypeError, ValueError):
-                pass
+            raw_cp = p.get("currentPrice")
+            if raw_cp is not None and not isinstance(raw_cp, bool):
+                try:
+                    px = float(raw_cp)
+                    if math.isfinite(px) and px > 0:
+                        return px
+                except (TypeError, ValueError):
+                    pass
         # Fallback to market data feed when no open position is held in the account
         try:
             market_data = importlib.import_module("212trading.market_data")
             yahoo_sym = market_data.t212_to_yahoo(symbol)
             px = market_data.get_price_usd(yahoo_sym)
-            if px is not None and math.isfinite(float(px)) and float(px) > 0:
+            if px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0:
                 return float(px)
         except Exception as e:
             print(f"[T212] get_current_price fallback {symbol}: {e}")
@@ -170,14 +172,18 @@ class T212Provider(MarketDataProvider):
                 cash = get_cash_fn()
                 if not isinstance(cash, dict):
                     return None
-                free_ron = float(cash.get("free") or 0.0)
+                raw_free = cash.get("free")
+                if isinstance(raw_free, bool):
+                    return None
+                free_ron = float(raw_free or 0.0)
                 if not math.isfinite(free_ron) or free_ron < 0:
                     return None
                 if asset_u == "RON":
                     return free_ron
                 try:
                     market_data = importlib.import_module("212trading.market_data")
-                    usd_ron = float(market_data.get_usd_ron() or 4.6)
+                    raw_fx = market_data.get_usd_ron()
+                    usd_ron = float(raw_fx or 4.6) if not isinstance(raw_fx, bool) else 4.6
                 except Exception:
                     usd_ron = 4.6
                 if not math.isfinite(usd_ron) or usd_ron <= 0:
@@ -193,8 +199,11 @@ class T212Provider(MarketDataProvider):
             return None
         if not p:
             return 0.0
+        raw_qty = p.get("quantity")
+        if isinstance(raw_qty, bool):
+            return None
         try:
-            qty = float(p.get("quantity") or 0.0)
+            qty = float(raw_qty or 0.0)
         except (TypeError, ValueError):
             return None
         if not math.isfinite(qty) or qty < 0:
@@ -219,6 +228,8 @@ class T212Provider(MarketDataProvider):
         p = self._position(symbol, strict=True)
         if not p:
             return []
+        if isinstance(p.get("averagePrice"), bool) or isinstance(p.get("quantity"), bool):
+            raise ProviderError(f"portfolio({symbol}): invalid position")
         try:
             avg = float(p.get("averagePrice"))
             qty = float(p.get("quantity") or 0.0)
@@ -238,6 +249,8 @@ class T212Provider(MarketDataProvider):
     @staticmethod
     def _signed_qty(side: str, qty: float) -> float:
         side_u = (side or "").strip().upper()
+        if isinstance(qty, bool):
+            raise ProviderError(f"invalid T212 quantity: {qty!r}")
         try:
             qty_f = round(abs(float(qty)), _VOLUME_DECIMALS)
         except (TypeError, ValueError) as e:
@@ -257,6 +270,8 @@ class T212Provider(MarketDataProvider):
             return self._client().place_market_order(symbol, signed, extended_hours=False)
         if price is None:
             raise ProviderError("a T212 LIMIT order requires a price")
+        if isinstance(price, bool):
+            raise ProviderError(f"invalid T212 price: {price!r}")
         try:
             price_f = float(price)
         except (TypeError, ValueError) as e:
@@ -334,6 +349,8 @@ class T212Provider(MarketDataProvider):
         return order_id
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
+        if isinstance(order_id, bool) or not str(order_id or "").strip():
+            raise ProviderError(f"order_status({order_id}): invalid order id")
         try:
             raw = self._client().get_order_status(order_id)
         except Exception as e:  # noqa: BLE001
@@ -360,6 +377,8 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(
                 f"order_status({order_id}): unknown T212 status {venue_status!r}")
 
+        if any(isinstance(raw.get(k), bool) for k in ("filledQuantity", "filledValue", "fee", "commission")):
+            raise ProviderError(f"order_status({order_id}): invalid fill values")
         try:
             filled_qty = abs(float(raw.get("filledQuantity") or 0.0))
             filled_value_raw = raw.get("filledValue")
@@ -384,6 +403,10 @@ class T212Provider(MarketDataProvider):
             # Some legacy payloads expose execution price instead of filledValue.
             # Do not use limitPrice because it is not actual execution and distorts P&L.
             fill_price = raw.get("fillPrice", raw.get("averagePrice"))
+            if isinstance(fill_price, bool):
+                raise ProviderError(
+                    f"order_status({order_id}): fill {filled_qty} without an executed cost"
+                )
             try:
                 cost = abs(float(fill_price)) * filled_qty
             except (TypeError, ValueError):
@@ -411,6 +434,8 @@ class T212Provider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
+        if isinstance(order_id, bool) or not str(order_id or "").strip():
+            raise ProviderError(f"cancel_order({order_id}): invalid order id")
         if not self._orders_live():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")
         try:

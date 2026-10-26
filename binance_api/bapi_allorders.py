@@ -73,6 +73,12 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
             order_type = order_type.upper()
         sym.validate_symbols(symbol)
         sym.validate_ordertype(order_type)
+        if startTime is None or isinstance(startTime, bool):
+            raise ValueError("startTime must be a valid timestamp")
+        start_f = float(startTime)
+        if not math.isfinite(start_f) or start_f < 0:
+            raise ValueError("startTime must be a valid timestamp")
+        startTime = int(start_f)
 
         end_time = int(time.time() * 1000)  # ms
 
@@ -111,8 +117,13 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
         
         grouped = defaultdict(lambda: {'price_qty': 0, 'quantity': 0, 'timestamp': 0, 'side': ''})
 
-        for t in filtered:
-            key = t['orderId']
+        for idx, t in enumerate(filtered):
+            raw_oid = t['orderId']
+            key = (
+                raw_oid
+                if (raw_oid is not None and not isinstance(raw_oid, bool) and str(raw_oid).strip())
+                else f"_unkeyed_{idx}"
+            )
             grouped[key]['price_qty'] += t['price'] * t['quantity']
             grouped[key]['quantity'] += t['quantity']
             grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])
@@ -260,19 +271,39 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
 
 # The default aggregation window is the previous 24 hours.
 def get_total_traded_stats(symbol, period_seconds=86400):
-    
-    trades = get_trade_orders(order_type=None, symbol=symbol, max_age_seconds=period_seconds)
+    period_val = 86400
+    if period_seconds is not None and not isinstance(period_seconds, bool):
+        try:
+            cand_p = float(period_seconds)
+            if math.isfinite(cand_p) and cand_p > 0:
+                period_val = cand_p
+        except (TypeError, ValueError, OverflowError):
+            pass
+    trades = get_trade_orders(order_type=None, symbol=symbol, max_age_seconds=period_val)
 
     stats = {
         'BUY': {'total_quantity': 0, 'total_value': 0, 'trade_count': 0},
         'SELL': {'total_quantity': 0, 'total_value': 0, 'trade_count': 0}
     }
 
-    for t in trades:
+    for t in trades or []:
+        if not isinstance(t, dict):
+            continue
         side = str(t.get('side') or '').upper()
         if side in stats:
-            stats[side]['total_quantity'] += t['quantity']
-            stats[side]['total_value'] += t['price'] * t['quantity']
+            raw_px = t.get('price')
+            raw_qty = t.get('quantity', t.get('qty'))
+            if isinstance(raw_px, bool) or isinstance(raw_qty, bool):
+                continue
+            try:
+                px_f = float(raw_px)
+                qty_f = float(raw_qty)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(px_f) or not math.isfinite(qty_f) or px_f <= 0 or qty_f <= 0:
+                continue
+            stats[side]['total_quantity'] += qty_f
+            stats[side]['total_value'] += px_f * qty_f
             stats[side]['trade_count'] += 1
 
     # Round the accumulated values once, after all rows are included.

@@ -83,10 +83,24 @@ def get_current_price(symbol):
     now = time.time()
     cached_at = cprice_time.get(symbol)
     cached = cprice.get(symbol)
-    if cached_at is not None and cached is not None:
-        age = now - cached_at
-        if 0 <= age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
-            return cached
+    if (
+        cached_at is not None
+        and not isinstance(cached_at, bool)
+        and cached is not None
+        and not isinstance(cached, bool)
+    ):
+        try:
+            age = now - float(cached_at)
+            cached_f = float(cached)
+            if (
+                math.isfinite(age)
+                and math.isfinite(cached_f)
+                and cached_f > 0
+                and 0 <= age < BINANCE_REST_PRICE_CACHE_TTL_SEC
+            ):
+                return cached_f
+        except (TypeError, ValueError, OverflowError):
+            pass
 
     # A failed refresh returns None. It deliberately does not extend the timestamp
     # of an older quote, so repeated outages cannot keep stale data apparently fresh.
@@ -214,16 +228,20 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 executed_qty = 0.0
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0
+            ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
             if 'time' in order and order.get('time') is not None and not isinstance(order.get('time'), bool):
                 try:
                     raw_time = float(order['time'])
-                    ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
+                    if math.isfinite(raw_time) and raw_time >= 0.0:
+                        ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
                 except (TypeError, ValueError):
-                    ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-            else:
-                ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-            raw_oid = order['orderId'] if order.get('orderId') is not None else extract_order_id(order)
-            if raw_oid is None:
+                    pass
+            raw_oid = (
+                order['orderId']
+                if (order.get('orderId') is not None and not isinstance(order.get('orderId'), bool))
+                else extract_order_id(order)
+            )
+            if raw_oid is None or isinstance(raw_oid, bool):
                 continue
             filtered_orders[raw_oid] = {
                 'price': extract_order_price(order),
@@ -249,7 +267,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
           
 def cancel_order(symbol, order_id):
     try:
-        if not order_id:
+        if not order_id or isinstance(order_id, bool):
             return False
         client.cancel_order(symbol=symbol, orderId=order_id)
         print(f"The order with ID {order_id} was cancelled.")
@@ -361,7 +379,7 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
 def check_order_filled(order_id, symbol):
     """Legacy adapter; new code uses market_api.order_status()."""
     try:
-        if not order_id:
+        if not order_id or isinstance(order_id, bool):
             return False
         from providers.market_api import api as market_api
         return market_api.order_status(symbol, str(order_id)).fully_filled
@@ -401,25 +419,39 @@ def _get_symbol_price_safe(symbol):
 
 
 def _convert_to_usdc(asset, amount):
-    if amount <= 0:
+    if amount is None or isinstance(amount, bool):
+        return 0.0
+    try:
+        amt_f = float(amount)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(amt_f) or amt_f <= 0:
         return 0.0
     if asset == "USDC":
-        return amount
+        return amt_f
 
     price = _get_symbol_price_safe(f"{asset}USDC")
     if price:
-        return amount * price
+        return amt_f * price
 
     return 0.0
 
 
 def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CACHE_TTL_SECONDS, raise_errors=False):
     now = time.time()
+    ttl_f = float(ASSET_VALUE_CACHE_TTL_SECONDS)
+    if cache_ttl_seconds is not None and not isinstance(cache_ttl_seconds, bool):
+        try:
+            cand_ttl = float(cache_ttl_seconds)
+            if math.isfinite(cand_ttl) and cand_ttl >= 0:
+                ttl_f = cand_ttl
+        except (TypeError, ValueError, OverflowError):
+            pass
     if use_cache:
         with _asset_value_cache_lock:
             if (
                 _asset_value_cache["value"] is not None
-                and 0 <= (now - _asset_value_cache["timestamp"]) < cache_ttl_seconds
+                and 0 <= (now - _asset_value_cache["timestamp"]) < ttl_f
             ):
                 return _asset_value_cache["value"]
 
