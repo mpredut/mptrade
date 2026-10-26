@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import time
 from typing import Any, Dict, Optional, Tuple
 import urllib.request
@@ -44,22 +45,42 @@ class FearGreedCollector:
     @staticmethod
     def parse_payload(payload: Dict[str, Any]) -> Optional[FearGreedSnapshot]:
         """Parse raw JSON response payload into a FearGreedSnapshot."""
+        if not isinstance(payload, dict):
+            return None
         data = payload.get("data")
         if not data or not isinstance(data, list):
             return None
 
         current = data[0]
+        if not isinstance(current, dict):
+            return None
+        raw_val = current.get("value")
+        raw_ts = current.get("timestamp")
+        if raw_val is None or isinstance(raw_val, bool):
+            return None
         try:
-            val = int(current.get("value", 50))
-            classification = str(current.get("value_classification", "Neutral"))
-            ts = float(current.get("timestamp", time.time()))
+            val_f = float(raw_val)
+            if not math.isfinite(val_f):
+                return None
+            val = max(0, min(100, int(round(val_f))))
+            classification = str(current.get("value_classification") or "Neutral")
+            ts = float(raw_ts) if raw_ts is not None and not isinstance(raw_ts, bool) else time.time()
+            if not math.isfinite(ts) or ts <= 0:
+                ts = time.time()
         except (ValueError, TypeError):
             return None
 
         history: list[int] = []
         for item in data:
+            if not isinstance(item, dict):
+                continue
+            item_val = item.get("value")
+            if item_val is None or isinstance(item_val, bool):
+                continue
             try:
-                history.append(int(item.get("value", 50)))
+                v_f = float(item_val)
+                if math.isfinite(v_f):
+                    history.append(max(0, min(100, int(round(v_f)))))
             except (ValueError, TypeError):
                 continue
 

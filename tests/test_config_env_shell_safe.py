@@ -403,3 +403,64 @@ def test_cooldown_and_internal_state_hardening(tmp_path):
     assert isinstance(t_res, dict) and isinstance(t_res["T"], int) and t_res["n"] == 3
 
 
+def test_triggers_guards_and_collectors_hardening(tmp_path):
+    import json
+    import time
+    import numpy as np
+    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrend
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+    dec_nan = GuardDecision.downscale("test_guard", float("nan"), "nan_scale")
+    assert dec_nan.allowed is False
+    assert dec_nan.suggested_scale == 0.0
+    assert dec_nan.brake_action == BrakeAction.HARD_VETO
+
+    tsg = TrendSignificanceGuard(max_p_value=0.05)
+    ev = TriggerEvent(action=TriggerAction.ENTRY, side=TriggerSide.BUY, source="t", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert tsg.evaluate(ev, np.array([100.0 + i for i in range(12)])).allowed is True
+
+    lgt = LinearGradientTrigger(strength_threshold=2.0)
+    assert lgt.evaluate("BTCUSDC", float("nan"), 3.0, 1.0) == ("unknown", None)
+    assert lgt.last_state == "neutral"
+
+    kt = KalmanTrend()
+    assert kt.update(None, 100.0, 1.0)["vel"] == 0.0
+    assert kt.update(1000.0, True, 1.0)["vel"] == 0.0
+
+    mrt = MeanReversionTrigger(mode="rsi", rsi_period=3)
+    for i in range(6):
+        res_ev = mrt.update("BTCUSDC", 1000.0 + i, 100.0)
+    assert res_ev.metadata["rsi"] == 50.0
+    assert res_ev.side == TriggerSide.HOLD
+
+    ev_bool = TriggerEvent(action=TriggerAction.ENTRY, side=TriggerSide.BUY, source="t", symbol="BTCUSDC", price=True, strength=1.0)
+    assert ev_bool.is_executable() is False
+
+    assert FearGreedCollector.parse_payload(None) is None
+    assert FearGreedCollector.parse_payload({"data": [{"value": None}]}) is None
+
+    tickers = [{"symbol": f"COIN{i}USDT", "quoteVolume": "10000000", "priceChangePercent": "2.0"} for i in range(6)]
+    tickers.append({"symbol": "BADUSDT", "quoteVolume": "inf", "priceChangePercent": "nan"})
+    mb_snap = MarketBreadthCollector.parse_tickers(tickers)
+    assert mb_snap is not None and mb_snap.total_count == 6
+
+    hist_file = tmp_path / "news_feed_collect.json"
+    now = time.time()
+    hist_file.write_text(
+        json.dumps([
+            {"first_seen_ts": "corrupted", "title": "Bad"},
+            {"first_seen_ts": now - 10, "title": "Valid Headline", "matched_keywords": None, "is_high_severity": True},
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(hist_file))
+    assert len(nfc.get_pool_snapshot(now_ts=now).headlines) == 1
+
+

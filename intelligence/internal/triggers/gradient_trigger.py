@@ -26,7 +26,28 @@ class LinearGradientTrigger:
 
         Returns (regime_str, Optional[TriggerEvent]).
         """
-        if not math.isfinite(gradient) or not math.isfinite(epsilon) or epsilon <= 0:
+        if (
+            price is None
+            or gradient is None
+            or epsilon is None
+            or isinstance(price, bool)
+            or isinstance(gradient, bool)
+            or isinstance(epsilon, bool)
+        ):
+            return "unknown", None
+        try:
+            price = float(price)
+            gradient = float(gradient)
+            epsilon = float(epsilon)
+        except (TypeError, ValueError):
+            return "unknown", None
+        if (
+            not math.isfinite(price)
+            or price <= 0
+            or not math.isfinite(gradient)
+            or not math.isfinite(epsilon)
+            or epsilon <= 0
+        ):
             return "unknown", None
 
         strength = abs(gradient) / epsilon

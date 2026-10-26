@@ -14,7 +14,10 @@ from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerE
 def _f_env(name: str, default: float) -> float:
     try:
         raw = os.environ.get(name, "").strip()
-        return float(raw) if raw else default
+        if not raw:
+            return default
+        val = float(raw)
+        return val if math.isfinite(val) else default
     except ValueError:
         return default
 
@@ -56,14 +59,38 @@ class KalmanTrend:
 
     def update(self, ts: float, price: float, epsilon: float | None) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
-        if not (math.isfinite(float(ts)) and math.isfinite(float(price)) and float(price) > 0):
+        if ts is None or price is None or isinstance(ts, bool) or isinstance(price, bool):
             return {
                 "vel": 0.0,
                 "vel_std": 0.0,
                 "trend": self.trend,
                 "old_trend": self.trend,
             }
-        eps = float(epsilon) if (epsilon is not None and math.isfinite(float(epsilon))) else 0.0
+        try:
+            ts = float(ts)
+            price = float(price)
+        except (TypeError, ValueError):
+            return {
+                "vel": 0.0,
+                "vel_std": 0.0,
+                "trend": self.trend,
+                "old_trend": self.trend,
+            }
+        if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
+            return {
+                "vel": 0.0,
+                "vel_std": 0.0,
+                "trend": self.trend,
+                "old_trend": self.trend,
+            }
+        eps = 0.0
+        if epsilon is not None and not isinstance(epsilon, bool):
+            try:
+                eps_f = float(epsilon)
+                if math.isfinite(eps_f):
+                    eps = eps_f
+            except (TypeError, ValueError):
+                eps = 0.0
         if eps <= 0:
             eps = max(price * 1e-4, 1e-9)
         R = eps * eps

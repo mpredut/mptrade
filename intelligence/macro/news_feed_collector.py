@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -86,14 +87,24 @@ class NewsFeedCollector:
                 for item in data:
                     if not isinstance(item, dict):
                         continue
-                    ts = float(item.get("first_seen_ts", now))
+                    try:
+                        raw_ts = item.get("first_seen_ts", now)
+                        if raw_ts is None or isinstance(raw_ts, bool):
+                            continue
+                        ts = float(raw_ts)
+                        if not math.isfinite(ts):
+                            continue
+                    except (TypeError, ValueError):
+                        continue
                     if 0.0 <= (now - ts) < self.rolling_window_sec:
+                        kws = item.get("matched_keywords")
+                        matched_kws = tuple(str(k) for k in kws) if isinstance(kws, (list, tuple)) else ()
                         h = NewsHeadline(
-                            title=str(item.get("title", "")),
-                            source=str(item.get("source", "")),
-                            pub_date=str(item.get("pub_date", "")),
-                            url=str(item.get("url", "")),
-                            matched_keywords=tuple(item.get("matched_keywords", ())),
+                            title=str(item.get("title") or ""),
+                            source=str(item.get("source") or ""),
+                            pub_date=str(item.get("pub_date") or ""),
+                            url=str(item.get("url") or ""),
+                            matched_keywords=matched_kws,
                             is_high_severity=bool(item.get("is_high_severity", False)),
                         )
                         norm = self._normalize_title(h.title)

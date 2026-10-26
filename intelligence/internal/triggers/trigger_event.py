@@ -38,9 +38,15 @@ class TriggerEvent:
 
     def is_executable(self) -> bool:
         """Return True if this event requests an actual order (BUY or SELL)."""
+        if self.price is None or isinstance(self.price, bool):
+            return False
+        try:
+            px = float(self.price)
+        except (TypeError, ValueError):
+            return False
         return (
             self.side in (TriggerSide.BUY, TriggerSide.SELL)
-            and math.isfinite(self.price)
-            and self.price > 0
+            and math.isfinite(px)
+            and px > 0
             and self.action in (TriggerAction.ENTRY, TriggerAction.EXIT)
         )

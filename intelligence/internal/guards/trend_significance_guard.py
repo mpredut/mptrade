@@ -46,7 +46,7 @@ class TrendSignificanceGuard:
                 reason="not_an_entry_trigger",
             )
 
-        if not price_history or len(price_history) < 8:
+        if price_history is None or len(price_history) < 8:
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",
                 reason="insufficient_history_for_mk_test",

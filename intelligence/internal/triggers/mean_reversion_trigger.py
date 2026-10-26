@@ -35,10 +35,10 @@ class MeanReversionTrigger:
         pb_high: float = 1.0,
     ) -> None:
         self.mode = mode
-        self.rsi_period = rsi_period
+        self.rsi_period = max(1, int(rsi_period))
         self.rsi_low = rsi_low
         self.rsi_high = rsi_high
-        self.bb_period = bb_period
+        self.bb_period = max(1, int(bb_period))
         self.bb_k = bb_k
         self.pb_low = pb_low
         self.pb_high = pb_high
@@ -47,7 +47,7 @@ class MeanReversionTrigger:
         self.avg_gain: float | None = None
         self.avg_loss: float | None = None
         self._seed_gains: list[tuple[float, float]] = []
-        self.bb_buf: deque[float] = deque(maxlen=bb_period)
+        self.bb_buf: deque[float] = deque(maxlen=self.bb_period)
         self.current_sign: int = 0  # +1 oversold (buy), -1 overbought (sell), 0 neutral
 
     def _calc_rsi(self, price: float) -> float | None:
@@ -71,7 +71,7 @@ class MeanReversionTrigger:
             self.avg_loss = (self.avg_loss * (self.rsi_period - 1) + loss) / self.rsi_period
 
         if self.avg_loss == 0.0:
-            return 100.0
+            return 50.0 if self.avg_gain == 0.0 else 100.0
         rs = self.avg_gain / self.avg_loss
         return 100.0 - 100.0 / (1.0 + rs)
 
@@ -96,7 +96,14 @@ class MeanReversionTrigger:
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
         import math
-        if not (math.isfinite(float(price)) and float(price) > 0):
+        valid_price = False
+        if price is not None and not isinstance(price, bool):
+            try:
+                price = float(price)
+                valid_price = math.isfinite(price) and price > 0
+            except (TypeError, ValueError):
+                valid_price = False
+        if not valid_price:
             return TriggerEvent(
                 action=TriggerAction.NEUTRAL,
                 side=TriggerSide.HOLD,

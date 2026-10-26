@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import statistics
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -51,27 +52,50 @@ class MarketBreadthCollector:
         now_ts: Optional[float] = None,
     ) -> Optional[MarketBreadthSnapshot]:
         """Parse raw 24hr ticker data and calculate market breadth statistics."""
-        if not tickers:
+        if not tickers or not isinstance(tickers, list):
             return None
 
-        now = now_ts if now_ts is not None else time.time()
+        now = time.time()
+        if now_ts is not None and not isinstance(now_ts, bool):
+            try:
+                now_f = float(now_ts)
+                if math.isfinite(now_f) and now_f > 0.0:
+                    now = now_f
+            except (ValueError, TypeError):
+                pass
+        min_vol = 5_000_000.0
+        if min_volume_usd is not None and not isinstance(min_volume_usd, bool):
+            try:
+                mv_f = float(min_volume_usd)
+                if math.isfinite(mv_f) and mv_f >= 0.0:
+                    min_vol = mv_f
+            except (ValueError, TypeError):
+                pass
         filtered: List[Tuple[str, float]] = []
 
         for item in tickers:
-            symbol = item.get("symbol", "")
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
             if not symbol.endswith("USDT"):
                 continue
             # Exclude leveraged tokens or stablecoin pairs
             if any(sym_part in symbol for sym_part in ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT", "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "EURUSDT")):
                 continue
 
+            raw_qv = item.get("quoteVolume", 0.0)
+            raw_cp = item.get("priceChangePercent", 0.0)
+            if isinstance(raw_qv, bool) or isinstance(raw_cp, bool) or raw_qv is None or raw_cp is None:
+                continue
             try:
-                quote_vol = float(item.get("quoteVolume", 0.0))
-                change_pct = float(item.get("priceChangePercent", 0.0))
+                quote_vol = float(raw_qv)
+                change_pct = float(raw_cp)
             except (ValueError, TypeError):
                 continue
+            if not (math.isfinite(quote_vol) and math.isfinite(change_pct)):
+                continue
 
-            if quote_vol >= min_volume_usd:
+            if quote_vol >= min_vol:
                 filtered.append((symbol, change_pct))
 
         if len(filtered) < 5:
