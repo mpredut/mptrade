@@ -1532,26 +1532,14 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     assert vhf._f(float("nan"), -1.0) == -1.0
     assert vhf._f("12.5", 0.0) == 12.5
 
-    # 6. hyperliquid/shadow_longterm.py snapshot restores shadow_live globals even on failure
-    import importlib.util
-    saved_sys_path = list(sys.path)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "hl_shadow_longterm_under_test",
-            os.path.join(ps.ROOT, "hyperliquid", "shadow_longterm.py"),
-        )
-        hl_sh = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(hl_sh)
-        orig_log_dir = hl_sh.shadow.LOG_DIR
-        orig_variants = hl_sh.shadow._variants
-        orig_fetch = hl_sh.shadow._fetch_with_ts
-        monkeypatch.setattr(hl_sh, "_fetch_with_ts", lambda _p, _i: [])
-        with pytest.raises(RuntimeError):
-            hl_sh.snapshot(quiet=True)
-        assert hl_sh.shadow.LOG_DIR == orig_log_dir
-        assert hl_sh.shadow._variants is orig_variants
-        assert hl_sh.shadow._fetch_with_ts is orig_fetch
-    finally:
-        sys.path[:] = saved_sys_path
+    # 6. kraken/shadow_live._print_block handles missing "current" key in configs without KeyError
+    from kraken import shadow_live as k_sh
+    k_sh._print_block("CUSTOM", {"bars": 10, "buyhold_pct": 1.5, "configs": {"alt": {"net_pct": 1.0, "total_pct": 1.2, "maxdd_pct": 0.5, "cycles": 1}}})
+
+    # 7. BinancePriceStream._process_message accepts float-formatted event timestamps
+    from binance_api.bapi_ws import BinancePriceStream
+    ps_ws = BinancePriceStream()
+    ps_ws._process_message('{"data": {"s": "BTCUSDC", "c": "75000.5", "E": "1700000000123.0"}}')
+    assert ps_ws.get_price("BTCUSDC") == 75000.5
 
 

@@ -338,7 +338,14 @@ class BinancePriceStream(BinanceWSBase):
             )
             if isinstance(raw_ts, bool):
                 raw_ts = None
-            ts_ms = int(raw_ts) if raw_ts is not None else int(time.time() * 1000)
+            ts_ms = 0
+            if raw_ts is not None:
+                try:
+                    ts_f = float(raw_ts)
+                    if math.isfinite(ts_f) and ts_f > 0:
+                        ts_ms = int(ts_f)
+                except (TypeError, ValueError, OverflowError):
+                    ts_ms = 0
             if ts_ms <= 0:
                 ts_ms = int(time.time() * 1000)
             with self._lock:
