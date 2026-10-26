@@ -169,18 +169,24 @@ class TestIzolareParams(unittest.TestCase):
 
 class TestDiscover(unittest.TestCase):
     def test_it_finds_the_active_configs(self):
-        d = tempfile.mkdtemp()
-        for n in ("nvda", "spcx", "rgnt"):
-            open(os.path.join(d, f"config.{n}.env"), "w").close()
-        open(os.path.join(d, ".env"), "w").close()  # NOT an asset.
-        names = [n for n, _ in discover_assets(d)]
-        self.assertEqual(names, ["nvda", "rgnt", "spcx"])  # sorted, without .env
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("nvda", "spcx", "rgnt"):
+                open(os.path.join(d, f"config.{n}.env"), "w").close()
+            open(os.path.join(d, ".env"), "w").close()  # NOT an asset.
+            names = [n for n, _ in discover_assets(d)]
+            self.assertEqual(names, ["nvda", "rgnt", "spcx"])  # sorted, without .env
+
+
+_TMP_FILES: list[str] = []
 
 
 def _tmp(content: str) -> str:
+    import atexit
     f = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
     f.write(content)
     f.close()
+    _TMP_FILES.append(f.name)
+    atexit.register(lambda p=f.name: os.unlink(p) if os.path.exists(p) else None)
     return f.name
 
 

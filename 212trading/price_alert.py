@@ -67,10 +67,12 @@ def main() -> int:
     if os.path.exists(state_path):
         try:
             with open(state_path, "r", encoding="utf-8") as fh:
-                st = json.load(fh)
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                st = loaded
         except (OSError, ValueError):
             st = {}
-    armed = st.get("armed", True)
+    armed = bool(st.get("armed", True))
 
     hit_below = args.below is not None and price <= args.below
     hit_above = args.above is not None and price >= args.above
@@ -88,8 +90,8 @@ def main() -> int:
         title = f"{args.symbol} at {price:.2f} ({cond})"
         body = f"{args.symbol} = {price:.2f} USD — threshold {cond} reached. Manual buying zone."
         log(f"  [{args.symbol}] ALERT: {price:.2f} {cond}")
-        push(topic, title, body)
-        armed = False
+        if push(topic, title, body):
+            armed = False
     else:
         log(f"  [{args.symbol}] price {price:.2f} (below={args.below} above={args.above} armed={armed})")
 

@@ -932,6 +932,41 @@ class TestMinProfit(Base):
             cid2 = self.po.orders[-1]["client_order_id"]
             self.assertNotEqual(cid1, cid2, "restarted adapter must not reuse canceled client_order_id")
 
+        with self.subTest(msg="corrupted_peak_or_warmup_and_market_data_hardening"):
+            self.tearDown(); self.setUp()
+            import importlib.util
+            from trailing_core import should_sell
+            from kraken.market_data import pair_precision
+
+            hl_md_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid", "market_data.py")
+            hl_spec = importlib.util.spec_from_file_location("hl_md_test", hl_md_path)
+            hl_md = importlib.util.module_from_spec(hl_spec)
+            hl_spec.loader.exec_module(hl_md)
+
+            self.assertFalse(should_sell(True, 100.0, 10.0))
+            self.assertFalse(should_sell(80.0, True, 10.0))
+            self.assertFalse(should_sell(80.0, 100.0, True))
+
+            self.assertEqual(pair_precision({"pair_decimals": None, "lot_decimals": None, "ordermin": -5}), (2, 8, 0.0))
+            self.assertEqual(
+                hl_md.normalize_closed_candles(
+                    [
+                        {"t": 1000, "T": 2000, "o": "nan", "h": 10, "l": 9, "c": 10},
+                        {"t": 2000, "T": 3000, "o": 10, "h": 11, "l": 9, "c": 10.5},
+                    ],
+                    now_ms=5000,
+                ),
+                [{"timestamp": 2, "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5}],
+            )
+
+            api = FakeApi(250.0, free=2.0)
+            ts = self.ts(api)
+            ts._save({"TAOUSDC": {"peak": None, "warmup_at": None}})
+            ts.check_once()
+            st = ts._load()["TAOUSDC"]
+            self.assertEqual(st["peak"], 250.0)
+            self.assertNotIn("warmup_at", st)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

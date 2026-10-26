@@ -10,6 +10,8 @@ a valid price. HYPE qualifies; an unlisted future pair does not.
 from __future__ import annotations
 
 import json
+import math
+import urllib.parse
 import urllib.request
 
 try:
@@ -32,7 +34,8 @@ def fetch_ohlc_candles(
     Excludes the final still-forming candle when drop_incomplete is True to ensure
     reproducible historical backtests and avoid lookahead bias.
     """
-    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval}"
+    qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
+    url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     req = urllib.request.Request(
         url, headers={"User-Agent": "mptrade/kraken-ohlc-fetcher"}
     )
@@ -45,17 +48,33 @@ def fetch_ohlc_candles(
     if not key:
         return []
     raw = res[key]
+    if not isinstance(raw, list):
+        return []
     rows = raw[:-1] if drop_incomplete else raw
-    return [
-        {
-            "timestamp": int(x[0]),
-            "open": float(x[1]),
-            "high": float(x[2]),
-            "low": float(x[3]),
-            "close": float(x[4]),
-        }
-        for x in rows
-    ]
+    records: list[dict] = []
+    for x in rows:
+        if not isinstance(x, (list, tuple)) or len(x) < 5:
+            continue
+        try:
+            ts = int(float(x[0]))
+            o_val = float(x[1])
+            h_val = float(x[2])
+            l_val = float(x[3])
+            c_val = float(x[4])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(o_val) and math.isfinite(h_val) and math.isfinite(l_val) and math.isfinite(c_val)):
+            continue
+        if o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
+            continue
+        records.append({
+            "timestamp": ts,
+            "open": o_val,
+            "high": h_val,
+            "low": l_val,
+            "close": c_val,
+        })
+    return records
 
 
 def _is_kraken_error(exc: BaseException) -> bool:
@@ -109,10 +128,23 @@ def pair_available(client: KrakenClient, pair: str) -> dict | None:
 
 def pair_precision(info: dict) -> tuple[int, int, float]:
     """Return (price decimals, volume decimals, minimum order) from pair metadata."""
-    price_dec = int(info.get("pair_decimals", 2))
-    vol_dec = int(info.get("lot_decimals", 8))
+    if not isinstance(info, dict):
+        return 2, 8, 0.0
     try:
-        ordermin = float(info.get("ordermin", 0) or 0)
+        raw_p = info.get("pair_decimals")
+        price_dec = max(0, int(raw_p)) if raw_p is not None and not isinstance(raw_p, bool) else 2
+    except (TypeError, ValueError):
+        price_dec = 2
+    try:
+        raw_v = info.get("lot_decimals")
+        vol_dec = max(0, int(raw_v)) if raw_v is not None and not isinstance(raw_v, bool) else 8
+    except (TypeError, ValueError):
+        vol_dec = 8
+    try:
+        raw_min = info.get("ordermin", 0)
+        ordermin = float(raw_min or 0) if not isinstance(raw_min, bool) else 0.0
+        if not math.isfinite(ordermin) or ordermin < 0:
+            ordermin = 0.0
     except (TypeError, ValueError):
         ordermin = 0.0
     return price_dec, vol_dec, ordermin

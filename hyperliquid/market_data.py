@@ -7,6 +7,7 @@ Price comes from public all_mids; available means the coin is in the perpetual u
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.request
 
@@ -55,16 +56,29 @@ def normalize_closed_candles(
     """Sort, deduplicate and drop the candle that is still open."""
     by_open_time: dict[int, dict] = {}
     for row in rows:
-        open_time = int(row["t"])
-        close_time = int(row["T"])
+        if not isinstance(row, dict):
+            continue
+        try:
+            open_time = int(row["t"])
+            close_time = int(row["T"])
+            o_val = float(row["o"])
+            h_val = float(row["h"])
+            l_val = float(row["l"])
+            c_val = float(row["c"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(o_val) and math.isfinite(h_val) and math.isfinite(l_val) and math.isfinite(c_val)):
+            continue
+        if o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
+            continue
         if drop_incomplete and close_time >= now_ms:
             continue
         by_open_time[open_time] = {
             "timestamp": open_time // 1000,
-            "open": float(row["o"]),
-            "high": float(row["h"]),
-            "low": float(row["l"]),
-            "close": float(row["c"]),
+            "open": o_val,
+            "high": h_val,
+            "low": l_val,
+            "close": c_val,
         }
     return [by_open_time[key] for key in sorted(by_open_time)]
 
@@ -92,6 +106,8 @@ def fetch_ohlc_candles(
         if interval_min is None:
             raise ValueError(f"unsupported Hyperliquid interval: {interval}")
     else:
+        if isinstance(interval, bool):
+            raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
         interval_min = int(interval)
         interval_str = INTERVALS.get(interval_min)
         if interval_str is None:
@@ -127,7 +143,18 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
         data = _post_info({"type": "fundingHistory", "coin": coin, "startTime": start_ms}, timeout=timeout)
         if not isinstance(data, list):
             return []
-        return sorted(((int(d["time"]), float(d["fundingRate"])) for d in data), key=lambda x: x[0])
+        entries: list[tuple[int, float]] = []
+        for d in data:
+            if not isinstance(d, dict):
+                continue
+            try:
+                t_ms = int(d["time"])
+                rate = float(d["fundingRate"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(rate):
+                entries.append((t_ms, rate))
+        return sorted(entries, key=lambda x: x[0])
     except Exception as e:  # noqa: BLE001
         log(f"  ! funding history unavailable for {coin}: {e}")
         return []

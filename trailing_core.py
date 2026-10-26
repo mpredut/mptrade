@@ -38,6 +38,8 @@ from state_io import load_json_state, save_json_state
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
+    if isinstance(current, bool) or isinstance(peak, bool) or isinstance(trail_pct, bool):
+        return False
     if not (math.isfinite(current) and math.isfinite(peak) and math.isfinite(trail_pct)):
         return False
     return current > 0 and peak > 0 and trail_pct > 0 and current <= peak * (1 - trail_pct / 100.0)
@@ -108,11 +110,19 @@ class TrailingCore:
         if callable(total_getter):
             try:
                 tot = total_getter(asset)
-                if isinstance(tot, (int, float)) and math.isfinite(tot) and tot >= 0:
+                if (isinstance(tot, (int, float)) and not isinstance(tot, bool)
+                        and math.isfinite(tot) and tot >= 0):
                     return float(tot)
             except Exception:
                 pass
-        return float(self.a.free_qty(asset) or 0.0)
+        raw_free = self.a.free_qty(asset)
+        if isinstance(raw_free, bool) or raw_free is None:
+            return 0.0
+        try:
+            val = float(raw_free)
+            return val if math.isfinite(val) and val >= 0 else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
     def _finish_pending(self, st: dict, result, price: float, pair) -> None:
         """Apply one terminal fill exactly once, then acknowledge pending state."""
@@ -251,8 +261,19 @@ class TrailingCore:
         if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
             return
         price = float(price)
-        is_new = key not in state
-        st = state.setdefault(key, {"peak": price})
+        is_new = key not in state or not isinstance(state.get(key), dict)
+        if is_new:
+            state[key] = {"peak": price}
+        st = state[key]
+        raw_peak = st.get("peak")
+        if (isinstance(raw_peak, bool) or not isinstance(raw_peak, (int, float))
+                or not math.isfinite(float(raw_peak)) or float(raw_peak) <= 0):
+            st["peak"] = price
+        if "warmup_at" in st:
+            raw_warmup = st.get("warmup_at")
+            if (isinstance(raw_warmup, bool) or not isinstance(raw_warmup, (int, float))
+                    or not math.isfinite(float(raw_warmup)) or float(raw_warmup) <= 0):
+                st.pop("warmup_at", None)
 
         total_pos = self._remaining_qty(asset)
         if total_pos <= 0:
