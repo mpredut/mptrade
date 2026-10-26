@@ -7,6 +7,7 @@ Identifies high-probability reversal points triggered by forced liquidations:
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Optional
 
@@ -40,7 +41,24 @@ class LiquidationCapitulationTrigger:
         now: Optional[float] = None,
     ) -> Optional[TriggerEvent]:
         """Evaluate current liquidation window for capitulation buy or squeeze exit."""
-        t_now = float(now) if now is not None else time.time()
+        if price is None or isinstance(price, bool):
+            return None
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(price_f) and price_f > 0.0):
+            return None
+        price = price_f
+
+        t_now = time.time()
+        if now is not None and not isinstance(now, bool):
+            try:
+                nf = float(now)
+                if math.isfinite(nf) and nf > 0.0:
+                    t_now = nf
+            except (TypeError, ValueError):
+                pass
         if summary is None and self.collector is not None:
             try:
                 summary = (
@@ -51,7 +69,15 @@ class LiquidationCapitulationTrigger:
             except TypeError:
                 summary = self.collector.get_summary(symbol, window_sec=self.window_sec)
 
-        if summary is None or summary.total_usd < self.min_notional_usd:
+        if (
+            summary is None
+            or not math.isfinite(summary.total_usd)
+            or not math.isfinite(summary.long_liq_usd)
+            or not math.isfinite(summary.short_liq_usd)
+            or not math.isfinite(summary.capitulation_ratio)
+            or not math.isfinite(summary.squeeze_ratio)
+            or summary.total_usd < self.min_notional_usd
+        ):
             return None
 
         # 1. Long capitulation burst -> BUY entry

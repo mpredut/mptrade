@@ -176,9 +176,19 @@ class NewsFeedCollector:
 
     def get_pool_snapshot(self, now_ts: Optional[float] = None) -> NewsFeedSnapshot:
         """Return snapshot of currently aggregated history pool without fetching network."""
-        now = now_ts if now_ts is not None else time.time()
+        now = time.time()
+        if now_ts is not None and not isinstance(now_ts, bool):
+            try:
+                nf = float(now_ts)
+                if math.isfinite(nf) and nf > 0.0:
+                    now = nf
+            except (TypeError, ValueError):
+                pass
         cutoff = now - self.rolling_window_sec
-        active_pool = {k: v for k, v in self._aggregated_pool.items() if v[0] >= cutoff}
+        active_pool = {
+            k: v for k, v in self._aggregated_pool.items()
+            if math.isfinite(v[0]) and cutoff <= v[0] <= (now + 5.0)
+        }
         all_headlines = [
             v[1]
             for v in sorted(

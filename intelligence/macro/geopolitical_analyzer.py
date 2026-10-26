@@ -153,7 +153,14 @@ class GeopoliticalThreatAnalyzer:
         now_ts: Optional[float] = None,
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
-        now = now_ts if now_ts is not None else time.time()
+        now = time.time()
+        if now_ts is not None and not isinstance(now_ts, bool):
+            try:
+                nf = float(now_ts)
+                if math.isfinite(nf) and nf > 0.0:
+                    now = nf
+            except (TypeError, ValueError):
+                pass
         effective_ttl = (
             self.fallback_retry_ttl_sec
             if (self._cached_assessment is not None and self._cached_assessment.is_fallback)
@@ -238,7 +245,7 @@ class GeopoliticalThreatAnalyzer:
             thread_title=macro_thread_title,
             topic_key="macro_geopolitical",
         )
-        if not resp:
+        if not resp or not isinstance(resp, dict):
             has_acute_phrase = any(
                 phrase in h.title.lower()
                 for h in high_sev
@@ -283,6 +290,8 @@ class GeopoliticalThreatAnalyzer:
             return fallback_assessment
 
         threat_level = str(resp.get("threat_level") or "NORMAL").upper().strip()
+        if threat_level not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
+            threat_level = "NORMAL"
         raw_score = resp.get("risk_score")
         if raw_score is None or isinstance(raw_score, bool):
             risk_score = 0.5
@@ -295,6 +304,8 @@ class GeopoliticalThreatAnalyzer:
                 risk_score = 0.5
         summary = str(resp.get("summary") or "")
         recommended_brake = str(resp.get("recommended_brake") or "NONE").upper().strip()
+        if recommended_brake not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
+            recommended_brake = "NONE"
 
         assessment = GeopoliticalThreatAssessment(
             threat_level=threat_level,

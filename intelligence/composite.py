@@ -92,14 +92,16 @@ class CompositeMarketIntelligence:
         self.geopolitical_guard = geopolitical_guard or GeopoliticalShockGuard()
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
-        if symbol not in self.kalman_triggers:
-            self.kalman_triggers[symbol] = KalmanTrendTrigger()
-        return self.kalman_triggers[symbol]
+        sym = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        if sym not in self.kalman_triggers:
+            self.kalman_triggers[sym] = KalmanTrendTrigger()
+        return self.kalman_triggers[sym]
 
     def _get_gradient(self, symbol: str) -> LinearGradientTrigger:
-        if symbol not in self.gradient_triggers:
-            self.gradient_triggers[symbol] = LinearGradientTrigger()
-        return self.gradient_triggers[symbol]
+        sym = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        if sym not in self.gradient_triggers:
+            self.gradient_triggers[sym] = LinearGradientTrigger()
+        return self.gradient_triggers[sym]
 
     def evaluate_guards(
         self,
@@ -252,25 +254,49 @@ class CompositeMarketIntelligence:
                 _record_downscale(panic_dec)
 
         # 8. Google Gemini High-Stake Guard (GLLM1)
-        computed_notional = notional_eur
-        if computed_notional is None and qty is not None and price > 0:
-            computed_notional = price * qty
+        computed_notional: Optional[float] = None
+        if notional_eur is not None and not isinstance(notional_eur, bool):
+            try:
+                nf = float(notional_eur)
+                if math.isfinite(nf) and nf > 0.0:
+                    computed_notional = nf
+            except (TypeError, ValueError):
+                computed_notional = None
+        qty_finite: Optional[float] = None
+        if qty is not None and not isinstance(qty, bool):
+            try:
+                qf = float(qty)
+                if math.isfinite(qf) and qf > 0.0:
+                    qty_finite = qf
+            except (TypeError, ValueError):
+                qty_finite = None
+        price_finite: Optional[float] = None
+        if price is not None and not isinstance(price, bool):
+            try:
+                pf = float(price)
+                if math.isfinite(pf) and pf > 0.0:
+                    price_finite = pf
+            except (TypeError, ValueError):
+                price_finite = None
+        if computed_notional is None and qty_finite is not None and price_finite is not None:
+            computed_notional = price_finite * qty_finite
         if (
             computed_notional is not None
-            and math.isfinite(float(computed_notional))
-            and float(computed_notional) >= self.gemini_guard.min_notional_eur
+            and computed_notional >= self.gemini_guard.min_notional_eur
             and not _is_bypassed("GLLM1", "gemini_guard", "highstakeguard")
         ):
             telemetry_ctx = {
                 "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
                 "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
             }
+            eff_price = price_finite if price_finite is not None else price
+            eff_qty = qty_finite if qty_finite is not None else 1.0
             try:
                 gemini_dec = self.gemini_guard.check(
                     symbol,
                     side,
-                    price,
-                    qty if qty is not None else 1.0,
+                    eff_price,
+                    eff_qty,
                     notional_eur=computed_notional,
                     telemetry=telemetry_ctx,
                     dur_sec=dur_sec if dur_sec > 0 else None,
@@ -280,8 +306,8 @@ class CompositeMarketIntelligence:
                 gemini_dec = self.gemini_guard.check(
                     symbol,
                     side,
-                    price,
-                    qty if qty is not None else 1.0,
+                    eff_price,
+                    eff_qty,
                     notional_eur=computed_notional,
                     telemetry=telemetry_ctx,
                 )
@@ -325,7 +351,14 @@ class CompositeMarketIntelligence:
         notional_eur: Optional[float] = None,
     ) -> MarketIntelligenceEvaluation:
         """Evaluate directional triggers and validate against all guards."""
-        now_ts = ts if ts is not None else time.time()
+        now_ts = time.time()
+        if ts is not None and not isinstance(ts, bool):
+            try:
+                tf = float(ts)
+                if math.isfinite(tf) and tf > 0.0:
+                    now_ts = tf
+            except (TypeError, ValueError):
+                pass
         triggered_events: List[TriggerEvent] = []
 
         # 1. Kalman trigger

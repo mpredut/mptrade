@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional, Tuple
 
@@ -40,20 +41,45 @@ class MarketBreadthTrigger:
         ts: Optional[float] = None,
     ) -> Tuple[Optional[str], Optional[TriggerEvent]]:
         """Evaluate market breadth snapshot and generate actionable triggers."""
-        if snapshot is None:
+        if snapshot is None or price is None or isinstance(price, bool):
             return None, None
+        try:
+            price_f = float(price)
+            adv_r = float(snapshot.advance_ratio)
+            med_c = float(snapshot.median_change_pct)
+        except (TypeError, ValueError):
+            return None, None
+        if (
+            isinstance(snapshot.advance_ratio, bool)
+            or isinstance(snapshot.median_change_pct, bool)
+            or not (math.isfinite(price_f) and price_f > 0.0 and math.isfinite(adv_r) and math.isfinite(med_c))
+        ):
+            return None, None
+        price = price_f
 
-        now = ts if ts is not None else time.time()
+        now = time.time()
+        if ts is not None and not isinstance(ts, bool):
+            try:
+                tf = float(ts)
+                if math.isfinite(tf) and tf > 0.0:
+                    now = tf
+            except (TypeError, ValueError):
+                pass
 
         # 1. Capitulation Washout Bounce Entry
         if (
-            snapshot.advance_ratio <= self.washout_advance_threshold
-            and snapshot.median_change_pct <= self.washout_median_threshold
+            adv_r <= self.washout_advance_threshold
+            and med_c <= self.washout_median_threshold
         ):
             # If asset is outperforming the bleeding median (relative strength leader)
             relative_strength = False
-            if asset_24h_change_pct is not None and asset_24h_change_pct > snapshot.median_change_pct:
-                relative_strength = True
+            if asset_24h_change_pct is not None and not isinstance(asset_24h_change_pct, bool):
+                try:
+                    a24 = float(asset_24h_change_pct)
+                    if math.isfinite(a24) and a24 > med_c:
+                        relative_strength = True
+                except (TypeError, ValueError):
+                    pass
 
             strength = round(min(0.95, 0.70 + (1.0 - snapshot.advance_ratio) * 0.25), 2)
             event = TriggerEvent(

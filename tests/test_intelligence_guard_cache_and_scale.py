@@ -5925,12 +5925,147 @@ def test_iteration29_candle_interval_bool_t212_get_orders_whale_funding_ts_and_c
     assert dt_col.fetch("BTCUSDC", allow_network=False, now=float("nan")) is dt_snap
 
 
+def test_iteration30_bybit_liquidations_breadth_macro_triggers_and_composite_guards(tmp_path):
+    """Iteration 30 regression suite:
+    1. BybitLiquidationCollector._ingest, record_event, and get_summary reject non-dict/bool/NaN/invalid-side
+       inputs, normalize slash symbols ("BTC/USDT" -> "BTCUSDT"), and do not leak expired events when
+       get_summary is called with NaN/bool `now` or `window_sec`.
+    2. MarketBreadthCollector.parse_tickers sanitizes NaN/bool `now_ts` and `min_volume_usd` and normalizes
+       lowercase/whitespace symbols.
+    3. SentimentAdvisor.review and GeopoliticalThreatAnalyzer.assess handle NaN/bool `now_ts`, non-dict
+       LLM JSON responses, and invalid threat_level/recommended_brake values without crashing.
+    4. NewsFeedCollector.get_pool_snapshot filters out future-skewed or NaN timestamps and sanitizes NaN/bool `now_ts`.
+    5. LiquidationCapitulationTrigger, SentimentContrarianTrigger, MarketBreadthTrigger, and
+       CompositeMarketIntelligence sanitize NaN/bool inputs and normalize slash symbols across triggers/GLLM1.
+    """
+    from types import SimpleNamespace
+    import math
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector, LiquidationSummary
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.composite import CompositeMarketIntelligence
 
+    # 1. BybitLiquidationCollector hardening
+    liq_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
+    now_s = time.time()
+    liq_col._ingest("null")
+    liq_col._ingest("[1, 2, 3]")
+    liq_col._ingest(json.dumps({
+        "topic": "allLiquidation.BTCUSDT",
+        "data": [
+            "not-a-dict",
+            {"s": "BTCUSDT", "S": "Buy", "v": True, "p": 85000.0},
+            {"s": "BTCUSDT", "S": "UNKNOWN", "v": 1.0, "p": 85000.0},
+            {"s": "btc/usdt", "S": "BUY", "v": 2.0, "p": 50000.0},
+        ],
+    }))
+    liq_col.record_event("BTC/USDT", "BUY", True, ts=now_s)
+    liq_col.record_event("BTC/USDT", "BUY", 50000.0, ts=float("nan"))
+    liq_col.record_event("BTC/USDT", "INVALID_SIDE", 50000.0, ts=now_s)
+    # Record an expired event 2000s ago
+    liq_col.record_event("BTC/USDT", "SELL", 250000.0, ts=now_s - 2000.0)
 
+    # Calling get_summary with NaN `now` or NaN `window_sec` must NOT include the 2000s-old event
+    summary = liq_col.get_summary("btc/usdt", window_sec=float("nan"), now=float("nan"))
+    assert summary.symbol == "BTCUSDT"
+    assert summary.events_count == 1
+    assert summary.long_liq_usd == 100000.0
+    assert summary.short_liq_usd == 0.0
 
+    # 2. MarketBreadthCollector.parse_tickers with NaN min_volume_usd & lowercase symbols
+    tickers = [
+        {"symbol": f"coin{i}usdt", "quoteVolume": "10000000", "priceChangePercent": "-5.5"}
+        for i in range(6)
+    ]
+    b_snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=float("nan"), now_ts=float("nan"))
+    assert b_snap is not None
+    assert b_snap.total_count == 6
+    assert b_snap.regime == "PANIC_WASHOUT"
+    assert math.isfinite(b_snap.ts) and b_snap.ts > 0.0
 
+    # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer non-dict LLM response & enum sanitization
+    fake_gemini_list = SimpleNamespace(query_json=lambda *a, **kw: ["unexpected", "list"])
+    advisor = SentimentAdvisor(
+        gemini_client=fake_gemini_list,
+        cache_file=str(tmp_path / "sentiment_eval.json"),
+    )
+    assert advisor.review(force_refresh=True, now_ts=float("nan")) is None
 
+    fake_gemini_bad_enums = SimpleNamespace(
+        query_json=lambda *a, **kw: {
+            "threat_level": "APOCALYPSE",
+            "risk_score": 0.8,
+            "summary": "Test",
+            "recommended_brake": "FULL_HALT",
+        }
+    )
+    geo = GeopoliticalThreatAnalyzer(
+        gemini_client=fake_gemini_bad_enums,
+        cache_ttl_sec=60.0,
+        fallback_retry_ttl_sec=10.0,
+        state_file=str(tmp_path / "geo_eval.json"),
+    )
+    news_snap = NewsFeedSnapshot(
+        headlines=(
+            NewsHeadline(
+                title="Military strike reported near oil pipeline",
+                source="Test",
+                pub_date="",
+                url="",
+                matched_keywords=("military strike",),
+                is_high_severity=True,
+            ),
+        ),
+        total_fetched=1,
+        high_severity_count=1,
+        has_critical_shock_keywords=False,
+        ts=now_s,
+    )
+    geo_res = geo.assess(news_snap, force_refresh=True, now_ts=float("nan"))
+    assert geo_res.threat_level == "NORMAL"
+    assert geo_res.recommended_brake == "NONE"
+    assert math.isfinite(geo_res.ts) and geo_res.ts > 0.0
 
+    # 4. NewsFeedCollector.get_pool_snapshot filters future-skewed / NaN timestamps
+    nf_col = NewsFeedCollector(history_file=str(tmp_path / "news_collect.json"))
+    nf_col._aggregated_pool["future_hl"] = (now_s + 3600.0, news_snap.headlines[0])
+    nf_col._aggregated_pool["nan_hl"] = (float("nan"), news_snap.headlines[0])
+    nf_col._aggregated_pool["valid_hl"] = (now_s - 10.0, news_snap.headlines[0])
+    pool_snap = nf_col.get_pool_snapshot(now_ts=float("nan"))
+    assert pool_snap.total_fetched == 1
+    assert math.isfinite(pool_snap.ts)
 
+    # 5. Triggers & CompositeMarketIntelligence hardening
+    liq_trig = LiquidationCapitulationTrigger(min_notional_usd=100_000.0)
+    bad_summary = LiquidationSummary(
+        symbol="BTCUSDT", window_sec=300.0, long_liq_usd=float("nan"), short_liq_usd=0.0,
+        net_usd=0.0, capitulation_ratio=0.9, squeeze_ratio=0.1, events_count=1, last_event_ts=now_s,
+    )
+    assert liq_trig.evaluate("BTCUSDT", 85000.0, summary=bad_summary, now=float("nan")) is None
+    assert liq_trig.evaluate("BTCUSDT", True, summary=summary, now=now_s) is None
 
+    sc_trig = SentimentContrarianTrigger()
+    fg_snap = FearGreedSnapshot(
+        value=15, classification="Extreme Fear", timestamp=now_s,
+        historical_values=(15, 16), trend_7d_change=-5, is_extreme_fear=True, is_extreme_greed=False,
+    )
+    assert sc_trig.evaluate("BTCUSDT", False, fg_snap) == (None, None)
 
+    mb_trig = MarketBreadthTrigger()
+    sig, ev = mb_trig.evaluate("BTCUSDT", 85000.0, b_snap, asset_24h_change_pct=False, ts=float("nan"))
+    assert sig == "BREADTH_WASHOUT_BUY"
+    assert ev is not None and ev.metadata["relative_strength"] is False
+    assert math.isfinite(ev.ts) and ev.ts > 0.0
+
+    comp = CompositeMarketIntelligence()
+    assert comp._get_kalman("btc/usdc") is comp._get_kalman("BTCUSDC")
+    assert comp._get_gradient("btc/usdc") is comp._get_gradient("BTCUSDC")
+    # Passing bool notional_eur or bool qty must not crash or trigger GLLM1 falsely
+    g_dec = comp.evaluate_guards("BTC/USDC", "BUY", 85000.0, qty=True, notional_eur="bad")
+    assert g_dec.allowed is True

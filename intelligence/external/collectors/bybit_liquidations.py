@@ -145,20 +145,36 @@ class BybitLiquidationCollector:
     def _ingest(self, raw: str) -> None:
         try:
             msg = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             return
-        topic = msg.get("topic", "")
+        if not isinstance(msg, dict):
+            return
+        topic = str(msg.get("topic") or "")
         if not topic.startswith("allLiquidation."):
             return
         now = time.time()
-        for item in msg.get("data", []) or []:
+        data_items = msg.get("data")
+        if not isinstance(data_items, list):
+            return
+        for item in data_items:
+            if not isinstance(item, dict):
+                continue
             try:
-                symbol = str(item["s"]).strip().upper()
+                symbol = str(item["s"]).strip().upper().replace("/", "").replace("-", "").replace("_", "")
                 if not symbol:
                     continue
-                # Bybit: Buy = long liquidated, Sell = short liquidated
-                side = "LONG" if item["S"] == "Buy" else "SHORT"
-                notional = float(item["v"]) * float(item["p"])
+                raw_side = str(item["S"]).strip().upper()
+                if raw_side in ("BUY", "LONG"):
+                    side = "LONG"
+                elif raw_side in ("SELL", "SHORT"):
+                    side = "SHORT"
+                else:
+                    continue
+                raw_v = item["v"]
+                raw_p = item["p"]
+                if isinstance(raw_v, bool) or isinstance(raw_p, bool):
+                    continue
+                notional = float(raw_v) * float(raw_p)
                 if not math.isfinite(notional) or notional <= 0:
                     continue
             except (KeyError, ValueError, TypeError):
@@ -167,24 +183,46 @@ class BybitLiquidationCollector:
                 dq = self._events.setdefault(symbol, deque())
                 dq.append((now, side, notional))
                 cutoff = now - self._retention
-                while dq and dq[0][0] < cutoff:
+                while dq and (not math.isfinite(dq[0][0]) or dq[0][0] < cutoff):
                     dq.popleft()
 
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
+        if notional_usd is None or isinstance(notional_usd, bool):
+            return
         try:
             notional = float(notional_usd)
         except (ValueError, TypeError):
             return
         if not math.isfinite(notional) or notional <= 0:
             return
-        now = float(ts) if ts is not None else time.time()
-        side_norm = "LONG" if str(side).upper() in ("LONG", "BUY") else "SHORT"
+        sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        if not sym_norm:
+            return
+        raw_side = str(side or "").strip().upper()
+        if raw_side in ("LONG", "BUY"):
+            side_norm = "LONG"
+        elif raw_side in ("SHORT", "SELL"):
+            side_norm = "SHORT"
+        else:
+            return
+        now = time.time()
+        if ts is not None and not isinstance(ts, bool):
+            try:
+                ts_f = float(ts)
+                if math.isfinite(ts_f) and ts_f > 0.0:
+                    now = ts_f
+                else:
+                    return
+            except (ValueError, TypeError):
+                return
+        elif isinstance(ts, bool):
+            return
         with self._lock:
-            dq = self._events.setdefault(str(symbol).strip().upper(), deque())
+            dq = self._events.setdefault(sym_norm, deque())
             dq.append((now, side_norm, notional))
             cutoff = now - self._retention
-            while dq and dq[0][0] < cutoff:
+            while dq and (not math.isfinite(dq[0][0]) or dq[0][0] < cutoff):
                 dq.popleft()
 
     def get_summary(
@@ -194,9 +232,24 @@ class BybitLiquidationCollector:
         now: Optional[float] = None,
     ) -> LiquidationSummary:
         """Aggregate liquidation metrics for symbol over window_sec."""
-        symbol = symbol.upper()
-        now_ts = float(now) if now is not None else time.time()
-        cutoff = now_ts - window_sec
+        symbol = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        now_ts = time.time()
+        if now is not None and not isinstance(now, bool):
+            try:
+                now_f = float(now)
+                if math.isfinite(now_f) and now_f > 0.0:
+                    now_ts = now_f
+            except (ValueError, TypeError):
+                pass
+        win_sec = 300.0
+        if window_sec is not None and not isinstance(window_sec, bool):
+            try:
+                win_f = float(window_sec)
+                if math.isfinite(win_f) and win_f > 0.0:
+                    win_sec = win_f
+            except (ValueError, TypeError):
+                pass
+        cutoff = now_ts - win_sec
         long_usd = short_usd = 0.0
         events_n = 0
         last_ts = 0.0
@@ -210,6 +263,8 @@ class BybitLiquidationCollector:
                         break
 
         for ts, side, notional in items:
+            if not (math.isfinite(ts) and math.isfinite(notional) and notional > 0.0):
+                continue
             if ts < cutoff or ts > (now_ts + 5.0):
                 continue
             last_ts = max(last_ts, ts)
@@ -225,7 +280,7 @@ class BybitLiquidationCollector:
 
         return LiquidationSummary(
             symbol=symbol,
-            window_sec=window_sec,
+            window_sec=win_sec,
             long_liq_usd=long_usd,
             short_liq_usd=short_usd,
             net_usd=short_usd - long_usd,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional, Tuple
 
@@ -38,11 +39,27 @@ class SentimentContrarianTrigger:
 
         Returns (signal_type, Optional[TriggerEvent]).
         """
-        if snapshot is None:
+        if snapshot is None or price is None or isinstance(price, bool):
             return None, None
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError):
+            return None, None
+        if not (math.isfinite(price_f) and price_f > 0.0):
+            return None, None
+        price = price_f
 
-        now = ts if ts is not None else time.time()
+        now = time.time()
+        if ts is not None and not isinstance(ts, bool):
+            try:
+                tf = float(ts)
+                if math.isfinite(tf) and tf > 0.0:
+                    now = tf
+            except (TypeError, ValueError):
+                pass
         val = snapshot.value
+        if val is None or isinstance(val, bool) or not math.isfinite(float(val)):
+            return None, None
 
         # 1. Contrarian ENTRY BUY during Extreme Fear
         if val <= self.extreme_fear_entry:

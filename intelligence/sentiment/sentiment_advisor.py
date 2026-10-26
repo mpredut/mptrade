@@ -130,7 +130,14 @@ class SentimentAdvisor:
         now_ts: Optional[float] = None,
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
-        now = now_ts if now_ts is not None else time.time()
+        now = time.time()
+        if now_ts is not None and not isinstance(now_ts, bool):
+            try:
+                nf = float(now_ts)
+                if math.isfinite(nf) and nf > 0.0:
+                    now = nf
+            except (TypeError, ValueError):
+                pass
         if not force_refresh and self._cached_assessment and 0.0 <= (now - self._last_eval_ts) < self.cache_ttl_sec:
             return self._cached_assessment
 
@@ -171,7 +178,7 @@ class SentimentAdvisor:
             thread_title=macro_thread_title,
             topic_key="macro_sentiment",
         )
-        if not resp:
+        if not resp or not isinstance(resp, dict):
             return self._cached_assessment
 
         try:
