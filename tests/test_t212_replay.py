@@ -883,6 +883,37 @@ class T212CancellationLifecycleTest(unittest.TestCase):
             self.assertEqual(len(records_trunc), 1)
             self.assertEqual(records_trunc[0]["close"], 101.0)
 
+    def test_provider_quantity_and_t212_hardening(self):
+        from providers.strategy_executor import OrderStatus, PairPrecision
+        from providers.quantity import balance_cap_quantity, decide_quantity
+        from providers.t212_provider import T212Provider
+
+        with self.assertRaises(ValueError):
+            OrderStatus("open", True, 0.0, 0.0)
+        with self.assertRaises(ValueError):
+            OrderStatus("open", 0.0, 0.0, 0.0, orig_qty=True)
+        with self.assertRaises(ValueError):
+            PairPrecision(2, 2, True)
+
+        cap, asset = balance_cap_quantity(lambda _a: 100.0, "BTCUSDC", "BUY", float("nan"))
+        self.assertIsNone(cap)
+        self.assertEqual(asset, "USDC")
+        cap_bool, _ = balance_cap_quantity(lambda _a: True, "BTCUSDC", "SELL", 100.0)
+        self.assertIsNone(cap_bool)
+
+        dummy_provider = MagicMock()
+        dummy_provider.free_balance.return_value = 100.0
+        with self.assertRaises(ValueError):
+            decide_quantity(dummy_provider, "BTCUSDC", "BUY", 10.0, True)
+
+        fake_cli = MagicMock()
+        fake_cli.get_cash.return_value = {"free": 460.0}
+        provider = T212Provider(client=fake_cli)
+        fake_md = MagicMock()
+        fake_md.get_usd_ron.return_value = -1.0
+        with patch("importlib.import_module", return_value=fake_md):
+            self.assertAlmostEqual(provider.free_balance("USD"), 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

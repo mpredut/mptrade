@@ -102,15 +102,26 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
     asset = base if side == "SELL" else quote
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be BUY or SELL")
-    if not asset or (side == "BUY" and price <= 0):
+    if not asset:
         return None, asset
+    if side == "BUY":
+        if isinstance(price, bool):
+            return None, asset
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return None, asset
+        if not math.isfinite(price_f) or price_f <= 0:
+            return None, asset
+    else:
+        price_f = 0.0
     raw = free_balance(asset)
-    if raw is None:
+    if raw is None or isinstance(raw, bool):
         return None, asset
     balance = float(raw)
     if not math.isfinite(balance) or balance < 0:
         return None, asset
-    return (balance if side == "SELL" else balance / float(price)), asset
+    return (balance if side == "SELL" else balance / price_f), asset
 
 
 def fee_cap_quantity(available_qty: float, fee_rate: float) -> float:
@@ -136,6 +147,8 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     if requested_qty is None:
         requested = float("inf")
     else:
+        if isinstance(requested_qty, bool):
+            raise ValueError("requested quantity must be finite")
         requested = float(requested_qty)
         if not math.isfinite(requested):
             raise ValueError("requested quantity must be finite")

@@ -41,14 +41,30 @@ def resolve_quantity(order_price: float,
                      order_qty: float | None,
                      order_budget_ron: float | None) -> float | None:
     """Resolve share quantity from fixed ORDER_QTY or a RON budget at the current FX rate."""
-    if order_qty:
-        return order_qty
-    if order_budget_ron:
-        rate = get_usd_ron()
-        qty = order_budget_ron / (order_price * rate)
+    if order_qty is not None and not isinstance(order_qty, bool):
+        try:
+            qty_val = float(order_qty)
+        except (TypeError, ValueError, OverflowError):
+            qty_val = 0.0
+        if math.isfinite(qty_val) and qty_val > 0:
+            return qty_val
+    if order_budget_ron is not None and not isinstance(order_budget_ron, bool):
+        if isinstance(order_price, bool):
+            return None
+        try:
+            budget = float(order_budget_ron)
+            price = float(order_price)
+            rate = float(get_usd_ron() or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not (math.isfinite(budget) and budget > 0
+                and math.isfinite(price) and price > 0
+                and math.isfinite(rate) and rate > 0):
+            return None
+        qty = budget / (price * rate)
         log(f"  [ORDER] {order_budget_ron} RON / ({order_price} USD × {rate:.2f}) = {qty:.4f} actiuni")
         if qty < 1:
-            log(f"  ! [ORDER] budget < the price of one share (~{order_price*rate:.0f} RON) "
+            log(f"  ! [ORDER] budget < the price of one share (~{price*rate:.0f} RON) "
                 f"-> a FRACTIONAL order ({qty:.4f}). T212 may refuse fractional orders on a new instrument.")
         return qty
     return None
@@ -308,8 +324,12 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
     misses = int(record.get("lookup_misses") or 0) + 1
     record["lookup_misses"] = misses
     record["last_observed_at"] = now
+    next_retry_at = float(record.get("next_retry_at") or 0.0)
+    if not math.isfinite(next_retry_at) or next_retry_at > now + max(float(retry_delay), 0.0) + 60.0:
+        next_retry_at = now + max(float(retry_delay), 0.0)
+        record["next_retry_at"] = next_retry_at
     _persist_marker(record, marker_path)
-    if misses < ABSENCE_CONFIRMATIONS or now < float(record.get("next_retry_at") or 0.0):
+    if misses < ABSENCE_CONFIRMATIONS or now < next_retry_at:
         return "waiting"
     return "retryable"
 
@@ -335,6 +355,9 @@ def place_order_with_retry(
     it eligible for a later invocation. There is no in-process retry loop.
     """
 
+    if isinstance(quantity, bool) or isinstance(limit_price, bool) or isinstance(retry_delay, bool):
+        log("  ! [ORDER] parametri numerici invalizi: bool nu este permis")
+        return False
     try:
         qty_r = round(float(quantity), 2)
         price_r = round(float(limit_price), 2)

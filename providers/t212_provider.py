@@ -179,7 +179,9 @@ class T212Provider(MarketDataProvider):
                     usd_ron = float(market_data.get_usd_ron() or 4.6)
                 except Exception:
                     usd_ron = 4.6
-                return round(free_ron / usd_ron, 2) if usd_ron > 0 else free_ron
+                if not math.isfinite(usd_ron) or usd_ron <= 0:
+                    usd_ron = 4.6
+                return round(free_ron / usd_ron, 2)
             except Exception as e:
                 print(f"[T212] cash balance {asset}: {e}")
                 return None

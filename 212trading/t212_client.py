@@ -178,6 +178,8 @@ class T212Client:
                 self._fetch_fail.pop("_ord_cache", None)
                 self._pf_cache = None
                 self._fetch_fail.pop("_pf_cache", None)
+                self._cash_cache = None
+                self._fetch_fail.pop("_cash_cache", None)
         return status, data
 
     def place_limit_order(
@@ -312,6 +314,8 @@ class T212Client:
                 self._fetch_fail.pop("_ord_cache", None)
                 self._pf_cache = None
                 self._fetch_fail.pop("_pf_cache", None)
+                self._cash_cache = None
+                self._fetch_fail.pop("_cash_cache", None)
         return ok
 
     def _log_read_fail(self, what: str, status: int) -> None:
@@ -392,7 +396,8 @@ class T212Client:
 
         A brief shared TTL coalesces all asset-thread requests into one call.
         """
-        return self._read_cached("_pf_cache", "/equity/portfolio", "portofoliu")
+        res = self._read_cached("_pf_cache", "/equity/portfolio", "portofoliu")
+        return res if isinstance(res, list) else None
 
     def list_active_orders(self) -> list[dict] | None:
         """Return pending orders; executed orders disappear into the portfolio.
@@ -401,7 +406,8 @@ class T212Client:
         reconciliation immediately sees new orders instead of incorrectly dropping
         them or marking a take-profit tranche as sold.
         """
-        return self._read_cached("_ord_cache", "/equity/orders", "active orders")
+        res = self._read_cached("_ord_cache", "/equity/orders", "active orders")
+        return res if isinstance(res, list) else None
 
     def get_cash(self) -> dict | None:
         """Return account cash breakdown (free, invested, blocked, total) in account base currency."""

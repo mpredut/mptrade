@@ -114,6 +114,8 @@ class OrderStatus:
             raise ValueError(f"unnormalized order status: {self.status!r}")
         for name, raw in (("filled_qty", self.filled_qty),
                           ("cost", self.cost), ("fee", self.fee)):
+            if isinstance(raw, bool):
+                raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
             value = float(raw)
             # A negative fee is valid when the venue pays a maker rebate.
             if not math.isfinite(value) or (name != "fee" and value < 0):
@@ -122,6 +124,8 @@ class OrderStatus:
         object.__setattr__(self, "venue_status", str(self.venue_status or "").upper())
         if self.orig_qty is not None:
             raw_orig = self.orig_qty
+            if isinstance(raw_orig, bool):
+                raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
             try:
                 orig_val = abs(float(raw_orig))
                 if not math.isfinite(orig_val):
@@ -162,6 +166,8 @@ class PairPrecision:
             if isinstance(raw, bool) or int(raw) != raw or int(raw) < 0:
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
             object.__setattr__(self, name, int(raw))
+        if isinstance(self.order_min, bool):
+            raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
         minimum = float(self.order_min)
         if not math.isfinite(minimum) or minimum < 0:
             raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
