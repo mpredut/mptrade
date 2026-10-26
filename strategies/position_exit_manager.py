@@ -328,6 +328,18 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
         pass
 
 
+def _resolve_now_s(current_time_s: Optional[float]) -> float:
+    """Resolve explicit simulation/snapshot timestamp or fall back to wall-clock time."""
+    if current_time_s is not None and not isinstance(current_time_s, bool):
+        try:
+            tf = float(current_time_s)
+            if math.isfinite(tf) and tf >= 0.0:
+                return tf
+        except (TypeError, ValueError):
+            pass
+    return time.time()
+
+
 PERSISTED_EXIT_STATE_KEYS: Tuple[str, ...] = (
     "sl_bounce_state",
     "sl_episode_state",
@@ -931,16 +943,7 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now: Optional[float] = None
-        if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
-            try:
-                tf = float(snapshot.current_time_s)
-                if math.isfinite(tf) and tf >= 0.0:
-                    now = tf
-            except (TypeError, ValueError):
-                pass
-        if now is None:
-            now = time.time()
+        now = _resolve_now_s(snapshot.current_time_s)
         gain_threshold = custom_threshold if custom_threshold is not None else self.config.gain_threshold
 
         if not snapshot.is_valid_price:
@@ -1216,16 +1219,7 @@ class PositionExitManager:
         current_price = snapshot.current_price
         last_sell = snapshot.last_sell_price
         last_kind = snapshot.last_exit_kind or "SELL"
-        now: Optional[float] = None
-        if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
-            try:
-                tf = float(snapshot.current_time_s)
-                if math.isfinite(tf) and tf >= 0.0:
-                    now = tf
-            except (TypeError, ValueError):
-                pass
-        if now is None:
-            now = time.time()
+        now = _resolve_now_s(snapshot.current_time_s)
 
         if not snapshot.is_valid_price:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")

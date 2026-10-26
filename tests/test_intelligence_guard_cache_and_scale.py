@@ -6299,3 +6299,122 @@ def test_iteration32_external_order_guard_position_exit_manager_and_monitortrade
     assert mt._place_guarded(fake_inst, "BUY", True, 0.01, 0.001) is False
     assert len(placed) == 0
 
+
+def test_iteration33_zero_timestamp_fidelity_and_monitortrades_reentry_nan_safety(monkeypatch):
+    """Iteration 33 regression suite:
+    1. PositionExitManager and SmartStopLossGuard treat explicit current_time_s=0.0 / now=0.0 as a valid
+       timestamp and never call wall-clock time.time() when a finite timestamp is explicitly supplied.
+    2. PositionExitManager preserves started_at=0.0 and last_peak_time=0.0 across subsequent simulation ticks
+       instead of resetting them as invalid (<= 0).
+    3. monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN/bool before calling
+       PostStopReentryGuard.check so trough is never passed as NaN.
+    """
+    import math
+    import time
+    from types import SimpleNamespace
+    import monitortrades as mt
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentrySnapshot,
+    )
+
+    def _forbidden_time():
+        raise AssertionError("time.time() must not be invoked when an explicit finite timestamp is provided!")
+
+    # 1. SmartStopLossGuard.evaluate and on_recovered with now=0.0 must not invoke time.time()
+    ssl_guard = SmartStopLossGuard(mode="off")
+    monkeypatch.setattr(time, "time", _forbidden_time)
+    should_exec, reason, meta = ssl_guard.evaluate(
+        "BTCUSDC",
+        0.04,
+        0.03,
+        now=0.0,
+        provider="test",
+        current_price=96.0,
+        buy_price=100.0,
+    )
+    assert should_exec is True and meta["now"] == 0.0
+
+    # 2. PositionExitManager preserves started_at=0.0 across subsequent ticks without calling time.time()
+    cfg = PositionExitConfig(
+        lost_threshold=0.05,
+        gain_threshold=0.05,
+        sl_trend_defer_max_sec=60.0,
+        tp_stagnation_max_sec=60.0,
+        allow_external_cache=False,
+    )
+    mgr = PositionExitManager(config=cfg)
+    snap_t0 = PositionSnapshot(
+        symbol="BTCUSDC",
+        current_price=94.0,
+        avg_buy_price=100.0,
+        net_qty=1.0,
+        sellable_qty=1.0,
+        current_time_s=0.0,
+        trend_up=True,
+        vol_1h=0.02,
+        provider="test",
+    )
+    d0 = mgr.evaluate_stop_loss(snap_t0)
+    assert d0.should_exit is False
+    assert mgr.sl_bounce_state["BTCUSDC"]["started_at"] == 0.0
+
+    snap_t65 = PositionSnapshot(
+        symbol="BTCUSDC",
+        current_price=94.0,
+        avg_buy_price=100.0,
+        net_qty=1.0,
+        sellable_qty=1.0,
+        current_time_s=65.0,
+        trend_up=True,
+        vol_1h=0.02,
+        provider="test",
+    )
+    d65 = mgr.evaluate_stop_loss(snap_t65)
+    assert d65.should_exit is True and "mhdsl_bounce_timeout" in d65.reason
+
+    # Restore time.time for subsequent checks
+    monkeypatch.undo()
+
+    # 3. monitortrades._apply_post_stop_ai_guard sanitizes post_sell_trough=NaN
+    captured_trough = []
+
+    class _DummyPSGuard:
+        mode = "enforce"
+
+        def check(self, **kwargs):
+            captured_trough.append(kwargs.get("trough"))
+            return SimpleNamespace(allowed=True, scale=1.0, reason="ok")
+
+    import intelligence.sentiment.guards.post_stop_reentry_guard as ps_mod
+    import intelligence.sentiment.guards.high_stake_guard as hs_mod
+    monkeypatch.setattr(ps_mod, "get_post_stop_reentry_guard", lambda: _DummyPSGuard())
+    monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda inst: False)
+
+    re_snap = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=102.0,
+        last_sell_price=105.0,
+        last_exit_kind="STOP",
+        post_sell_trough=float("nan"),
+        post_sell_peak=float("nan"),
+    )
+    allowed, _, _, _ = mt._apply_post_stop_ai_guard(
+        symbol="BTCUSDC",
+        current_price=102.0,
+        sell_price=105.0,
+        sell_time=1700000000.0,
+        reentry_snap=re_snap,
+        buy_budget=100.0,
+        buy_qty_cfg=None,
+        qty=1.0,
+        inst=SimpleNamespace(provider_name="binance", params={"bypass_guards": []}),
+    )
+    assert allowed is True
+    assert len(captured_trough) == 1 and math.isfinite(captured_trough[0]) and captured_trough[0] == 102.0
+
+

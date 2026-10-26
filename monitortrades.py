@@ -1380,10 +1380,11 @@ def _execute_stop_loss(
     owned_qty = snapshot.net_qty
     isolation = inst.isolation
     sellable_qty = snapshot.sellable_qty
-    if avail_qty_refreshed is not None:
+    if avail_qty_refreshed is not None and not isinstance(avail_qty_refreshed, bool):
         try:
             avail_qty = float(avail_qty_refreshed)
-            sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
+            if math.isfinite(avail_qty) and avail_qty >= 0.0:
+                sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
         except (TypeError, ValueError):
             pass
 
@@ -1426,11 +1427,14 @@ def _execute_stop_loss(
             if _is_terminal_dust_refusal(outcome_ctx.get("reason")):
                 _SL_BOUNCE_STATE.pop(symbol, None)
             else:
+                if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
+                    prev_sl_state = dict(prev_sl_state)
+                    prev_sl_state["started_at"] = bounce_started_f
                 _SL_BOUNCE_STATE[symbol] = prev_sl_state
             _save_mt_state()
         elif outcome_ctx.get("reason") == "trend_deferred":
             _SL_BOUNCE_STATE[symbol] = {
-                "started_at": bounce_started_at if bounce_started_at is not None else current_time_s,
+                "started_at": bounce_started_f if bounce_started_f is not None else current_time_s,
                 "entry_loss": snapshot.loss_ratio,
                 "lowest_price": current_price,
                 "peak_bounce_price": current_price,
@@ -1684,7 +1688,15 @@ def _apply_post_stop_ai_guard(
         _ps_guard = get_post_stop_reentry_guard()
         if getattr(_ps_guard, "mode", None) in ("off", "shadow"):
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
-        _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
+        raw_trough = reentry_snap.post_sell_trough
+        _trough_px = min(sell_price, current_price)
+        if raw_trough is not None and not isinstance(raw_trough, bool):
+            try:
+                tf = float(raw_trough)
+                if math.isfinite(tf) and tf > 0.0:
+                    _trough_px = tf
+            except (TypeError, ValueError):
+                pass
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
         _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
         if (
@@ -2124,13 +2136,32 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _LAST_EXIT_KIND[symbol] = "STOP"
         last_exit_kind = "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
 
+        def _valid_reentry_px(val, fallback: float) -> float:
+            if val is None or isinstance(val, bool):
+                return fallback
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0.0) else fallback
+            except (TypeError, ValueError):
+                return fallback
+
+        def _valid_reentry_ts(val) -> Optional[float]:
+            if val is None or isinstance(val, bool):
+                return None
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0.0) else None
+            except (TypeError, ValueError):
+                return None
+
+        sell_time_clean = _valid_reentry_ts(sell_time)
         prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
-        if prev_reentry_state and sell_time:
-            state_sell_time = prev_reentry_state.get("sell_time")
-            state_started_at = prev_reentry_state.get("started_at")
+        if prev_reentry_state and sell_time_clean is not None:
+            state_sell_time = _valid_reentry_ts(prev_reentry_state.get("sell_time"))
+            state_started_at = _valid_reentry_ts(prev_reentry_state.get("started_at"))
             if (
-                (state_sell_time is not None and float(state_sell_time) != float(sell_time))
-                or (state_sell_time is None and state_started_at is not None and float(state_started_at) < float(sell_time))
+                (state_sell_time is not None and state_sell_time != sell_time_clean)
+                or (state_sell_time is None and state_started_at is not None and state_started_at < sell_time_clean)
             ):
                 prev_reentry_state = {}
                 _REENTRY_STATE.pop(symbol, None)
@@ -2140,25 +2171,21 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 "peak": max(sell_price, current_price),
                 "peak_bounce": current_price,
                 "started_at": current_time_s,
-                "sell_time": sell_time,
+                "sell_time": sell_time_clean,
             }
         else:
-            if sell_time and prev_reentry_state.get("sell_time") is None:
-                prev_reentry_state["sell_time"] = sell_time
-            prev_trough = prev_reentry_state.get("trough")
-            if prev_trough is None or current_price < prev_trough:
+            if sell_time_clean is not None and _valid_reentry_ts(prev_reentry_state.get("sell_time")) is None:
+                prev_reentry_state["sell_time"] = sell_time_clean
+            prev_trough = _valid_reentry_px(prev_reentry_state.get("trough"), min(sell_price, current_price))
+            prev_peak_bounce = _valid_reentry_px(prev_reentry_state.get("peak_bounce"), current_price)
+            if current_price < prev_trough:
                 prev_reentry_state["trough"] = current_price
                 prev_reentry_state["peak_bounce"] = current_price
             else:
                 prev_reentry_state["trough"] = min(prev_trough, current_price)
-                prev_reentry_state["peak_bounce"] = max(
-                    prev_reentry_state.get("peak_bounce", current_price),
-                    current_price,
-                )
-            prev_peak = prev_reentry_state.get("peak")
-            prev_reentry_state["peak"] = (
-                current_price if prev_peak is None else max(prev_peak, current_price)
-            )
+                prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, current_price)
+            prev_peak = _valid_reentry_px(prev_reentry_state.get("peak"), max(sell_price, current_price))
+            prev_reentry_state["peak"] = max(prev_peak, current_price)
         _REENTRY_STATE[symbol] = dict(prev_reentry_state)
 
         reentry_snap = ReentrySnapshot(

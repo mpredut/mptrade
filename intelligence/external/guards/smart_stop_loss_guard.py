@@ -66,6 +66,17 @@ def _safe_float(val: Any, default: float) -> float:
         return default
 
 
+def _resolve_now(now: Any) -> float:
+    if now is not None and not isinstance(now, bool):
+        try:
+            f = float(now)
+            if math.isfinite(f):
+                return f
+        except (TypeError, ValueError):
+            pass
+    return time.time()
+
+
 def _format_price(p: Optional[float]) -> str:
     if p is None:
         return ""
@@ -278,7 +289,7 @@ class SmartStopLossGuard:
             - should_execute = True  -> Proceed with stop-loss placement.
             - should_execute = False -> Defer stop-loss for this tick (grace period active).
         """
-        now_ts = _safe_float(now, time.time())
+        now_ts = _resolve_now(now)
         sym_key = str(symbol or "").strip().upper().replace("/", "")
         is_sim = _is_simulated_provider(provider)
         price_decrease = _safe_float(price_decrease, 0.0)
@@ -550,7 +561,7 @@ class SmartStopLossGuard:
                         return False
                 except (TypeError, ValueError):
                     pass
-            now_ts = _safe_float(now, time.time())
+            now_ts = _resolve_now(now)
             start_ts = _safe_float(grace_info.get("start_ts"), now_ts)
             if start_ts > now_ts + 5.0:
                 return False
