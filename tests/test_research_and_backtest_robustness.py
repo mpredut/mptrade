@@ -2823,6 +2823,68 @@ def test_cache_manager_item_validation_and_kraken_trailing_hardening():
         assert kt_dummy.trail_pct_for(f" {sample_asset.lower()} ") == KRAKEN_TRAIL_PCT[sample_asset]
 
 
+def test_venue_market_data_and_client_hardening():
+    """Verify Binance, Kraken, Hyperliquid, and T212 market_data/client helpers reject malformed inputs."""
+    import importlib
+    import importlib.util
+    import pytest
+    from binance_api import bapi
+    from binance_api import market_data as b_md
+    from kraken import market_data as k_md
+    t212_md = importlib.import_module("212trading.market_data")
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec_hl_c = importlib.util.spec_from_file_location(
+        "hl_client_local", os.path.join(repo_root, "hyperliquid", "hl_client.py")
+    )
+    hl_client = importlib.util.module_from_spec(spec_hl_c)
+    spec_hl_c.loader.exec_module(hl_client)
+
+    spec_hl_md = importlib.util.spec_from_file_location(
+        "hl_market_data_local", os.path.join(repo_root, "hyperliquid", "market_data.py")
+    )
+    hl_md = importlib.util.module_from_spec(spec_hl_md)
+    spec_hl_md.loader.exec_module(hl_md)
+
+    # 1. Binance market_data: non-ASCII digits and invalid symbols
+    with pytest.raises(ValueError, match="unsupported Binance interval"):
+        b_md.parse_interval_minutes("\u00b2")
+    with pytest.raises(ValueError, match="symbol must be a non-empty string"):
+        b_md.fetch_ohlc_candles("   ", 60)
+
+    # 2. Binance bapi helpers: whitespace/non-string asset or order_id
+    assert bapi.get_free_balance("") is None
+    assert bapi.get_free_balance(None) is None  # type: ignore[arg-type]
+    assert bapi._convert_to_usdc(" usdc ", 25.5) == 25.5
+    assert bapi._convert_to_usdc(None, 25.5) == 0.0
+    assert bapi.cancel_order("BTCUSDC", "   ") is False
+    assert bapi.check_order_filled("   ", "BTCUSDC") is False
+
+    # 3. Kraken market_data: fractional float interval must raise ValueError
+    with pytest.raises(ValueError, match="invalid interval"):
+        k_md.fetch_ohlc_candles("XXBTZUSD", 1.5)  # type: ignore[arg-type]
+
+    # 4. Hyperliquid market_data and hl_client: non-ASCII interval, fractional sz_decimals, invalid cancel coin
+    with pytest.raises(ValueError, match="unsupported Hyperliquid interval"):
+        hl_md.fetch_ohlc_candles("HYPE", "\u00b2")
+    with pytest.raises(ValueError, match="sz_decimals must be a non-negative integer"):
+        hl_client._round_px(25.1234, 1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="sz_decimals must be a non-negative integer"):
+        hl_client._round_px(25.1234, -1)
+
+    dummy_hl = object.__new__(hl_client.HLClient)
+    dummy_hl.exchange = object()
+    assert dummy_hl.spot_order("@107", True, 1.0, 25.0, sz_decimals=1.5)[0] is False  # type: ignore[arg-type]
+    assert dummy_hl.cancel("   ", 12345) is False
+    assert dummy_hl.cancel(None, 12345) is False  # type: ignore[arg-type]
+
+    # 5. 212trading market_data._chart short-circuits empty/non-string symbol without HTTP call
+    assert t212_md._chart("") == (None, [])
+    assert t212_md._chart("   ") == (None, [])
+    assert t212_md._chart(None) == (None, [])  # type: ignore[arg-type]
+
+
+
 
 
 

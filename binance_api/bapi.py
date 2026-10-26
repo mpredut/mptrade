@@ -124,8 +124,10 @@ def split_symbol(symbol: str):
 
 def get_free_balance(asset: str):
     try:
+        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+            return None
         # Return the free Binance balance for an asset.
-        asset_info = client.get_asset_balance(asset=asset)
+        asset_info = client.get_asset_balance(asset=asset.strip().upper())
         raw_free = (asset_info or {}).get("free", 0)
         if isinstance(raw_free, bool):
             raise TypeError(f"invalid boolean free balance: {raw_free!r}")
@@ -276,7 +278,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
           
 def cancel_order(symbol, order_id):
     try:
-        if not order_id or isinstance(order_id, bool):
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
             return False
         client.cancel_order(symbol=symbol, orderId=order_id)
         print(f"The order with ID {order_id} was cancelled.")
@@ -391,10 +393,10 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
 def check_order_filled(order_id, symbol):
     """Legacy adapter; new code uses market_api.order_status()."""
     try:
-        if not order_id or isinstance(order_id, bool):
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
             return False
         from providers.market_api import api as market_api
-        return market_api.order_status(symbol, str(order_id)).fully_filled
+        return market_api.order_status(symbol, str(order_id).strip()).fully_filled
     except Exception as e:
         print(f"Error checking order status: {e}")
         return False
@@ -433,16 +435,19 @@ def _get_symbol_price_safe(symbol):
 def _convert_to_usdc(asset, amount):
     if amount is None or isinstance(amount, bool):
         return 0.0
+    if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+        return 0.0
+    asset_clean = asset.strip().upper()
     try:
         amt_f = float(amount)
     except (TypeError, ValueError, OverflowError):
         return 0.0
     if not math.isfinite(amt_f) or amt_f <= 0:
         return 0.0
-    if asset == "USDC":
+    if asset_clean == "USDC":
         return amt_f
 
-    price = _get_symbol_price_safe(f"{asset}USDC")
+    price = _get_symbol_price_safe(f"{asset_clean}USDC")
     if price:
         return amt_f * price
 

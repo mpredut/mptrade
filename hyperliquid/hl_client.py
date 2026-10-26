@@ -57,8 +57,8 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
         dec_f = float(sz_decimals)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("px and sz_decimals must be finite numbers") from exc
-    if not math.isfinite(dec_f):
-        raise ValueError("sz_decimals must be finite")
+    if not math.isfinite(dec_f) or not dec_f.is_integer() or int(dec_f) < 0:
+        raise ValueError("sz_decimals must be a non-negative integer")
     if not math.isfinite(px) or px <= 0:
         return px
     max_dec = (6 if is_perp else 8) - int(dec_f)
@@ -424,6 +424,7 @@ class HLClient:
             raise HLError("No agent wallet (HL_SECRET_KEY)")
         if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return False, None, "invalid pair"
+        pair = pair.strip()
         if not isinstance(is_buy, bool):
             return False, None, "invalid non-boolean is_buy"
         if isinstance(sz, bool) or isinstance(px, bool) or isinstance(sz_decimals, bool):
@@ -431,7 +432,10 @@ class HLClient:
         try:
             sz_f = float(sz)
             px_f = float(px)
-            dec_i = max(0, min(int(sz_decimals), 18))
+            dec_f = float(sz_decimals)
+            if not math.isfinite(dec_f) or not dec_f.is_integer() or int(dec_f) < 0:
+                return False, None, "invalid numeric order parameter"
+            dec_i = max(0, min(int(dec_f), 18))
         except (TypeError, ValueError, OverflowError):
             return False, None, "invalid numeric order parameter"
         if not (math.isfinite(sz_f) and sz_f > 0 and math.isfinite(px_f) and px_f > 0):
@@ -485,6 +489,7 @@ class HLClient:
             raise HLError("No agent wallet (HL_SECRET_KEY) — orders cannot be placed")
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return False, None, "invalid coin"
+        coin = coin.strip()
         if not isinstance(is_buy, bool) or not isinstance(reduce_only, bool):
             return False, None, "invalid non-boolean is_buy or reduce_only"
         if isinstance(sz, bool) or isinstance(px, bool):
@@ -523,8 +528,16 @@ class HLClient:
         return True, None, str(st)
 
     def cancel(self, coin: str, oid: int) -> bool:
-        if not self.exchange or oid is None or isinstance(oid, bool):
+        if (
+            not self.exchange
+            or isinstance(coin, bool)
+            or not isinstance(coin, str)
+            or not coin.strip()
+            or oid is None
+            or isinstance(oid, bool)
+        ):
             return False
+        coin = coin.strip()
         try:
             oid_f = float(oid) if isinstance(oid, (int, float)) else float(int(str(oid).strip()))
             if not math.isfinite(oid_f) or not oid_f.is_integer() or int(oid_f) <= 0:

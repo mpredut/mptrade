@@ -158,7 +158,10 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
     """Return (meta, bars) from Yahoo chart data; bars contain non-null closes.
     The intraday series is fresher than metadata. For a new listing, metadata can remain
     stale, e.g. SPCX volume=0 and an old price despite active trading."""
-    status, body = http_get(YAHOO_CHART.format(sym=sym) + f"?range={rng}&interval={interval}",
+    if isinstance(sym, bool) or not isinstance(sym, str) or not sym.strip():
+        return None, []
+    sym_clean = sym.strip()
+    status, body = http_get(YAHOO_CHART.format(sym=sym_clean) + f"?range={rng}&interval={interval}",
                             headers=_UA)
     if status != 200 or not body:
         return None, []
@@ -199,7 +202,7 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
                         v_clean = v_f
                 except (TypeError, ValueError, OverflowError):
                     v_clean = None
-            bars.append((t, c_f, v_clean))
+            bars.append((int(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
         return meta, bars
     except (ValueError, KeyError, TypeError):
         return None, []

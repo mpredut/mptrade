@@ -129,7 +129,7 @@ def fetch_ohlc_candles(
         if cleaned in rev_intervals:
             interval_str = cleaned
             interval_min = rev_intervals[cleaned]
-        elif cleaned.isdigit():
+        elif cleaned.isascii() and cleaned.isdigit():
             interval_min = int(cleaned)
             interval_str = INTERVALS.get(interval_min)
             if interval_str is None:

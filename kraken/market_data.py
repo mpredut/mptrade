@@ -40,9 +40,16 @@ def fetch_ohlc_candles(
     if isinstance(interval, bool) or isinstance(timeout, bool):
         raise ValueError("interval and timeout must not be boolean")
     try:
+        if isinstance(interval, str) and "." in interval.strip():
+            raise ValueError(f"invalid interval={interval!r}")
         itv_f = float(interval)
         to_f = float(timeout)
-        if not (math.isfinite(itv_f) and math.isfinite(to_f)) or int(itv_f) <= 0 or to_f <= 0:
+        if (
+            not (math.isfinite(itv_f) and math.isfinite(to_f))
+            or not itv_f.is_integer()
+            or int(itv_f) <= 0
+            or to_f <= 0
+        ):
             raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
         interval = int(itv_f)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -52,7 +59,7 @@ def fetch_ohlc_candles(
     req = urllib.request.Request(
         url, headers={"User-Agent": "mptrade/kraken-ohlc-fetcher"}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=to_f) as r:
         data = json.loads(r.read())
     if not isinstance(data, dict):
         raise RuntimeError(f"invalid Kraken OHLC payload: {data!r}")

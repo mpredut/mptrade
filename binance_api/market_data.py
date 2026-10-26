@@ -52,7 +52,7 @@ def parse_interval_minutes(interval: int | str) -> int:
         cleaned = interval.strip()
         if cleaned in INTERVALS_STR_TO_MIN:
             return INTERVALS_STR_TO_MIN[cleaned]
-        if cleaned.isdigit():
+        if cleaned.isascii() and cleaned.isdigit():
             val = int(cleaned)
             if val <= 0:
                 raise ValueError(f"interval must be positive: {interval}")
@@ -98,6 +98,8 @@ def fetch_ohlc_candles(
     Returns:
         list[dict] with keys: 'timestamp' (seconds), 'open', 'high', 'low', 'close'
     """
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError(f"symbol must be a non-empty string: {symbol!r}")
     sym = symbol.strip().upper()
     interval_str = interval_to_binance_str(interval)
     interval_min = parse_interval_minutes(interval)
@@ -176,7 +178,7 @@ def fetch_ohlc_candles(
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_f) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
 
         if not isinstance(raw, list) or not raw:
