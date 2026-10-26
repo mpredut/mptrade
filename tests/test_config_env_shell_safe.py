@@ -1028,7 +1028,9 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
 
     # 1. smart_stop_loss_guard handles bool/NaN/None in _format_price, _resolve_now, and on_recovered
     assert sslg._format_price(True) == ""
-    assert sslg._resolve_now(0.0) > 1_000_000_000.0
+    assert sslg._resolve_now(0.0) == 0.0
+    assert sslg._resolve_now(float("nan")) > 1_000_000_000.0
+    assert sslg._resolve_now(True) > 1_000_000_000.0
     guard = sslg.SmartStopLossGuard(mode="enforce")
     monkeypatch.setitem(
         sslg._GRACE_TRACKER,
@@ -1066,6 +1068,58 @@ def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
         processes={"100:1": {"pid": 100, "ticks": 10, "rss_mb": 10.0, "command": "python3 bot.py"}},
         cpu_count=4,
     ) is False
+
+
+def test_liquidation_kalman_mean_reversion_and_breadth_triggers_hardening():
+    from types import SimpleNamespace
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrend
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+
+    # 1. LiquidationCapitulationTrigger handles None/bool fields on summary and <=0 min_notional_usd
+    lt = LiquidationCapitulationTrigger(min_notional_usd=0.0, ratio_threshold=float("nan"), window_sec=True)
+    assert lt.min_notional_usd == 100_000.0 and lt.ratio_threshold == 0.75 and lt.window_sec == 300.0
+    bad_summary = SimpleNamespace(
+        total_usd=None,
+        long_liq_usd=200_000.0,
+        short_liq_usd=0.0,
+        capitulation_ratio=0.9,
+        squeeze_ratio=0.1,
+    )
+    assert lt.evaluate("BTCUSDC", 85000.0, summary=bad_summary) is None
+
+    # 2. NoiseFloorGuard and TrendSignificanceGuard handle non-finite/bool args and None trigger
+    ng = NoiseFloorGuard(min_strength_ratio=float("nan"))
+    assert ng.min_strength_ratio == 1.0
+    tsg = TrendSignificanceGuard(max_p_value=True, min_hurst=float("nan"))
+    assert tsg.max_p_value == 0.05 and tsg.min_hurst is None
+    assert tsg.evaluate(None, [100.0] * 10).allowed is True
+
+    # 3. KalmanTrend and MeanReversionTrigger sanitize constructor args and timestamp
+    kt = KalmanTrend(qr=float("nan"), gap_reset_sec=True)
+    assert kt.qr > 0.0 and kt.gap_reset_sec > 0.0
+    mrt = MeanReversionTrigger(rsi_period=True, bb_period=float("nan"), rsi_low=None)
+    assert mrt.rsi_period == 14 and mrt.bb_period == 20 and mrt.rsi_low == 30.0
+    ev_mr = mrt.update("BTCUSDC", float("nan"), 85000.0)
+    assert ev_mr.ts == 0.0
+
+    # 4. MarketBreadthTrigger handles string-encoded ratios and missing regime attribute
+    mbt = MarketBreadthTrigger()
+    snap_mb = SimpleNamespace(advance_ratio="0.10", median_change_pct="-5.0")
+    sig_mb, ev_mb = mbt.evaluate("BTCUSDC", 85000.0, snap_mb, ts=float("nan"))
+    assert sig_mb == "BREADTH_WASHOUT_BUY" and ev_mb is not None and ev_mb.metadata["regime"] == "NEUTRAL"
+
+    # 5. FearGreedCollector and MarketBreadthCollector sanitize TTLs
+    fgc = FearGreedCollector(cache_ttl_sec=float("nan"))
+    assert fgc.cache_ttl_sec == 900.0
+    mbc = MarketBreadthCollector(cache_ttl_sec=True, min_volume_usd=float("nan"))
+    assert mbc.cache_ttl_sec == 60.0 and mbc.min_volume_usd == 5_000_000.0
+
 
 
 

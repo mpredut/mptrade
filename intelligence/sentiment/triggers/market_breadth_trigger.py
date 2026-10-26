@@ -43,17 +43,18 @@ class MarketBreadthTrigger:
         """Evaluate market breadth snapshot and generate actionable triggers."""
         if snapshot is None or price is None or isinstance(price, bool):
             return None, None
+        raw_adv = getattr(snapshot, "advance_ratio", None)
+        raw_med = getattr(snapshot, "median_change_pct", None)
+        regime = str(getattr(snapshot, "regime", None) or "NEUTRAL")
+        if raw_adv is None or raw_med is None or isinstance(raw_adv, bool) or isinstance(raw_med, bool):
+            return None, None
         try:
             price_f = float(price)
-            adv_r = float(snapshot.advance_ratio)
-            med_c = float(snapshot.median_change_pct)
+            adv_r = float(raw_adv)
+            med_c = float(raw_med)
         except (TypeError, ValueError):
             return None, None
-        if (
-            isinstance(snapshot.advance_ratio, bool)
-            or isinstance(snapshot.median_change_pct, bool)
-            or not (math.isfinite(price_f) and price_f > 0.0 and math.isfinite(adv_r) and math.isfinite(med_c))
-        ):
+        if not (math.isfinite(price_f) and price_f > 0.0 and math.isfinite(adv_r) and math.isfinite(med_c)):
             return None, None
         price = price_f
 
@@ -81,7 +82,7 @@ class MarketBreadthTrigger:
                 except (TypeError, ValueError):
                     pass
 
-            strength = round(min(0.95, 0.70 + (1.0 - snapshot.advance_ratio) * 0.25), 2)
+            strength = round(min(0.95, 0.70 + (1.0 - adv_r) * 0.25), 2)
             event = TriggerEvent(
                 action=TriggerAction.ENTRY,
                 side=TriggerSide.BUY,
@@ -90,22 +91,22 @@ class MarketBreadthTrigger:
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"market_washout_capitulation_bounce (adv_ratio={snapshot.advance_ratio:.2f}, median={snapshot.median_change_pct:.1f}%)",
+                reason=f"market_washout_capitulation_bounce (adv_ratio={adv_r:.2f}, median={med_c:.1f}%)",
                 metadata={
-                    "advance_ratio": snapshot.advance_ratio,
-                    "median_change_pct": snapshot.median_change_pct,
+                    "advance_ratio": adv_r,
+                    "median_change_pct": med_c,
                     "relative_strength": relative_strength,
-                    "regime": snapshot.regime,
+                    "regime": regime,
                 },
             )
             return "BREADTH_WASHOUT_BUY", event
 
         # 2. Overheated Blowoff Distribution Exit
         if (
-            snapshot.advance_ratio >= self.blowoff_advance_threshold
-            and snapshot.median_change_pct >= self.blowoff_median_threshold
+            adv_r >= self.blowoff_advance_threshold
+            and med_c >= self.blowoff_median_threshold
         ):
-            strength = round(min(0.95, 0.70 + snapshot.advance_ratio * 0.25), 2)
+            strength = round(min(0.95, 0.70 + adv_r * 0.25), 2)
             event = TriggerEvent(
                 action=TriggerAction.EXIT,
                 side=TriggerSide.SELL,
@@ -114,11 +115,11 @@ class MarketBreadthTrigger:
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"market_blowoff_overheated_exhaustion (adv_ratio={snapshot.advance_ratio:.2f}, median={snapshot.median_change_pct:.1f}%)",
+                reason=f"market_blowoff_overheated_exhaustion (adv_ratio={adv_r:.2f}, median={med_c:.1f}%)",
                 metadata={
-                    "advance_ratio": snapshot.advance_ratio,
-                    "median_change_pct": snapshot.median_change_pct,
-                    "regime": snapshot.regime,
+                    "advance_ratio": adv_r,
+                    "median_change_pct": med_c,
+                    "regime": regime,
                 },
             )
             return "BREADTH_BLOWOFF_SELL", event

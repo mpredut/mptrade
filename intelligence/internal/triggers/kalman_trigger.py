@@ -34,8 +34,24 @@ class KalmanTrend:
     """One-dimensional constant-velocity Kalman filter for level and velocity tracking."""
 
     def __init__(self, qr: float = KALMAN_QR, gap_reset_sec: float = GAP_RESET_SEC):
-        self.qr = qr
-        self.gap_reset_sec = float(gap_reset_sec)
+        qr_val = KALMAN_QR
+        if qr is not None and not isinstance(qr, bool):
+            try:
+                qf = float(qr)
+                if math.isfinite(qf) and qf > 0.0:
+                    qr_val = qf
+            except (TypeError, ValueError):
+                pass
+        gap_val = GAP_RESET_SEC
+        if gap_reset_sec is not None and not isinstance(gap_reset_sec, bool):
+            try:
+                gf = float(gap_reset_sec)
+                if math.isfinite(gf) and gf > 0.0:
+                    gap_val = gf
+            except (TypeError, ValueError):
+                pass
+        self.qr = qr_val
+        self.gap_reset_sec = gap_val
         self.x = None          # [level, velocity]
         self.P = None          # State covariance
         self._x0 = 0.0

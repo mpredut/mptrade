@@ -37,7 +37,15 @@ class FearGreedCollector:
         cache_ttl_sec: float = 900.0,
         endpoint_url: str = "https://api.alternative.me/fng/?limit=14",
     ) -> None:
-        self.cache_ttl_sec = cache_ttl_sec
+        ttl = 900.0
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                tf = float(cache_ttl_sec)
+                if math.isfinite(tf) and tf >= 0.0:
+                    ttl = tf
+            except (TypeError, ValueError):
+                pass
+        self.cache_ttl_sec = ttl
         self.endpoint_url = endpoint_url
         self._cached_snapshot: Optional[FearGreedSnapshot] = None
         self._last_fetch_ts: float = 0.0

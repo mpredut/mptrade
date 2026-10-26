@@ -12,12 +12,33 @@ NOTE & RESEARCH FINDINGS (from docs/archive/RSI_BOLLINGER_REVIEW_2026-09-14.md):
 from __future__ import annotations
 
 from collections import deque
-from typing import Literal
+import math
+from typing import Any, Literal
 from intelligence.internal.triggers.trigger_event import (
     TriggerEvent,
     TriggerAction,
     TriggerSide,
 )
+
+
+def _safe_float(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_pos_int(val: Any, default: int) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return max(1, int(f)) if (math.isfinite(f) and f >= 1.0) else default
+    except (TypeError, ValueError):
+        return default
 
 
 class MeanReversionTrigger:
@@ -35,13 +56,13 @@ class MeanReversionTrigger:
         pb_high: float = 1.0,
     ) -> None:
         self.mode = mode
-        self.rsi_period = max(1, int(rsi_period))
-        self.rsi_low = rsi_low
-        self.rsi_high = rsi_high
-        self.bb_period = max(1, int(bb_period))
-        self.bb_k = bb_k
-        self.pb_low = pb_low
-        self.pb_high = pb_high
+        self.rsi_period = _safe_pos_int(rsi_period, 14)
+        self.rsi_low = _safe_float(rsi_low, 30.0)
+        self.rsi_high = _safe_float(rsi_high, 70.0)
+        self.bb_period = _safe_pos_int(bb_period, 20)
+        self.bb_k = _safe_float(bb_k, 2.0)
+        self.pb_low = _safe_float(pb_low, 0.0)
+        self.pb_high = _safe_float(pb_high, 1.0)
 
         self.prev_price: float | None = None
         self.avg_gain: float | None = None
@@ -95,7 +116,7 @@ class MeanReversionTrigger:
 
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
-        import math
+        ts_clean = _safe_float(timestamp, 0.0)
         valid_price = False
         if price is not None and not isinstance(price, bool):
             try:
@@ -111,7 +132,7 @@ class MeanReversionTrigger:
                 symbol=symbol,
                 price=0.0,
                 strength=0.0,
-                ts=timestamp,
+                ts=ts_clean,
                 confidence=0.0,
                 metadata={
                     "rsi": None,
@@ -162,7 +183,7 @@ class MeanReversionTrigger:
             symbol=symbol,
             price=price,
             strength=float(abs(new_sign)),
-            ts=timestamp,
+            ts=ts_clean,
             confidence=conf,
             metadata={
                 "rsi": rsi,

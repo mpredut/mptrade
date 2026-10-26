@@ -39,8 +39,24 @@ class MarketBreadthCollector:
         min_volume_usd: float = 5_000_000.0,
         endpoint_url: str = "https://api.binance.com/api/v3/ticker/24hr",
     ) -> None:
-        self.cache_ttl_sec = cache_ttl_sec
-        self.min_volume_usd = min_volume_usd
+        ttl = 60.0
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                tf = float(cache_ttl_sec)
+                if math.isfinite(tf) and tf >= 0.0:
+                    ttl = tf
+            except (TypeError, ValueError):
+                pass
+        mv = 5_000_000.0
+        if min_volume_usd is not None and not isinstance(min_volume_usd, bool):
+            try:
+                mf = float(min_volume_usd)
+                if math.isfinite(mf) and mf >= 0.0:
+                    mv = mf
+            except (TypeError, ValueError):
+                pass
+        self.cache_ttl_sec = ttl
+        self.min_volume_usd = mv
         self.endpoint_url = endpoint_url
         self._cached_snapshot: Optional[MarketBreadthSnapshot] = None
         self._last_fetch_ts: float = 0.0

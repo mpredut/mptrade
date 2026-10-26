@@ -11,7 +11,15 @@ class NoiseFloorGuard:
     """Noise floor guard preventing orders when market movement is indistinguishable from noise."""
 
     def __init__(self, min_strength_ratio: float = 1.0):
-        self.min_strength_ratio = float(min_strength_ratio)
+        ratio = 1.0
+        if min_strength_ratio is not None and not isinstance(min_strength_ratio, bool):
+            try:
+                rf = float(min_strength_ratio)
+                if math.isfinite(rf) and rf >= 0.0:
+                    ratio = rf
+            except (TypeError, ValueError):
+                pass
+        self.min_strength_ratio = ratio
 
     def check(
         self,

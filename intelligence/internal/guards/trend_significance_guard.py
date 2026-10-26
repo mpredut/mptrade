@@ -6,7 +6,8 @@ from Brownian noise (Mann-Kendall p-value > alpha) or executing momentum strateg
 
 from __future__ import annotations
 
-from typing import Sequence
+import math
+from typing import Any, Optional, Sequence
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.internal.state.persistence import (
@@ -14,6 +15,16 @@ from intelligence.internal.state.persistence import (
     calculate_hurst_exponent,
     classify_hurst_regime,
 )
+
+
+def _safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
 
 
 class TrendSignificanceGuard:
@@ -30,8 +41,9 @@ class TrendSignificanceGuard:
                          Higher values indicate trend slope is indistinguishable from random noise.
             min_hurst: If specified (e.g. 0.50), requires Hurst exponent >= min_hurst for trend entries.
         """
-        self.max_p_value = max_p_value
-        self.min_hurst = min_hurst
+        mp = _safe_float(max_p_value, 0.05)
+        self.max_p_value = mp if (mp is not None and mp >= 0.0) else 0.05
+        self.min_hurst = _safe_float(min_hurst, None)
 
     def evaluate(
         self,
@@ -40,7 +52,7 @@ class TrendSignificanceGuard:
     ) -> GuardDecision:
         """Evaluate if the price series statistically supports the trigger action."""
         # Only evaluate entries (momentum / trend buying or selling)
-        if trigger.action != TriggerAction.ENTRY or trigger.side == TriggerSide.HOLD:
+        if trigger is None or trigger.action != TriggerAction.ENTRY or trigger.side == TriggerSide.HOLD:
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",
                 reason="not_an_entry_trigger",
