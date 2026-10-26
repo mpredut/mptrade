@@ -74,16 +74,27 @@ def _ols_slope_pct(closes: list[float]) -> float | None:
 
 
 def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
-    if isinstance(value, bool):
-        raise ValueError("fx_to_usd cannot be bool")
-    if isinstance(value, (int, float)):
-        rates = [float(value)] * count
+    if isinstance(value, bool) or isinstance(count, bool) or count < 0:
+        raise ValueError("fx_to_usd and count must be valid non-bool values")
+    if isinstance(value, (int, float, str)):
+        try:
+            scalar = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid scalar fx_to_usd: {value!r}") from exc
+        rates = [scalar] * count
     else:
         rates = []
-        for rate in value:
+        try:
+            iterator = iter(value)
+        except TypeError as exc:
+            raise ValueError(f"invalid fx_to_usd sequence: {value!r}") from exc
+        for rate in iterator:
             if isinstance(rate, bool):
                 raise ValueError("fx_to_usd values cannot be bool")
-            rates.append(float(rate))
+            try:
+                rates.append(float(rate))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid fx_to_usd element: {rate!r}") from exc
         if len(rates) != count:
             raise ValueError(f"the FX series has {len(rates)} values for {count} bars")
     if any(not math.isfinite(rate) or rate <= 0 for rate in rates):
@@ -110,25 +121,46 @@ def run_replay(
     if not ohlc:
         raise ValueError("ohlc cannot be empty")
     if bar_minutes is not None:
-        if isinstance(bar_minutes, bool) or not math.isfinite(float(bar_minutes)) or float(bar_minutes) <= 0:
+        try:
+            bm_f = float(bar_minutes)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("bar_minutes must be a finite positive number") from exc
+        if isinstance(bar_minutes, bool) or not math.isfinite(bm_f) or bm_f <= 0:
             raise ValueError("bar_minutes must be a finite positive number")
     if periods_per_year is not None:
-        if isinstance(periods_per_year, bool) or not math.isfinite(float(periods_per_year)) or float(periods_per_year) <= 0:
+        try:
+            ppy_f = float(periods_per_year)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("periods_per_year must be a finite positive number") from exc
+        if isinstance(periods_per_year, bool) or not math.isfinite(ppy_f) or ppy_f <= 0:
             raise ValueError("periods_per_year must be a finite positive number")
     for idx, row in enumerate(ohlc):
         if not isinstance(row, (list, tuple)) or len(row) != 4:
             raise ValueError(f"invalid OHLC bar at index {idx}")
         if any(isinstance(v, bool) for v in row):
             raise ValueError(f"OHLC bar at index {idx} contains bool")
-        o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        try:
+            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
         if not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
             raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError(
             "dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal"
         )
-    if timestamps and len(timestamps) != len(ohlc):
-        raise ValueError("timestamps must have the same length as ohlc")
+    if timestamps:
+        if len(timestamps) != len(ohlc):
+            raise ValueError("timestamps must have the same length as ohlc")
+        for idx, ts_val in enumerate(timestamps):
+            if isinstance(ts_val, bool):
+                raise ValueError(f"timestamp at index {idx} cannot be bool")
+            try:
+                ts_f = float(ts_val)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"timestamp at index {idx} is not numeric") from exc
+            if not math.isfinite(ts_f):
+                raise ValueError(f"timestamp at index {idx} must be finite")
     rates = _fx_rates(fx_to_usd, len(ohlc))
     model = execution or ExecutionModel()
     return choose_intrabar_scenario(

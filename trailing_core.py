@@ -184,6 +184,8 @@ class TrailingCore:
             accum_qty = _safe_nonneg_float(st.get("exit_sold_qty", 0.0)) + filled
             accum_cost = _safe_nonneg_float(st.get("exit_sold_cost", 0.0)) + (avg * filled)
             overall_avg = accum_cost / accum_qty if accum_qty > 0 else avg
+            if not math.isfinite(overall_avg) or overall_avg <= 0:
+                overall_avg = avg
 
             target_qty = _safe_nonneg_float(st.get("target_exit_qty", 0.0))
             remaining_balance = self._remaining_qty(asset)
@@ -238,7 +240,9 @@ class TrailingCore:
     def _reconcile_pending(self, state: dict, st: dict, price: float, pair) -> bool:
         """Return true when this tick is consumed by a persisted order lifecycle."""
         pending = st.get("pending_order")
-        if not pending:
+        if not isinstance(pending, dict) or not pending:
+            if "pending_order" in st:
+                st.pop("pending_order", None)
             return False
         persist = self._pending_persist(state, st)
         result = self.a.reconcile_pending(pending, persist)

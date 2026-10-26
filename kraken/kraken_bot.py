@@ -191,9 +191,12 @@ def _cmd_find_pair(client: KrakenClient, term: str) -> int:
     except KrakenError as e:
         log(f"! {e}")
         return 1
+    if not isinstance(pairs, dict):
+        log("! invalid asset_pairs response")
+        return 1
     t = term.upper()
     hits = [(k, v) for k, v in pairs.items()
-            if t in (k + str(v.get("altname")) + str(v.get("wsname")) + str(v.get("base"))).upper()]
+            if isinstance(v, dict) and t in (k + str(v.get("altname")) + str(v.get("wsname")) + str(v.get("base"))).upper()]
     log(f"[FIND] '{term}' — {len(hits)} results:")
     for k, v in hits[:20]:
         log(f"  altname={v.get('altname'):<12} wsname={v.get('wsname'):<14} "

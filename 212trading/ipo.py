@@ -64,10 +64,13 @@ def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bo
     if not expected_isin:
         return True
     instruments = client.list_instruments()
-    if not instruments:
+    if not instruments or not isinstance(instruments, list):
         log("  ! cannot verify the ISIN (metadata unavailable) — continuing on the explicit ticker")
         return True
-    match = next((i for i in instruments if str(i.get("ticker", "")).upper() == ticker.upper()), None)
+    match = next(
+        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).upper() == ticker.upper()),
+        None,
+    )
     if not match:
         log(f"  ! {ticker} does not appear in the T212 metadata yet — continuing (it may be a delay)")
         return True
@@ -281,14 +284,16 @@ def _wait_for_launch(args, yahoo_symbol, label, interval) -> bool:
 def _cmd_find_ticker(client: T212Client, query: str) -> int:
     log(f"[FIND] Caut '{query}' in instrumentele T212...")
     instruments = client.list_instruments()
-    if instruments is None:
+    if not isinstance(instruments, list):
         log("! cannot list the instruments (auth/network)")
         return 1
     q = query.lower()
     hits = [i for i in instruments
-            if q in str(i.get("ticker", "")).lower()
-            or q in str(i.get("name", "")).lower()
-            or q in str(i.get("shortName", "")).lower()]
+            if isinstance(i, dict) and (
+                q in str(i.get("ticker", "")).lower()
+                or q in str(i.get("name", "")).lower()
+                or q in str(i.get("shortName", "")).lower()
+            )]
     for h in hits:
         log(f"  ticker={h.get('ticker'):<20} name={h.get('name')}  "
             f"currency={h.get('currencyCode')}  isin={h.get('isin')}")

@@ -161,8 +161,10 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     except KrakenError as e:
         log(f"  ! asset_pairs: {e}")
         return
+    if not isinstance(pairs, dict):
+        return
     matches = [(k, v) for k, v in pairs.items()
-               if re.search(rx, f"{k} {v.get('wsname') or ''} {v.get('base') or ''}", re.I)]
+               if isinstance(v, dict) and re.search(rx, f"{k} {v.get('wsname') or ''} {v.get('base') or ''}", re.I)]
     if not matches:
         return
     if quote:
@@ -173,7 +175,7 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     k, v = matches[0]
     name = v.get("wsname") or k
     st["pair"] = k
-    if not st["alerted_pair"]:
+    if not st.get("alerted_pair"):
         st["alerted_pair"] = True
         px = None
         try:
@@ -225,7 +227,7 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
         qty = 0.0
     if not math.isfinite(qty) or qty < 0:
         qty = 0.0
-    if not st["alerted_tp"] and chg >= tp_pct:
+    if not st.get("alerted_tp") and chg >= tp_pct:
         st["alerted_tp"] = True
         notify(title=f"📈 xStock {chg:+.1f}% above the allocation ({price})",
                body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "
@@ -237,7 +239,7 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
         notify(title=f"📈📈 TRANSA 2: xStock {chg:+.1f}% ({price})",
                body=f"The second target is reached — sell the rest. Value: {qty * price:.0f}.",
                source="xstock-watch", price=price, desktop=desktop)
-    if not st["alerted_sl"] and chg <= -sl_pct:
+    if not st.get("alerted_sl") and chg <= -sl_pct:
         st["alerted_sl"] = True
         notify(title=f"📉 xStock {chg:+.1f}% sub alocare ({price})",
                body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "

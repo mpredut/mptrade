@@ -9156,6 +9156,72 @@ def test_iteration69_hyperliquid_and_t212_strategy_market_data_safety(tmp_path):
     assert len(ladder) == 2
 
 
+def test_iteration70_t212_replay_bot_kraken_watch_and_trailing_core_safety(tmp_path):
+    """Iteration 70: 212trading replay / t212_bot / ipo, kraken xstock_watch / kraken_bot, and trailing_core safety."""
+    import importlib.util
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    from trailing_core import TrailingCore
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    t212_dir = os.path.join(repo_root, "212trading")
+    kraken_dir = os.path.join(repo_root, "kraken")
+
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    t212_rep = _load_mod("_t212_replay_70", os.path.join(t212_dir, "replay.py"), t212_dir)
+    t212_bot = _load_mod("_t212_bot_70", os.path.join(t212_dir, "t212_bot.py"), t212_dir)
+    k_watch = _load_mod("_k_watch_70", os.path.join(kraken_dir, "kraken_xstock_watch.py"), kraken_dir)
+
+    # 1. 212trading.replay._fx_rates accepts scalar numeric strings without iterating character-by-character
+    assert t212_rep._fx_rates("1.08", 3) == [1.08, 1.08, 1.08]
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates("not-a-float", 2)
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates(1.0, -1)
+
+    # 2. 212trading.t212_bot.verify_isin tolerates non-dict items in instruments list
+    dummy_t212 = SimpleNamespace(list_instruments=lambda: ["bad-item", {"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
+    assert t212_bot.verify_isin(dummy_t212, "NVDA_US_EQ", "US67066G1040") is True
+
+    # 3. kraken_xstock_watch.check_pairs tolerates non-dict entries and missing alerted_pair in state dict
+    k_watch.notify = lambda **kw: None
+    dummy_k = SimpleNamespace(
+        asset_pairs=lambda: {"BAD": "not-a-dict", "SPCXXUSD": {"wsname": "SPCXx/USD", "base": "SPCXx"}},
+        last_price=lambda k: 50.0,
+    )
+    st_watch = {}
+    k_watch.check_pairs(dummy_k, st_watch, "SPCX", desktop=False, quote="USD")
+    assert st_watch.get("pair") == "SPCXXUSD"
+    assert st_watch.get("alerted_pair") is True
+
+    # 4. TrailingCore._reconcile_pending cleans up corrupted non-dict pending_order without crashing
+    core = TrailingCore(
+        SimpleNamespace(),
+        log=lambda *_: None,
+        enabled=True,
+        state_file=str(tmp_path / "trail.json"),
+        min_notional=10.0,
+        rebuy_enabled=True,
+        rebuy_bounce_pct=1.2,
+        rebuy_skip_if_trend_down=False,
+    )
+    st_coin = {"pending_order": True, "peak": 100.0}
+    assert core._reconcile_pending({"BTC": st_coin}, st_coin, 95.0, "BTCUSDC") is False
+    assert "pending_order" not in st_coin
+
+
+
 
 
 

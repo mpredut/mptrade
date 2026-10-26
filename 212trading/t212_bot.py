@@ -58,9 +58,12 @@ def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
     if not expected_isin:
         return True
     instruments = client.list_instruments()
-    if not instruments:
+    if not instruments or not isinstance(instruments, list):
         return True
-    match = next((i for i in instruments if str(i.get("ticker", "")).upper() == ticker.upper()), None)
+    match = next(
+        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).upper() == ticker.upper()),
+        None,
+    )
     if not match:
         return True
     if str(match.get("isin", "")) != expected_isin:
@@ -82,8 +85,8 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     strat_dry = force_paper or not required_bool_env("STRAT_EXECUTE", cfg)
     observe_only = str(cfg.get("T212_BOT_OBSERVE_ONLY") or os.environ.get("T212_BOT_OBSERVE_ONLY") or "").strip().lower() in ("1", "true", "yes", "on")
     interval = required_float_env("POLL_SECONDS", cfg)
-    if interval < 30:
-        raise ValueError("POLL_SECONDS must be at least 30")
+    if not (interval >= 30 and interval <= 86400):
+        raise ValueError("POLL_SECONDS must be a finite number between 30 and 86400")
 
     if not strat_enabled:
         log(f"  ! [{name}] STRAT_ENABLED!=true — skipping (t212_bot only runs strategies)"); return
