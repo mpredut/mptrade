@@ -68,14 +68,24 @@ def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
     if not ts_str or not isinstance(ts_str, str):
         return None
     try:
-        ts_part = ts_str.split("+")[0].rstrip("Zz").strip()
-        if ts_part.startswith("0001-01-01"):
+        raw = ts_str.strip()
+        if raw.startswith("0001-01-01"):
             return datetime(1, 1, 1, tzinfo=timezone.utc)
-        if "." in ts_part:
-            main_ts, frac = ts_part.split(".", 1)
+        tz_suffix = "+00:00"
+        if raw.endswith(("Z", "z")):
+            raw = raw[:-1].strip()
+        else:
+            m_tz = re.search(r"([+-]\d{2}:\d{2})\s*$", raw)
+            if m_tz:
+                tz_suffix = m_tz.group(1)
+                raw = raw[: m_tz.start()].strip()
+            elif "+" in raw:
+                raw = raw.split("+", 1)[0].strip()
+        if "." in raw:
+            main_ts, frac = raw.split(".", 1)
             frac_digits = "".join(ch for ch in frac if ch.isdigit())
-            ts_part = f"{main_ts}.{frac_digits[:6].ljust(6, '0')}" if frac_digits else main_ts
-        return datetime.fromisoformat(f"{ts_part}+00:00")
+            raw = f"{main_ts}.{frac_digits[:6].ljust(6, '0')}" if frac_digits else main_ts
+        return datetime.fromisoformat(f"{raw}{tz_suffix}").astimezone(timezone.utc)
     except (ValueError, TypeError, AttributeError):
         return None
 

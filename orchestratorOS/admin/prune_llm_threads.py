@@ -185,7 +185,9 @@ def prune_old_cli_threads(
     max_threads_i: Optional[int] = None
     if max_threads is not None and not isinstance(max_threads, bool):
         try:
-            max_threads_i = int(max_threads)
+            mt_f = float(max_threads)
+            if math.isfinite(mt_f):
+                max_threads_i = int(mt_f)
         except (TypeError, ValueError, OverflowError):
             max_threads_i = None
     if max_threads_i is not None and 0 <= max_threads_i < len(kept):

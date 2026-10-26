@@ -96,13 +96,18 @@ class AutonomousOvernightMonitor:
                     if len(parts) >= 7:
                         pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
                         if role in ("bot", "fleet") and cmd:
+                            try:
+                                hb_val = float(hbstale)
+                                hb_stale_s = hb_val if math.isfinite(hb_val) and hb_val > 0 else 0.0
+                            except (TypeError, ValueError):
+                                hb_stale_s = 0.0
                             procs.append({
                                 "name": label or pat,
                                 "pattern": pat,
                                 "dir": dr.replace("$ROOT", self.workspace_dir),
                                 "cmd": cmd.replace("$ROOT", self.workspace_dir),
                                 "hb_log": hblog.replace("$ROOT", self.workspace_dir),
-                                "hb_stale_s": float(hbstale) if hbstale.isdigit() else 0.0,
+                                "hb_stale_s": hb_stale_s,
                                 "role": role,
                             })
         except Exception as e:
@@ -345,7 +350,15 @@ class AutonomousOvernightMonitor:
 
     def loop(self, interval_seconds: float = 60.0) -> None:
         """Continuous execution loop."""
-        logger.info("Starting Autonomous Overnight Monitor (interval=%.0fs)...", interval_seconds)
+        if (
+            isinstance(interval_seconds, bool)
+            or not isinstance(interval_seconds, (int, float))
+            or not math.isfinite(float(interval_seconds))
+            or float(interval_seconds) <= 0
+        ):
+            raise ValueError("interval_seconds must be a positive finite number")
+        sleep_s = float(interval_seconds)
+        logger.info("Starting Autonomous Overnight Monitor (interval=%.0fs)...", sleep_s)
         while True:
             try:
                 report = self.run_cycle(persist=True)
@@ -361,7 +374,7 @@ class AutonomousOvernightMonitor:
                 )
             except Exception as e:
                 logger.error("Error in monitor loop: %s", e, exc_info=True)
-            time.sleep(interval_seconds)
+            time.sleep(sleep_s)
 
 
 def main() -> None:

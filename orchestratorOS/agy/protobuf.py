@@ -29,6 +29,8 @@ def enc_varint(v: int) -> bytes:
 def dec_varint(buf: bytes, pos: int) -> Tuple[int, int]:
     val = shift = 0
     while pos < len(buf):
+        if shift >= 64:
+            raise ValueError("varint too long")
         b = buf[pos]
         pos += 1
         val |= (b & 0x7F) << shift
@@ -43,6 +45,8 @@ def parse_fields(buf: bytes) -> List[Field]:
     while pos < len(buf):
         key, pos = dec_varint(buf, pos)
         tag, wire = key >> 3, key & 7
+        if tag <= 0:
+            raise ValueError("invalid field tag 0")
         if wire == 0:
             v, pos = dec_varint(buf, pos)
         elif wire == 2:
@@ -107,9 +111,17 @@ def summary_ui_visible(raw: bytes, title: str = "", *, reset_running: bool = Fal
 
 def summary_annotation_title(raw: bytes) -> str:
     """Extract the user-visible annotation title (field 15, sub-field 1) from a TrajectorySummary."""
-    for tag, wire, v in parse_fields(raw):
+    try:
+        top_fields = parse_fields(raw)
+    except (ValueError, IndexError):
+        return ""
+    for tag, wire, v in top_fields:
         if tag == SUMMARY_ANNOTATIONS_FIELD and wire == 2:
-            for t, w, x in parse_fields(v):
+            try:
+                sub_fields = parse_fields(v)
+            except (ValueError, IndexError):
+                continue
+            for t, w, x in sub_fields:
                 if t == 1 and w == 2:
                     return x.decode("utf-8", "ignore").strip()
     return ""

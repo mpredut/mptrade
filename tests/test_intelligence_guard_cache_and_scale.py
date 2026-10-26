@@ -9692,6 +9692,46 @@ def test_iteration79_alerts_config_price_notifier_and_verify_tools_safety(tmp_pa
     assert gen_alert_thresholds.suggest("BTC", days=float("nan")) is None
 
 
+def test_iteration80_protobuf_summary_store_and_overnight_monitor_safety(tmp_path):
+    """Verify Iteration 80 protobuf varint/tag bounds, summary_store timezone offset parsing, and AutonomousOvernightMonitor validation."""
+    import pytest
+    from datetime import datetime, timezone
+    from orchestratorOS.agy import protobuf, summary_store
+    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+
+    # 1. protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0
+    with pytest.raises(ValueError, match="varint too long"):
+        protobuf.dec_varint(b"\x80" * 11, 0)
+    with pytest.raises(ValueError, match="invalid field tag 0"):
+        protobuf.parse_fields(b"\x00\x01")
+    assert protobuf.summary_annotation_title(b"\x80\x80") == ""
+
+    # 2. summary_store.parse_db_timestamp preserves negative/positive timezone offsets without corrupting fractional digits
+    dt_neg = summary_store.parse_db_timestamp("2026-10-26T14:30:00.12-05:00")
+    assert dt_neg == datetime(2026, 10, 26, 19, 30, 0, 120000, tzinfo=timezone.utc)
+    dt_pos = summary_store.parse_db_timestamp("2026-10-26T14:30:00.5+02:00")
+    assert dt_pos == datetime(2026, 10, 26, 12, 30, 0, 500000, tzinfo=timezone.utc)
+
+    # 3. AutonomousOvernightMonitor parses float hb_stale_s and rejects invalid loop intervals
+    procs_file = tmp_path / "procs.conf"
+    procs_file.write_text(
+        "tradeall.py|$ROOT|python tradeall.py|tradeall|logs/tradeall.log|180.5|bot\n",
+        encoding="utf-8",
+    )
+    mon = AutonomousOvernightMonitor(workspace_dir=str(tmp_path))
+    parsed = mon.parse_process_manifest()
+    assert len(parsed) == 1
+    assert parsed[0]["hb_stale_s"] == 180.5
+
+    with pytest.raises(ValueError):
+        mon.loop(interval_seconds=False)
+    with pytest.raises(ValueError):
+        mon.loop(interval_seconds=0)
+    with pytest.raises(ValueError):
+        mon.loop(interval_seconds=float("nan"))
+
+
+
 
 
 
