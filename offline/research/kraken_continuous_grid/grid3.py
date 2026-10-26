@@ -8,8 +8,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import grid, grid2
-from grid import load, WARM, DATA, EXP
+try:
+    from offline.research.kraken_continuous_grid import grid, grid2
+except ImportError:
+    import grid, grid2
+load, WARM, DATA, EXP = grid.load, grid.WARM, grid.DATA, grid.EXP
 CFGS = ["live", "old_live_pre0923", "sl0", "abl_gate_off", "ov650_t8", "ov650_t8_brake",
         "ov650_t8_brake_gateoff", "ov650_t8_gateoff", "ov650_t8_sl0", "ov650_t8_sl25",
         "ov1000_t8_gateoff", "ov1000_t10_gateoff", "ov2000_t10", "ov1300_t12", "ov800_t12"]

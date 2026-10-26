@@ -18,8 +18,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import grid
-from grid import CONFIGS, LIVE, OLD, R, ov, load, WARM, W30, W90, WSTEP, DATA, EXP
+try:
+    from offline.research.kraken_continuous_grid import grid
+except ImportError:
+    import grid
+CONFIGS, LIVE, OLD, R, ov, load = grid.CONFIGS, grid.LIVE, grid.OLD, grid.R, grid.ov, grid.load
+WARM, W30, W90, WSTEP, DATA, EXP = grid.WARM, grid.W30, grid.W90, grid.WSTEP, grid.DATA, grid.EXP
 
 OUT = os.path.join(EXP, "results2.jsonl")
 FEE = {"std": 0.26, "stress": 0.40}
@@ -99,8 +103,10 @@ def select(asset):
             if k not in oos_cache:
                 oos_cache[k] = replay(oos_slice, oos_warm, p, pk, 0.26)["ret"]
             oos[c] = oos_cache[k]
+        p0 = float(ohlc[t][3])
+        p1 = float(ohlc[t + TEST - 1][3])
         steps.append({"t": bars[t][0], "pick": best, "pick_ret": oos[best], "oos": oos,
-                      "bh": round((ohlc[t + TEST - 1][3] / ohlc[t][3] - 1) * 100, 2)})
+                      "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0})
     return {"kind": "select", "asset": asset, "steps": steps}
 
 

@@ -71,7 +71,7 @@ class MeanReversionTracker:
         self.fired_down = False
         self.last_attempt_up_ts = None
         self.last_attempt_down_ts = None
-        self.stats = STATS[tag]
+        self.stats = _make_stats(tag)
 
     # -- indicators -----------------------------------------------------------
     def _rsi(self, price):
@@ -109,7 +109,7 @@ class MeanReversionTracker:
 
     # -- combined contrarian sign --------------------------------------------
     def update_sign(self, price):
-        if not (math.isfinite(price) and price > 0):
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not (math.isfinite(price) and price > 0):
             return self.sign
         oversold = overbought = None
         if self.mode == "rsi":
@@ -134,7 +134,7 @@ class MeanReversionTracker:
             self.sign = new_sign
             self.fired_up = False
             self.fired_down = False
-            self.stats["sign_changes"] += 1
+            self.stats["sign_changes"] = self.stats.get("sign_changes", 0) + 1
         return self.sign
 
     def update(self, _ts, price):

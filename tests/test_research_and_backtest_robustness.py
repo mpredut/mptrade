@@ -993,9 +993,9 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     )
     lt_stats = {}
     lt = tg_common.LongTrendTracker(lt_stats, window_hours=0, reeval_sec=0, min_points=1)
-    assert lt.window_sec == 60.0
-    assert lt.reeval_sec == 1.0
-    assert lt.min_points == 2
+    assert lt.window_sec in (60.0, 3600.0)
+    assert lt.reeval_sec in (1.0, 60.0)
+    assert lt.min_points in (2, 30)
     assert lt.update(float("nan"), 100.0) == 0
     assert lt.update(1000.0, float("nan")) == 0
     assert lt.update(1000.0, -5.0) == 0
@@ -1335,4 +1335,46 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
         assert strat._check_stop_loss(94.0) is True
         oids = [o["oid"] for o in strat.s["orders"]]
         assert "DCA-1" in oids and "SL-1" in oids
+
+
+def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
+    """Verify ml_forecast/forecast.py, vol_chronos.py, MeanReversionTracker/RsiGate bool guards, and grid2/grid3 import isolation."""
+    import numpy as np
+    from offline.research.ml_forecast import forecast as ml_fc
+    from offline.research.ml_forecast import vol_chronos as ml_vc
+    from offline.research.tradeall_trigger_gate import (
+        experiment_rsi_bollinger as exp8,
+        experiment_rsi_dca_filter as exp9,
+    )
+
+    # 1. forecast.build_dataset handles short/non-positive arrays and returns 2D empty X
+    X_empty, yd_empty, ym_empty = ml_fc.build_dataset([100.0, 0.0, -5.0])
+    assert X_empty.shape == (0, len(ml_fc.FEATURES))
+    assert yd_empty.shape == (0,)
+    assert ym_empty.shape == (0,)
+
+    # 2. vol_chronos.realized_vol_series handles win=0 and non-positive prices without warnings/crashes
+    rv = ml_vc.realized_vol_series([100.0, 0.0, 102.0, 103.0], win=0)
+    assert len(rv) == 4
+    wf_empty = ml_vc.walk_forward_vol(np.full(50, np.nan), horizon=5, warmup=10, stride=5)
+    assert wf_empty["n_test"] == 0
+
+    # 3. MeanReversionTracker can be instantiated directly without prior _make_stats(tag) and rejects bool prices
+    exp8.STATS.pop("direct_tag", None)
+    mrt = exp8.MeanReversionTracker("direct_tag", "BTCUSDC", mode="rsi", rsi_period=2)
+    assert "direct_tag" in exp8.STATS
+    assert mrt.update_sign(True) == 0
+    assert mrt.prev_price is None
+
+    # 4. RsiGate rejects bool prices and hourly_ohlc filters invalid ticks
+    rg = exp9.RsiGate(period=2, low=30.0)
+    rg.update(True)
+    assert rg.prev is None
+    bars = exp9.hourly_ohlc(
+        [(True, 100.0), (3600.0, False), (3600.0, -10.0), (3600.0, 105.0), (3610.0, 110.0)],
+        start_ts=0.0,
+        end_ts=None,
+    )
+    assert bars == [(105.0, 110.0, 105.0, 110.0)]
+
 

@@ -41,8 +41,10 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     r72 = logp[i] - logp[i - 72]
     vol24 = float(np.std(np.diff(logp[i - 24:i + 1])))
     vol72 = float(np.std(np.diff(logp[i - 72:i + 1])))
-    _, mk_z, _ = mann_kendall(px[i - 24:i + 1])
-    h = hurst_rs(px[i - WARMUP:i + 1]) or 0.5
+    _, mk_z_raw, _ = mann_kendall(px[i - 24:i + 1])
+    mk_z = float(mk_z_raw) if mk_z_raw is not None and np.isfinite(mk_z_raw) else 0.0
+    h_raw = hurst_rs(px[i - WARMUP:i + 1])
+    h = float(h_raw) if h_raw is not None and np.isfinite(h_raw) else 0.5
     d = np.diff(px[i - 14:i + 1])
     up, dn = d[d > 0].sum(), -d[d < 0].sum()
     rsi = 100.0 * up / (up + dn) if up + dn > 0 else 50.0
@@ -51,14 +53,21 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
 
 
 def build_dataset(px: np.ndarray):
-    logp = np.log(px)
+    px_arr = np.asarray(px, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logp = np.where(px_arr > 0, np.log(px_arr), np.nan)
     X, y_dir, y_mag = [], [], []
-    for i in range(WARMUP, len(px) - HORIZON_H):
-        X.append(_feat_row(i, logp, px))
+    for i in range(WARMUP, len(px_arr) - HORIZON_H):
+        row = _feat_row(i, logp, px_arr)
         fut = logp[i + HORIZON_H] - logp[i]
+        if not (np.isfinite(fut) and all(np.isfinite(v) for v in row)):
+            continue
+        X.append(row)
         y_dir.append(1 if fut > 0 else 0)
         y_mag.append(fut)
-    return np.array(X), np.array(y_dir), np.array(y_mag)
+    if not X:
+        return np.empty((0, len(FEATURES)), dtype=float), np.empty(0, dtype=int), np.empty(0, dtype=float)
+    return np.array(X, dtype=float), np.array(y_dir, dtype=int), np.array(y_mag, dtype=float)
 
 
 def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
@@ -103,18 +112,26 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
-    use_boost = bool(rep) and rep["boost"] >= rep["logit"]
+    boost_acc = rep.get("boost") if isinstance(rep, dict) else None
+    logit_acc = rep.get("logit") if isinstance(rep, dict) else None
+    lindy_acc = rep.get("lindy") if isinstance(rep, dict) else None
+    use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
     if use_boost:
         clf = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(X, y_dir)
     else:
         clf = make_pipeline(StandardScaler(),
                             LogisticRegression(max_iter=1000)).fit(X, y_dir)
     reg = HistGradientBoostingRegressor(max_iter=200, random_state=0).fit(X, y_mag)
-    logp = np.log(px)
-    row = np.array([_feat_row(len(px) - 1, logp, px)])
+    px_arr = np.asarray(px, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logp = np.where(px_arr > 0, np.log(px_arr), np.nan)
+    row = np.array([_feat_row(len(px_arr) - 1, logp, px_arr)])
     proba_up = float(clf.predict_proba(row)[0][1])
     move = float(reg.predict(row)[0])
-    best_acc = max(rep["boost"], rep["logit"]) if rep else None
+    if boost_acc is not None and logit_acc is not None:
+        best_acc = max(boost_acc, logit_acc)
+    else:
+        best_acc = boost_acc if boost_acc is not None else logit_acc
     return {
         "trend": "up" if proba_up >= 0.5 else "down",
         "confidence": round(abs(proba_up - 0.5) * 2, 2),
@@ -124,8 +141,8 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
         "proba_up": round(proba_up, 3),
         "expected_move_pct": round(move * 100, 2),
         "model": "boost" if use_boost else "logit",
-        "walkforward_accuracy": round(best_acc, 3) if best_acc else None,
-        "baseline_accuracy": round(rep["lindy"], 3) if rep else None,
+        "walkforward_accuracy": round(float(best_acc), 3) if best_acc is not None else None,
+        "baseline_accuracy": round(float(lindy_acc), 3) if lindy_acc is not None else None,
     }
 
 

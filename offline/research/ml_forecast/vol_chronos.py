@@ -32,10 +32,15 @@ BATCH = 8                               # test windows batched per call
 
 def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
     """Return trailing [i-win, i] log-return standard deviation, with NaN before history."""
-    logp = np.log(px)
+    px_arr = np.asarray(px, dtype=float)
+    if isinstance(win, bool) or not isinstance(win, (int, float)) or not np.isfinite(win):
+        win = 24
+    win = max(1, int(win))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logp = np.where(px_arr > 0, np.log(px_arr), np.nan)
     r = np.diff(logp)
-    rv = np.full(len(px), np.nan)
-    for i in range(win, len(px)):
+    rv = np.full(len(px_arr), np.nan)
+    for i in range(win, len(px_arr)):
         rv[i] = np.std(r[i - win:i])
     return rv
 
@@ -56,7 +61,12 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     stride = max(1, int(stride))
     warmup = max(0, int(warmup))
     n = len(rv)
-    idxs = list(range(warmup, n - horizon, stride))
+    idxs = [
+        i for i in range(warmup, n - horizon, stride)
+        if not np.isnan(rv[i])
+        and not np.isnan(rv[i + horizon])
+        and np.any(~np.isnan(rv[max(0, i + 1 - MAX_CONTEXT):i + 1]))
+    ]
     if not idxs:
         return {
             "n_test": 0,

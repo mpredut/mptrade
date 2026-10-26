@@ -50,7 +50,7 @@ class RsiGate:
         self.rsi = None
 
     def update(self, price):
-        if not (math.isfinite(price) and price > 0):
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not (math.isfinite(price) and price > 0):
             return
         if self.prev is None:
             self.prev = price
@@ -102,6 +102,8 @@ def load_ticks(symbol):
 def hourly_ohlc(ticks, start_ts, end_ts):
     buckets, order = {}, []
     for ts, p in ticks:
+        if isinstance(ts, bool) or isinstance(p, bool) or not (math.isfinite(ts) and math.isfinite(p) and p > 0):
+            continue
         if ts < start_ts:
             continue
         if end_ts is not None and ts > end_ts:
@@ -167,7 +169,7 @@ if __name__ == "__main__":
             if len(bars) < 50:
                 sys.stderr.write(f"  {plabel}: only {len(bars)} bars, skipped\n")
                 continue
-            bh_pct = (bars[-1][3] / bars[0][3] - 1.0) * 100.0
+            bh_pct = ((bars[-1][3] / bars[0][3] - 1.0) * 100.0) if bars[0][3] > 0 else 0.0
             row = {}
             for name, gcfg in CONFIGS:
                 gate = RsiGate(*gcfg) if gcfg else None
