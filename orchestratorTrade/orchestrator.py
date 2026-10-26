@@ -377,8 +377,11 @@ class BotManager:
                     if b.get("hb_stale_s", 0) > 0 and hb_files:
                         for hbf in hb_files:
                             if os.path.exists(hbf):
-                                age = now - os.path.getmtime(hbf)
-                                hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: {age:.1f}s/{b['hb_stale_s']:.0f}s)")
+                                try:
+                                    age = max(0.0, now - os.path.getmtime(hbf))
+                                    hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: {age:.1f}s/{b['hb_stale_s']:.0f}s)")
+                                except OSError:
+                                    hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: missing)")
                             else:
                                 hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: missing)")
                 if hb_statuses:

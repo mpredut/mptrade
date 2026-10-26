@@ -277,6 +277,10 @@ class AutonomousIntentGateway:
         conf = self._load_conf()
 
         if mode is not None:
+            if isinstance(mode, bool):
+                raise ValueError(
+                    f"Invalid autonomous_trading_mode {mode!r}; must be one of ['enforce', 'off', 'shadow']"
+                )
             raw_mode = mode
         else:
             if "autonomous_trading_mode" not in conf:
@@ -322,7 +326,19 @@ class AutonomousIntentGateway:
             )
 
         if notify_enabled is not None:
-            self.notify_enabled = bool(notify_enabled)
+            if isinstance(notify_enabled, str):
+                ne_s = notify_enabled.strip().lower()
+                if ne_s in ("1", "true", "yes", "on"):
+                    self.notify_enabled = True
+                elif ne_s in ("0", "false", "no", "off", ""):
+                    self.notify_enabled = False
+                else:
+                    ne_num = _parse_finite_float(ne_s, float("nan"))
+                    if not math.isfinite(ne_num):
+                        raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
+                    self.notify_enabled = bool(int(ne_num))
+            else:
+                self.notify_enabled = bool(notify_enabled)
         else:
             if "autonomous_trading_notify" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_notify' in order_guard.conf")
@@ -332,7 +348,10 @@ class AutonomousIntentGateway:
             elif raw_notify in ("0", "false", "no", "off"):
                 self.notify_enabled = False
             else:
-                self.notify_enabled = bool(int(float(raw_notify)))
+                notify_num = _parse_finite_float(raw_notify, float("nan"))
+                if not math.isfinite(notify_num):
+                    raise ValueError(f"Invalid autonomous_trading_notify {conf['autonomous_trading_notify']!r}")
+                self.notify_enabled = bool(int(notify_num))
 
     def _load_conf(self) -> Dict[str, str]:
         """Loads configuration from order_guard.conf / config.env, overlaying workspace-specific overrides."""
@@ -775,6 +794,8 @@ class AutonomousIntentGateway:
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Validates and processes a single intent according to ``mode`` (default: the gateway mode)."""
+        if not isinstance(intent, dict):
+            return {}
         mode = mode or self.mode
         raw_iid = intent.get("intent_id") or intent.get("id") or f"intent_{int(time.time())}"
         intent_id = str(raw_iid)
@@ -991,6 +1012,8 @@ class AutonomousIntentGateway:
         processes it immediately in the more restrictive of the gateway mode and ``max_mode``
         (the producer's own mode), so a shadow producer can never trigger a live order.
         """
+        if not isinstance(decision, dict):
+            return None
         side = str(decision.get("decision", "HOLD")).strip().upper()
         if side not in ("BUY", "SELL"):
             logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, side)

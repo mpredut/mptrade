@@ -192,13 +192,15 @@ class AutonomousOvernightMonitor:
 
         def _read(fname: str) -> Optional[Dict[str, Any]]:
             p = os.path.join(self.cachedb_dir, fname)
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8", errors="replace") as f:
-                        data = json.load(f)
-                    return data if isinstance(data, dict) else None
-                except Exception:
-                    pass
+            for cand in (p, f"{p}.previous"):
+                if os.path.exists(cand):
+                    try:
+                        with open(cand, "r", encoding="utf-8", errors="replace") as f:
+                            data = json.load(f)
+                        if isinstance(data, dict):
+                            return data
+                    except Exception:
+                        continue
             return None
 
         def _finite_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:

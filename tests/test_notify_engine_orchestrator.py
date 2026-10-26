@@ -680,5 +680,40 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertIsNone(cli.query_json("p1", cache_ttl_sec=60.0))
         self.assertEqual(cli.query_json("p1", cache_ttl_sec=60.0), {"a": 1})
 
+    def test_orchestrator_reconciler_gateway_and_monitor_safety(self):
+        from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+            AutonomousAIReconciler,
+            recent_log_lines,
+        )
+        from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+        from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+
+        # 1. recent_log_lines: handles NaN file_mtime, None lines, and non-str items in lines
+        self.assertEqual(recent_log_lines(None, 1000.0, 500.0), [])  # type: ignore[arg-type]
+        res_lines = recent_log_lines([None, "2026-10-27 00:00:00 [ERROR] test error", 123], float("nan"), 0.0)  # type: ignore[list-item]
+        self.assertEqual(res_lines, ["2026-10-27 00:00:00 [ERROR] test error"])
+
+        # 2. AutonomousAIReconciler & AutonomousIntentGateway: notify_enabled='false', mode=True rejection, non-dict submit/process_intent
+        rec = AutonomousAIReconciler(workspace_dir=self._temp_dir.name, mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
+        self.assertFalse(rec.notify_enabled)
+        with self.assertRaises(ValueError):
+            AutonomousIntentGateway(workspace_dir=self._temp_dir.name, mode=True)  # type: ignore[arg-type]
+        gw = AutonomousIntentGateway(workspace_dir=self._temp_dir.name, mode="shadow", notify_enabled="false")  # type: ignore[arg-type]
+        self.assertFalse(gw.notify_enabled)
+        self.assertEqual(gw.process_intent(None), {})  # type: ignore[arg-type]
+        self.assertIsNone(gw.submit(None, source="test", max_mode="shadow"))  # type: ignore[arg-type]
+
+        # 3. AutonomousOvernightMonitor.gather_sensor_status: recovers from .previous when primary is missing or corrupt
+        cachedb = os.path.join(self._temp_dir.name, "cachedb")
+        os.makedirs(cachedb, exist_ok=True)
+        with open(os.path.join(cachedb, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
+            f.write("{corrupt")
+        with open(os.path.join(cachedb, "geopolitical_threat_eval.json.previous"), "w", encoding="utf-8") as f:
+            json.dump({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered"}, f)
+        mon = AutonomousOvernightMonitor(workspace_dir=self._temp_dir.name)
+        sensors = mon.gather_sensor_status()
+        self.assertEqual(sensors["geopolitical_threat"]["threat_level"], "ELEVATED")
+        self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)
+
 
 

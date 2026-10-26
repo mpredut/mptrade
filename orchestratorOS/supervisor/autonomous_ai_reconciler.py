@@ -62,9 +62,19 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
     """
     from datetime import datetime, timedelta
 
-    ref = datetime.fromtimestamp(file_mtime)
+    if not isinstance(lines, (list, tuple)) or not lines:
+        return []
+    fm = _parse_finite_float(file_mtime, time.time())
+    if fm <= 0:
+        fm = time.time()
+    cutoff_ts = _parse_finite_float(cutoff_ts, 0.0)
+    try:
+        ref = datetime.fromtimestamp(fm)
+    except (ValueError, OverflowError, OSError):
+        fm = time.time()
+        ref = datetime.fromtimestamp(fm)
     day = ref.date()
-    prev_ts = float(file_mtime)
+    prev_ts = float(fm)
     picked: List[str] = []
 
     def _resolve_fold_ts(dt_naive: datetime, upper_ts: float) -> float:
@@ -76,6 +86,8 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
 
     pending_unstamped: List[str] = []
     for line in reversed(lines):
+        if not isinstance(line, str):
+            continue
         ts: Optional[float] = None
         has_stamp_token = False
         m = _FULL_TS_RE.search(line)
@@ -264,7 +276,19 @@ class AutonomousAIReconciler:
             raise ValueError(f"Invalid supervisor_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']")
 
         if notify_enabled is not None:
-            self.notify_enabled = bool(notify_enabled)
+            if isinstance(notify_enabled, str):
+                ne_s = notify_enabled.strip().lower()
+                if ne_s in ("1", "true", "yes", "on"):
+                    self.notify_enabled = True
+                elif ne_s in ("0", "false", "no", "off", ""):
+                    self.notify_enabled = False
+                else:
+                    ne_num = _parse_finite_float(ne_s, float("nan"))
+                    if not math.isfinite(ne_num):
+                        raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
+                    self.notify_enabled = bool(int(ne_num))
+            else:
+                self.notify_enabled = bool(notify_enabled)
         else:
             if "supervisor_notify" not in conf:
                 raise KeyError("Missing required 'supervisor_notify' in order_guard.conf")
@@ -332,7 +356,10 @@ class AutonomousAIReconciler:
             if ts_f > 0:
                 ref_ts = ts_f / 1000.0 if ts_f > 1e12 else ts_f
             elif os.path.exists(fpath):
-                ref_ts = os.path.getmtime(fpath)
+                try:
+                    ref_ts = os.path.getmtime(fpath)
+                except OSError:
+                    ref_ts = None
             if ref_ts is not None:
                 enriched.setdefault("age_min", round(max(0.0, now_ts - ref_ts) / 60.0, 1))
             return enriched
@@ -405,8 +432,11 @@ class AutonomousAIReconciler:
         for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json", "kraken_trades_full.json"):
             s_path = os.path.join(self.workspace_dir, s_file)
             if os.path.exists(s_path):
-                mtime = os.path.getmtime(s_path)
-                snapshot.state_files[s_file] = {"age_hours": (now_ts - mtime) / 3600.0}
+                try:
+                    mtime = os.path.getmtime(s_path)
+                    snapshot.state_files[s_file] = {"age_hours": max(0.0, (now_ts - mtime) / 3600.0)}
+                except OSError:
+                    pass
 
         # 7. Live market prices, short/long/Weibull trend, 1s 24trend windows, 7d range, and Kalman velocity
         prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
