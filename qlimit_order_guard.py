@@ -49,10 +49,21 @@ def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) ->
         if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):
-                p90_d = float(ent["p90_d"]) if ent.get("p90_d") else None
-                med_d = float(ent["median_d"]) if ent.get("median_d") else None
-                t_val = float(ent["T"]) if ent.get("T") else None
-                gauss_h = round(t_val * (1.0 + exceed_percent), 4) if t_val and t_val > 0 else None
+                import math
+
+                def _pos_finite(val: Any) -> Optional[float]:
+                    if val is None or isinstance(val, bool):
+                        return None
+                    try:
+                        f = float(val)
+                        return f if (math.isfinite(f) and f > 0.0) else None
+                    except (TypeError, ValueError):
+                        return None
+
+                p90_d = _pos_finite(ent.get("p90_d"))
+                med_d = _pos_finite(ent.get("median_d"))
+                t_val = _pos_finite(ent.get("T"))
+                gauss_h = round(t_val * (1.0 + exceed_percent), 4) if t_val is not None else None
                 return p90_d, med_d, gauss_h
     except Exception:
         pass
@@ -113,6 +124,10 @@ def check_qlimit2_order_guards(
     from order_guard import _load_margins, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
+    if "intelligence_guards_mode" in m:
+        master_mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
+        if master_mode == "off":
+            return True, "intelligence_guards_off", 1.0
     mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
     if mode == "off":
         return True, "intelligence_guards_off", 1.0

@@ -90,6 +90,11 @@ def check_external_order_guards(
     else:
         m = margins
 
+    if "intelligence_guards_mode" in m:
+        master_mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
+        if master_mode == "off":
+            return True, "intelligence_guards_off", 1.0
+
     ext_mode = "enforce"
     if "external_guard_mode" in m:
         ext_mode = validate_guard_mode_cfg(m["external_guard_mode"], "external_guard_mode")

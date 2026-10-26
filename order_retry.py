@@ -516,7 +516,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             attempts < 0):
         return None
     record_id = uuid.uuid4().hex
-    placement = dict(place_kwargs or {})
+    placement = {
+        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
+        for k, v in dict(place_kwargs or {}).items()
+    }
     prefix = placement.get("prefix") or (
         f"{placement.get('owner')}_OR" if placement.get("owner") else None
     )
@@ -667,7 +670,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                     e["qty"] = qty
                     e["requested_qty_total"] = qty
                     revision = int(e.get("revision", 0)) + 1
-                    refreshed_kwargs = dict(place_kwargs or {})
+                    refreshed_kwargs = {
+                        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
+                        for k, v in dict(place_kwargs or {}).items()
+                    }
                     pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
                     refreshed_kwargs.setdefault(
                         "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx))

@@ -52,6 +52,9 @@ def evaluate_high_stake_order_guard(
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
     from order_guard import resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
+    if "intelligence_guards_mode" in margins:
+        if validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+            return True, "ok", 1.0
     skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
     if skip_llm or llm_mode == "off":
@@ -222,6 +225,10 @@ def check_geopolitical_order_guards(
 
     from intelligence.internal.guards.guard_decision import BrakeAction
 
+    if "intelligence_guards_mode" in m:
+        if validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+            return True, "intelligence_guards_off", 1.0
+
     geo_mode = validate_guard_mode_cfg(m["geopolitical_guard_mode"], "geopolitical_guard_mode")
     if geo_mode == "off":
         return True, "geopolitical_guard_off", 1.0
@@ -313,11 +320,15 @@ def check_llm_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins
+    from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
         m = _load_margins()
     else:
         m = margins
+
+    if "intelligence_guards_mode" in m:
+        if validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+            return True, "intelligence_guards_off", 1.0
 
     effective_scale = 1.0
     active_reason = "ok"

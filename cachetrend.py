@@ -340,10 +340,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         return self.window_seconds[-1]
 
     def _live_trend_file(self, symbol: str) -> str:
-        return os.path.join(self.trend_dir, f"live_{symbol}.json")
+        safe_sym = str(symbol or "").strip().replace("/", "").replace("\\", "")
+        return os.path.join(self.trend_dir, f"live_{safe_sym}.json")
 
     def _hist_trend_file(self, symbol: str) -> str:
-        return os.path.join(self.trend_dir, f"hist_{symbol}.json")
+        safe_sym = str(symbol or "").strip().replace("/", "").replace("\\", "")
+        return os.path.join(self.trend_dir, f"hist_{safe_sym}.json")
 
     def _get_trend_buffer(self, symbol: str):
         import pricewindow as pw
@@ -1146,28 +1148,35 @@ class CacheShortTrendManager(CacheManagerInterface):
             return None
         slice_key = f"{t1_ms}_{t2_ms}"
 
+        variants = _short_trend_symbol_variants(symbol)
         with self._lock:
-            sym_hist = self._hist_windows.setdefault(symbol, {})
-            if isinstance(sym_hist.get(slice_key), dict):
-                return dict(sym_hist[slice_key])
-            loaded = self._read_hist_symbol_file(symbol)
-            if isinstance(loaded, dict):
-                for k, v in loaded.items():
-                    if isinstance(v, dict):
-                        sym_hist[k] = v
+            for cand in variants:
+                sym_hist = self._hist_windows.setdefault(cand, {})
                 if isinstance(sym_hist.get(slice_key), dict):
                     return dict(sym_hist[slice_key])
+                loaded = self._read_hist_symbol_file(cand)
+                if isinstance(loaded, dict):
+                    for k, v in loaded.items():
+                        if isinstance(v, dict):
+                            sym_hist[k] = v
+                    if isinstance(sym_hist.get(slice_key), dict):
+                        return dict(sym_hist[slice_key])
 
         # Cache miss: resolve raw entries from memory Cache24 or disk Cache24
         entries = []
+        matched_sym = symbol
         if self._cache24_managers is not None:
-            c24 = self._cache24_managers.get(symbol)
-            if c24 is not None:
-                if hasattr(c24, "cache") and hasattr(c24, "lock"):
-                    with c24.lock:
-                        entries = list(c24.cache.get(symbol, []))
-                elif hasattr(c24, "entries"):
-                    entries = list(c24.entries)
+            for cand in variants:
+                c24 = self._cache24_managers.get(cand)
+                if c24 is not None:
+                    matched_sym = cand
+                    if hasattr(c24, "cache") and hasattr(c24, "lock"):
+                        with c24.lock:
+                            entries = list(c24.cache.get(cand, []))
+                    elif hasattr(c24, "entries"):
+                        entries = list(c24.entries)
+                    if entries:
+                        break
         if not entries:
             entries = self._load_disk_cache24_entries(symbol)
         if len(entries) < 3:
@@ -1180,7 +1189,7 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         slice_win_sec = (t2_ms - t1_ms) / 1000.0
         ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-            symbol, entries, a, b, window_seconds=slice_win_sec
+            matched_sym, entries, a, b, window_seconds=slice_win_sec
         )
         res = dict(
             t1_ms=t1_ms,

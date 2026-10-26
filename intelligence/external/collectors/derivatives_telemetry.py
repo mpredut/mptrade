@@ -39,13 +39,25 @@ class DerivativesTelemetry:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> DerivativesTelemetry:
+        import math
+
+        def _f(key: str, default: float) -> float:
+            raw = data.get(key)
+            if raw is None or isinstance(raw, bool):
+                return default
+            try:
+                val = float(raw)
+                return val if math.isfinite(val) else default
+            except (TypeError, ValueError):
+                return default
+
         return cls(
-            symbol=str(data.get("symbol", "")),
-            funding_rate=float(data.get("funding_rate", 0.0)),
-            predicted_funding_rate=float(data.get("predicted_funding_rate", 0.0)),
-            open_interest=float(data.get("open_interest", 0.0)),
-            open_interest_usd=float(data.get("open_interest_usd", 0.0)),
-            ts=float(data.get("ts", 0.0)),
+            symbol=str(data.get("symbol") or ""),
+            funding_rate=_f("funding_rate", 0.0),
+            predicted_funding_rate=_f("predicted_funding_rate", 0.0),
+            open_interest=_f("open_interest", 0.0),
+            open_interest_usd=_f("open_interest_usd", 0.0),
+            ts=_f("ts", 0.0),
         )
 
 

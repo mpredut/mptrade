@@ -475,11 +475,12 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
       AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT; DEFENSIVE expands drawdown thresholds by
       up to AG_P3B_BUY_DEFENSIVE_MAX_PENALTY to avoid catching falling knives early.
     """
-    bypass_guards_raw = bypass_guards
-    if bypass_guards_raw is None:
-        m = _og._load_margins()
-        bypass_guards_raw = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
-    eff_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
+    m = _og._load_margins()
+    venue_bg = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
+    eff_bypass = (
+        normalize_bypassed_guards(bypass_guards=bypass_guards)
+        | normalize_bypassed_guards(bypass_guards=venue_bg)
+    )
     if GUARD_REGISTRY["GLLM2"].is_bypassed(eff_bypass):
         return 1.0, 1.0, None
     if assessment is None:

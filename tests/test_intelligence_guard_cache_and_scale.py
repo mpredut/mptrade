@@ -4878,5 +4878,128 @@ def test_iteration22_guard_bypass_union_mt_state_clock_skew_kraken_cache_and_tel
     assert "Macro Sentiment Bias" not in telem
 
 
+def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_order_retry_set_serialization(tmp_path, monkeypatch):
+    """Iteration 23 regression tests:
+    1. assetguardian._p3b_threshold_multipliers unions caller bypass_guards with binance_bypass_guards.
+    2. check_external_order_guards and check_llm_order_guards honor intelligence_guards_mode='off',
+       and resolve_cached_gaussian_horizon rejects non-finite/negative values.
+    3. OrderbookSnapshot.from_dict, WhalePositioningSnapshot.from_dict, and DerivativesTelemetry.from_dict
+       tolerate null/bool/NaN values without raising TypeError.
+    4. CacheShortTrendManager._live_trend_file / _hist_trend_file sanitize slashes in symbols (TAO/USD),
+       and get_trend_for_slice resolves cross-venue symbol variants (TAO/USD -> TAOUSDC).
+    5. order_retry.enqueue serializes set/frozenset values inside place_kwargs cleanly to JSONL.
+    """
+    import assetguardian as ag
+    from external_order_guard import check_external_order_guards
+    from llm_order_guard import check_llm_order_guards
+    from qlimit_order_guard import resolve_cached_gaussian_horizon
+    from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+    from cachetrend import CacheShortTrendManager
+    import order_retry
+
+    # 1. assetguardian._p3b_threshold_multipliers unions caller bypass_guards with venue bypass_guards
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {**orig_margins, "binance_bypass_guards": {"GLLM2"}},
+    )
+    defensive_assessment = {
+        "recommended_action": "DEFENSIVE",
+        "market_bias": "BEARISH",
+        "risk_level": "HIGH",
+        "confidence": 0.9,
+        "ts": time.time(),
+    }
+    sell_mult, buy_mult, eff_a = ag._p3b_threshold_multipliers(
+        assessment=defensive_assessment,
+        bypass_guards={"G_PROF"},
+    )
+    assert sell_mult == pytest.approx(1.0)
+    assert buy_mult == pytest.approx(1.0)
+    assert eff_a is None
+
+    # 2. check_external_order_guards & check_llm_order_guards honor intelligence_guards_mode='off'
+    off_margins = {**orig_margins, "intelligence_guards_mode": "off"}
+    assert check_external_order_guards("BTCUSDC", "BUY", 85000.0, margins=off_margins) == (
+        True,
+        "intelligence_guards_off",
+        1.0,
+    )
+    assert check_llm_order_guards("binance", "BTCUSDC", "BUY", 85000.0, margins=off_margins) == (
+        True,
+        "intelligence_guards_off",
+        1.0,
+    )
+
+    # resolve_cached_gaussian_horizon rejects non-finite / negative values
+    t_cache = tmp_path / "t_cache.json"
+    t_cache.write_text(
+        json.dumps({"BTCUSDC": {"p90_d": -5.0, "median_d": float("nan"), "T": float("inf")}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("intelligence.internal.state.survival.T_CACHE_FILE", str(t_cache))
+    assert resolve_cached_gaussian_horizon("BTCUSDC") == (None, None, None)
+
+    # 3. Snapshot.from_dict tolerates None / bool / NaN fields
+    ob_snap = OrderbookSnapshot.from_dict({"symbol": "BTCUSDC", "imbalance_ratio": None, "largest_ask_wall_usd": "NaN"})
+    assert ob_snap.imbalance_ratio == pytest.approx(0.5)
+    assert ob_snap.largest_ask_wall_usd == pytest.approx(0.0)
+
+    w_snap = WhalePositioningSnapshot.from_dict({"symbol": "BTCUSDC", "taker_buy_sell_ratio": None, "funding_rate": "NaN"})
+    assert w_snap.taker_buy_sell_ratio == pytest.approx(1.0)
+    assert w_snap.funding_rate is None
+
+    d_snap = DerivativesTelemetry.from_dict({"symbol": "BTCUSDC", "funding_rate": None, "open_interest_usd": True})
+    assert d_snap.funding_rate == pytest.approx(0.0)
+    assert d_snap.open_interest_usd == pytest.approx(0.0)
+
+    # 4. CacheShortTrendManager slash sanitization & cross-venue get_trend_for_slice
+    st_file = tmp_path / "cache_short_trend.json"
+    (tmp_path / "24trend").mkdir(parents=True, exist_ok=True)
+    stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), writer=True)
+    assert "/" not in os.path.basename(stm._live_trend_file("TAO/USD"))
+    assert "/" not in os.path.basename(stm._hist_trend_file("TAO/USD"))
+    c24_path = tmp_path / "cache_24_price_TAOUSDC.json"
+    c24_path.write_text(
+        json.dumps({
+            "items": {
+                "TAOUSDC": [
+                    [1_700_000_000_000, 100.0],
+                    [1_700_000_010_000, 101.0],
+                    [1_700_000_020_000, 102.0],
+                    [1_700_000_030_000, 103.0],
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    slice_res = stm.get_trend_for_slice("TAO/USD", 1_700_000_000.0, 1_700_000_030.0)
+    assert slice_res is not None
+    assert slice_res["growth_coefficient"] > 0
+
+    # 5. order_retry.enqueue serializes set/frozenset in place_kwargs cleanly
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
+    rec_id = order_retry.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.1,
+        place_kwargs={"bypass_guards": {"g_prof", "gllm1"}},
+        requested_price=85000.0,
+        ref_price=85000.0,
+        failure_reason="trend_deferred",
+    )
+    assert rec_id is not None
+    loaded_q = order_retry.load_all()
+    assert len(loaded_q) == 1
+    assert loaded_q[0]["place_kwargs"]["bypass_guards"] == ["g_prof", "gllm1"]
+
+
+
 
 

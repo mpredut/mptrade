@@ -83,17 +83,29 @@ class OrderbookSnapshot:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> OrderbookSnapshot:
+        import math
+
+        def _f(key: str, default: float) -> float:
+            raw = data.get(key)
+            if raw is None or isinstance(raw, bool):
+                return default
+            try:
+                val = float(raw)
+                return val if math.isfinite(val) else default
+            except (TypeError, ValueError):
+                return default
+
         return cls(
-            symbol=str(data.get("symbol", "")),
-            mid_price=float(data.get("mid_price", 0.0)),
-            bid_depth_usd=float(data.get("bid_depth_usd", 0.0)),
-            ask_depth_usd=float(data.get("ask_depth_usd", 0.0)),
-            imbalance_ratio=float(data.get("imbalance_ratio", 0.5)),
-            largest_bid_wall_usd=float(data.get("largest_bid_wall_usd", 0.0)),
-            largest_bid_wall_price=float(data.get("largest_bid_wall_price", 0.0)),
-            largest_ask_wall_usd=float(data.get("largest_ask_wall_usd", 0.0)),
-            largest_ask_wall_price=float(data.get("largest_ask_wall_price", 0.0)),
-            ts=float(data.get("ts", 0.0)),
+            symbol=str(data.get("symbol") or ""),
+            mid_price=_f("mid_price", 0.0),
+            bid_depth_usd=_f("bid_depth_usd", 0.0),
+            ask_depth_usd=_f("ask_depth_usd", 0.0),
+            imbalance_ratio=_f("imbalance_ratio", 0.5),
+            largest_bid_wall_usd=_f("largest_bid_wall_usd", 0.0),
+            largest_bid_wall_price=_f("largest_bid_wall_price", 0.0),
+            largest_ask_wall_usd=_f("largest_ask_wall_usd", 0.0),
+            largest_ask_wall_price=_f("largest_ask_wall_price", 0.0),
+            ts=_f("ts", 0.0),
         )
 
 

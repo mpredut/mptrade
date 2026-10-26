@@ -47,19 +47,39 @@ class WhalePositioningSnapshot:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
+        import math
+
+        def _f(key: str, default: float) -> float:
+            raw = data.get(key)
+            if raw is None or isinstance(raw, bool):
+                return default
+            try:
+                val = float(raw)
+                return val if math.isfinite(val) else default
+            except (TypeError, ValueError):
+                return default
+
         fr = data.get("funding_rate")
+        fr_val: Optional[float] = None
+        if fr is not None and not isinstance(fr, bool):
+            try:
+                cand = float(fr)
+                if math.isfinite(cand):
+                    fr_val = cand
+            except (TypeError, ValueError):
+                fr_val = None
         return cls(
-            symbol=str(data.get("symbol", "")),
-            top_traders_long_ratio=float(data.get("top_traders_long_ratio", 1.0)),
-            top_traders_long_pct=float(data.get("top_traders_long_pct", 0.5)),
-            taker_buy_sell_ratio=float(data.get("taker_buy_sell_ratio", 1.0)),
-            taker_buy_vol_usd=float(data.get("taker_buy_vol_usd", 0.0)),
-            taker_sell_vol_usd=float(data.get("taker_sell_vol_usd", 0.0)),
-            open_interest_usd=float(data.get("open_interest_usd", 0.0)),
-            open_interest_1h_change_pct=float(data.get("open_interest_1h_change_pct", 0.0)),
-            divergence_regime=str(data.get("divergence_regime", "neutral")),
-            ts=float(data.get("ts", 0.0)),
-            funding_rate=float(fr) if fr is not None else None,
+            symbol=str(data.get("symbol") or ""),
+            top_traders_long_ratio=_f("top_traders_long_ratio", 1.0),
+            top_traders_long_pct=_f("top_traders_long_pct", 0.5),
+            taker_buy_sell_ratio=_f("taker_buy_sell_ratio", 1.0),
+            taker_buy_vol_usd=_f("taker_buy_vol_usd", 0.0),
+            taker_sell_vol_usd=_f("taker_sell_vol_usd", 0.0),
+            open_interest_usd=_f("open_interest_usd", 0.0),
+            open_interest_1h_change_pct=_f("open_interest_1h_change_pct", 0.0),
+            divergence_regime=str(data.get("divergence_regime") or "neutral"),
+            ts=_f("ts", 0.0),
+            funding_rate=fr_val,
         )
 
 
