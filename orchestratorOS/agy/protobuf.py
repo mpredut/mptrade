@@ -91,11 +91,18 @@ def summary_ui_visible(raw: bytes, title: str = "", *, reset_running: bool = Fal
     a stale RUNNING status (field 28 = 2) is reset to IDLE (4) and fields are sorted by tag.
     """
     keep, annot_sub = [], []
-    for tag, wire, v in parse_fields(raw):
+    try:
+        top_fields = parse_fields(raw)
+    except (ValueError, IndexError):
+        top_fields = []
+    for tag, wire, v in top_fields:
         if tag == SUMMARY_SOURCE_FIELD:
             continue
         if tag == SUMMARY_ANNOTATIONS_FIELD and wire == 2:
-            annot_sub = parse_fields(v)
+            try:
+                annot_sub = parse_fields(v)
+            except (ValueError, IndexError):
+                annot_sub = []
             continue
         if reset_running and tag == SUMMARY_STATUS_FIELD and wire == 0 and v == 2:
             v = 4
@@ -141,17 +148,25 @@ def entry_cid(entry: bytes) -> str:
 
 def list_entry_cids(buf: bytes) -> Set[str]:
     """Return all conversation IDs stored in top-level summary map entries (field 1) of a summaries .pb file."""
+    try:
+        top_fields = parse_fields(buf)
+    except (ValueError, IndexError):
+        return set()
     return {
         cid
-        for tag, wire, v in parse_fields(buf)
+        for tag, wire, v in top_fields
         if tag == 1 and wire == 2 and (cid := entry_cid(v))
     }
 
 
 def drop_entries(buf: bytes, cids: Set[str]) -> Tuple[bytes, int]:
     """Remove every top-level map entry (summaries and file mod times) keyed by one of ``cids``."""
+    try:
+        top_fields = parse_fields(buf)
+    except (ValueError, IndexError):
+        return bytes(buf or b""), 0
     kept, removed = [], 0
-    for tag, wire, v in parse_fields(buf):
+    for tag, wire, v in top_fields:
         if wire == 2 and entry_cid(v) in cids:
             removed += 1
             continue
@@ -161,8 +176,12 @@ def drop_entries(buf: bytes, cids: Set[str]) -> Tuple[bytes, int]:
 
 def replace_summary_entry(buf: bytes, cid: str, raw_summary: bytes) -> Tuple[bytes, bool]:
     """Update the stored TrajectorySummary of ``cid`` in place if present; never adds new conversation IDs."""
+    try:
+        top_fields = parse_fields(buf)
+    except (ValueError, IndexError):
+        return bytes(buf or b""), False
     out, updated = [], False
-    for tag, wire, v in parse_fields(buf):
+    for tag, wire, v in top_fields:
         if tag == 1 and wire == 2 and entry_cid(v) == cid:
             out.append((1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, raw_summary)])))
             updated = True

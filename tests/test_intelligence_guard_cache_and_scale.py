@@ -9731,8 +9731,34 @@ def test_iteration80_protobuf_summary_store_and_overnight_monitor_safety(tmp_pat
         mon.loop(interval_seconds=float("nan"))
 
 
+def test_iteration81_protobuf_self_heal_agy_store_fix_and_config_safety(monkeypatch):
+    """Verify Iteration 81 protobuf corrupted-blob self-healing, agy_store_fix NaN/missing-file resilience, and config._parse_bool safety."""
+    import pytest
+    import config
+    from orchestratorOS.agy import protobuf
+    from orchestratorOS.admin import agy_store_fix
 
+    # 1. protobuf.summary_ui_visible self-heals corrupted raw bytes and preserves title
+    repaired = protobuf.summary_ui_visible(b"\x80\x80", title="Recovered Thread", reset_running=True)
+    assert protobuf.summary_annotation_title(repaired) == "Recovered Thread"
+    assert protobuf.list_entry_cids(b"\x80\x80") == set()
+    assert protobuf.drop_entries(b"\x80\x80", {"abc"}) == (b"\x80\x80", 0)
+    assert protobuf.replace_summary_entry(b"\x80\x80", "abc", b"") == (b"\x80\x80", False)
 
+    # 2. agy_store_fix rejects non-finite idle_sec and handles missing PB/DB files gracefully
+    with pytest.raises(ValueError):
+        agy_store_fix.mode_ui_sync_check(float("nan"))
+    with pytest.raises(ValueError):
+        agy_store_fix.mode_ui_sync_check(float("inf"))
+    monkeypatch.setattr(agy_store_fix, "PB", "/nonexistent/path/agyhub_summaries_proto.pb")
+    monkeypatch.setattr(agy_store_fix, "DB", "/nonexistent/path/conversation_summaries.db")
+    assert agy_store_fix.daemon_known_cids() == set()
+    assert agy_store_fix.summary_row_cids() == set()
 
+    # 3. config._parse_bool handles NaN/Inf and unrecognized strings by falling back to default
+    assert config._parse_bool(float("nan"), default=False) is False
+    assert config._parse_bool(float("nan"), default=True) is True
+    assert config._parse_bool("unknown_token", default=True) is True
+    assert config._parse_bool("unknown_token", default=False) is False
 
 

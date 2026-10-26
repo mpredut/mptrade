@@ -1,3 +1,4 @@
+import math
 import os
 import time
 import threading
@@ -14,6 +15,8 @@ def _parse_bool(value, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
+        if not math.isfinite(float(value)):
+            return bool(default)
         return bool(value)
     if isinstance(value, str):
         cleaned = value.strip()
@@ -24,7 +27,7 @@ def _parse_bool(value, default: bool = False) -> bool:
             return True
         if lowered in ("false", "0", "no", "off", ""):
             return False
-        return False
+        return bool(default)
     return bool(default)
 
 
@@ -95,9 +98,18 @@ def config_watcher(interval=5 * 60):  # 5 minutes
     """
     Periodically monitor configuration and reload the cache.
     """
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not math.isfinite(float(interval))
+        or float(interval) <= 0
+    ):
+        wait_sec = 5.0 * 60.0
+    else:
+        wait_sec = float(interval)
     while not _watcher_stop_event.is_set():
         load_config()
-        if _watcher_stop_event.wait(interval):
+        if _watcher_stop_event.wait(wait_sec):
             break
 
 

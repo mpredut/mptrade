@@ -32,6 +32,7 @@ import glob
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -430,16 +431,22 @@ UI_SYNC_READY, UI_SYNC_NOTHING, UI_SYNC_BUSY, UI_SYNC_STUCK = 0, 10, 11, 12
 
 def daemon_known_cids() -> set[str]:
     """Conversation IDs the running daemon holds in memory (as persisted in agyhub_summaries_proto.pb)."""
-    with open(PB, "rb") as f:
-        return list_entry_cids(f.read())
+    try:
+        with open(PB, "rb") as f:
+            return list_entry_cids(f.read())
+    except OSError:
+        return set()
 
 
 def summary_row_cids() -> set[str]:
-    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=15)
     try:
-        return {r[0] for r in c.execute("SELECT conversation_id FROM conversation_summaries")}
-    finally:
-        c.close()
+        c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=15)
+        try:
+            return {r[0] for r in c.execute("SELECT conversation_id FROM conversation_summaries") if r and r[0]}
+        finally:
+            c.close()
+    except (sqlite3.Error, OSError):
+        return set()
 
 
 def pending_ui_sync() -> list[str]:
@@ -577,7 +584,12 @@ def last_store_activity() -> float:
 
 
 def mode_ui_sync_check(idle_sec: int) -> int:
-    if isinstance(idle_sec, bool) or idle_sec <= 0:
+    if (
+        isinstance(idle_sec, bool)
+        or not isinstance(idle_sec, (int, float))
+        or not math.isfinite(float(idle_sec))
+        or idle_sec <= 0
+    ):
         raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
