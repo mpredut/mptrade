@@ -52,7 +52,12 @@ class FundingCrowdingGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
-        side_norm = side.upper()
+        side_norm = str(side or "").strip().upper()
+        if side_norm not in ("BUY", "SELL"):
+            return GuardDecision.allow(
+                guard_name="FundingCrowdingGuard",
+                reason="unsupported_side_allowed",
+            )
         if telemetry is None and self.collector is not None:
             try:
                 telemetry = self.collector.fetch(symbol, now=now) if now is not None else self.collector.fetch(symbol)

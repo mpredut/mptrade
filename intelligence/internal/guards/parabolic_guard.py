@@ -71,10 +71,16 @@ class ParabolicSurgeGuard:
 
         # Dynamic threshold based on volatility if available
         threshold = self.surge_threshold_pct
-        if volatility_1h_pct is not None and math.isfinite(float(volatility_1h_pct)) and volatility_1h_pct > 0:
-            threshold = max(self.surge_threshold_pct, float(volatility_1h_pct) * self.vol_multiplier)
+        if volatility_1h_pct is not None and not isinstance(volatility_1h_pct, bool):
+            try:
+                vol_f = float(volatility_1h_pct)
+                if math.isfinite(vol_f) and vol_f > 0:
+                    threshold = max(self.surge_threshold_pct, vol_f * self.vol_multiplier)
+            except (TypeError, ValueError):
+                pass
 
-        state_key = symbol if side_u == "BUY" else f"{symbol}:SELL"
+        sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        state_key = sym_norm if side_u == "BUY" else f"{sym_norm}:SELL"
         st = self._states.setdefault(
             state_key,
             {
@@ -117,8 +123,12 @@ class ParabolicSurgeGuard:
             window_pts = []
             for item in price_history:
                 try:
-                    t_f = float(item[0])
-                    p_f = float(item[1])
+                    raw_t = item[0]
+                    raw_p = item[1]
+                    if isinstance(raw_t, bool) or isinstance(raw_p, bool):
+                        continue
+                    t_f = float(raw_t)
+                    p_f = float(raw_p)
                     if math.isfinite(t_f) and math.isfinite(p_f) and p_f > 0 and window_start_ts <= t_f <= max_allowed_ts:
                         window_pts.append((t_f, p_f))
                 except (TypeError, ValueError, IndexError):

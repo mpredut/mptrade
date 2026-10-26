@@ -90,19 +90,22 @@ class PostStopReentryGuard:
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("PostStopReentryGuard", "backtest_mode_exempt")
 
-        now_ts = float(now) if (now is not None and not isinstance(now, bool) and math.isfinite(float(now))) else time.time()
-        safe_sell_px = (
-            float(last_sell_price)
-            if (last_sell_price is not None and not isinstance(last_sell_price, bool) and math.isfinite(float(last_sell_price)))
-            else 0.0
-        )
-        safe_sell_ts = (
-            int(float(last_sell_time_s))
-            if (last_sell_time_s is not None and not isinstance(last_sell_time_s, bool) and math.isfinite(float(last_sell_time_s)))
-            else 0
-        )
+        def _sf(val: Any, default: float = 0.0) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+                return f if math.isfinite(f) else default
+            except (TypeError, ValueError):
+                return default
+
+        now_in = _sf(now, 0.0)
+        now_ts = now_in if now_in > 0.0 else time.time()
+        safe_sell_px = _sf(last_sell_price, 0.0)
+        safe_sell_ts_f = _sf(last_sell_time_s, 0.0)
+        safe_sell_ts = int(safe_sell_ts_f) if safe_sell_ts_f > 0.0 else 0
         cache_key = (
-            str(symbol or "").strip().upper().replace("/", ""),
+            str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", ""),
             round(safe_sell_px, 6),
             safe_sell_ts,
         )
@@ -111,34 +114,19 @@ class PostStopReentryGuard:
             if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:
                 return cached[1]
 
-        safe_trough = (
-            float(trough)
-            if (trough is not None and not isinstance(trough, bool) and math.isfinite(float(trough)))
-            else 0.0
-        )
-        safe_curr_px = (
-            float(current_price)
-            if (current_price is not None and not isinstance(current_price, bool) and math.isfinite(float(current_price)))
-            else 0.0
-        )
-        safe_qty = (
-            float(qty)
-            if (qty is not None and not isinstance(qty, bool) and math.isfinite(float(qty)))
-            else 1.0
-        )
-        safe_bounce = (
-            float(bounce_pct)
-            if (bounce_pct is not None and not isinstance(bounce_pct, bool) and math.isfinite(float(bounce_pct)))
-            else 0.0
-        )
+        safe_trough = _sf(trough, 0.0)
+        safe_curr_px = _sf(current_price, 0.0)
+        safe_qty = _sf(qty, 1.0)
+        safe_bounce = _sf(bounce_pct, 0.0)
         drop_after_sl_pct = (
             ((safe_sell_px - safe_trough) / safe_sell_px * 100.0)
             if safe_sell_px > 0 and safe_trough > 0
             else 0.0
         )
         bounce_from_trough_pct = float(safe_bounce * 100.0)
-        if notional_eur is not None and not isinstance(notional_eur, bool) and math.isfinite(float(notional_eur)):
-            notional = float(notional_eur)
+        notional_in = _sf(notional_eur, -1.0) if notional_eur is not None else -1.0
+        if notional_in > 0.0:
+            notional = notional_in
         else:
             notional = float(safe_curr_px * safe_qty)
 
@@ -150,16 +138,16 @@ class PostStopReentryGuard:
         )
 
         elapsed_str = ""
-        if last_sell_time_s and last_sell_time_s > 0:
-            elapsed_min = max(0.0, (now_ts - last_sell_time_s) / 60.0)
+        if safe_sell_ts_f > 0:
+            elapsed_min = max(0.0, (now_ts - safe_sell_ts_f) / 60.0)
             elapsed_str = f"- Elapsed Time Since Stop-Loss: {elapsed_min:.1f} minutes"
 
         context_items = [
             f"- Symbol: {symbol}",
-            f"- Previous Stop-Loss Exit Price: ${last_sell_price:.4f}",
-            f"- Lowest Post-Stop Trough: ${trough:.4f} (-{drop_after_sl_pct:.2f}% drop from SL)",
-            f"- Current Recovery Price: ${current_price:.4f} (+{bounce_from_trough_pct:.2f}% bounce from trough)",
-            f"- Proposed Re-entry Quantity: {qty}",
+            f"- Previous Stop-Loss Exit Price: ${safe_sell_px:.4f}",
+            f"- Lowest Post-Stop Trough: ${safe_trough:.4f} (-{drop_after_sl_pct:.2f}% drop from SL)",
+            f"- Current Recovery Price: ${safe_curr_px:.4f} (+{bounce_from_trough_pct:.2f}% bounce from trough)",
+            f"- Proposed Re-entry Quantity: {safe_qty}",
             f"- Estimated Notional Value: €{notional:,.2f} EUR",
         ]
         if elapsed_str:
@@ -198,7 +186,7 @@ class PostStopReentryGuard:
             topic_key="guard_post_stop",
         )
 
-        if not resp:
+        if not resp or not isinstance(resp, dict):
             logger.warning(
                 "LLM post-stop re-entry query failed or timed out for %s €%.2f. Fallback: %s",
                 symbol,
@@ -212,7 +200,7 @@ class PostStopReentryGuard:
                 fallback_action=self.fallback_action,
                 notional_eur=notional,
             )
-            self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
+            self._maybe_notify(symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts)
             if self.mode == "shadow":
                 final_dec = GuardDecision.allow(
                     "PostStopReentryGuard",
@@ -236,7 +224,7 @@ class PostStopReentryGuard:
             notional_eur=notional,
         )
 
-        self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
+        self._maybe_notify(symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts)
 
         if self.mode == "shadow":
             final_dec = GuardDecision.allow(

@@ -6069,3 +6069,121 @@ def test_iteration30_bybit_liquidations_breadth_macro_triggers_and_composite_gua
     # Passing bool notional_eur or bool qty must not crash or trigger GLLM1 falsely
     g_dec = comp.evaluate_guards("BTC/USDC", "BUY", 85000.0, qty=True, notional_eur="bad")
     assert g_dec.allowed is True
+
+
+def test_iteration31_parabolic_high_stake_post_stop_and_smart_sl_nan_safety(monkeypatch):
+    """Iteration 31 regression suite:
+    1. ParabolicSurgeGuard.check normalizes slash symbols ("btc/usdc" == "BTCUSDC"), tolerates string/bool
+       volatility_1h_pct, and ignores boolean prices in price_history without triggering false 99.99% surges.
+    2. FundingCrowdingGuard, OrderbookWallGuard, and WhaleDivergenceGuard handle None/non-standard side safely.
+    3. HighStakeGuard.check (GLLM1), compute_24h_price_metrics, and extract_symbol_recent_fills sanitize
+       NaN/bool/malformed inputs and share decision cache across slash/non-slash symbol variants.
+    4. PostStopReentryGuard.check sanitizes None/string/NaN/bool prices and timestamps without raising
+       TypeError/ValueError during prompt formatting or notification.
+    5. SmartStopLossGuard.evaluate preserves the Hard Disaster Floor even when disaster_buffer_pct=NaN.
+    """
+    from types import SimpleNamespace
+    import math
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.sentiment.guards.high_stake_guard import (
+        HighStakeGuard,
+        _HIGH_STAKE_DECISION_CACHE,
+        compute_24h_price_metrics,
+        extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        clear_post_stop_reentry_cache,
+    )
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+
+    # 1. ParabolicSurgeGuard symbol normalization & bool/string resilience
+    pg = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
+    # Bool price in history (True -> 1.0 if unguarded) must be ignored
+    hist_with_bool = [(1000.0, True), (1010.0, 100.0), (1020.0, 101.0)]
+    dec_pg = pg.check("btc/usdc", "BUY", 101.0, price_history=hist_with_bool, volatility_1h_pct="2.0", now=1020.0)
+    assert dec_pg.allowed is True
+    assert "BTCUSDC" in pg._states
+
+    # 2. External guards with None side
+    assert FundingCrowdingGuard().check("BTCUSDC", None).allowed is True
+    assert OrderbookWallGuard().check("BTCUSDC", None).allowed is True
+    assert WhaleDivergenceGuard().check("BTCUSDC", None).allowed is True
+
+    # 3. HighStakeGuard & helpers NaN/bool resilience
+    m24 = compute_24h_price_metrics([
+        [1000.0, 100.0],
+        [1060.0, float("nan")],
+        [1120.0, True],
+        [2000.0, 105.0],
+    ])
+    assert m24.get("low_24h") == 100.0 and m24.get("high_24h") == 105.0
+
+    fills = extract_symbol_recent_fills([
+        {"side": "BUY", "price": float("nan"), "qty": 2.0, "cummulativeQuoteQty": 200.0, "timestamp": "bad-ts"},
+        {"side": "SELL", "price": True, "qty": 1.0, "timestamp": 1700000000000},
+    ])
+    assert fills is not None
+    assert fills["last_buy"]["price"] == 100.0
+    assert fills["last_sell"]["price"] is None
+
+    monkeypatch.setenv("DISABLE_GEMINI_LLM", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    _HIGH_STAKE_DECISION_CACHE.clear()
+    calls = {"n": 0}
+
+    def _fake_query(*a, **kw):
+        calls["n"] += 1
+        return {"decision": "DOWNSCALE", "suggested_scale": 0.5, "reason": "test"}
+
+    hs = HighStakeGuard(
+        gemini_client=SimpleNamespace(query_json=_fake_query),
+        min_notional_usd=700.0,
+        cache_ttl_sec=600.0,
+    )
+    # NaN notional_eur must not raise ValueError on int(notional // 100.0)
+    assert hs.check("BTCUSDC", "BUY", 85000.0, 1.0, notional_eur=float("nan")).allowed is True
+    # Slash symbol variant hits the same cache entry as canonical symbol
+    d1 = hs.check("BTC/USDC", "BUY", 1000.0, 1.0, notional_eur=800.0, now=float("nan"))
+    d2 = hs.check("BTCUSDC", "BUY", 1000.0, 1.0, notional_eur=800.0, now=time.time())
+    assert d1.suggested_scale == 0.5 and d2.suggested_scale == 0.5
+    assert calls["n"] == 1
+
+    # 4. PostStopReentryGuard string/None/NaN input formatting safety
+    clear_post_stop_reentry_cache()
+    ps_guard = PostStopReentryGuard(
+        gemini_client=SimpleNamespace(query_json=lambda *a, **kw: ["not-a-dict"]),
+        fallback_action="downscale",
+        notify_enabled=False,
+        cache_ttl_sec=60.0,
+    )
+    ps_dec = ps_guard.check(
+        "tao/usdc",
+        current_price="bad",
+        last_sell_price=None,
+        trough=float("nan"),
+        bounce_pct=True,
+        qty="bad",
+        last_sell_time_s="bad",
+        telemetry={},
+        now="bad",
+    )
+    assert ps_dec.suggested_scale == 0.5
+
+    # 5. SmartStopLossGuard preserves Hard Disaster Floor when disaster_buffer_pct=NaN
+    ssl = SmartStopLossGuard(mode="enforce", max_threshold_pct=6.0, disaster_buffer_pct=0.85)
+    should_exec, reason, meta = ssl.evaluate(
+        "BTCUSDC",
+        price_decrease=0.04,       # 4.0% loss
+        lost_threshold=0.02925,    # 2.925% SL + 0.85% buf = 3.775% disaster floor
+        disaster_buffer_pct=float("nan"),
+        provider="sim",
+    )
+    assert should_exec is True
+    assert "hard_disaster_floor_breached" in reason
+    assert math.isfinite(meta["disaster_floor_pct"])
+

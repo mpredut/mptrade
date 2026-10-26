@@ -24,23 +24,45 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         return {}
     try:
         def _to_ms(raw_ts: Any) -> float:
+            if raw_ts is None or isinstance(raw_ts, bool):
+                return 0.0
             ts_f = float(raw_ts)
+            if not math.isfinite(ts_f) or ts_f <= 0:
+                return 0.0
             return ts_f * 1000.0 if 0 < ts_f < 1e11 else ts_f
 
-        now_ms = _to_ms(series[-1][0])
-        cur_px = float(series[-1][1])
-        if cur_px <= 0:
+        def _valid_px(raw_p: Any) -> Optional[float]:
+            if raw_p is None or isinstance(raw_p, bool):
+                return None
+            try:
+                pf = float(raw_p)
+                return pf if (math.isfinite(pf) and pf > 0) else None
+            except (TypeError, ValueError):
+                return None
+
+        clean_series = []
+        for row in series:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            tms = _to_ms(row[0])
+            p_v = _valid_px(row[1])
+            if tms > 0 and p_v is not None:
+                clean_series.append((tms, p_v))
+        if len(clean_series) < 2:
             return {}
+
+        now_ms = clean_series[-1][0]
+        cur_px = clean_series[-1][1]
 
         def _px_ago(mins: float) -> float:
             target = now_ms - mins * 60000.0
-            for ts_raw, p_val in reversed(series):
-                if _to_ms(ts_raw) <= target:
-                    return float(p_val)
-            return float(series[0][1])
+            for tms, p_val in reversed(clean_series):
+                if tms <= target:
+                    return p_val
+            return clean_series[0][1]
 
         p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
-        sample_prices = [float(x[1]) for x in series[::max(1, len(series) // 500)] if len(x) > 1]
+        sample_prices = [x[1] for x in clean_series[::max(1, len(clean_series) // 500)]]
         out: Dict[str, Any] = {
             "low_24h": min(sample_prices) if sample_prices else cur_px,
             "high_24h": max(sample_prices) if sample_prices else cur_px,
@@ -65,16 +87,20 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     valid = [o for o in orders_list if isinstance(o, dict)]
     if not valid:
         return None
+
+    def _safe_order_ts(o: Dict[str, Any]) -> float:
+        raw_t = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
+        if raw_t is None or isinstance(raw_t, bool):
+            return 0.0
+        try:
+            tf = float(raw_t)
+            return tf if math.isfinite(tf) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
     ordered = sorted(
         enumerate(valid),
-        key=lambda item: (
-            float(
-                item[1].get("timestamp")
-                if item[1].get("timestamp") is not None
-                else (item[1].get("time") or 0.0)
-            ),
-            item[0],
-        ),
+        key=lambda item: (_safe_order_ts(item[1]), item[0]),
     )
     chron = [o for _, o in ordered]
     last_buy = next((o for o in reversed(chron) if str(o.get("side") or "").upper() == "BUY"), None)
@@ -90,16 +116,22 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         p_raw = o.get("price")
         ts_raw = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
         try:
-            q_f = float(q_raw) if q_raw is not None else 0.0
+            q_f = float(q_raw) if (q_raw is not None and not isinstance(q_raw, bool)) else 0.0
+            if not math.isfinite(q_f):
+                q_f = 0.0
         except (TypeError, ValueError):
             q_f = 0.0
         try:
-            p_f = float(p_raw) if p_raw is not None else 0.0
+            p_f = float(p_raw) if (p_raw is not None and not isinstance(p_raw, bool)) else 0.0
+            if not math.isfinite(p_f):
+                p_f = 0.0
         except (TypeError, ValueError):
             p_f = 0.0
-        if p_f <= 0 and q_f > 0 and o.get("cummulativeQuoteQty") is not None:
+        if p_f <= 0 and q_f > 0 and o.get("cummulativeQuoteQty") is not None and not isinstance(o.get("cummulativeQuoteQty"), bool):
             try:
-                p_f = round(float(o["cummulativeQuoteQty"]) / q_f, 6)
+                cq = float(o["cummulativeQuoteQty"])
+                if math.isfinite(cq) and cq > 0:
+                    p_f = round(cq / q_f, 6)
             except (TypeError, ValueError, ZeroDivisionError):
                 p_f = 0.0
         return (p_f if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
@@ -387,7 +419,7 @@ def evaluate_llm_guard_response(
 ) -> GuardDecision:
     """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
     fb_norm = str(fallback_action or "allow").strip().lower()
-    if not resp:
+    if not resp or not isinstance(resp, dict):
         if fb_norm in ("veto", "block"):
             return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=notional_eur)
         if fb_norm == "downscale":
@@ -482,13 +514,32 @@ class HighStakeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
-        side_norm = side.upper()
+        side_norm = str(side or "").strip().upper()
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")
 
         # 2. Compute effective notional value in EUR/USD
-        notional = float(notional_eur if notional_eur is not None else (price * qty))
-        if notional < self.min_notional_eur:
+        notional = 0.0
+        if notional_eur is not None and not isinstance(notional_eur, bool):
+            try:
+                nf = float(notional_eur)
+                if math.isfinite(nf) and nf > 0.0:
+                    notional = nf
+            except (TypeError, ValueError):
+                notional = 0.0
+        elif notional_eur is None:
+            if (
+                price is not None and not isinstance(price, bool)
+                and qty is not None and not isinstance(qty, bool)
+            ):
+                try:
+                    pf = float(price)
+                    qf = float(qty)
+                    if math.isfinite(pf) and math.isfinite(qf) and pf > 0.0 and qf > 0.0:
+                        notional = pf * qf
+                except (TypeError, ValueError):
+                    notional = 0.0
+        if not math.isfinite(notional) or notional < self.min_notional_eur:
             return GuardDecision.allow(
                 "HighStakeGuard",
                 f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)",
@@ -498,8 +549,16 @@ class HighStakeGuard:
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
 
-        now_ts = float(now) if now is not None else time.time()
-        cache_key = (symbol.upper(), side_norm, int(notional // 100.0))
+        now_ts = time.time()
+        if now is not None and not isinstance(now, bool):
+            try:
+                now_f = float(now)
+                if math.isfinite(now_f) and now_f > 0.0:
+                    now_ts = now_f
+            except (TypeError, ValueError):
+                pass
+        sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        cache_key = (sym_norm, side_norm, int(notional // 100.0))
         if self.cache_ttl_sec > 0:
             cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
             if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:

@@ -302,7 +302,9 @@ class SmartStopLossGuard:
             return True, "wide_stop_exempt", meta
 
         # 2. Hard Disaster Floor: absolute safety circuit breaker
-        eff_buf = self.disaster_buffer_pct if disaster_buffer_pct is None else float(disaster_buffer_pct)
+        eff_buf = _safe_float(disaster_buffer_pct, self.disaster_buffer_pct)
+        if eff_buf < 0.0:
+            eff_buf = self.disaster_buffer_pct
         disaster_floor = lost_threshold + (eff_buf / 100.0)
         meta["disaster_floor_pct"] = round(disaster_floor * 100.0, 3)
         if price_decrease >= disaster_floor:
@@ -400,13 +402,15 @@ class SmartStopLossGuard:
 
             if active_grace is None:
                 # Start Grace Period
+                cp_clean = _safe_float(current_price, 0.0)
+                bp_clean = _safe_float(buy_price, 0.0)
                 tracker[sym_key] = {
                     "start_ts": now_ts,
                     "initial_loss_pct": round(price_decrease * 100.0, 3),
                     "lost_threshold_pct": round(lost_threshold * 100.0, 3),
                     "provider": str(provider or "").strip(),
-                    "current_price": float(current_price) if current_price is not None else None,
-                    "buy_price": float(buy_price) if buy_price is not None else None,
+                    "current_price": cp_clean if cp_clean > 0.0 else None,
+                    "buy_price": bp_clean if bp_clean > 0.0 else None,
                 }
                 if not is_sim:
                     _save_grace_state()
@@ -444,10 +448,12 @@ class SmartStopLossGuard:
                     return True, f"shadow_defer: {reason}", meta
                 return False, reason, meta
             else:
-                if current_price is not None:
-                    active_grace["current_price"] = float(current_price)
-                if buy_price is not None and active_grace.get("buy_price") is None:
-                    active_grace["buy_price"] = float(buy_price)
+                cp_clean = _safe_float(current_price, 0.0)
+                bp_clean = _safe_float(buy_price, 0.0)
+                if cp_clean > 0.0:
+                    active_grace["current_price"] = cp_clean
+                if bp_clean > 0.0 and active_grace.get("buy_price") is None:
+                    active_grace["buy_price"] = bp_clean
                 start_ts = float(active_grace.get("start_ts", now_ts))
                 elapsed = max(0.0, now_ts - start_ts)
                 meta["grace_elapsed_sec"] = round(elapsed, 1)
