@@ -226,13 +226,27 @@ def collect_pretrade_telemetry(
                 telemetry["Orderbook Depth Imbalance"] = f"{imb_f:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
             ask_wall_usd = getattr(ob_snap, "largest_ask_wall_usd", 0.0) or 0.0
             ask_wall_px = getattr(ob_snap, "largest_ask_wall_price", 0.0) or 0.0
-            if math.isfinite(float(ask_wall_usd)) and float(ask_wall_usd) > 100_000.0:
+            if (
+                not isinstance(ask_wall_usd, bool)
+                and not isinstance(ask_wall_px, bool)
+                and math.isfinite(float(ask_wall_usd))
+                and float(ask_wall_usd) > 100_000.0
+                and math.isfinite(float(ask_wall_px))
+                and float(ask_wall_px) > 0.0
+            ):
                 telemetry["Orderbook Ask Wall Ahead"] = f"${float(ask_wall_usd):,.0f} @ ${float(ask_wall_px):,.2f}"
             else:
                 telemetry["Orderbook Ask Wall Ahead"] = "None detected within 2%"
             bid_wall_usd = getattr(ob_snap, "largest_bid_wall_usd", 0.0) or 0.0
             bid_wall_px = getattr(ob_snap, "largest_bid_wall_price", 0.0) or 0.0
-            if math.isfinite(float(bid_wall_usd)) and float(bid_wall_usd) > 100_000.0:
+            if (
+                not isinstance(bid_wall_usd, bool)
+                and not isinstance(bid_wall_px, bool)
+                and math.isfinite(float(bid_wall_usd))
+                and float(bid_wall_usd) > 100_000.0
+                and math.isfinite(float(bid_wall_px))
+                and float(bid_wall_px) > 0.0
+            ):
                 telemetry["Orderbook Bid Wall Ahead"] = f"${float(bid_wall_usd):,.0f} @ ${float(bid_wall_px):,.2f}"
             else:
                 telemetry["Orderbook Bid Wall Ahead"] = "None detected within 2%"
@@ -244,9 +258,12 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_derivatives_collector
         f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
         if f_snap is not None:
-            telemetry["Perpetual Funding Rate"] = f"{f_snap.funding_rate * 100:+.4f}% (8h)"
-            if f_snap.open_interest_usd > 0:
-                telemetry["Derivatives Open Interest"] = f"${f_snap.open_interest_usd:,.0f}"
+            raw_fr = getattr(f_snap, "funding_rate", None)
+            if raw_fr is not None and not isinstance(raw_fr, bool) and math.isfinite(float(raw_fr)):
+                telemetry["Perpetual Funding Rate"] = f"{float(raw_fr) * 100:+.4f}% (8h)"
+            raw_oi = getattr(f_snap, "open_interest_usd", None)
+            if raw_oi is not None and not isinstance(raw_oi, bool) and math.isfinite(float(raw_oi)) and float(raw_oi) > 0:
+                telemetry["Derivatives Open Interest"] = f"${float(raw_oi):,.0f}"
     except Exception:
         pass
 
@@ -255,9 +272,17 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_whale_collector
         w_snap = get_whale_collector().fetch(symbol, allow_network=False)
         if w_snap is not None:
-            long_pct = w_snap.top_traders_long_pct * 100
-            telemetry["Whale Positioning"] = f"{long_pct:.1f}% Top Traders Long (L/S ratio: {w_snap.top_traders_long_ratio:.2f})"
-            telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {w_snap.taker_buy_sell_ratio:.2f} (regime: {w_snap.divergence_regime})"
+            raw_lp = getattr(w_snap, "top_traders_long_pct", None)
+            raw_lr = getattr(w_snap, "top_traders_long_ratio", None)
+            if (
+                raw_lp is not None and not isinstance(raw_lp, bool) and math.isfinite(float(raw_lp))
+                and raw_lr is not None and not isinstance(raw_lr, bool) and math.isfinite(float(raw_lr))
+            ):
+                long_pct = float(raw_lp) * 100.0
+                telemetry["Whale Positioning"] = f"{long_pct:.1f}% Top Traders Long (L/S ratio: {float(raw_lr):.2f})"
+            raw_tr = getattr(w_snap, "taker_buy_sell_ratio", None)
+            if raw_tr is not None and not isinstance(raw_tr, bool) and math.isfinite(float(raw_tr)):
+                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {float(raw_tr):.2f} (regime: {getattr(w_snap, 'divergence_regime', 'neutral')})"
     except Exception:
         pass
 

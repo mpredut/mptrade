@@ -297,7 +297,8 @@ class PostStopReentryGuard:
                         ts = nt_f
                 except (TypeError, ValueError, OverflowError):
                     pass
-            notify_key = (str(symbol or "").upper(), action_label)
+            norm_sym = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+            notify_key = (norm_sym, action_label)
             cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
             if cooldown > 0:
                 last_notified = _POST_STOP_NOTIFY_CACHE.get(notify_key)

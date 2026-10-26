@@ -96,8 +96,20 @@ class BybitLiquidationCollector:
 
     def stop(self, timeout: float = 8.0) -> None:
         self._stop.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+        t_sec = 8.0
+        if timeout is not None and not isinstance(timeout, bool):
+            try:
+                tf = float(timeout)
+                if math.isfinite(tf) and tf >= 0.0:
+                    t_sec = tf
+            except (TypeError, ValueError, OverflowError):
+                t_sec = 8.0
+        if (
+            self._thread
+            and self._thread.is_alive()
+            and self._thread is not threading.current_thread()
+        ):
+            self._thread.join(timeout=t_sec)
 
     @property
     def is_running(self) -> bool:

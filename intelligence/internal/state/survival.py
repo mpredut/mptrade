@@ -33,10 +33,25 @@ T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
     """Return paginated Binance history with 1,000 candles per request."""
-    candles = fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False)
-    ts = np.array([float(c["timestamp"]) for c in candles])
-    px = np.array([float(c["close"]) for c in candles])
-    return ts, px
+    candles = fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False) or []
+    ts_list: list[float] = []
+    px_list: list[float] = []
+    for c in candles:
+        if not isinstance(c, dict):
+            continue
+        raw_t = c.get("timestamp")
+        raw_p = c.get("close")
+        if raw_t is None or raw_p is None or isinstance(raw_t, bool) or isinstance(raw_p, bool):
+            continue
+        try:
+            tf = float(raw_t)
+            pf = float(raw_p)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+            ts_list.append(tf)
+            px_list.append(pf)
+    return np.asarray(ts_list, dtype=float), np.asarray(px_list, dtype=float)
 
 
 def block_slopes(ts, px, window_h, step_h):
@@ -230,8 +245,27 @@ def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0
 
 def verdict(cont: dict, mid: float) -> str:
     """Compare young (t < mid) and old (t >= mid) trend continuation."""
-    young = [p for t, p in cont.items() if t < mid]
-    old = [p for t, p in cont.items() if t >= mid]
+    if not isinstance(cont, dict):
+        return "insufficient_data"
+    mid_f = _pos_float(mid, 0.0)
+    if mid_f <= 0.0:
+        return "insufficient_data"
+    young: list[float] = []
+    old: list[float] = []
+    for t, p in cont.items():
+        if t is None or p is None or isinstance(t, bool) or isinstance(p, bool):
+            continue
+        try:
+            tf = float(t)
+            pf = float(p)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(tf) and math.isfinite(pf)):
+            continue
+        if tf < mid_f:
+            young.append(pf)
+        else:
+            old.append(pf)
     if not young or not old:
         return "insufficient_data"
     ym, om = float(np.mean(young)), float(np.mean(old))

@@ -270,8 +270,13 @@ class OrderbookDepthCollector:
             if not bids or not asks:
                 return None
 
+            bids.sort(key=lambda x: x[0], reverse=True)
+            asks.sort(key=lambda x: x[0])
+
             best_bid = bids[0][0]
             best_ask = asks[0][0]
+            if best_bid <= 0 or best_ask <= 0 or best_bid > best_ask:
+                return None
             mid = (best_bid + best_ask) / 2.0
             if not math.isfinite(mid) or mid <= 0:
                 return None

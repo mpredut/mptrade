@@ -134,14 +134,24 @@ class MacroAnalyzer:
                     if pool is None:
                         pool = getattr(nc, "_history", None)
                     if pool:
-                        news_snap = nc.get_pool_snapshot()
+                        try:
+                            news_snap = nc.get_pool_snapshot(now_ts=eval_now) if now is not None else nc.get_pool_snapshot()
+                        except TypeError:
+                            news_snap = nc.get_pool_snapshot()
                         break
                     if news_snap is None:
-                        news_snap = nc.get_pool_snapshot()
+                        try:
+                            news_snap = nc.get_pool_snapshot(now_ts=eval_now) if now is not None else nc.get_pool_snapshot()
+                        except TypeError:
+                            news_snap = nc.get_pool_snapshot()
             if news_snap is None:
-                news_snap = NewsFeedCollector(
+                nc_default = NewsFeedCollector(
                     history_file=os.path.join(self.cache_dir, "news_feed_collect.json")
-                ).get_pool_snapshot()
+                )
+                try:
+                    news_snap = nc_default.get_pool_snapshot(now_ts=eval_now) if now is not None else nc_default.get_pool_snapshot()
+                except TypeError:
+                    news_snap = nc_default.get_pool_snapshot()
 
             try:
                 assessment = (
@@ -219,7 +229,7 @@ class MacroAnalyzer:
                         try:
                             v_f = float(raw_val)
                             if math.isfinite(v_f):
-                                fg_val = int(v_f)
+                                fg_val = max(0, min(100, int(round(v_f))))
                         except (TypeError, ValueError, OverflowError):
                             fg_val = 50
                     raw_cls = fg_data.get("classification")

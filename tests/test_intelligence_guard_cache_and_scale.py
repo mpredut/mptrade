@@ -11665,6 +11665,109 @@ def test_iteration110_trailing_core_cachepaths_and_utils_safety(tmp_path):
     assert u.cache_path(True) is True
 
 
+def test_iteration98_intelligence_collectors_survival_and_guards_safety(tmp_path, monkeypatch):
+    """Verify BybitLiquidationCollector.stop, OrderbookDepthCollector.fetch sorting, survival.verdict string keys, and HighStakeGuard telemetry NaN filtering."""
+    import json
+    import threading
+    from types import SimpleNamespace
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.internal.state.survival import verdict
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        clear_post_stop_reentry_cache,
+    )
+    from intelligence.internal.guards.guard_decision import GuardDecision
+
+    # 1. BybitLiquidationCollector.stop: self-join and invalid timeout safety
+    bybit = BybitLiquidationCollector(["BTCUSDT"])
+    bybit._thread = threading.current_thread()
+    bybit.stop(timeout=float("nan"))
+    assert bybit._stop.is_set()
+
+    # 2. OrderbookDepthCollector.fetch: unsorted bids/asks and crossed book rejection
+    ob = OrderbookDepthCollector(cache_dir=str(tmp_path), depth_band_pct=2.0, cache_ttl_sec=0.0)
+
+    class _DummyResp:
+        def __init__(self, payload: dict):
+            self._bytes = json.dumps(payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self._bytes
+
+    # Crossed book (best bid 105 > best ask 100) -> rejected (returns None)
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=4: _DummyResp({"bids": [["105.0", "1.0"]], "asks": [["100.0", "1.0"]]}),
+    )
+    assert ob.fetch("BTCUSDC", allow_network=True) is None
+
+    # Unsorted levels -> sorted before mid and depth band calculation
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=4: _DummyResp({
+            "bids": [["95.0", "10.0"], ["99.0", "1.0"], ["100.0", "2.0"]],
+            "asks": [["105.0", "10.0"], ["101.0", "1.0"], ["100.0", "2.0"]],
+        }),
+    )
+    snap = ob.fetch("BTCUSDC", allow_network=True)
+    assert snap is not None
+    assert snap.mid_price == 100.0
+    # Within 2% of 100.0 ([98.0, 102.0]), 99.0*1 + 100.0*2 = 299.0 for bids, 100.0*2 + 101.0*1 = 301.0 for asks
+    assert snap.bid_depth_usd == 299.0
+    assert snap.ask_depth_usd == 301.0
+
+    # 3. survival.verdict: accepts string keys (as persisted in p_cont) and rejects invalid mid/cont
+    assert verdict(None, 7.0) == "insufficient_data"
+    assert verdict({"1": 0.8, "2": 0.8, "8": 0.79, "10": 0.78}, 5.0).startswith("VALIDATED")
+    assert verdict({"1": 0.8, "10": 0.5}, float("nan")) == "insufficient_data"
+
+    # 4. collect_pretrade_telemetry: skips NaN wall prices and NaN funding/whale fields
+    monkeypatch.setattr(
+        "external_order_guard.get_orderbook_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                imbalance_ratio=0.6,
+                largest_ask_wall_usd=250_000.0,
+                largest_ask_wall_price=float("nan"),
+                largest_bid_wall_usd=250_000.0,
+                largest_bid_wall_price=50000.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "external_order_guard.get_derivatives_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                funding_rate=float("nan"),
+                open_interest_usd=float("inf"),
+            )
+        ),
+    )
+    tel = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
+    assert tel["Orderbook Ask Wall Ahead"] == "None detected within 2%"
+    assert "$250,000 @ $50,000.00" in tel["Orderbook Bid Wall Ahead"]
+    assert "Perpetual Funding Rate" not in tel
+    assert "Derivatives Open Interest" not in tel
+
+    # 5. PostStopReentryGuard._maybe_notify deduplicates across symbol formatting variants
+    clear_post_stop_reentry_cache()
+    notified = []
+    monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: notified.append(kw))
+    psg = PostStopReentryGuard(notify_enabled=True, cache_ttl_sec=600.0)
+    dec = GuardDecision.veto("PostStopReentryGuard", "test_veto")
+    psg._maybe_notify("BTC/USDC", 100.0, 102.0, 98.0, 2.0, dec, now_ts=1000.0)
+    psg._maybe_notify("BTCUSDC", 100.0, 102.0, 98.0, 2.0, dec, now_ts=1005.0)
+    assert len(notified) == 1
+
+
 
 
 
