@@ -580,7 +580,7 @@ def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp
     with open(os.path.join(t212_dir, "runtime.env"), "w", encoding="utf-8") as f:
         f.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
     with open(os.path.join(t212_dir, "config.spcx.env"), "w", encoding="utf-8") as f:
-        f.write("STRAT_PAIR=SPCX_US_EQ\n")
+        f.write("T212_TICKER=SPCX_US_EQ\n")
     with open(os.path.join(t212_dir, "config.nvda.env"), "w", encoding="utf-8") as f:
         f.write("STRAT_PAIR=NVDA_US_EQ\n")
 
@@ -625,6 +625,13 @@ def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp
     ok, clamped_usd, _ = gw._clamp_notional_to_wallet_balance(hl_inst, "BUY", 40.0, 100.0)
     assert ok is True
     assert clamped_usd == pytest.approx(95.0)
+
+    # 5. Trading212 SELL reserves $6.0 USD fractional-share dust buffer when sub-2-decimal residual exists
+    spcx_inst._provider.free_balance = MagicMock(return_value=5.15296546)
+    ok_t212, clamped_t212, _ = gw._clamp_notional_to_wallet_balance(spcx_inst, "SELL", 150.0, 1000.0)
+    assert ok_t212 is True
+    # round(5.15296546 - 6.0 / 150.0, 2) = round(5.11296546, 2) = 5.11 shares * $150 = $766.50
+    assert clamped_t212 == pytest.approx(5.11 * 150.0)
 
 
 

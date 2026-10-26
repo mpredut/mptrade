@@ -200,7 +200,7 @@ def _discover_t212_equities(workspace_dir: str) -> List[Tuple[str, str, str, str
                     if not cleaned or "=" not in cleaned:
                         continue
                     k, v = cleaned.split("=", 1)
-                    if k.strip().upper() == "STRAT_PAIR":
+                    if k.strip().upper() in ("T212_TICKER", "STRAT_PAIR"):
                         ticker = v.strip().strip('"').strip("'").upper()
                         if ticker and ticker not in seen:
                             seen.add(ticker)
@@ -687,7 +687,19 @@ class AutonomousIntentGateway:
 
         venue_l = str(getattr(inst, "provider_name", "")).lower()
         buy_buf = 0.95 if venue_l == "hyperliquid" else 0.998
-        avail_usd = bal * buy_buf if decision == "BUY" else bal * price
+        if decision == "BUY":
+            avail_usd = bal * buy_buf
+        else:
+            sell_bal = bal
+            if venue_l == "t212" and price > 0:
+                q_round = round(bal, 2)
+                dust = bal - q_round
+                if abs(dust) > 1e-6 and abs(dust) * price < 6.0:
+                    buf = 6.0 / price
+                    sell_bal = max(0.0, round(bal - buf, 2)) if bal > buf else 0.0
+                else:
+                    sell_bal = q_round
+            avail_usd = sell_bal * price
         if avail_usd < self.min_notional_usd:
             return (
                 False,

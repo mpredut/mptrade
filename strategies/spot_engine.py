@@ -2241,16 +2241,17 @@ class Strategy:
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
         clean_ts = _clean_nonneg_float(timestamp)
+        had_persisted_reconcile = bool(self.s.get("ledger_reconcile_required"))
         if self.observe_only:
             tick_time = clean_ts if clean_ts is not None else self._now()
             self._shadow_prices.append((tick_time, price))
-            if not self.dry_run and not self.s.get("orders") and self.s.get("qty", 0.0) > 1e-12:
+            if not self.dry_run and not self.s.get("orders"):
                 self.s["ledger_reconcile_required"] = True
             else:
                 return
         held = self.s["qty"]
         if (not self.dry_run and self.s.get("ledger_reconcile_required")
-                and held > 1e-12 and not self.s.get("orders")):
+                and (held > 1e-12 or self.observe_only) and not self.s.get("orders")):
             try:
                 precision = self.client.pair_precision(self.pair)
                 base = precision.base_asset if precision else ""
@@ -2267,35 +2268,43 @@ class Strategy:
                 return
             tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
             if ledger_qty <= tolerance:
-                log(
-                    f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
-                )
-                self.s["qty"] = 0.0
-                self.s["cost"] = 0.0
-                self.s["spent"] = 0.0
-                self.s["dca_buys"] = 0
-                self.s["entry_price"] = None
-                self.s["last_buy_price"] = None
-                self.s["entry_ts"] = None
-                self.s["trail_peak"] = None
-                self.s["trail_stop"] = None
-                self.s["trend_mode"] = False
-                self.s["trend_peak"] = None
-                self.s["trend_confirm_count"] = 0
-                self.s["pending_exit"] = None
-                self.s["surge_active"] = False
-                self.s["surge_peak"] = None
-                self.s["slow_grind_active"] = False
-                self.s["slow_grind_peak"] = None
-                self.s["sl_bounce_state"] = {}
-                self.s["sl_episode_state"] = {}
-                self.s["tp_ride_state"] = {}
-                self.s["reentry_state"] = {}
-                if self.exit_manager is not None:
-                    self.exit_manager.clear_state(self.pair)
-                    self.exit_manager.bind_state(self.s)
-                self.s["ledger_reconcile_required"] = False
-                self._save()
+                if held > 1e-12:
+                    log(
+                        f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
+                    )
+                    self.s["qty"] = 0.0
+                    self.s["cost"] = 0.0
+                    self.s["spent"] = 0.0
+                    self.s["dca_buys"] = 0
+                    self.s["entry_price"] = None
+                    self.s["last_buy_price"] = None
+                    self.s["last_sell_price"] = price
+                    self.s["last_exit_kind"] = "TP"
+                    self.s["last_sell_ts"] = clean_ts if clean_ts is not None else self._now()
+                    self.s["entry_ts"] = None
+                    self.s["trail_peak"] = None
+                    self.s["trail_stop"] = None
+                    self.s["trend_mode"] = False
+                    self.s["trend_peak"] = None
+                    self.s["trend_confirm_count"] = 0
+                    self.s["pending_exit"] = None
+                    self.s["surge_active"] = False
+                    self.s["surge_peak"] = None
+                    self.s["slow_grind_active"] = False
+                    self.s["slow_grind_peak"] = None
+                    self.s["sl_bounce_state"] = {}
+                    self.s["sl_episode_state"] = {}
+                    self.s["tp_ride_state"] = {}
+                    self.s["reentry_state"] = {}
+                    if self.exit_manager is not None:
+                        self.exit_manager.clear_state(self.pair)
+                        self.exit_manager.bind_state(self.s)
+                    self.s["ledger_reconcile_required"] = False
+                    self._save()
+                else:
+                    self.s["ledger_reconcile_required"] = False
+                    if had_persisted_reconcile:
+                        self._save()
                 return
             if ledger_qty + tolerance < held:
                 log(
@@ -2309,8 +2318,27 @@ class Strategy:
                 self.s["ledger_reconcile_required"] = False
                 self._save()
                 return
+            if self.observe_only and ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
+                log(
+                    f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
+                    f"{held:.{self.vol_dec}f} -> {ledger_qty:.{self.vol_dec}f}); synchronizing state"
+                )
+                added_cost = (ledger_qty - held) * price
+                self.s["qty"] = ledger_qty
+                self.s["cost"] = float(self.s.get("cost", 0.0)) + added_cost
+                self.s["spent"] = float(self.s.get("spent", 0.0)) + added_cost
+                if held <= tolerance or self.s.get("entry_price") is None:
+                    self.s["entry_price"] = price
+                    self.s["entry_ts"] = clean_ts if clean_ts is not None else self._now()
+                else:
+                    self.s["dca_buys"] = int(self.s.get("dca_buys") or 0) + 1
+                self.s["last_buy_price"] = price
+                self.s["ledger_reconcile_required"] = False
+                self._save()
+                return
             self.s["ledger_reconcile_required"] = False
-            self._save()
+            if had_persisted_reconcile:
+                self._save()
         if self.observe_only:
             return
         entry_px = sr.entry_price(price, self.p.entry_discount_pct)   # = price*(1 - disc%)

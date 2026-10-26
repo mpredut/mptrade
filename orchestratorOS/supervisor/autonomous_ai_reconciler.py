@@ -388,7 +388,13 @@ class AutonomousAIReconciler:
         kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
         prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_prices_multi.json"))
         trailing_data = _read_json(os.path.join(self.cache_dir, "trailing_state.json"))
-        trailing_map = trailing_data if isinstance(trailing_data, dict) else {}
+        trailing_map = dict(trailing_data) if isinstance(trailing_data, dict) else {}
+        krk_trail_data = _read_json(os.path.join(self.workspace_dir, "kraken", "trailing_state.json"))
+        if isinstance(krk_trail_data, dict):
+            for k_asset, k_st in krk_trail_data.items():
+                if isinstance(k_st, dict) and k_st.get("peak") is not None:
+                    k_key = k_asset.upper() if str(k_asset).upper().endswith("USD") else f"{str(k_asset).upper()}USD"
+                    trailing_map.setdefault(k_key, k_st)
 
         price_map: Dict[str, float] = {}
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
@@ -846,7 +852,7 @@ class AutonomousAIReconciler:
             for st_path in sorted(glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
                 fname = os.path.basename(st_path)
                 pair_name = fname[len(".state_") : -len(".json")].upper()
-                if not pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
+                if not pair_name.isalnum() or not pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
                     continue
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
@@ -880,6 +886,8 @@ class AutonomousAIReconciler:
             for st_path in sorted(glob.glob(os.path.join(hl_dir, ".state_*.json"))):
                 fname = os.path.basename(st_path)
                 raw_tok = fname[len(".state_") : -len(".json")].upper()
+                if not raw_tok.isalnum():
+                    continue
                 pair_name = raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC"
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
@@ -919,12 +927,17 @@ class AutonomousAIReconciler:
         if has_active_t212 and os.path.isdir(t212_dir):
             for st_path in sorted(glob.glob(os.path.join(t212_dir, ".state_*.json"))):
                 fname = os.path.basename(st_path)
+                if fname.startswith(".."):
+                    continue
                 ticker = fname[len(".state_") : -len(".json")].upper()
+                if not ticker.replace("_", "").isalnum():
+                    continue
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
                 qty = float(st_data.get("qty") or 0.0)
-                cost = float(st_data.get("cost") or 0.0)
+                raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
+                cost = float(raw_cost or 0.0)
                 avg_cost = round(cost / qty, 4) if qty > 1e-12 and cost > 0 else None
                 px = snapshot.prices_and_trends.get(ticker, {}).get("price")
                 dd_pct = (
@@ -942,6 +955,7 @@ class AutonomousAIReconciler:
                     "last_exit_kind": st_data.get("last_exit_kind"),
                     "dca_buys": st_data.get("dca_buys"),
                     "dd_pct": dd_pct,
+                    "pos_peak": st_data.get("pos_peak") or st_data.get("trail_peak"),
                 }
         if t212_cycles:
             snapshot.portfolio_summary["t212_cycles"] = t212_cycles
@@ -964,7 +978,7 @@ class AutonomousAIReconciler:
                     pass
                 break
 
-        # 9D. Recent fills across Binance (cache_order.json) and Kraken (cache_trade_kraken.json)
+        # 9D. Recent fills across Binance (cache_order.json), Kraken (cache_trade_kraken.json), and Hyperliquid
         recent_orders: Dict[str, Any] = {}
         for order_cache_name in ("cache_order.json", "cache_trade_kraken.json"):
             orders_data = _read_json(os.path.join(self.cache_dir, order_cache_name))
@@ -975,6 +989,18 @@ class AutonomousAIReconciler:
                     fills = extract_symbol_recent_fills(o_list)
                     if fills:
                         recent_orders[sym] = fills
+        for sym, inst in inst_by_sym.items():
+            if sym in recent_orders or str(getattr(inst, "provider_name", "")).lower() != "hyperliquid":
+                continue
+            try:
+                prov = getattr(inst, "_provider", None)
+                if prov is not None and hasattr(prov, "get_orders"):
+                    hl_orders = prov.get_orders(sym, None, 90 * 86400.0)
+                    fills = extract_symbol_recent_fills(hl_orders)
+                    if fills:
+                        recent_orders[sym] = fills
+            except Exception:
+                pass
         if recent_orders:
             snapshot.portfolio_summary["recent_orders"] = recent_orders
         for pos in snapshot.portfolio_summary.get("tradable_positions", []):
@@ -1020,6 +1046,11 @@ class AutonomousAIReconciler:
                     pos["last_sell_px"] = ls_c
                     if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
                         pos["chg_vs_last_sell_pct"] = round(((float(pos_px) - ls_c) / ls_c) * 100.0, 2)
+                if pos.get("trailing_peak") is None and isinstance(cyc.get("pos_peak"), (int, float)) and float(cyc["pos_peak"]) > 0:
+                    pk = float(cyc["pos_peak"])
+                    pos["trailing_peak"] = pk
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["dd_from_peak_pct"] = round(((float(pos_px) - pk) / pk) * 100.0, 2)
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -2173,7 +2204,12 @@ class AutonomousAIReconciler:
         decisions_list: List[Dict[str, Any]] = _normalize_trading_decisions(plan) if spec.can_trade else []
         market_decision: Dict[str, Any] = decisions_list[0] if decisions_list else {}
         intents_emitted: List[Dict[str, Any]] = []
-        for dec in decisions_list:
+        actionable_decs = [
+            d for d in decisions_list
+            if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
+        ]
+        submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
+        for dec in submit_decs:
             emitted = self.intent_gateway.submit(dec, source=topic_key, max_mode=self.mode)
             if isinstance(emitted, dict):
                 intents_emitted.append(emitted)

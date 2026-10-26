@@ -1159,18 +1159,24 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
             "last_exit_kind": "TP",
             "dca_buys": 1,
         }, f)
+    # Backup and paper state files in hyperliquid/ must be ignored
+    with open(os.path.join(hl_dir, ".state_HYPE.pre_fee_reconcile_20260822_084538.json"), "w", encoding="utf-8") as f:
+        json.dump({"qty": 99.0, "cost": 9999.0}, f)
+    with open(os.path.join(hl_dir, ".state_HYPE_long.json"), "w", encoding="utf-8") as f:
+        json.dump({"qty": 0.0, "cost": 0.0}, f)
 
     t212_dir = os.path.join(workspace, "212trading")
     os.makedirs(t212_dir, exist_ok=True)
     with open(os.path.join(t212_dir, ".state_SPCX_US_EQ.json"), "w", encoding="utf-8") as f:
         json.dump({
             "qty": 5.0,
-            "cost": 150.0,
+            "cost_usd": 150.0,
             "entry_price": 30.0,
             "last_buy_price": 30.0,
             "last_sell_price": 31.5,
             "last_exit_kind": "TP",
             "dca_buys": 0,
+            "pos_peak": 32.0,
         }, f)
 
     hl_inst = MagicMock()
@@ -1212,7 +1218,7 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     )
     sensors = reconciler.harvest_sensors_telemetry()
     ps = sensors.portfolio_summary
-    assert "HYPEUSDC" in ps["hyperliquid_cycles"]
+    assert list(ps["hyperliquid_cycles"].keys()) == ["HYPEUSDC"]
     assert "SPCX_US_EQ" in ps["t212_cycles"]
 
     pos_by_sym = {p["symbol"]: p for p in ps["tradable_positions"]}
@@ -1220,6 +1226,8 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     assert pos_by_sym["HYPEUSDC"]["pnl_vs_avg_pct"] == 5.26
     assert pos_by_sym["SPCX_US_EQ"]["active_avg_buy_px"] == 30.0
     assert pos_by_sym["SPCX_US_EQ"]["pnl_vs_avg_pct"] == 3.0
+    assert pos_by_sym["SPCX_US_EQ"]["trailing_peak"] == 32.0
+    assert pos_by_sym["SPCX_US_EQ"]["dd_from_peak_pct"] == -3.44
 
     reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
     crypto_prompt = captured_prompts[0]
