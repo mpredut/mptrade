@@ -85,7 +85,7 @@ def _parse_finite_float(val: Any, default: float) -> float:
     try:
         parsed = float(val)
         return parsed if math.isfinite(parsed) else default
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
@@ -110,8 +110,13 @@ def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
     from datetime import datetime, time as dt_time
     from zoneinfo import ZoneInfo
 
-    ts = float(now_ts) if now_ts is not None else time.time()
-    ny_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
+    ts = _parse_finite_float(now_ts, time.time())
+    if ts <= 0:
+        ts = time.time()
+    try:
+        ny_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
+    except (ValueError, OverflowError, OSError):
+        ny_dt = datetime.fromtimestamp(time.time(), tz=ZoneInfo("America/New_York"))
     if ny_dt.weekday() >= 5:
         return False
     return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
@@ -390,10 +395,11 @@ class AutonomousIntentGateway:
             intent["status"] = "EXECUTED"
             intent["execution_payload"] = exec_payload
             try:
-                rec_ts = float(rec.get("ts") or time.time())
+                raw_ts = rec.get("ts")
+                rec_ts = float(raw_ts) if raw_ts is not None and not isinstance(raw_ts, bool) else time.time()
                 if not math.isfinite(rec_ts) or rec_ts <= 0:
                     rec_ts = time.time()
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 rec_ts = time.time()
             intent.setdefault("history", []).append({
                 "ts": rec_ts,
@@ -600,9 +606,10 @@ class AutonomousIntentGateway:
         try:
             if hasattr(inst._provider, "get_current_price"):
                 px = inst._provider.get_current_price(inst.symbol)
-                px_f = float(px)
-                if math.isfinite(px_f) and px_f > 0:
-                    return px_f
+                if px is not None and not isinstance(px, bool):
+                    px_f = float(px)
+                    if math.isfinite(px_f) and px_f > 0:
+                        return px_f
         except Exception:
             pass
 
@@ -624,10 +631,13 @@ class AutonomousIntentGateway:
                 for cand in candidates:
                     if cand in items and items[cand]:
                         try:
-                            px_f = float(items[cand][0][1])
+                            raw_v = items[cand][0][1]
+                            if raw_v is None or isinstance(raw_v, bool):
+                                continue
+                            px_f = float(raw_v)
                             if math.isfinite(px_f) and px_f > 0:
                                 return px_f
-                        except (TypeError, ValueError, IndexError):
+                        except (TypeError, ValueError, IndexError, OverflowError):
                             continue
                 if inst_base:
                     base_u = str(inst_base).upper()
@@ -635,10 +645,13 @@ class AutonomousIntentGateway:
                         k_base = (_split_symbol_assets(str(k)) or (str(k).upper(), ""))[0]
                         if k_base == base_u and v:
                             try:
-                                px_f = float(v[0][1])
+                                raw_v = v[0][1]
+                                if raw_v is None or isinstance(raw_v, bool):
+                                    continue
+                                px_f = float(raw_v)
                                 if math.isfinite(px_f) and px_f > 0:
                                     return px_f
-                            except (TypeError, ValueError, IndexError):
+                            except (TypeError, ValueError, IndexError, OverflowError):
                                 continue
         except Exception:
             pass

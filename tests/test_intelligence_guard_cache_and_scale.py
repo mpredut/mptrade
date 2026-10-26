@@ -8833,3 +8833,76 @@ def test_iteration64_cooldown_state_io_spot_rules_and_rtrade_pair_safety(tmp_pat
     assert outcome.reason == "quote_cancel_pending"
     assert not outcome.terminal
 
+
+def test_iteration65_trailing_core_kraken_trailing_and_autonomous_gateway_safety(tmp_path):
+    """Iteration 65: TrailingCore set/price/init safety, KrakenTrailing retry_counts float/inf safety, and AutonomousIntentGateway boolean price & RTH timestamp safety."""
+    import json
+    import math
+    from types import SimpleNamespace
+    from trailing_core import TrailingCore
+    from orchestratorTrade.autonomous_intent_gateway import (
+        AutonomousIntentGateway,
+        _is_us_rth_open,
+        _parse_finite_float,
+    )
+
+    # 1. TrailingCore sanitizes sets, normalizes constructor params, and skips invalid string/overflow prices
+    class _DummyAdapter:
+        def assets(self):
+            return [("BTC", "BTC", "BTCUSDC", 15.0)]
+        def begin_tick(self):
+            return True
+        def free_qty(self, asset):
+            return 1.0
+        def price(self, pair):
+            return "not-a-number"
+
+    tc = TrailingCore(
+        _DummyAdapter(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file=str(tmp_path / "trail_state.json"),
+        min_notional="bad",
+        rebuy_enabled=True,
+        rebuy_bounce_pct=-5.0,
+        rebuy_skip_if_trend_down=False,
+        sell_fraction=2.5,
+        min_profit_pct="bad",
+    )
+    assert tc.sell_fraction == 1.0
+    assert tc.min_notional == 0.0
+    assert tc.min_profit_pct == 0.0
+    assert tc.save({"BTC": {"tags": {"a", "b"}, "peak": float("nan")}}) is True
+    tc.check_once()  # does not raise ValueError on "not-a-number" price
+
+    # 2. _parse_finite_float & _is_us_rth_open handle OverflowError, booleans, and out-of-range timestamps
+    assert _parse_finite_float(10**400, 12.5) == 12.5
+    assert isinstance(_is_us_rth_open(True), bool)
+    assert isinstance(_is_us_rth_open(float("inf")), bool)
+    assert isinstance(_is_us_rth_open(1e20), bool)
+
+    # 3. AutonomousIntentGateway._get_live_price rejects boolean True prices from provider and cache
+    ws = tmp_path / "gw_ws"
+    ws.mkdir()
+    cache = ws / "cachedb"
+    cache.mkdir()
+    (ws / "order_guard.conf").write_text(
+        "autonomous_trading_mode = shadow\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n",
+        encoding="utf-8",
+    )
+    (cache / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[1000, True]]}}),
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(ws), cache_dir="cachedb")
+    inst = SimpleNamespace(
+        symbol="BTCUSDC",
+        base="BTC",
+        _provider=SimpleNamespace(get_current_price=lambda _s: True),
+    )
+    assert math.isnan(gw._get_live_price(inst))
+

@@ -64,13 +64,14 @@ class TrailingCore:
         self.log = log
         self.enabled = enabled
         self.state_file = state_file
-        self.min_notional = min_notional
-        self.rebuy_enabled = rebuy_enabled
-        self.rebuy_bounce_pct = rebuy_bounce_pct
-        self.rebuy_skip_if_trend_down = rebuy_skip_if_trend_down
-        self.sell_skip_if_trend_up = sell_skip_if_trend_up
-        self.sell_fraction = sell_fraction
-        self.min_profit_pct = min_profit_pct
+        self.min_notional = _safe_nonneg_float(min_notional, default=0.0)
+        self.rebuy_enabled = bool(rebuy_enabled)
+        self.rebuy_bounce_pct = _safe_nonneg_float(rebuy_bounce_pct, default=0.0)
+        self.rebuy_skip_if_trend_down = bool(rebuy_skip_if_trend_down)
+        self.sell_skip_if_trend_up = bool(sell_skip_if_trend_up)
+        sf = _safe_nonneg_float(sell_fraction, default=1.0)
+        self.sell_fraction = min(1.0, sf) if sf > 0.0 else 1.0
+        self.min_profit_pct = _safe_nonneg_float(min_profit_pct, default=0.0)
         # item_isolation=True (Binance): catch errors per coin and always save after the loop
         # (one failed coin does not stop the rest). False (Kraken): wrap the entire tick;
         # on error, log without saving and retry next time. This preserves each provider's
@@ -88,7 +89,7 @@ class TrailingCore:
         def _sanitize(obj):
             if isinstance(obj, dict):
                 return {k: _sanitize(v) for k, v in obj.items()}
-            if isinstance(obj, (list, tuple)):
+            if isinstance(obj, (list, tuple, set, frozenset)):
                 return [_sanitize(v) for v in obj]
             if isinstance(obj, float) and not math.isfinite(obj):
                 return None
@@ -163,14 +164,14 @@ class TrailingCore:
             filled = 0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else float(raw_filled)
             if not math.isfinite(filled) or filled < 0.0:
                 filled = 0.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             filled = 0.0
         try:
             raw_cost = status.cost
             cost_val = 0.0 if (raw_cost is None or isinstance(raw_cost, bool)) else float(raw_cost)
             if not math.isfinite(cost_val) or cost_val < 0.0:
                 cost_val = 0.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             cost_val = 0.0
         avg = cost_val / filled if filled > 0 and cost_val > 0 else price
         if not math.isfinite(avg) or avg <= 0:
@@ -328,10 +329,15 @@ class TrailingCore:
             return
         trail = trail_f
         free = self._safe_free_qty(asset)
-        price = self.a.price(pair)
-        if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
+        raw_price = self.a.price(pair)
+        if not raw_price or isinstance(raw_price, bool):
             return
-        price = float(price)
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(price) or price <= 0:
+            return
         is_new = key not in state or not isinstance(state.get(key), dict)
         if is_new:
             state[key] = {"peak": price}

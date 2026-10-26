@@ -336,21 +336,18 @@ class KrakenTrailing:
         raw_rc_act = rc.get(action, 0)
         raw_att = pending.get("attempt")
         try:
-            rc_act = 0 if isinstance(raw_rc_act, bool) else int(raw_rc_act or 0)
+            rc_act_f = float(raw_rc_act or 0)
+            rc_act = 0 if isinstance(raw_rc_act, bool) or not math.isfinite(rc_act_f) else max(0, int(rc_act_f))
         except (TypeError, ValueError, OverflowError):
             rc_act = 0
         try:
-            att_val = 1 if isinstance(raw_att, bool) else int(raw_att or 1)
+            att_f = float(raw_att or 1)
+            att_val = 1 if isinstance(raw_att, bool) or not math.isfinite(att_f) else max(1, int(att_f))
         except (TypeError, ValueError, OverflowError):
             att_val = 1
-        try:
-            attempt_base = max(
-                int(self._retry_counts.get(retry_key, 0)),
-                rc_act,
-                max(0, att_val - 1),
-            )
-        except (TypeError, ValueError):
-            attempt_base = int(self._retry_counts.get(retry_key, 0))
+        cur_rc = self._retry_counts.get(retry_key, 0)
+        cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+        attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
         if result.outcome in ("absent", "retryable"):
             new_count = attempt_base + 1
             self._retry_counts[retry_key] = new_count
