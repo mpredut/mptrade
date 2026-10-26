@@ -6581,5 +6581,61 @@ def test_iteration35_compute_weight_inf_auto_qty_and_instrument_nan_bool_safety(
             assert out.get("reason") == "invalid_price"
 
 
+def test_iteration36_daily_limit_and_order_retry_nan_bool_safety():
+    import math
+    from types import SimpleNamespace
+    import pytest
+    import order_guard as og
+    import order_retry as oq
+
+    # 1. daily_limit_guard ignores bool/NaN max_daily_trades and inf timestamps
+    prov_dl = SimpleNamespace(
+        name="binance",
+        get_orders=lambda sym, side, win: [
+            {"timestamp": float("inf"), "price": 100.0, "qty": 1.0},
+            {"timestamp": 1000.0, "price": 100.0, "qty": 1.0},
+            "malformed_entry",
+        ],
+    )
+    ok_bool, r_bool = og.daily_limit_guard(prov_dl, "BTCUSDC", "BUY", max_daily_trades=True)
+    assert ok_bool is True and r_bool is None
+    ok_nan, r_nan = og.daily_limit_guard(prov_dl, "BTCUSDC", "SELL", max_daily_trades=float("nan"))
+    assert ok_nan is True and r_nan is None
+
+    # 2. order_retry._lifecycle_finite and TrackedOrderLifecycle reject boolean values
+    assert oq._lifecycle_finite(True, positive=True) is None
+    assert oq._lifecycle_finite(False, positive=False) is None
+    assert oq._lifecycle_finite(1.5, positive=True) == 1.5
+
+    with pytest.raises(ValueError):
+        oq.TrackedOrderLifecycle(object(), provider_name="binance", missing_confirmations=True)
+    with pytest.raises(ValueError):
+        oq.TrackedOrderLifecycle(object(), provider_name="binance", max_age_seconds=True)
+
+    tl = oq.TrackedOrderLifecycle(object(), provider_name="binance", clock=lambda: 1000.0)
+    with pytest.raises(ValueError):
+        tl.new_intent(
+            intent_id="i1", client_order_id="c1", symbol="BTCUSDC",
+            side="BUY", requested_qty=True, requested_price=100.0,
+        )
+    with pytest.raises(ValueError):
+        tl.new_intent(
+            intent_id="i1", client_order_id="c1", symbol="BTCUSDC",
+            side="BUY", requested_qty=1.0, requested_price=True,
+        )
+    with pytest.raises(ValueError):
+        tl.new_intent(
+            intent_id="i1", client_order_id="c1", symbol="BTCUSDC",
+            side="BUY", requested_qty=1.0, requested_price=100.0, attempt=True,
+        )
+
+    # 3. order_retry.enqueue / update_claimed_qty / resolve_record_ttl reject boolean inputs
+    assert oq.enqueue("BTCUSDC", "BUY", True) is None
+    assert oq.enqueue("BTCUSDC", "BUY", 1.0, now=True) is None
+    assert oq.update_claimed_qty({"id": "x"}, True) is None
+    assert oq.resolve_record_ttl({"ttl_sec": True}) == float(oq.RETRY_TTL_SEC)
+
+
+
 
 

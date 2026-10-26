@@ -596,7 +596,7 @@ def process_once(mkt, now=None):
                 "skipping, it stays queued")
             oq.complete_claim(r, "release", now)
             continue
-        if price is None:
+        if price is None or isinstance(price, bool):
             oq.complete_claim(r, "release", now)
             continue
         if not oq.price_gate_ok(r, price):
@@ -654,8 +654,12 @@ def process_once(mkt, now=None):
             kwargs["wait_for_trend"] = False if is_stop_expired_timer else True
             cur_pm = kwargs.get("profit_margin")
             try:
-                cur_pm_f = float(cur_pm) if cur_pm is not None else None
-            except (TypeError, ValueError):
+                cur_pm_f = (
+                    float(cur_pm)
+                    if (cur_pm is not None and not isinstance(cur_pm, bool))
+                    else None
+                )
+            except (TypeError, ValueError, OverflowError):
                 cur_pm_f = None
             if age_progress >= 0.75:
                 retry_stage = "salvage"
@@ -702,7 +706,7 @@ def process_once(mkt, now=None):
             print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) — treating it as a failure")
             order = None
         submitted_qty = outcome_context.get("submitted_qty")
-        if submitted_qty is not None:
+        if submitted_qty is not None and not isinstance(submitted_qty, bool):
             try:
                 sq = float(submitted_qty)
                 if math.isfinite(sq) and sq > 0:
@@ -748,7 +752,9 @@ def process_once(mkt, now=None):
                     "pre_submit_refused"
                     if submission_state == "refused"
                     else "submit_ambiguous")
-            if ((refusal_reason in {"execution_disabled", "trading_disabled"}
+            if ((refusal_reason in {
+                    "execution_disabled", "trading_disabled",
+                    "aborted_by_caller", "invalid_price"}
                     or oq.is_terminal_filter_refusal(refusal_reason))
                     and submission_state == "refused"):
                 # A durable dry or venue-invalid intent cannot become executable

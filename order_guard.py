@@ -1043,9 +1043,21 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         if GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
     name = _provider_name(provider)
-    order_type = order_type.upper()
-    max_daily_trades = max_daily_trades if max_daily_trades is not None else get_max_daily_trades_cfg(name)
-    antispam_sec = get_antispam_sec_cfg(name)
+    order_type = (order_type or "").upper()
+    resolved_max_trades = None
+    if max_daily_trades is not None and not isinstance(max_daily_trades, bool):
+        try:
+            mt_f = float(max_daily_trades)
+            if math.isfinite(mt_f) and mt_f >= 0:
+                resolved_max_trades = int(mt_f)
+        except (TypeError, ValueError, OverflowError):
+            resolved_max_trades = None
+    max_daily_trades = (
+        resolved_max_trades
+        if resolved_max_trades is not None
+        else get_max_daily_trades_cfg(name)
+    )
+    antispam_sec = _clean_pos_float(get_antispam_sec_cfg(name), 0.0)
     try:
         trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)
     except ProviderError as exc:
@@ -1064,8 +1076,10 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     if antispam_sec > 0 and trades:
         now_s = time.time()
         for t in trades:
+            if not isinstance(t, dict):
+                continue
             ts_s = extract_timestamp_s(t, default=0.0) or 0.0
-            if ts_s > 0:
+            if math.isfinite(ts_s) and ts_s > 0:
                 elapsed_s = max(0.0, now_s - ts_s)
                 if elapsed_s < antispam_sec:
                     print(f"[DAILY-LIMIT] {order_type} {symbol}: last fill {elapsed_s:.1f}s ago "

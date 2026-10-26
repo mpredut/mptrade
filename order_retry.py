@@ -475,6 +475,8 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             and not str(replaces_order_id or "").strip()):
         return None
     if lifecycle == "awaiting_cancel":
+        if isinstance(replaces_original_qty, bool):
+            return None
         try:
             replaces_original_qty = float(replaces_original_qty)
         except (TypeError, ValueError, OverflowError):
@@ -483,6 +485,8 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                 or replaces_original_qty <= 0):
             return None
     if _producer_lease_sec is not None:
+        if isinstance(_producer_lease_sec, bool):
+            return None
         try:
             _producer_lease_sec = float(_producer_lease_sec)
         except (TypeError, ValueError, OverflowError):
@@ -503,6 +507,14 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     else:
         producer_pid = None
         producer_process_start_id = None
+    if (
+        isinstance(qty, bool)
+        or isinstance(now, bool)
+        or isinstance(created_ts, bool)
+        or isinstance(attempts, bool)
+        or isinstance(last_attempt_ts, bool)
+    ):
+        return None
     now = now if now is not None else time.time()
     side_u = (side or "").upper()
     try:
@@ -561,15 +573,15 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         prefix = "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
     custom_ttl = None
-    if ttl_sec is not None:
+    if ttl_sec is not None and not isinstance(ttl_sec, bool):
         try:
             custom_ttl = float(ttl_sec)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
-    elif placement and "ttl_sec" in placement:
+    elif placement and "ttl_sec" in placement and not isinstance(placement["ttl_sec"], bool):
         try:
             custom_ttl = float(placement["ttl_sec"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     if custom_ttl is not None:
         if math.isfinite(custom_ttl) and custom_ttl > 0:
@@ -775,6 +787,8 @@ def enqueue_claimed(
     while the producer is still inside bounded permit, cancellation, or provider
     I/O. The returned snapshot must be finalized with ``complete_claim``.
     """
+    if isinstance(lease_sec, bool):
+        return None
     try:
         lease_sec = float(
             RETRY_INTERVAL_SEC + RETRY_CLAIM_LEASE_SEC
@@ -800,7 +814,7 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     so crash recovery or partial fills calculate remainder against the actual
     submitted amount rather than the initial unscaled intent.
     """
-    if not isinstance(claim_snapshot, dict):
+    if not isinstance(claim_snapshot, dict) or isinstance(qty, bool):
         return None
     try:
         q_val = float(qty)
@@ -830,7 +844,7 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
                 continue
             record["qty"] = q_val
             record["requested_qty_total"] = q_val
-            if applied_scale is not None:
+            if applied_scale is not None and not isinstance(applied_scale, bool):
                 try:
                     s_val = float(applied_scale)
                     if math.isfinite(s_val) and 0.0 < s_val < 1.0:
@@ -853,7 +867,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
     submission state becomes producer_claimed, and the lease is renewed before
     any external provider call. None means the caller must not submit.
     """
-    if not isinstance(claim_snapshot, dict):
+    if not isinstance(claim_snapshot, dict) or isinstance(now, bool) or isinstance(lease_sec, bool):
         return None
     try:
         now = float(time.time() if now is None else now)
@@ -905,7 +919,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
             record["claim_until"] = max(
                 float(record.get("claim_until", 0) or 0),
                 now + lease_sec)
-            if qty is not None:
+            if qty is not None and not isinstance(qty, bool):
                 try:
                     q_val = float(qty)
                     if math.isfinite(q_val) and q_val > 0:
@@ -913,7 +927,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
                         record["requested_qty_total"] = q_val
                 except (TypeError, ValueError, OverflowError):
                     pass
-            if applied_scale is not None:
+            if applied_scale is not None and not isinstance(applied_scale, bool):
                 try:
                     s_val = float(applied_scale)
                     if math.isfinite(s_val) and 0.0 < s_val < 1.0:
@@ -1456,12 +1470,14 @@ def activate_claimed_replacement(claimed, qty, now=None):
     concurrently; the generic worker may claim the intent only after the lease
     expires, when the replaced venue order is already confirmed canceled.
     """
-    now = float(time.time() if now is None else now)
+    if isinstance(qty, bool) or isinstance(now, bool):
+        return None
     try:
+        now = float(time.time() if now is None else now)
         qty = float(qty)
     except (TypeError, ValueError, OverflowError):
         return None
-    if not math.isfinite(qty) or qty < 0:
+    if not math.isfinite(now) or now <= 0 or not math.isfinite(qty) or qty < 0:
         return None
     result = None
     replaced_order_id = None
@@ -1716,12 +1732,14 @@ def rewrite(items):
 
 def resolve_record_ttl(rec):
     """Return the effective active retry TTL for ``rec``, honoring custom ``ttl_sec``."""
-    try:
-        custom_ttl = float(rec.get("ttl_sec") or 0)
-        if math.isfinite(custom_ttl) and custom_ttl > 0:
-            return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-    except (TypeError, ValueError, OverflowError):
-        pass
+    raw_ttl = rec.get("ttl_sec") if isinstance(rec, dict) else None
+    if raw_ttl is not None and not isinstance(raw_ttl, bool):
+        try:
+            custom_ttl = float(raw_ttl)
+            if math.isfinite(custom_ttl) and custom_ttl > 0:
+                return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
+        except (TypeError, ValueError, OverflowError):
+            pass
     return float(RETRY_TTL_SEC)
 
 
@@ -1886,6 +1904,8 @@ class StrategyExecutorLifecycleApi:
 
 
 def _lifecycle_finite(raw, *, positive=False):
+    if isinstance(raw, bool):
+        return None
     try:
         value = float(raw)
     except (TypeError, ValueError, OverflowError):
@@ -1962,7 +1982,7 @@ class TrackedOrderLifecycle:
                  audit=None, clock: Callable[[], float] = time.time):
         if not str(provider_name or "").strip():
             raise ValueError("provider_name is required")
-        if int(missing_confirmations) <= 0:
+        if isinstance(missing_confirmations, bool) or int(missing_confirmations) <= 0:
             raise ValueError("missing_confirmations must be positive")
         if max_age_seconds is not None:
             parsed_age = _lifecycle_finite(max_age_seconds, positive=True)
@@ -2017,6 +2037,12 @@ class TrackedOrderLifecycle:
                    requested_price: Optional[float] = None,
                    kind: Optional[str] = None, attempt: int = 1,
                    metadata: Optional[Dict] = None) -> dict:
+        if isinstance(requested_qty, bool):
+            raise ValueError("tracked intent requested_qty must be positive")
+        if isinstance(requested_price, bool):
+            raise ValueError("tracked intent requested_price must be positive")
+        if isinstance(attempt, bool):
+            raise ValueError("tracked intent attempt must be positive")
         now = self._now()
         intent = {
             "intent_id": str(intent_id),
