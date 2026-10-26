@@ -39,6 +39,7 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
             isinstance(attempts, bool)
             or isinstance(read, bool)
             or isinstance(backoff, bool)
+            or isinstance(status_forcelist, bool)
             or not isinstance(attempts, (int, float))
             or not isinstance(read, (int, float))
             or not isinstance(backoff, (int, float))

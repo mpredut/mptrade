@@ -11565,6 +11565,51 @@ def test_iteration108_binance_filters_bapi_ws_normalize_and_bapi_safety():
     assert agg[0]["isBestMatch"] is None
 
 
+def test_iteration109_providers_base_http_resilience_replay_and_trailing_stop_safety(tmp_path):
+    """Iteration 109: Verify providers.base, http_resilience, replay_provider, and trailing_stop safety."""
+    from types import SimpleNamespace
+    from providers import base as pbase
+    from providers import http_resilience as hres
+    from providers import replay_provider as rprov
+    from binance_api import trailing_stop as bts
+
+    # 1. providers.base: env_value, bool_env, extract_order_id, extract_order_fee, aggregate_fills_by_order_id
+    assert pbase.env_value(True, "KEY") is None
+    assert pbase.env_value(str(tmp_path), True) is None
+    assert pbase.bool_env(True, default=True) is True
+    assert pbase.bool_env("", default=False) is False
+    assert pbase.extract_order_id({"orderId": {}}) is None
+    assert pbase.extract_order_id({"orderId": set()}) is None
+    assert pbase.extract_order_id(object()) is None
+
+    fee_res = pbase.extract_order_fee(
+        {"commission": "0.1", "commissionAsset": [1, 2]},
+        base_asset=True,
+        quote_asset=True,
+        fill_price=100.0,
+    )
+    assert fee_res is not None
+    assert fee_res["fee_asset"] == ""
+    assert pbase.aggregate_fills_by_order_id(12345) == []
+
+    # 2. providers.http_resilience: mount_connect_retry rejects boolean status_forcelist
+    assert hres.mount_connect_retry(SimpleNamespace(), status_forcelist=True) is False
+
+    # 3. providers.replay_provider: load_price_series rejects non-str path or symbol
+    assert rprov.load_price_series(True, "BTCUSDC") == []
+    assert rprov.load_price_series(str(tmp_path), True) == []
+
+    # 4. binance_api.trailing_stop: string 'false' enabled flag and boolean symbol guards
+    dummy_api = SimpleNamespace()
+    dummy_po = SimpleNamespace()
+    dummy_sym = SimpleNamespace(symbols=["BTCUSDC"])
+    ts = bts.TrailingStop(dummy_api, dummy_po, dummy_sym, enabled="false", state_file=str(tmp_path / "trail.json"))
+    assert ts.enabled is False
+    assert ts.rebuy_enabled_for(True) is False
+    assert ts.rebuy_configured_for(True) is False
+
+
+
 
 
 

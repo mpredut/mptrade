@@ -8,6 +8,8 @@ from typing import Any, List, Optional
 
 def env_value(folder: str, key: str) -> Optional[str]:
     """Read one key from ``.env``/``config.env``/``runtime.env`` without mutating ``os.environ``."""
+    if not isinstance(folder, str) or not folder.strip() or not isinstance(key, str) or not key.strip():
+        return None
     for fname in (".env", "config.env", "runtime.env"):
         path = os.path.join(folder, fname)
         if not os.path.exists(path):
@@ -33,6 +35,8 @@ def env_value(folder: str, key: str) -> Optional[str]:
 
 def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> bool:
     """Resolve a boolean flag from os.environ or optional provider .env/config.env."""
+    if not isinstance(key, str) or not key.strip():
+        return bool(default)
     v = os.environ.get(key)
     if v is None and folder is not None:
         v = env_value(folder, key)
@@ -126,7 +130,7 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
 
 
 def _clean_single_order_id(val: Any) -> Optional[str]:
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, (bool, dict, set, frozenset)):
         return None
     if isinstance(val, float) and not math.isfinite(val):
         return None
@@ -135,6 +139,8 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
             cleaned = _clean_single_order_id(item)
             if cleaned is not None:
                 return cleaned
+        return None
+    if not isinstance(val, (str, int, float)):
         return None
     text = str(val).strip()
     return text if text else None
@@ -427,15 +433,15 @@ def extract_order_fee(
         if key in order:
             has_asset_key = True
             val = order[key]
-            if val is not None and not isinstance(val, bool):
-                fee_asset = str(val).strip().upper()
+            if isinstance(val, str) and val.strip():
+                fee_asset = val.strip().upper()
             break
 
     if require_explicit_asset and (not has_asset_key or (fee > 0.0 and not fee_asset)):
         return None
 
-    base_u = str(base_asset or "").strip().upper()
-    quote_u = str(quote_asset or "").strip().upper()
+    base_u = base_asset.strip().upper() if isinstance(base_asset, str) else ""
+    quote_u = quote_asset.strip().upper() if isinstance(quote_asset, str) else ""
     if not fee_asset and not require_explicit_asset and quote_u:
         fee_asset = quote_u
 
@@ -497,7 +503,7 @@ def aggregate_fills_by_order_id(
     volume-weighted average ``price``, summed ``qty``, and ``max(timestamp)``,
     matching ``BinanceProvider.get_orders()``.
     """
-    if rows is None or isinstance(rows, (str, bytes, bool)):
+    if rows is None or isinstance(rows, (str, bytes, bool)) or not hasattr(rows, "__iter__"):
         return []
     if isinstance(side, bool):
         return []

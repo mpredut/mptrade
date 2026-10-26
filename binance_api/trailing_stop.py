@@ -138,7 +138,12 @@ class TrailingStop:
         self.po = po
         self.sym = sym
         self.log = log
-        self.enabled = TRAILING_ENABLED if enabled is None else bool(enabled)
+        if enabled is None:
+            self.enabled = TRAILING_ENABLED
+        elif isinstance(enabled, str):
+            self.enabled = enabled.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            self.enabled = bool(enabled)
         self.sell_fraction = _finite(
             sell_fraction, name="TRAILING_SELL_FRACTION", minimum=0.0, maximum=1.0)
         min_profit_pct = _finite(
@@ -181,7 +186,9 @@ class TrailingStop:
         """Per-coin re-buy switch (registry trailing.rebuy): on/off, or 'auto' to follow
         the long-term trend. A symbol not in the trailing registry uses the global
         default (TRAILING_REBUY_ENABLED)."""
-        sym_norm = str(symbol or "").strip().upper()
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        sym_norm = symbol.strip().upper()
         mode = REBUY_MODE_BY_SYMBOL.get(sym_norm)
         if mode is None and symbol in REBUY_MODE_BY_SYMBOL:
             mode = REBUY_MODE_BY_SYMBOL.get(symbol)
@@ -195,7 +202,9 @@ class TrailingStop:
 
     def rebuy_configured_for(self, symbol: str) -> bool:
         """Auto keeps a sold-position recovery intent even while its trend is down."""
-        sym_norm = str(symbol or "").strip().upper()
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        sym_norm = symbol.strip().upper()
         mode = REBUY_MODE_BY_SYMBOL.get(sym_norm, REBUY_MODE_BY_SYMBOL.get(symbol))
         if mode == "auto":
             return True
@@ -440,10 +449,12 @@ class TrailingStop:
 
     def reconcile_pending(self, pending, persist):
         result = self.order_lifecycle.reconcile(pending, persist=persist)
-        pair = str(pending.get("symbol") or "")
-        raw_meta = pending.get("metadata")
+        raw_pair = pending.get("symbol") if isinstance(pending, dict) else None
+        pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
+        raw_meta = pending.get("metadata") if isinstance(pending, dict) else None
         meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-        action = str(pending.get("action") or meta_dict.get("action") or "").upper()
+        raw_act = (pending.get("action") if isinstance(pending, dict) else None) or meta_dict.get("action")
+        action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
         retry_key = (pair, action)
         st = getattr(persist, "st", None)
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}

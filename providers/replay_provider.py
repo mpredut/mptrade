@@ -35,6 +35,8 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
     Return an empty list when the file is absent.
     """
     out: List[Tuple[float, float]] = []
+    if not isinstance(path, str) or not path.strip() or not isinstance(symbol, str) or not symbol.strip():
+        return out
     if not os.path.exists(path):
         return out
     with open(path, encoding="utf-8") as f:
