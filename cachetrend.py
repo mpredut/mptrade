@@ -1701,7 +1701,9 @@ class CacheShortTrendManager(CacheManagerInterface):
                 )
                 if dyn is None:
                     return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
-                raw_g = dyn.get("growth_coefficient", dyn.get("gradient_recent", 0.0))
+                raw_g = dyn.get("growth_coefficient")
+                if raw_g is None:
+                    raw_g = dyn.get("gradient_recent", 0.0)
                 if isinstance(raw_g, bool):
                     return False
                 try:
@@ -1732,13 +1734,15 @@ class CacheShortTrendManager(CacheManagerInterface):
         if snap is None:
             return False   # Unknown or stale data executes immediately.
         if fast:
-            raw_g = snap.get(
-                "gradient_recent_fast", snap.get("gradient_recent", 0.0)
-            )
+            raw_g = snap.get("gradient_recent_fast")
+            if raw_g is None:
+                raw_g = snap.get("gradient_recent")
+            if raw_g is None:
+                raw_g = snap.get("growth_coefficient", 0.0)
         else:
-            raw_g = snap.get(
-                "growth_coefficient", snap.get("gradient_recent", 0.0)
-            )
+            raw_g = snap.get("growth_coefficient")
+            if raw_g is None:
+                raw_g = snap.get("gradient_recent", 0.0)
         if isinstance(raw_g, bool):
             return False
         try:

@@ -4896,6 +4896,7 @@ def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_o
     from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
     from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
     from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+    from types import SimpleNamespace
     from cachetrend import CacheShortTrendManager
     import order_retry
 
@@ -5468,6 +5469,161 @@ def test_iteration26_spot_rules_nan_backoff_clamp_macro_null_json_and_window_ref
     hp = HyperliquidProvider()
     assert hp.get_orders("HYPEUSDC", "BUY", float("nan")) == []
     assert hp.get_orders("HYPEUSDC", "BUY", -5.0) == []
+
+
+def test_iteration27_should_wait_none_fallback_price_analysis_memo_and_quantity_nan_policy(monkeypatch):
+    """Iteration 27 regression suite:
+    1. CacheShortTrendManager.should_wait (GT_S) falls back to gradient_recent when
+       growth_coefficient or gradient_recent_fast is explicitly None in snapshot/dynamic dict.
+    2. priceAnalysis.get_weight_for_cash_permission_at_quant_time handles slash symbols (TAO/USD),
+       NaN duration_seconds, direction changes at the same timestamp, and backward clock skew.
+    3. MarketRegimeService.compose_evidence matches TAO/USD with TAOUSD and _evaluate_provider_source
+       rejects negative cache age (clock skew).
+    4. decide_quantity rejects NaN/bool policy_cap with refuse_reason="policy_unavailable"
+       and ignores NaN suggested_scale.
+    """
+    from types import SimpleNamespace
+    from cachetrend import CacheShortTrendManager
+    import cacheManager as cm
+    import priceAnalysis as pa
+    from market_regime import MarketRegimeService, MarketRegimeEvidence, MarketRegimeDecision, ClosedPriceSeries
+    from providers.quantity import decide_quantity
+
+    # 1. CacheShortTrendManager.should_wait (GT_S) with None growth_coefficient / gradient_recent_fast
+    mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
+    mgr.window_seconds = (1800,)
+    mgr._epsilon = lambda snap: 1e-6
+    mgr.get_fresh_snapshot = lambda sym, now=None: {
+        "growth_coefficient": None,
+        "gradient_recent_fast": None,
+        "gradient_recent": -0.005,
+    }
+    assert mgr.should_wait("BUY", "BTCUSDC", fast=False, use_noise_gate=False) is True
+    assert mgr.should_wait("BUY", "BTCUSDC", fast=True, use_noise_gate=False) is True
+    assert mgr.should_wait("SELL", "BTCUSDC", fast=False, use_noise_gate=False) is False
+
+    mgr.get_short_trend_for_window = lambda sym, win, now=None: {
+        "growth_coefficient": None,
+        "gradient_recent": 0.004,
+        "epsilon": 1e-6,
+    }
+    assert mgr.should_wait("SELL", "BTCUSDC", window_seconds=900, use_noise_gate=True) is True
+    assert mgr.should_wait("BUY", "BTCUSDC", window_seconds=900, use_noise_gate=True) is False
+
+    # 2. priceAnalysis.get_weight_for_cash_permission_at_quant_time
+    fake_lt_cache = {
+        "TAOUSD": [
+            {
+                "duration_seconds": 86400 * 7,
+                "direction": "up",
+                "start_timestamp": 1_700_000_000.0,
+                "timestamp": 1_700_604_800.0,
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        cm,
+        "get_cache_manager",
+        lambda name: SimpleNamespace(cache=fake_lt_cache),
+    )
+    pa.last_timestamp.clear()
+    pa.last_w.clear()
+    pa.last_calc_time.clear()
+    pa.last_duration.clear()
+
+    # Slash symbol TAO/USD resolves to TAOUSD and computes aligned BUY weight (~0.95 at mid-T)
+    w_up = pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY")
+    assert w_up is not None and w_up > 0.8
+
+    # Flipping direction to 'down' at the same timestamp must NOT return the cached 'up' weight
+    fake_lt_cache["TAOUSD"][0]["direction"] = "down"
+    w_down = pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY")
+    assert w_down is not None and w_down < 0.2
+
+    # Future last_calc_time (clock skew) forces recalculation instead of using stale last_w
+    memo_key = ("TAO/USD", "BUY", 14.0, "down")
+    pa.last_calc_time[memo_key] = time.time() + 10_000.0
+    pa.last_w[memo_key] = [0.999]
+    w_recalc = pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY")
+    assert w_recalc is not None and w_recalc < 0.2
+
+    # NaN duration_seconds returns None cleanly without ValueError
+    fake_lt_cache["TAOUSD"][0]["duration_seconds"] = float("nan")
+    assert pa.get_weight_for_cash_permission_at_quant_time("TAO/USD", T_quanta=14, order_type="BUY") is None
+
+    # 3. MarketRegimeService.compose_evidence slash normalization & _evaluate_provider_source clock skew
+    svc = MarketRegimeService(clock=lambda: 1000.0, cache_ttl_sec=60.0)
+    up_dec = MarketRegimeDecision(
+        regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok",
+    )
+    ev_short = MarketRegimeEvidence(
+        role="asset_short", family="price_trend", classifier="linreg",
+        provider="kraken", symbol="TAO/USD", decision=up_dec, evaluated_at=1000.0,
+    )
+    ev_long = MarketRegimeEvidence(
+        role="asset_long", family="price_trend", classifier="linreg",
+        provider="kraken", symbol="TAO/USD", decision=up_dec, evaluated_at=1000.0,
+    )
+    comp = svc.compose_evidence((ev_short, ev_long), asset_symbol="TAOUSD")
+    assert comp.regime == "bull"
+
+    calls = []
+    class DummyRegimeProv:
+        name = "kraken"
+        def ohlc_series(self, sym, interval_min):
+            calls.append(sym)
+            return ClosedPriceSeries(
+                closes=tuple(100.0 + i for i in range(30)),
+                interval_min=interval_min,
+                last_closed_at=1000.0,
+                timestamps=tuple(1000.0 - (29 - i) * 60.0 for i in range(30)),
+            )
+
+    prov = DummyRegimeProv()
+    svc._evaluate_provider_source(prov, "TAOUSD", interval_min=1, window_seconds=900.0)
+    assert len(calls) == 1
+    # Inject future timestamp into cache (clock skew: cached_at = 2000.0 > clock = 1000.0)
+    cache_key = ("kraken", "TAOUSD", 1, 900.0)
+    svc._cache[cache_key] = (2000.0,) + svc._cache[cache_key][1:]
+    svc._evaluate_provider_source(prov, "TAOUSD", interval_min=1, window_seconds=900.0)
+    assert len(calls) == 2
+
+    # 4. decide_quantity with NaN/bool policy_cap and NaN suggested_scale
+    class DummyQtyProvider:
+        def spent_asset(self, side, base, quote):
+            return quote if side == "BUY" else base
+        def free_balance(self, asset):
+            return 1000.0
+        def balance_cap_quantity(self, side, price, free):
+            return free / price
+        def policy_cap_quantity(self, *a, **k):
+            return float("nan")
+        def fee_cap_quantity(self, *a, **k):
+            return 10.0
+        def round_amount(self, sym, qty):
+            return round(qty, 4)
+
+    q_nan = decide_quantity(DummyQtyProvider(), "TAOUSD", "BUY", 100.0, 2.0, apply_policy=True)
+    assert q_nan.refuse_reason == "policy_unavailable"
+    assert q_nan.final_qty == 0.0
+
+    class DummyQtyProviderOk(DummyQtyProvider):
+        def policy_cap_quantity(self, *a, **k):
+            return 5.0
+
+    q_scale_nan = decide_quantity(
+        DummyQtyProviderOk(),
+        "TAOUSD",
+        "BUY",
+        100.0,
+        2.0,
+        apply_policy=True,
+        regime_context=SimpleNamespace(suggested_scale=float("nan")),
+    )
+    assert q_scale_nan.refuse_reason is None
+    assert q_scale_nan.final_qty == 2.0
+    assert q_scale_nan.scale_applied is False
+
 
 
 

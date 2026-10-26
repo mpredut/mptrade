@@ -860,10 +860,11 @@ class MarketRegimeService:
                 ),
                 "",
             )
-        asset_key = str(asset_symbol or "").upper()
+        asset_key = str(asset_symbol or "").strip().upper().replace("/", "")
         selected = {}
         for item in directional:
-            key = (item.symbol.upper(), item.role)
+            item_key = str(item.symbol or "").strip().upper().replace("/", "")
+            key = (item_key, item.role)
             selected.setdefault(key, item)
 
         unknown = self.evaluator.unknown("evidence_unavailable")
@@ -872,18 +873,18 @@ class MarketRegimeService:
         benchmark_symbols = tuple(dict.fromkeys(
             item.symbol
             for item in directional
-            if item.symbol.upper() != asset_key
+            if str(item.symbol or "").strip().upper().replace("/", "") != asset_key
             and item.role in {"benchmark_short", "benchmark_long"}
         ))
         benchmarks = tuple(
             (
                 symbol,
                 selected.get(
-                    (symbol.upper(), "benchmark_short"),
+                    (str(symbol or "").strip().upper().replace("/", ""), "benchmark_short"),
                     None,
                 ),
                 selected.get(
-                    (symbol.upper(), "benchmark_long"),
+                    (str(symbol or "").strip().upper().replace("/", ""), "benchmark_long"),
                     None,
                 ),
             )
@@ -982,7 +983,7 @@ class MarketRegimeService:
                     if cached[1].fresh
                     else self.negative_cache_ttl_sec
                 )
-                if ttl > 0 and cache_now - cached[0] <= ttl:
+                if ttl > 0 and 0.0 <= cache_now - cached[0] <= ttl:
                     self._cache.move_to_end(key)
                     return cached[1:]
         observed_at = None

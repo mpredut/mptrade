@@ -167,16 +167,28 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                                 "insufficient_funds", asset)
     policy_cap = requested
     if apply_policy:
-        policy_cap = provider.policy_cap_quantity(
+        raw_policy_cap = provider.policy_cap_quantity(
             symbol, side, price, requested, balance_cap,
             base=base, quote=quote,
             cancelorders=cancelorders, hours=hours)
-        if policy_cap is None:
+        if raw_policy_cap is None or isinstance(raw_policy_cap, bool):
             return QuantityDecision(requested, balance_cap, None, None, 0.0,
                                     "policy_unavailable", asset)
-        policy_cap = max(0.0, float(policy_cap))
-    fee_cap = max(0.0, float(provider.fee_cap_quantity(
-        symbol, side, price, balance_cap)))
+        try:
+            policy_cap_f = float(raw_policy_cap)
+        except (TypeError, ValueError, OverflowError):
+            return QuantityDecision(requested, balance_cap, None, None, 0.0,
+                                    "policy_unavailable", asset)
+        if math.isnan(policy_cap_f):
+            return QuantityDecision(requested, balance_cap, None, None, 0.0,
+                                    "policy_unavailable", asset)
+        policy_cap = max(0.0, policy_cap_f)
+    raw_fee_cap = provider.fee_cap_quantity(symbol, side, price, balance_cap)
+    try:
+        fee_cap_f = float(raw_fee_cap) if (raw_fee_cap is not None and not isinstance(raw_fee_cap, bool)) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        fee_cap_f = 0.0
+    fee_cap = max(0.0, fee_cap_f) if not math.isnan(fee_cap_f) else 0.0
     final = min(requested, balance_cap, policy_cap, fee_cap)
 
     round_fn = getattr(provider, "round_amount", None)
@@ -200,12 +212,21 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     if effective_scale is None and regime_context is not None and str(side).upper() == "BUY":
         effective_scale = getattr(regime_context, "suggested_scale", None)
 
+    eff_scale_f = None
+    if effective_scale is not None and not isinstance(effective_scale, bool):
+        try:
+            cand_s = float(effective_scale)
+            if math.isfinite(cand_s):
+                eff_scale_f = cand_s
+        except (TypeError, ValueError, OverflowError):
+            eff_scale_f = None
+
     if (
-        effective_scale is not None
-        and 0.0 < float(effective_scale) < 1.0
+        eff_scale_f is not None
+        and 0.0 < eff_scale_f < 1.0
         and final > 0
     ):
-        scaled_amount = final * float(effective_scale)
+        scaled_amount = final * eff_scale_f
         if callable(round_fn):
             res = round_fn(symbol, scaled_amount)
             try:
@@ -215,10 +236,10 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
             except (TypeError, ValueError):
                 pass
         print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
-              f"{final} -> {scaled_amount} (scale={float(effective_scale):.2f})")
+              f"{final} -> {scaled_amount} (scale={eff_scale_f:.2f})")
         final = scaled_amount
         scale_applied = True
-        applied_scale = float(effective_scale)
+        applied_scale = eff_scale_f
 
     reason = None if final > 0 else "qty_zero_after_policy"
     # Reject a venue-invalid candidate before it can become a durable retry intent.

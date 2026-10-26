@@ -682,7 +682,13 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
 
     all_trend_data = cm.get_cache_manager("LongTrend").cache
-    items = all_trend_data.get(symbol) or all_trend_data.get((symbol or "").upper())
+    sym_u = (symbol or "").strip().upper()
+    sym_clean = sym_u.replace("/", "")
+    items = (
+        all_trend_data.get(symbol)
+        or all_trend_data.get(sym_u)
+        or all_trend_data.get(sym_clean)
+    )
     if not items:
         # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)
         from order_guard import _normalize_base_asset
@@ -710,24 +716,54 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     if trend is None:
         print(f" No trend in cache for symbol {symbol}.")
         return None
-    
-    duration_days = trend["duration_seconds"] / 86400
+
+    raw_dur = trend.get("duration_seconds")
+    if raw_dur is None or isinstance(raw_dur, bool):
+        return None
+    try:
+        dur_sec = float(raw_dur)
+        t_quanta_f = float(T_quanta)
+        quant_sec_f = float(quant_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (
+        math.isfinite(dur_sec)
+        and dur_sec > 0
+        and math.isfinite(t_quanta_f)
+        and t_quanta_f > 0
+        and math.isfinite(quant_sec_f)
+        and quant_sec_f > 0
+    ):
+        print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
+        return None
+
+    direction = str(trend.get("direction") or "").strip().lower()
+    if direction not in ("up", "down"):
+        return None
+
+    duration_days = dur_sec / 86400.0
+    raw_start_ts = trend.get("start_timestamp")
+    start_ts_val = (
+        float(raw_start_ts)
+        if (raw_start_ts is not None and not isinstance(raw_start_ts, bool) and math.isfinite(float(raw_start_ts)))
+        else 0.0
+    )
     print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
-    print(f"   Start trend:     {format_timestamp(trend["start_timestamp"])}")
-    print(f"   Duration:        {format_duration(trend["duration_seconds"])} ({duration_days:.1f} days)")
-    timestamp = trend['timestamp']
-    # Include order type and T in the memo key because their weights differ and
-    # automatic T may change after re-estimation.
-    memo_key = (symbol, order_type.upper(), T_quanta)
+    print(f"   Start trend:     {format_timestamp(start_ts_val)}")
+    print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
+    timestamp = trend.get("timestamp")
+    # Include order type, T, and direction in the memo key because their weights differ
+    # and automatic T or direction may change after re-estimation.
+    memo_key = (symbol, order_type.upper(), t_quanta_f, direction)
     curr_now = time.time()
-    dur_sec = float(trend.get('duration_seconds', 0) or 0.0)
     cache_age = curr_now - last_calc_time.get(memo_key, 0.0)
     dur_drift = abs(dur_sec - last_duration.get(memo_key, 0.0))
 
-    # Recalculate if timestamp changed, cache age > 300s (5min fallback TTL), or duration drifted > 300s
+    # Recalculate if timestamp changed, cache age > 300s (5min fallback TTL) or < 0 (clock skew), or duration drifted > 300s
     if (
-        timestamp == last_timestamp.get(memo_key)
-        and cache_age < 300.0
+        timestamp is not None
+        and timestamp == last_timestamp.get(memo_key)
+        and 0.0 <= cache_age < 300.0
         and dur_drift < 300.0
     ):
         cached_w = last_w.get(memo_key)
@@ -735,15 +771,13 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             print(f"not new timestamp (age={cache_age:.1f}s), use weight from mem cache.")
             return float(cached_w[0])
 
-    trend_len_quanta = trend.get('duration_seconds', 0) / quant_seconds
-    if trend_len_quanta <= 0:
+    trend_len_quanta = dur_sec / quant_sec_f
+    if not math.isfinite(trend_len_quanta) or trend_len_quanta <= 0:
         print(f"[{symbol}] duration_seconds invalid, return None")
         return None
 
-    direction = trend['direction']
-
     t, w = get_trade_weight(
-        T=T_quanta,
+        T=t_quanta_f,
         trend_len=trend_len_quanta,
         trend=direction,
         order_type=order_type
@@ -792,9 +826,18 @@ last_duration = {}
 def get_trade_weight(T, trend_len, trend, order_type,
                      exceed_percent=0.4, max_against_trend=0.15,
                      peak_weight=0.95, min_weight=0.02, lindy_plateau=True):
+    try:
+        T_f = float(T)
+        trend_len_f = float(trend_len)
+    except (TypeError, ValueError, OverflowError):
+        return np.array([]), np.array([])
+    if not (math.isfinite(T_f) and T_f > 0 and math.isfinite(trend_len_f) and trend_len_f >= 0):
+        return np.array([]), np.array([])
+    T = T_f
+    trend_len = trend_len_f
     aligned = (
-        (order_type.upper() == "BUY"  and trend == "up") or
-        (order_type.upper() == "SELL" and trend == "down")
+        (str(order_type or "").upper() == "BUY"  and trend == "up") or
+        (str(order_type or "").upper() == "SELL" and trend == "down")
     )
 
     T_extended = T * (1 + exceed_percent)
