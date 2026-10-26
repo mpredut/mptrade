@@ -126,14 +126,21 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
             ohlc = [b[1:] for b in bars]
         if ts is None:
             ts = [b[0] for b in bars]
+        if len(ohlc) <= WARM:
+            return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "fills": 0, "bh": 0.0}
         m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
                           warmup_ohlc=ohlc[:WARM],
                           timestamps=ts[WARM:])
         budget = float(params.max_budget)
-        return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
-                "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
-                "fills": m.get("fills", 0),
-                "bh": round((ohlc[-1][3] / ohlc[WARM][3] - 1) * 100, 2)}
+        tot = float(m.get("total") or 0.0)
+        p0 = float(ohlc[WARM][3])
+        p1 = float(ohlc[-1][3])
+        return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
+                "dd": round(m.get("max_drawdown_pct") or 0, 3),
+                "cyc": int(m.get("cycles") or 0),
+                "expo": round(m.get("exposure_pct") or 0, 1),
+                "fills": int(m.get("fills") or 0),
+                "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0}
     finally:
         FLAGS["peak"] = False
         strat.Strategy.step = _orig_step
@@ -225,7 +232,8 @@ if __name__ == "__main__":
                     **r, "profile": al_prof, "variant": al_var, "secs": 0.0
                 }
                 fh.write(json.dumps(row) + "\n")
-                tag = "ERROR " + row["error"].strip().splitlines()[-1] if "error" in row else \
+                err_lines = str(row.get("error") or "").strip().splitlines()
+                tag = ("ERROR " + (err_lines[-1] if err_lines else "unknown")) if "error" in row else \
                     f"1h {row.get('1h', {}).get('ret')} 1d {row.get('1d', {}).get('ret')} ({row.get('secs')}s)"
                 print(f"[t212grid] {done_count}/{len(todo)} {row['profile']} {row['variant']:<16} {row['asset']:<6} {tag} [{time.time()-t0:.0f}s]", flush=True)
             fh.flush()

@@ -182,7 +182,7 @@ def run_symbol(
     inst = Instrument(name=symbol, symbol=symbol, provider="replay",
                       base=base, quote="USDC", params=dict(params), api=api)
 
-    maxage_s = int(float(params["mt.maxage_days"]) * 24 * 3600)
+    maxage_s = max(60, int(float(params.get("mt.maxage_days") or 7) * 24 * 3600))
 
     # 29 Jul: is_trend_up() REPLICATED from the replayed history (ReplayTrendSource),
     # neutralizat — vezi replay_trend_source.py pt de ce (cursa fast/slow investigata
@@ -199,8 +199,15 @@ def run_symbol(
 
     def _replay_is_trend_up(sym, window_seconds=None, now=None):
         if cached_tape is not None and sym == symbol and window_seconds is None:
-            return cached_tape[tick_idx]
-        return trend_source.is_trend_up(sym, window_seconds=window_seconds, now=now)
+            if 0 <= tick_idx < len(cached_tape):
+                return cached_tape[tick_idx]
+            return bool(cached_tape[-1]) if cached_tape else False
+        if trend_source is not None:
+            return trend_source.is_trend_up(sym, window_seconds=window_seconds, now=now)
+        if cached_tape and sym == symbol:
+            idx = min(max(tick_idx, 0), len(cached_tape) - 1)
+            return cached_tape[idx]
+        return False
 
     orig_is_trend_up = mt.is_trend_up
     mt.is_trend_up = _replay_is_trend_up

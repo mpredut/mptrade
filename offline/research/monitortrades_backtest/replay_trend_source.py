@@ -34,6 +34,7 @@ uses what suits it):
 from __future__ import annotations
 
 from collections import deque
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -59,7 +60,8 @@ class ReplayTrendSource:
     use SEPARATE instances (do not reuse one across horizons)."""
 
     def __init__(self, symbols, window_seconds: float = DEFAULT_WINDOW_SECONDS):
-        self.window_seconds = float(window_seconds)
+        w_sec = float(window_seconds) if window_seconds is not None else DEFAULT_WINDOW_SECONDS
+        self.window_seconds = w_sec if (math.isfinite(w_sec) and w_sec > 0) else DEFAULT_WINDOW_SECONDS
         self._windows: Dict[str, pw.PriceWindow] = {
             s: pw.PriceWindow(s, window_size=200, window_seconds=self.window_seconds)
             for s in symbols
@@ -74,11 +76,20 @@ class ReplayTrendSource:
         win = self._windows.get(symbol)
         if win is None:
             return
+        if isinstance(ts, bool) or isinstance(price, bool):
+            return
+        try:
+            ts_f = float(ts)
+            px_f = float(price)
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(ts_f) and math.isfinite(px_f) and px_f > 0):
+            return
         prev = self._prev_ts.get(symbol)
-        if prev is not None and ts > prev:
-            win.set_sample_rate(ts - prev)
-        self._prev_ts[symbol] = ts
-        win.process_price(price)
+        if prev is not None and ts_f > prev:
+            win.set_sample_rate(ts_f - prev)
+        self._prev_ts[symbol] = ts_f
+        win.process_price(px_f)
         self._cached_trend_up[symbol] = None
 
     def is_trend_up(self, symbol: str, window_seconds: Optional[float] = None,
@@ -145,15 +156,25 @@ class DynamicReplayTrendSource:
     (not precomputed) — any timeout in the range, not just fixed buckets."""
 
     def __init__(self, symbols, max_timeout_sec: float = SMALL_TIMEOUT_RANGE_SEC[1]):
-        self.max_timeout_sec = float(max_timeout_sec)
+        m_sec = float(max_timeout_sec) if max_timeout_sec is not None else SMALL_TIMEOUT_RANGE_SEC[1]
+        self.max_timeout_sec = m_sec if (math.isfinite(m_sec) and m_sec > 0) else SMALL_TIMEOUT_RANGE_SEC[1]
         self._buf: Dict[str, deque] = {s: deque() for s in symbols}   # [(ts, price), ...] crescator
 
     def advance(self, symbol: str, ts: float, price: float) -> None:
         buf = self._buf.get(symbol)
         if buf is None:
             return
-        buf.append((ts, price))
-        cutoff = ts - self.max_timeout_sec
+        if isinstance(ts, bool) or isinstance(price, bool):
+            return
+        try:
+            ts_f = float(ts)
+            px_f = float(price)
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(ts_f) and math.isfinite(px_f) and px_f > 0):
+            return
+        buf.append((ts_f, px_f))
+        cutoff = ts_f - self.max_timeout_sec
         while buf and buf[0][0] < cutoff:
             buf.popleft()
 
@@ -188,8 +209,10 @@ class DynamicReplayTrendSource:
         """"Confirmable": True only if at least `min_agree` of the given timeouts
         agree that the trend is up (default min_agree=all — the most
         strict). An answer to the user's idea: do not rely on ONE noisy sample."""
+        if not timeouts_sec:
+            return False
         votes = [self.is_trend_up_at(symbol, t) for t in timeouts_sec]
-        threshold = min_agree if min_agree is not None else len(timeouts_sec)
+        threshold = max(1, int(min_agree)) if min_agree is not None else len(timeouts_sec)
         return sum(votes) >= threshold
 
     def should_wait(self, symbol: str, side: str, timeout_sec: float,

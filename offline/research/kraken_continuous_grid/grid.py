@@ -152,16 +152,29 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
     try:
         ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
         w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
+        if not ohlc:
+            if initial_cash is not None:
+                return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": float(initial_cash)}
+            return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
         m = rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
                           warmup_ohlc=w_ohlc, initial_cash=initial_cash)
+        tot = float(m.get("total") or 0.0)
         if initial_cash is not None:
-            return {"ret": round(m["total"] / initial_cash * 100, 2), "dd": round(m.get("max_drawdown_pct") or 0, 2),
-                    "cyc": m.get("cycles", 0), "refused": m["funding"]["refused_buys"],
-                    "min_cash": m["funding"]["minimum_cash"]}
+            ic = float(initial_cash)
+            funding = m.get("funding") or {}
+            return {"ret": round(tot / ic * 100, 2) if ic > 0 else 0.0,
+                    "dd": round(m.get("max_drawdown_pct") or 0, 2),
+                    "cyc": int(m.get("cycles") or 0),
+                    "refused": int(funding.get("refused_buys") or 0),
+                    "min_cash": float(funding.get("minimum_cash") if funding.get("minimum_cash") is not None else ic)}
         budget = float(params.effective_max_budget())
-        return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
-                "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
-                "bh": round((ohlc[-1][3] / ohlc[0][3] - 1) * 100, 3)}
+        p0 = float(ohlc[0][3])
+        p1 = float(ohlc[-1][3])
+        return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
+                "dd": round(m.get("max_drawdown_pct") or 0, 3),
+                "cyc": int(m.get("cycles") or 0),
+                "expo": round(m.get("exposure_pct") or 0, 1),
+                "bh": round((p1 / p0 - 1) * 100, 3) if p0 > 0 else 0.0}
     finally:
         FLAGS["peak"] = False
         strat.Strategy.step = _orig_step

@@ -1045,6 +1045,32 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert net_q == 2.5
     assert avg_p > 0
 
+    # 7. replay_trend_source, run_deep_surge_sweep, and compare_mhdsl_reentry_replay edge cases
+    from offline.research import compare_mhdsl_reentry_replay as cmr
+    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as rdss
+    from offline.research.monitortrades_backtest import replay_trend_source as rts
+
+    rts_inst = rts.ReplayTrendSource(["BTCUSDC"], window_seconds=-10)
+    assert rts_inst.window_seconds == rts.DEFAULT_WINDOW_SECONDS
+    rts_inst.advance("BTCUSDC", float("nan"), 100.0)
+    rts_inst.advance("BTCUSDC", 1000.0, -5.0)
+    assert len(rts_inst._windows["BTCUSDC"].prices) == 0
+
+    drts = rts.DynamicReplayTrendSource(["BTCUSDC"], max_timeout_sec=0)
+    assert drts.max_timeout_sec == rts.SMALL_TIMEOUT_RANGE_SEC[1]
+    drts.advance("BTCUSDC", float("nan"), 100.0)
+    assert len(drts._buf["BTCUSDC"]) == 0
+    assert drts.is_trend_up_confirmed("BTCUSDC", []) is False
+
+    assert rdss._win_move_at_ts([100.0, 110.0], 0, float("nan"), 4.0) is None
+    assert rdss._win_move_at_ts([100.0, 110.0], 0, 240.0 * 60.0, 0.0) is None
+    assert rdss._win_move_at_ts([0.0, 110.0], 0, 240.0 * 60.0, 4.0) is None
+    assert rdss._win_move_at_ts([100.0, 110.0], 0, 240.0 * 60.0, 4.0) == 10.0
+
+    empty_csv = tmp_path / "empty_hype.csv"
+    empty_csv.write_text("timestamp,open,high,low,close\n1700000000,nan,10,9,10\n", encoding="utf-8")
+    assert cmr.run_comparison(str(empty_csv)) == []
+
 
 
 

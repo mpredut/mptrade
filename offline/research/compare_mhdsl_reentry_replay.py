@@ -2,6 +2,7 @@
 """Compare MHDSL and baseline spot DCA replay on HYPE spot dataset."""
 
 import csv
+import math
 import os
 import sys
 
@@ -19,9 +20,20 @@ def run_comparison(csv_path=None):
         print(f"Dataset not found at {csv_file}")
         return []
 
+    bars = []
     with open(csv_file, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        bars = [(float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"])) for r in reader]
+        for r in reader:
+            try:
+                bar = (float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if all(math.isfinite(v) and v > 0 for v in bar):
+                bars.append(bar)
+
+    if not bars:
+        print(f"No valid bars in {csv_file}")
+        return []
 
     print(f"Loaded {len(bars)} historical bars (HYPE spot 4h).")
     sl_levels = [6.0, 8.0, 10.0, 12.0]
@@ -65,14 +77,24 @@ def run_comparison(csv_path=None):
     print("=" * 92)
 
     for sl, base, prop in results:
-        base_win_pct = (base['wins'] / base['cycles'] * 100) if base.get('cycles', 0) > 0 else 0
-        prop_win_pct = (prop['wins'] / prop['cycles'] * 100) if prop.get('cycles', 0) > 0 else 0
+        b_cyc = int(base.get('cycles') or 0)
+        p_cyc = int(prop.get('cycles') or 0)
+        b_wins = int(base.get('wins') or 0)
+        p_wins = int(prop.get('wins') or 0)
+        b_net = float(base.get('net') or 0.0)
+        p_net = float(prop.get('net') or 0.0)
+        b_dd = float(base.get('maxdd') or 0.0)
+        p_dd = float(prop.get('maxdd') or 0.0)
+        b_fills = int(base.get('fills') or 0)
+        p_fills = int(prop.get('fills') or 0)
+        base_win_pct = (b_wins / b_cyc * 100) if b_cyc > 0 else 0.0
+        prop_win_pct = (p_wins / p_cyc * 100) if p_cyc > 0 else 0.0
 
-        print(f"{sl:<6.1f} | {'Baseline':<10} | {base.get('net', 0.0):<12.2f} | {base.get('cycles', 0):<8} | {base.get('wins', 0):<6} | {base_win_pct:<8.1f} | {base.get('maxdd', 0.0):<12.2f} | {base.get('fills', 0):<8}")
-        print(f"{'':<6} | {'Proposed':<10} | {prop.get('net', 0.0):<12.2f} | {prop.get('cycles', 0):<8} | {prop.get('wins', 0):<6} | {prop_win_pct:<8.1f} | {prop.get('maxdd', 0.0):<12.2f} | {prop.get('fills', 0):<8}")
-        diff_net = prop.get('net', 0.0) - base.get('net', 0.0)
-        diff_dd = prop.get('maxdd', 0.0) - base.get('maxdd', 0.0)
-        print(f"{'':<6} | {'Delta':<10} | {'+' if diff_net >= 0 else ''}{diff_net:<12.2f} | {prop.get('cycles', 0)-base.get('cycles', 0):<8} | {prop.get('wins', 0)-base.get('wins', 0):<6} | {prop_win_pct-base_win_pct:<+8.1f} | {diff_dd:<+12.2f} | {prop.get('fills', 0)-base.get('fills', 0):<8}")
+        print(f"{sl:<6.1f} | {'Baseline':<10} | {b_net:<12.2f} | {b_cyc:<8} | {b_wins:<6} | {base_win_pct:<8.1f} | {b_dd:<12.2f} | {b_fills:<8}")
+        print(f"{'':<6} | {'Proposed':<10} | {p_net:<12.2f} | {p_cyc:<8} | {p_wins:<6} | {prop_win_pct:<8.1f} | {p_dd:<12.2f} | {p_fills:<8}")
+        diff_net = p_net - b_net
+        diff_dd = p_dd - b_dd
+        print(f"{'':<6} | {'Delta':<10} | {'+' if diff_net >= 0 else ''}{diff_net:<12.2f} | {p_cyc - b_cyc:<8} | {p_wins - b_wins:<6} | {prop_win_pct - base_win_pct:<+8.1f} | {diff_dd:<+12.2f} | {p_fills - b_fills:<8}")
         print("-" * 92)
 
     return results

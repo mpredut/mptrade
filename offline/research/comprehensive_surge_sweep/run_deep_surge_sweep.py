@@ -188,9 +188,9 @@ def evaluate_single_candidate(
                 warmup_ohlc=warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            pnl = float(res.get("total", 0.0))
-            dd = float(res.get("max_drawdown_pct", 0.0))
-            cyc = int(res.get("cycles", 0))
+            pnl = float(res.get("total") or 0.0)
+            dd = float(res.get("max_drawdown_pct") or 0.0)
+            cyc = int(res.get("cycles") or 0)
 
             total_profit += pnl
             worst_maxdd = max(worst_maxdd, dd)
@@ -219,8 +219,8 @@ def evaluate_single_candidate(
                 warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            h1_profits += float(res_h1.get("total", 0.0))
-            h2_profits += float(res_h2.get("total", 0.0))
+            h1_profits += float(res_h1.get("total") or 0.0)
+            h2_profits += float(res_h2.get("total") or 0.0)
 
     pnl_per_drawdown_point = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
 
@@ -259,9 +259,9 @@ def _run_slice_replay(
         initial_cash=initial_cash,
     )
     metrics = (
-        float(res.get("total", 0.0)),
-        float(res.get("max_drawdown_pct", 0.0)),
-        int(res.get("cycles", 0)),
+        float(res.get("total") or 0.0),
+        float(res.get("max_drawdown_pct") or 0.0),
+        int(res.get("cycles") or 0),
     )
     diag = _spot_replay._LAST_REPLAY_DIAG
     return (
@@ -277,15 +277,18 @@ def _win_move_at_ts(
     ts: float,
     w_hours: float,
 ) -> float | None:
+    if not (math.isfinite(ts) and math.isfinite(w_hours) and w_hours > 0):
+        return None
     bar_idx = int(round(ts / (240.0 * 60.0)))
     nb = max(1, round(w_hours / 4.0))
     idx = warmup_n + bar_idx
     if idx < nb or idx >= len(all_closes):
         return None
     past_p = all_closes[idx - nb]
-    if past_p <= 0:
+    cur_p = all_closes[idx]
+    if not (math.isfinite(past_p) and past_p > 0 and math.isfinite(cur_p)):
         return None
-    return (all_closes[idx] - past_p) / past_p * 100.0
+    return (cur_p - past_p) / past_p * 100.0
 
 
 def evaluate_candidate_group(
