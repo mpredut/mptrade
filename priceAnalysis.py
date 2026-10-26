@@ -394,9 +394,17 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
 
 def format_duration(seconds):
     """Convert seconds to the human-readable ``Xd Yh Zm`` format."""
-    days = int(seconds // 86400)
-    hours = int((seconds % 86400) // 3600)
-    minutes = int((seconds % 3600) // 60)
+    if seconds is None or isinstance(seconds, bool):
+        return "0m"
+    try:
+        sec_f = float(seconds)
+    except (TypeError, ValueError, OverflowError):
+        return "0m"
+    if not math.isfinite(sec_f) or sec_f <= 0:
+        return "0m"
+    days = int(sec_f // 86400)
+    hours = int((sec_f % 86400) // 3600)
+    minutes = int((sec_f % 3600) // 60)
     
     parts = []
     if days > 0:
@@ -411,7 +419,15 @@ def format_duration(seconds):
 
 def format_timestamp(ts):
     """Convert a timestamp to a human-readable representation."""
-    return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+    if ts is None or isinstance(ts, bool):
+        return datetime.fromtimestamp(0).strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        ts_f = float(ts)
+        if not math.isfinite(ts_f) or ts_f < 0:
+            ts_f = 0.0
+        return datetime.fromtimestamp(ts_f).strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError, OSError, OverflowError):
+        return datetime.fromtimestamp(0).strftime('%Y-%m-%d %H:%M:%S')
 
 
 # Minimum points required for a credible window slope; fewer points constitute a gap.
@@ -737,6 +753,20 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     import cacheManager as cm
     global last_timestamp, last_w, last_calc_time, last_duration
 
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    if not isinstance(order_type, str):
+        return None
+    side_u = order_type.strip().upper()
+    if side_u == "B":
+        side_u = "BUY"
+    elif side_u == "S":
+        side_u = "SELL"
+    if side_u not in ("BUY", "SELL"):
+        return None
+    if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
+        return None
+
     if T_quanta is None:
         try:
             from intelligence.internal.state.survival import estimate_T
@@ -806,23 +836,30 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         return None
 
     direction = str(trend.get("direction") or "").strip().lower()
+    if direction == "bull":
+        direction = "up"
+    elif direction == "bear":
+        direction = "down"
     if direction not in ("up", "down"):
         return None
 
     duration_days = dur_sec / 86400.0
     raw_start_ts = trend.get("start_timestamp")
-    start_ts_val = (
-        float(raw_start_ts)
-        if (raw_start_ts is not None and not isinstance(raw_start_ts, bool) and math.isfinite(float(raw_start_ts)))
-        else 0.0
-    )
+    start_ts_val = 0.0
+    if raw_start_ts is not None and not isinstance(raw_start_ts, bool):
+        try:
+            st_f = float(raw_start_ts)
+            if math.isfinite(st_f):
+                start_ts_val = st_f
+        except (TypeError, ValueError, OverflowError):
+            start_ts_val = 0.0
     print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
     print(f"   Start trend:     {format_timestamp(start_ts_val)}")
     print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
     timestamp = trend.get("timestamp")
     # Include order type, T, and direction in the memo key because their weights differ
     # and automatic T or direction may change after re-estimation.
-    memo_key = (symbol, order_type.upper(), t_quanta_f, direction)
+    memo_key = (symbol, side_u, t_quanta_f, direction)
     curr_now = time.time()
     cache_age = curr_now - last_calc_time.get(memo_key, 0.0)
     dur_drift = abs(dur_sec - last_duration.get(memo_key, 0.0))
@@ -848,7 +885,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         T=t_quanta_f,
         trend_len=trend_len_quanta,
         trend=direction,
-        order_type=order_type
+        order_type=side_u
     )
 
     if len(w) == 0:
@@ -894,6 +931,8 @@ last_duration = {}
 def get_trade_weight(T, trend_len, trend, order_type,
                      exceed_percent=0.4, max_against_trend=0.15,
                      peak_weight=0.95, min_weight=0.02, lindy_plateau=True):
+    if isinstance(T, bool) or isinstance(trend_len, bool) or not isinstance(order_type, str) or not isinstance(trend, str):
+        return np.array([]), np.array([])
     try:
         T_f = float(T)
         trend_len_f = float(trend_len)
@@ -903,9 +942,23 @@ def get_trade_weight(T, trend_len, trend, order_type,
         return np.array([]), np.array([])
     T = T_f
     trend_len = trend_len_f
+    side_u = order_type.strip().upper()
+    if side_u == "B":
+        side_u = "BUY"
+    elif side_u == "S":
+        side_u = "SELL"
+    if side_u not in ("BUY", "SELL"):
+        return np.array([]), np.array([])
+    trend_norm = trend.strip().lower()
+    if trend_norm == "bull":
+        trend_norm = "up"
+    elif trend_norm == "bear":
+        trend_norm = "down"
+    if trend_norm not in ("up", "down"):
+        return np.array([]), np.array([])
     aligned = (
-        (str(order_type or "").upper() == "BUY"  and trend == "up") or
-        (str(order_type or "").upper() == "SELL" and trend == "down")
+        (side_u == "BUY"  and trend_norm == "up") or
+        (side_u == "SELL" and trend_norm == "down")
     )
 
     T_extended = T * (1 + exceed_percent)

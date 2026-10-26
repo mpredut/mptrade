@@ -11091,6 +11091,81 @@ def test_iteration101_intelligence_guards_side_and_fill_extraction_safety():
         assert capped_bool == 0.0
 
 
+def test_iteration102_composite_priceanalysis_survival_and_volatility_safety():
+    """Iteration 102: Verify CompositeMarketIntelligence bypass_guards='all' & side/scale handling, priceAnalysis, survival, and volatility safety."""
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.internal.guards.guard_decision import GuardDecision
+    from intelligence.internal.state import survival, volatility
+    import priceAnalysis as pa
+
+    # 1. CompositeMarketIntelligence: bypass_guards={"all"} bypasses code=None guards (noise, parabolic, cascade)
+    cmi = CompositeMarketIntelligence()
+    # Without bypass: gradient=0.01 <= epsilon=1.0 -> NoiseFloorGuard defers
+    dec_noise = cmi.evaluate_guards("BTCUSDC", " b ", 100.0, gradient=0.01, epsilon=1.0)
+    assert dec_noise.allowed is False and dec_noise.guard_name == "NoiseFloorGuard"
+    # With bypass_guards={"all"}: NoiseFloorGuard and ParabolicSurgeGuard are bypassed
+    dec_bypass_all = cmi.evaluate_guards(
+        "BTCUSDC", " b ", 120.0,
+        gradient=0.01, epsilon=1.0,
+        price_history=[(1000.0, 100.0), (1500.0, 120.0)],
+        now=1500.0,
+        bypass_guards={"all"},
+    )
+    assert dec_bypass_all.allowed is True and dec_bypass_all.reason == "all_guards_cleared"
+
+    # evaluate() forwards bypass_guards and handles zero suggested_scale as non-executable
+    eval_bypassed = cmi.evaluate(
+        "BTCUSDC", 120.0,
+        ts=1500.0,
+        gradient=5.0, epsilon=1.0,
+        price_history=[(1000.0, 100.0), (1500.0, 120.0)],
+        bypass_guards={"all"},
+    )
+    assert eval_bypassed.can_execute is True
+    assert eval_bypassed.effective_scale == pytest.approx(1.0)
+
+    # 2. priceAnalysis: format_duration, format_timestamp, get_trade_weight, get_weight_for_cash_permission_at_quant_time
+    assert pa.format_duration(None) == "0m"
+    assert pa.format_duration(True) == "0m"
+    assert pa.format_duration(-100) == "0m"
+    assert pa.format_duration(float("nan")) == "0m"
+    assert pa.format_duration(3660) == "1h 1m"
+    assert isinstance(pa.format_timestamp(None), str)
+    assert isinstance(pa.format_timestamp(True), str)
+    assert isinstance(pa.format_timestamp(float("inf")), str)
+
+    t_b, w_b = pa.get_trade_weight(T=True, trend_len=5.0, trend="up", order_type="BUY")
+    assert len(w_b) == 0
+    t_inv, w_inv = pa.get_trade_weight(T=14.0, trend_len=5.0, trend="up", order_type="INVALID")
+    assert len(w_inv) == 0
+    t_bull, w_bull = pa.get_trade_weight(T=14.0, trend_len=7.0, trend=" BULL ", order_type=" b ")
+    assert len(w_bull) > 0 and float(w_bull[0]) == pytest.approx(0.95, abs=0.02)
+    t_bear, w_bear = pa.get_trade_weight(T=14.0, trend_len=7.0, trend=" BEAR ", order_type=" s ")
+    assert len(w_bear) > 0 and float(w_bear[0]) == pytest.approx(0.95, abs=0.02)
+
+    assert pa.get_weight_for_cash_permission_at_quant_time(None, "BUY") is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", None) is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", True) is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", "BUY", T_quanta=True) is None
+    assert pa.get_weight_for_cash_permission_at_quant_time("BTCUSDC", "BUY", quant_seconds=False) is None
+
+    # 3. survival: non-str symbol and episodes length mismatch / bool args
+    assert survival._extract_base_symbol(True) == ""
+    assert survival._lookup_t_cache_entry({"BTCUSDC": {"T": 10}}, True) is None
+    est_bad = survival.estimate_T(True, prior_T=12.0)
+    assert est_bad["T"] == 12 and est_bad["n"] == 0
+    assert survival.episodes(None, [1.0, 1.0], 24) == []
+    assert survival.episodes([1000.0, 2000.0, 3000.0], [1.0, 1.0, 1.0, 1.0], 24, noise_tolerance=True, min_confirm=2) != []
+
+    # 4. volatility: negative values and non-str symbol/path
+    assert volatility.vol_pct_to_ratio(-2.5) == 0.0
+    assert volatility.vol_ratio_to_pct(-0.025) == 0.0
+    assert volatility._vol_symbol_variants(True) == ()
+    assert volatility._extract_vol_ratio_from_file(True, "BTCUSDC") is None
+    assert volatility._extract_vol_ratio_from_file("some_path.json", True) is None
+
+
+
 
 
 

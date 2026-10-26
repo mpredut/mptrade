@@ -92,13 +92,13 @@ class CompositeMarketIntelligence:
         self.geopolitical_guard = geopolitical_guard or GeopoliticalShockGuard()
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
-        sym = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym = (symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")) if isinstance(symbol, str) else ""
         if sym not in self.kalman_triggers:
             self.kalman_triggers[sym] = KalmanTrendTrigger()
         return self.kalman_triggers[sym]
 
     def _get_gradient(self, symbol: str) -> LinearGradientTrigger:
-        sym = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym = (symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")) if isinstance(symbol, str) else ""
         if sym not in self.gradient_triggers:
             self.gradient_triggers[sym] = LinearGradientTrigger()
         return self.gradient_triggers[sym]
@@ -132,11 +132,17 @@ class CompositeMarketIntelligence:
         effective_scale = 1.0
         downscale_dec: Optional[GuardDecision] = None
         bypassed = normalize_bypassed_guards(bypass_guards)
-        side = str(side or "").strip().upper()
+        side = side.strip().upper() if isinstance(side, str) else ""
+        if side == "B":
+            side = "BUY"
+        elif side == "S":
+            side = "SELL"
 
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
             if not bypassed:
                 return False
+            if "all" in bypassed or "*" in bypassed:
+                return True
             if code:
                 spec = GUARD_REGISTRY.get(code)
                 if spec is not None and spec.is_bypassed(bypassed):
@@ -359,6 +365,7 @@ class CompositeMarketIntelligence:
         asset_24h_change_pct: Optional[float] = None,
         qty: Optional[float] = None,
         notional_eur: Optional[float] = None,
+        bypass_guards: Optional[object] = None,
     ) -> MarketIntelligenceEvaluation:
         """Evaluate directional triggers and validate against all guards."""
         now_ts = time.time()
@@ -438,7 +445,11 @@ class CompositeMarketIntelligence:
         else:
             active_trigger = triggered_events[0] if triggered_events else None
         raw_side = getattr(active_trigger.side, "value", active_trigger.side) if active_trigger else "HOLD"
-        side = str(raw_side or "HOLD").strip().upper()
+        side = str(raw_side or "HOLD").strip().upper() if not isinstance(raw_side, bool) else "HOLD"
+        if side == "B":
+            side = "BUY"
+        elif side == "S":
+            side = "SELL"
 
         # Evaluate guards against active side
         if active_trigger and active_trigger.is_executable():
@@ -460,12 +471,26 @@ class CompositeMarketIntelligence:
                 qty=qty,
                 notional_eur=notional_eur,
                 now=now_ts,
+                bypass_guards=bypass_guards,
             )
         else:
             guard_dec = GuardDecision.allow("NoActiveOrder", "idle")
 
         can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
-        scale = (1.0 if side == "SELL" else guard_dec.suggested_scale) if can_exec else 0.0
+        raw_sc = getattr(guard_dec, "suggested_scale", 1.0)
+        sc_val = 1.0
+        if raw_sc is not None and not isinstance(raw_sc, bool):
+            try:
+                sf = float(raw_sc)
+                sc_val = min(1.0, max(0.0, sf)) if math.isfinite(sf) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                sc_val = 0.0
+        else:
+            sc_val = 0.0
+        scale = (1.0 if side == "SELL" else sc_val) if can_exec else 0.0
+        if scale <= 0.0:
+            can_exec = False
+            scale = 0.0
 
         return MarketIntelligenceEvaluation(
             symbol=symbol,

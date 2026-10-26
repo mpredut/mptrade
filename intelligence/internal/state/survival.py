@@ -69,11 +69,20 @@ def block_slopes(ts, px, window_h, step_h):
 def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
     """Return trend episodes in hours using the detector's semantics."""
     eps = []
+    if bt is None or bs is None:
+        return eps
+    w_h = _pos_float(window_h, 0.0)
+    if w_h <= 0.0:
+        return eps
+    nt = 2 if isinstance(noise_tolerance, bool) or noise_tolerance is None else max(0, int(noise_tolerance))
+    mc = 3 if isinstance(min_confirm, bool) or min_confirm is None else max(1, int(min_confirm))
     i = 0
-    n = len(bs)
+    n = min(len(bt), len(bs))
+    bt = bt[:n]
+    bs = bs[:n]
     while i < n:
         sign = bs[i]
-        start = bt[i] - window_h * 3600.0
+        start = bt[i] - w_h * 3600.0
         last_confirm = bt[i]
         confirms, noise = 1, 0
         j = i + 1
@@ -82,12 +91,12 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
                 confirms += 1
                 noise = 0
                 last_confirm = bt[j]
-            elif noise < noise_tolerance:
+            elif noise < nt:
                 noise += 1
             else:
                 break
             j += 1
-        if confirms >= min_confirm:
+        if confirms >= mc:
             eps.append(
                 {
                     "dir": "up" if sign > 0 else "down",
@@ -188,7 +197,9 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
 
 
 def _extract_base_symbol(symbol: str) -> str:
-    s = (symbol or "").upper().strip().replace("/", "").replace("-", "").replace("_", "")
+    if not isinstance(symbol, str):
+        return ""
+    s = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
     if s == "USDCUSDT":
         return s
     for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD", "RON", "GBP"):
@@ -198,7 +209,7 @@ def _extract_base_symbol(symbol: str) -> str:
 
 
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
-    if not isinstance(data, dict) or not symbol:
+    if not isinstance(data, dict) or not isinstance(symbol, str) or not symbol.strip():
         return None
     sym_u = symbol.upper().strip()
     ent = data.get(symbol) or data.get(sym_u)
@@ -237,6 +248,17 @@ def estimate_T(
     """Estimate asset-specific trend lifetime T empirically from historical candlesticks."""
     prior_f = _pos_float(prior_T, 14.0)
     ttl_f = _pos_float(ttl_days, 7.0)
+    if not isinstance(symbol, str) or not symbol.strip():
+        return {
+            "T": int(round(prior_f)),
+            "n": 0,
+            "w": 0.0,
+            "source_symbol": None,
+            "median_d": None,
+            "p90_d": None,
+            "T_emp": None,
+            "ts": 0,
+        }
     loaded_cache = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
     cache = loaded_cache if isinstance(loaded_cache, dict) else {}
 
@@ -256,7 +278,7 @@ def estimate_T(
             except (TypeError, ValueError):
                 pass
 
-    sym_u = (symbol or "").upper().strip()
+    sym_u = symbol.upper().strip()
     base = _extract_base_symbol(sym_u)
     candidates = [sym_u] if sym_u else [symbol]
     if base and sym_u != "USDCUSDT":

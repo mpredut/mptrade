@@ -227,7 +227,7 @@ def vol_pct_to_ratio(vol_pct: float) -> float:
         return 0.0
     try:
         vf = float(vol_pct)
-        return (vf / 100.0) if math.isfinite(vf) else 0.0
+        return (vf / 100.0) if (math.isfinite(vf) and vf > 0.0) else 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -238,7 +238,7 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
         return 0.0
     try:
         vf = float(vol_ratio)
-        return (vf * 100.0) if math.isfinite(vf) else 0.0
+        return (vf * 100.0) if (math.isfinite(vf) and vf > 0.0) else 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -255,7 +255,9 @@ def get_kalman_state_path() -> str:
 
 
 def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
-    raw = str(symbol or "").strip().upper()
+    if not isinstance(symbol, str):
+        return ()
+    raw = symbol.strip().upper()
     if not raw:
         return ()
     clean = raw.replace("/", "").replace("-", "").replace("_", "")
@@ -274,7 +276,7 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
 
 
 def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
-    if not path:
+    if not path or not isinstance(path, str) or not isinstance(symbol, str):
         return None
     try:
         from state_io import read_recovering_previous
