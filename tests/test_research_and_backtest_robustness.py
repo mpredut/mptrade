@@ -1019,6 +1019,32 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     rg.update(float("nan"))
     assert rg.prev is None
 
+    # 6. clean_order_cache, migrate_price_cache, and verify_account_facade edge cases
+    from offline.legacy_tools import clean_order_cache as coc, migrate_price_cache as mpc
+    from verify_tools import verify_account_facade as vaf
+
+    assert coc.is_garbage(None) is True
+    assert coc.is_garbage({"status": "FILLED", "price": float("nan")}) is True
+    assert coc.is_garbage({"status": "FILLED", "price": float("inf")}) is True
+    assert coc.is_garbage({"status": "FILLED", "price": True}) is True
+    assert coc.is_garbage({"status": "FILLED", "price": 100.0}) is False
+
+    assert mpc._entry_ts([None, 100.0]) == 0
+    assert mpc._entry_ts([True, 100.0]) == 0
+    assert mpc._entry_ts([float("nan"), 100.0]) == 0
+    assert mpc._entry_ts(["1700000000000", 100.0]) == 1700000000000
+
+    assert vaf.order_key(None) == (0.0, 0.0, 0.0, "")
+    orders_mixed = [
+        {"timestamp": None, "price": "100.0", "qty": "1.0", "side": "buy"},
+        {"timestamp": 1700000000, "price": 99.0, "qty": 2.0, "side": "BUY"},
+    ]
+    sorted_orders = sorted(orders_mixed, key=vaf.order_key)
+    assert len(sorted_orders) == 2
+    avg_p, net_q = vaf.position_from(orders_mixed, [{"qty": "0.5", "price": 105.0}])
+    assert net_q == 2.5
+    assert avg_p > 0
+
 
 
 

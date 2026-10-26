@@ -19,6 +19,7 @@ Idempotent.
 import os
 import sys
 import json
+import math
 import time
 
 # offline/legacy_tools/ sits two levels below the repository root.
@@ -30,12 +31,18 @@ BAD_STATUS = {"CANCELED", "EXPIRED", "REJECTED", "NEW"}
 
 
 def is_garbage(order):
+    if not isinstance(order, dict):
+        return True
     status = str(order.get("status") or "").upper()
-    try:
-        price = float(order.get("price") or 0)
-    except (TypeError, ValueError):
-        price = 0
-    return status in BAD_STATUS or price <= 0
+    raw_price = order.get("price")
+    if isinstance(raw_price, bool) or raw_price is None:
+        price = 0.0
+    else:
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            price = 0.0
+    return status in BAD_STATUS or not (math.isfinite(price) and price > 0)
 
 
 def main():
@@ -46,11 +53,19 @@ def main():
 
     with open(ORDER_FILE) as f:
         data = json.load(f)
+    if not isinstance(data, dict):
+        print(f"{ORDER_FILE} does not contain a JSON object — nothing to do.")
+        return
     items = data.get("items", {})
+    if not isinstance(items, dict):
+        print(f"{ORDER_FILE} items is not a dict — nothing to do.")
+        return
 
     total = removed = 0
     cleaned = {}
     for sym, lst in items.items():
+        if not isinstance(lst, list):
+            continue
         keep = [o for o in lst if not is_garbage(o)]
         total += len(lst)
         removed += len(lst) - len(keep)

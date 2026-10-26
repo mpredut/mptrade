@@ -14,6 +14,7 @@ a real zero balance. Confirmed differences still produce a nonzero exit.
 Run before restarting the fleet:
   ../myenv/bin/python verify_account_facade.py
 """
+import math
 import os
 import sys
 
@@ -29,26 +30,41 @@ import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 base_of = utils.base_asset
 
 
+def _f(val, default=0.0):
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        v = float(val)
+        return v if math.isfinite(v) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def free_direct(base):
     """Legacy full-account loop; unavailable account data is indistinguishable from zero."""
     for b in (api.get_account_assets_balances() or []):
-        if b.get("asset") == base:
-            return float(b.get("free", 0.0) or 0.0)
+        if isinstance(b, dict) and b.get("asset") == base:
+            return _f(b.get("free"), 0.0)
     return 0.0
 
 
 def position_from(buy_orders, sell_orders):
     """The get_position_stats logic: avg_buy + net_qty derived from order lists."""
-    tq = sum(float(o["qty"]) for o in buy_orders)
-    tv = sum(float(o["price"]) * float(o["qty"]) for o in buy_orders)
-    sq = sum(float(o["qty"]) for o in sell_orders)
-    avg = tv / tq if tq else 0.0
+    buys = [o for o in (buy_orders or []) if isinstance(o, dict)]
+    sells = [o for o in (sell_orders or []) if isinstance(o, dict)]
+    tq = sum(_f(o.get("qty"), 0.0) for o in buys)
+    tv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in buys)
+    sq = sum(_f(o.get("qty"), 0.0) for o in sells)
+    avg = tv / tq if tq > 0 else 0.0
     return avg, tq - sq
 
 
 def order_key(o):
-    return (o.get("timestamp"), float(o.get("price", 0) or 0),
-            float(o.get("qty", 0) or 0), (o.get("side") or "").upper())
+    if not isinstance(o, dict):
+        return (0.0, 0.0, 0.0, "")
+    raw_ts = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
+    return (_f(raw_ts, 0.0), _f(o.get("price"), 0.0),
+            _f(o.get("qty"), 0.0), str(o.get("side") or "").upper())
 
 
 def main():

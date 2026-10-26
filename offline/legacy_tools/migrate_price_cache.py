@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import glob
+import math
 import time
 
 # offline/legacy_tools/ sits two levels below the repository root.
@@ -34,11 +35,20 @@ def _atomic_write_lines(path, lines):
 
 def _entry_ts(item):
     # An item is [ts, price] (a list) — we use the first element as the timestamp.
+    raw = 0
     if isinstance(item, (list, tuple)) and item:
-        return item[0]
-    if isinstance(item, dict):
-        return item.get("time") or item.get("timestamp") or 0
-    return 0
+        raw = item[0]
+    elif isinstance(item, dict):
+        raw = item.get("time") if item.get("time") is not None else item.get("timestamp")
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    try:
+        val = float(raw)
+        if not math.isfinite(val) or val <= 0:
+            return 0
+        return int(val)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _load_old_json(path):
@@ -46,7 +56,9 @@ def _load_old_json(path):
     with open(path) as f:
         data = json.load(f)
     items = data.get("items", data) if isinstance(data, dict) else {}
-    return items if isinstance(items, dict) else {}
+    if not isinstance(items, dict):
+        return {}
+    return {k: v for k, v in items.items() if isinstance(v, list)}
 
 
 def _load_jsonl(path):
@@ -61,7 +73,8 @@ def _load_jsonl(path):
                 continue
             try:
                 rec = json.loads(line)
-                out.setdefault(rec["s"], []).append(rec["i"])
+                if isinstance(rec, dict) and "s" in rec and "i" in rec:
+                    out.setdefault(rec["s"], []).append(rec["i"])
             except Exception:
                 continue
     return out
@@ -80,10 +93,14 @@ def migrate_file(json_path, dry_run=False):
     for sym in symbols:
         by_ts = {}
         for item in new.get(sym, []):          # intai noile (au prioritate la duplicat)
-            by_ts[_entry_ts(item)] = item
+            ts = _entry_ts(item)
+            if ts > 0:
+                by_ts[ts] = item
         before = len(by_ts)
         for item in old.get(sym, []):
-            by_ts.setdefault(_entry_ts(item), item)
+            ts = _entry_ts(item)
+            if ts > 0:
+                by_ts.setdefault(ts, item)
         added = len(by_ts) - before
         added_total += added
         merged[sym] = [by_ts[k] for k in sorted(by_ts)]

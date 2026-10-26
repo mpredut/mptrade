@@ -82,20 +82,21 @@ def main():
     check("free_balance(HYPE) numeric >=0", isinstance(free_hype, (int, float)) and free_hype >= 0,
           repr(free_hype))
 
-    buys = mkt.get_orders(HYPE, "BUY", MAXAGE)
-    sells = mkt.get_orders(HYPE, "SELL", MAXAGE)
+    buys = mkt.get_orders(HYPE, "BUY", MAXAGE) or []
+    sells = mkt.get_orders(HYPE, "SELL", MAXAGE) or []
     print(f"  get_orders BUY={len(buys)} SELL={len(sells)} (ultimele {MAXAGE//86400} zile, SPOT)")
-    shape_ok = all(set(("side", "price", "qty", "timestamp")) <= set(o) for o in (buys + sells))
-    sides_ok = all(o["side"] == "BUY" for o in buys) and all(o["side"] == "SELL" for o in sells)
+    shape_ok = all(isinstance(o, dict) and set(("side", "price", "qty", "timestamp")) <= set(o) for o in (buys + sells))
+    sides_ok = all(isinstance(o, dict) and o.get("side") == "BUY" for o in buys) and all(isinstance(o, dict) and o.get("side") == "SELL" for o in sells)
     check("orders normalised to {side,price,qty,timestamp}", shape_ok)
     check("side filtrat corect (BUY/SELL)", sides_ok)
     for o in (buys[:2] + sells[:2]):
-        print(f"    {o['side']} px={o['price']} qty={o['qty']} ts={o['timestamp']}")
+        if isinstance(o, dict):
+            print(f"    {o.get('side')} px={o.get('price')} qty={o.get('qty')} ts={o.get('timestamp')}")
 
     print("\n==== POZITIE (logica get_position_stats) ====")
-    tbq = sum(float(o["qty"]) for o in buys)
-    tbv = sum(float(o["price"]) * float(o["qty"]) for o in buys)
-    tsq = sum(float(o["qty"]) for o in sells)
+    tbq = sum(float(o.get("qty") or 0.0) for o in buys if isinstance(o, dict))
+    tbv = sum(float(o.get("price") or 0.0) * float(o.get("qty") or 0.0) for o in buys if isinstance(o, dict))
+    tsq = sum(float(o.get("qty") or 0.0) for o in sells if isinstance(o, dict))
     avg_buy = tbv / tbq if tbq else 0.0
     net = tbq - tsq
     print(f"  buy_qty={tbq:.6f} sell_qty={tsq:.6f} net_qty={net:.6f} avg_buy={avg_buy:.4f}")
@@ -105,19 +106,22 @@ def main():
 
     print("\n==== A simulated DECISION (like monitor_price_and_trade, WITHOUT placing) ====")
     if buys and price:
-        last_buy = sorted(buys, key=lambda x: x["timestamp"], reverse=True)[0]["price"]
-        inc = (price - last_buy) / last_buy
-        print(f"  last buy={last_buy}  price={price}  change={inc*100:+.2f}%")
-        gain, lost = 0.092, 0.049
-        if inc >= 0.17:
-            decision = "HARD-TP (sell a fraction, regardless of the trend)"
-        elif inc > gain:
-            decision = "gain above threshold -> sell ONLY if the trend is NOT up"
-        elif (last_buy - price) / last_buy > lost:
-            decision = "loss above threshold -> sell ONLY if the trend is NOT up"
+        last_buy = float(sorted(buys, key=lambda x: x.get("timestamp") or 0, reverse=True)[0].get("price") or 0.0)
+        if last_buy > 0:
+            inc = (price - last_buy) / last_buy
+            print(f"  last buy={last_buy}  price={price}  change={inc*100:+.2f}%")
+            gain, lost = 0.092, 0.049
+            if inc >= 0.17:
+                decision = "HARD-TP (sell a fraction, regardless of the trend)"
+            elif inc > gain:
+                decision = "gain above threshold -> sell ONLY if the trend is NOT up"
+            elif (last_buy - price) / last_buy > lost:
+                decision = "loss above threshold -> sell ONLY if the trend is NOT up"
+            else:
+                decision = "nothing interesting"
+            print(f"  -> decision: {decision}")
         else:
-            decision = "nothing interesting"
-        print(f"  -> decision: {decision}")
+            print("  (last buy price invalid — no sell decision)")
     else:
         print("  (no recent SPOT buys or no price — no sell decision)")
 
