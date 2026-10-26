@@ -663,13 +663,18 @@ class KrakenProvider(MarketDataProvider):
                 )
             if any(isinstance(info[key], bool) for key in ("pair_decimals", "lot_decimals", "ordermin")):
                 raise ValueError("boolean values not allowed in pair_precision")
+            p_dec = int(info["pair_decimals"])
+            v_dec = int(info["lot_decimals"])
+            ord_min = float(info["ordermin"])
+            if p_dec < 0 or v_dec < 0 or not math.isfinite(ord_min) or ord_min <= 0.0:
+                raise ValueError("non-finite or non-positive values in pair_precision")
             return PairPrecision(
-                price_decimals=int(info["pair_decimals"]),
-                volume_decimals=int(info["lot_decimals"]),
-                order_min=float(info["ordermin"]),
+                price_decimals=p_dec,
+                volume_decimals=v_dec,
+                order_min=ord_min,
                 base_asset=str(info["base"]),
             )
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:

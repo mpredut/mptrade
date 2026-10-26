@@ -8309,3 +8309,91 @@ def test_iteration57_agy_store_drawprices_trailing_and_t212_strategy_safety(monk
     assert limit is None
 
 
+def test_iteration58_binance_trailing_t212_params_and_provider_adapters_safety(monkeypatch):
+    import os
+    import sys
+    from binance_api.trailing_stop import TrailingStop
+    from trailing_core import TrailingCore
+    from providers.market_api import BinanceProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.strategy_executor import ProviderError
+
+    # 1. Binance TrailingStop._sync_retry_count_from_state & _order_intent
+    ts = object.__new__(TrailingStop)
+    ts._retry_counts = {}
+    ts.order_lifecycle = MagicMock()
+    ts.order_lifecycle.new_intent.side_effect = lambda **kw: kw
+    dummy_persist = type("P", (), {"st": {"retry_counts": {"SELL": True}}})()
+    ts._sync_retry_count_from_state("BTCUSDC", "SELL", dummy_persist)
+    assert ts._retry_counts.get(("BTCUSDC", "SELL"), 0) == 0
+    intent = ts._order_intent("SELL", "BTCUSDC", "BTC", "BTCUSDC", 0.1, 60000.0, anchor=None)
+    assert ":60000.00000000" in intent["intent_id"]
+
+    # 2. TrailingCore._process ignores invalid trail (bool, NaN, <=0, >=100)
+    core = object.__new__(TrailingCore)
+    core.a = MagicMock()
+    core.a.free_qty.return_value = 10.0
+    core.a.price.return_value = 100.0
+    st_dict = {}
+    core._process("BTCUSDC", "BTC", "BTCUSDC", float("nan"), st_dict)
+    core._process("BTCUSDC", "BTC", "BTCUSDC", True, st_dict)
+    core._process("BTCUSDC", "BTC", "BTCUSDC", 120.0, st_dict)
+    assert st_dict == {}
+
+    # 3. BinanceProvider.open_orders & order_status reject bool/NaN
+    bp = BinanceProvider()
+    fake_bapi = MagicMock()
+    fake_bapi.client.get_open_orders.return_value = [{"orderId": 1, "price": float("nan"), "origQty": 1.0, "executedQty": 0.0}]
+    monkeypatch.setattr("providers.market_api._get_bapi", lambda: fake_bapi)
+    with pytest.raises(ProviderError):
+        bp.open_orders("BTCUSDC")
+
+    fake_bapi.client.get_order.return_value = {"status": "NEW", "executedQty": True, "cummulativeQuoteQty": 0.0, "origQty": 1.0}
+    with pytest.raises(ProviderError):
+        bp.order_status("BTCUSDC", "123")
+
+    # 4. KrakenProvider.pair_precision rejects NaN/non-positive ordermin
+    kp = KrakenProvider(client=MagicMock())
+    kp._cli.pair_info.return_value = {"pair_decimals": 2, "lot_decimals": 4, "ordermin": float("nan"), "base": "HYPE"}
+    with pytest.raises(ProviderError):
+        kp.pair_precision("HYPEUSD")
+
+    # 5. HyperliquidProvider.submit_order market rejects NaN mid price
+    hp = HyperliquidProvider(token="HYPE", live_enabled=True)
+    monkeypatch.setattr(hp, "_pair", lambda: "@107")
+    monkeypatch.setattr(hp, "get_current_price", lambda s: float("nan"))
+    with pytest.raises(ProviderError, match="price unavailable"):
+        hp.submit_order("HYPEUSDC", "BUY", 1.0, price=None, market=True)
+
+    # 6. 212trading/strategy.py StratParams.from_env rejects NaN in STRAT_TP_LADDER
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as strat_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    base_env = {
+        "STRATEGY_MODE": "avg_tp",
+        "STRAT_TP_LADDER": "5:nan,10:50",
+        "STRAT_MAX_BUDGET": "1000",
+        "STRAT_ENTRY_PCT": "10",
+        "STRAT_DCA_PCT": "10",
+        "STRAT_MAX_DCA_BUYS": "5",
+    }
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_LADDER"):
+        strat_mod.StratParams.from_env(base_env)
+
+
+

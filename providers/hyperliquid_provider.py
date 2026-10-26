@@ -415,12 +415,30 @@ class HyperliquidProvider(MarketDataProvider):
         is_buy = side.startswith("B")
 
         if is_market:
-            curr_px = float(self.get_current_price(symbol) or 0.0)
-            base_px = curr_px if curr_px > 0 else (float(price) if price is not None and float(price) > 0 else 0.0)
+            raw_curr = self.get_current_price(symbol)
+            try:
+                curr_px = float(raw_curr) if raw_curr is not None and not isinstance(raw_curr, bool) else 0.0
+                if not math.isfinite(curr_px) or curr_px <= 0.0:
+                    curr_px = 0.0
+            except (TypeError, ValueError, OverflowError):
+                curr_px = 0.0
+            try:
+                fb_px = float(price) if price is not None and not isinstance(price, bool) else 0.0
+                if not math.isfinite(fb_px) or fb_px <= 0.0:
+                    fb_px = 0.0
+            except (TypeError, ValueError, OverflowError):
+                fb_px = 0.0
+            base_px = curr_px if curr_px > 0 else fb_px
             if base_px <= 0:
                 print(f"[HL] place_order {side} {symbol}: market price unavailable")
                 return None
-            slippage = float(kwargs.get("slippage", 0.05))
+            raw_slip = kwargs.get("slippage", 0.05)
+            try:
+                slippage = float(raw_slip) if raw_slip is not None and not isinstance(raw_slip, bool) else 0.05
+                if not math.isfinite(slippage) or slippage < 0.0 or slippage >= 1.0:
+                    slippage = 0.05
+            except (TypeError, ValueError, OverflowError):
+                slippage = 0.05
             aggressive_px = base_px * (1.0 + slippage if is_buy else 1.0 - slippage)
             submit_px = self.round_price(symbol, aggressive_px)
             order_tif = "Ioc"
@@ -566,9 +584,9 @@ class HyperliquidProvider(MarketDataProvider):
         px = price
         if market or px is None:
             mid = self.get_current_price(symbol)
-            if not mid:
+            if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
                 raise ProviderError(f"submit_order({symbol}) market: price unavailable")
-            px = mid * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
+            px = float(mid) * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
         px = self.round_price(symbol, px)
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
@@ -744,9 +762,12 @@ class HyperliquidProvider(MarketDataProvider):
             for f in user_fills_data:
                 if not isinstance(f, dict):
                     continue
+                raw_f_oid = f.get("oid")
+                if raw_f_oid is None or isinstance(raw_f_oid, bool):
+                    continue
                 try:
-                    f_oid = int(f.get("oid") or -1)
-                except (TypeError, ValueError):
+                    f_oid = int(raw_f_oid)
+                except (TypeError, ValueError, OverflowError):
                     continue
                 if f_oid != oid:
                     continue

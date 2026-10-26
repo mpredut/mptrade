@@ -203,19 +203,39 @@ class BinanceProvider(MarketDataProvider):
             raw = _get_bapi().client.get_open_orders(symbol=symbol)
             if raw is None:
                 raise ProviderError(f"open_orders({symbol}): received None from Binance client")
+            if not isinstance(raw, list):
+                raise ProviderError(f"open_orders({symbol}): received invalid payload from Binance client")
         except ProviderError:
             raise
         except Exception as exc:
             raise ProviderError(f"open_orders({symbol}): {exc}") from exc
-        return [{
-            "orderId": str(order.get("orderId")),
-            "clientOrderId": order.get("clientOrderId"),
-            "side": str(order.get("side") or "").upper(),
-            "price": float(order.get("price") or 0.0),
-            "origQty": float(order.get("origQty") or 0.0),
-            "executedQty": float(order.get("executedQty") or 0.0),
-            "status": str(order.get("status") or "NEW"),
-        } for order in raw]
+        normalized = []
+        for order in raw:
+            if not isinstance(order, dict):
+                raise ProviderError(f"open_orders({symbol}): invalid order entry")
+            raw_px = order.get("price")
+            raw_orig = order.get("origQty")
+            raw_exec = order.get("executedQty")
+            if any(isinstance(v, bool) for v in (raw_px, raw_orig, raw_exec)):
+                raise ProviderError(f"open_orders({symbol}): boolean numeric field in order")
+            try:
+                price_f = float(raw_px or 0.0)
+                orig_f = float(raw_orig or 0.0)
+                exec_f = float(raw_exec or 0.0)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ProviderError(f"open_orders({symbol}): invalid numeric field in order") from exc
+            if not all(math.isfinite(v) and v >= 0.0 for v in (price_f, orig_f, exec_f)):
+                raise ProviderError(f"open_orders({symbol}): non-finite or negative field in order")
+            normalized.append({
+                "orderId": str(order.get("orderId")),
+                "clientOrderId": order.get("clientOrderId"),
+                "side": str(order.get("side") or "").upper(),
+                "price": price_f,
+                "origQty": orig_f,
+                "executedQty": exec_f,
+                "status": str(order.get("status") or "NEW"),
+            })
+        return normalized
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         try:
@@ -439,12 +459,31 @@ class BinanceProvider(MarketDataProvider):
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc
         completed = list(klines or ())[:-1]
-        closes = tuple(float(item[4]) for item in completed)
-        timestamps = (
-            tuple(float(item[6]) / 1000.0 for item in completed)
-            if completed and all(len(item) > 6 for item in completed)
-            else ()
-        )
+        valid = []
+        for item in completed:
+            if not isinstance(item, (list, tuple)) or len(item) < 5 or isinstance(item[4], bool):
+                continue
+            try:
+                c_f = float(item[4])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(c_f) and c_f > 0:
+                valid.append((item, c_f))
+        closes = tuple(c_f for _item, c_f in valid)
+        ts_list = []
+        ts_ok = bool(valid) and all(len(item) > 6 and not isinstance(item[6], bool) for item, _ in valid)
+        if ts_ok:
+            for item, _ in valid:
+                try:
+                    t_f = float(item[6]) / 1000.0
+                    if not math.isfinite(t_f) or t_f <= 0:
+                        ts_ok = False
+                        break
+                    ts_list.append(t_f)
+                except (TypeError, ValueError, OverflowError):
+                    ts_ok = False
+                    break
+        timestamps = tuple(ts_list) if ts_ok else ()
         observed_at = timestamps[-1] if timestamps else None
         return ClosedPriceSeries(
             closes,
@@ -517,7 +556,15 @@ class BinanceProvider(MarketDataProvider):
         trades = client.get_my_trades(symbol=symbol, orderId=order_id) or []
         total = 0.0
         for trade in trades:
-            if int(trade.get("orderId", -1)) != order_id:
+            if not isinstance(trade, dict):
+                continue
+            raw_tid = trade.get("orderId", -1)
+            if raw_tid is None or isinstance(raw_tid, bool):
+                continue
+            try:
+                if int(raw_tid) != order_id:
+                    continue
+            except (TypeError, ValueError, OverflowError):
                 continue
             fee_info = extract_order_fee(trade, base_asset=base, quote_asset=quote)
             if fee_info is None or fee_info["fee"] <= 0.0:
@@ -527,11 +574,15 @@ class BinanceProvider(MarketDataProvider):
             else:
                 asset = fee_info["fee_asset"]
                 conversion = _get_bapi().get_current_price(f"{asset}{quote}")
-                if not conversion:
+                try:
+                    conv_f = float(conversion) if conversion is not None and not isinstance(conversion, bool) else 0.0
+                except (TypeError, ValueError, OverflowError):
+                    conv_f = 0.0
+                if not math.isfinite(conv_f) or conv_f <= 0.0:
                     raise ProviderError(
                         f"order_status({order_id}): cannot convert the fee {asset}->{quote}"
                     )
-                total += fee_info["fee"] * float(conversion)
+                total += fee_info["fee"] * conv_f
         return total
 
     def order_status(self, symbol: str, order_id: str):
@@ -561,7 +612,21 @@ class BinanceProvider(MarketDataProvider):
                 )
             raise ProviderError(f"order_status({order_id}): {e}") from e
 
-        executed_qty = float(o.get("executedQty") or 0.0)
+        if not isinstance(o, dict):
+            raise ProviderError(f"order_status({order_id}): order payload is invalid")
+        raw_exec = o.get("executedQty")
+        raw_cost = o.get("cummulativeQuoteQty")
+        raw_orig = o.get("origQty")
+        if any(isinstance(v, bool) for v in (raw_exec, raw_cost, raw_orig)):
+            raise ProviderError(f"order_status({order_id}): invalid fill values")
+        try:
+            executed_qty = float(raw_exec or 0.0)
+            cost_val = float(raw_cost or 0.0)
+            orig_val = float(raw_orig or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"order_status({order_id}): invalid fill values") from exc
+        if not all(math.isfinite(v) and v >= 0.0 for v in (executed_qty, cost_val, orig_val)):
+            raise ProviderError(f"order_status({order_id}): invalid fill values")
         fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0
         st_map = {
             "FILLED": "closed",
@@ -576,10 +641,10 @@ class BinanceProvider(MarketDataProvider):
         return OrderStatus(
             status=st_map.get(o.get("status"), "open"),
             filled_qty=executed_qty,
-            cost=float(o.get("cummulativeQuoteQty") or 0.0),
+            cost=cost_val,
             fee=fee,
             venue_status=venue_status,
-            orig_qty=float(o.get("origQty") or 0.0),
+            orig_qty=orig_val,
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:

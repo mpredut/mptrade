@@ -318,6 +318,15 @@ class TrailingCore:
 
     # -- one asset ------------------------------------------------------------
     def _process(self, key, asset, pair, trail, state) -> None:
+        if trail is None or isinstance(trail, bool):
+            return
+        try:
+            trail_f = float(trail)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(trail_f) or trail_f <= 0.0 or trail_f >= 100.0:
+            return
+        trail = trail_f
         free = self._safe_free_qty(asset)
         price = self.a.price(pair)
         if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:

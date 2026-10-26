@@ -232,8 +232,11 @@ class StratParams:
             if clean_raw.count(":") == 2 and "," not in clean_raw:
                 try:
                     p_min, p_max, p_steps = clean_raw.split(":")
-                    _ladder = generate_tp_ladder(float(p_min), float(p_max), int(p_steps), curve=ladder_curve)
-                except ValueError as exc:
+                    steps_f = float(p_steps)
+                    if not math.isfinite(steps_f):
+                        raise ValueError("non-finite steps")
+                    _ladder = generate_tp_ladder(float(p_min), float(p_max), int(steps_f), curve=ladder_curve)
+                except (ValueError, OverflowError) as exc:
                     raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
             else:
                 for _part in raw_ladder.split(","):
@@ -244,7 +247,11 @@ class StratParams:
                         raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
                     _lvl, _frac = _part.split(":", 1)
                     try:
-                        _ladder.append((float(_lvl), float(_frac) / 100.0))
+                        lvl_f = float(_lvl)
+                        frac_f = float(_frac) / 100.0
+                        if not (math.isfinite(lvl_f) and math.isfinite(frac_f)) or frac_f <= 0.0:
+                            raise ValueError("non-finite or non-positive ladder rung")
+                        _ladder.append((lvl_f, frac_f))
                     except ValueError as exc:
                         raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
         elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
@@ -264,7 +271,13 @@ class StratParams:
             _max_dca = max(0, int((_budget - _entry) // _dca)) if _dca > 0 else 0
             _entry = _budget - _max_dca * _dca   # Entry absorbs remainder to cover the full budget.
         elif _mdb:
-            _max_dca = int(float(_mdb))
+            try:
+                _mdb_f = float(_mdb)
+                if not math.isfinite(_mdb_f) or _mdb_f < 0:
+                    raise ValueError("invalid STRAT_MAX_DCA_BUYS")
+                _max_dca = int(_mdb_f)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}") from exc
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         return cls(
@@ -1147,6 +1160,16 @@ class Strategy:
             status = self._tracked_order_status(order, cache)
             if status is None or isinstance(status, str):
                 continue
+            raw_vals = (
+                status.filled_qty,
+                status.cost,
+                status.fee,
+                order.get("applied_fill_qty"),
+                order.get("applied_fill_cost"),
+                order.get("applied_fill_fee"),
+            )
+            if any(isinstance(v, bool) for v in raw_vals):
+                continue
             try:
                 cumulative_qty = float(status.filled_qty or 0.0)
                 cumulative_cost = float(status.cost or 0.0)
@@ -1154,7 +1177,9 @@ class Strategy:
                 applied_qty = float(order.get("applied_fill_qty") or 0.0)
                 applied_cost = float(order.get("applied_fill_cost") or 0.0)
                 applied_fee = float(order.get("applied_fill_fee") or 0.0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not all(math.isfinite(v) for v in (cumulative_qty, cumulative_cost, cumulative_fee, applied_qty, applied_cost, applied_fee)):
                 continue
             if cumulative_qty + 1e-9 < applied_qty or cumulative_cost + 1e-9 < applied_cost:
                 log(f"  ! [STRAT] fill T212 {order.get('id')} a regresat cumulativ — ignor")
@@ -1480,7 +1505,7 @@ class Strategy:
         if include_trend and self._trend_slope_provider:
             try:
                 slope = self._trend_slope_provider(self.yahoo_sym)
-                if slope is not None and slope >= 0.0:
+                if slope is not None and not isinstance(slope, bool) and math.isfinite(float(slope)) and float(slope) >= 0.0:
                     trend_up = True
             except Exception:
                 pass
@@ -1708,10 +1733,11 @@ class Strategy:
         if not trend_up and self._trend_slope_provider:
             try:
                 slope = self._trend_slope_provider(self.yahoo_sym)
-                if slope is not None:
-                    if slope >= 0.0:
+                if slope is not None and not isinstance(slope, bool) and math.isfinite(float(slope)):
+                    slope_f = float(slope)
+                    if slope_f >= 0.0:
                         trend_up = True
-                    elif slope < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
+                    elif slope_f < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
                         trend_down = True
             except Exception:
                 pass
@@ -1951,9 +1977,14 @@ class Strategy:
                 if self._now() < getattr(self, "_dca_gate_until", 0):
                     return   # Recently trend-blocked; retry after the cache window.
                 slope = self._trend_slope_provider(self.yahoo_sym)
-                if slope is not None and slope < -self.p.dca_trend_gate_pct:
+                if (
+                    slope is not None
+                    and not isinstance(slope, bool)
+                    and math.isfinite(float(slope))
+                    and float(slope) < -self.p.dca_trend_gate_pct
+                ):
                     self._dca_gate_until = self._now() + 300
-                    log(f"  [STRAT] DCA BLOCKED de trend: slope {slope:+.3f}%/bar "
+                    log(f"  [STRAT] DCA BLOCKED de trend: slope {float(slope):+.3f}%/bar "
                         f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-verific in 5 min")
                     return
             log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}"

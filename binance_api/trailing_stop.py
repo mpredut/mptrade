@@ -382,10 +382,18 @@ class TrailingStop:
         return self._trend_value(pair)
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
-        attempt = int(self._retry_counts.get((pair, action), 0)) + 1
+        raw_attempt = self._retry_counts.get((pair, action), 0)
+        attempt = (int(raw_attempt) if not isinstance(raw_attempt, bool) and isinstance(raw_attempt, (int, float)) and math.isfinite(float(raw_attempt)) else 0) + 1
+        raw_anchor = metadata.get("anchor", price)
+        try:
+            anchor_f = float(raw_anchor) if raw_anchor is not None and not isinstance(raw_anchor, bool) else float(price)
+            if not math.isfinite(anchor_f):
+                anchor_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            anchor_f = float(price)
         intent_id = (
-            f"trailing:binance:{key}:{action}:{qty:.8f}:{price:.8f}:"
-            f"{metadata.get('anchor', price):.8f}"
+            f"trailing:binance:{key}:{action}:{float(qty):.8f}:{float(price):.8f}:"
+            f"{anchor_f:.8f}"
         )
         if attempt > 1:
             intent_id = f"{intent_id}:a{attempt}"
@@ -404,12 +412,19 @@ class TrailingStop:
             return
         rc = st.get("retry_counts")
         if isinstance(rc, dict) and action in rc:
-            try:
-                persisted = int(rc[action] or 0)
-            except (TypeError, ValueError):
+            raw_rc = rc[action]
+            if raw_rc is None or isinstance(raw_rc, bool):
                 persisted = 0
+            else:
+                try:
+                    persisted_f = float(raw_rc)
+                    persisted = int(persisted_f) if math.isfinite(persisted_f) and persisted_f >= 0 else 0
+                except (TypeError, ValueError, OverflowError):
+                    persisted = 0
             retry_key = (pair, action)
-            if persisted > int(self._retry_counts.get(retry_key, 0)):
+            cur_rc = self._retry_counts.get(retry_key, 0)
+            cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+            if persisted > cur_rc_i:
                 self._retry_counts[retry_key] = persisted
 
     def reconcile_pending(self, pending, persist):
@@ -419,14 +434,21 @@ class TrailingStop:
         retry_key = (pair, action)
         st = getattr(persist, "st", None)
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
+        raw_rc_act = rc.get(action, 0)
+        raw_att = pending.get("attempt")
         try:
-            attempt_base = max(
-                int(self._retry_counts.get(retry_key, 0)),
-                int(rc.get(action, 0) or 0),
-                max(0, int(pending.get("attempt") or 1) - 1),
-            )
-        except (TypeError, ValueError):
-            attempt_base = int(self._retry_counts.get(retry_key, 0))
+            rc_act_f = float(raw_rc_act or 0)
+            rc_act = 0 if isinstance(raw_rc_act, bool) or not math.isfinite(rc_act_f) else max(0, int(rc_act_f))
+        except (TypeError, ValueError, OverflowError):
+            rc_act = 0
+        try:
+            att_f = float(raw_att or 1)
+            att_val = 1 if isinstance(raw_att, bool) or not math.isfinite(att_f) else max(1, int(att_f))
+        except (TypeError, ValueError, OverflowError):
+            att_val = 1
+        cur_rc = self._retry_counts.get(retry_key, 0)
+        cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+        attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
         if result.outcome in ("absent", "retryable"):
             new_count = attempt_base + 1
             self._retry_counts[retry_key] = new_count
@@ -544,9 +566,11 @@ class TrailingStop:
                  f"[set TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        raw_low = rb.get("low") if isinstance(rb, dict) else None
         try:
-            low_val = float((rb.get("low") if isinstance(rb, dict) else None) or price)
-        except (TypeError, ValueError):
+            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
+            low_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
+        except (TypeError, ValueError, OverflowError):
             low_val = float(price)
         self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [TRAILING_ENABLED=true for it to execute]")
