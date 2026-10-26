@@ -44,12 +44,20 @@ def calculate_difference_percent(val1, val2):
 
     
 def value_diff_to_percent(value1, value2):
-    if value1 == 0:
-        return value2 
-        
-    diff = value1 - value2
-    percent = (diff / value1) * 100
-    return percent
+    if any(v is None or isinstance(v, bool) for v in (value1, value2)):
+        return 0.0
+    try:
+        v1 = float(value1)
+        v2 = float(value2)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not (math.isfinite(v1) and math.isfinite(v2)):
+        return 0.0
+    if v1 == 0.0:
+        return v2
+    diff = v1 - v2
+    percent = (diff / v1) * 100.0
+    return percent if math.isfinite(percent) else 0.0
 
 def slope(val1, idx1, val2, idx2):
     if any(v is None or isinstance(v, bool) for v in (val1, idx1, val2, idx2)):
@@ -137,13 +145,23 @@ def timeToHMS(timestamp_sec):
         return "N/A"
 
 
+def _safe_seconds(max_age_seconds) -> float:
+    if max_age_seconds is None or isinstance(max_age_seconds, bool):
+        return 0.0
+    try:
+        val = float(max_age_seconds)
+        return val if math.isfinite(val) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
 # Convert seconds to days.
 def secondsToDays(max_age_seconds):
     # Seconds per day.
     seconds_in_a_day = 86400  # 24 hours * 60 minutes * 60 seconds
     
     # Calculate the number of days.
-    days = max_age_seconds / seconds_in_a_day
+    days = _safe_seconds(max_age_seconds) / seconds_in_a_day
     
     return days
 
@@ -153,7 +171,7 @@ def secondsToHours(max_age_seconds):
     seconds_in_an_hour = 3600  # 60 minutes * 60 seconds
     
     # Calculate the number of hours.
-    hours = max_age_seconds / seconds_in_an_hour
+    hours = _safe_seconds(max_age_seconds) / seconds_in_an_hour
     
     return hours
 
@@ -163,7 +181,7 @@ def secondsToMinutes(max_age_seconds):
     seconds_in_a_minute = 60  # 60 seconds
     
     # Calculate the number of minutes.
-    minutes = max_age_seconds / seconds_in_a_minute
+    minutes = _safe_seconds(max_age_seconds) / seconds_in_a_minute
     
     return minutes
 
@@ -323,8 +341,9 @@ def cache_path(name):
 
     Preserve ``name`` when it is absolute or already contains a directory separator.
     """
-    if not name:
+    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
         return name
-    if os.path.isabs(name) or os.sep in name or (os.altsep and os.altsep in name):
-        return name
-    return _cp_cache_path(name)
+    name_str = str(os.fspath(name))
+    if os.path.isabs(name_str) or os.sep in name_str or (os.altsep and os.altsep in name_str):
+        return name_str
+    return _cp_cache_path(name_str)

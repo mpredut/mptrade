@@ -11609,6 +11609,63 @@ def test_iteration109_providers_base_http_resilience_replay_and_trailing_stop_sa
     assert ts.rebuy_configured_for(True) is False
 
 
+def test_iteration110_trailing_core_cachepaths_and_utils_safety(tmp_path):
+    """Iteration 110: Verify trailing_core, cachepaths, and utils safety."""
+    from types import SimpleNamespace
+    import trailing_core as tc
+    import cachepaths as cp
+    import utils as u
+
+    # 1. trailing_core: string 'false' flags and malformed pending metadata in _finish_pending
+    adapter = SimpleNamespace(
+        assets=lambda: [("BTCUSDC", "BTC", "BTCUSDC", 20.0)],
+        free_qty=lambda _a: 0.0,
+        total_qty=lambda _a: 0.0,
+        rebuy_configured_for=lambda _p: False,
+        rebuy_enabled_for=lambda _p: False,
+    )
+    core = tc.TrailingCore(
+        adapter,
+        log=lambda _m: None,
+        enabled="false",
+        state_file=str(tmp_path / "tc.json"),
+        min_notional=10.0,
+        rebuy_enabled="false",
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down="false",
+        sell_skip_if_trend_up="false",
+    )
+    assert core.enabled is False
+    assert core.rebuy_enabled is False
+    assert core.rebuy_skip_if_trend_down is False
+    assert core.sell_skip_if_trend_up is False
+
+    st = {"pending_order": {"action": "SELL"}, "peak": 100.0}
+    res = SimpleNamespace(
+        status=SimpleNamespace(filled_qty=1.0, cost=90.0, status="closed"),
+        intent={"action": "SELL", "metadata": True, "asset": True},
+    )
+    core._finish_pending(st, res, 90.0, "BTCUSDC")
+    assert "pending_order" not in st
+    assert st["peak"] == 90.0
+
+    # 2. cachepaths: migrate_legacy_filename_if_needed and cache_path with PathLike/bool/None
+    cp.migrate_legacy_filename_if_needed(None)
+    cp.migrate_legacy_filename_if_needed(True)
+    cp.migrate_legacy_filename_if_needed(tmp_path / "cache_short_trend.json")
+    assert cp.cache_path(True) is True
+    assert cp.cache_path(123) == 123
+
+    # 3. utils: value_diff_to_percent, secondsTo*, cache_path
+    assert u.value_diff_to_percent(True, 100.0) == 0.0
+    assert u.value_diff_to_percent(float("nan"), 100.0) == 0.0
+    assert u.secondsToDays(True) == 0.0
+    assert u.secondsToHours(None) == 0.0
+    assert u.secondsToMinutes("bad") == 0.0
+    assert u.cache_path(True) is True
+
+
+
 
 
 

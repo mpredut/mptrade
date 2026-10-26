@@ -46,6 +46,14 @@ def _safe_nonneg_float(val, default: float = 0.0) -> float:
         return default
 
 
+def _parse_bool_flag(val, default: bool = False) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
     if isinstance(current, bool) or isinstance(peak, bool) or isinstance(trail_pct, bool):
@@ -62,13 +70,13 @@ class TrailingCore:
                  min_profit_pct=0.0):
         self.a = adapter
         self.log = log
-        self.enabled = enabled
+        self.enabled = _parse_bool_flag(enabled, default=False)
         self.state_file = state_file
         self.min_notional = _safe_nonneg_float(min_notional, default=0.0)
-        self.rebuy_enabled = bool(rebuy_enabled)
+        self.rebuy_enabled = _parse_bool_flag(rebuy_enabled, default=False)
         self.rebuy_bounce_pct = _safe_nonneg_float(rebuy_bounce_pct, default=0.0)
-        self.rebuy_skip_if_trend_down = bool(rebuy_skip_if_trend_down)
-        self.sell_skip_if_trend_up = bool(sell_skip_if_trend_up)
+        self.rebuy_skip_if_trend_down = _parse_bool_flag(rebuy_skip_if_trend_down, default=False)
+        self.sell_skip_if_trend_up = _parse_bool_flag(sell_skip_if_trend_up, default=False)
         sf = _safe_nonneg_float(sell_fraction, default=1.0)
         self.sell_fraction = min(1.0, sf) if sf > 0.0 else 1.0
         self.min_profit_pct = _safe_nonneg_float(min_profit_pct, default=0.0)
@@ -157,8 +165,12 @@ class TrailingCore:
     def _finish_pending(self, st: dict, result, price: float, pair) -> None:
         """Apply one terminal fill exactly once, then acknowledge pending state."""
         status = result.status
-        pending = result.intent
-        action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
+        raw_intent = getattr(result, "intent", None)
+        pending = raw_intent if isinstance(raw_intent, dict) else {}
+        raw_meta = pending.get("metadata")
+        meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
+        raw_act = pending.get("action") or meta_dict.get("action")
+        action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
         try:
             raw_filled = status.filled_qty
             filled = 0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else float(raw_filled)
@@ -177,7 +189,8 @@ class TrailingCore:
         if not math.isfinite(avg) or avg <= 0:
             avg = price
         if action == "SELL" and filled > 0:
-            asset = pending.get("asset") or (pending.get("metadata") or {}).get("asset")
+            raw_asset = pending.get("asset") or meta_dict.get("asset")
+            asset = raw_asset.strip() if isinstance(raw_asset, str) else ""
             if not asset:
                 asset = self._asset_for_pair(pair)
 

@@ -38,6 +38,11 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
 
 def migrate_legacy_filename_if_needed(filepath: str) -> None:
     """Rename legacy pre-symmetry cache files in place when the new path is absent."""
+    if not filepath or isinstance(filepath, bool) or not isinstance(filepath, (str, os.PathLike)):
+        return
+    filepath = str(os.fspath(filepath))
+    if not filepath.strip():
+        return
     if os.path.exists(filepath) or os.path.exists(filepath + ".previous"):
         return
     for legacy_path in legacy_filenames_for(filepath):
@@ -86,11 +91,14 @@ def cache_path(name: str) -> str:
 
     Preserves name when it is already absolute or None/empty.
     """
-    if not name or isinstance(name, bool):
+    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
         return name
-    if os.path.isabs(name):
+    name_str = str(os.fspath(name))
+    if not name_str.strip():
         return name
-    norm = name.replace("\\", "/")
+    if os.path.isabs(name_str):
+        return name_str
+    norm = name_str.replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
     if norm.startswith("cachedb/"):
