@@ -20,7 +20,6 @@ from offline.research.hybrid_reentry.harness import (
 )
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
-os.makedirs(OUT_DIR, exist_ok=True)
 
 # Datasets
 DATASETS = {
@@ -90,6 +89,7 @@ build_equity_variants = build_ablation_variants
 
 
 def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
     print("======================================================================")
     print("TRADING 212 EQUITIES HYBRID RE-ENTRY ABLATION SUITE (Tests 0 to 4)")
     print("======================================================================")

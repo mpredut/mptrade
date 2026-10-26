@@ -9,6 +9,8 @@ def backup_and_replace(converted_file: str, cache_file: str):
     1. Move the existing cache_file into old/ as a backup (if it exists)
     2. Muta/redenumeste converted_file in cache_file
     """
+    if not os.path.exists(converted_file):
+        raise FileNotFoundError(f"Converted file does not exist: {converted_file}")
     old_folder = "old"
     os.makedirs(old_folder, exist_ok=True)
 
@@ -23,5 +25,6 @@ def backup_and_replace(converted_file: str, cache_file: str):
     print(f"[INFO] The converted file {converted_file} was moved/renamed into {cache_file}")
 
 
-backup_and_replace("btc_converted.json", "cache_price_BTCUSDC.json")
-backup_and_replace("tao_converted.json", "cache_price_TAOUSDC.json")
+if __name__ == "__main__":
+    backup_and_replace("btc_converted.json", "cache_price_BTCUSDC.json")
+    backup_and_replace("tao_converted.json", "cache_price_TAOUSDC.json")

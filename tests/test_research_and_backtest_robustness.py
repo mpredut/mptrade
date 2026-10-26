@@ -1071,6 +1071,24 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     empty_csv.write_text("timestamp,open,high,low,close\n1700000000,nan,10,9,10\n", encoding="utf-8")
     assert cmr.run_comparison(str(empty_csv)) == []
 
+    # 8. backtest_ranges and legacy move.backup_and_replace edge cases
+    from offline.legacy_tools import move as legacy_move
+    from offline.research import backtest_ranges as br
+
+    assert br.scan_backtest_ranges(str(tmp_path)) == {}
+    cfg_file = tmp_path / "ranges.conf"
+    cfg_file.write_text(
+        "[BINANCE_BTC]\n# BACKTEST: , , \nmt.gain = 7.0\n# BACKTEST: 5.0, 6.0\nmt.lost = 3.0\n",
+        encoding="utf-8",
+    )
+    assert br.scan_backtest_ranges(str(cfg_file)) == {"BINANCE_BTC.mt.lost": ["5.0", "6.0"]}
+
+    cache_orig = tmp_path / "cache_price_TEST.json"
+    cache_orig.write_text("{}", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        legacy_move.backup_and_replace(str(tmp_path / "missing_converted.json"), str(cache_orig))
+    assert cache_orig.exists()
+
 
 
 

@@ -35,11 +35,15 @@ import matplotlib.pyplot as plt
 
 def analyze_drops_with_distribution(df):
     drops = []
-    total_intervals = len(df) - 2*60  # Intervale de 20 de minute
+    total_intervals = max(0, len(df) - 2 * 60)  # Intervale de 2*60 de minute
+    if total_intervals == 0:
+        return 0, 0.0, 0, 0.0, 0, 0.0
 
     for i in range(total_intervals):
         start_price = df['close'].iloc[i]
-        end_price = df['close'].iloc[i + 2*60]
+        end_price = df['close'].iloc[i + 2 * 60]
+        if start_price <= 0:
+            continue
         drop_percent = (start_price - end_price) / start_price * 100
         drops.append(drop_percent)
 
@@ -60,15 +64,17 @@ def analyze_drops_with_distribution(df):
 
     return count_drops_5, probability_5, count_drops_3, probability_3, count_drops_2, probability_2
 
-# Fetch data and analyze
-df = fetch_data()
-# Analyze with distribution
-count_drops_5, probability_5, count_drops_3, probability_3, count_drops_2, probability_2 = analyze_drops_with_distribution(df)
 
-print(f"Numar de scaderi de 5% in 20 de minute: {count_drops_5}")
-print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability_5:.2f}%")
-print(f"Numar de scaderi de 3% in 20 de minute: {count_drops_3}")
-print(f"Probabilitatea unei scaderi de 3% in 20 de minute: {probability_3:.2f}%")
-print(f"Numar de scaderi de 2% in 20 de minute: {count_drops_2}")
-print(f"Probabilitatea unei scaderi de 2% in 20 de minute: {probability_2:.2f}%")
+if __name__ == "__main__":
+    # Fetch data and analyze
+    df = fetch_data()
+    # Analyze with distribution
+    count_drops_5, probability_5, count_drops_3, probability_3, count_drops_2, probability_2 = analyze_drops_with_distribution(df)
+
+    print(f"Numar de scaderi de 5% in 20 de minute: {count_drops_5}")
+    print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability_5:.2f}%")
+    print(f"Numar de scaderi de 3% in 20 de minute: {count_drops_3}")
+    print(f"Probabilitatea unei scaderi de 3% in 20 de minute: {probability_3:.2f}%")
+    print(f"Numar de scaderi de 2% in 20 de minute: {count_drops_2}")
+    print(f"Probabilitatea unei scaderi de 2% in 20 de minute: {probability_2:.2f}%")
 

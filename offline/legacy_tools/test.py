@@ -26,11 +26,15 @@ def fetch_data():
 
 def analyze_drops(df):
     count_drops = 0
-    total_intervals = len(df) - 20  # Intervale de 20 de minute
+    total_intervals = max(0, len(df) - 20)  # Intervale de 20 de minute
+    if total_intervals == 0:
+        return 0, 0, 0.0
 
     for i in range(total_intervals):
         start_price = df['close'].iloc[i]
         end_price = df['close'].iloc[i + 20]
+        if start_price <= 0:
+            continue
         drop_percent = (start_price - end_price) / start_price * 100
 
         if drop_percent >= 5:
@@ -39,10 +43,12 @@ def analyze_drops(df):
     probability = count_drops / total_intervals * 100
     return count_drops, total_intervals, probability
 
-# Fetch data and analyze
-df = fetch_data()
-count_drops, total_intervals, probability = analyze_drops(df)
 
-print(f"Numar de scaderi de 5% in 20 de minute: {count_drops}")
-print(f"Total intervale de 20 de minute in 30 de zile: {total_intervals}")
-print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability:.2f}%")
+if __name__ == "__main__":
+    # Fetch data and analyze
+    df = fetch_data()
+    count_drops, total_intervals, probability = analyze_drops(df)
+
+    print(f"Numar de scaderi de 5% in 20 de minute: {count_drops}")
+    print(f"Total intervale de 20 de minute in 30 de zile: {total_intervals}")
+    print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability:.2f}%")

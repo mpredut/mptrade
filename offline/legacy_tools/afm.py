@@ -35,26 +35,24 @@ def play_sound():
     except Exception as e:
         print(f"Eroare la redarea sunetului: {e}")
 
-# URL-ul paginii
-url = 'https://depunerefotovoltaice.afm.ro/'
+if __name__ == "__main__":
+    # URL-ul paginii
+    url = 'https://depunerefotovoltaice.afm.ro/'
 
-# Hash-ul initial al paginii
-last_hash = get_page_hash(url)
+    # Hash-ul initial al paginii
+    last_hash = get_page_hash(url)
 
-if last_hash:
-    print("Monitorizare pornita...")
+    if last_hash:
+        print("Monitorizare pornita...")
 
-    while True:
-        time.sleep(1)  # Check every second.
-        current_hash = get_page_hash(url)
-        print(f"Nothing")
-        #show_notification("Alerta!", "Pagina s-a modificat!")
-        #play_sound()
-        if current_hash and current_hash != last_hash:
-            print("Pagina s-a schimbat!............................................HAHA!")
-            #show_notification("Alerta!", "Pagina s-a modificat!")
-            play_sound()
-            last_hash = current_hash  # Actualizeaza hash-ul paginii
-            exit
-        elif not current_hash:
-            print("Eroare la preluarea paginii. Reincercam...")
+        while True:
+            time.sleep(1)  # Check every second.
+            current_hash = get_page_hash(url)
+            print("Nothing")
+            if current_hash and current_hash != last_hash:
+                print("Pagina s-a schimbat!............................................HAHA!")
+                play_sound()
+                last_hash = current_hash  # Actualizeaza hash-ul paginii
+                break
+            elif not current_hash:
+                print("Eroare la preluarea paginii. Reincercam...")

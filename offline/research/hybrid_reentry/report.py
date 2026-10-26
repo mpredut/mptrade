@@ -16,17 +16,22 @@ def generate_markdown_report() -> str:
         return "No crypto ablation results found."
 
     with open(CRYPTO_JSON, "r", encoding="utf-8") as f:
-        crypto_data = json.load(f)
+        raw_crypto = json.load(f)
+    crypto_data = [r for r in raw_crypto if isinstance(r, dict) and r.get("asset")] if isinstance(raw_crypto, list) else []
 
     summary = {}
     if os.path.isfile(SUMMARY_JSON):
         with open(SUMMARY_JSON, "r", encoding="utf-8") as f:
-            summary = json.load(f)
+            raw_sum = json.load(f)
+        if isinstance(raw_sum, dict):
+            summary = raw_sum
 
     equities_data = []
     if os.path.isfile(EQUITIES_JSON):
         with open(EQUITIES_JSON, "r", encoding="utf-8") as f:
-            equities_data = json.load(f)
+            raw_eq = json.load(f)
+        if isinstance(raw_eq, list):
+            equities_data = [eq for eq in raw_eq if isinstance(eq, dict)]
 
     md = []
     md.append("# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report")
@@ -53,9 +58,15 @@ def generate_markdown_report() -> str:
     md.append("|---|---|---|---|---|---|---|---|---|---|---|")
 
     for var in ["Test 0", "Test 1", "Test 2", "Test 3", "Test 4"]:
-        if var in summary:
+        if var in summary and isinstance(summary[var], dict):
             s = summary[var]
-            md.append(f"| **{var}** | {s['name']} | {s['positive_assets']} | **{s['median_return_pct']:+.2f}%** | {s['worst_return_pct']:+.2f}% | {s['best_return_pct']:+.2f}% | {s['median_drawdown_pct']:.2f}% | {s['max_drawdown_pct']:.2f}% | {s['mean_exposure_pct']:.2f}% | {s['total_cycles']} | {s['total_wins']} |")
+            md.append(
+                f"| **{var}** | {s.get('name', var)} | {s.get('positive_assets', '0/0')} | "
+                f"**{(s.get('median_return_pct') or 0.0):+.2f}%** | {(s.get('worst_return_pct') or 0.0):+.2f}% | "
+                f"{(s.get('best_return_pct') or 0.0):+.2f}% | {(s.get('median_drawdown_pct') or 0.0):.2f}% | "
+                f"{(s.get('max_drawdown_pct') or 0.0):.2f}% | {(s.get('mean_exposure_pct') or 0.0):.2f}% | "
+                f"{s.get('total_cycles') or 0} | {s.get('total_wins') or 0} |"
+            )
 
     md.append("\n---\n")
     md.append("## 2. Asset-by-Asset Comparative Performance")

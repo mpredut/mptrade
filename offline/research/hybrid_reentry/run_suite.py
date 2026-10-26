@@ -20,7 +20,6 @@ from offline.research.hybrid_reentry.harness import (
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
-os.makedirs(OUT_DIR, exist_ok=True)
 
 # 11 benchmark crypto assets
 ASSETS = ["HYPE", "BTC", "ETH", "SOL", "TAO", "ADA", "AVAX", "BNB", "DOGE", "LINK", "XRP"]
@@ -77,6 +76,7 @@ BASE_PARAMS = strat.StratParams(
 
 
 def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
     print("======================================================================")
     print("HYBRID RE-ENTRY ABLATION EXPERIMENT SUITE (Tests 0 to 4)")
     print("======================================================================")
@@ -114,14 +114,14 @@ def main():
 
     summary = {}
     for var in variants:
-        runs = [r for r in all_results if r.get("test_id") == var and "error" not in r]
+        runs = [r for r in all_results if isinstance(r, dict) and r.get("test_id") == var and "error" not in r]
         if not runs:
             continue
-        rets = [r["total_return_pct"] for r in runs]
-        dds = [r["max_drawdown_pct"] for r in runs]
-        exposures = [r["exposure_pct"] for r in runs]
-        cycles = [r["cycles"] for r in runs]
-        wins = [r["wins"] for r in runs]
+        rets = [float(r.get("total_return_pct") or 0.0) for r in runs]
+        dds = [float(r.get("max_drawdown_pct") or 0.0) for r in runs]
+        exposures = [float(r.get("exposure_pct") or 0.0) for r in runs]
+        cycles = [int(r.get("cycles") or 0) for r in runs]
+        wins = [int(r.get("wins") or 0) for r in runs]
         n = len(runs)
         pos_count = sum(1 for ret in rets if ret > 0)
 
