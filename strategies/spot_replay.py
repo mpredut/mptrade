@@ -48,10 +48,25 @@ class _ReplayClient:
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
     if not ohlc:
         raise ValueError("ohlc cannot be empty")
+    for idx, row in enumerate(ohlc):
+        if not isinstance(row, (list, tuple)) or len(row) < 4:
+            raise ValueError(f"invalid OHLC bar at index {idx}")
+        if any(isinstance(row[i], bool) for i in range(4)):
+            raise ValueError(f"OHLC bar at index {idx} contains bool")
+        try:
+            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
+        if not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
     if bar_minutes is not None:
-        if (isinstance(bar_minutes, bool)
-                or not math.isfinite(float(bar_minutes))
-                or float(bar_minutes) <= 0):
+        if isinstance(bar_minutes, bool):
+            raise ValueError("bar_minutes must be finite and positive")
+        try:
+            bm_val = float(bar_minutes)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("bar_minutes must be finite and positive") from exc
+        if not math.isfinite(bm_val) or bm_val <= 0:
             raise ValueError("bar_minutes must be finite and positive")
     surge_window_enabled = (
         params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
@@ -144,6 +159,10 @@ def _run_once(
     # must obtain this metadata from the venue.
     # Legacy replay explicitly assumes funding up to the configured cycle cap.
     # A mock or unavailable live balance must never imply unlimited buying power.
+    if dca_drop_series is not None or reentry_series is not None:
+        import copy
+        import dataclasses
+        params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
     client = _ReplayClient(float(params.effective_max_budget()))
     original_notify = _strat.notify
     original_log = _strat.log
@@ -159,8 +178,9 @@ def _run_once(
             replay_mode=True,
         )
         warmup_step = bar_minutes * 60 if bar_minutes else 1.0
-        for index, (_open, _high, _low, close) in enumerate(
+        for index, w_row in enumerate(
                 warmup_ohlc, start=-len(warmup_ohlc)):
+            close = w_row[3]
             strategy._shadow_prices.append((index * warmup_step, float(close)))
             if strategy._surge_replay_closes is not None:
                 strategy._surge_replay_closes.append(float(close))
@@ -221,7 +241,8 @@ def _run_once(
         bar_step_sec = bar_minutes * 60 if bar_minutes else 1
         side_order = execution.side_order()
 
-        for bar_index, (open_, high, low, close) in enumerate(ohlc):
+        for bar_index, row in enumerate(ohlc):
+            open_, high, low, close = row[0], row[1], row[2], row[3]
             current_bar = bar_index
             replay_time = bar_index * bar_step_sec
             strategy.set_simulated_time(replay_time)

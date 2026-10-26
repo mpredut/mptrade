@@ -122,10 +122,17 @@ def generate_tp_ladder(
     steps_i = int(steps_f)
     if steps_i < 1:
         return []
+    if steps_i > 1 and max_f < min_f:
+        raise ValueError("generate_tp_ladder requires max_pct >= min_pct")
     if steps_i == 1:
         return [(round(min_f, 1), 1.0)]
     steps = steps_i
-    curve_lower = str(curve or "linear").lower()
+    curve_lower = str(curve or "linear").strip().lower()
+    if curve_lower not in (
+        "linear", "uniform", "bell", "gaussian", "normal", "pyramid",
+        "front_heavy", "back_heavy", "geometric",
+    ):
+        raise ValueError(f"unsupported generate_tp_ladder curve: {curve!r}")
 
     if curve_lower == "geometric":
         r_start = 1.0 + min_f / 100.0
@@ -261,11 +268,13 @@ class StratParams:
                     try:
                         lvl_f = float(_lvl)
                         frac_f = float(_frac) / 100.0
-                        if not (math.isfinite(lvl_f) and math.isfinite(frac_f)) or frac_f <= 0.0:
+                        if not (math.isfinite(lvl_f) and math.isfinite(frac_f)) or lvl_f <= 0.0 or frac_f <= 0.0:
                             raise ValueError("non-finite or non-positive ladder rung")
                         _ladder.append((lvl_f, frac_f))
                     except ValueError as exc:
                         raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
+                if sum(f for _, f in _ladder) > 1.0 + 1e-6:
+                    raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
         elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
             p_min = required_float_env("STRAT_TP_LADDER_MIN", e)
             p_max = required_float_env("STRAT_TP_LADDER_MAX", e)
@@ -952,11 +961,14 @@ class Strategy:
                 return not definitive
             # Reset only when the venue confirms owned is effectively zero. A positive
             # owned amount with lower free balance must not erase a real position.
-            _m = re.search(r'owned["\']?\s*[:=]\s*([0-9.]+)', message)
+            _m = re.search(r'owned["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', message)
             if _m is None:
                 log("  ! [STRAT] selling-not-owned without the owned quantity — NOT resetting the position")
                 return False
-            _owned = float(_m.group(1))
+            try:
+                _owned = float(_m.group(1))
+            except (TypeError, ValueError, OverflowError):
+                return False
             if _owned <= 1e-6:
                 log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
                 self.s["qty"] = 0.0

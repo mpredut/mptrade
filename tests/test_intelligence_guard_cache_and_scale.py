@@ -10376,3 +10376,81 @@ def test_iteration92_hyperliquid_client_market_data_strategy_and_xstock_watch_sa
     assert st_xw["pair"] is None
     assert st_xw["alerted_pair"] is False
 
+
+def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypatch):
+    import importlib
+    import importlib.util
+    import sys
+
+    # 1. strategies.spot_replay: OHLC validation & params isolation when dca_drop_series / reentry_series is used
+    from offline.backtests.execution import ExecutionModel
+    from strategies.spot_engine import StratParams as SpotStratParams
+    from strategies.spot_replay import run_replay
+
+    import dataclasses
+    orig_params = dataclasses.replace(
+        SpotStratParams.from_env(), dca_drop_pct=2.0, reentry_drop_pct=1.0
+    )
+    ohlc = [
+        (100.0, 101.0, 99.0, 100.0, 1000),
+        (100.0, 102.0, 95.0, 98.0, 1060),
+    ]
+    run_replay(
+        ohlc,
+        orig_params,
+        bar_minutes=float(orig_params.trend_interval),
+        execution=ExecutionModel(intrabar_policy="worst_case"),
+        dca_drop_series=[3.5, 4.5],
+        reentry_series=[2.5, 3.5],
+    )
+    # Caller's params must not be mutated in-place by dynamic series!
+    assert orig_params.dca_drop_pct == pytest.approx(2.0)
+    assert orig_params.reentry_drop_pct == pytest.approx(1.0)
+
+    with pytest.raises(ValueError, match="non-finite or invalid prices"):
+        run_replay(
+            [(100.0, 98.0, 99.0, 100.0, 1000)],
+            orig_params,
+            bar_minutes=float(orig_params.trend_interval),
+        )
+
+    # 2. strategies.spot_engine._parse_tranches rejects booleans
+    from strategies.spot_engine import _parse_tranches
+
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_TRANCHES"):
+        _parse_tranches(True)
+
+    # 3. hyperliquid.replay validation
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setitem(sys.modules, "strategy", sys.modules.get("strategy"))
+    spec_hl_r = importlib.util.spec_from_file_location(
+        "hl_replay_iter93", "/home/mariusp/mptrade/hyperliquid/replay.py"
+    )
+    hl_replay = importlib.util.module_from_spec(spec_hl_r)
+    monkeypatch.setitem(sys.modules, "hl_replay_iter93", hl_replay)
+    spec_hl_r.loader.exec_module(hl_replay)
+    with pytest.raises(ValueError, match="Unsupported Hyperliquid replay engine"):
+        hl_replay.make_hyperliquid_replay_adapter({}, engine="futures")
+    with pytest.raises(ValueError, match="fee_pct"):
+        hl_replay.run_replay([(100.0, 101.0, 99.0, 100.0, 1000)], fee_pct=-0.1)
+
+    # 4. 212trading.strategy ladder validation & owned parsing
+    spec_t212 = importlib.util.spec_from_file_location(
+        "t212_strategy_iter93", "/home/mariusp/mptrade/212trading/strategy.py"
+    )
+    t212_strat = importlib.util.module_from_spec(spec_t212)
+    monkeypatch.setitem(sys.modules, "t212_strategy_iter93", t212_strat)
+    spec_t212.loader.exec_module(t212_strat)
+
+    with pytest.raises(ValueError, match="generate_tp_ladder requires max_pct >= min_pct"):
+        t212_strat.generate_tp_ladder(steps=3, min_pct=5.0, max_pct=2.0)
+    with pytest.raises(ValueError, match="unsupported generate_tp_ladder curve"):
+        t212_strat.generate_tp_ladder(steps=3, min_pct=1.0, max_pct=5.0, curve="cubic")
+
+    with pytest.raises(ValueError, match="fractions exceed 100%"):
+        t212_strat.StratParams.from_env({"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": "2.0:60,5.0:60"})
+
+    with pytest.raises(ValueError, match="Invalid STRAT_TP_LADDER"):
+        t212_strat.StratParams.from_env({"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": "0.0:50"})
+
+

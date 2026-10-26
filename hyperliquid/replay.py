@@ -176,7 +176,9 @@ def _run_once(
         strat_params = StratParams(direction=direction)
 
     if fee_pct is not None:
-        strat_params.fee_pct = fee_pct
+        if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(float(fee_pct)) or float(fee_pct) < 0:
+            raise ValueError(f"invalid fee_pct: {fee_pct!r}")
+        strat_params.fee_pct = float(fee_pct)
 
     strategy = Strategy(
         client=None,
@@ -359,7 +361,7 @@ def _run_once(
         turnover_notional=turnover_notional,
     )
 
-    rounded = lambda v: round(float(v), 10) if isinstance(v, (int, float)) and math.isfinite(v) else v
+    rounded = lambda v: round(float(v), 10) if not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) else v
     result = {
         "realized": rounded(realized),
         "net": rounded(realized + funding),
@@ -404,7 +406,10 @@ def make_hyperliquid_replay_adapter(
 
     Supports both 'perp' (Strategy engine) and 'spot' (strategies.spot_replay SSOT).
     """
-    if engine == "spot":
+    engine_norm = str(engine or "perp").strip().lower() if not isinstance(engine, bool) else ""
+    if engine_norm not in ("perp", "spot"):
+        raise ValueError(f"Unsupported Hyperliquid replay engine: {engine!r}")
+    if engine_norm == "spot":
         return make_hyperliquid_spot_replay_adapter(
             params=params,
             fee_pct=fee_pct if fee_pct is not None else 0.035,
