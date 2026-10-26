@@ -35,8 +35,8 @@ def _load_cooldown_sec() -> int:
     """Strictly read mandatory ``[cooldown] default_sec`` from ``trade_cooldown.conf``."""
     if not os.path.exists(CONF_FILE):
         raise FileNotFoundError(f"Missing mandatory configuration file: {CONF_FILE}")
-    cp = configparser.ConfigParser()
-    if not cp.read(CONF_FILE):
+    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+    if not cp.read(CONF_FILE, encoding="utf-8"):
         raise ValueError(f"Failed to read mandatory configuration file: {CONF_FILE}")
     if not cp.has_option("cooldown", "default_sec"):
         raise KeyError(f"Missing required [cooldown] default_sec in {CONF_FILE}")

@@ -1185,7 +1185,59 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
         assert sig_out == ["neutral", "neutral", "neutral"]
 
 
+def test_scheduled_pilot_and_cooldown_config_parsing_and_hl_signals_fallback(tmp_path, monkeypatch):
+    """Verify inline comment/interpolation handling in scheduled_pilot, run_replay_backtest, trade_cooldown, and hl signals fallback."""
+    import importlib.util
+    import sys
+    from pathlib import Path
 
+    from offline.research.monitortrades_backtest import run_replay_backtest as rrb
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+    import lock.trade_cooldown as tc
 
+    conf_file = tmp_path / "instruments.conf"
+    conf_file.write_text(
+        "[BTCEUR] ; primary section comment with 50% note\n"
+        "mt.gain = 7.5 ; semicolon comment with 10% note\n"
+        "mt.lost = 3.2 # hash comment with 20% note\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sp, "INSTRUMENTS_CONF", str(conf_file))
+    assert sp._current_value("BTCEUR", "mt.gain") == 7.5
+    assert sp._current_value("BTCEUR", "mt.lost") == 3.2
+
+    sp._apply_config_change("BTCEUR", "mt.gain", 7.5, 8.25)
+    updated_text = conf_file.read_text(encoding="utf-8")
+    assert "mt.gain = 8.25 ; semicolon comment with 10% note" in updated_text
+    assert sp._current_value("BTCEUR", "mt.gain") == 8.25
+
+    monkeypatch.setattr(rrb, "ROOT", str(tmp_path))
+    live_params = rrb._live_mt_params("BTCEUR")
+    assert live_params == {"mt.gain": "8.25", "mt.lost": "3.2"}
+
+    cd_conf = tmp_path / "trade_cooldown.conf"
+    cd_conf.write_text("[cooldown]\ndefault_sec = 7 ; inline comment with 100% safety\n", encoding="utf-8")
+    monkeypatch.setattr(tc, "CONF_FILE", str(cd_conf))
+    assert tc._load_cooldown_sec() == 7
+
+    root_dir = Path(sp.__file__).resolve().parents[3]
+    with monkeypatch.context() as m:
+        m.setattr(sys, "path", [p for p in sys.path if "hyperliquid" not in p])
+        spec_sig = importlib.util.spec_from_file_location("hl_signals_test", root_dir / "hyperliquid/signals.py")
+        mod_sig = importlib.util.module_from_spec(spec_sig)
+        spec_sig.loader.exec_module(mod_sig)
+        # Remove hyperliquid dir from sys.path after import so `from price_analysis import signal` fails
+        m.setattr(sys, "path", [p for p in sys.path if "hyperliquid" not in p])
+        m.syspath_prepend(str(tmp_path))
+        m.setenv("SIGNAL_SOURCE", "analysis")
+        m.setenv("TREND_WINDOW_HOURS", "24")
+        m.setenv("TREND_RESAMPLE_HOURS", "8")
+
+        class _DummyClient:
+            def candles(self, coin, interval, lookback_hours=30):
+                return []
+
+        res = mod_sig.get_signal(_DummyClient(), "BTC")
+        assert res["trend"] == "neutral"
 
 

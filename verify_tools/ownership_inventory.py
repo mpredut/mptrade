@@ -265,7 +265,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
     )
     instruments_path = root / "instruments.conf"
     if instruments_path.exists():
-        parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+        parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
         parser.read(instruments_path, encoding="utf-8")
         venue_envs = {
             "binance": root_env,

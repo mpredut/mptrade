@@ -55,8 +55,8 @@ def _live_mt_params(section):
     without that protection, producing a false catastrophic result of -$200k on a
     "buy again" with qty=1 whole BTC, which was not modelled correctly because of it)."""
     import configparser
-    cp = configparser.ConfigParser()
-    cp.read(os.path.join(ROOT, "instruments.conf"))
+    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+    cp.read(os.path.join(ROOT, "instruments.conf"), encoding="utf-8")
     if section not in cp:
         return {}
     return {k: v for k, v in cp[section].items() if k.startswith("mt.") or k.startswith("trailing.")}

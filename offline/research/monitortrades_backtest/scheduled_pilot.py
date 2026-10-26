@@ -138,8 +138,8 @@ def _last_change_for(full_key):
 def _current_value(section, key):
     """Read today's LIVE value (not the grid) directly from instruments.conf."""
     import configparser
-    cp = configparser.ConfigParser()
-    cp.read(INSTRUMENTS_CONF)
+    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+    cp.read(INSTRUMENTS_CONF, encoding="utf-8")
     return float(cp[section][key])
 
 
@@ -408,12 +408,14 @@ def _apply_config_change(section, key, old_value, new_value):
     """Replace ONLY the numeric value on the `key = ...` line in
     sectiunea `section`, pastrand tot restul fisierului (comentarii,
     formatare, alte sectiuni) neatins."""
+    from state_io import atomic_text_writer
+
     with open(INSTRUMENTS_CONF, encoding="utf-8") as f:
         lines = f.readlines()
     in_section = False
-    key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#]+)(.*)$')
+    key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')
     for i, line in enumerate(lines):
-        sm = re.match(r'^\s*\[([^\]]+)\]\s*$', line)
+        sm = re.match(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$', line)
         if sm:
             in_section = (sm.group(1) == section)
             continue
@@ -422,7 +424,7 @@ def _apply_config_change(section, key, old_value, new_value):
             if m:
                 lines[i] = f"{m.group(1)}{new_value}{m.group(3)}\n"
                 break
-    with open(INSTRUMENTS_CONF, "w", encoding="utf-8") as f:
+    with atomic_text_writer(INSTRUMENTS_CONF) as f:
         f.writelines(lines)
 
 
@@ -681,7 +683,9 @@ def main():
         # a snapshot of the current proposals (overwriting — the file means "what dev proposes
         # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
         # confirmed signal in this cycle (prod has nothing to apply).
-        with open(args.propose_out, "w", encoding="utf-8") as f:
+        from state_io import atomic_text_writer
+
+        with atomic_text_writer(args.propose_out) as f:
             json.dump(proposals, f, indent=2, default=str)
         print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
         if proposals and os.environ.get("PILOT_NOTIFY_PROPOSALS", "0").strip().lower() in {"1", "true", "yes", "on"}:

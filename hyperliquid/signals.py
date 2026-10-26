@@ -108,7 +108,17 @@ def get_signal(client, coin: str) -> dict:
     if src == "builtin":
         return _builtin_trend(client, coin)
     if src == "analysis":               # ported WMA/time-window slope analysis
-        from price_analysis import signal as analysis_signal
+        try:
+            from price_analysis import signal as analysis_signal
+        except ImportError:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "hyperliquid_price_analysis", os.path.join(_HERE, "price_analysis.py")
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            analysis_signal = mod.signal
         return analysis_signal(client, coin)
     if src == "file":
         return _file_signal(required_env("SIGNAL_FILE"))
