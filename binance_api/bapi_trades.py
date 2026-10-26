@@ -375,6 +375,8 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
         order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
+    limit = _clean_non_neg_int(limit, default=1000) or 1000
+    years_to_keep = _clean_non_neg_int(years_to_keep, default=2) or 2
 
     print(f"save_trades_to_file")
     print(f"{symbol} symbol and order_type {order_type} ")

@@ -7608,11 +7608,141 @@ def test_iteration50_t212_client_market_data_strategy_and_replay_nan_bool_safety
     assert t212_rep._ols_slope_pct([float("nan")] * 10) is None
 
 
+def test_iteration51_binance_api_and_providers_nan_bool_safety(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi_placeorder, bapi_allorders, trailing_stop
+    from providers.base import ProviderError
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
 
+    # 1. bapi_placeorder._submit_binance_order rejects bool/NaN/Inf/<=0 even when cache_permit is None
+    dummy_bclient = SimpleNamespace(
+        order_limit_buy=lambda **kw: {"orderId": 1},
+        order_market_buy=lambda **kw: {"orderId": 2},
+    )
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order(
+            "BUY", "BTCUSDC", True, price=50000.0, market=False, api_client=dummy_bclient
+        )
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order(
+            "BUY", "BTCUSDC", 0.01, price=float("nan"), market=False, api_client=dummy_bclient
+        )
+    with pytest.raises(bapi_placeorder.SubmissionRefused):
+        bapi_placeorder._submit_binance_order(
+            "BUY", "BTCUSDC", float("nan"), price=None, market=True, api_client=dummy_bclient
+        )
+    with pytest.raises(ValueError):
+        bapi_placeorder.order_candidate_price("BUY", True, 100.0)
+    assert bapi_placeorder.order_candidate_price("BUY", 100.0, True) == 100.0
+    assert bapi_placeorder.order_candidate_price("BUY", 100.0, float("nan")) == 100.0
 
+    # 2. bapi_allorders.paginate_my_trades rejects bool start_time_ms & normalizes bool limit to 1000
+    assert bapi_allorders.paginate_my_trades(SimpleNamespace(), "BTCUSDC", start_time_ms=True) == []
+    seen_limits = []
+    assert (
+        bapi_allorders.paginate_my_trades(
+            SimpleNamespace(get_my_trades=lambda **kw: seen_limits.append(kw["limit"]) or []),
+            "BTCUSDC",
+            start_time_ms=1000,
+            limit=True,
+        )
+        == []
+    )
+    assert seen_limits == [1000]
 
+    # 3. TrailingStop.reconcile_pending handles NaN/bool filled_qty and req_qty safely
+    ts = trailing_stop.TrailingStop(
+        api=SimpleNamespace(), po=SimpleNamespace(), sym=SimpleNamespace(symbols=[]), log=lambda _m: None
+    )
+    ts.order_lifecycle = SimpleNamespace(
+        reconcile=lambda pending, persist: SimpleNamespace(
+            outcome="terminal",
+            status=SimpleNamespace(status="closed", filled_qty=float("nan")),
+        )
+    )
+    st_dict = {"retry_counts": {}}
+    persist_fn = lambda _val: None
+    persist_fn.st = st_dict
+    pending_obj = {"symbol": "BTCUSDC", "action": "SELL", "submitted_qty": float("nan"), "attempt": True}
+    res = ts.reconcile_pending(pending_obj, persist_fn)
+    assert res.outcome == "terminal"
+    assert st_dict["retry_counts"]["SELL"] == 1
 
+    # 4. HyperliquidProvider: free_balance, get_price_history, ohlc_series, order_status
+    hlp = HyperliquidProvider()
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef1234567890abcdef12345678")
+    fake_hl = SimpleNamespace(
+        info=SimpleNamespace(
+            spot_user_state=lambda addr: {
+                "balances": [{"coin": "USDC", "total": "nan", "hold": "0.0"}]
+            },
+            candles_snapshot=lambda pair, interval, start, end: [
+                {"t": 1700000000000, "c": "nan"},
+                {"t": True, "c": "25.0"},
+                {"t": 1700000060000, "c": "25.5"},
+            ],
+            query_order_by_oid=lambda addr, oid: {
+                "status": "order",
+                "order": {"status": "open", "order": {"origSz": "nan", "sz": "1.0"}},
+            },
+            user_fills=lambda addr: [],
+        ),
+        candles=lambda pair, interval, lookback_h: [
+            {"c": "nan", "T": 1700000000000},
+            {"c": True, "T": 1700000060000},
+            {"c": "25.5", "T": 1700000120000},
+            {"c": "26.0", "T": 1700000180000},
+        ],
+    )
+    monkeypatch.setattr(hlp, "_hl", lambda: fake_hl)
+    monkeypatch.setattr(hlp, "_pair", lambda: "@107")
+    assert hlp.free_balance("USDC") is None
+    assert hlp.get_price_history("HYPEUSDC", True) is None
+    assert hlp.get_price_history("HYPEUSDC", float("nan")) is None
+    hist = hlp.get_price_history("HYPEUSDC", 1.0)
+    assert hist == [{"timestamp": 1700000060000, "price": 25.5}]
+    with pytest.raises(ProviderError):
+        hlp.ohlc_series("HYPEUSDC", True)
+    series = hlp.ohlc_series("HYPEUSDC", 15)
+    assert series.closes == (25.5,)
+    with pytest.raises(ProviderError):
+        hlp.order_status("HYPEUSDC", "101")
 
+    # 5. KrakenProvider: get_price_history, open_orders, order_status
+    kp = KrakenProvider()
+    fake_kcli = SimpleNamespace(
+        _public=lambda ep, params: {"XXBTZUSD": [[1700000000, "1", "1", "1", "nan"], [True, "1", "1", "1", "50000"]]},
+        open_orders=lambda: {
+            "O1": {"descr": {"pair": "XBTUSD", "type": "buy", "price": True}, "vol": "1.0", "vol_exec": "0.0"}
+        },
+        query_orders=lambda oid: {
+            oid: {"status": "closed", "vol_exec": "nan", "cost": "100.0", "fee": "0.1", "vol": "1.0"}
+        },
+    )
+    monkeypatch.setattr(kp, "_client", lambda: fake_kcli)
+    assert kp.get_price_history("BTCUSD", True) is None
+    assert kp.get_price_history("BTCUSD", float("nan")) is None
+    with pytest.raises(ProviderError):
+        kp.open_orders("BTCUSD")
+    with pytest.raises(ProviderError):
+        kp.order_status("BTCUSD", "O1")
 
-
+    # 6. T212Provider: order_status rejects NaN/Inf filledQuantity, filledValue, fee, fillPrice
+    tp = T212Provider()
+    fake_t212 = SimpleNamespace(
+        get_order_status=lambda oid: {
+            "ticker": "NVDA_US_EQ",
+            "status": "FILLED",
+            "filledQuantity": "nan",
+            "filledValue": 100.0,
+            "fee": 0.0,
+        }
+    )
+    monkeypatch.setattr(tp, "_client", lambda: fake_t212)
+    with pytest.raises(ProviderError):
+        tp.order_status("NVDA_US_EQ", "ORD1")
 

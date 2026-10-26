@@ -208,23 +208,36 @@ class KrakenProvider(MarketDataProvider):
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending public OHLC closes as timestamp/price mappings."""
+        if isinstance(lookback_h, bool):
+            return None
         try:
+            lookback_f = float(lookback_h)
+            if not math.isfinite(lookback_f) or lookback_f <= 0:
+                return None
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.
-            raw_interval = max(1, int(math.ceil((lookback_h * 60.0) / 720.0)))
+            raw_interval = max(1, int(math.ceil((lookback_f * 60.0) / 720.0)))
             valid_intervals = (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
             res = cli._public("OHLC", {"pair": symbol, "interval": interval})
             rows = next((v for k, v in res.items() if k != "last"), None)
             if not rows:
                 return None
-            cutoff = time.time() - lookback_h * 3600
+            cutoff = time.time() - lookback_f * 3600
             out = []
             for r in rows:                       # [time, o, h, l, c, vwap, vol, cnt]
-                t = float(r[0])
-                if t < cutoff:
+                if not isinstance(r, (list, tuple)) or len(r) < 5:
                     continue
-                out.append({"timestamp": int(t * 1000), "price": float(r[4])})
+                if isinstance(r[0], bool) or isinstance(r[4], bool):
+                    continue
+                try:
+                    t = float(r[0])
+                    p = float(r[4])
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not (math.isfinite(t) and math.isfinite(p)) or p <= 0 or t < cutoff:
+                    continue
+                out.append({"timestamp": int(t * 1000), "price": p})
             return out or None
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] history {symbol}: {e}")
@@ -313,10 +326,16 @@ class KrakenProvider(MarketDataProvider):
             if side not in {"BUY", "SELL"}:
                 raise ProviderError(
                     f"open_orders({symbol}): an invalid side for {order_id}")
+            raw_px = description.get("price", raw.get("price", 0.0))
+            raw_vol = raw.get("vol")
+            raw_vol_exec = raw.get("vol_exec")
+            if any(isinstance(v, bool) for v in (raw_px, raw_vol, raw_vol_exec)):
+                raise ProviderError(
+                    f"open_orders({symbol}): invalid values for {order_id}")
             try:
-                price = float(description.get("price", raw.get("price", 0.0)) or 0.0)
-                original_qty = float(raw.get("vol") or 0.0)
-                executed_qty = float(raw.get("vol_exec") or 0.0)
+                price = float(raw_px or 0.0)
+                original_qty = float(raw_vol or 0.0)
+                executed_qty = float(raw_vol_exec or 0.0)
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ProviderError(
                     f"open_orders({symbol}): invalid values for {order_id}") from exc
@@ -554,13 +573,29 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"order_status {order_id}: unknown Kraken status {raw_status!r}"
             )
+        raw_vol_exec = info.get("vol_exec")
+        raw_cost = info.get("cost")
+        raw_fee = info.get("fee")
+        raw_vol = info.get("vol")
+        if any(isinstance(v, bool) for v in (raw_vol_exec, raw_cost, raw_fee, raw_vol)):
+            raise ProviderError(f"order_status {order_id}: invalid fill values")
+        try:
+            filled_qty = float(raw_vol_exec or 0.0)
+            cost = float(raw_cost or 0.0)
+            fee = float(raw_fee or 0.0)
+            orig_qty = float(raw_vol or 0.0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"order_status {order_id}: invalid fill values") from exc
+        if (not all(math.isfinite(v) for v in (filled_qty, cost, fee, orig_qty))
+                or filled_qty < 0.0 or cost < 0.0 or orig_qty < 0.0):
+            raise ProviderError(f"order_status {order_id}: invalid fill values")
         return OrderStatus(
             status=norm_status,
-            filled_qty=float(info.get("vol_exec") or 0.0),
-            cost=float(info.get("cost") or 0.0),
-            fee=float(info.get("fee") or 0.0),
+            filled_qty=filled_qty,
+            cost=cost,
+            fee=fee,
             venue_status=raw_status,
-            orig_qty=float(info.get("vol") or 0.0),
+            orig_qty=orig_qty,
         )
 
     def order_by_client_id(self, symbol: str, client_order_id: str):

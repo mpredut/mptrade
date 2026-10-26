@@ -393,6 +393,19 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
                           kind=None, cancel_opposite_requested_price=None):
     """Single low-level dispatch after common filter normalization."""
     side = str(order_type).upper()
+    if isinstance(qty, bool) or (not market and isinstance(price, bool)):
+        raise SubmissionRefused("invalid_order_parameters")
+    try:
+        qty_f = float(qty)
+        price_f = None if market else float(price)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SubmissionRefused("invalid_order_parameters") from exc
+    if (
+        not math.isfinite(qty_f)
+        or qty_f <= 0
+        or (not market and (price_f is None or not math.isfinite(price_f) or price_f <= 0))
+    ):
+        raise SubmissionRefused("invalid_order_parameters")
     cancel_price = None
     if cancel_opposite_requested_price is not None:
         if isinstance(cancel_opposite_requested_price, bool):
@@ -838,7 +851,15 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
 def adjust_price_and_cancel_opposite(order_type, symbol, price,
                                      cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
-    order_type = order_type.upper()
+    order_type = str(order_type).upper()
+    if isinstance(price, bool):
+        raise SubmissionRefused("invalid_order_parameters")
+    try:
+        price = float(price)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SubmissionRefused("invalid_order_parameters") from exc
+    if not math.isfinite(price) or price <= 0:
+        raise SubmissionRefused("invalid_order_parameters")
     if cancel_opposite:
         cancel_opposite_orders(order_type, symbol, price)
     current_price = api.get_current_price(symbol)
@@ -870,6 +891,15 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
     side = str(order_type).upper()
     if side not in {"BUY", "SELL"}:
         raise ValueError("order_type must be BUY or SELL")
+    if isinstance(requested_price, bool):
+        raise ValueError("requested_price cannot be bool")
+    try:
+        req_f = float(requested_price)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("requested_price must be numeric") from exc
+    if not math.isfinite(req_f) or req_f <= 0:
+        raise ValueError("requested_price must be finite and positive")
+    requested_price = req_f
     if current_price is None or isinstance(current_price, bool):
         return requested_price
     try:

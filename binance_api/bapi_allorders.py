@@ -24,6 +24,29 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     The first page uses ``startTime`` and later pages use the previous final fill ID
     plus one until a short page arrives.
     """
+    if start_time_ms is None or isinstance(start_time_ms, bool):
+        if strict:
+            raise ValueError("start_time_ms must be a valid timestamp")
+        return []
+    try:
+        start_f = float(start_time_ms)
+        if not math.isfinite(start_f) or start_f < 0:
+            if strict:
+                raise ValueError("start_time_ms must be a finite non-negative timestamp")
+            return []
+        start_time_ms = int(start_f)
+    except (TypeError, ValueError, OverflowError) as exc:
+        if strict:
+            raise ValueError("start_time_ms must be a valid timestamp") from exc
+        return []
+    if isinstance(limit, bool) or limit is None:
+        limit = 1000
+    else:
+        try:
+            lim_f = float(limit)
+            limit = max(1, int(lim_f)) if math.isfinite(lim_f) and lim_f > 0 else 1000
+        except (TypeError, ValueError, OverflowError):
+            limit = 1000
     out = []
     from_id = None
     while True:
@@ -55,7 +78,10 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         if len(batch) < limit:          # Final page.
             break
         try:
-            next_from_id = int(batch[-1]["id"]) + 1   # Continue from the next fill ID.
+            tail = batch[-1]
+            if not isinstance(tail, dict) or isinstance(tail.get("id"), bool):
+                raise ValueError("invalid tail trade id")
+            next_from_id = int(tail["id"]) + 1   # Continue from the next fill ID.
         except (KeyError, TypeError, ValueError):
             if strict:
                 raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")

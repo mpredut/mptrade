@@ -214,21 +214,36 @@ class HyperliquidProvider(MarketDataProvider):
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending granular spot closes over the last ``lookback_h`` hours."""
         self.validate_symbol(symbol)
+        if isinstance(lookback_h, bool):
+            return None
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
             return None
         try:
-            lookback_h = max(float(lookback_h or 0), 0.0)
+            lookback_f = float(lookback_h or 0.0)
+            if not math.isfinite(lookback_f):
+                return None
+            lookback_h = max(lookback_f, 0.0)
             interval = "1m" if lookback_h <= 24 else "15m"
             end = int(time.time() * 1000)
             start = end - int(lookback_h * 3600 * 1000)
             candles = c.info.candles_snapshot(pair, interval, start, end) or []
             out = []
             for k in candles:
+                if not isinstance(k, dict):
+                    continue
+                raw_t = k.get("t")
+                raw_c = k.get("c")
+                if isinstance(raw_t, bool) or isinstance(raw_c, bool):
+                    continue
                 try:
-                    out.append({"timestamp": int(k.get("t")), "price": float(k.get("c"))})
-                except (TypeError, ValueError):
+                    t_f = float(raw_t)
+                    c_f = float(raw_c)
+                    if not (math.isfinite(t_f) and math.isfinite(c_f)) or t_f <= 0 or c_f <= 0:
+                        continue
+                    out.append({"timestamp": int(t_f), "price": c_f})
+                except (TypeError, ValueError, OverflowError):
                     continue
             out.sort(key=lambda x: x["timestamp"])
             return out
@@ -247,9 +262,17 @@ class HyperliquidProvider(MarketDataProvider):
             if not addr:
                 return None
             for b in c.info.spot_user_state(addr).get("balances", []):
+                if not isinstance(b, dict):
+                    continue
                 if b.get("coin") == asset:
-                    total = float(b.get("total") or 0.0)
-                    hold = float(b.get("hold") or 0.0)
+                    raw_total = b.get("total")
+                    raw_hold = b.get("hold")
+                    if isinstance(raw_total, bool) or isinstance(raw_hold, bool):
+                        return None
+                    total = float(raw_total or 0.0)
+                    hold = float(raw_hold or 0.0)
+                    if not (math.isfinite(total) and math.isfinite(hold)) or total < 0.0 or hold < 0.0:
+                        return None
                     return max(total - hold, 0.0)
             return 0.0
         except Exception as e:  # noqa: BLE001
@@ -318,16 +341,28 @@ class HyperliquidProvider(MarketDataProvider):
                     continue
                 try:
                     if "limitPx" in o and o["limitPx"] is not None:
-                        float(o["limitPx"])
+                        if isinstance(o["limitPx"], bool) or not math.isfinite(float(o["limitPx"])):
+                            continue
                     price = extract_order_price(o, default=0.0)
-                    sz = float(o.get("sz", o.get("qty", 0.0)) or 0.0)
+                    raw_sz = o.get("sz", o.get("qty", 0.0))
+                    if isinstance(raw_sz, bool):
+                        continue
+                    sz = float(raw_sz or 0.0)
                     raw_orig = o.get("origSz", o.get("origQty"))
                     if raw_orig is not None:
+                        if isinstance(raw_orig, bool):
+                            continue
                         orig_sz = float(raw_orig or sz)
                     else:
                         orig_sz = float(extract_orig_qty(o, default=sz) or sz)
-                    exec_sz = max(0.0, float(o.get("executedQty", orig_sz - sz)) or 0.0)
-                except (TypeError, ValueError):
+                    raw_exec = o.get("executedQty", orig_sz - sz)
+                    if isinstance(raw_exec, bool):
+                        continue
+                    exec_f = float(raw_exec or 0.0)
+                    if not all(math.isfinite(v) for v in (price, sz, orig_sz, exec_f)) or price < 0 or sz < 0 or orig_sz < 0:
+                        continue
+                    exec_sz = max(0.0, exec_f)
+                except (TypeError, ValueError, OverflowError):
                     continue
                 oid_val = extract_order_id(o, default="")
                 side = extract_order_side(o) or "SELL"
@@ -460,28 +495,55 @@ class HyperliquidProvider(MarketDataProvider):
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
+        if isinstance(interval_min, bool):
+            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         client = self._hl()
         pair = self._pair()
         if client is None or pair is None:
             raise ProviderError(
                 f"ohlc_series({symbol}): client/pair unavailable")
-        interval = int(interval_min)
+        try:
+            interval = int(interval_min)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}") from exc
+        if interval <= 0:
+            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         lookback_h = max(1, int(90 * interval / 60))
         try:
             completed = list(
                 client.candles(pair, candle_interval(interval), lookback_h) or ()
             )[:-1]
-            valid = [
-                item for item in completed if item.get("c") is not None
-            ]
-            closes = tuple(float(item["c"]) for item in valid)
-            raw_timestamps = [item.get("T") for item in valid]
-            timestamps = (
-                tuple(float(value) / 1000.0 for value in raw_timestamps)
-                if raw_timestamps and all(
-                    value is not None for value in raw_timestamps)
-                else ()
-            )
+            valid = []
+            for item in completed:
+                if not isinstance(item, dict):
+                    continue
+                raw_c = item.get("c")
+                if raw_c is None or isinstance(raw_c, bool):
+                    continue
+                try:
+                    c_f = float(raw_c)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(c_f) and c_f > 0:
+                    valid.append((item, c_f))
+            closes = tuple(c_f for _item, c_f in valid)
+            raw_timestamps = [item.get("T") for item, _c_f in valid]
+            ts_list = []
+            ts_ok = bool(raw_timestamps)
+            for value in raw_timestamps:
+                if value is None or isinstance(value, bool):
+                    ts_ok = False
+                    break
+                try:
+                    ts_f = float(value) / 1000.0
+                except (TypeError, ValueError, OverflowError):
+                    ts_ok = False
+                    break
+                if not math.isfinite(ts_f) or ts_f <= 0:
+                    ts_ok = False
+                    break
+                ts_list.append(ts_f)
+            timestamps = tuple(ts_list) if ts_ok else ()
             observed_at = timestamps[-1] if timestamps else None
             return ClosedPriceSeries(
                 closes, interval, observed_at, timestamps)
@@ -697,7 +759,12 @@ class HyperliquidProvider(MarketDataProvider):
                     raw_fee = fee_info["fee"]
                     fee_token = fee_info["fee_asset"]
                 else:
-                    raw_fee = float(f.get("fee", f.get("commission", 0.0)) or 0.0)
+                    raw_fee_val = f.get("fee", f.get("commission", 0.0))
+                    if isinstance(raw_fee_val, bool):
+                        raise ProviderError(f"order_status({order_id}): invalid fee value")
+                    raw_fee = float(raw_fee_val or 0.0)
+                    if not math.isfinite(raw_fee):
+                        raise ProviderError(f"order_status({order_id}): non-finite fee value")
                     fee_token = str(f.get("feeToken") or f.get("feeAsset") or "").strip().upper()
                 # Hyperliquid usually charges BUY fees in base and SELL fees in
                 # quote. Convert base fees at the exact fill price for quote accounting.
@@ -711,7 +778,7 @@ class HyperliquidProvider(MarketDataProvider):
                         (c.spot_mid(hype_pair) if hype_pair else None)
                         or getattr(c, "mid", lambda _t: None)("HYPE")
                     )
-                    if not hype_mid or not math.isfinite(float(hype_mid)) or float(hype_mid) <= 0:
+                    if not hype_mid or isinstance(hype_mid, bool) or not math.isfinite(float(hype_mid)) or float(hype_mid) <= 0:
                         raise ProviderError(
                             f"order_status({order_id}): cannot value HYPE fee in USDC"
                         )
@@ -720,13 +787,22 @@ class HyperliquidProvider(MarketDataProvider):
                     raise ProviderError(
                         f"order_status({order_id}): unknown feeToken {fee_token!r}"
                     )
+            raw_orig_sz = order_payload.get("origSz")
+            raw_rem_sz = order_payload.get("sz")
+            if isinstance(raw_orig_sz, bool) or isinstance(raw_rem_sz, bool):
+                raise ProviderError(f"order_status({order_id}): invalid order sizes")
             try:
-                original = float(order_payload.get("origSz") or 0.0)
-                remaining = float(order_payload.get("sz") or 0.0)
-            except (TypeError, ValueError) as e:
+                original = float(raw_orig_sz or 0.0)
+                remaining = float(raw_rem_sz or 0.0)
+            except (TypeError, ValueError, OverflowError) as e:
                 raise ProviderError(
                     f"order_status({order_id}): invalid order sizes"
                 ) from e
+            if (not all(math.isfinite(v) for v in (original, remaining, filled, cost, fee))
+                    or original < 0.0 or remaining < 0.0 or filled < 0.0 or cost < 0.0):
+                raise ProviderError(
+                    f"order_status({order_id}): invalid order sizes"
+                )
             if venue_status in {"open", "filled"} or remaining > 0:
                 expected_filled = max(0.0, original - remaining)
             else:

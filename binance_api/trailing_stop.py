@@ -208,7 +208,12 @@ class TrailingStop:
             else:
                 klines = self.api.client.get_klines(
                     symbol=symbol, interval="1d", limit=REBUY_TREND_DAYS + 1) or []
-                closed = [k for k in klines if float(k[6]) < day * 86400000]
+                closed = [
+                    k for k in klines
+                    if isinstance(k, (list, tuple)) and len(k) >= 7
+                    and not any(isinstance(k[i], bool) for i in (0, 4, 6))
+                    and math.isfinite(float(k[6])) and float(k[6]) < day * 86400000
+                ]
                 window = closed[-REBUY_TREND_DAYS:]
                 if len(window) != REBUY_TREND_DAYS:
                     raise ValueError("insufficient completed daily history")
@@ -429,8 +434,18 @@ class TrailingStop:
                 st.setdefault("retry_counts", {})[action] = new_count
                 persist(None)
         elif result.outcome == "terminal":
-            filled = float(getattr(result.status, "filled_qty", 0.0) or 0.0)
-            req_qty = float(pending.get("submitted_qty") or pending.get("requested_qty") or 0.0)
+            raw_filled = getattr(result.status, "filled_qty", 0.0)
+            raw_req = pending.get("submitted_qty") or pending.get("requested_qty") or 0.0
+            try:
+                filled_f = float(0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else raw_filled)
+                filled = filled_f if (math.isfinite(filled_f) and filled_f >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                filled = 0.0
+            try:
+                req_f = float(0.0 if (raw_req is None or isinstance(raw_req, bool)) else raw_req)
+                req_qty = req_f if (math.isfinite(req_f) and req_f >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                req_qty = 0.0
             st_name = str(getattr(result.status, "status", "") or "").lower()
             if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
                 new_count = attempt_base + 1
@@ -589,8 +604,9 @@ def main() -> int:
                 st = {}
             peak_raw = st.get("peak")
             try:
-                peak = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
-            except (TypeError, ValueError):
+                peak_f = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
+                peak = peak_f if (peak_f is not None and math.isfinite(peak_f) and peak_f > 0) else None
+            except (TypeError, ValueError, OverflowError):
                 peak = None
             mode = ("pending order" if st.get("pending_order") else
                     "warming up" if "warmup_at" in st else

@@ -384,8 +384,10 @@ class T212Provider(MarketDataProvider):
             filled_value_raw = raw.get("filledValue")
             cost = abs(float(filled_value_raw or 0.0))
             fee = float(raw.get("fee", raw.get("commission", 0.0)) or 0.0)
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(f"order_status({order_id}): invalid fill values") from e
+        if not all(math.isfinite(v) for v in (filled_qty, cost, fee)):
+            raise ProviderError(f"order_status({order_id}): invalid fill values")
 
         fee_currencies = {
             str(currency).strip().upper()
@@ -408,8 +410,13 @@ class T212Provider(MarketDataProvider):
                     f"order_status({order_id}): fill {filled_qty} without an executed cost"
                 )
             try:
-                cost = abs(float(fill_price)) * filled_qty
-            except (TypeError, ValueError):
+                fp_val = abs(float(fill_price))
+                if not math.isfinite(fp_val) or fp_val <= 0:
+                    raise ValueError("non-finite or non-positive fill_price")
+                cost = fp_val * filled_qty
+                if not math.isfinite(cost):
+                    raise ValueError("non-finite cost")
+            except (TypeError, ValueError, OverflowError):
                 raise ProviderError(
                     f"order_status({order_id}): fill {filled_qty} without an executed cost"
                 ) from None
