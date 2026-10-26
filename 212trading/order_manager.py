@@ -124,9 +124,11 @@ def _read_or_migrate_marker(ticker: str, marker_path: str) -> dict | None:
     legacy = _read_marker(ORDER_MARKER)
     if legacy is None:
         return None
+    raw_order = legacy.get("order")
+    order_dict = raw_order if isinstance(raw_order, dict) else {}
     legacy_ticker = str(
         legacy.get("ticker")
-        or (legacy.get("order") or {}).get("ticker")
+        or order_dict.get("ticker")
         or ""
     ).upper()
     if legacy_ticker != ticker.upper():
@@ -313,7 +315,8 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         elif status in {"CANCELLED", "CANCELED", "EXPIRED"}:
             record["lifecycle"] = "expired" if status == "EXPIRED" else "canceled"
         elif status == "REJECTED":
-            history = list(record.get("venue_order_ids") or [])
+            raw_hist = record.get("venue_order_ids")
+            history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []
             if str(order_id) not in history:
                 history.append(str(order_id))
             record.update({
@@ -566,7 +569,8 @@ def place_order_with_retry(
             "lifecycle": lifecycle, "order": data,
         })
         if venue_status == "REJECTED":
-            history = list(record.get("venue_order_ids") or [])
+            raw_hist = record.get("venue_order_ids")
+            history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []
             if oid not in history:
                 history.append(oid)
             record["venue_order_ids"] = history

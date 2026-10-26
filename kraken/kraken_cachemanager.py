@@ -145,12 +145,31 @@ def _load_initial_cache(path):
         and isinstance(loaded.get("items"), dict)
         and isinstance(loaded.get("fetchtime"), dict)
     ):
+        clean_items: dict[str, list[dict]] = {}
+        for k, v in loaded["items"].items():
+            if not isinstance(v, list):
+                continue
+            valid_rows: list[dict] = []
+            for row in v:
+                if not isinstance(row, dict) or row.get("id") is None:
+                    continue
+                raw_t = row.get("time")
+                if raw_t is None or isinstance(raw_t, bool):
+                    continue
+                try:
+                    t_f = float(raw_t)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(t_f):
+                    continue
+                row_copy = dict(row)
+                row_copy["id"] = str(row["id"])
+                row_copy["time"] = int(t_f)
+                valid_rows.append(row_copy)
+            valid_rows.sort(key=lambda t: t["time"])
+            clean_items[str(k)] = valid_rows
         return {
-            "items": {
-                str(k): list(v)
-                for k, v in loaded["items"].items()
-                if isinstance(v, list)
-            },
+            "items": clean_items,
             "fetchtime": {
                 str(k): v
                 for k, v in loaded["fetchtime"].items()

@@ -373,6 +373,78 @@ def _new_state() -> dict:
     }
 
 
+def _sanitize_t212_state(st: dict) -> dict:
+    """Ensure persisted or injected state has valid types for all structural and numeric fields in-place."""
+    defaults = _new_state()
+    if not isinstance(st, dict):
+        return defaults
+    for k, v in defaults.items():
+        st.setdefault(k, v)
+    for k in ("qty", "cost_usd", "spent_cash", "fees_usd", "pos_peak"):
+        st[k] = _clean_nonneg_float(st.get(k), 0.0)
+    for k in ("realized_pnl_usd", "realized_net_usd"):
+        raw_v = st.get(k)
+        if isinstance(raw_v, bool) or raw_v is None:
+            st[k] = 0.0
+        else:
+            try:
+                vf = float(raw_v)
+                st[k] = vf if math.isfinite(vf) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                st[k] = 0.0
+    for k, min_i in (("cycle", 1), ("dca_buys", 0), ("loss_band", 0)):
+        raw_i = st.get(k)
+        if isinstance(raw_i, bool) or raw_i is None:
+            st[k] = min_i
+        else:
+            try:
+                if_val = float(raw_i)
+                st[k] = max(min_i, int(if_val)) if math.isfinite(if_val) else min_i
+            except (TypeError, ValueError, OverflowError):
+                st[k] = min_i
+    for k in ("entry_price", "last_buy_price", "last_sell_price", "last_sell_ts", "post_sell_peak", "post_sell_trough"):
+        st[k] = _clean_pos_float(st.get(k))
+    for k in ("sl_bounce_state", "sl_episode_state", "tp_ride_state", "reentry_state"):
+        if not isinstance(st.get(k), dict):
+            st[k] = {}
+    for k in ("pending_submit", "tp_pending_exit", "sl_pending_exit"):
+        if not isinstance(st.get(k), dict):
+            st[k] = None
+    raw_orders = st.get("orders")
+    if isinstance(raw_orders, list):
+        st["orders"] = [o for o in raw_orders if isinstance(o, dict)]
+    else:
+        st["orders"] = []
+    raw_sold = st.get("tp_sold_levels")
+    if isinstance(raw_sold, list):
+        clean_sold = []
+        for item in raw_sold:
+            lvl_f = _clean_pos_float(item)
+            if lvl_f is not None:
+                clean_sold.append(lvl_f)
+        st["tp_sold_levels"] = clean_sold
+    else:
+        st["tp_sold_levels"] = []
+    for k in ("buy_backoff_until", "locked_zero_until", "tr_fail_until", "sl_fail_until"):
+        if k in st:
+            cleaned = _clean_nonneg_float(st.get(k), -1.0)
+            if cleaned >= 0.0:
+                st[k] = cleaned
+            else:
+                st.pop(k, None)
+    if "tp_fail_until" in st:
+        raw_fails = st.get("tp_fail_until")
+        if isinstance(raw_fails, dict):
+            st["tp_fail_until"] = {
+                str(fk): _clean_nonneg_float(fv, 0.0)
+                for fk, fv in raw_fails.items()
+                if _clean_nonneg_float(fv, -1.0) > 0.0
+            }
+        else:
+            st.pop("tp_fail_until", None)
+    return st
+
+
 def _sell_pnl(avg: float, price: float, qty: float, fee_pct: float = FX_FEE_PCT) -> tuple[float, float, float]:
     """Return gross, round-trip FX fee, and net for selling quantity at price."""
     gross = (price - avg) * qty
@@ -418,15 +490,7 @@ class Strategy:
         )
         self.state_file = state_path_for(ticker)
         self._state_write_failed = False
-        self.s = initial_state if initial_state is not None else self._load()
-        self.s.setdefault("pending_submit", None)
-        self.s.setdefault("post_sell_trough", None)
-        self.s.setdefault("last_exit_kind", None)
-        self.s.setdefault("sl_bounce_state", {})
-        self.s.setdefault("tp_ride_state", {})
-        self.s.setdefault("reentry_state", {})
-        self.s.setdefault("tp_pending_exit", None)
-        self.s.setdefault("sl_pending_exit", None)
+        self.s = _sanitize_t212_state(initial_state if initial_state is not None else self._load())
         self.exit_manager: PositionExitManager | None = (
             self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
         )
@@ -1055,11 +1119,13 @@ class Strategy:
         # Place missing levels. Back off for 30 minutes after persistent tranche failure
         # instead of retrying on every tick. Defer and break if a submit is already in flight.
         now = self._now()
-        fails = self.s.setdefault("tp_fail_until", {})
+        if not isinstance(self.s.get("tp_fail_until"), dict):
+            self.s["tp_fail_until"] = {}
+        fails = self.s["tp_fail_until"]
         for lvl, (q, lim) in desired.items():
             if lvl in open_sells:
                 continue
-            if now < fails.get(str(lvl), 0):
+            if now < _clean_nonneg_float(fails.get(str(lvl)), 0.0):
                 continue
             if self.s.get("pending_submit"):
                 break
@@ -1257,7 +1323,7 @@ class Strategy:
         status_cache: dict[str, object] = {}
 
         # --- Executed BUY: the position increased (or adopt an existing position). ---
-        if real_qty > prev_qty + 1e-6 and self._now() < self.s.get("locked_zero_until", 0):
+        if real_qty > prev_qty + 1e-6 and self._now() < _clean_nonneg_float(self.s.get("locked_zero_until"), 0.0):
             log("  [STRAT] adoptie ignorata — portfolio stale (not-owned recent, lock activ)")
             return False
         if real_qty > prev_qty + 1e-6:
@@ -1494,7 +1560,7 @@ class Strategy:
         drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
         if drop_pct < self.p.trail_pct:
             return False
-        if self._now() < self.s.get("tr_fail_until", 0):
+        if self._now() < _clean_nonneg_float(self.s.get("tr_fail_until"), 0.0):
             return False
         # The peak drawdown reached the threshold: sell all once, replacing only a stale limit.
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
@@ -1589,7 +1655,8 @@ class Strategy:
             snapshot = self._create_position_snapshot(price, avg, held)
             sell_qty = snapshot.sellable_qty
 
-            pending_sl = self.s.get("sl_pending_exit") if in_sl else None
+            raw_pending_sl = self.s.get("sl_pending_exit") if in_sl else None
+            pending_sl = raw_pending_sl if isinstance(raw_pending_sl, dict) else None
             if pending_sl:
                 should_exit_sl = True
                 exit_reason = str(pending_sl.get("reason") or "mhdsl_pending_exit")
@@ -1602,7 +1669,7 @@ class Strategy:
                 exit_reason = decision.reason if should_exit_sl else ""
 
             if should_exit_sl:
-                if self._now() < self.s.get("sl_fail_until", 0):
+                if self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0):
                     return False
                 if pending_sl is None:
                     self.s["sl_pending_exit"] = {"reason": exit_reason, "time": self._now()}
@@ -1630,7 +1697,7 @@ class Strategy:
             self.s["sl_pending"] = False        # End this stop-loss episode after recovery.
             self.s.pop("sl_fail_until", None)
             return False
-        if self._now() < self.s.get("sl_fail_until", 0):
+        if self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
         # Anti-spam: place the stop once and replace it only if price moved below its limit.
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
@@ -1813,7 +1880,7 @@ class Strategy:
             return
         disc = 1 - self.p.entry_discount_pct / 100
 
-        in_backoff = self._now() < self.s.get("buy_backoff_until", 0)
+        in_backoff = self._now() < _clean_nonneg_float(self.s.get("buy_backoff_until"), 0.0)
 
         is_flat = held <= 1e-9 or (self._is_dust(held, price) and not self._has_open("SELL"))
         if is_flat:
@@ -1854,7 +1921,8 @@ class Strategy:
         if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
             if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
                 tick_time = self._now()
-                pending_exit = self.s.get("tp_pending_exit")
+                raw_pending_exit = self.s.get("tp_pending_exit")
+                pending_exit = raw_pending_exit if isinstance(raw_pending_exit, dict) else None
                 decision = None
 
                 if pending_exit is None:
@@ -1935,7 +2003,8 @@ class Strategy:
                         return
 
                     fresh_held = self.s["qty"]
-                    sell_fraction = float(pending_exit.get("sell_fraction", 1.0) or 1.0)
+                    raw_sf = _clean_pos_float(pending_exit.get("sell_fraction"))
+                    sell_fraction = min(1.0, raw_sf) if raw_sf is not None else 1.0
                     target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
                     sell_qty = self._sellable_qty(target_qty, price)
                     if sell_qty <= 0 or self._is_dust(sell_qty, price):
@@ -1987,7 +2056,7 @@ class Strategy:
                     if self.s["last_buy_price"] else None)
         in_sl_state = bool(
             self.s.get("sl_pending")
-            or (self._now() < self.s.get("sl_fail_until", 0))
+            or (self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0))
             or (self.ticker in self.exit_manager.sl_bounce_state if self.exit_manager else False)
         )
         if (not in_backoff

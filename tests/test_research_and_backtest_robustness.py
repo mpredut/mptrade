@@ -1881,5 +1881,61 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert isinstance(checker.config["default"], dict)
     assert checker._is_dynamic_symbol("BTC") is False
 
+    # 8. T212 order_manager/strategy, Kraken cachemanager/trailing_stop, and Binance trailing_stop state resilience
+    import importlib.util
+    import sys
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    t212_dir = os.path.join(repo_root, "212trading")
+    if t212_dir not in sys.path:
+        sys.path.insert(0, t212_dir)
+    t212_strat_spec = importlib.util.spec_from_file_location(
+        "t212_strategy_test_mod", os.path.join(t212_dir, "strategy.py")
+    )
+    t212_strat_mod = importlib.util.module_from_spec(t212_strat_spec)
+    sys.modules["t212_strategy_test_mod"] = t212_strat_mod
+    try:
+        t212_strat_spec.loader.exec_module(t212_strat_mod)
+    finally:
+        sys.modules.pop("t212_strategy_test_mod", None)
+        if t212_dir in sys.path:
+            sys.path.remove(t212_dir)
+    sanitized_t212 = t212_strat_mod._sanitize_t212_state({
+        "qty": "2.5",
+        "cost_usd": "250.0",
+        "orders": ["not_a_dict", {"id": "O1", "side": "SELL", "qty": 1.0, "limit": 120.0}],
+        "tp_sold_levels": [None, "2.0", "bad"],
+        "tp_fail_until": None,
+        "buy_backoff_until": None,
+        "sl_pending_exit": "corrupted",
+        "tp_pending_exit": 123,
+    })
+    assert sanitized_t212["qty"] == 2.5
+    assert len(sanitized_t212["orders"]) == 1
+    assert sanitized_t212["tp_sold_levels"] == [2.0]
+    assert "tp_fail_until" not in sanitized_t212
+    assert "buy_backoff_until" not in sanitized_t212
+    assert sanitized_t212["sl_pending_exit"] is None
+    assert sanitized_t212["tp_pending_exit"] is None
+
+    from kraken.kraken_cachemanager import _load_initial_cache
+    bad_kraken_cache = tmp_path / "cache_trade_kraken_bad.json"
+    bad_kraken_cache.write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [
+                    "not_a_dict",
+                    {"id": None, "time": 1000},
+                    {"id": "T2", "time": "2000", "price": 10.0, "qty": 1.0},
+                    {"id": "T1", "time": 1000, "price": 9.5, "qty": 1.0},
+                ]
+            },
+            "fetchtime": {"HYPEUSD": 2000},
+        }),
+        encoding="utf-8",
+    )
+    loaded_kc = _load_initial_cache(str(bad_kraken_cache))
+    assert [r["id"] for r in loaded_kc["items"]["HYPEUSD"]] == ["T1", "T2"]
+
+
 
 

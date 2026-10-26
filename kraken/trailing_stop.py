@@ -329,7 +329,9 @@ class KrakenTrailing:
     def reconcile_pending(self, pending, persist):
         result = self.order_lifecycle.reconcile(pending, persist=persist)
         pair = str(pending.get("symbol") or "")
-        action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
+        raw_meta = pending.get("metadata")
+        meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
+        action = str(pending.get("action") or meta_dict.get("action") or "").upper()
         retry_key = (pair, action)
         st = getattr(persist, "st", None)
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
@@ -352,7 +354,9 @@ class KrakenTrailing:
             new_count = attempt_base + 1
             self._retry_counts[retry_key] = new_count
             if isinstance(st, dict):
-                st.setdefault("retry_counts", {})[action] = new_count
+                if not isinstance(st.get("retry_counts"), dict):
+                    st["retry_counts"] = {}
+                st["retry_counts"][action] = new_count
                 persist(None)
         elif result.outcome == "terminal":
             raw_filled = getattr(result.status, "filled_qty", 0.0)
@@ -372,7 +376,9 @@ class KrakenTrailing:
                 new_count = attempt_base + 1
                 self._retry_counts[retry_key] = new_count
                 if isinstance(st, dict):
-                    st.setdefault("retry_counts", {})[action] = new_count
+                    if not isinstance(st.get("retry_counts"), dict):
+                        st["retry_counts"] = {}
+                    st["retry_counts"][action] = new_count
             else:
                 self._retry_counts.pop(retry_key, None)
                 if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
