@@ -2497,13 +2497,21 @@ class CacheTradeManager(CacheManagerInterface):
         if not isinstance(order_type, str) or order_type.strip().upper() not in ("BUY", "SELL"):
             return None
         want_buyer = (order_type.strip().upper() == "SELL")   # The opposite of SELL is BUY.
+        sym_u = str(symbol or "").strip().upper()
+        sym_clean = sym_u.replace("/", "")
         latest_key = None
         latest_price = None
         with self.lock:
-            for trade in self.cache.get(symbol, []):
+            bucket = (
+                self.cache.get(symbol)
+                or self.cache.get(sym_u)
+                or self.cache.get(sym_clean)
+                or []
+            )
+            for trade in bucket:
                 if (
                     not self._is_valid_item(trade)
-                    or str(trade["symbol"]).upper() != str(symbol).upper()
+                    or str(trade["symbol"]).strip().upper().replace("/", "") != sym_clean
                     or trade["isBuyer"] != want_buyer
                 ):
                     continue
@@ -3424,7 +3432,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             self.bind_provider(symbol, provider_name)
 
     def provider_name_for(self, symbol: str):
-        return self._provider_names.get(str(symbol or "").strip().upper())
+        sym_u = str(symbol or "").strip().upper()
+        return self._provider_names.get(sym_u) or self._provider_names.get(sym_u.replace("/", ""))
 
     def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
         now = time.time()
@@ -3624,8 +3633,14 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         max_age = float(max_age_sec)
         if not math.isfinite(max_age) or max_age <= 0:
             raise ValueError("max_age_sec must be finite and positive")
+        sym_u = str(symbol or "").strip().upper()
+        sym_clean = sym_u.replace("/", "")
         with self.lock:
-            entries = self.cache.get(symbol)
+            entries = (
+                self.cache.get(symbol)
+                or self.cache.get(sym_u)
+                or self.cache.get(sym_clean)
+            )
             entry = list(entries[0]) if entries and isinstance(entries[0], (list, tuple)) else None
         if not entry or len(entry) < 2:
             return None
@@ -3650,8 +3665,19 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_price(self, symbol: str):
         """Return ``[timestamp_ms, price]``, forcing HTTP when missing or stale."""
+        sym_u = str(symbol or "").strip().upper()
+        sym_clean = sym_u.replace("/", "")
+        target_sym = symbol
         with self.lock:
-            entries = self.cache.get(symbol)
+            if symbol in self.cache:
+                target_sym = symbol
+            elif sym_u in self.cache:
+                target_sym = sym_u
+            elif sym_clean in self.cache:
+                target_sym = sym_clean
+            elif sym_clean in getattr(self, "symbols", ()):
+                target_sym = sym_clean
+            entries = self.cache.get(target_sym)
             cached_price, last_ts = self._extract_price_and_ts(entries)
             entry = [last_ts, cached_price] if cached_price is not None else None
         now_ms = int(time.time() * 1000)
@@ -3663,16 +3689,16 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             or age_ms < -5_000
         ):
             age = age_ms if age_ms is not None else -1
-            print(f"[{self.cls_name}] {symbol} stale ({age}ms) - forced HTTP fetch")
-            new = self.get_remote_items(symbol, None)
+            print(f"[{self.cls_name}] {target_sym} stale ({age}ms) - forced HTTP fetch")
+            new = self.get_remote_items(target_sym, None)
             if not new or self._extract_price_and_ts(new)[0] is None:
                 # Preserve the old row for diagnostics, but never return it as a
                 # usable quote after its bounded-age refresh has failed.
                 return None
-            self._persist_items(symbol, new)
+            self._persist_items(target_sym, new)
             self.save_state_to_file_if_enabled()
             with self.lock:
-                entries = self.cache.get(symbol)
+                entries = self.cache.get(target_sym)
                 cached_price, last_ts = self._extract_price_and_ts(entries)
                 entry = [last_ts, cached_price] if cached_price is not None else None
         return entry

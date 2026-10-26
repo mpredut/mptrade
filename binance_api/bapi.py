@@ -206,7 +206,12 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 else:
                     continue
             original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
-            executed_qty = float(order.get('executedQty', order.get('z', order.get('vol_exec', 0.0))) or 0.0)
+            raw_exec_qty = order.get('executedQty', order.get('z', order.get('vol_exec', 0.0)))
+            try:
+                exec_f = float(raw_exec_qty) if (raw_exec_qty is not None and not isinstance(raw_exec_qty, bool)) else 0.0
+                executed_qty = exec_f if (math.isfinite(exec_f) and exec_f >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                executed_qty = 0.0
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0
             if 'time' in order and order.get('time') is not None and not isinstance(order.get('time'), bool):
@@ -276,6 +281,14 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol)
+    if expire_time is None or isinstance(expire_time, bool):
+        return
+    try:
+        expire_val = float(expire_time)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(expire_val) or expire_val <= 0:
+        return
     
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
 
@@ -290,7 +303,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
 
-        if order_time > 0 and current_time - order_time > expire_time:
+        if order_time > 0 and current_time - order_time > expire_val:
             cancel = cancel_order(symbol, order_id)
             if cancel:
                 try:
@@ -309,6 +322,14 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol)
+    if max_age_seconds is None or isinstance(max_age_seconds, bool):
+        return
+    try:
+        max_age_val = float(max_age_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(max_age_val) or max_age_val < 0:
+        return
     
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
     current_time = int(time.time())  # Current time in seconds
@@ -320,7 +341,8 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
     count = 0
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-        if order_time > 0 and current_time - order_time <= max_age_seconds:  # Order is recent
+        age_sec = current_time - order_time
+        if order_time > 0 and -5.0 <= age_sec <= max_age_val:  # Order is recent
             cancel = cancel_order(symbol, order_id)
             if cancel:
                 try:

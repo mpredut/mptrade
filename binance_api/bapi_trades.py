@@ -65,6 +65,8 @@ def aggregate_trades(trades):
             continue
         qty = extract_order_qty(trade)
         px = extract_order_price(trade)
+        if qty <= 0 or px <= 0:
+            continue
         try:
             raw_qq = float(trade.get('quoteQty', 0.0) or 0.0)
             quote_qty = raw_qq if math.isfinite(raw_qq) and raw_qq > 0 else (px * qty)
@@ -458,9 +460,17 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         sync_reader()
 
     # Copy one coherent snapshot while the manager may reload a new generation.
+    sym_u = str(symbol or "").strip().upper()
+    sym_clean = sym_u.replace("/", "")
     with manager.lock:
+        raw_bucket = (
+            manager.cache.get(symbol)
+            or manager.cache.get(sym_u)
+            or manager.cache.get(sym_clean)
+            or []
+        )
         trades = [
-            dict(trade) for trade in manager.cache.get(symbol, [])
+            dict(trade) for trade in raw_bucket
             if isinstance(trade, dict)
         ]
     if not trades:
@@ -481,15 +491,19 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     for trade in trades:
         side = extract_order_side(trade)
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
-        if ts_ms > 0 and (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
+        age_ms = current_time_ms - ts_ms
+        if ts_ms > 0 and (order_type is None or side == order_type) and -5_000 <= age_ms <= max_age_ms:
+            px = extract_order_price(trade)
             qty = extract_order_qty(trade)
+            if px <= 0 or qty <= 0:
+                continue
             is_buyer = side == "BUY"
             filtered_trades.append({
                 'symbol': trade.get('symbol', symbol),
                 'id': trade.get('id'),
                 'orderId': trade.get('orderId'),
                 'orderListId': trade.get('orderId'),
-                'price': extract_order_price(trade),
+                'price': px,
                 'qty': qty,
                 'quantity': qty,
                 'time': ts_ms,

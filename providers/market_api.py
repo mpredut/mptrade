@@ -682,9 +682,15 @@ class MarketApi:
         side = str(side).upper()
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
+        if isinstance(since_s, bool):
+            raise ValueError("since_s must be finite and positive")
         since_s = float(since_s)
         if not math.isfinite(since_s) or since_s <= 0:
             raise ValueError("since_s must be finite and positive")
+        if isinstance(min_notional, bool):
+            raise ValueError("min_notional must be finite and non-negative")
+        if isinstance(max_notional, bool):
+            raise ValueError("max_notional must be finite and non-negative")
         min_value = None if min_notional is None else float(min_notional)
         max_value = None if max_notional is None else float(max_notional)
         if min_value is not None and (not math.isfinite(min_value) or min_value < 0):
@@ -842,6 +848,8 @@ class MarketApi:
         trend_duration_seconds=0.0,
     ) -> MarketRegimeContext:
         """Resolve one reusable short-horizon context at the composition root."""
+        if isinstance(now, bool):
+            raise ValueError("now must be finite")
         evaluated_at = time.time() if now is None else float(now)
         if not math.isfinite(evaluated_at):
             raise ValueError("now must be finite")
@@ -963,7 +971,11 @@ class MarketApi:
         """Collect evidence and select only fresh, usable directional sources."""
         service = self._regime_service_for(strength_threshold)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        evaluated_at = time.time() if now is None else now
+        if isinstance(now, bool):
+            raise ValueError("now must be finite")
+        evaluated_at = time.time() if now is None else float(now)
+        if not math.isfinite(evaluated_at):
+            raise ValueError("now must be finite")
         if snapshot_max_age_seconds is None:
             snapshot_max_age_seconds = (
                 service.default_snapshot_max_age_seconds())
@@ -980,7 +992,7 @@ class MarketApi:
             benchmark = str(item or "").strip()
             if not benchmark:
                 raise ValueError("benchmark symbols must be non-empty")
-            identity = benchmark.upper()
+            identity = benchmark.upper().replace("/", "")
             if identity not in seen_benchmarks:
                 normalized_benchmarks.append(benchmark)
                 seen_benchmarks.add(identity)
@@ -1147,9 +1159,24 @@ class MarketApi:
         from instrument import Instrument
         import utils as u
         explicit_provider_name = kwargs.pop("provider_name", None)
+        inst_params = kwargs.pop("params", None)
         provider = self._provider_explicit_or_routed(
             symbol, explicit_provider_name)
         prov_name = provider.name
+        if inst_params is None:
+            try:
+                from instrument_registry import select_instruments
+                sym_clean = str(symbol or "").strip().upper().replace("/", "")
+                for spec in select_instruments(prov_name).values():
+                    if str(spec.symbol or "").strip().upper().replace("/", "") == sym_clean:
+                        inst_params = dict(spec.params or {})
+                        if base is None and spec.base:
+                            base = spec.base
+                        if quote is None and spec.quote:
+                            quote = spec.quote
+                        break
+            except Exception:
+                inst_params = {}
         if base is None:
             try:
                 base = u.base_asset(symbol)
@@ -1160,7 +1187,7 @@ class MarketApi:
         if quote is None and str(prov_name).lower() == "hyperliquid":
             quote = "USDC"
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
-                          base=base, quote=quote, api=self)
+                          base=base, quote=quote, params=inst_params or {}, api=self)
         return inst.place(side, price, qty, **kwargs)
 
     def supports_symbol(self, symbol: str) -> bool:

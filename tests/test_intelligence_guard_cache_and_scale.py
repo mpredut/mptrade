@@ -5625,6 +5625,211 @@ def test_iteration27_should_wait_none_fallback_price_analysis_memo_and_quantity_
     assert q_scale_nan.scale_applied is False
 
 
+def test_iteration28_cache_symbol_variants_future_timestamps_cancel_bounds_and_market_api_place_params(monkeypatch):
+    """Iteration 28 regression suite:
+    1. CacheTradeManager.get_last_opposite_fill_price and CacheCurrentPriceManager
+       (provider_name_for, get_cached_price_observation, get_price) normalize slash/case
+       symbol variants (e.g. 'BTC/USDC', 'tao/usd').
+    2. bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and bapi_trades.aggregate_trades
+       reject future-dated (clock-skewed) timestamps and zero-price/zero-qty rows.
+    3. bapi.cancel_expired_orders and bapi.cancel_recent_orders reject bool/NaN/non-positive
+       time bounds and future order timestamps without canceling valid open orders.
+    4. MarketApi.place inherits instrument params (e.g. bypass_guards) from instrument_registry
+       when not explicitly supplied, and latest_fill_price / market_regime_bundle reject bool inputs.
+    """
+    import threading
+    from types import SimpleNamespace
+    import pytest
+    import cacheManager as cm
+    from binance_api import bapi, bapi_allorders, bapi_trades
+    import instrument_registry
+    from providers.market_api import MarketApi
+
+    # 1A. CacheTradeManager.get_last_opposite_fill_price with slash/lowercase symbol
+    tm = cm.CacheTradeManager.__new__(cm.CacheTradeManager)
+    tm.lock = threading.RLock()
+    tm.sync_account_reader_if_needed = lambda: None
+    tm.cache = {
+        "BTCUSDC": [
+            {
+                "symbol": "BTCUSDC",
+                "id": 101,
+                "orderId": 201,
+                "price": "88500.0",
+                "qty": "0.1",
+                "time": 1_700_000_000_000,
+                "isBuyer": False,
+            }
+        ]
+    }
+    assert tm.get_last_opposite_fill_price("BTC/USDC", "BUY") == 88500.0
+    assert tm.get_last_opposite_fill_price("btcusdc", "BUY") == 88500.0
+
+    # 1B. CacheCurrentPriceManager slash/case symbol normalization
+    cpm = cm.CacheCurrentPriceManager.__new__(cm.CacheCurrentPriceManager)
+    cpm.cls_name = "CacheCurrentPriceManager"
+    cpm.lock = threading.RLock()
+    cpm.symbols = ["TAOUSD"]
+    cpm._provider_names = {"TAOUSD": "kraken"}
+    now_ms = int(time.time() * 1000)
+    cpm.cache = {"TAOUSD": [[now_ms, 420.5]]}
+    assert cpm.provider_name_for("tao/usd") == "kraken"
+    obs = cpm.get_cached_price_observation("TAO/USD", 10.0)
+    assert obs is not None and obs[1] == 420.5
+    assert cpm.get_price_value("tao/usd") == 420.5
+
+    # 2. bapi_allorders.get_trade_orders, bapi_trades.get_trade_orders, and aggregate_trades
+    monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda s: None)
+    monkeypatch.setattr(bapi_trades.sym, "validate_symbols", lambda s: None)
+    future_ts = now_ms + 3_600_000  # 1 hour in the future (clock skew)
+    valid_ts = now_ms - 10_000
+    fake_order_mgr = SimpleNamespace(
+        lock=threading.RLock(),
+        cache={
+            "BTCUSDC": [
+                {"orderId": 1, "price": 90000.0, "quantity": 0.1, "timestamp": future_ts, "side": "SELL"},
+                {"orderId": 2, "price": 0.0, "quantity": 0.1, "timestamp": valid_ts, "side": "SELL"},
+                {"orderId": 3, "price": 85000.0, "quantity": 0.2, "timestamp": valid_ts, "side": "SELL"},
+            ]
+        },
+    )
+    monkeypatch.setattr(cm, "get_cache_manager", lambda name, **kw: fake_order_mgr)
+    orders_out = bapi_allorders.get_trade_orders("SELL", "BTC/USDC", 300)
+    assert len(orders_out) == 1 and orders_out[0]["orderId"] == 3
+
+    fake_trade_mgr = SimpleNamespace(
+        lock=threading.RLock(),
+        cache={
+            "BTCUSDC": [
+                {"symbol": "BTCUSDC", "id": 1, "orderId": 1, "price": 90000.0, "qty": 0.1, "time": future_ts, "isBuyer": False},
+                {"symbol": "BTCUSDC", "id": 2, "orderId": 2, "price": 0.0, "qty": 0.1, "time": valid_ts, "isBuyer": False},
+                {"symbol": "BTCUSDC", "id": 3, "orderId": 3, "price": 86000.0, "qty": 0.3, "time": valid_ts, "isBuyer": False},
+            ]
+        },
+    )
+    monkeypatch.setattr(bapi_trades, "init_cache_trade_manager", lambda: fake_trade_mgr)
+    trades_out = bapi_trades.get_trade_orders("SELL", "BTC/USDC", 300)
+    assert len(trades_out) == 1 and trades_out[0]["id"] == 3
+
+    agg = bapi_trades.aggregate_trades([
+        {"orderId": 10, "price": "0.0", "qty": "1.0", "time": valid_ts, "isBuyer": True},
+        {"orderId": 11, "price": "85000.0", "qty": "0.5", "time": valid_ts, "isBuyer": True},
+    ])
+    assert len(agg) == 1 and agg[0]["orderId"] == 11
+
+    assert bapi_allorders.get_recent_filled_orders("BUY", "BTCUSDC", float("nan")) == []
+    assert bapi_allorders.get_recent_filled_orders("BUY", "BTCUSDC", True) == []
+
+    # 3. bapi.cancel_expired_orders and bapi.cancel_recent_orders with NaN/bool/non-positive bounds & future order_time
+    canceled_ids = []
+    monkeypatch.setattr(bapi.sym, "validate_params", lambda ot, s: None)
+    monkeypatch.setattr(
+        bapi,
+        "get_open_orders",
+        lambda ot, s, **kw: {
+            501: {"time": now_ms - 5_000, "price": 80000.0, "qty": 0.1},
+            502: {"time": now_ms + 60_000, "price": 80000.0, "qty": 0.1},  # future timestamp
+        },
+    )
+    monkeypatch.setattr(bapi, "cancel_order", lambda s, oid: (canceled_ids.append(oid) or True))
+
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", 0)
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", -10)
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", float("nan"))
+    bapi.cancel_expired_orders("BUY", "BTCUSDC", True)
+    assert canceled_ids == []
+
+    bapi.cancel_recent_orders("BUY", "BTCUSDC", float("nan"))
+    bapi.cancel_recent_orders("BUY", "BTCUSDC", True)
+    assert canceled_ids == []
+
+    # Valid recent window (10s) cancels order 501 (age ~5s) but NOT future-dated order 502 (age -60s)
+    bapi.cancel_recent_orders("BUY", "BTCUSDC", 10.0)
+    assert canceled_ids == [501]
+
+    # 4. MarketApi.place inherits instrument params from instrument_registry & bool rejections
+    captured_bypasses = []
+    orig_margins = dict(order_guard._load_margins())
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: orig_margins)
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (captured_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+    monkeypatch.setattr(
+        instrument_registry,
+        "select_instruments",
+        lambda prov=None: {
+            "KRAKEN:TAOUSD": SimpleNamespace(
+                symbol="TAOUSD",
+                base="TAO",
+                quote="USD",
+                params={"bypass_guards": "GI_WHALE"},
+            )
+        },
+    )
+
+    class DummyProv:
+        name = "kraken"
+        def supports_symbol(self, sym):
+            return sym == "TAOUSD"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 1000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            return None
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            from providers.quantity import QuantityDecision
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=float(qty or 1.0),
+                scale_applied=False,
+                applied_scale=1.0,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-28", "qty": qty}
+
+    mapi = MarketApi([DummyProv()])
+    res_place = mapi.place(
+        "TAOUSD", "BUY", 100.0, 1.0,
+        provider_name="kraken", smart=False, wait_for_trend=False, caller_owns_retry=True,
+    )
+    assert res_place is not None
+    assert len(captured_bypasses) == 1
+    assert "gi_whale" in captured_bypasses[0]
+
+    with pytest.raises(ValueError):
+        mapi.latest_fill_price("TAOUSD", "BUY", True, provider_name="kraken")
+    with pytest.raises(ValueError):
+        mapi.market_regime_bundle("TAOUSD", provider_name="kraken", now=True)
+    with pytest.raises(ValueError):
+        mapi.market_regime_bundle("TAOUSD", provider_name="kraken", now=float("nan"))
+
+
+
 
 
 
