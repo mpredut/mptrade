@@ -20,7 +20,7 @@ def _finite_pos_float(val: Any, default: float = 0.0) -> float:
         return default
     try:
         f = float(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return f if math.isfinite(f) and f > 0.0 else default
 

@@ -44,7 +44,7 @@ def _is_backup(path: str) -> bool:
 def _first(row: dict, *names):
     for name in names:
         value = row.get(name)
-        if value is not None and value != "":
+        if value is not None and not isinstance(value, bool) and value != "":
             return value
     return None
 
@@ -55,17 +55,18 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
         return None
     place_kwargs = row.get("place_kwargs")
     nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
-    client_order_id = _first(row, "client_order_id") or nested_kwargs.get("client_order_id")
+    client_order_id = _first(row, "client_order_id") or _first(nested_kwargs, "client_order_id")
     intent_id = _first(row, "intent_id", "client_order_id", "order_id", "id", "txid") or client_order_id
     side = _first(row, "side", "start_side")
     quantity = _first(row, "requested_qty", "qty", "quantity", "vol")
+    qty_f = _finite_float(quantity, default=None)
     if (
         not intent_id
         or isinstance(intent_id, bool)
         or not side
         or isinstance(side, bool)
-        or quantity is None
-        or isinstance(quantity, bool)
+        or qty_f is None
+        or qty_f <= 0
     ):
         return None
     side_str = str(side).upper()
@@ -164,7 +165,11 @@ def _extract_exposure(payload: dict, *, owner: str, source: str,
     if qty_val is None or abs(qty_val) < 1e-9:
         return None
     cost_val = _finite_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None)
+    if cost_val is not None and cost_val < 0:
+        cost_val = None
     entry_price_val = _finite_float(payload.get("entry_price"), default=None)
+    if entry_price_val is not None and entry_price_val <= 0:
+        entry_price_val = None
     symbol = (_first(payload, "symbol", "ticker", "pair")
               or _first(inherited, "symbol", "ticker", "pair"))
     venue = (_first(payload, "provider_name", "venue") or inherited.get("venue")

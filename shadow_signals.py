@@ -73,7 +73,7 @@ class KalmanJournal:
 
     @staticmethod
     def _sanitize(value) -> str:
-        return str(value).replace("|", "/").replace("\n", " ") if value is not None else ""
+        return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ") if value is not None else ""
 
     def _path(self) -> str:
         if self.fixed_path:
@@ -182,7 +182,10 @@ class KalmanStateTracker:
             return None, 1e18
         if not math.isfinite(kt_f) or int(kt_f) not in (-1, 0, 1):
             return None, 1e18
-        return int(kt_f), now_f - ts_f
+        age = now_f - ts_f
+        if age < -60.0:
+            return None, 1e18
+        return int(kt_f), max(0.0, age)
 
     @staticmethod
     def _grad_std(fed: list[float]) -> float:

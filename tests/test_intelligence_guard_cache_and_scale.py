@@ -8649,6 +8649,51 @@ def test_iteration61_ws_normalize_t212_eur_replay_and_bapi_sync_safety(tmp_path,
     assert fake_bclient.timestamp_offset == 0
 
 
+def test_iteration62_active_intents_rtrade_store_shadow_signals_and_rollback_safety(tmp_path):
+    """Iteration 62: active_intents boolean/zero-qty filtering, RTradePairStore validation, shadow_signals future-ts guard, and T212 rollback amount."""
+    import active_intents
+    from rtrade_pair_store import RTradePairStore
+    from shadow_signals import KalmanJournal, KalmanStateTracker
+
+    # 1. active_intents._intent_row ignores boolean IDs and non-positive/NaN quantities
+    assert active_intents._intent_row(
+        {"order_id": True, "side": "BUY", "qty": 1.0},
+        owner="kraken", source="s", location="$", inherited={},
+    ) is None
+    assert active_intents._intent_row(
+        {"order_id": "ord-1", "side": "BUY", "qty": 0.0},
+        owner="kraken", source="s", location="$", inherited={},
+    ) is None
+    valid_row = active_intents._intent_row(
+        {"order_id": "ord-1", "side": "BUY", "qty": 2.5, "symbol": True},
+        owner="kraken", source="s", location="$", inherited={"symbol": "HYPEUSD"},
+    )
+    assert valid_row is not None and valid_row["symbol"] == "HYPEUSD"
+
+    exp = active_intents._extract_exposure(
+        {"qty": 1.0, "cost": -50.0, "entry_price": -10.0, "symbol": "HYPEUSD"},
+        owner="kraken", source="s", inherited={},
+    )
+    assert exp is not None and exp["cost"] is None and exp["entry_price"] is None
+
+    # 2. RTradePairStore guards terminal_retention, accepted order_id, and checkpoint state
+    store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"), terminal_retention=True)
+    assert store.terminal_retention == 200
+    with pytest.raises(ValueError, match="invalid rtrade accepted order_id"):
+        store.accepted("p1", "BUY", True)
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint"):
+        store.checkpoint("p1", None)
+
+    # 3. KalmanJournal._sanitize strips CR/LF/pipe and KalmanStateTracker.current_trend fails closed on corrupt future ts
+    assert KalmanJournal._sanitize("a|b\rc\nd") == "a/b c d"
+    tracker = KalmanStateTracker(state_path=None, now_fn=lambda: 1000.0)
+    tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 5000.0}
+    assert tracker.current_trend("BTCUSDC") == (None, 1e18)
+    tracker._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 1005.0}
+    assert tracker.current_trend("BTCUSDC") == (1, 0.0)
+
+
+
 
 
 

@@ -21,7 +21,14 @@ class RTradePairStore:
         root = os.path.dirname(os.path.abspath(__file__))
         self.path = path or os.path.join(root, "cachedb", "rtrade_pairs.json")
         self.lock_path = self.path + ".lock"
-        self.terminal_retention = max(0, int(terminal_retention))
+        if isinstance(terminal_retention, bool) or terminal_retention is None:
+            ret_i = 200
+        else:
+            try:
+                ret_i = max(0, int(terminal_retention))
+            except (TypeError, ValueError, OverflowError):
+                ret_i = 200
+        self.terminal_retention = ret_i
 
     @staticmethod
     def _finite_positive(value, field):
@@ -327,13 +334,17 @@ class RTradePairStore:
         self.mutate(op)
 
     def accepted(self, pair_id, side, order_id, kind="limit"):
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            raise ValueError(f"invalid rtrade accepted order_id: {order_id!r}")
         def op(pairs):
             key = f"{kind}:{side.upper()}"
-            pairs[pair_id]["intents"][key]["order_id"] = str(order_id)
+            pairs[pair_id]["intents"][key]["order_id"] = str(order_id).strip()
             pairs[pair_id]["updated_ts"] = time.time()
         self.mutate(op)
 
     def checkpoint(self, pair_id, state, terminal=False):
+        if not isinstance(state, dict):
+            raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
         def op(pairs):
             rec = pairs[pair_id]
             rec["state"] = state
@@ -347,6 +358,9 @@ class RTradePairStore:
         checkpoints = list(checkpoints)
         if not checkpoints:
             return
+        for pair_id, state, _terminal in checkpoints:
+            if not isinstance(state, dict):
+                raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
         def op(pairs):
             now = time.time()
             for pair_id, state, terminal in checkpoints:

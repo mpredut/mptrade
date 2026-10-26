@@ -934,7 +934,14 @@ class Strategy:
                 raw_amount = raw_ord.get("amount")
                 usd_notional = p["qty"] * p["limit"]
                 fallback_amt = (usd_notional / self.fx_to_usd) if self.fx_to_usd > 0 else usd_notional
-                amount = raw_amount or fallback_amt
+                amount = fallback_amt
+                if raw_amount is not None and not isinstance(raw_amount, bool):
+                    try:
+                        cand_amt = float(raw_amount)
+                        if math.isfinite(cand_amt) and cand_amt > 0.0:
+                            amount = cand_amt
+                    except (TypeError, ValueError, OverflowError):
+                        pass
                 return bool(self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY")))
             return False
 
