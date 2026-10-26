@@ -112,7 +112,11 @@ class _PersistentQuarantineSet(set):
             if isinstance(loaded, dict):
                 data = dict(loaded)
             data[self._key] = [
-                list(x) if isinstance(x, tuple) else [x] for x in sorted(self)
+                list(x) if isinstance(x, tuple) else [x]
+                for x in sorted(
+                    self,
+                    key=lambda item: tuple(str(e) for e in item) if isinstance(item, tuple) else (str(item),),
+                )
             ]
             save_json_state(path, data, separators=(",", ":"))
         except Exception:
@@ -210,12 +214,17 @@ def _reconcile_client_order(
 
 
 def _provider_name(mkt, record):
-    configured = record.get("provider_name")
-    if configured:
-        return str(configured)
+    configured = record.get("provider_name") if isinstance(record, dict) else None
+    if configured is not None and not isinstance(configured, bool) and str(configured).strip():
+        return str(configured).strip()
     resolver = getattr(mkt, "provider_name_for", None)
-    if callable(resolver):
-        return str(resolver(record.get("symbol")))
+    if callable(resolver) and isinstance(record, dict):
+        try:
+            resolved = resolver(record.get("symbol"))
+            if resolved is not None and not isinstance(resolved, bool) and str(resolved).strip():
+                return str(resolved).strip()
+        except Exception:
+            pass
     return None
 
 
@@ -1071,15 +1080,24 @@ class IncidentDigest:
 
     def __init__(self, path, interval_seconds):
         self.path = os.fspath(path)
-        if isinstance(interval_seconds, bool):
+        if isinstance(interval_seconds, bool) or interval_seconds is None:
             raise ValueError("digest interval must be finite and positive")
-        self.interval = float(interval_seconds)
+        try:
+            self.interval = float(interval_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("digest interval must be finite and positive") from exc
         if not math.isfinite(self.interval) or self.interval <= 0:
             raise ValueError("digest interval must be finite and positive")
 
     def collect(self, events, *, now):
         """Return due summaries of events with labels, quantity and sample ID."""
-        if isinstance(now, bool) or not math.isfinite(now) or now <= 0:
+        if isinstance(now, bool) or now is None:
+            raise ValueError("digest time must be finite and positive")
+        try:
+            now = float(now)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("digest time must be finite and positive") from exc
+        if not math.isfinite(now) or now <= 0:
             raise ValueError("digest time must be finite and positive")
         if (
             not events

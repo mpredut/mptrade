@@ -666,7 +666,10 @@ class AlertNotifier:
         Headers are Latin-1, while ntfy decodes this value as UTF-8, so pass UTF-8 bytes
         through Latin-1 to preserve the original symbol.
         """
-        return str(value if value is not None else "").encode("utf-8").decode("latin-1", "ignore")
+        if value is None or isinstance(value, bool):
+            return ""
+        cleaned = re.sub(r"[\r\n]+", " ", str(value)).strip()
+        return cleaned.encode("utf-8").decode("latin-1", "ignore")
 
     @staticmethod
     def format_new_coin_message(alert: dict) -> str:
@@ -938,7 +941,12 @@ def notify(title: str, body: str, source: str, symbol: str,
     else:
         from notify_engine.server import NotificationServer
         NotificationServer().dispatch_alerts([alert])
-    if email:
+    email_flag = (
+        email
+        if isinstance(email, bool)
+        else (str(email).strip().lower() in {"1", "true", "yes", "on"} if isinstance(email, str) else bool(email))
+    )
+    if email_flag:
         from notify_engine.mailer import is_email_mirrored
         from notify_engine.server import _topic_for_category
         if not is_email_mirrored(_topic_for_category(title, source)):
@@ -947,7 +955,12 @@ def notify(title: str, body: str, source: str, symbol: str,
  
 def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:
     """Dispatches a trade alert notification if condition is met."""
-    if condition:
+    cond_flag = (
+        condition
+        if isinstance(condition, bool)
+        else (str(condition).strip().lower() in {"1", "true", "yes", "on"} if isinstance(condition, str) else bool(condition))
+    )
+    if cond_flag:
         try:
             notify("Trade Alert", str(message), "tradeall", symbol)
         except Exception:

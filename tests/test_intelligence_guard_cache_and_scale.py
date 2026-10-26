@@ -11946,4 +11946,44 @@ def test_iteration113_order_retry_execution_audit_and_state_io_safety(tmp_path, 
     sio.discard_generation_file(123)
 
 
+def test_iteration114_order_retry_worker_botcore_and_alertnotifiers_safety(tmp_path, monkeypatch):
+    """Iteration 114: Verify order_retry_worker, botcore, and alertnotifiers validation."""
+    from types import SimpleNamespace
+    import pytest
+    import order_retry_worker as orw
+    import botcore as bc
+    from notify_engine import alertnotifiers as an
+
+    # 1. order_retry_worker._provider_name and IncidentDigest
+    assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: None), {"symbol": "BTCUSDC", "provider_name": True}) is None
+    assert orw._provider_name(SimpleNamespace(provider_name_for=lambda _s: "Binance"), {"symbol": "BTCUSDC", "provider_name": "   "}) == "Binance"
+    with pytest.raises(ValueError):
+        orw.IncidentDigest(tmp_path / "digest.json", None)
+    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    with pytest.raises(ValueError):
+        digest.collect([], now=None)
+    with pytest.raises(ValueError):
+        digest.collect([], now="bad")
+
+    # 2. botcore._dotenv_pairs, required_env, defined_env, required_bool_env
+    assert bc._dotenv_pairs(None) == ([], False)
+    assert bc._dotenv_pairs(True) == ([], False)
+    with pytest.raises(ValueError):
+        bc.required_env("API_KEY", {"API_KEY": True})
+    with pytest.raises(ValueError):
+        bc.defined_env("API_KEY", {"API_KEY": False})
+    assert bc.required_bool_env("FLAG", {"FLAG": True}) is True
+    assert bc.required_bool_env("FLAG", {"FLAG": False}) is False
+
+    # 3. alertnotifiers: utf8_header strips CR/LF and rejects bool/None; check_alert ignores 'false'
+    assert an.AlertNotifier.utf8_header(None) == ""
+    assert an.AlertNotifier.utf8_header(True) == ""
+    assert an.AlertNotifier.utf8_header("Line1\r\nLine2") == "Line1 Line2"
+    called = []
+    monkeypatch.setattr(an, "notify", lambda *a, **kw: called.append((a, kw)))
+    an.check_alert("false", "should not fire")
+    assert called == []
+
+
+
 

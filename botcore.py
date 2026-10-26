@@ -52,7 +52,12 @@ def single_instance(name: str, lockdir: str = "/tmp") -> None:
 
 def _dotenv_pairs(path: str) -> tuple[list[tuple[str, str]], bool]:
     """Parse shared dotenv syntax once and report whether the file was read successfully."""
-    if not os.path.exists(path):
+    if not path or isinstance(path, (bool, int)):
+        return [], False
+    try:
+        if not os.path.exists(path):
+            return [], False
+    except TypeError:
         return [], False
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -190,6 +195,8 @@ def required_env(key: str, env: dict | None = None) -> str:
     """Return a mandatory setting, rejecting missing, empty, or comment-only values."""
     src = os.environ if env is None else env
     val = src.get(key)
+    if isinstance(val, bool):
+        raise ValueError(f"Invalid mandatory setting: {key}={val!r}")
     raw = "" if val is None else str(val).split("#", 1)[0].strip()
     if not raw:
         raise ValueError(f"Missing or empty mandatory setting: {key}")
@@ -202,6 +209,8 @@ def defined_env(key: str, env: dict | None = None) -> str:
     if key not in src:
         raise ValueError(f"Missing mandatory setting: {key}")
     val = src[key]
+    if isinstance(val, bool):
+        raise ValueError(f"Invalid setting: {key}={val!r}")
     return "" if val is None else str(val).split("#", 1)[0].strip()
 
 
@@ -230,6 +239,10 @@ def required_int_env(key: str, env: dict | None = None) -> int:
 
 def required_bool_env(key: str, env: dict | None = None) -> bool:
     """Return a mandatory strict boolean setting."""
+    src = os.environ if env is None else env
+    raw_val = src.get(key)
+    if isinstance(raw_val, bool):
+        return raw_val
     raw = required_env(key, env).lower()
     if raw not in {"true", "false"}:
         raise ValueError(f"Invalid boolean setting: {key}={raw!r}; expected true or false")
