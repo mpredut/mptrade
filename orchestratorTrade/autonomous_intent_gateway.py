@@ -89,6 +89,15 @@ def _parse_finite_float(val: Any, default: float) -> float:
         return default
 
 
+def _append_intent_history(intent: Dict[str, Any], entry: Dict[str, Any]) -> None:
+    """Append an entry to ``intent['history']``, coercing null or non-list history fields."""
+    hist = intent.get("history")
+    if not isinstance(hist, list):
+        hist = []
+        intent["history"] = hist
+    hist.append(entry)
+
+
 def _norm_sym(symbol: str) -> str:
     """Normalize a symbol for comparison by stripping separators and uppercasing."""
     return (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
@@ -412,7 +421,7 @@ class AutonomousIntentGateway:
                     rec_ts = time.time()
             except (TypeError, ValueError, OverflowError):
                 rec_ts = time.time()
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": rec_ts,
                 "action": "RECONCILED_EXECUTED",
                 "order_id": rec.get("order_id"),
@@ -760,7 +769,8 @@ class AutonomousIntentGateway:
     ) -> Dict[str, Any]:
         """Validates and processes a single intent according to ``mode`` (default: the gateway mode)."""
         mode = mode or self.mode
-        intent_id = intent.get("intent_id") or intent.get("id") or f"intent_{int(time.time())}"
+        raw_iid = intent.get("intent_id") or intent.get("id") or f"intent_{int(time.time())}"
+        intent_id = str(raw_iid)
         decision = str(intent.get("decision", "HOLD")).strip().upper()
         symbol = str(intent.get("symbol", "")).strip().upper()
         venue = str(intent.get("venue", "binance")).strip().lower()
@@ -768,7 +778,7 @@ class AutonomousIntentGateway:
 
         if decision not in ("BUY", "SELL"):
             intent["status"] = "REJECTED_INVALID_DECISION"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now, "action": "REJECTED_INVALID_DECISION", "decision": decision
             })
             return intent
@@ -779,7 +789,7 @@ class AutonomousIntentGateway:
             logger.info("[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
                         intent_id, confidence, self.min_confidence)
             intent["status"] = "REJECTED_LOW_CONFIDENCE"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now, "action": "REJECTED_LOW_CONFIDENCE",
                 "confidence": confidence, "min_confidence": self.min_confidence
             })
@@ -793,7 +803,7 @@ class AutonomousIntentGateway:
             logger.warning("[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",
                            intent_id, symbol, venue)
             intent["status"] = "REJECTED_UNKNOWN_INSTRUMENT"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now, "action": "REJECTED_UNKNOWN_INSTRUMENT", "symbol": symbol, "venue": venue
             })
             return intent
@@ -805,7 +815,7 @@ class AutonomousIntentGateway:
         if not math.isfinite(price) or price <= 0:
             logger.warning("[INTENT GATEWAY] Intent %s rejected: invalid price for %s", intent_id, symbol)
             intent["status"] = "REJECTED_PRICE_UNAVAILABLE"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now, "action": "REJECTED_PRICE_UNAVAILABLE", "symbol": symbol
             })
             return intent
@@ -842,7 +852,7 @@ class AutonomousIntentGateway:
             self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
 
             intent["status"] = "OBSERVED_SHADOW"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now,
                 "action": "OBSERVED_SHADOW",
                 "guard_allowed": guard_allowed,
@@ -857,7 +867,7 @@ class AutonomousIntentGateway:
         if mode != "enforce":
             logger.info("[LLM TRADER] Gateway mode is %r — skipping execution for intent %s", mode, intent_id)
             intent["status"] = "REJECTED_GATEWAY_DISABLED"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now,
                 "action": "REJECTED_GATEWAY_DISABLED",
                 "mode": mode,
@@ -877,7 +887,7 @@ class AutonomousIntentGateway:
             self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
 
             intent["status"] = "BLOCKED_BY_GUARD"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now,
                 "action": "BLOCKED_BY_GUARD",
                 "guard_reason": guard_reason,
@@ -921,7 +931,7 @@ class AutonomousIntentGateway:
 
                 intent["status"] = "EXECUTED"
                 intent["execution_payload"] = order_res
-                intent.setdefault("history", []).append({
+                _append_intent_history(intent, {
                     "ts": now,
                     "action": "EXECUTED",
                     "notional_usd": effective_usd,
@@ -944,7 +954,7 @@ class AutonomousIntentGateway:
                 }
                 if refusal_cat:
                     hist_entry["category"] = refusal_cat
-                intent.setdefault("history", []).append(hist_entry)
+                _append_intent_history(intent, hist_entry)
         except Exception as e:
             logger.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
             title = f"🚨 {trade_tag} ERROR {decision} {inst.symbol}"
@@ -952,7 +962,7 @@ class AutonomousIntentGateway:
             self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
 
             intent["status"] = "FAILED"
-            intent.setdefault("history", []).append({
+            _append_intent_history(intent, {
                 "ts": now,
                 "action": "ERROR",
                 "error": str(e),
@@ -994,8 +1004,12 @@ class AutonomousIntentGateway:
         now = time.time()
         intents = self.load_all_intents()
         base_id = f"intent_{int(now)}_{side.lower()}_{symbol.lower()}"
-        existing_ids = {i.get("intent_id") for i in intents if isinstance(i, dict)}
-        intent_id = base_id if base_id not in existing_ids else f"{base_id}_{len(intents) + 1}"
+        existing_ids = {str(i.get("intent_id") or i.get("id")) for i in intents if isinstance(i, dict)}
+        intent_id = base_id
+        suffix = len(intents) + 1
+        while intent_id in existing_ids:
+            intent_id = f"{base_id}_{suffix}"
+            suffix += 1
         intent = asdict(TradeIntentRecord(
             intent_id=intent_id,
             timestamp=now,

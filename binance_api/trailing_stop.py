@@ -156,7 +156,7 @@ class TrailingStop:
             min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
             rebuy_bounce_pct=REBUY_BOUNCE_PCT,
             rebuy_skip_if_trend_down=REBUY_SKIP_IF_TREND_DOWN,
-            sell_fraction=sell_fraction, item_isolation=True,
+            sell_fraction=self.sell_fraction, item_isolation=True,
             min_profit_pct=min_profit_pct)
         self.order_lifecycle = TrackedOrderLifecycle(
             self.po, provider_name="BINANCE", venue="Binance",

@@ -86,15 +86,19 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
                 is_alive = False
 
         status_str = "alive" if (is_alive and age < 120.0) else ("stale" if is_alive else "dead")
+        raw_symbols = data.get("symbols")
+        symbols_list = [str(s) for s in raw_symbols if s is not None and not isinstance(s, bool)] if isinstance(raw_symbols, list) else []
+        raw_intervals = data.get("intervals")
+        raw_last_run = data.get("last_run")
         return {
             "running": is_alive and age < 120.0,
             "pid": pid,
             "status": status_str,
             "age_seconds": round(age, 1) if math.isfinite(age) else None,
             "age_formatted": _format_age(age),
-            "symbols": data.get("symbols", []),
-            "intervals": data.get("intervals", {}),
-            "last_run": data.get("last_run", {}),
+            "symbols": symbols_list,
+            "intervals": raw_intervals if isinstance(raw_intervals, dict) else {},
+            "last_run": raw_last_run if isinstance(raw_last_run, dict) else {},
         }
     except Exception as e:
         return {"running": False, "error": str(e)}
@@ -124,14 +128,16 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
                 is_alive = False
 
         status_str = "alive" if (is_alive and age < 300.0) else ("stale" if is_alive else "dead")
+        raw_intervals = data.get("intervals")
+        raw_last_run = data.get("last_run")
         return {
             "running": is_alive and age < 300.0,
             "pid": pid,
             "status": status_str,
             "age_seconds": round(age, 1) if math.isfinite(age) else None,
             "age_formatted": _format_age(age),
-            "intervals": data.get("intervals", {}),
-            "last_run": data.get("last_run", {}),
+            "intervals": raw_intervals if isinstance(raw_intervals, dict) else {},
+            "last_run": raw_last_run if isinstance(raw_last_run, dict) else {},
         }
     except Exception as e:
         return {"running": False, "error": str(e)}
@@ -305,12 +311,17 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
 def print_intelligence_report(report: Dict[str, Any]) -> None:
     """Print structured, human-readable terminal report."""
-    symbol = report["symbol"]
-    p1 = report.get("pillar1_internal", {})
-    p2 = report.get("pillar2_external", {})
-    p3 = report.get("pillar3_sentiment", {})
-    p4 = report.get("pillar4_macro", {})
-    gp = report.get("guard_preview", {})
+    symbol = str(report.get("symbol") or "UNKNOWN")
+    raw_p1 = report.get("pillar1_internal")
+    p1 = raw_p1 if isinstance(raw_p1, dict) else {}
+    raw_p2 = report.get("pillar2_external")
+    p2 = raw_p2 if isinstance(raw_p2, dict) else {}
+    raw_p3 = report.get("pillar3_sentiment")
+    p3 = raw_p3 if isinstance(raw_p3, dict) else {}
+    raw_p4 = report.get("pillar4_macro")
+    p4 = raw_p4 if isinstance(raw_p4, dict) else {}
+    raw_gp = report.get("guard_preview")
+    gp = raw_gp if isinstance(raw_gp, dict) else {}
 
     print("\n" + "=" * 76)
     print(f"  🔍 MARKET INTELLIGENCE AUDIT — {symbol}")
@@ -318,7 +329,8 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
 
     # Pillar 1
     print("\n📊 [PILLAR 1: INTERNAL QUANTITATIVE & SURVIVAL]")
-    surv = p1.get("trend_survival")
+    raw_surv = p1.get("trend_survival")
+    surv = raw_surv if isinstance(raw_surv, dict) else None
     if surv and surv.get("P90_days") is not None:
         print(f"  • Trend Survival: T_emp={surv.get('T_emp')}d | Median={surv.get('median_duration_days')}d | P90={surv.get('P90_days')}d")
         print(f"  • Calibration:    {surv.get('samples', 0)} empirical trend cycles")

@@ -1704,5 +1704,109 @@ def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch)
         sys.path[:] = saved_path
 
 
+def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatch, tmp_path, capsys):
+    """Verify Binance market_data/trades, TrailingStop, AutonomousIntentGateway, and intelligence CLI edge cases."""
+    from unittest.mock import MagicMock
 
+    # 1. binance_api.trailing_stop passes validated float sell_fraction to TrailingCore
+    from binance_api.trailing_stop import TrailingStop
+    ts_bot = TrailingStop(
+        api=MagicMock(),
+        po=MagicMock(),
+        sym=MagicMock(),
+        enabled=False,
+        sell_fraction="0.75",
+        state_file=str(tmp_path / "ts_state.json"),
+        min_profit_pct="1.5",
+    )
+    assert ts_bot.sell_fraction == 0.75
+    assert ts_bot.core.sell_fraction == 0.75
+
+    # 2. binance_api.market_data.fetch_klines accepts float strings for window params and rejects inconsistent OHLC bars
+    from binance_api import market_data as bn_md
+
+    class _DummyResp:
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    raw_klines = [
+        # Valid candle with float-string open/close timestamps
+        ["1700000000000.0", "100.0", "105.0", "95.0", "102.0", "10.0", "1700003599000.0"],
+        # Inconsistent OHLC candle (high < low) -> must be skipped
+        [1700003600000, "100.0", "90.0", "95.0", "102.0", "10.0", 1700007199000],
+        # close_time < open_time -> must be skipped
+        [1700007200000, "100.0", "105.0", "95.0", "102.0", "10.0", 1700003600000],
+    ]
+    calls = {"n": 0}
+
+    def _fake_urlopen(*a, **k):
+        calls["n"] += 1
+        return _DummyResp(json.dumps(raw_klines if calls["n"] == 1 else []).encode("utf-8"))
+
+    monkeypatch.setattr(bn_md.urllib.request, "urlopen", _fake_urlopen)
+    candles = bn_md.fetch_ohlc_candles(
+        "BTCUSDC",
+        interval="60",
+        start_ms="1699990000000.0",
+        end_ms="1700010000000.0",
+        limit_per_batch="500.0",
+        drop_incomplete=False,
+    )
+    assert len(candles) == 1
+    assert candles[0]["timestamp"] == 1700000000
+    assert candles[0]["close"] == 102.0
+
+    # 3. binance_api.bapi_trades.get_my_trades_simple preserves multiple unkeyed partial fills
+    from binance_api import bapi_allorders, bapi_trades
+    monkeypatch.setattr(bapi_trades.sym, "validate_ordertype", lambda *a, **k: True)
+    monkeypatch.setattr(bapi_trades.sym, "validate_symbols", lambda *a, **k: True)
+    monkeypatch.setattr(
+        bapi_allorders,
+        "paginate_my_trades",
+        lambda *a, **k: [
+            {"symbol": "BTCUSDC", "isBuyer": True, "qty": "0.1", "price": "50000", "time": 1000},
+            {"symbol": "BTCUSDC", "isBuyer": True, "qty": "0.2", "price": "50100", "time": 2000},
+            "not_a_dict",
+        ],
+    )
+    fills = bapi_trades.get_my_trades_simple("BUY", "BTCUSDC", backdays=1)
+    assert len(fills) == 2
+
+    # 4. AutonomousIntentGateway handles null history and integer intent_id without crashing
+    from orchestratorTrade.autonomous_intent_gateway import _append_intent_history
+    intent_obj = {"intent_id": 12345, "history": None}
+    _append_intent_history(intent_obj, {"action": "TEST"})
+    assert intent_obj["history"] == [{"action": "TEST"}]
+
+    # 5. intelligence.cli handles null symbols/pillars in heartbeat and report safely
+    from intelligence.cli import get_daemon_status, print_intelligence_report
+    hb_file = tmp_path / "globaltelemetry_collector.heartbeat"
+    hb_file.write_text(
+        json.dumps({"pid": 0, "ts": 1700000000.0, "symbols": None, "intervals": None, "last_run": None}),
+        encoding="utf-8",
+    )
+    st = get_daemon_status(str(tmp_path))
+    assert st["symbols"] == []
+    assert st["intervals"] == {}
+    assert st["last_run"] == {}
+
+    print_intelligence_report({
+        "symbol": "BTCUSDC",
+        "pillar1_internal": None,
+        "pillar2_external": None,
+        "pillar3_sentiment": None,
+        "pillar4_macro": None,
+        "guard_preview": None,
+    })
+    out = capsys.readouterr().out
+    assert "MARKET INTELLIGENCE AUDIT — BTCUSDC" in out
 

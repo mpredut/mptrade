@@ -271,8 +271,17 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
             
         ##########
         latest_trades = {}
-        for trade in all_trades:
-            fill_key = trade.get('id', trade.get('orderId'))
+        for idx, trade in enumerate(all_trades):
+            if not isinstance(trade, dict):
+                continue
+            raw_key = trade.get('id')
+            if raw_key is None or isinstance(raw_key, bool) or raw_key == "":
+                raw_key = trade.get('orderId')
+            fill_key = (
+                raw_key
+                if (raw_key is not None and not isinstance(raw_key, bool) and raw_key != "")
+                else f"_unkeyed_{idx}"
+            )
             ts_ms = extract_timestamp_ms(trade, default=0) or 0
 
             # Deduplicate by individual fill ID (falling back to orderId when id is absent).
@@ -353,8 +362,17 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
         # Deduplicate by individual fill ID (falling back to orderId only when id is absent)
         # so multi-fill orders do not lose earlier partial fills.
         latest_trades = {}
-        for trade in all_trades:
-            fill_key = trade.get('id', trade.get('orderId'))
+        for idx, trade in enumerate(all_trades):
+            if not isinstance(trade, dict):
+                continue
+            raw_key = trade.get('id')
+            if raw_key is None or isinstance(raw_key, bool) or raw_key == "":
+                raw_key = trade.get('orderId')
+            fill_key = (
+                raw_key
+                if (raw_key is not None and not isinstance(raw_key, bool) and raw_key != "")
+                else f"_unkeyed_{idx}"
+            )
             ts_ms = extract_timestamp_ms(trade, default=0) or 0
             if (
                 fill_key not in latest_trades
@@ -432,14 +450,23 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
 
     # Remove duplicates by fill ID.
     # new_trades = [trade for trade in new_trades if trade['time'] > most_recent_trade_time]    #
+    def _trade_fill_key(trade_obj):
+        if not isinstance(trade_obj, dict):
+            return None
+        rk = trade_obj.get('id')
+        if rk is None or isinstance(rk, bool) or rk == "":
+            rk = trade_obj.get('orderId')
+        return rk if (rk is not None and not isinstance(rk, bool) and rk != "") else None
+
     existing_trade_ids = {
-        trade.get('id', trade.get('orderId'))
-        for trade in filtered_existing_trades
-        if trade.get('id', trade.get('orderId')) is not None
+        k for k in (_trade_fill_key(trade) for trade in filtered_existing_trades)
+        if k is not None
     }
     unique_new_trades = [
         trade for trade in new_trades
-        if trade.get('id', trade.get('orderId')) not in existing_trade_ids
+        if isinstance(trade, dict) and (
+            _trade_fill_key(trade) is None or _trade_fill_key(trade) not in existing_trade_ids
+        )
     ]
 
     if unique_new_trades:

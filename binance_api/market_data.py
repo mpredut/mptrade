@@ -116,22 +116,37 @@ def fetch_ohlc_candles(
         timeout_f = float(timeout)
         if not math.isfinite(timeout_f) or timeout_f <= 0:
             raise ValueError(f"timeout must be finite and positive: {timeout}")
-        final_end = int(end_ms) if end_ms is not None else now_ms
+        if end_ms is not None:
+            end_f = float(end_ms)
+            if not math.isfinite(end_f):
+                raise ValueError(f"end_ms must be finite: {end_ms}")
+            final_end = int(end_f)
+        else:
+            final_end = now_ms
         if final_end <= 0:
             raise ValueError(f"end_ms must be positive: {end_ms}")
         if start_ms is not None:
-            final_start = int(start_ms)
+            start_f = float(start_ms)
+            if not math.isfinite(start_f):
+                raise ValueError(f"start_ms must be finite: {start_ms}")
+            final_start = int(start_f)
             if final_start < 0:
                 raise ValueError(f"start_ms must be non-negative: {start_ms}")
         elif lookback_days is not None:
-            lb_days = int(lookback_days)
+            lb_f = float(lookback_days)
+            if not math.isfinite(lb_f):
+                raise ValueError(f"lookback_days must be finite: {lookback_days}")
+            lb_days = int(lb_f)
             if lb_days <= 0:
                 raise ValueError(f"lookback_days must be positive: {lookback_days}")
             final_start = final_end - lb_days * 86400 * 1000
         else:
             # Default to ~30 days of history
             final_start = final_end - 30 * 86400 * 1000
-        batch_limit_raw = int(limit_per_batch)
+        batch_f = float(limit_per_batch)
+        if not math.isfinite(batch_f):
+            raise ValueError(f"limit_per_batch must be finite: {limit_per_batch}")
+        batch_limit_raw = int(batch_f)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"invalid OHLC window parameters: {exc}") from exc
     if batch_limit_raw <= 0:
@@ -186,17 +201,23 @@ def fetch_ohlc_candles(
             if any(isinstance(item[idx], bool) for idx in (0, 1, 2, 3, 4, 6)):
                 continue
             try:
-                open_time_ms = int(item[0])
-                close_time_ms = int(item[6])
+                ot_f = float(item[0])
+                ct_f = float(item[6])
+                if not (math.isfinite(ot_f) and math.isfinite(ct_f)):
+                    continue
+                open_time_ms = int(ot_f)
+                close_time_ms = int(ct_f)
                 o_v = float(item[1])
                 h_v = float(item[2])
                 l_v = float(item[3])
                 c_v = float(item[4])
             except (TypeError, ValueError, OverflowError):
                 continue
-            if open_time_ms <= 0 or close_time_ms <= 0:
+            if open_time_ms <= 0 or close_time_ms <= 0 or close_time_ms < open_time_ms:
                 continue
             if not all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
+                continue
+            if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
                 continue
             ts_sec = open_time_ms // 1000
 
