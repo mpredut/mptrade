@@ -9590,5 +9590,61 @@ def test_iteration77_discovery_news_visuals_and_notify_server_safety(tmp_path, m
     assert len(sent) == 1
 
 
+def test_iteration78_pricechecker_thresholds_alertnotifiers_and_sim_window_normalization(monkeypatch):
+    """Verify Iteration 78 PriceChecker partial/malformed per_coin thresholds, AlertNotifier helpers, and PriceWindow synchronized normalization."""
+    import pytest
+    from market_monitor.pricechecker import PriceChecker, PriceAlert, PRICE_ALERT_CONFIG
+    from notify_engine.alertnotifiers import AlertNotifier, _positive_int_env
+    from offline.simulations.sim import PriceWindow
+
+    # 1. PriceChecker._get_thresholds_for_symbol handles partial or invalid per_coin dicts
+    class _DummyCache:
+        symbol_added_time = {}
+
+    checker = PriceChecker(
+        _DummyCache(),
+        config={
+            "per_coin": {
+                "BTC": {"up_percent": 2.5},  # missing down_percent
+                "ETH": {"up_percent": True, "down_percent": -5.0},
+            }
+        },
+    )
+    btc_th = checker._get_thresholds_for_symbol("BTCUSDC")
+    assert btc_th["up_percent"] == 2.5
+    assert btc_th["down_percent"] == PRICE_ALERT_CONFIG["default"]["down_percent"]
+    eth_th = checker._get_thresholds_for_symbol("ETHUSDC")
+    assert eth_th["up_percent"] == PRICE_ALERT_CONFIG["default"]["up_percent"]
+    assert eth_th["down_percent"] == PRICE_ALERT_CONFIG["default"]["down_percent"]
+
+    pa = PriceAlert("BTCUSDC", "up", 65000.0, 62000.0, 4.84, 4.1)
+    pa.timestamp = 1e20
+    assert "BTCUSDC" in str(pa)
+    assert pa.to_dict()["symbol"] == "BTCUSDC"
+
+    # 2. AlertNotifier helpers
+    assert AlertNotifier.email_subject([]) == "Alert"
+    assert AlertNotifier.utf8_header(None) == ""
+    monkeypatch.setenv("TEST_POS_INT_ENV", "300.0")
+    assert _positive_int_env("TEST_POS_INT_ENV", 10) == 300
+
+    # 3. PriceWindow input validation and synchronized normalization when window_size >= max_index
+    with pytest.raises(ValueError):
+        PriceWindow(True)
+    with pytest.raises(ValueError):
+        PriceWindow(5, max_index=0)
+    with pytest.raises(ValueError):
+        PriceWindow(5, epsilon=-0.1)
+
+    pw = PriceWindow(window_size=5, max_index=3)
+    for px in [10.0, 20.0, 5.0, 30.0, 15.0, 25.0]:
+        pw.process_price(px)
+    min_px, min_pos = pw.get_min()
+    max_px, max_pos = pw.get_max()
+    assert min_px == 5.0 and min_pos == 1
+    assert max_px == 30.0 and max_pos == 2
+
+
+
 
 

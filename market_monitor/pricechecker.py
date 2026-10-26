@@ -59,7 +59,13 @@ class PriceAlert:
     def __str__(self) -> str:
         direction = "🚀 RISE" if self.alert_type == "up" else "📉 DROP"
         emoji = "🟢" if self.alert_type == "up" else "🔴"
-        reference_time = self.reference_time or datetime.fromtimestamp(self.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        if self.reference_time:
+            reference_time = self.reference_time
+        else:
+            try:
+                reference_time = datetime.fromtimestamp(float(self.timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError, OSError, OverflowError):
+                reference_time = str(self.timestamp)
         url_line = f"🔗 CoinMarketCap: {self.url}\n" if self.url else ""
         return (
             f"\n{emoji} {direction} {emoji}\n"
@@ -71,6 +77,10 @@ class PriceAlert:
         )
 
     def to_dict(self) -> dict:
+        try:
+            ts_readable = datetime.fromtimestamp(float(self.timestamp)).isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            ts_readable = str(self.timestamp)
         return {
             "symbol": self.symbol,
             "alert_type": self.alert_type,
@@ -79,7 +89,7 @@ class PriceAlert:
             "percent_change": self.percent_change,
             "threshold": self.threshold,
             "timestamp": self.timestamp,
-            "timestamp_readable": datetime.fromtimestamp(self.timestamp).isoformat(),
+            "timestamp_readable": ts_readable,
             "reference_time": self.reference_time,
             "url": self.url,
         }
@@ -202,7 +212,7 @@ class PriceChecker:
         if not math.isfinite(current_price) or current_price <= 0:
             return {"has_data": False, "error": "No current price available"}
 
-        lookback_hours = self.config["lookback_hours"]
+        lookback_hours = self.config.get("lookback_hours", 24)
         history = self._get_price_history_last_hours(symbol, lookback_hours)
         count = len(history)
 
@@ -269,15 +279,35 @@ class PriceChecker:
         return bool(symbol_added_time.get(symbol))
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:
-        per_coin = self.config.get("per_coin", {})
-        if symbol in per_coin:                 # configured per-coin threshold takes precedence
-            return per_coin[symbol]
-        base = get_base_symbol(symbol)
-        if base and base in per_coin:
-            return per_coin[base]
-        if self._is_dynamic_symbol(symbol):    # new coin uses the dynamic threshold
-            return self.config["dynamic"]
-        return self.config["default"]          # all remaining coins use the default
+        fallback = self.config.get("dynamic") if self._is_dynamic_symbol(symbol) else self.config.get("default")
+        if not isinstance(fallback, dict):
+            fallback = PRICE_ALERT_CONFIG["default"]
+        per_coin = self.config.get("per_coin")
+        chosen = None
+        if isinstance(per_coin, dict):
+            if isinstance(per_coin.get(symbol), dict):
+                chosen = per_coin[symbol]
+            else:
+                base = get_base_symbol(symbol)
+                if base and isinstance(per_coin.get(base), dict):
+                    chosen = per_coin[base]
+        raw = chosen if isinstance(chosen, dict) else fallback
+
+        def _pos_float(val, default_val: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default_val
+            try:
+                f = float(val)
+                return f if math.isfinite(f) and f > 0 else default_val
+            except (TypeError, ValueError, OverflowError):
+                return default_val
+
+        def_up = _pos_float(fallback.get("up_percent"), PRICE_ALERT_CONFIG["default"]["up_percent"])
+        def_down = _pos_float(fallback.get("down_percent"), PRICE_ALERT_CONFIG["default"]["down_percent"])
+        return {
+            "up_percent": _pos_float(raw.get("up_percent"), def_up),
+            "down_percent": _pos_float(raw.get("down_percent"), def_down),
+        }
 
     def _record_alert_sent(self, symbol: str, alert_type: str):
         """Record that an alert was sent."""

@@ -58,9 +58,18 @@ _TRADE_MARKERS = (
 
 
 def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or isinstance(raw, bool):
+        return default
+    s = str(raw).strip()
+    if not s:
+        return default
     try:
-        return max(0, int(os.environ.get(name, str(default))))
-    except (TypeError, ValueError):
+        f = float(s)
+        if not math.isfinite(f):
+            return default
+        return max(0, int(f))
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -647,7 +656,7 @@ class AlertNotifier:
         Headers are Latin-1, while ntfy decodes this value as UTF-8, so pass UTF-8 bytes
         through Latin-1 to preserve the original symbol.
         """
-        return value.encode("utf-8").decode("latin-1")
+        return str(value if value is not None else "").encode("utf-8").decode("latin-1", "ignore")
 
     @staticmethod
     def format_new_coin_message(alert: dict) -> str:
@@ -780,6 +789,8 @@ class AlertNotifier:
 
     @staticmethod
     def email_subject(alerts: list) -> str:
+        if not alerts:
+            return "Alert"
         first = alerts[0]
         if isinstance(first, dict) and first.get("type") == "new_coin_discovered":
             from notify_engine.server import NotificationServer

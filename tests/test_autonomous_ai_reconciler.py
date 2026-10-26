@@ -1132,7 +1132,15 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
 
     # 2. portfolio_snapshot._ntfy encodes non-ASCII emojis safely for HTTP headers
     with patch("urllib.request.urlopen") as mock_open, \
-         patch.dict(os.environ, {"NTFY_TOPIC": "test-topic"}):
+         patch.dict(
+             os.environ,
+             {
+                 "NTFY_TOPIC": "test-topic",
+                 "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
+                 "BACKTEST_MODE": "0",
+                 "REPLAY_MODE": "0",
+             },
+         ):
         portfolio_snapshot._ntfy("⚠️ Drawdown 5.5% (-$100)", "body")
         mock_open.assert_called_once()
         req = mock_open.call_args[0][0]
