@@ -193,7 +193,12 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
         try:
             ts_f = float(row[0])
             o_f, h_f, l_f, c_f = float(row[1]), float(row[2]), float(row[3]), float(row[4])
-            if not all(math.isfinite(v) and v > 0 for v in (ts_f, o_f, h_f, l_f, c_f)) or h_f < l_f:
+            if (
+                not all(math.isfinite(v) and v > 0 for v in (ts_f, o_f, h_f, l_f, c_f))
+                or h_f < l_f
+                or h_f < max(o_f, c_f)
+                or l_f > min(o_f, c_f)
+            ):
                 continue
             out.append((int(ts_f), o_f, h_f, l_f, c_f))
         except (TypeError, ValueError, OverflowError):

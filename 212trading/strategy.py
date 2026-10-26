@@ -422,9 +422,53 @@ def _sanitize_t212_state(st: dict) -> dict:
     for k in ("pending_submit", "tp_pending_exit", "sl_pending_exit"):
         if not isinstance(st.get(k), dict):
             st[k] = None
+    if isinstance(st.get("pending_submit"), dict):
+        ps = st["pending_submit"]
+        ps_side = str(ps.get("side") or "").strip().upper()
+        ps_qty = _clean_pos_float(ps.get("qty"))
+        ps_limit = _clean_pos_float(ps.get("limit"))
+        ps_intent = ps.get("intent_id")
+        if (
+            ps_side not in ("BUY", "SELL")
+            or ps_qty is None
+            or ps_limit is None
+            or not isinstance(ps_intent, str)
+            or not ps_intent.strip()
+        ):
+            st["pending_submit"] = None
+        else:
+            ps_copy = dict(ps)
+            ps_copy["side"] = ps_side
+            ps_copy["qty"] = ps_qty
+            ps_copy["limit"] = ps_limit
+            ps_copy["intent_id"] = ps_intent.strip()
+            ps_copy["market"] = bool(ps.get("market"))
+            st["pending_submit"] = ps_copy
     raw_orders = st.get("orders")
     if isinstance(raw_orders, list):
-        st["orders"] = [o for o in raw_orders if isinstance(o, dict)]
+        clean_orders = []
+        for o in raw_orders:
+            if not isinstance(o, dict):
+                continue
+            raw_oid = o.get("id")
+            if raw_oid is None or isinstance(raw_oid, bool) or not str(raw_oid).strip():
+                continue
+            o_side = str(o.get("side") or "").strip().upper()
+            if o_side not in ("BUY", "SELL"):
+                continue
+            o_qty = _clean_pos_float(o.get("qty"))
+            o_market = bool(o.get("market"))
+            o_limit = _clean_nonneg_float(o.get("limit"), -1.0) if o_market else _clean_pos_float(o.get("limit"))
+            if o_qty is None or o_limit is None or o_limit < 0.0:
+                continue
+            o_copy = dict(o)
+            o_copy["id"] = str(raw_oid).strip()
+            o_copy["side"] = o_side
+            o_copy["qty"] = o_qty
+            o_copy["limit"] = o_limit
+            o_copy["market"] = o_market
+            clean_orders.append(o_copy)
+        st["orders"] = clean_orders
     else:
         st["orders"] = []
     raw_sold = st.get("tp_sold_levels")
@@ -827,7 +871,7 @@ class Strategy:
             self.s["last_buy_price"] = price
             if self.s["entry_price"] is None:
                 self.s["entry_price"] = price
-            self.s["spent_cash"] += order.get("amount", 0.0)
+            self.s["spent_cash"] += _clean_nonneg_float(order.get("amount"), 0.0)
             if order.get("kind") == "DCA":
                 self.s["dca_buys"] += 1
             avg = self._avg_cost()

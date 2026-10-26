@@ -111,8 +111,10 @@ def _normalize(txid, tr):
     qty = extract_order_qty(tr, default=0.0)
     price = extract_order_price(tr, default=0.0)
     order_id = tr.get("ordertxid", tr.get("orderId"))
-    if order_id is None:
+    if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
         order_id = extract_order_id(tr)
+    else:
+        order_id = str(order_id).strip()
     normalized = {
         "symbol": tr.get("pair", tr.get("symbol")),
         "id": str(txid),
@@ -151,7 +153,12 @@ def _load_initial_cache(path):
                 continue
             valid_rows: list[dict] = []
             for row in v:
-                if not isinstance(row, dict) or row.get("id") is None:
+                if (
+                    not isinstance(row, dict)
+                    or row.get("id") is None
+                    or isinstance(row.get("id"), bool)
+                    or not str(row.get("id")).strip()
+                ):
                     continue
                 raw_t = row.get("time")
                 if raw_t is None or isinstance(raw_t, bool):
@@ -160,10 +167,10 @@ def _load_initial_cache(path):
                     t_f = float(raw_t)
                 except (TypeError, ValueError, OverflowError):
                     continue
-                if not math.isfinite(t_f):
+                if not math.isfinite(t_f) or t_f <= 0:
                     continue
                 row_copy = dict(row)
-                row_copy["id"] = str(row["id"])
+                row_copy["id"] = str(row["id"]).strip()
                 row_copy["time"] = int(t_f)
                 valid_rows.append(row_copy)
             valid_rows.sort(key=lambda t: t["time"])
@@ -194,15 +201,15 @@ def _ledger_to_fills(ledger):
         if not isinstance(x, dict):
             continue
         refid = x.get("refid")
-        if refid:
-            by_ref.setdefault(refid, []).append(x)
+        if refid and not isinstance(refid, bool) and str(refid).strip():
+            by_ref.setdefault(str(refid).strip(), []).append(x)
     fills = []
     for refid, legs in by_ref.items():
         if len(legs) < 2:
             continue                                      # one leg means staking/deposit, not a trade
         quote = next((l for l in legs if str(l.get("asset", "")).upper() in _QUOTE), None)
         base = next((l for l in legs if l is not quote and str(l.get("asset", "")).upper() not in _QUOTE), None)
-        if not quote or not base or str(base.get("type")) not in ("trade", "receive", "spend"):
+        if not quote or not base or str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
             continue
         raw_ba = base.get("amount") if isinstance(base, dict) else None
         raw_qa = quote.get("amount") if isinstance(quote, dict) else None

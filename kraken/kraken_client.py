@@ -218,7 +218,14 @@ class KrakenClient:
         self, pair: str, interval: int,
     ) -> tuple[list, tuple]:
         """Return completed OHLC closes and every corresponding close timestamp."""
-        if isinstance(interval, bool) or interval is None:
+        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            raise ValueError("pair must be a non-empty string")
+        pair = pair.strip()
+        if (
+            isinstance(interval, (bool, float))
+            or interval is None
+            or (isinstance(interval, str) and "." in interval.strip())
+        ):
             raise ValueError("interval must be a positive integer")
         try:
             itv_f = float(interval)

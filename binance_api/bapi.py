@@ -337,7 +337,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
 
     #current_time = int(time.time() * 1000)  # Convert current time to milliseconds
-    current_time = int(time.time())
+    current_time = float(time.time())
   
     if len(open_orders) < 1:
         return
@@ -376,7 +376,7 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
         return
     
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-    current_time = int(time.time())  # Current time in seconds
+    current_time = float(time.time())  # Current time in seconds
 
     if len(open_orders) < 1:
         return

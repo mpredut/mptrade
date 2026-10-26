@@ -219,8 +219,11 @@ class HLClient:
                 raw_entry = p.get("entryPx")
                 if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
                     raise HLError(f"Invalid boolean position state for {coin}")
-                szi = float(raw_szi or 0.0)
-                entry = float(raw_entry or 0.0)
+                try:
+                    szi = float(raw_szi or 0.0)
+                    entry = float(raw_entry or 0.0)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise HLError(f"Invalid numeric position state for {coin}") from exc
                 if not (math.isfinite(szi) and math.isfinite(entry)) or entry < 0.0:
                     raise HLError(f"Invalid non-finite position state for {coin}")
                 return szi, entry
@@ -315,7 +318,10 @@ class HLClient:
                 raw_tot = b.get("total")
                 if isinstance(raw_tot, bool):
                     raise HLError(f"Invalid boolean spot balance for {token}")
-                tot = float(raw_tot or 0.0)
+                try:
+                    tot = float(raw_tot or 0.0)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise HLError(f"Invalid numeric spot balance for {token}") from exc
                 if not math.isfinite(tot) or tot < 0.0:
                     raise HLError(f"Invalid non-finite spot balance for {token}")
                 return tot
@@ -388,18 +394,28 @@ class HLClient:
 
     def funding_history(self, start_ms: int) -> list[dict]:
         """Return actual funding payments received or paid since start_ms."""
-        if not self.address:
+        if not self.address or start_ms is None or isinstance(start_ms, bool):
             return []
         try:
-            return self.info.user_funding_history(self.address, start_ms)
+            start_f = float(start_ms)
+            if not math.isfinite(start_f) or start_f < 0:
+                return []
+            res = self.info.user_funding_history(self.address, int(start_f))
+            return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
         except Exception as e:  # noqa: BLE001
             log(f"  ! funding_history failed: {e}")
             return []
 
     def candles(self, coin: str, interval: str = "1h", lookback_hours: int = 60) -> list[dict]:
         """Return OHLCV candles for trend indicators."""
-        if lookback_hours is None or isinstance(lookback_hours, bool):
+        if (
+            not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip()
+            or not interval or isinstance(interval, bool) or not isinstance(interval, str) or not interval.strip()
+            or lookback_hours is None or isinstance(lookback_hours, bool)
+        ):
             return []
+        coin = coin.strip()
+        interval = interval.strip()
         try:
             lh_f = float(lookback_hours)
         except (TypeError, ValueError, OverflowError):
@@ -409,7 +425,8 @@ class HLClient:
         end = int(time.time() * 1000)
         start = max(0, int(end - lh_f * 3600 * 1000))
         try:
-            return self.info.candles_snapshot(coin, interval, start, end)
+            res = self.info.candles_snapshot(coin, interval, start, end)
+            return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
         except Exception as e:  # noqa: BLE001
             log(f"  ! candles({coin}) failed: {e}")
             return []
@@ -476,9 +493,17 @@ class HLClient:
     def set_leverage(self, coin: str, leverage: int) -> None:
         if not self.exchange:
             return
+        if not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return
+        if leverage is None or isinstance(leverage, bool):
+            return
         try:
-            self.exchange.update_leverage(leverage, coin, is_cross=True)
-            log(f"  [HL] leverage {coin} set to {leverage}x")
+            lev_f = float(leverage)
+            if not math.isfinite(lev_f) or not lev_f.is_integer() or int(lev_f) <= 0:
+                return
+            lev_i = int(lev_f)
+            self.exchange.update_leverage(lev_i, coin.strip(), is_cross=True)
+            log(f"  [HL] leverage {coin.strip()} set to {lev_i}x")
         except Exception as e:  # noqa: BLE001
             log(f"  ! set_leverage failed: {e}")
 

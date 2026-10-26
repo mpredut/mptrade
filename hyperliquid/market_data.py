@@ -60,8 +60,14 @@ def normalize_closed_candles(
     rows: list[dict], *, now_ms: int, drop_incomplete: bool = True
 ) -> list[dict]:
     """Sort, deduplicate and drop the candle that is still open."""
+    if not isinstance(rows, list):
+        return []
+    if drop_incomplete:
+        if isinstance(now_ms, bool) or not isinstance(now_ms, (int, float)) or not math.isfinite(float(now_ms)):
+            return []
+        now_ms = int(now_ms)
     by_open_time: dict[int, dict] = {}
-    for row in (rows or []):
+    for row in rows:
         if not isinstance(row, dict):
             continue
         if any(isinstance(row.get(k), bool) for k in ("t", "T", "o", "h", "l", "c")):
@@ -137,7 +143,7 @@ def fetch_ohlc_candles(
         else:
             raise ValueError(f"unsupported Hyperliquid interval: {interval}")
     else:
-        if isinstance(interval, bool):
+        if isinstance(interval, (bool, float)):
             raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
         try:
             interval_f = float(interval)
@@ -198,6 +204,8 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
     if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
         return []
     if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)) or int(start_ms) < 0:
+        return []
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
         return []
     try:
         data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_ms)}, timeout=timeout)

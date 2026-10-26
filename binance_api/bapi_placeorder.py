@@ -115,6 +115,17 @@ class _AccountCacheSubmitPermit:
         return self._scope.expires_at
 
 
+def _normalize_side(order_type):
+    if isinstance(order_type, str):
+        cleaned = order_type.strip().upper()
+        if cleaned == "B":
+            return "BUY"
+        if cleaned == "S":
+            return "SELL"
+        return cleaned
+    return order_type
+
+
 def _resolve_qty(qty):
     """Normalize the quantity model used by the placement pipeline.
 
@@ -144,6 +155,11 @@ def _fresh_price(symbol):
 def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     from . import bapi_allorders as apiorders
     auto_qty = required_qty is None
+    if isinstance(order_type, bool) or not isinstance(order_type, str):
+        raise SubmissionRefused("invalid_weight_policy_inputs")
+    order_type = _normalize_side(order_type)
+    if order_type not in {"BUY", "SELL"}:
+        raise SubmissionRefused("invalid_weight_policy_inputs")
     if (
         isinstance(price, bool)
         or isinstance(available_qty, bool)
@@ -167,7 +183,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     if auto_qty:
         required_qty = available_qty
 
-    is_sell = str(order_type).upper() == "SELL"
+    is_sell = order_type == "SELL"
 
     def _fail_open_or_refuse(reason, exc):
         # An UNAVAILABLE policy is infrastructure downtime, not a legitimate cap of
@@ -384,7 +400,7 @@ def _consume_account_cache_submit_permit(
             and symbol is not None and not isinstance(symbol, bool)
             and side is not None and not isinstance(side, bool)
             and scope.symbol == str(symbol).strip().upper()
-            and scope.side == str(side).strip().upper()
+            and scope.side == str(_normalize_side(side))
             and scope.market is bool(market)
             and scope.kind == str(kind or "")
             and math.isfinite(actual_qty)
@@ -400,7 +416,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
                           cache_permit=None, permit_requested_price=None,
                           kind=None, cancel_opposite_requested_price=None):
     """Single low-level dispatch after common filter normalization."""
-    side = "" if order_type is None or isinstance(order_type, bool) else str(order_type).strip().upper()
+    side = "" if order_type is None or isinstance(order_type, bool) else str(_normalize_side(order_type))
     if isinstance(qty, bool) or (not market and isinstance(price, bool)):
         raise SubmissionRefused("invalid_order_parameters")
     try:
@@ -514,7 +530,9 @@ def _last_opposite_fill_price_api(symbol, order_type):
     This covers a new symbol or an unpopulated cache. Raise on API errors so the caller
     fails closed; return ``None`` only when Binance confirms no opposite fill exists.
     """
-    side = str(order_type or "").strip().upper()
+    side = "" if order_type is None or isinstance(order_type, bool) else str(_normalize_side(order_type))
+    if side not in {"BUY", "SELL"}:
+        raise ValueError(f"Invalid order_type: {order_type!r}")
     want_side = "BUY" if side == "SELL" else "SELL"
     for tr in reversed(client.get_my_trades(symbol=symbol, limit=200) or ()):
         if not isinstance(tr, dict):
@@ -537,8 +555,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     from providers.market_api import BinanceProvider
 
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
     allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
@@ -726,8 +743,7 @@ def place_safe_order(order_type, symbol, price, qty=None,
                      cancelorders=False, hours=PLACE_ORDER_HOURS,
                      _reason_out=None, **kwargs):
     """Adapt the compatible safe API to the common pipeline without smart repricing."""
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     # ``None`` is the legacy "maximum permitted" request. Preserve it until the
     # shared QuantityDecision has loaded balance and policy caps; a synthetic
     # infinity here would be indistinguishable from an invalid explicit value.
@@ -776,8 +792,7 @@ def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivat
 # Retain ``pair`` only for compatibility with callers that explicitly pass it. It is
 # intentionally ignored legacy code; do not remove it without updating those callers.
 def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None, _reason_out=None, **kwargs):
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(
         order_type, symbol, price, 1.0 if qty is None else qty)
     call_kwargs = dict(kwargs)
@@ -959,8 +974,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     Instrument.place holds the RAII cooldown around this call. Return an accepted
     order, or raise ``SubmissionRefused`` for a deterministic filter violation.
     """
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol, price, qty)
     is_market = bool(force or market or kwargs.get("market", False) or kwargs.get("force", False))
     try:

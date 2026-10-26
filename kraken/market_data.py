@@ -37,8 +37,8 @@ def fetch_ohlc_candles(
     if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
         raise ValueError(f"invalid pair: {pair!r}")
     pair = pair.strip()
-    if isinstance(interval, bool) or isinstance(timeout, bool):
-        raise ValueError("interval and timeout must not be boolean")
+    if isinstance(interval, (bool, float)) or isinstance(timeout, bool):
+        raise ValueError("interval must be an integer and timeout must not be boolean")
     try:
         if isinstance(interval, str) and "." in interval.strip():
             raise ValueError(f"invalid interval={interval!r}")
@@ -168,7 +168,7 @@ def pair_precision(info: dict) -> tuple[int, int, float]:
         raw_p = info.get("pair_decimals")
         if raw_p is not None and not isinstance(raw_p, bool):
             p_f = float(raw_p)
-            price_dec = int(p_f) if math.isfinite(p_f) and p_f >= 0 and p_f == int(p_f) else 2
+            price_dec = int(p_f) if math.isfinite(p_f) and 0 <= p_f <= 18 and p_f == int(p_f) else 2
         else:
             price_dec = 2
     except (TypeError, ValueError, OverflowError):
@@ -177,7 +177,7 @@ def pair_precision(info: dict) -> tuple[int, int, float]:
         raw_v = info.get("lot_decimals")
         if raw_v is not None and not isinstance(raw_v, bool):
             v_f = float(raw_v)
-            vol_dec = int(v_f) if math.isfinite(v_f) and v_f >= 0 and v_f == int(v_f) else 8
+            vol_dec = int(v_f) if math.isfinite(v_f) and 0 <= v_f <= 18 and v_f == int(v_f) else 8
         else:
             vol_dec = 8
     except (TypeError, ValueError, OverflowError):

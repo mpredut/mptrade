@@ -230,6 +230,9 @@ def _sanitize_state(raw: dict) -> dict:
         for o in raw_orders:
             if not isinstance(o, dict) or o.get("role") not in ("open", "close"):
                 continue
+            raw_oid = o.get("oid")
+            if raw_oid is None or isinstance(raw_oid, bool) or not str(raw_oid).strip():
+                continue
             raw_px = o.get("px")
             raw_sz = o.get("sz")
             if isinstance(raw_px, bool) or isinstance(raw_sz, bool):
@@ -543,7 +546,15 @@ class Strategy:
             self.s["spent"] = round(real_qty * eff_avg, 2)
         else:
             self.s["qty"] += fq; self.s["cost"] += fq * fp
-            self.s["spent"] += amount or fq * fp
+            amt_f = 0.0
+            if amount is not None and not isinstance(amount, bool):
+                try:
+                    cand_amt = float(amount)
+                    if math.isfinite(cand_amt) and cand_amt > 0.0:
+                        amt_f = cand_amt
+                except (TypeError, ValueError, OverflowError):
+                    amt_f = 0.0
+            self.s["spent"] += amt_f if amt_f > 0.0 else fq * fp
         avg = self._avg()
         tag = "[PAPER] " if self.dry_run else ""
         if not self.replay_mode:

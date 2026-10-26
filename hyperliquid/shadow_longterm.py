@@ -104,7 +104,13 @@ def _fetch_with_ts(_pair: str, interval: int):
             o_v, h_v, l_v, c_v = float(item["o"]), float(item["h"]), float(item["l"]), float(item["c"])
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        if ts > 0 and all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
+        if (
+            ts > 0
+            and all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v))
+            and h_v >= l_v
+            and h_v >= max(o_v, c_v)
+            and l_v <= min(o_v, c_v)
+        ):
             parsed.append((ts, o_v, h_v, l_v, c_v))
     rows = sorted(parsed)
     # The final candle may still be forming; remove it as the Kraken runner does.

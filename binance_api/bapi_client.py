@@ -63,7 +63,10 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
         raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
         if raw_srv is None or isinstance(raw_srv, bool):
             raise ValueError("invalid serverTime in Binance response")
-        server_ms = int(raw_srv)
+        srv_f = float(raw_srv)
+        if not (srv_f == srv_f and abs(srv_f) != float("inf") and srv_f.is_integer()):
+            raise ValueError("invalid serverTime in Binance response")
+        server_ms = int(srv_f)
         if server_ms <= 0:
             raise ValueError(f"non-positive serverTime: {server_ms}")
         t1_ms = int(time.time() * 1000)

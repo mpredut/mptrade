@@ -11985,5 +11985,134 @@ def test_iteration114_order_retry_worker_botcore_and_alertnotifiers_safety(tmp_p
     assert called == []
 
 
+def test_iteration115_venue_clients_placeorder_and_strategy_state_safety(tmp_path, monkeypatch):
+    """Iteration 115: Verify Binance shorthand side normalization, Kraken/HL client and market_data
+    bounds, and HL/T212 strategy state sanitization."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    import binance_api.bapi_placeorder as bpo
+    from kraken.kraken_client import KrakenClient
+    import kraken.market_data as kmd
+    import kraken.kraken_cachemanager as kcm
+
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hlmd
+        import strategy as hl_strat
+        HLClient, HLError = hlc.HLClient, hlc.HLError
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. bapi_placeorder._normalize_side and _last_opposite_fill_price_api
+    assert bpo._normalize_side(" b ") == "BUY"
+    assert bpo._normalize_side(" s ") == "SELL"
+    with pytest.raises( bpo.SubmissionRefused ):
+        bpo.apply_weight_limit("BTCUSDC", True, 100.0, 1.0, 2.0)
+    with pytest.raises( bpo.SubmissionRefused ):
+        bpo.apply_weight_limit("BTCUSDC", "INVALID", 100.0, 1.0, 2.0)
+    with pytest.raises(ValueError):
+        bpo._last_opposite_fill_price_api("BTCUSDC", "INVALID")
+    with pytest.raises(ValueError):
+        bpo._last_opposite_fill_price_api("BTCUSDC", True)
+
+    # 2. KrakenClient.ohlc_closes_with_timestamps and kraken.market_data
+    kc = KrakenClient(api_key="", api_secret="")
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("   ", 60)
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("XBTUSD", 60.0)
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("XBTUSD", "60.0")
+    with pytest.raises(ValueError):
+        kmd.fetch_ohlc_candles("XBTUSD", 60.0)
+    assert kmd.pair_precision({"pair_decimals": 999, "lot_decimals": 999, "ordermin": "0.1"}) == (2, 8, 0.1)
+
+    # 3. kraken_cachemanager._normalize, _load_initial_cache, and _ledger_to_fills
+    norm = kcm._normalize("tx1", {"pair": "XBTUSD", "ordertxid": True, "order_id": "OID-1", "price": "100", "vol": "1", "time": 1700000000})
+    assert norm["orderId"] == "OID-1"
+    cache_file = tmp_path / "kraken_trades.json"
+    cache_file.write_text('{"items":{"XBTUSD":[{"id":true,"time":100},{"id":"   ","time":100},{"id":"t1","time":0},{"id":" t2 ","time":1700000000000}]},"fetchtime":{"XBTUSD":100}}')
+    loaded = kcm._load_initial_cache(str(cache_file))
+    assert [r["id"] for r in loaded["items"]["XBTUSD"]] == ["t2"]
+    fills = kcm._ledger_to_fills({
+        "l1": {"refid": True, "asset": "XXBT", "type": "trade", "amount": "1", "time": 1700000000},
+        "l2": {"refid": True, "asset": "ZUSD", "type": "trade", "amount": "-100", "time": 1700000000},
+        "l3": {"refid": " R1 ", "asset": "XXBT", "type": " TRADE ", "amount": "0.5", "time": 1700000000},
+        "l4": {"refid": "R1", "asset": "ZUSD", "type": "TRADE", "amount": "-50", "time": 1700000000},
+    })
+    assert len(fills) == 1 and fills[0]["orderId"] == "R1"
+
+    # 4. HLClient strict position/spot_balance & market_data guards
+    hl = HLClient.__new__(HLClient)
+    hl.address = "0x123"
+    hl.exchange = None
+    hl._user_state = lambda: {"assetPositions": [{"position": {"coin": "HYPE", "szi": "bad", "entryPx": "10"}}]}
+    with pytest.raises(HLError):
+        hl.position_strict("HYPE")
+    hl.info = SimpleNamespace(
+        spot_user_state=lambda _a: {"balances": [{"coin": "HYPE", "total": "bad"}]},
+        user_funding_history=lambda _a, _s: ["not-a-dict", {"time": 1}],
+        candles_snapshot=lambda *_a: ["not-a-dict", {"t": 1}],
+    )
+    with pytest.raises(HLError):
+        hl.spot_balance_strict("HYPE")
+    assert hl.funding_history(True) == []
+    assert hl.funding_history(-1) == []
+    assert hl.funding_history(1000) == [{"time": 1}]
+    assert hl.candles("", "1h", 10) == []
+    assert hl.candles("HYPE", "", 10) == []
+    assert hl.candles("HYPE", "1h", 10) == [{"t": 1}]
+    assert hlmd.normalize_closed_candles("not-a-list", now_ms=1000) == []
+    assert hlmd.normalize_closed_candles([{"t": 1, "T": 2, "o": 1, "h": 2, "l": 1, "c": 1.5}], now_ms=True) == []
+    with pytest.raises(ValueError):
+        hlmd.fetch_ohlc_candles("HYPE", 60.0)
+    assert hlmd.fetch_funding_history("HYPE", 1000, timeout=0) == []
+
+    # 5. HL and T212 strategy state sanitization
+    hl_clean = hl_strat._sanitize_state({
+        "orders": [
+            {"role": "open", "px": 10.0, "sz": 1.0},  # missing oid
+            {"role": "open", "oid": True, "px": 10.0, "sz": 1.0},  # bool oid
+            {"role": "open", "oid": "123", "px": 10.0, "sz": 1.0},
+        ]
+    })
+    assert len(hl_clean["orders"]) == 1 and hl_clean["orders"][0]["oid"] == "123"
+
+    t212_clean = t212_strat._sanitize_t212_state({
+        "pending_submit": {"side": "INVALID", "qty": 1.0, "limit": 10.0, "intent_id": "id1"},
+        "orders": [
+            {"side": "BUY", "qty": 1.0, "limit": 10.0},  # missing id
+            {"id": "o1", "side": "INVALID", "qty": 1.0, "limit": 10.0},
+            {"id": " o2 ", "side": " buy ", "qty": "2.5", "limit": "15.0"},
+        ],
+    })
+    assert t212_clean["pending_submit"] is None
+    assert len(t212_clean["orders"]) == 1
+    assert t212_clean["orders"][0]["id"] == "o2"
+    assert t212_clean["orders"][0]["side"] == "BUY"
+
+
+
 
 
