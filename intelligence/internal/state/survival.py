@@ -42,11 +42,42 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
 def block_slopes(ts, px, window_h, step_h):
     """Return slope signs for each [t-window, t] window stepped by step_h."""
     out_t, out_s = [], []
-    if ts is None or px is None or len(ts) == 0 or len(px) == 0:
+    if (
+        ts is None
+        or px is None
+        or isinstance(ts, (bool, str, bytes))
+        or isinstance(px, (bool, str, bytes))
+    ):
         return np.array(out_t), np.array(out_s)
-    n_common = min(len(ts), len(px))
-    ts = ts[:n_common]
-    px = px[:n_common]
+    try:
+        raw_ts = list(ts)
+        raw_px = list(px)
+    except TypeError:
+        return np.array(out_t), np.array(out_s)
+    n_common = min(len(raw_ts), len(raw_px))
+    if n_common < 5:
+        return np.array(out_t), np.array(out_s)
+    clean_ts = []
+    clean_px = []
+    for t_val, p_val in zip(raw_ts[:n_common], raw_px[:n_common]):
+        if t_val is None or p_val is None or isinstance(t_val, bool) or isinstance(p_val, bool):
+            continue
+        try:
+            tf = float(t_val)
+            pf = float(p_val)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+            clean_ts.append(tf)
+            clean_px.append(pf)
+    if len(clean_ts) < 5:
+        return np.array(out_t), np.array(out_s)
+    ts = np.asarray(clean_ts, dtype=float)
+    px = np.asarray(clean_px, dtype=float)
+    if np.any(np.diff(ts) < 0):
+        order = np.argsort(ts, kind="mergesort")
+        ts = ts[order]
+        px = px[order]
     w_h = _pos_float(window_h, 0.0)
     s_h = _pos_float(step_h, 0.0)
     if w_h <= 0.0 or s_h <= 0.0:
@@ -54,14 +85,19 @@ def block_slopes(ts, px, window_h, step_h):
     w, s = w_h * 3600.0, s_h * 3600.0
     if not (math.isfinite(w) and w > 0.0 and math.isfinite(s) and s > 0.0):
         return np.array(out_t), np.array(out_s)
-    t = ts[0] + w
-    while t <= ts[-1]:
+    t = float(ts[0]) + w
+    t_end = float(ts[-1])
+    while t <= t_end:
         lo = int(np.searchsorted(ts, t - w, "left"))
         hi = int(np.searchsorted(ts, t, "right"))
         if hi - lo >= 5:
-            sl, _ = np.polyfit(ts[lo:hi] - ts[lo], px[lo:hi], 1)
-            out_t.append(t)
-            out_s.append(1.0 if sl > 0 else -1.0)
+            dx = ts[lo:hi] - ts[lo]
+            dev_x = dx - float(np.mean(dx))
+            var_x = float(np.dot(dev_x, dev_x))
+            if var_x > 0.0:
+                sl = float(np.dot(dev_x, px[lo:hi]) / var_x)
+                out_t.append(t)
+                out_s.append(1.0 if sl > 0 else -1.0)
         t += s
     return np.array(out_t), np.array(out_s)
 
@@ -69,17 +105,57 @@ def block_slopes(ts, px, window_h, step_h):
 def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
     """Return trend episodes in hours using the detector's semantics."""
     eps = []
-    if bt is None or bs is None:
+    if (
+        bt is None
+        or bs is None
+        or isinstance(bt, (bool, str, bytes))
+        or isinstance(bs, (bool, str, bytes))
+    ):
         return eps
     w_h = _pos_float(window_h, 0.0)
     if w_h <= 0.0:
         return eps
-    nt = 2 if isinstance(noise_tolerance, bool) or noise_tolerance is None else max(0, int(noise_tolerance))
-    mc = 3 if isinstance(min_confirm, bool) or min_confirm is None else max(1, int(min_confirm))
+    nt = 2
+    if noise_tolerance is not None and not isinstance(noise_tolerance, bool):
+        try:
+            nt_f = float(noise_tolerance)
+            if math.isfinite(nt_f):
+                nt = max(0, int(nt_f))
+        except (TypeError, ValueError, OverflowError):
+            nt = 2
+    mc = 3
+    if min_confirm is not None and not isinstance(min_confirm, bool):
+        try:
+            mc_f = float(min_confirm)
+            if math.isfinite(mc_f):
+                mc = max(1, int(mc_f))
+        except (TypeError, ValueError, OverflowError):
+            mc = 3
+    try:
+        raw_bt = list(bt)
+        raw_bs = list(bs)
+    except TypeError:
+        return eps
+    n_common = min(len(raw_bt), len(raw_bs))
+    clean_bt = []
+    clean_bs = []
+    for t_val, s_val in zip(raw_bt[:n_common], raw_bs[:n_common]):
+        if t_val is None or s_val is None or isinstance(t_val, bool) or isinstance(s_val, bool):
+            continue
+        try:
+            tf = float(t_val)
+            sf = float(s_val)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(tf) and math.isfinite(sf) and sf != 0.0:
+            clean_bt.append(tf)
+            clean_bs.append(1.0 if sf > 0 else -1.0)
+    n = len(clean_bt)
+    if n == 0:
+        return eps
+    bt = np.asarray(clean_bt, dtype=float)
+    bs = np.asarray(clean_bs, dtype=float)
     i = 0
-    n = min(len(bt), len(bs))
-    bt = bt[:n]
-    bs = bs[:n]
     while i < n:
         sign = bs[i]
         start = bt[i] - w_h * 3600.0
@@ -110,16 +186,44 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
 
 def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0):
     """Calculate and format empirical survival table."""
-    d = np.array(durs_h)
+    if (
+        durs_h is None
+        or t_grid_days is None
+        or isinstance(durs_h, (bool, str, bytes))
+        or isinstance(t_grid_days, (bool, str, bytes))
+    ):
+        return None
+    try:
+        clean_d = [
+            float(x)
+            for x in durs_h
+            if x is not None and not isinstance(x, bool) and math.isfinite(float(x)) and float(x) >= 0.0
+        ]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    d = np.array(clean_d, dtype=float)
     if len(d) < 15:
         return None
+    hz = _pos_float(horizon_h, 24.0)
     cont = {}
-    for t_days in t_grid_days:
-        t_h = t_days * 24.0
+    try:
+        grid_iter = list(t_grid_days)
+    except TypeError:
+        return None
+    for t_days in grid_iter:
+        if t_days is None or isinstance(t_days, bool):
+            continue
+        try:
+            t_days_f = float(t_days)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(t_days_f) or t_days_f < 0.0:
+            continue
+        t_h = t_days_f * 24.0
         alive = d > t_h
         if alive.sum() < 10:
             break
-        p = float((d > t_h + horizon_h).sum() / alive.sum())
+        p = float((d > t_h + hz).sum() / alive.sum())
         cont[t_days] = p
     return cont
 

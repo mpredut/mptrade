@@ -58,6 +58,8 @@ def run(c, cmd, wait=20):
 
 
 def connect():
+    if paramiko is None:
+        raise RuntimeError("paramiko is not installed")
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(HOST, port=PORT, username=USER, password=PASS, timeout=15)

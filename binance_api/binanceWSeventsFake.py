@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 
@@ -10,54 +11,80 @@ from . import bapi as api   # package-local Binance API facade
 balances_cache = {}
 orders_cache = {}
 trades_cache = []
+_MAX_TRADES_CACHE = 1000
+
+
+def _safe_float(val, default=0.0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return res if math.isfinite(res) else default
+
 
 # ------------------------------
 # MESSAGE-HANDLING FUNCTIONS
 # ------------------------------
 def handle_execution_report(data):
-    symbol = data["s"]
-    order_id = data["i"]
-    status = data["X"]
-    event_type = data["x"]
+    if not isinstance(data, dict):
+        return
+    symbol = data.get("s", "")
+    order_id = data.get("i")
+    status = data.get("X", "")
+    event_type = data.get("x", "")
+    side = data.get("S", "")
 
-    orders_cache[order_id] = {
-        "symbol": symbol,
-        "side": data["S"],
-        "type": data["o"],
-        "status": status,
-        "price": float(data["p"]),
-        "origQty": float(data["q"]),
-        "executedQty": float(data["z"]),
-        "updateTime": data["E"]
-    }
+    if order_id is not None:
+        orders_cache[order_id] = {
+            "symbol": symbol,
+            "side": side,
+            "type": data.get("o", ""),
+            "status": status,
+            "price": _safe_float(data.get("p"), 0.0),
+            "origQty": _safe_float(data.get("q"), 0.0),
+            "executedQty": _safe_float(data.get("z"), 0.0),
+            "updateTime": data.get("E"),
+        }
 
     if event_type == "TRADE":
         trade = {
-            "tradeId": data["t"],
+            "tradeId": data.get("t"),
             "orderId": order_id,
             "symbol": symbol,
-            "side": data["S"],
-            "price": float(data["L"]),
-            "qty": float(data["l"]),
-            "time": data["T"]
+            "side": side,
+            "price": _safe_float(data.get("L", data.get("p")), 0.0),
+            "qty": _safe_float(data.get("l", data.get("z")), 0.0),
+            "time": data.get("T", data.get("E")),
         }
         trades_cache.append(trade)
-        print(f"[TRADE] {symbol} {data['S']} {trade['qty']} @ {trade['price']}")
+        if len(trades_cache) > _MAX_TRADES_CACHE:
+            del trades_cache[:-_MAX_TRADES_CACHE]
+        print(f"[TRADE] {symbol} {side} {trade['qty']} @ {trade['price']}")
     else:
         print(f"[ORDER UPDATE] {symbol} → {status}")
 
 def handle_balance_update(asset, delta, timestamp):
-    balances_cache[asset] = balances_cache.get(asset, 0) + delta
-    print(f"[BALANCE UPDATE] {asset}: {delta:+f} (at {timestamp})")
+    delta_f = _safe_float(delta, 0.0)
+    prev_f = _safe_float(balances_cache.get(asset, 0.0), 0.0)
+    balances_cache[asset] = prev_f + delta_f
+    print(f"[BALANCE UPDATE] {asset}: {delta_f:+f} (at {timestamp})")
 
 def handle_account_position(balances):
+    if not isinstance(balances, (list, tuple)):
+        return
+    updated = 0
     for bal in balances:
+        if not isinstance(bal, dict):
+            continue
         asset = bal["a"] if "a" in bal else bal.get("asset", "")
-        free = float(bal.get("f", bal.get("free", 0)))
-        locked = float(bal.get("l", bal.get("locked", 0)))
+        free = _safe_float(bal.get("f", bal.get("free", 0)), 0.0)
+        locked = _safe_float(bal.get("l", bal.get("locked", 0)), 0.0)
         balances_cache[asset] = free + locked
+        updated += 1
         #print(f"asset {asset}, {balances_cache[asset]}")
-    print(f"[ACCOUNT UPDATE] {len(balances)} assets updated")
+    print(f"[ACCOUNT UPDATE] {updated} assets updated")
 
 # ------------------------------
 # POLLING — WebSocket replacement

@@ -2498,12 +2498,14 @@ class Strategy:
                         high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
                     )
                     existing_ride = self.exit_manager.tp_ride_state.get(self.pair)
-                    if existing_ride is not None and existing_ride.get("buy_price") is not None:
-                        if not math.isclose(float(existing_ride["buy_price"]), avg, rel_tol=1e-9, abs_tol=1e-12):
+                    if isinstance(existing_ride, dict) and existing_ride.get("buy_price") is not None:
+                        ride_bp = _clean_pos_float(existing_ride.get("buy_price"))
+                        if ride_bp is None or not math.isclose(ride_bp, avg, rel_tol=1e-9, abs_tol=1e-12):
                             self.exit_manager.tp_ride_state.pop(self.pair, None)
                             existing_ride = None
-                    if existing_ride is not None:
-                        if high > existing_ride.get("peak_price", 0.0):
+                    if isinstance(existing_ride, dict):
+                        cur_peak = _clean_pos_float(existing_ride.get("peak_price")) or 0.0
+                        if high > cur_peak:
                             existing_ride["peak_price"] = high
                             existing_ride["peak_gain"] = high_snap.gain_ratio
                             existing_ride["last_peak_time"] = high_snap.current_time_s
@@ -2534,8 +2536,8 @@ class Strategy:
                     self._cancel_orders("sell", exclude_market=True)
                     return
                 elif decision.action == ExitAction.HOLD:
-                    ride_state = self.exit_manager.tp_ride_state.get(self.pair, {})
-                    peak_px = ride_state.get("peak_price", price)
+                    ride_state = self.exit_manager.tp_ride_state.get(self.pair)
+                    peak_px = (_clean_pos_float(ride_state.get("peak_price")) if isinstance(ride_state, dict) else None) or price
                     self.s["trail_peak"] = peak_px
                     if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
                         return

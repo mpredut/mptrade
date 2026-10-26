@@ -3181,5 +3181,60 @@ def test_root_modules_batch4_hardening():
     assert isinstance(written, int)
 
 
+def test_batch5_hardening():
+    import importlib.util
+    import numpy as np
+    from binance_api import binanceWSeventsFake
+    from intelligence.internal.state import survival
+    from notify_engine import server as notify_server
+    import priceAnalysis
+
+    from pathlib import Path
+    hl_pa_path = Path(__file__).resolve().parent.parent / "hyperliquid" / "price_analysis.py"
+    spec = importlib.util.spec_from_file_location("hl_price_analysis_local", hl_pa_path)
+    assert spec is not None and spec.loader is not None
+    hl_pa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hl_pa)
+
+    # 1. survival.block_slopes, episodes, survival_report with bad inputs and duplicate timestamps
+    bt, bs = survival.block_slopes("bad", "bad", 24, 8)
+    assert len(bt) == 0 and len(bs) == 0
+    # Collinear/constant timestamps in a window must not raise LinAlgError
+    ts_collinear = [1000.0] * 10 + [1000.0 + i * 3600.0 for i in range(1, 30)]
+    px_collinear = [100.0] * 10 + [100.0 + i * 2.0 for i in range(1, 30)]
+    bt2, bs2 = survival.block_slopes(ts_collinear, px_collinear, 6, 2)
+    assert len(bt2) == len(bs2) and len(bt2) > 0
+    assert survival.episodes(bt2, bs2, 6, noise_tolerance=float("nan"), min_confirm="bad") is not None
+    assert survival.survival_report([None, True, "bad", 10.0], "BTC", [1, 2], horizon_h=True) is None
+
+    # 2. notify_engine.server coercion of non-str title/source/bot_name
+    assert notify_server._category_for_title_and_source(12345, True) == "TRADES"  # type: ignore[arg-type]
+    assert notify_server._resolve_provider_label(123, None) == "123"  # type: ignore[arg-type]
+    assert notify_server._resolve_provider_label(True, "kraken_bot") == "Kraken"  # type: ignore[arg-type]
+
+    # 3. binanceWSeventsFake string delta, non-dict execution report, and trades_cache cap
+    binanceWSeventsFake.balances_cache.clear()
+    binanceWSeventsFake.orders_cache.clear()
+    binanceWSeventsFake.trades_cache.clear()
+    binanceWSeventsFake.handle_balance_update("USDC", "12.5", 1700000000000)
+    assert binanceWSeventsFake.balances_cache["USDC"] == 12.5
+    binanceWSeventsFake.handle_execution_report("not_a_dict")
+    binanceWSeventsFake.handle_execution_report(
+        {"s": "BTCUSDC", "i": 99, "X": "FILLED", "x": "TRADE", "S": "BUY", "p": "bad", "q": "1.0", "z": "1.0", "L": "65000.5", "l": "0.5"}
+    )
+    assert binanceWSeventsFake.orders_cache[99]["price"] == 0.0
+    assert binanceWSeventsFake.trades_cache[-1]["price"] == 65000.5
+    binanceWSeventsFake.handle_account_position(["not_a_dict", {"a": "BTC", "f": "1.25", "l": "bad"}])
+    assert binanceWSeventsFake.balances_cache["BTC"] == 1.25
+
+    # 4. detect_long_term_trend with non-iterable/str/bool/mixed elements in both priceAnalysis and hyperliquid.price_analysis
+    assert hl_pa.detect_long_term_trend("12345", "12345") is None
+    assert hl_pa.detect_long_term_trend(12345, 12345) is None
+    assert priceAnalysis.detect_long_term_trend("12345", "12345") is None
+    assert priceAnalysis.detect_long_term_trend(np.array([True, False, True]), np.array([1.0, 2.0, 3.0])) is None
+    assert priceAnalysis.detect_long_term_trend([1000.0, None, "bad", True, 2000.0], [100.0, 101.0, 102.0, 103.0, 104.0]) is None
+
+
+
 
 

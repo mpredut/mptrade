@@ -192,7 +192,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
     trade_settings = _env(root / "config.txt")
     kraken_env = _env(root / "kraken" / "config.env", root / "kraken" / ".env")
     hl_env = _env(root / "hyperliquid" / "config.env", root / "hyperliquid" / ".env")
-    t212_env = _env(root / "212trading" / ".env")
+    t212_env = _env(root / "212trading" / "runtime.env", root / "212trading" / ".env")
 
     kraken_pair = kraken_env.get("KRAKEN_PAIR", "HYPEUSD").split("#", 1)[0].strip()
     kraken_ref = _account_ref(kraken_env, "kraken", "kraken-spot-dca")

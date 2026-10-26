@@ -29,7 +29,7 @@ def _safe_float(val, default=0.0):
 
 
 def env_value(folder, name):
-    for fn in ('.env', 'config.env'):
+    for fn in ('.env', 'config.env', 'runtime.env'):
         p = os.path.join(folder, fn)
         if not os.path.exists(p):
             continue
@@ -81,11 +81,14 @@ def _client():
 
 def fetch_all_trades(cli):
     all_trades, ofs, total, pages = {}, 0, None, 0
-    while True:
+    while pages < 1000:
         res = cli._private('TradesHistory', {'ofs': ofs}, fresh=True)
-        batch = (res or {}).get('trades', {}) or {}
+        if not isinstance(res, dict):
+            break
+        raw_trades = res.get('trades')
+        batch = raw_trades if isinstance(raw_trades, dict) else {}
         if total is None:
-            total = int(_safe_float((res or {}).get('count'), 0.0))
+            total = int(_safe_float(res.get('count'), 0.0))
         if not batch:
             break
         all_trades.update(batch)
@@ -93,7 +96,7 @@ def fetch_all_trades(cli):
         if len(all_trades) >= total or len(batch) < 50:
             break
         time.sleep(2.0)                            # Gentle on the rate limit (a cost of 20 per call).
-    return all_trades, total
+    return all_trades, total or 0
 
 
 def main():
@@ -105,13 +108,15 @@ def main():
         extract_order_side,
         extract_timestamp_ms,
     )
+    from state_io import atomic_write_json
     cli = _client()
     trades, total = fetch_all_trades(cli)
     by_sym = {}
     for txid, t in trades.items():
         if not isinstance(t, dict):
             continue
-        by_sym.setdefault(t.get('pair', '?'), []).append(dict(
+        pair = str(t.get('pair') or '?').strip() or '?'
+        by_sym.setdefault(pair, []).append(dict(
             txid=txid, side=extract_order_side(t) or 'SELL',
             price=_safe_float(extract_order_price(t), 0.0),
             qty=_safe_float(extract_order_qty(t), 0.0),
@@ -120,8 +125,7 @@ def main():
             time=extract_timestamp_ms(t, default=0) or 0))
     out = {'items': by_sym, 'source': 'TradesHistory full (read-only)',
            'total': total, 'generated': dt.datetime.now().isoformat()}
-    with open(OUT, 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=1)
+    atomic_write_json(OUT, out, indent=1)
 
     print(f'[kraken_pnl] {len(trades)}/{total} trades -> {OUT}')
     grand = 0.0

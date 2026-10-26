@@ -479,7 +479,12 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     estimated_future_hours, current_slope_h, blocks(index pairs for plotting)}``
     or ``None``.
     """
-    if timestamps is None or prices is None:
+    if (
+        timestamps is None
+        or prices is None
+        or isinstance(timestamps, (bool, str, bytes))
+        or isinstance(prices, (bool, str, bytes))
+    ):
         return None
     if any(
         isinstance(v, bool)
@@ -513,8 +518,40 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     min_points_per_window = mpw_i
     detection_lag_hours = lag_f
 
-    timestamps = np.asarray(timestamps, dtype=float)
-    prices = np.asarray(prices, dtype=float)
+    if isinstance(timestamps, np.ndarray) and timestamps.dtype == bool:
+        return None
+    if isinstance(prices, np.ndarray) and prices.dtype == bool:
+        return None
+    try:
+        if not isinstance(timestamps, np.ndarray) and any(isinstance(x, bool) for x in timestamps):
+            raise TypeError("bool element")
+        if not isinstance(prices, np.ndarray) and any(isinstance(x, bool) for x in prices):
+            raise TypeError("bool element")
+        timestamps = np.asarray(timestamps, dtype=float)
+        prices = np.asarray(prices, dtype=float)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            raw_ts = list(timestamps)
+            raw_px = list(prices)
+        except TypeError:
+            return None
+        if len(raw_ts) != len(raw_px) or len(raw_ts) < 2:
+            return None
+        clean_ts: list[float] = []
+        clean_px: list[float] = []
+        for t_item, p_item in zip(raw_ts, raw_px):
+            if isinstance(t_item, bool) or isinstance(p_item, bool):
+                continue
+            try:
+                tf = float(t_item)
+                pf = float(p_item)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+                clean_ts.append(tf)
+                clean_px.append(pf)
+        timestamps = np.asarray(clean_ts, dtype=float)
+        prices = np.asarray(clean_px, dtype=float)
     if timestamps.ndim != 1 or prices.ndim != 1 or len(prices) != len(timestamps):
         return None
     finite_mask = np.isfinite(timestamps) & (timestamps > 0) & np.isfinite(prices) & (prices > 0)

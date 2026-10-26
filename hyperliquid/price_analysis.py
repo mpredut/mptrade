@@ -45,7 +45,12 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW):
     """Port priceAnalysis.detect_long_term_trend with gap/density robustness."""
-    if timestamps is None or prices is None:
+    if (
+        timestamps is None
+        or prices is None
+        or isinstance(timestamps, (bool, str, bytes))
+        or isinstance(prices, (bool, str, bytes))
+    ):
         return None
     if any(isinstance(v, bool) for v in (window_hours, step_hours, min_consecutive_blocks, noise_tolerance, min_points_per_window)):
         return None
@@ -66,8 +71,11 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         return None
     if mcb_i < 1 or nt_i < 0 or mpw_i < 2:
         return None
-    raw_ts = list(timestamps)
-    raw_px = list(prices)
+    try:
+        raw_ts = list(timestamps)
+        raw_px = list(prices)
+    except TypeError:
+        return None
     if len(raw_ts) != len(raw_px) or len(raw_ts) < 2:
         return None
     pairs: list[tuple[float, float]] = []

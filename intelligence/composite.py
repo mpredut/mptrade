@@ -426,7 +426,7 @@ class CompositeMarketIntelligence:
                     sr_sec = sr_f
             except (TypeError, ValueError, OverflowError):
                 sr_sec = 60.0
-        if isinstance(prices_for_vol, (list, tuple)) and len(prices_for_vol) >= 20:
+        if prices_for_vol is not None and not isinstance(prices_for_vol, (bool, str, bytes)):
             vol1h = calculate_volatility_1h(prices_for_vol, sr_sec)
 
         # Select primary active trigger (prioritize highest strength among executable triggers)

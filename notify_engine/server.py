@@ -52,7 +52,7 @@ def _ensure_env_loaded() -> None:
 
 def resolve_topic(category: str) -> str:
     from botcore import required_env
-    cat = (category or "").strip().upper()
+    cat = ("" if isinstance(category, bool) else str(category or "")).strip().upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
         cat = "SERVER"
     key = f"NTFY_TOPIC_{cat}"
@@ -61,8 +61,8 @@ def resolve_topic(category: str) -> str:
     return required_env(key)
 
 def _category_for_title_and_source(title: str, source: str) -> str:
-    t = (title or "").upper()
-    s = (source or "").lower()
+    t = ("" if isinstance(title, bool) else str(title or "")).upper()
+    s = ("" if isinstance(source, bool) else str(source or "")).lower()
     if "AUTO_TECHNICAL_REPAIR" in t or s == "ai_supervisor":
         if any(m in t for m in _EXPLICIT_ERROR_MARKERS):
             return "ERROR"
@@ -103,8 +103,10 @@ def _topic_for_category(title: str, source: str) -> str:
     return resolve_topic(cat)
 
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
-    s = (source or "").lower()
-    b = (bot_name or "").lower()
+    bot_str = "" if isinstance(bot_name, bool) else str(bot_name or "")
+    src_str = "" if isinstance(source, bool) else str(source or "")
+    s = src_str.lower()
+    b = bot_str.lower()
     if "kraken" in s or "kraken" in b or "xstock" in b:
         return "Kraken"
     if "hyperliquid" in s or "hl" in s or "hyperliquid" in b or b.startswith("hl"):
@@ -113,9 +115,9 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
         return "T212"
     if "binance" in s or "binance" in b or b in ("rtrade", "tradeall", "monitortrades", "order_retry", "monitororder") or "monitororder" in s:
         return "Binance"
-    if "-" in bot_name:
-        return bot_name.split("-")[0]
-    return bot_name or (source.capitalize() if source else "")
+    if "-" in bot_str:
+        return bot_str.split("-")[0]
+    return bot_str or (src_str.capitalize() if src_str else "")
 
 class NotificationServer:
     def __init__(self):
