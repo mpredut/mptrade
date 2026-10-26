@@ -3066,4 +3066,25 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert k_bt_tr.bh([(100.0, 101.0, 99.0, True)]) == 0.0  # type: ignore[list-item]
     assert k_bt_tr.bh([(100.0,)]) == 0.0  # type: ignore[list-item]
 
+    # 8. providers.base.extract_order_id and binance_api.bapi_allorders/bapi_trades hardening
+    from types import SimpleNamespace
+    from providers.base import extract_order_id
+    from binance_api import bapi_allorders, bapi_trades
+
+    assert extract_order_id({"orderId": "", "id": "999"}) == "999"
+    assert extract_order_id({"orderId": "   ", "txid": ["", "TX42"]}) == "TX42"
+    assert extract_order_id({"orderId": float("nan"), "id": 777}) == "777"
+    assert extract_order_id({"orderId": float("nan")}) is None
+
+    agg = bapi_trades.aggregate_trades([
+        {"orderId": "", "id": 501, "symbol": "BTCUSDC", "price": "100.0", "qty": "1.0", "time": 1000, "isBuyer": True},
+        {"orderId": float("nan"), "id": 502, "symbol": "BTCUSDC", "price": "200.0", "qty": "1.0", "time": 2000, "isBuyer": False},
+    ])
+    assert [row["orderId"] for row in agg] == ["501", "502"]
+
+    bad_client = SimpleNamespace(get_my_trades=lambda **kw: [{"id": 12.5}, {"id": 13.5}])
+    with pytest.raises(RuntimeError):
+        bapi_allorders.paginate_my_trades(bad_client, "BTCUSDC", 1000, limit=2, strict=True)
+
+
 

@@ -79,9 +79,23 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
             break
         try:
             tail = batch[-1]
-            if not isinstance(tail, dict) or isinstance(tail.get("id"), bool):
+            if not isinstance(tail, dict):
+                raise ValueError("invalid tail trade")
+            raw_tid = tail.get("id")
+            if raw_tid is None or isinstance(raw_tid, bool):
                 raise ValueError("invalid tail trade id")
-            next_from_id = int(tail["id"]) + 1   # Continue from the next fill ID.
+            if isinstance(raw_tid, float):
+                if not math.isfinite(raw_tid) or not raw_tid.is_integer():
+                    raise ValueError("invalid tail trade id")
+                tid_int = int(raw_tid)
+            else:
+                tid_str = str(raw_tid).strip()
+                if not tid_str or not tid_str.isascii() or not tid_str.isdigit():
+                    raise ValueError("invalid tail trade id")
+                tid_int = int(tid_str)
+            if tid_int <= 0:
+                raise ValueError("invalid tail trade id")
+            next_from_id = tid_int + 1   # Continue from the next fill ID.
         except (KeyError, TypeError, ValueError, OverflowError):
             if strict:
                 raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")
@@ -145,9 +159,15 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
 
         for idx, t in enumerate(filtered):
             raw_oid = t['orderId']
+            valid_oid = (
+                raw_oid is not None
+                and not isinstance(raw_oid, bool)
+                and not (isinstance(raw_oid, float) and not math.isfinite(raw_oid))
+                and bool(str(raw_oid).strip())
+            )
             key = (
-                raw_oid
-                if (raw_oid is not None and not isinstance(raw_oid, bool) and str(raw_oid).strip())
+                (raw_oid.strip() if isinstance(raw_oid, str) else raw_oid)
+                if valid_oid
                 else f"_unkeyed_{idx}"
             )
             grouped[key]['price_qty'] += t['price'] * t['quantity']
@@ -252,6 +272,8 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             or cache_order_manager.cache.get(sym_clean)
             or []
         )
+        if not isinstance(raw_bucket, (list, tuple)):
+            raw_bucket = []
         orders_for_symbol = [
             dict(order) for order in raw_bucket
             if isinstance(order, dict)

@@ -49,6 +49,17 @@ trade_cache = []
 #######      get_my_trades     #######
 #######
 
+def _valid_fill_id(val):
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, float) and not math.isfinite(val):
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        return s if s else None
+    return val if str(val).strip() else None
+
+
 def aggregate_trades(trades):
     aggregated_trades = defaultdict(lambda: {
         'symbol': '', 'price': '', 'qty': 0.0, 'quoteQty': 0.0, 'weightedCost': 0.0,
@@ -60,9 +71,9 @@ def aggregate_trades(trades):
     for trade in trades or ():
         if not isinstance(trade, dict):
             continue
-        raw_oid = trade.get('orderId')
-        orderId = raw_oid if (raw_oid is not None and not isinstance(raw_oid, bool)) else extract_order_id(trade)
-        if orderId is None or isinstance(orderId, bool):
+        raw_oid = _valid_fill_id(trade.get('orderId'))
+        orderId = raw_oid if raw_oid is not None else extract_order_id(trade)
+        if orderId is None or isinstance(orderId, bool) or not str(orderId).strip():
             continue
         qty = extract_order_qty(trade)
         px = extract_order_price(trade)
@@ -274,14 +285,10 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         for idx, trade in enumerate(all_trades):
             if not isinstance(trade, dict):
                 continue
-            raw_key = trade.get('id')
-            if raw_key is None or isinstance(raw_key, bool) or raw_key == "":
-                raw_key = trade.get('orderId')
-            fill_key = (
-                raw_key
-                if (raw_key is not None and not isinstance(raw_key, bool) and raw_key != "")
-                else f"_unkeyed_{idx}"
-            )
+            raw_key = _valid_fill_id(trade.get('id'))
+            if raw_key is None:
+                raw_key = _valid_fill_id(trade.get('orderId'))
+            fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
             ts_ms = extract_timestamp_ms(trade, default=0) or 0
 
             # Deduplicate by individual fill ID (falling back to orderId when id is absent).
@@ -365,14 +372,10 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
         for idx, trade in enumerate(all_trades):
             if not isinstance(trade, dict):
                 continue
-            raw_key = trade.get('id')
-            if raw_key is None or isinstance(raw_key, bool) or raw_key == "":
-                raw_key = trade.get('orderId')
-            fill_key = (
-                raw_key
-                if (raw_key is not None and not isinstance(raw_key, bool) and raw_key != "")
-                else f"_unkeyed_{idx}"
-            )
+            raw_key = _valid_fill_id(trade.get('id'))
+            if raw_key is None:
+                raw_key = _valid_fill_id(trade.get('orderId'))
+            fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
             ts_ms = extract_timestamp_ms(trade, default=0) or 0
             if (
                 fill_key not in latest_trades
@@ -453,10 +456,10 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     def _trade_fill_key(trade_obj):
         if not isinstance(trade_obj, dict):
             return None
-        rk = trade_obj.get('id')
-        if rk is None or isinstance(rk, bool) or rk == "":
-            rk = trade_obj.get('orderId')
-        return rk if (rk is not None and not isinstance(rk, bool) and rk != "") else None
+        rk = _valid_fill_id(trade_obj.get('id'))
+        if rk is None:
+            rk = _valid_fill_id(trade_obj.get('orderId'))
+        return rk
 
     existing_trade_ids = {
         k for k in (_trade_fill_key(trade) for trade in filtered_existing_trades)
@@ -533,6 +536,8 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             or manager.cache.get(sym_clean)
             or []
         )
+        if not isinstance(raw_bucket, (list, tuple)):
+            raw_bucket = []
         trades = [
             dict(trade) for trade in raw_bucket
             if isinstance(trade, dict)

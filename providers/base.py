@@ -125,6 +125,21 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
     return default
 
 
+def _clean_single_order_id(val: Any) -> Optional[str]:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, float) and not math.isfinite(val):
+        return None
+    if isinstance(val, (list, tuple)):
+        for item in val:
+            cleaned = _clean_single_order_id(item)
+            if cleaned is not None:
+                return cleaned
+        return None
+    text = str(val).strip()
+    return text if text else None
+
+
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
     """Extract and normalize a venue order ID from any response shape.
 
@@ -134,29 +149,17 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
     if order is None or isinstance(order, bool):
         return default
     if hasattr(order, "order_id") and hasattr(order, "state"):
-        oid = getattr(order, "order_id", None)
-        if oid is not None and not isinstance(oid, bool) and str(oid).strip():
-            return str(oid).strip()
-        return default
-    order_id = None
+        cleaned = _clean_single_order_id(getattr(order, "order_id", None))
+        return cleaned if cleaned is not None else default
     if isinstance(order, dict):
         for key in _ORDER_ID_KEYS:
-            if key in order and order[key] is not None and not isinstance(order[key], bool):
-                order_id = order[key]
-                break
-    else:
-        order_id = order
-    if isinstance(order_id, (list, tuple)):
-        order_id = next(
-            (
-                item for item in order_id
-                if item is not None and not isinstance(item, bool) and str(item).strip()
-            ),
-            None,
-        )
-    if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            if key in order:
+                cleaned = _clean_single_order_id(order[key])
+                if cleaned is not None:
+                    return cleaned
         return default
-    return str(order_id).strip()
+    cleaned = _clean_single_order_id(order)
+    return cleaned if cleaned is not None else default
 
 
 def extract_order_side(order: Any) -> str:
