@@ -144,7 +144,11 @@ class StratParams:
                 if s in ("0", "false", "no", "off", ""):
                     return False
                 raise ValueError(f"invalid boolean string for {key}: {raw!r}")
-            return bool(raw)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                if raw in (0, 1):
+                    return bool(raw)
+                raise ValueError(f"invalid numeric boolean for {key}: {raw!r}")
+            raise ValueError(f"invalid boolean value for {key}: {raw!r}")
 
         return cls(
             currency=str(d.get("currency", "USDC") or "USDC").strip().upper(),
@@ -336,7 +340,7 @@ class Strategy:
                                      "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
             return
         ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
-        if ok:
+        if ok and oid is not None and not isinstance(oid, bool):
             log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={oid} {sz} @ {px:.4f} ({msg})")
             self.s["orders"].append({"oid": oid, "role": role, "side": side, "sz": sz, "px": px,
                                      "amount": amount, "kind": kind, "ts": time.time()})
@@ -347,14 +351,15 @@ class Strategy:
         o = self._close_order()
         if not o:
             return True
-        if not self.dry_run and not self.replay_mode and not str(o["oid"]).startswith("PAPER"):
-            if self.client.cancel(self.coin, o["oid"]) is False:
+        oid = o.get("oid")
+        if not self.dry_run and not self.replay_mode and oid is not None and not str(oid).startswith("PAPER"):
+            if self.client.cancel(self.coin, oid) is False:
                 if not self.replay_mode:
-                    log(f"  ! [STRAT] failed to cancel close {o['oid']} — keeping tracked")
+                    log(f"  ! [STRAT] failed to cancel close {oid} — keeping tracked")
                 return False
         self._remove(o)
         if not self.replay_mode:
-            log(f"  [STRAT] cancelled close {o['oid']}")
+            log(f"  [STRAT] cancelled close {oid}")
         return True
 
     # -- reconciliation --------------------------------------------------------
@@ -599,14 +604,20 @@ class Strategy:
             if not self.replay_mode:
                 log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — CLOSING everything (cutting the loss)")
             # Cancel every pending order, including DCA, so the position cannot refill.
+            close_cancel_failed = False
             for o in list(self.s["orders"]):
-                if not self.dry_run and not self.replay_mode and not str(o["oid"]).startswith("PAPER"):
-                    if self.client.cancel(self.coin, o["oid"]) is False:
-                        log(f"  ! [STRAT] failed to cancel {o['oid']} before SL — keeping tracked")
+                oid = o.get("oid")
+                if not self.dry_run and not self.replay_mode and oid is not None and not str(oid).startswith("PAPER"):
+                    if self.client.cancel(self.coin, oid) is False:
+                        log(f"  ! [STRAT] failed to cancel {oid} before SL — keeping tracked")
+                        if o.get("role") == "close":
+                            close_cancel_failed = True
                         continue
                 self._remove(o)
             if self.replay_mode:
                 self._apply_close(avg, price, self.s["qty"])
+                return True
+            if close_cancel_failed:
                 return True
             agg = price * (1 - self.sign * 0.005)           # aggressive price for reliable fill
             self._place("close", self.s["qty"], agg, "STOP")

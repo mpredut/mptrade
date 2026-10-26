@@ -163,8 +163,19 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
         return
     if not isinstance(pairs, dict):
         return
-    matches = [(k, v) for k, v in pairs.items()
-               if isinstance(v, dict) and re.search(rx, f"{k} {v.get('wsname') or ''} {v.get('base') or ''}", re.I)]
+    matches = [
+        (k, v)
+        for k, v in pairs.items()
+        if isinstance(v, dict)
+        and (
+            v.get("status") is None
+            or (
+                isinstance(v.get("status"), str)
+                and (not v.get("status").strip() or v.get("status").strip().lower() in ("online", "limit_only", "post_only"))
+            )
+        )
+        and re.search(rx, f"{k} {v.get('wsname') or ''} {v.get('base') or ''}", re.I)
+    ]
     if not matches:
         return
     if quote:

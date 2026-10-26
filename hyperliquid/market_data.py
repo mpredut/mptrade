@@ -61,7 +61,7 @@ def normalize_closed_candles(
 ) -> list[dict]:
     """Sort, deduplicate and drop the candle that is still open."""
     by_open_time: dict[int, dict] = {}
-    for row in rows:
+    for row in (rows or []):
         if not isinstance(row, dict):
             continue
         if any(isinstance(row.get(k), bool) for k in ("t", "T", "o", "h", "l", "c")):
@@ -120,6 +120,9 @@ def fetch_ohlc_candles(
     Returns a list of dicts:
         {"timestamp": int, "open": float, "high": float, "low": float, "close": float}
     """
+    if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        raise ValueError(f"invalid coin: {coin!r}")
+    coin = coin.strip()
     if isinstance(interval, str):
         rev_intervals = {v: k for k, v in INTERVALS.items()}
         cleaned = interval.strip()
@@ -192,8 +195,12 @@ def fetch_ohlc_candles(
 
 def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[tuple[int, float]]:
     """Return hourly coin funding history sorted as (time_ms, funding_rate) tuples."""
+    if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+        return []
+    if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)) or int(start_ms) < 0:
+        return []
     try:
-        data = _post_info({"type": "fundingHistory", "coin": coin, "startTime": start_ms}, timeout=timeout)
+        data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_ms)}, timeout=timeout)
         if not isinstance(data, list):
             return []
         entries: list[tuple[int, float]] = []
@@ -203,12 +210,12 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
             if isinstance(d.get("time"), bool) or isinstance(d.get("fundingRate"), bool):
                 continue
             try:
-                t_ms = int(d["time"])
+                t_f = float(d["time"])
                 rate = float(d["fundingRate"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if t_ms > 0 and math.isfinite(rate):
-                entries.append((t_ms, rate))
+            if math.isfinite(t_f) and int(t_f) > 0 and math.isfinite(rate):
+                entries.append((int(t_f), rate))
         return sorted(entries, key=lambda x: x[0])
     except Exception as e:  # noqa: BLE001
         log(f"  ! funding history unavailable for {coin}: {e}")

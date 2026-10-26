@@ -10270,3 +10270,109 @@ def test_iteration91_market_data_order_manager_and_trailing_core_safety(monkeypa
     assert "target_exit_qty" not in st
     assert "pending_order" not in st
 
+
+def test_iteration92_hyperliquid_client_market_data_strategy_and_xstock_watch_safety(monkeypatch):
+    """Verify Iteration 92 HLClient is_buy/pair/sz_decimals safety, hyperliquid.market_data validation, hyperliquid.strategy close-order cancel guard, and kraken_xstock_watch pair status filtering."""
+    import importlib
+    import importlib.util
+    import os
+    import sys
+    import pytest
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(root_dir, "hyperliquid")
+
+    def _load_hl_mod(mod_name: str, filename: str):
+        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
+        mod = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, mod_name, mod)
+        spec.loader.exec_module(mod)
+        return mod
+
+    saved_path = list(sys.path)
+    saved_mods = {k: sys.modules.get(k) for k in ("common", "notify", "hl_client", "market_data", "signals")}
+    try:
+        hl_client_mod = _load_hl_mod("_it92_hl_client", "hl_client.py")
+        hl_md_mod = _load_hl_mod("_it92_hl_md", "market_data.py")
+        hl_strat_mod = _load_hl_mod("_it92_hl_strat", "strategy.py")
+    finally:
+        sys.path[:] = saved_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. HLClient spot_order / place_limit reject non-bool is_buy and fractional szDecimals
+    hl = object.__new__(hl_client_mod.HLClient)
+    hl.exchange = object()
+    hl._meta_cache = {"HYPE": {"szDecimals": 2.5, "maxLeverage": 3.5}}
+    hl.info = type("I", (), {"spot_meta": lambda self: {}})()
+    with pytest.raises(hl_client_mod.HLError, match="Missing size precision"):
+        hl.sz_decimals("HYPE")
+    with pytest.raises(hl_client_mod.HLError, match="Missing leverage"):
+        hl.max_leverage("HYPE")
+    hl._meta_cache = {"HYPE": {"szDecimals": 2, "maxLeverage": 5}}
+    assert hl.spot_order("@107", "SELL", 1.0, 20.0) == (False, None, "invalid non-boolean is_buy")
+    assert hl.spot_order("  ", True, 1.0, 20.0) == (False, None, "invalid pair")
+    assert hl.place_limit("HYPE", "SELL", 1.0, 20.0) == (False, None, "invalid non-boolean is_buy or reduce_only")
+    assert hl.place_limit("", True, 1.0, 20.0) == (False, None, "invalid coin")
+
+    # 2. hyperliquid.market_data validation
+    assert hl_md_mod.normalize_closed_candles(None, now_ms=1000) == []
+    with pytest.raises(ValueError, match="invalid coin"):
+        hl_md_mod.fetch_ohlc_candles("  ", 60)
+    with pytest.raises(ValueError, match="invalid coin"):
+        hl_md_mod.fetch_ohlc_candles(True, 60)
+    assert hl_md_mod.fetch_funding_history("", 1000) == []
+    assert hl_md_mod.fetch_funding_history("HYPE", -1) == []
+
+    # 3. hyperliquid.strategy: StratParams.from_dict bool validation & _check_stop_loss avoids duplicate close on close cancel failure
+    with pytest.raises(ValueError, match="invalid numeric boolean"):
+        hl_strat_mod.StratParams.from_dict({"enable_takeprofit": 2})
+
+    class _CloseFailCancelClient:
+        exchange = None
+        placed = 0
+
+        def sz_decimals(self, _coin):
+            return 2
+
+        def cancel(self, _coin, _oid):
+            return False
+
+        def place_limit(self, _coin, _is_buy, _sz, _px, reduce_only=False):
+            self.placed += 1
+            return True, f"SL-{self.placed}", "ok"
+
+    cli = _CloseFailCancelClient()
+    strat = hl_strat_mod.Strategy(
+        client=cli,
+        coin="HYPE",
+        params=hl_strat_mod.StratParams(direction="long", stop_loss_pct=5.0),
+        dry_run=False,
+        replay_mode=False,
+        initial_state={"qty": 1.0, "cost": 100.0, "spent": 100.0, "orders": [{"oid": "TP-1", "role": "close", "px": 105.0, "sz": 1.0}]},
+    )
+    strat._save = lambda: None
+    assert strat._check_stop_loss(94.0) is True
+    assert cli.placed == 0
+    assert [o["oid"] for o in strat.s["orders"]] == ["TP-1"]
+
+    # 4. kraken.kraken_xstock_watch.check_pairs skips non-tradable status
+    xw = importlib.import_module("kraken.kraken_xstock_watch")
+    st_xw = xw._default_state()
+    fake_k = type(
+        "FK",
+        (),
+        {
+            "asset_pairs": lambda self: {
+                "SPCXXUSD": {"wsname": "SPCXx/USD", "base": "SPCXX", "status": "cancel_only"}
+            },
+            "last_price": lambda self, p: 200.0,
+        },
+    )()
+    xw.check_pairs(fake_k, st_xw, "SPCX", False, quote="USD")
+    assert st_xw["pair"] is None
+    assert st_xw["alerted_pair"] is False
+

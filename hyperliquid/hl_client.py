@@ -16,9 +16,18 @@ Run with the Python interpreter from the SDK virtual environment:
 from __future__ import annotations
 
 import math
+import os
+import sys
 import time
 
-from common import log
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+try:
+    from .common import log
+except ImportError:
+    from common import log
 
 try:
     import eth_account
@@ -141,9 +150,9 @@ class HLClient:
         raw_dec = meta.get("szDecimals") if isinstance(meta, dict) else None
         if raw_dec is not None and not isinstance(raw_dec, bool):
             try:
-                dec = int(raw_dec)
-                if 0 <= dec <= 18:
-                    return dec
+                dec_f = float(raw_dec)
+                if math.isfinite(dec_f) and dec_f.is_integer() and 0 <= int(dec_f) <= 18:
+                    return int(dec_f)
             except (TypeError, ValueError, OverflowError):
                 pass
         try:
@@ -152,9 +161,9 @@ class HLClient:
                 if isinstance(token, dict) and token.get("name") == coin and "szDecimals" in token:
                     raw_tdec = token["szDecimals"]
                     if raw_tdec is not None and not isinstance(raw_tdec, bool):
-                        dec = int(raw_tdec)
-                        if 0 <= dec <= 18:
-                            return dec
+                        tdec_f = float(raw_tdec)
+                        if math.isfinite(tdec_f) and tdec_f.is_integer() and 0 <= int(tdec_f) <= 18:
+                            return int(tdec_f)
         except Exception:  # noqa: BLE001
             pass
         raise HLError(f"Missing size precision metadata for {coin}")
@@ -164,9 +173,9 @@ class HLClient:
         raw_lev = meta.get("maxLeverage") if isinstance(meta, dict) else None
         if raw_lev is not None and not isinstance(raw_lev, bool):
             try:
-                lev = int(raw_lev)
-                if lev > 0:
-                    return lev
+                lev_f = float(raw_lev)
+                if math.isfinite(lev_f) and lev_f.is_integer() and int(lev_f) > 0:
+                    return int(lev_f)
             except (TypeError, ValueError, OverflowError):
                 pass
         raise HLError(f"Missing leverage metadata for {coin}")
@@ -413,6 +422,10 @@ class HLClient:
         """Place a spot limit or market IOC order; pair is the @index name such as @107."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY)")
+        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return False, None, "invalid pair"
+        if not isinstance(is_buy, bool):
+            return False, None, "invalid non-boolean is_buy"
         if isinstance(sz, bool) or isinstance(px, bool) or isinstance(sz_decimals, bool):
             return False, None, "invalid boolean order parameter"
         try:
@@ -470,6 +483,10 @@ class HLClient:
         """Place a GTC LIMIT order and return (ok, oid, message)."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY) — orders cannot be placed")
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return False, None, "invalid coin"
+        if not isinstance(is_buy, bool) or not isinstance(reduce_only, bool):
+            return False, None, "invalid non-boolean is_buy or reduce_only"
         if isinstance(sz, bool) or isinstance(px, bool):
             return False, None, "invalid boolean order parameter"
         try:
