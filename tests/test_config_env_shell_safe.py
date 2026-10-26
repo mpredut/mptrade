@@ -167,22 +167,24 @@ def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         shadow_runtime.require_shadow_interval(True, 1.0, "test")
 
-    outcomes_file = tmp_path / "outcomes.jsonl"
-    monkeypatch.setattr(order_outcomes_log, "_OUTCOMES_PATH", str(outcomes_file))
+    from types import SimpleNamespace
+    monkeypatch.setattr(order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
     order_outcomes_log.log_order_outcome(
-        venue="binance",
         symbol="BTCUSDC",
         side="BUY",
-        qty=0.01,
         price=50000.0,
-        decision="ALLOWED",
-        source="test",
-        regime_context={"regime": "BULL", "strength": "invalid_float"},
+        qty=0.01,
+        outcome="accepted",
+        refuse_reason="",
+        motivation="test",
+        caller="test_suite",
+        regime_context=SimpleNamespace(regime="BULL", strength="invalid_float"),
     )
-    rows = [json.loads(line) for line in outcomes_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(rows) == 1
-    assert rows[0]["regime"] == "BULL"
-    assert rows[0]["regime_strength"] is None
+    log_files = list(tmp_path.glob("order_outcomes_*.log"))
+    assert len(log_files) == 1
+    lines = log_files[0].read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert "|BULL||" in lines[0]
 
 
 
