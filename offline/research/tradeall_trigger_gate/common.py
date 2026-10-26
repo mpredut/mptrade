@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import math
 import os
 import shutil
 import sys
@@ -238,9 +239,9 @@ class LongTrendTracker:
     """Multi-hour linear-regression regime tracker evaluated at fixed intervals."""
 
     def __init__(self, stats: dict, window_hours: float, reeval_sec: float, min_points: int = 30):
-        self.window_sec = window_hours * 3600.0
-        self.reeval_sec = reeval_sec
-        self.min_points = min_points
+        self.window_sec = max(60.0, float(window_hours) * 3600.0)
+        self.reeval_sec = max(1.0, float(reeval_sec))
+        self.min_points = max(2, int(min_points))
         self.buf = deque()
         self.last_eval_ts: Optional[float] = None
         self.sign = 0
@@ -251,6 +252,8 @@ class LongTrendTracker:
         self.stats = stats
 
     def update(self, ts: float, price: float) -> int:
+        if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
+            return self.sign
         self.buf.append((ts, price))
         cutoff = ts - self.window_sec
         while self.buf and self.buf[0][0] < cutoff:
@@ -398,6 +401,11 @@ def execute_tradeall_variant(
     pnl_path = os.path.join(out_dir, "pnl.json")
     pnl = {}
     if os.path.exists(pnl_path):
-        with open(pnl_path, encoding="utf-8") as fh:
-            pnl = json.load(fh)
+        try:
+            with open(pnl_path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                pnl = loaded
+        except (OSError, json.JSONDecodeError):
+            pnl = {}
     return pnl, elapsed

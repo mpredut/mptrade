@@ -974,5 +974,51 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     t212_out = t212_report.generate_report(str(tmp_path))
     assert "unknown" in t212_out
 
+    # 5. tradeall_trigger_gate LongTrendTracker, RsiGate, MeanReversionTracker, and STATS reset per run
+    from offline.research.tradeall_trigger_gate import (
+        common as tg_common,
+        experiment_cooldown_only_and_tighten as exp7,
+        experiment_quality_signal as exp5,
+        experiment_quality_signal_v2 as exp6,
+        experiment_rsi_bollinger as exp8,
+        experiment_rsi_dca_filter as exp9,
+    )
+    lt_stats = {}
+    lt = tg_common.LongTrendTracker(lt_stats, window_hours=0, reeval_sec=0, min_points=1)
+    assert lt.window_sec == 60.0
+    assert lt.reeval_sec == 1.0
+    assert lt.min_points == 2
+    assert lt.update(float("nan"), 100.0) == 0
+    assert lt.update(1000.0, float("nan")) == 0
+    assert lt.update(1000.0, -5.0) == 0
+    assert len(lt.buf) == 0
+
+    _, st7_a = exp7.make_instrumented("tag7")
+    st7_a["starts"] = 5
+    _, st7_b = exp7.make_instrumented("tag7")
+    assert st7_b["starts"] == 0
+
+    exp5.make_quality_logic("tag5", 24, 1800)
+    exp5.STATS["tag5"]["sign_changes"] = 4
+    exp5.make_quality_logic("tag5", 24, 1800)
+    assert exp5.STATS["tag5"]["sign_changes"] == 0
+
+    st6_a = exp6._make_stats("tag6")
+    st6_a["sign_changes"] = 3
+    st6_b = exp6._make_stats("tag6")
+    assert st6_b["sign_changes"] == 0
+
+    exp8._make_stats("tag8")
+    mrt = exp8.MeanReversionTracker("tag8", "BTCUSDC", mode="both", rsi_period=0, bb_period=0)
+    assert mrt.rsi_period == 1
+    assert mrt.bb_period == 1
+    assert mrt.update_sign(float("nan")) == 0
+
+    rg = exp9.RsiGate(0, 30.0)
+    assert rg.period == 1
+    rg.update(float("nan"))
+    assert rg.prev is None
+
+
 
 

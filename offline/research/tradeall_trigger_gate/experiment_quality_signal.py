@@ -54,14 +54,16 @@ _trackers = {}
 
 
 def make_quality_logic(tag, window_hours, reeval_sec):
+    stats = {
+        "sign_changes": 0,
+        "fire_attempts_up": 0, "fire_confirmed_up": 0, "fire_blocked_up": 0,
+        "fire_attempts_down": 0, "fire_confirmed_down": 0, "fire_blocked_down": 0,
+    }
+    STATS[tag] = stats
+
     def get_tracker(symbol):
         tr = _trackers.get(symbol)
         if tr is None:
-            stats = STATS.setdefault(tag, {
-                "sign_changes": 0,
-                "fire_attempts_up": 0, "fire_confirmed_up": 0, "fire_blocked_up": 0,
-                "fire_attempts_down": 0, "fire_confirmed_down": 0, "fire_blocked_down": 0,
-            })
             tr = _trackers[symbol] = LongTrendTracker(stats, window_hours, reeval_sec)
         return tr
 

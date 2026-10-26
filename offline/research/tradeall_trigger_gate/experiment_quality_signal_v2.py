@@ -51,11 +51,13 @@ _trackers = {}
 
 
 def _make_stats(tag):
-    return STATS.setdefault(tag, {
+    stats = {
         "sign_changes": 0,
         "fire_attempts_up": 0, "fire_confirmed_up": 0, "fire_blocked_up": 0, "fire_skipped_cooldown_up": 0,
         "fire_attempts_down": 0, "fire_confirmed_down": 0, "fire_blocked_down": 0, "fire_skipped_cooldown_down": 0,
-    })
+    }
+    STATS[tag] = stats
+    return stats
 
 
 def make_quality_logic(tag):

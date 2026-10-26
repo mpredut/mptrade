@@ -43,13 +43,15 @@ class RsiGate:
     """Wilder RSI fed the bar closes; oversold() gates the DCA trigger."""
 
     def __init__(self, period, low):
-        self.period, self.low = period, low
+        self.period, self.low = max(1, int(period)), low
         self.prev = None
         self.ag = self.al = None
         self.seed = []
         self.rsi = None
 
     def update(self, price):
+        if not (math.isfinite(price) and price > 0):
+            return
         if self.prev is None:
             self.prev = price
             return

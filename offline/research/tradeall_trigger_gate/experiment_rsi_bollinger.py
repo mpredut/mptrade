@@ -25,6 +25,7 @@ Benchmark: pnl["net_total"] (strategy) vs pnl["buy_hold_net"] (buy & hold on the
 standard quantity over the same interval). To be worth pursuing, a variant must beat
 buy & hold on the full span AND on both halves.
 """
+import math
 import os
 import sys
 import time
@@ -53,9 +54,9 @@ class MeanReversionTracker:
     def __init__(self, tag, symbol, *, mode, rsi_period=14, rsi_low=30.0, rsi_high=70.0,
                  bb_period=20, bb_k=2.0, pb_low=0.0, pb_high=1.0):
         self.mode = mode                      # "rsi" | "pb" | "both"
-        self.rsi_period = rsi_period
+        self.rsi_period = max(1, int(rsi_period))
         self.rsi_low, self.rsi_high = rsi_low, rsi_high
-        self.bb_period = bb_period
+        self.bb_period = max(1, int(bb_period))
         self.bb_k = bb_k
         self.pb_low, self.pb_high = pb_low, pb_high
 
@@ -63,7 +64,7 @@ class MeanReversionTracker:
         self.avg_gain = None
         self.avg_loss = None
         self._seed_gains = []
-        self.bb_buf = deque(maxlen=bb_period)
+        self.bb_buf = deque(maxlen=self.bb_period)
 
         self.sign = 0
         self.fired_up = False
@@ -108,6 +109,8 @@ class MeanReversionTracker:
 
     # -- combined contrarian sign --------------------------------------------
     def update_sign(self, price):
+        if not (math.isfinite(price) and price > 0):
+            return self.sign
         oversold = overbought = None
         if self.mode == "rsi":
             rsi = self._rsi(price)

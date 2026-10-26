@@ -51,11 +51,12 @@ MIN_RETRY_INTERVAL_SEC = 1800.0   # 30 min between BLOCKED attempts (as in Exp6)
 
 
 def make_instrumented(tag, confirm_threshold_override=None):
-    stats = STATS.setdefault(tag, {
+    stats = {
         "starts": 0, "confirms": 0, "expires": 0,
         "fire_confirmed_up": 0, "fire_blocked_up": 0, "fire_skipped_cooldown_up": 0,
         "fire_confirmed_down": 0, "fire_blocked_down": 0, "fire_skipped_cooldown_down": 0,
-    })
+    }
+    STATS[tag] = stats
     cls = make_instrumented_trend_state(
         stats,
         confirm_threshold_override=confirm_threshold_override,
