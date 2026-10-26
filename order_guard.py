@@ -960,8 +960,13 @@ def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded
     """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
     w = _clean_pos_float(weight, 0.0)
     px = _clean_pos_float(price, 0.0)
-    req = _clean_pos_float(required_qty, 0.0)
-    if w <= 0.0 or px <= 0.0 or req <= 0.0:
+    if required_qty is None or isinstance(required_qty, bool):
+        return 0.0
+    try:
+        req = float(required_qty)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(req) or req <= 0.0 or w <= 0.0 or px <= 0.0:
         return 0.0
     avail = _clean_pos_float(available_qty, 0.0)
     traded = _clean_pos_float(traded_24h_value, 0.0)
