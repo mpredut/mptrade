@@ -58,12 +58,24 @@ class PostStopReentryGuard:
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-        self.timeout_sec = float(timeout_sec)
-        self.fallback_action = fallback_action.strip().lower()
-        self.mode = mode.strip().lower()
-        self.notify_enabled = notify_enabled
-        if cache_ttl_sec is not None:
-            self.cache_ttl_sec = float(cache_ttl_sec)
+        t_sec = DEFAULT_TIMEOUT_SEC
+        if timeout_sec is not None and not isinstance(timeout_sec, bool):
+            try:
+                tf = float(timeout_sec)
+                if math.isfinite(tf) and tf > 0.0:
+                    t_sec = tf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.timeout_sec = t_sec
+        self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
+        self.mode = str(mode or "enforce").strip().lower()
+        self.notify_enabled = bool(notify_enabled)
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                cf = float(cache_ttl_sec)
+                self.cache_ttl_sec = cf if (math.isfinite(cf) and cf >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                self.cache_ttl_sec = 0.0
         elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
             self.cache_ttl_sec = DEFAULT_POST_STOP_CACHE_TTL_SEC
         else:
@@ -116,7 +128,8 @@ class PostStopReentryGuard:
 
         safe_trough = _sf(trough, 0.0)
         safe_curr_px = _sf(current_price, 0.0)
-        safe_qty = _sf(qty, 1.0)
+        raw_qty = _sf(qty, 1.0)
+        safe_qty = raw_qty if raw_qty > 0.0 else 1.0
         safe_bounce = _sf(bounce_pct, 0.0)
         drop_after_sl_pct = (
             ((safe_sell_px - safe_trough) / safe_sell_px * 100.0)

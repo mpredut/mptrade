@@ -249,14 +249,26 @@ def collect_pretrade_telemetry(
             grad = getattr(dec, "gradient", None) if dec else None
             eps = getattr(dec, "epsilon", None) if dec else None
             trend_str = f"{trend}" if trend else "unspecified"
-            if grad is not None and eps is not None:
-                trend_str += f" (gradient={grad:+.4f}, epsilon={eps:.4f})"
+            if (
+                grad is not None
+                and eps is not None
+                and not isinstance(grad, bool)
+                and not isinstance(eps, bool)
+            ):
+                gf, ef = float(grad), float(eps)
+                if math.isfinite(gf) and math.isfinite(ef):
+                    trend_str += f" (gradient={gf:+.4f}, epsilon={ef:.4f})"
             telemetry["Technical Trend Regime"] = trend_str
         except Exception:
             pass
 
-    if dur_sec and dur_sec > 0:
-        telemetry["Trend Duration"] = f"{dur_sec / 3600.0:.1f} hours"
+    if dur_sec is not None and not isinstance(dur_sec, bool):
+        try:
+            df = float(dur_sec)
+            if math.isfinite(df) and df > 0.0:
+                telemetry["Trend Duration"] = f"{df / 3600.0:.1f} hours"
+        except (TypeError, ValueError, OverflowError):
+            pass
 
     # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
     from intelligence.external.collectors.orderbook_depth import _symbol_variants
@@ -488,13 +500,28 @@ class HighStakeGuard:
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-        resolved_min = float(min_notional_usd) if min_notional_usd is not None else float(min_notional_eur)
+
+        def _pos_f(val: Any, default: float) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0.0) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        raw_min = min_notional_usd if min_notional_usd is not None else min_notional_eur
+        resolved_min = _pos_f(raw_min, DEFAULT_MIN_NOTIONAL_USD)
         self.min_notional_usd = resolved_min
         self.min_notional_eur = resolved_min
-        self.timeout_sec = float(timeout_sec)
-        self.fallback_action = fallback_action.strip().lower()
-        if cache_ttl_sec is not None:
-            self.cache_ttl_sec = float(cache_ttl_sec)
+        self.timeout_sec = _pos_f(timeout_sec, 25.0)
+        self.fallback_action = str(fallback_action or "allow").strip().lower()
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                cf = float(cache_ttl_sec)
+                self.cache_ttl_sec = cf if (math.isfinite(cf) and cf >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                self.cache_ttl_sec = 0.0
         elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
             self.cache_ttl_sec = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
         else:

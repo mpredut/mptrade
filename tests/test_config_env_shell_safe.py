@@ -976,6 +976,52 @@ def test_collectors_and_gemini_client_hardening():
     assert received["timeout"] == 15.0
 
 
+def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
+    from types import SimpleNamespace
+    import math
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+
+    class _DummyGemini:
+        _custom_runner = True
+
+        def query_json(self, *args, **kwargs):
+            return {"market_bias": "NEUTRAL", "risk_level": "LOW", "confidence": 0.8, "summary": "ok"}
+
+    # 1. GeopoliticalThreatAnalyzer sanitizes non-finite TTLs
+    ga = GeopoliticalThreatAnalyzer(
+        gemini_client=_DummyGemini(),
+        cache_ttl_sec=float("nan"),
+        fallback_retry_ttl_sec=True,
+        state_file=str(tmp_path / "geo.json"),
+    )
+    assert math.isfinite(ga.cache_ttl_sec) and ga.cache_ttl_sec > 0
+    assert math.isfinite(ga.fallback_retry_ttl_sec) and ga.fallback_retry_ttl_sec > 0
+
+    # 2. SentimentAdvisor.review handles float/None trend_7d_change and advance_ratio without ValueError/TypeError
+    sa = SentimentAdvisor(
+        gemini_client=_DummyGemini(),
+        cache_ttl_sec=float("nan"),
+        cache_file=str(tmp_path / "adv.json"),
+    )
+    fg = SimpleNamespace(value=45.0, classification=None, trend_7d_change=3.5)
+    mb = SimpleNamespace(advance_ratio=None, median_change_pct=float("nan"), regime=None)
+    res_sa = sa.review(fear_greed=fg, breadth=mb, force_refresh=True)
+    assert res_sa is not None and res_sa.market_bias == "NEUTRAL"
+
+    # 3. collect_pretrade_telemetry and HighStakeGuard/PostStopReentryGuard handle non-finite/bool params
+    tel = collect_pretrade_telemetry("BTCUSDC", dur_sec=float("inf"), cachedb_dir=str(tmp_path))
+    assert "Trend Duration" not in tel
+    hsg = HighStakeGuard(gemini_client=_DummyGemini(), min_notional_eur=float("nan"), timeout_sec=True)
+    assert math.isfinite(hsg.min_notional_eur) and hsg.min_notional_eur > 0
+    assert hsg.timeout_sec == 25.0
+    psg = PostStopReentryGuard(gemini_client=_DummyGemini(), timeout_sec=float("nan"), cache_ttl_sec=float("inf"))
+    assert psg.timeout_sec == 25.0 and psg.cache_ttl_sec == 0.0
+
+
+
 
 
 

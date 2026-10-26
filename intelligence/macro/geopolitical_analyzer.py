@@ -57,14 +57,24 @@ class GeopoliticalThreatAnalyzer:
         state_file: str = DEFAULT_STATE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
-        if cache_ttl_sec is not None:
-            self.cache_ttl_sec = float(cache_ttl_sec)
+        default_ttl = required_float_env("MACRO_LLM_INTERVAL_SEC")
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                ct_f = float(cache_ttl_sec)
+                self.cache_ttl_sec = ct_f if (math.isfinite(ct_f) and ct_f >= 0.0) else default_ttl
+            except (TypeError, ValueError, OverflowError):
+                self.cache_ttl_sec = default_ttl
         else:
-            self.cache_ttl_sec = required_float_env("MACRO_LLM_INTERVAL_SEC")
-        if fallback_retry_ttl_sec is not None:
-            self.fallback_retry_ttl_sec = float(fallback_retry_ttl_sec)
+            self.cache_ttl_sec = default_ttl
+        default_fb_ttl = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
+        if fallback_retry_ttl_sec is not None and not isinstance(fallback_retry_ttl_sec, bool):
+            try:
+                fb_f = float(fallback_retry_ttl_sec)
+                self.fallback_retry_ttl_sec = fb_f if (math.isfinite(fb_f) and fb_f >= 0.0) else default_fb_ttl
+            except (TypeError, ValueError, OverflowError):
+                self.fallback_retry_ttl_sec = default_fb_ttl
         else:
-            self.fallback_retry_ttl_sec = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
+            self.fallback_retry_ttl_sec = default_fb_ttl
         self.state_file = state_file
         self._cached_assessment: Optional[GeopoliticalThreatAssessment] = None
         self._last_eval_ts: float = 0.0
@@ -112,10 +122,14 @@ class GeopoliticalThreatAnalyzer:
                 except (TypeError, ValueError):
                     ts_val = 0.0
                 raw_hl = data.get("headlines_analyzed")
-                try:
-                    hl_cnt = int(raw_hl) if (raw_hl is not None and not isinstance(raw_hl, bool)) else 0
-                except (TypeError, ValueError):
-                    hl_cnt = 0
+                hl_cnt = 0
+                if raw_hl is not None and not isinstance(raw_hl, bool):
+                    try:
+                        hl_f = float(raw_hl)
+                        if math.isfinite(hl_f):
+                            hl_cnt = int(hl_f)
+                    except (TypeError, ValueError, OverflowError):
+                        hl_cnt = 0
                 self._cached_assessment = GeopoliticalThreatAssessment(
                     threat_level=str(data.get("threat_level") or "NORMAL"),
                     risk_score=risk_val,

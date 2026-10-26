@@ -42,7 +42,15 @@ class SentimentAdvisor:
         cache_file: str = DEFAULT_CACHE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
-        self.cache_ttl_sec = cache_ttl_sec
+        ttl_f = 10800.0
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                cf = float(cache_ttl_sec)
+                if math.isfinite(cf) and cf >= 0.0:
+                    ttl_f = cf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.cache_ttl_sec = ttl_f
         self.cache_file = cache_file
         self._cached_assessment: Optional[SentimentAdvisorAssessment] = None
         self._last_eval_ts: float = 0.0
@@ -141,11 +149,26 @@ class SentimentAdvisor:
         if not force_refresh and self._cached_assessment and 0.0 <= (now - self._last_eval_ts) < self.cache_ttl_sec:
             return self._cached_assessment
 
+        def _sf(val: Any, default: float = 0.0) -> float:
+            if val is None or isinstance(val, bool):
+                return default
+            try:
+                f = float(val)
+                return f if math.isfinite(f) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
         prompt_context = []
         if fear_greed:
-            prompt_context.append(f"- Fear & Greed Index: {fear_greed.value}/100 ({fear_greed.classification}), 7d trend change: {fear_greed.trend_7d_change:+d}")
+            fg_val = int(round(_sf(getattr(fear_greed, "value", 50), 50.0)))
+            fg_cls = str(getattr(fear_greed, "classification", None) or "Neutral")
+            fg_t7d = int(round(_sf(getattr(fear_greed, "trend_7d_change", 0), 0.0)))
+            prompt_context.append(f"- Fear & Greed Index: {fg_val}/100 ({fg_cls}), 7d trend change: {fg_t7d:+d}")
         if breadth:
-            prompt_context.append(f"- 24h Market Breadth: {breadth.advance_ratio*100:.1f}% advancing, median change {breadth.median_change_pct:+.2f}%, regime: {breadth.regime}")
+            mb_adv = _sf(getattr(breadth, "advance_ratio", 0.5), 0.5)
+            mb_med = _sf(getattr(breadth, "median_change_pct", 0.0), 0.0)
+            mb_reg = str(getattr(breadth, "regime", None) or "NEUTRAL")
+            prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%, regime: {mb_reg}")
         if whale_telemetry:
             prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
 
