@@ -6636,6 +6636,84 @@ def test_iteration36_daily_limit_and_order_retry_nan_bool_safety():
     assert oq.resolve_record_ttl({"ttl_sec": True}) == float(oq.RETRY_TTL_SEC)
 
 
+def test_iteration37_bapi_placeorder_and_external_order_guard_nan_bool_safety(monkeypatch):
+    import pytest
+    import external_order_guard as eog
+    from binance_api import bapi_placeorder as bp
 
+    # 1. external_order_guard fails fast on empty margins={}, allows partial margins with guard modes,
+    #    allows now=0.0, and sanitizes NaN/bool suggested_scale
+    with pytest.raises(KeyError):
+        eog.check_external_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
 
+    ok_part, r_part, scale_part = eog.check_external_order_guards(
+        "BTCUSDC",
+        "BUY",
+        60000.0,
+        margins={"whale_guard_mode": "off", "orderbook_wall_guard_mode": "off", "funding_guard_mode": "off"},
+        now=0.0,
+    )
+    assert ok_part is True and r_part == "ok"
+    assert scale_part == 1.0
+
+    from types import SimpleNamespace
+    from intelligence.internal.guards.guard_decision import BrakeAction
+    import intelligence.external.guards.whale_divergence_guard as wdg
+    import intelligence.external.guards.orderbook_wall_guard as owg
+    import intelligence.external.guards.funding_crowding_guard as fcg
+
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
+    monkeypatch.setattr(eog, "get_orderbook_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
+    monkeypatch.setattr(eog, "get_derivatives_collector", lambda: SimpleNamespace(fetch=lambda *a, **kw: {}))
+    monkeypatch.setattr(
+        wdg, "WhaleDivergenceGuard",
+        lambda **kw: SimpleNamespace(check=lambda *a, **k: SimpleNamespace(allowed=True, brake_action=BrakeAction.DOWNSCALE_QTY, suggested_scale=float("nan"), reason="w_nan")),
+    )
+    monkeypatch.setattr(
+        owg, "OrderbookWallGuard",
+        lambda **kw: SimpleNamespace(check=lambda *a, **k: SimpleNamespace(allowed=True, brake_action=BrakeAction.DOWNSCALE_QTY, suggested_scale=True, reason="ob_bool")),
+    )
+    monkeypatch.setattr(
+        fcg, "FundingCrowdingGuard",
+        lambda **kw: SimpleNamespace(check=lambda *a, **k: SimpleNamespace(allowed=True, brake_action=BrakeAction.DOWNSCALE_QTY, suggested_scale=0.75, reason="f_down")),
+    )
+    ok_scale, r_scale, scale_val = eog.check_external_order_guards(
+        "BTCUSDC",
+        "BUY",
+        60000.0,
+        margins={
+            "external_guards_mode": "enforce",
+            "whale_guard_mode": "enforce",
+            "orderbook_wall_guard_mode": "enforce",
+            "funding_guard_mode": "enforce",
+            "severe_cascade_oi_pct": 5.0,
+            "min_taker_ratio": 0.5,
+            "taker_downscale_threshold": 0.8,
+            "taker_downscaled_scale": 0.5,
+            "min_buy_imbalance": 0.2,
+            "max_sell_imbalance": 0.8,
+            "whale_wall_usd_limit": 500000.0,
+            "funding_max_long_rate": 0.001,
+            "funding_min_short_rate": -0.001,
+            "funding_crowding_policy": "downscale",
+            "funding_crowded_scale": 0.75,
+        },
+        now=0.0,
+    )
+    assert ok_scale is True and r_scale == "f_down"
+    assert scale_val == pytest.approx(0.75)
+
+    # 2. bapi_placeorder rejects boolean qty/price/cancel_opposite_requested_price
+    with pytest.raises(bp.SubmissionRefused):
+        bp.apply_weight_limit("BTCUSDC", "BUY", True, 1.0, 1.0)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.apply_weight_limit("BTCUSDC", "BUY", 60000.0, True, 1.0)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.apply_weight_limit("BTCUSDC", "BUY", 60000.0, 1.0, True)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.issue_account_cache_submit_permit("BTCUSDC", "BUY", True, price=60000.0)
+    with pytest.raises(bp.SubmissionRefused):
+        bp.issue_account_cache_submit_permit("BTCUSDC", "BUY", 1.0, price=True)
+    with pytest.raises(bp.SubmissionRefused):
+        bp._submit_binance_order("BUY", "BTCUSDC", 1.0, price=60000.0, cancel_opposite_requested_price=True)
 

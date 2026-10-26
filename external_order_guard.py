@@ -122,11 +122,20 @@ def check_external_order_guards(
     if now is not None and not isinstance(now, bool):
         try:
             nf = float(now)
-            if math.isfinite(nf) and nf > 0.0:
+            if math.isfinite(nf) and nf >= 0.0:
                 now_ts = nf
         except (TypeError, ValueError):
             pass
-    shadow_notify_enabled = str(m["shadow_notify"]).strip().lower() in ("1", "1.0", "true", "yes", "on")
+    shadow_notify_enabled = str(m.get("shadow_notify", False)).strip().lower() in ("1", "1.0", "true", "yes", "on")
+
+    def _clean_scale(val: Any) -> float:
+        if val is None or isinstance(val, bool):
+            return 1.0
+        try:
+            vf = float(val)
+        except (TypeError, ValueError, OverflowError):
+            return 1.0
+        return vf if (math.isfinite(vf) and 0.0 <= vf <= 1.0) else 1.0
 
     def _send_micro_shadow_notify(
         guard_key: str,
@@ -177,17 +186,18 @@ def check_external_order_guards(
                 taker_downscaled_scale=downscaled_scale,
             )
             w_dec = w_guard.check(symbol, order_side, snapshot=w_snap)
+            w_scale = _clean_scale(getattr(w_dec, "suggested_scale", 1.0))
             if not w_dec.allowed or w_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[WHALE_GUARD_SHADOW]" if whale_mode == "shadow" else "[WHALE_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {w_dec.reason} (brake={w_dec.brake_action})")
                 if whale_mode == "shadow" and shadow_notify_enabled:
-                    scale_pct = int(w_dec.suggested_scale * 100) if w_dec.suggested_scale < 1.0 else None
+                    scale_pct = int(w_scale * 100) if w_scale < 1.0 else None
                     _send_micro_shadow_notify("whale", f"🛡 [GI_WHALE] {w_dec.brake_action.value} {order_side} {symbol}", w_dec.reason, scale_pct=scale_pct)
                 if whale_mode == "enforce":
                     if not w_dec.allowed:
                         return False, w_dec.reason, 0.0
-                    if w_dec.suggested_scale < 1.0:
-                        effective_scale = min(effective_scale, w_dec.suggested_scale)
+                    if w_scale < 1.0:
+                        effective_scale = min(effective_scale, w_scale)
                         active_reason = w_dec.reason
         except Exception:
             pass
@@ -213,18 +223,19 @@ def check_external_order_guards(
                 whale_wall_usd_limit=wall_limit,
             )
             ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap)
+            ob_scale = _clean_scale(getattr(ob_dec, "suggested_scale", 1.0))
             if not ob_dec.allowed or ob_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[ORDERBOOK_GUARD_SHADOW]" if ob_mode == "shadow" else "[ORDERBOOK_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {ob_dec.reason} (brake={ob_dec.brake_action})")
                 if ob_mode == "shadow" and shadow_notify_enabled:
-                    scale_pct = int(ob_dec.suggested_scale * 100) if ob_dec.suggested_scale < 1.0 else None
+                    scale_pct = int(ob_scale * 100) if ob_scale < 1.0 else None
                     action_str = f"SCALE {scale_pct}%" if (ob_dec.allowed and scale_pct is not None) else "DEFER"
                     _send_micro_shadow_notify("orderbook", f"🛡 [GI_OBOOK] {action_str} {order_side} {symbol}", ob_dec.reason, scale_pct=scale_pct)
                 if ob_mode == "enforce":
                     if not ob_dec.allowed:
                         return False, ob_dec.reason, 0.0
-                    if ob_dec.suggested_scale < 1.0 and ob_dec.suggested_scale <= effective_scale:
-                        effective_scale = ob_dec.suggested_scale
+                    if ob_scale < 1.0 and ob_scale <= effective_scale:
+                        effective_scale = ob_scale
                         active_reason = ob_dec.reason
         except Exception:
             pass
@@ -252,20 +263,21 @@ def check_external_order_guards(
                 crowded_scale=f_scale,
             )
             f_dec = f_guard.check(symbol, order_side, telemetry=f_snap)
+            f_sval = _clean_scale(getattr(f_dec, "suggested_scale", 1.0))
             if not f_dec.allowed or f_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[FUNDING_GUARD_SHADOW]" if funding_mode == "shadow" else "[FUNDING_GUARD_ENFORCE]"
-                print(f"{prefix} {order_side} {symbol}: {f_dec.reason} (brake={f_dec.brake_action}, suggested_scale={f_dec.suggested_scale})")
+                print(f"{prefix} {order_side} {symbol}: {f_dec.reason} (brake={f_dec.brake_action}, suggested_scale={f_sval})")
                 if funding_mode == "shadow" and shadow_notify_enabled:
                     if not f_dec.allowed:
                         _send_micro_shadow_notify("funding", f"🛡 [GI_FUNDING] DEFER {order_side} {symbol}", f_dec.reason)
                     else:
-                        scale_pct = int(f_dec.suggested_scale * 100)
+                        scale_pct = int(f_sval * 100)
                         _send_micro_shadow_notify("funding", f"🛡 [GI_FUNDING] SCALE {scale_pct}% {order_side} {symbol}", f_dec.reason, scale_pct=scale_pct)
                 if funding_mode == "enforce":
                     if not f_dec.allowed:
                         return False, f_dec.reason, 0.0
-                    if f_dec.suggested_scale < 1.0 and f_dec.suggested_scale <= effective_scale:
-                        effective_scale = f_dec.suggested_scale
+                    if f_sval < 1.0 and f_sval <= effective_scale:
+                        effective_scale = f_sval
                         active_reason = f_dec.reason
         except Exception:
             pass

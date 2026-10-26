@@ -142,6 +142,12 @@ def _fresh_price(symbol):
 def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     from . import bapi_allorders as apiorders
     auto_qty = required_qty is None
+    if (
+        isinstance(price, bool)
+        or isinstance(available_qty, bool)
+        or isinstance(required_qty, bool)
+    ):
+        raise SubmissionRefused("invalid_weight_policy_inputs")
     try:
         price = float(price)
         available_qty = float(available_qty)
@@ -271,6 +277,8 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
     """Authorize one narrowly scoped submit after a complete cache validation."""
     side = str(side).upper()
     symbol = str(symbol).upper()
+    if isinstance(qty, bool) or (not market and isinstance(price, bool)):
+        raise SubmissionRefused("invalid_order_parameters")
     try:
         qty = float(qty)
         price = None if market else float(price)
@@ -322,6 +330,11 @@ def _consume_account_cache_submit_permit(
         # Burn malformed or expired permits as well, preventing later reuse.
         object.__setattr__(permit, "_consumed", True)
         scope = permit._scope
+        if (
+            isinstance(qty, bool)
+            or (not market and (isinstance(actual_price, bool) or isinstance(requested_price, bool)))
+        ):
+            raise SubmissionRefused("account_cache_not_fresh")
         try:
             actual_qty = float(qty)
             if market:
@@ -369,6 +382,8 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     side = str(order_type).upper()
     cancel_price = None
     if cancel_opposite_requested_price is not None:
+        if isinstance(cancel_opposite_requested_price, bool):
+            raise SubmissionRefused("invalid_opposing_cancel_request")
         try:
             cancel_price = float(cancel_opposite_requested_price)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -573,10 +588,18 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                     module=caller_module,
                     reference_mode=eff_ref_mode,
                 )
-                if not ref_window or ref_window <= 0:
-                    ref_window = time_back_in_seconds
+                tb_sec = 0.0
+                if time_back_in_seconds is not None and not isinstance(time_back_in_seconds, bool):
+                    try:
+                        tbf = float(time_back_in_seconds)
+                        if math.isfinite(tbf) and tbf > 0.0:
+                            tb_sec = tbf
+                    except (TypeError, ValueError, OverflowError):
+                        tb_sec = 0.0
+                if not ref_window or not math.isfinite(float(ref_window)) or float(ref_window) <= 0:
+                    ref_window = tb_sec if tb_sec > 0.0 else float(PLACE_ORDER_SAFEBACK_SEC)
 
-                fetch_window = max(float(time_back_in_seconds or 0), float(ref_window or 0))
+                fetch_window = max(tb_sec, float(ref_window or 0))
                 time_limit = float(time.time() * 1000) - (ref_window * 1000)
                 oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
                 recent_opposite_trades = [trade for trade in oposite_trades
@@ -879,11 +902,15 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
                 qty = fee_cap
 
         current_price = api.get_current_price(symbol)
-        ref_price = (
-            current_price
-            if (current_price is not None and math.isfinite(float(current_price)) and float(current_price) > 0)
-            else price
-        )
+        cp_val = None
+        if current_price is not None and not isinstance(current_price, bool):
+            try:
+                cand_cp = float(current_price)
+                if math.isfinite(cand_cp) and cand_cp > 0:
+                    cp_val = cand_cp
+            except (TypeError, ValueError, OverflowError):
+                cp_val = None
+        ref_price = cp_val if cp_val is not None else price
         from providers.binance_filters import (
             BinanceFilterError,
             BinanceOrderRules,
