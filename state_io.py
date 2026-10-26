@@ -105,7 +105,10 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 
     def _read_and_validate(candidate_path: str):
         with open(candidate_path, "r", encoding="utf-8") as handle:
-            value = json.load(handle, parse_constant=_reject_json_constant)
+            value = json.load(
+                handle,
+                parse_constant=_reject_json_constant if fail_closed else None,
+            )
         if not isinstance(value, root_type):
             raise ValueError(
                 f"expected {root_type.__name__}, got {type(value).__name__}"
@@ -258,13 +261,14 @@ def atomic_gzip_file(
     chunk_size: int = 1024 * 1024,
 ) -> str:
     """Compress ``source`` into ``destination`` (default ``<source>.gz``) atomically."""
+    eff_chunk = 1024 * 1024 if isinstance(chunk_size, bool) or int(chunk_size) <= 0 else int(chunk_size)
     source_path = os.path.abspath(os.fspath(source))
     target_path = os.path.abspath(
         os.fspath(destination) if destination is not None else f"{source_path}.gz"
     )
     with atomic_file_path(target_path, suffix=".tmp") as temp_gz:
         with open(source_path, "rb") as src_handle, gzip.open(temp_gz, "wb") as gz_handle:
-            shutil.copyfileobj(src_handle, gz_handle, length=chunk_size)
+            shutil.copyfileobj(src_handle, gz_handle, length=eff_chunk)
     if remove_source:
         discard_generation_file(source_path)
     return target_path
@@ -279,13 +283,14 @@ def read_tail_lines(
     """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
     if isinstance(limit, bool) or limit <= 0 or not os.path.exists(path):
         return []
+    eff_chunk = 65536 if isinstance(chunk_size, bool) or int(chunk_size) <= 0 else int(chunk_size)
     chunks: list[bytes] = []
     newline_count = 0
     with open(path, "rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
         while position > 0:
-            step = min(chunk_size, position)
+            step = min(eff_chunk, position)
             position -= step
             handle.seek(position)
             chunk = handle.read(step)
@@ -306,8 +311,10 @@ def read_tail_lines(
 
 def truncate_file_bytes(path: str, size: int) -> None:
     """Durably truncate ``path`` back to ``size`` bytes."""
+    if isinstance(size, bool) or int(size) < 0:
+        raise ValueError("size must be a non-negative integer")
     with open(path, "r+b") as handle:
-        handle.truncate(size)
+        handle.truncate(int(size))
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -451,9 +458,7 @@ def read_recovering_previous(
     if read_fn is json.loads:
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:
-                return json.loads(
-                    handle.read(), parse_constant=_reject_json_constant
-                )
+                return json.loads(handle.read())
     else:
         _invoke = read_fn
     try:

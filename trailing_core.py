@@ -85,13 +85,22 @@ class TrailingCore:
         )
 
     def save(self, state: dict) -> bool:
+        def _sanitize(obj):
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_sanitize(v) for v in obj]
+            if isinstance(obj, float) and not math.isfinite(obj):
+                return None
+            return obj
+
         try:
             d = os.path.dirname(self.state_file)
             if d:
                 os.makedirs(d, exist_ok=True)
-            save_json_state(self.state_file, state, indent=2)
+            save_json_state(self.state_file, _sanitize(state), indent=2)
             return True
-        except OSError as e:
+        except (OSError, ValueError, TypeError) as e:
             self.log(f"  ! [TRAIL] cannot save the state: {e}")
             return False
 
