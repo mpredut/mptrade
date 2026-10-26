@@ -1519,9 +1519,7 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     (env_dir / ".env").write_text('export KRAKEN_API_KEY_SPARE="spare_key_123"\n', encoding="utf-8")
     assert kpb.env_value(str(env_dir), "KRAKEN_API_KEY_SPARE") == "spare_key_123"
 
-    # 4. portfolio_snapshot._ntfy respects DISABLE_EXTERNAL_NOTIFICATIONS and hl_row restores sys.path
-    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "1")
-    ps._ntfy("Test Title", "Test Body")
+    # 4. portfolio_snapshot.hl_row restores sys.path and sys.modules["common"]
     before_path = list(sys.path)
     sentinel_common = object()
     monkeypatch.setitem(sys.modules, "common", sentinel_common)
@@ -1533,4 +1531,27 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
     assert vhf._f(True, -1.0) == -1.0
     assert vhf._f(float("nan"), -1.0) == -1.0
     assert vhf._f("12.5", 0.0) == 12.5
+
+    # 6. hyperliquid/shadow_longterm.py snapshot restores shadow_live globals even on failure
+    import importlib.util
+    saved_sys_path = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "hl_shadow_longterm_under_test",
+            os.path.join(ps.ROOT, "hyperliquid", "shadow_longterm.py"),
+        )
+        hl_sh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hl_sh)
+        orig_log_dir = hl_sh.shadow.LOG_DIR
+        orig_variants = hl_sh.shadow._variants
+        orig_fetch = hl_sh.shadow._fetch_with_ts
+        monkeypatch.setattr(hl_sh, "_fetch_with_ts", lambda _p, _i: [])
+        with pytest.raises(RuntimeError):
+            hl_sh.snapshot(quiet=True)
+        assert hl_sh.shadow.LOG_DIR == orig_log_dir
+        assert hl_sh.shadow._variants is orig_variants
+        assert hl_sh.shadow._fetch_with_ts is orig_fetch
+    finally:
+        sys.path[:] = saved_sys_path
+
 

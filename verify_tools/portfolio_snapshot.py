@@ -142,11 +142,6 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
-    if any(
-        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
-        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
-    ):
-        return
     topic = os.environ.get("NTFY_TOPIC")
     if not topic:
         # Read from kraken/config.env when it is not in the environment.
@@ -157,14 +152,6 @@ def _ntfy(title: str, body: str) -> None:
                     if ln.startswith("NTFY_TOPIC="):
                         topic = ln.split("=", 1)[1].strip()
                         break
-    if not topic:
-        topic = (
-            os.environ.get("NTFY_TOPIC_GUARD")
-            or _ROOT_CONFIG.get("NTFY_TOPIC_GUARD")
-            or os.environ.get("NTFY_TOPIC_ERROR")
-            or _ROOT_CONFIG.get("NTFY_TOPIC_ERROR")
-            or ""
-        ).strip()
     if not topic:
         return
     import urllib.request

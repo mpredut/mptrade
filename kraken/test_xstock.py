@@ -18,6 +18,10 @@ import unittest
 from types import SimpleNamespace
 
 KRAKEN_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(KRAKEN_DIR)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+_SAVED_SYS_PATH = list(sys.path)
 sys.path.insert(0, KRAKEN_DIR)
 from kraken_common import parse_dotenv  # noqa: E402
 
@@ -38,6 +42,9 @@ try:
     sys.modules[_SPEC.name] = strategy
     _SPEC.loader.exec_module(strategy)
 finally:
+    sys.path[:] = _SAVED_SYS_PATH
+    if KRAKEN_DIR not in sys.path:
+        sys.path.append(KRAKEN_DIR)
     for _name in _COLLIDING_MODULES:
         sys.modules.pop(_name, None)
     sys.modules.update(_PRELOADED_MODULES)

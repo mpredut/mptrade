@@ -278,7 +278,7 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
         if include_decision_trace:
             rows[name]["decision_trace"] = m.get("decision_trace", [])
     if include_decision_trace:
-        reference = rows["current"]["decision_trace"]
+        reference = rows.get("current", {}).get("decision_trace", [])
         for name, row in rows.items():
             row["decision_divergences"] = (
                 0 if name == "current" else
@@ -326,7 +326,7 @@ def _print_block(title: str, blk: dict) -> None:
     if not r:
         print("    (not enough bars — they are accumulating)")
         return
-    cur = r["current"]["total_pct"]
+    cur = r.get("current", {}).get("total_pct", 0.0)
     print(f"    {'config':<20} {'net%':>8} {'total%':>8} {'maxDD%':>8} "
           f"{'cycles':>8} {'Δdec':>6}  vs current total")
     for name, x in r.items():

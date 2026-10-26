@@ -112,10 +112,18 @@ def _fetch_with_ts(_pair: str, interval: int):
 
 
 def snapshot(*, quiet: bool = False):
-    shadow.LOG_DIR = LOG_DIR
-    shadow._variants = _variants
-    shadow._fetch_with_ts = _fetch_with_ts
-    return shadow.snapshot("HYPE-HL", 240, 0.07, quiet=quiet)
+    saved_log_dir = shadow.LOG_DIR
+    saved_variants = shadow._variants
+    saved_fetch = shadow._fetch_with_ts
+    try:
+        shadow.LOG_DIR = LOG_DIR
+        shadow._variants = _variants
+        shadow._fetch_with_ts = _fetch_with_ts
+        return shadow.snapshot("HYPE-HL", 240, 0.07, quiet=quiet)
+    finally:
+        shadow.LOG_DIR = saved_log_dir
+        shadow._variants = saved_variants
+        shadow._fetch_with_ts = saved_fetch
 
 
 def main() -> int:
