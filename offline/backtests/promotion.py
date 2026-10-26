@@ -56,6 +56,8 @@ def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
 
 
 def _finite(value) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -102,10 +104,16 @@ def evaluate_promotion(
             - float(base_windows[key]["return_pct"])
             for key in sorted(base_windows)
         ]
+        all_deltas_finite = all(
+            _finite(cand_windows[key].get("return_pct")) is not None
+            and _finite(base_windows[key].get("return_pct")) is not None
+            and math.isfinite(d)
+            for key, d in zip(sorted(base_windows), deltas)
+        )
         tolerance = 1e-10
-        wins = sum(delta > tolerance for delta in deltas)
-        ties = sum(abs(delta) <= tolerance for delta in deltas)
-        losses = sum(delta < -tolerance for delta in deltas)
+        wins = sum(math.isfinite(delta) and delta > tolerance for delta in deltas)
+        ties = sum(math.isfinite(delta) and abs(delta) <= tolerance for delta in deltas)
+        losses = sum(math.isfinite(delta) and delta < -tolerance for delta in deltas)
         active_windows = wins + losses
         sign_pvalue = _one_sided_sign_pvalue(wins, losses)
         base_aggregate = base["aggregate"]
@@ -123,14 +131,19 @@ def evaluate_promotion(
             - float(base_aggregate["worst_max_drawdown_pct"])
         )
         checks = {
-            "enough_windows": len(deltas) >= limits.min_windows,
+            "enough_windows": all_deltas_finite and len(deltas) >= limits.min_windows,
             "enough_active_windows": active_windows >= limits.min_active_windows,
-            "material_mean_improvement": mean_delta >= limits.min_mean_improvement_pp,
+            "material_mean_improvement": (
+                math.isfinite(mean_delta)
+                and mean_delta >= limits.min_mean_improvement_pp
+            ),
             "worst_return_preserved": (
-                worst_delta >= -limits.max_worst_return_degradation_pp
+                math.isfinite(worst_delta)
+                and worst_delta >= -limits.max_worst_return_degradation_pp
             ),
             "drawdown_preserved": (
-                drawdown_delta <= limits.max_drawdown_increase_pp
+                math.isfinite(drawdown_delta)
+                and drawdown_delta <= limits.max_drawdown_increase_pp
             ),
             "pairwise_robust": (
                 wins > losses if limits.require_more_wins_than_losses else True
@@ -198,14 +211,21 @@ def evaluate_risk_adjusted_promotion(
             - float(cand_windows[key]["max_drawdown_pct"])
             for key in sorted(base_windows)
         ]
-        wins = sum(delta > tolerance for delta in drawdown_improvements)
-        ties = sum(abs(delta) <= tolerance for delta in drawdown_improvements)
-        losses = sum(delta < -tolerance for delta in drawdown_improvements)
+        all_dd_finite = all(
+            _finite(base_windows[key].get("max_drawdown_pct")) is not None
+            and _finite(cand_windows[key].get("max_drawdown_pct")) is not None
+            and math.isfinite(d)
+            for key, d in zip(sorted(base_windows), drawdown_improvements)
+        )
+        wins = sum(math.isfinite(delta) and delta > tolerance for delta in drawdown_improvements)
+        ties = sum(math.isfinite(delta) and abs(delta) <= tolerance for delta in drawdown_improvements)
+        losses = sum(math.isfinite(delta) and delta < -tolerance for delta in drawdown_improvements)
         active_windows = wins + losses
         sign_pvalue = _one_sided_sign_pvalue(wins, losses)
 
         base_aggregate = base["aggregate"]
         candidate_aggregate = cand["aggregate"]
+        cand_mean_return = _finite(candidate_aggregate.get("mean_return_pct"))
         mean_delta = (
             float(candidate_aggregate["mean_return_pct"])
             - float(base_aggregate["mean_return_pct"])
@@ -240,12 +260,16 @@ def evaluate_risk_adjusted_promotion(
         )
 
         checks = {
-            "enough_windows": len(drawdown_improvements) >= limits.min_windows,
+            "enough_windows": all_dd_finite and len(drawdown_improvements) >= limits.min_windows,
             "enough_active_windows": active_windows >= limits.min_active_windows,
-            "positive_return": float(candidate_aggregate["mean_return_pct"]) > 0,
-            "return_noninferior": mean_delta >= -limits.max_mean_return_degradation_pp,
+            "positive_return": cand_mean_return is not None and cand_mean_return > 0,
+            "return_noninferior": (
+                math.isfinite(mean_delta)
+                and mean_delta >= -limits.max_mean_return_degradation_pp
+            ),
             "worst_return_preserved": (
-                worst_return_delta >= -limits.max_worst_return_degradation_pp
+                math.isfinite(worst_return_delta)
+                and worst_return_delta >= -limits.max_worst_return_degradation_pp
             ),
             "calmar_available": calmar_improvement is not None,
             "material_calmar_improvement": (
@@ -257,7 +281,8 @@ def evaluate_risk_adjusted_promotion(
                 and sortino_change >= -limits.max_median_sortino_degradation_ratio
             ),
             "material_drawdown_improvement": (
-                worst_drawdown_improvement
+                math.isfinite(worst_drawdown_improvement)
+                and worst_drawdown_improvement
                 >= limits.min_worst_drawdown_improvement_pp
             ),
             "material_cvar_improvement": (

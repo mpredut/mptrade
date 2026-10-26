@@ -182,6 +182,15 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "execution assumptions"):
             evaluate_dual_promotion(baseline, candidate)
 
+    def test_non_finite_metrics_never_pass_promotion(self):
+        baseline = _report(returns=(0.0,) * 20)
+        candidate = _report(
+            mean=float("inf"), worst=float("inf"), drawdown=float("-inf"),
+            returns=(float("inf"),) * 20,
+        )
+        res = evaluate_promotion(baseline, candidate)
+        self.assertFalse(res["promote"])
+
 
 if __name__ == "__main__":
     unittest.main()

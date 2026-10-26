@@ -10,7 +10,18 @@ Provides venue-agnostic comparison math for walk-forward evaluation windows:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping, Sequence
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def relative_to_baseline(
@@ -22,12 +33,19 @@ def relative_to_baseline(
     tolerance: float = 1e-10,
 ) -> dict[str, Any]:
     """Compute relative win, loss, tie counts and mean return delta against baseline."""
-    base_by_key = {window[key_field]: window for window in baseline}
-    deltas = [
-        float(window[metric_field]) - float(base_by_key[window[key_field]][metric_field])
-        for window in candidate
-        if window[key_field] in base_by_key
-    ]
+    base_by_key = {
+        window[key_field]: window
+        for window in baseline
+        if isinstance(window, Mapping) and key_field in window
+    }
+    deltas = []
+    for window in candidate:
+        if not isinstance(window, Mapping) or window.get(key_field) not in base_by_key:
+            continue
+        c_val = _finite_float(window.get(metric_field))
+        b_val = _finite_float(base_by_key[window[key_field]].get(metric_field))
+        if c_val is not None and b_val is not None:
+            deltas.append(c_val - b_val)
     if not deltas:
         return {
             "mean_return_delta_pct": 0.0,
@@ -43,6 +61,17 @@ def relative_to_baseline(
     }
 
 
+def _summary_metrics(summary: Mapping[str, Any]) -> tuple[float, float, float] | None:
+    if not isinstance(summary, Mapping):
+        return None
+    mean_ret = _finite_float(summary.get("mean_return_pct"))
+    worst_ret = _finite_float(summary.get("worst_return_pct"))
+    worst_dd = _finite_float(summary.get("worst_max_drawdown_pct"))
+    if mean_ret is None or worst_ret is None or worst_dd is None:
+        return None
+    return mean_ret, worst_ret, worst_dd
+
+
 def dominates(
     left: Mapping[str, Any],
     right: Mapping[str, Any],
@@ -53,19 +82,21 @@ def dominates(
 
     Strictly better in at least one dimension.
     """
+    left_vals = _summary_metrics(left)
+    right_vals = _summary_metrics(right)
+    if left_vals is None or right_vals is None:
+        return False
+    l_mean, l_worst, l_dd = left_vals
+    r_mean, r_worst, r_dd = right_vals
     no_worse = (
-        float(left["mean_return_pct"]) >= float(right["mean_return_pct"]) - tolerance
-        and float(left["worst_return_pct"]) >= float(right["worst_return_pct"]) - tolerance
-        and float(left["worst_max_drawdown_pct"]) <= (
-            float(right["worst_max_drawdown_pct"]) + tolerance
-        )
+        l_mean >= r_mean - tolerance
+        and l_worst >= r_worst - tolerance
+        and l_dd <= r_dd + tolerance
     )
     strictly_better = (
-        float(left["mean_return_pct"]) > float(right["mean_return_pct"]) + tolerance
-        or float(left["worst_return_pct"]) > float(right["worst_return_pct"]) + tolerance
-        or float(left["worst_max_drawdown_pct"]) < (
-            float(right["worst_max_drawdown_pct"]) - tolerance
-        )
+        l_mean > r_mean + tolerance
+        or l_worst > r_worst + tolerance
+        or l_dd < r_dd - tolerance
     )
     return no_worse and strictly_better
 
@@ -76,26 +107,34 @@ def pareto_frontier(
     summary_key: str = "summary",
 ) -> list[str]:
     """Return sorted names of non-dominated candidates from results dict."""
+    valid_items = {
+        name: candidate
+        for name, candidate in results.items()
+        if isinstance(candidate, Mapping)
+        and _summary_metrics(candidate.get(summary_key, candidate)) is not None
+    }
+    pool = valid_items if valid_items else results
     names = []
-    for name, candidate in results.items():
-        summary = candidate.get(summary_key, candidate)
+    for name, candidate in pool.items():
+        summary = candidate.get(summary_key, candidate) if isinstance(candidate, Mapping) else {}
         if not any(
             other_name != name
-            and dominates(other.get(summary_key, other), summary)
-            for other_name, other in results.items()
+            and dominates(
+                other.get(summary_key, other) if isinstance(other, Mapping) else {},
+                summary,
+            )
+            for other_name, other in pool.items()
         ):
             names.append(name)
     return sorted(names)
 
 
-import math
-
-
 def format_number(value: float | None, signed: bool = False) -> str:
     """Format floating point numbers consistently across report tables."""
-    if value is None or (isinstance(value, (int, float)) and not math.isfinite(value)):
+    fval = _finite_float(value)
+    if fval is None:
         return "n/a"
-    return f"{value:+.3f}" if signed else f"{value:.3f}"
+    return f"{fval:+.3f}" if signed else f"{fval:.3f}"
 
 
 def format_comparison_markdown(
@@ -118,7 +157,7 @@ def format_comparison_markdown(
         candidates.items(),
         key=lambda item: (
             item[0] != "live",
-            -float(item[1].get("summary", {}).get("mean_return_pct") or 0.0),
+            -(_finite_float((item[1].get("summary") or {}).get("mean_return_pct")) or 0.0),
             item[0],
         ),
     )

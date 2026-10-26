@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any
@@ -89,17 +90,19 @@ def default_candidates() -> list[Candidate]:
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
     if cli_venue:
         return cli_venue.strip().lower()
-    if "venue" in report:
+    if report.get("venue") is not None:
         return str(report["venue"]).strip().lower()
-    purpose = report.get("purpose", "").lower()
+    purpose = str(report.get("purpose") or "").lower()
     if "binance" in purpose:
         return "binance"
     if "hyperliquid" in purpose:
         return "hyperliquid"
     if "trading212" in purpose or "trading 212" in purpose or "t212" in purpose:
         return "trading212"
-    runtime = report.get("runtime", {})
-    if "profile" in runtime or str(runtime.get("ticker", "")).endswith("_EQ"):
+    runtime = report.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+    if "profile" in runtime or str(runtime.get("ticker") or "").endswith("_EQ"):
         return "trading212"
     return "kraken"
 
@@ -467,9 +470,15 @@ def main(argv: list[str] | None = None) -> int:
     fee_stress_str = args.fee_stress or DEFAULT_FEE_STRESS.get(venue, "0.16,0.26,0.35,0.50")
     fee_stress = {}
     for fee_text in fee_stress_str.split(","):
-        fee = float(fee_text.strip())
-        if fee < 0:
-            parser.error("the fee cannot be negative")
+        fee_stripped = fee_text.strip()
+        if not fee_stripped:
+            continue
+        try:
+            fee = float(fee_stripped)
+        except ValueError:
+            parser.error(f"invalid fee value: {fee_stripped!r}")
+        if not math.isfinite(fee) or fee < 0:
+            parser.error("the fee cannot be negative or non-finite")
         windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
         fee_key = f"{fee:.3f}".rstrip("0").rstrip(".") if round(fee, 2) != round(fee, 3) else f"{fee:.2f}"
         fee_stress[fee_key] = {

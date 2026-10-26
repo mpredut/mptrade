@@ -131,3 +131,22 @@ def test_format_comparison_markdown_none_mean_return():
     md = format_comparison_markdown(report)
     assert "| `empty_cand` | n/a | n/a | n/a |" in md
 
+
+def test_dominates_and_pareto_frontier_non_finite_and_bool():
+    valid = {"mean_return_pct": 5.0, "worst_return_pct": -1.0, "worst_max_drawdown_pct": 3.0}
+    nan_summary = {"mean_return_pct": float("nan"), "worst_return_pct": -1.0, "worst_max_drawdown_pct": 3.0}
+    none_summary = {"mean_return_pct": None, "worst_return_pct": None, "worst_max_drawdown_pct": None}
+    assert dominates(valid, nan_summary) is False
+    assert dominates(nan_summary, valid) is False
+    assert dominates(valid, none_summary) is False
+    assert format_number(True) == "n/a"
+    assert format_number(False) == "n/a"
+
+    frontier = pareto_frontier({
+        "valid": {"summary": valid},
+        "nan_cand": {"summary": nan_summary},
+        "none_cand": {"summary": none_summary},
+    })
+    assert frontier == ["valid"]
+
+
