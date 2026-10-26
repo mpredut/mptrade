@@ -644,16 +644,25 @@ class MarketDataProvider(ABC):
 
     def round_quantity(self, symbol: str, qty: float) -> float:
         """Round or floor quantity to venue volume precision."""
+        if qty is None or isinstance(qty, bool):
+            return 0.0
+        try:
+            qty_f = float(qty)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not math.isfinite(qty_f):
+            return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            if pp is not None and getattr(pp, "volume_decimals", None) is not None:
-                dec = int(pp.volume_decimals)
+            dec_raw = getattr(pp, "volume_decimals", None) if pp is not None else None
+            if dec_raw is not None and not isinstance(dec_raw, bool):
+                dec = int(dec_raw)
                 if dec >= 0:
                     factor = 10 ** dec
-                    return math.floor(float(qty) * factor + 1e-12) / factor
+                    return math.floor(qty_f * factor + 1e-12) / factor
         except Exception:
             pass
-        return float(qty)
+        return qty_f
 
     def round_amount(self, symbol: str, qty: float) -> float:
         """Backward-compatible alias for round_quantity."""
@@ -661,22 +670,35 @@ class MarketDataProvider(ABC):
 
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to venue price precision (tick size / price decimals)."""
+        if price is None or isinstance(price, bool):
+            return 0.0
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not math.isfinite(price_f):
+            return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            if pp is not None and getattr(pp, "price_decimals", None) is not None:
-                dec = int(pp.price_decimals)
+            dec_raw = getattr(pp, "price_decimals", None) if pp is not None else None
+            if dec_raw is not None and not isinstance(dec_raw, bool):
+                dec = int(dec_raw)
                 if dec >= 0:
-                    return round(float(price), dec)
+                    return round(price_f, dec)
         except Exception:
             pass
-        return float(price)
+        return price_f
 
     def min_order_qty(self, symbol: str) -> float:
         """Return venue minimum order quantity; 0.0 means no known minimum."""
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
             if pp is not None:
-                return float(getattr(pp, "order_min", 0.0) or 0.0)
+                raw_min = getattr(pp, "order_min", 0.0)
+                if raw_min is not None and not isinstance(raw_min, bool):
+                    val = float(raw_min)
+                    if math.isfinite(val) and val > 0.0:
+                        return val
         except Exception:
             pass
         return 0.0
@@ -686,6 +708,8 @@ class MarketDataProvider(ABC):
                              enforce_business_minimum: bool = True
                              ) -> Optional[str]:
         """Return a provider-specific pre-submit refusal, if one is known."""
+        if qty is None or isinstance(qty, bool):
+            return "qty_zero_or_negative"
         try:
             qty_f = float(qty)
             if not math.isfinite(qty_f) or qty_f <= 0:
@@ -732,8 +756,16 @@ class MarketDataProvider(ABC):
             module=module,
             reference_mode=reference_mode,
         )
-        if window_s is None or window_s <= 0:
-            window_s = float(safeback_sec) if safeback_sec else 0.0
+        if window_s is None or isinstance(window_s, bool) or not math.isfinite(float(window_s)) or float(window_s) <= 0:
+            sb_val = 0.0
+            if safeback_sec is not None and not isinstance(safeback_sec, bool):
+                try:
+                    cand_sb = float(safeback_sec)
+                    if math.isfinite(cand_sb) and cand_sb > 0.0:
+                        sb_val = cand_sb
+                except (TypeError, ValueError, OverflowError):
+                    sb_val = 0.0
+            window_s = sb_val
         wr_kwargs = {}
         if reference_mode is not None:
             wr_kwargs["reference_mode"] = reference_mode
@@ -743,13 +775,17 @@ class MarketDataProvider(ABC):
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
-        opposite = "SELL" if order_type.upper() == "BUY" else "BUY"
+        opposite = "SELL" if str(order_type).upper() == "BUY" else "BUY"
         fills = self.get_orders(symbol, opposite, since_s)
         if fills is None:
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")
-        if not fills:
+        valid_fills = [
+            order for order in fills
+            if isinstance(order, dict) and extract_order_price(order, default=0.0) > 0.0
+        ]
+        if not valid_fills:
             return None
-        latest = max(fills, key=lambda order: extract_timestamp_ms(order, default=0) or 0)
+        latest = max(valid_fills, key=lambda order: extract_timestamp_ms(order, default=0) or 0)
         price = extract_order_price(latest)
         return price or None
 

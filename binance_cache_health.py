@@ -103,14 +103,33 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         return None
 
 
+def _clean_now_ms(now_ms: Optional[int]) -> int:
+    if now_ms is None or isinstance(now_ms, bool):
+        return _now_ms()
+    try:
+        val = float(now_ms)
+        if math.isfinite(val) and val > 0:
+            return int(val)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return _now_ms()
+
+
 def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
                   now_ms: Optional[int] = None) -> None:
     """Enable the sole cacheManager writer and invalidate the old generation."""
     global _writer_enabled, _writer_path, _writer_state
-    timestamp = _now_ms() if now_ms is None else int(now_ms)
+    timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         _writer_path = os.fspath(path)
-        writer_pid = os.getpid() if pid is None else int(pid)
+        if pid is None or isinstance(pid, bool):
+            writer_pid = os.getpid()
+        else:
+            try:
+                cand_pid = int(pid)
+                writer_pid = cand_pid if cand_pid > 0 else os.getpid()
+            except (TypeError, ValueError, OverflowError):
+                writer_pid = os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
             _writer_enabled = False
@@ -141,9 +160,7 @@ def disable_writer(*, now_ms: Optional[int] = None) -> bool:
         try:
             if _writer_enabled and _writer_state:
                 _writer_state["stopping"] = True
-                _writer_state["published_at_ms"] = (
-                    _now_ms() if now_ms is None else int(now_ms)
-                )
+                _writer_state["published_at_ms"] = _clean_now_ms(now_ms)
                 _writer_state["generation"] += 1
                 _publish_locked()
                 published = True
@@ -171,7 +188,7 @@ def record_successful_sync(cache_name: str, data_version: str, *,
     version = str(data_version or "")
     if fields is None or not version:
         return False
-    sync_timestamp = _now_ms() if now_ms is None else int(now_ms)
+    sync_timestamp = _clean_now_ms(now_ms)
     sync_field, version_field = fields
     with _writer_lock:
         if not _writer_enabled:
@@ -194,7 +211,7 @@ def record_persisted_version(cache_name: str, data_version: str, *,
     if fields is None or not version:
         return False
     _sync_field, version_field = fields
-    timestamp = _now_ms() if now_ms is None else int(now_ms)
+    timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         if not _writer_enabled:
             return False

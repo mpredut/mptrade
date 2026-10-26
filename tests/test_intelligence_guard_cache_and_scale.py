@@ -6717,3 +6717,76 @@ def test_iteration37_bapi_placeorder_and_external_order_guard_nan_bool_safety(mo
     with pytest.raises(bp.SubmissionRefused):
         bp._submit_binance_order("BUY", "BTCUSDC", 1.0, price=60000.0, cancel_opposite_requested_price=True)
 
+
+def test_iteration38_headroom_cancel_opposite_and_provider_base_nan_bool_safety(monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    import binance_cache_health as bch
+    from binance_api import bapi_placeorder as bp
+    from providers.base import MarketDataProvider, PairPrecision
+
+    # 1. _require_submit_permit_headroom refuses NaN, negative, or boolean cache ages
+    for bad_status in (
+        SimpleNamespace(order_age_sec=0.5, trade_age_sec=float("nan")),
+        SimpleNamespace(order_age_sec=float("nan"), trade_age_sec=0.5),
+        SimpleNamespace(order_age_sec=True, trade_age_sec=0.5),
+        SimpleNamespace(order_age_sec=-1.0, trade_age_sec=0.5),
+    ):
+        with pytest.raises(bp.SubmissionRefused):
+            bp._require_submit_permit_headroom(bad_status)
+
+    # 2. cancel_opposite_orders ignores zero/missing price on BUY symmetrically with SELL and rejects bool requested_price
+    with pytest.raises(bp.SubmissionRefused):
+        bp.cancel_opposite_orders("BUY", "BTCUSDC", True)
+
+    canceled_ids = []
+    monkeypatch.setattr(
+        bp.api,
+        "get_open_orders",
+        lambda side, sym, **kw: {
+            "oid_zero": {"price": "0.00000000"},
+            "oid_adverse": {"price": "59000.0" if side == "SELL" else "61000.0"},
+        },
+    )
+    monkeypatch.setattr(bp.api, "cancel_order", lambda sym, oid: canceled_ids.append(oid) or True)
+    bp.cancel_opposite_orders("BUY", "BTCUSDC", 60000.0)
+    assert canceled_ids == ["oid_adverse"]
+    canceled_ids.clear()
+    bp.cancel_opposite_orders("SELL", "BTCUSDC", 60000.0)
+    assert canceled_ids == ["oid_adverse"]
+
+    # 3. binance_cache_health._clean_now_ms ignores bool/NaN
+    ts_clean = bch._clean_now_ms(True)
+    assert ts_clean > 1_000_000_000_000
+    assert bch._clean_now_ms(float("nan")) > 1_000_000_000_000
+
+    # 4. MarketDataProvider round_quantity, round_price, order_filter_refusal, and last_opposite_fill
+    class _DummyProv(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "dummy"
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def pair_precision(self, symbol: str):
+            return PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.01)
+
+        def get_orders(self, symbol: str, side, since_s: float):
+            return [
+                {"timestamp": 1000, "price": 50000.0, "qty": 1.0},
+                {"timestamp": 2000, "price": 0.0, "qty": 1.0},
+                "malformed",
+            ]
+
+    dp = _DummyProv()
+    assert dp.round_quantity("BTCUSDC", True) == 0.0
+    assert dp.round_quantity("BTCUSDC", float("nan")) == 0.0
+    assert dp.round_price("BTCUSDC", True) == 0.0
+    assert dp.round_price("BTCUSDC", float("nan")) == 0.0
+    assert dp.order_filter_refusal("BTCUSDC", "BUY", 100.0, True) == "qty_zero_or_negative"
+    assert dp.last_opposite_fill("BTCUSDC", "BUY") == pytest.approx(50000.0)
+

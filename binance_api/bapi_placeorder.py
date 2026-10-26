@@ -131,8 +131,10 @@ def _fresh_price(symbol):
     try:
         import cacheManager as cm
         p = cm.get_current_price_manager().get_price_value(symbol)
-        if p is not None:
-            return p
+        if p is not None and not isinstance(p, bool):
+            pf = float(p)
+            if math.isfinite(pf) and pf > 0:
+                return pf
     except Exception:
         pass
     return api.get_current_price(symbol)
@@ -262,10 +264,21 @@ def require_account_cache_for_submit():
 
 def _require_submit_permit_headroom(status):
     cache_ages = (status.order_age_sec, status.trade_age_sec)
-    if (any(age is None for age in cache_ages)
-            or max(float(age) for age in cache_ages)
-            + _CACHE_SUBMIT_PERMIT_TTL_SEC
-            > binance_cache_health.MAX_AGE_SEC):
+    parsed_ages = []
+    for age in cache_ages:
+        if age is None or isinstance(age, bool):
+            raise SubmissionRefused("account_cache_not_fresh")
+        try:
+            age_f = float(age)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SubmissionRefused("account_cache_not_fresh") from exc
+        if not math.isfinite(age_f) or age_f < 0.0:
+            raise SubmissionRefused("account_cache_not_fresh")
+        parsed_ages.append(age_f)
+    if (
+        max(parsed_ages) + _CACHE_SUBMIT_PERMIT_TTL_SEC
+        > binance_cache_health.MAX_AGE_SEC
+    ):
         # Refuse before cancellation unless the validated snapshot remains inside
         # its freshness time bound for the permit's entire configured lifetime.
         raise SubmissionRefused("account_cache_not_fresh")
@@ -763,7 +776,15 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
 
 def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):
     """Cancel adverse opposing Binance orders without changing the target price."""
-    order_type = order_type.upper()
+    order_type = str(order_type).upper()
+    if isinstance(requested_price, bool):
+        raise SubmissionRefused("invalid_opposing_cancel_request")
+    try:
+        req_px = float(requested_price)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SubmissionRefused("invalid_opposing_cancel_request") from exc
+    if not math.isfinite(req_px) or req_px <= 0:
+        raise SubmissionRefused("invalid_opposing_cancel_request")
     if order_type == "BUY":
         try:
             if allowed_owners is not None:
@@ -774,7 +795,8 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
         for order_id, order_details in open_orders.items():
-            if extract_order_price(order_details) < requested_price:
+            order_px = extract_order_price(order_details, default=0.0)
+            if order_px > 0 and order_px < req_px:
                 try:
                     canceled = api.cancel_order(symbol, order_id)
                 except Exception as exc:
@@ -797,7 +819,8 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
         for order_id, order_details in open_orders.items():
-            if extract_order_price(order_details) > requested_price:
+            order_px = extract_order_price(order_details, default=0.0)
+            if order_px > 0 and order_px > req_px:
                 try:
                     canceled = api.cancel_order(symbol, order_id)
                 except Exception as exc:
