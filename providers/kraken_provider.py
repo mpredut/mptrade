@@ -439,6 +439,7 @@ class KrakenProvider(MarketDataProvider):
             if not math.isfinite(px_f) or px_f <= 0:
                 print(f"[Kraken] place_order {symbol}: refused non-positive price={submit_price!r}")
                 return None
+            submit_price = px_f
         client_order_id = kwargs.get("client_order_id")
         try:
             cl_ord_id = (
@@ -504,6 +505,7 @@ class KrakenProvider(MarketDataProvider):
         else:
             raise SubmissionRefused(f"submit_order {symbol}: invalid side={side!r}")
         ordertype = "market" if (market or price is None) else "limit"
+        px_f = None
         if ordertype == "limit":
             if isinstance(price, bool):
                 raise ProviderError(f"submit_order {symbol} {s}: invalid price={price!r}")
@@ -528,7 +530,7 @@ class KrakenProvider(MarketDataProvider):
                 raise SubmissionRefused(
                     "KRAKEN_LIVE_ORDERS is not true; real execution is disabled")
             res = self._client().add_order(
-                symbol, s, qty, None if ordertype == "market" else price,
+                symbol, s, qty, None if ordertype == "market" else px_f,
                 **order_kwargs) or {}
         except SubmissionRefused:
             raise
@@ -725,25 +727,33 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
+        if isinstance(interval_min, bool):
+            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
+        try:
+            interval_i = int(interval_min)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}") from exc
+        if interval_i <= 0:
+            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
         try:
             client = self._client()
             series_reader = getattr(
                 client, "ohlc_closes_with_timestamps", None)
             if callable(series_reader):
-                closes, timestamps = series_reader(symbol, interval_min)
+                closes, timestamps = series_reader(symbol, interval_i)
                 timestamps = tuple(timestamps or ())
                 observed_at = timestamps[-1] if timestamps else None
             else:
                 reader = getattr(client, "ohlc_closes_with_timestamp", None)
                 if callable(reader):
-                    closes, observed_at = reader(symbol, interval_min)
+                    closes, observed_at = reader(symbol, interval_i)
                 else:
-                    closes = client.ohlc_closes(symbol, interval_min)
+                    closes = client.ohlc_closes(symbol, interval_i)
                     observed_at = None
                 timestamps = ()
             return ClosedPriceSeries(
                 tuple(closes or ()),
-                int(interval_min),
+                interval_i,
                 observed_at,
                 timestamps,
             )

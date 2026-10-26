@@ -420,8 +420,9 @@ class StratParams:
 
 def _parse_tranches(spec: str) -> list:
     """Parse ``3:50,6:50`` into percentage/share pairs whose shares total 100."""
-    if not spec.strip():
+    if spec is None or not str(spec).strip():
         return []
+    spec = str(spec)
     out = []
     try:
         for part in spec.split(","):

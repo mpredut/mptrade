@@ -1989,3 +1989,39 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     snap_nf = nfc.get_pool_snapshot(now_ts=2000.0)
     assert snap_nf.total_fetched == 0
 
+    # 10. Providers (Kraken ohlc_series, base aggregate_fills_by_order_id, quantity, replay_provider, _parse_tranches)
+    from providers.kraken_provider import KrakenProvider
+    from providers.strategy_executor import ProviderError
+    kp = KrakenProvider()
+    with pytest.raises(ProviderError):
+        kp.ohlc_series("HYPEUSD", True)
+    with pytest.raises(ProviderError):
+        kp.ohlc_series("HYPEUSD", 0)
+
+    from providers.base import aggregate_fills_by_order_id
+    agg_rows = [
+        {"orderId": "O10", "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 1000},
+        {"orderId": "O11", "side": "SELL", "price": 12.0, "qty": 1.0, "timestamp": 2000},
+    ]
+    assert len(aggregate_fills_by_order_id(agg_rows, side="b")) == 1
+    assert len(aggregate_fills_by_order_id(agg_rows, side="s")) == 1
+
+    from providers.quantity import balance_cap_quantity, resolve_assets
+    assert resolve_assets("  btcusdc  ") == ("BTC", "USDC")
+    cap_b, asset_b = balance_cap_quantity(lambda _a: 100.0, "BTCUSDC", " b ", 50.0)
+    assert cap_b == 2.0 and asset_b == "USDC"
+    cap_s, asset_s = balance_cap_quantity(lambda _a: 3.5, "BTCUSDC", " s ", 50.0)
+    assert cap_s == 3.5 and asset_s == "BTC"
+
+    from providers.replay_provider import ReplayMarketDataProvider
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0), (1060.0, 51000.0)]})
+    rp.advance("BTCUSDC")
+    assert rp.place_order("BTCUSDC", "b", 50000.0, 1.0) is not None
+    assert len(rp.get_orders("BTCUSDC", "b", 3600.0)) == 1
+    assert rp.place_order("BTCUSDC", "s", 50000.0, 0.5) is not None
+    assert len(rp.get_orders("BTCUSDC", "s", 3600.0)) == 1
+
+    from strategies.spot_engine import _parse_tranches
+    assert _parse_tranches(None) == []
+
+

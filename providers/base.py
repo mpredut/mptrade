@@ -483,7 +483,11 @@ def aggregate_fills_by_order_id(
     volume-weighted average ``price``, summed ``qty``, and ``max(timestamp)``,
     matching ``BinanceProvider.get_orders()``.
     """
-    want = (side or "").strip().upper()
+    want = str(side or "").strip().upper()
+    if want == "B":
+        want = "BUY"
+    elif want == "S":
+        want = "SELL"
     out: List[dict] = []
     grouped: dict[tuple[str, str], dict] = {}
     for r in rows:
@@ -804,7 +808,8 @@ class MarketDataProvider(ABC):
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
-        opposite = "SELL" if str(order_type).upper() == "BUY" else "BUY"
+        ot_norm = str(order_type or "").strip().upper()
+        opposite = "SELL" if ot_norm in ("BUY", "B") else "BUY"
         fills = self.get_orders(symbol, opposite, since_s)
         if fills is None:
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")

@@ -76,9 +76,9 @@ class QuantityDecision:
 
 def resolve_assets(symbol: str, base: Optional[str] = None,
                    quote: Optional[str] = None) -> tuple[str, Optional[str]]:
-    symbol_u = symbol.upper()
-    base_u = base.upper() if base else None
-    quote_u = quote.upper() if quote else None
+    symbol_u = str(symbol or "").strip().upper()
+    base_u = str(base).strip().upper() if base else None
+    quote_u = str(quote).strip().upper() if quote else None
     if base_u and quote_u:
         return base_u, quote_u
     if base_u and symbol_u.startswith(base_u) and symbol_u != base_u:
@@ -98,7 +98,11 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
                          quote: Optional[str] = None
                          ) -> tuple[Optional[float], Optional[str]]:
     base, quote = resolve_assets(symbol, base, quote)
-    side = side.upper()
+    side = str(side or "").strip().upper()
+    if side == "B":
+        side = "BUY"
+    elif side == "S":
+        side = "SELL"
     asset = base if side == "SELL" else quote
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be BUY or SELL")
@@ -223,7 +227,7 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     # Exclusively applies to BUY entries; exits and SELL orders must never be shrunk by entry risk guards.
     scale_applied = False
     applied_scale = 1.0
-    is_buy_side = str(side or "").strip().upper() == "BUY"
+    is_buy_side = str(side or "").strip().upper() in ("BUY", "B")
     effective_scale = scale if is_buy_side else None
     if effective_scale is None and regime_context is not None and is_buy_side:
         effective_scale = getattr(regime_context, "suggested_scale", None)

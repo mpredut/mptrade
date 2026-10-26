@@ -225,7 +225,11 @@ class ReplayMarketDataProvider(MarketDataProvider):
         cutoff_ms = (now - since_val) * 1000.0
         if orders[-1]["timestamp"] < cutoff_ms:
             return []
-        side_u = side.upper() if side else None
+        side_u = str(side or "").strip().upper() or None
+        if side_u == "B":
+            side_u = "BUY"
+        elif side_u == "S":
+            side_u = "SELL"
         cache_key = (symbol, side_u)
         cached = self._orders_cache.get(cache_key)
         if cached is not None:
@@ -261,7 +265,11 @@ class ReplayMarketDataProvider(MarketDataProvider):
         Update position quantity/average cost and order history. See the module
         documentation for fidelity limitations.
         """
-        side = str(side or "").upper()
+        side = str(side or "").strip().upper()
+        if side == "B":
+            side = "BUY"
+        elif side == "S":
+            side = "SELL"
         if side not in ("BUY", "SELL") or isinstance(price, bool) or isinstance(qty, bool):
             return None
         try:
