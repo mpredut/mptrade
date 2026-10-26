@@ -235,7 +235,7 @@ def _load_margins():
     global _MARGINS, _MARGINS_FILE_MTIME, _MARGINS_LAST_CHECK
     now_ts = time.time()
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
-    if _MARGINS is not None and (now_ts - _MARGINS_LAST_CHECK) < 5.0:
+    if _MARGINS is not None and 0.0 <= (now_ts - _MARGINS_LAST_CHECK) < 5.0:
         return _MARGINS
     _MARGINS_LAST_CHECK = now_ts
     if not os.path.exists(path):
@@ -277,8 +277,16 @@ def resolve_high_stake_min_notional_usd(
     require_key: bool = False,
 ) -> float:
     """Resolve the unified high-stake notional threshold (high_stake_min_notional_usd) from margins."""
-    if "high_stake_min_notional_usd" in margins:
-        return float(margins["high_stake_min_notional_usd"])
+    if isinstance(margins, dict) and "high_stake_min_notional_usd" in margins:
+        raw_val = margins["high_stake_min_notional_usd"]
+        if raw_val is not None and not isinstance(raw_val, bool):
+            try:
+                f = float(raw_val)
+                if math.isfinite(f) and f > 0.0:
+                    return f
+            except (TypeError, ValueError):
+                pass
+        return 700.0
     if require_key:
         raise KeyError("high_stake_min_notional_usd")
     return 700.0
@@ -360,9 +368,20 @@ def select_extreme_reference(prices, order_type: str, *, strict: bool = True) ->
     side = str(order_type or "").strip().upper()
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    clean_prices: List[float] = []
+    for p in prices:
+        if p is None or isinstance(p, bool):
+            continue
+        try:
+            pf = float(p)
+            if math.isfinite(pf) and pf > 0.0:
+                clean_prices.append(pf)
+        except (TypeError, ValueError):
+            continue
+    target = clean_prices if clean_prices else prices
     if strict:
-        return min(prices) if side == "BUY" else max(prices)
-    return max(prices) if side == "BUY" else min(prices)
+        return min(target) if side == "BUY" else max(target)
+    return max(target) if side == "BUY" else min(target)
 
 
 def get_profit_guard_mode_cfg(
@@ -494,6 +513,16 @@ def symbol_regime(
         return svc.evaluator.unknown("regime_resolution_failed")
 
 
+def _clean_pos_float(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if (math.isfinite(f) and f > 0.0) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def symbol_regime_context(
     symbol: str,
     provider=None,
@@ -507,7 +536,16 @@ def symbol_regime_context(
     benchmark_symbol: Optional[str] = None,
 ) -> MarketRegimeContext:
     """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
-    now_ts = time.time() if now is None else float(now)
+    now_ts: Optional[float] = None
+    if now is not None and not isinstance(now, bool):
+        try:
+            nf = float(now)
+            if math.isfinite(nf) and nf >= 0.0:
+                now_ts = nf
+        except (TypeError, ValueError):
+            pass
+    if now_ts is None:
+        now_ts = time.time()
     decision = symbol_regime(
         symbol,
         provider=provider,
@@ -518,8 +556,8 @@ def symbol_regime_context(
         provider_resolver=provider_resolver,
     )
     provider_name = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
-    dur_sec = trend_duration_seconds
-    if not dur_sec and symbol:
+    dur_sec = _clean_pos_float(trend_duration_seconds, 0.0)
+    if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)
     return MarketRegimeContext.from_decision(
         decision,
@@ -698,12 +736,21 @@ def _order_ts_qty_price(o):
     ts = extract_timestamp_s(o, default=0.0) or 0.0
     qty = extract_order_qty(o, default=0.0)
     px = extract_order_price(o, default=0.0)
+    if not math.isfinite(ts) or ts < 0.0:
+        ts = 0.0
+    if not math.isfinite(qty) or qty < 0.0:
+        qty = 0.0
+    if not math.isfinite(px) or px < 0.0:
+        px = 0.0
     return ts, qty, px
 
 
 def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
     """Aggregate active lots into a reference price symmetrically for BUY and SELL."""
-    active_prices = [px for _, px in active_lots if px > 0]
+    active_prices = [
+        float(px) for _, px in active_lots
+        if px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
+    ]
     if not active_prices:
         return None
     strict_ref = select_extreme_reference(active_prices, side, strict=True)
@@ -711,16 +758,26 @@ def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
         return strict_ref
     if mode == "off":
         return None
-    weighted_qty = sum(q for q, px in active_lots if q > 0 and px > 0)
+    valid_weighted = [
+        (float(q), float(px)) for q, px in active_lots
+        if q is not None and not isinstance(q, bool) and math.isfinite(float(q)) and float(q) > 0
+        and px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
+    ]
+    weighted_qty = sum(q for q, _ in valid_weighted)
     if weighted_qty > 0:
-        avg_ref = sum(q * px for q, px in active_lots if q > 0 and px > 0) / weighted_qty
+        avg_ref = sum(q * px for q, px in valid_weighted) / weighted_qty
     else:
         avg_ref = sum(active_prices) / len(active_prices)
-    if valid_opp and any(ts > 0 for ts, _, _ in valid_opp):
-        max_ts = max(ts for ts, _, _ in valid_opp)
-        last_ref = [px for ts, _, px in valid_opp if ts == max_ts][-1]
+    finite_ts_opp = [
+        (float(ts), float(px)) for ts, _, px in (valid_opp or [])
+        if ts is not None and not isinstance(ts, bool) and math.isfinite(float(ts)) and float(ts) > 0
+        and px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
+    ]
+    if finite_ts_opp:
+        max_ts = max(ts for ts, _ in finite_ts_opp)
+        last_ref = [px for ts, px in finite_ts_opp if ts == max_ts][-1]
     else:
-        last_ref = active_lots[-1][1]
+        last_ref = active_prices[-1]
     if mode == "average":
         return avg_ref
     if mode == "last":
@@ -901,16 +958,19 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
 def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded_24h_value):
     """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
-    price = float(price)
-    available = float(available_qty)
-    required = float(required_qty)
-    traded = float(traded_24h_value)
+    w = _clean_pos_float(weight, 0.0)
+    px = _clean_pos_float(price, 0.0)
+    req = _clean_pos_float(required_qty, 0.0)
+    if w <= 0.0 or px <= 0.0 or req <= 0.0:
+        return 0.0
+    avail = _clean_pos_float(available_qty, 0.0)
+    traded = _clean_pos_float(traded_24h_value, 0.0)
 
-    total_ref = traded + available * price
-    max_trade_value = total_ref * float(weight)
+    total_ref = traded + avail * px
+    max_trade_value = total_ref * w
     remaining_value = max(0.0, max_trade_value - traded)
-    remaining_qty = remaining_value / price if price > 0 else 0.0
-    return min(required, remaining_qty)
+    remaining_qty = remaining_value / px if px > 0 else 0.0
+    return min(req, remaining_qty)
 
 
 def weight_limit(provider, symbol, order_type, price, required_qty, *, available_qty):
@@ -1333,9 +1393,15 @@ def check_intelligence_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    computed_notional = notional_eur
-    if computed_notional is None and qty is not None and price > 0:
-        computed_notional = price * qty
+    px_clean = _clean_pos_float(price, 0.0)
+    qty_clean = _clean_pos_float(qty, 0.0)
+    notional_clean = _clean_pos_float(notional_eur, 0.0)
+    computed_notional = (
+        notional_clean
+        if notional_clean > 0.0
+        else ((px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else None)
+    )
+    explicit_dur_sec = _clean_pos_float(trend_duration_seconds, 0.0)
 
     # Check if expensive static analysis is already cached on regime_context for this (side, intel_bypass) key
     _raw_intel_codes = ("GT_L", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM2", "GLLM3")
@@ -1350,12 +1416,12 @@ def check_intelligence_guards(
         cached_res = cached_entry.get("decision")
         cached_price = cached_entry.get("price")
         cached_notional = cached_entry.get("notional")
-        cached_dur = float(cached_entry.get("trend_duration_seconds") or 0.0)
+        cached_dur = _clean_pos_float(cached_entry.get("trend_duration_seconds"), 0.0)
     elif valid_context and getattr(regime_context, "_intelligence_decision_key", cache_key) in (cache_key, legacy_cache_key):
         cached_res = getattr(regime_context, "_intelligence_decision", None)
         cached_price = getattr(regime_context, "_intelligence_price", None)
         cached_notional = getattr(regime_context, "_intelligence_notional", None)
-        cached_dur = float(getattr(regime_context, "_intelligence_trend_duration_seconds", 0.0) or 0.0)
+        cached_dur = _clean_pos_float(getattr(regime_context, "_intelligence_trend_duration_seconds", 0.0), 0.0)
     else:
         cached_res = None
         cached_price = None
@@ -1373,7 +1439,7 @@ def check_intelligence_guards(
             )
             or (
                 ("weibull_exhaustion" in str(cached_res[1]) or "trend_exhausted" in str(cached_res[1]))
-                and float(trend_duration_seconds or 0.0) != cached_dur
+                and explicit_dur_sec != cached_dur
             )
         )
     ):
@@ -1388,7 +1454,7 @@ def check_intelligence_guards(
             order_type,
             price,
             price_history=price_history,
-            trend_duration_seconds=trend_duration_seconds,
+            trend_duration_seconds=explicit_dur_sec,
             regime_context=regime_context if valid_context else None,
             qty=qty,
             notional_eur=computed_notional,
@@ -1406,14 +1472,14 @@ def check_intelligence_guards(
                     "decision": cached_res,
                     "price": price,
                     "notional": computed_notional,
-                    "trend_duration_seconds": float(trend_duration_seconds or 0.0),
+                    "trend_duration_seconds": explicit_dur_sec,
                 }
                 object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
                 object.__setattr__(regime_context, "_intelligence_decision_key", cache_key)
                 object.__setattr__(regime_context, "_intelligence_decision", cached_res)
                 object.__setattr__(regime_context, "_intelligence_price", price)
                 object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
-                object.__setattr__(regime_context, "_intelligence_trend_duration_seconds", float(trend_duration_seconds or 0.0))
+                object.__setattr__(regime_context, "_intelligence_trend_duration_seconds", explicit_dur_sec)
             except Exception:
                 pass
 
@@ -1434,7 +1500,7 @@ def check_intelligence_guards(
 
     # Dynamic Re-evaluation for cached context:
     # 1. Dynamic Parabolic Surge / Dump Guard (Anti-FOMO on BUY, Anti-Capitulation on SELL)
-    if internal_active and price > 0:
+    if internal_active and px_clean > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         surge_pct = float(m["parabolic_surge_pct"])
@@ -1447,7 +1513,7 @@ def check_intelligence_guards(
                 history = _read_cached_price_history(symbol, window_seconds=7200.0)
         if history:
             p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
-            p_dec = p_guard.check(symbol, side, price, price_history=history, now=now)
+            p_dec = p_guard.check(symbol, side, px_clean, price_history=history, now=now)
             if not p_dec.allowed:
                 prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
@@ -1455,8 +1521,10 @@ def check_intelligence_guards(
                     return False, p_dec.reason, 0.0
 
     # Resolve trend duration early so both LLM guard and Weibull guard have access
-    dur_sec = trend_duration_seconds or (getattr(regime_context, "trend_duration_seconds", 0.0) if valid_context else 0.0)
-    if not dur_sec and symbol:
+    dur_sec = explicit_dur_sec or (
+        _clean_pos_float(getattr(regime_context, "trend_duration_seconds", 0.0), 0.0) if valid_context else 0.0
+    )
+    if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)
 
     # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
@@ -1485,7 +1553,7 @@ def check_intelligence_guards(
         active_reason = hs_reason
 
     # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
-    if internal_active and dur_sec and dur_sec > 0:
+    if internal_active and dur_sec > 0.0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         from qlimit_order_guard import resolve_cached_gaussian_horizon
@@ -1493,7 +1561,7 @@ def check_intelligence_guards(
         e_scale = float(m["weibull_exhausted_scale"])
         e_p90 = float(m["weibull_p90_days"])
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
-        explicit_dur = bool(trend_duration_seconds and trend_duration_seconds > 0)
+        explicit_dur = explicit_dur_sec > 0.0
         if explicit_dur and getattr(regime_context, "resolved_trend", None) is None:
             trend_dir = None
         else:
@@ -1580,9 +1648,14 @@ def _evaluate_intelligence_guards_raw(
     if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0
 
-    computed_notional = notional_eur
-    if computed_notional is None and qty is not None and price > 0:
-        computed_notional = price * qty
+    px_clean = _clean_pos_float(price, 0.0)
+    qty_clean = _clean_pos_float(qty, 0.0)
+    notional_clean = _clean_pos_float(notional_eur, 0.0)
+    computed_notional = (
+        notional_clean
+        if notional_clean > 0.0
+        else ((px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else None)
+    )
 
     effective_scale = 1.0
     active_reason = "ok"
@@ -1692,13 +1765,23 @@ def check_math_profit_reference(
         return True
 
     def _parse_ref(val):
-        if val is None:
+        if val is None or isinstance(val, bool):
             return None
         try:
             f = float(val)
             return f if math.isfinite(f) and f > 0 else None
         except (TypeError, ValueError):
             return None
+
+    px_val = _parse_ref(price)
+    if px_val is None or profit_percentage is None or isinstance(profit_percentage, bool):
+        return False
+    try:
+        prof_pct = float(profit_percentage)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(prof_pct):
+        return False
 
     if mode == "dynamic":
         trend = None
@@ -1721,8 +1804,8 @@ def check_math_profit_reference(
         dyn_hours = dyn_window_s / 3600.0
         pos_window_ref = _parse_ref(window_ref)
         if pos_window_ref is not None:
-            diff = profit_diff_pct(side, price, pos_window_ref)
-            if diff < profit_percentage:
+            diff = profit_diff_pct(side, px_val, pos_window_ref)
+            if diff < prof_pct:
                 if hasattr(provider, "get_orders"):
                     try:
                         recent = provider.get_orders(symbol, opp_side, dyn_window_s)
@@ -1756,27 +1839,27 @@ def check_math_profit_reference(
                             active_ref = active_cycle_window_ref(recent, same_orders, side, reference_mode="strict")
                             if active_ref is not None and active_ref > 0:
                                 pos_window_ref = active_ref
-                    diff = profit_diff_pct(side, price, pos_window_ref)
-                    if diff >= profit_percentage:
+                    diff = profit_diff_pct(side, px_val, pos_window_ref)
+                    if diff >= prof_pct:
                         print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                              f"recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
+                              f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
                         return True
                 elif _is_favorable_trend(side, trend):
                     if not hasattr(provider, "get_orders"):
                         print(f"[GUARD] {side} {symbol}: dynamic mode bypassed historical {opp_side.lower()} reference "
-                              f"during confirmed {trend.upper()} trend; price {price} permitted")
+                              f"during confirmed {trend.upper()} trend; price {px_val} permitted")
                         return True
                 print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                      f"found recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}%, threshold {profit_percentage}%")
-                print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
+                      f"found recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}%, threshold {prof_pct}%")
+                print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. "
                       f"The {side} order is BLOCKED.")
                 return False
             print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                  f"recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
+                  f"recent {opp_side.lower()} ref {pos_window_ref}, price {px_val}, diff {diff:.2f}% >= {prof_pct}%. Permitted.")
             return True
         else:
             print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                  f"has no recent {opp_side.lower()} reference; price {price} permitted")
+                  f"has no recent {opp_side.lower()} reference; price {px_val} permitted")
             return True
 
     if (
@@ -1801,12 +1884,12 @@ def check_math_profit_reference(
     ref = _parse_ref(raw_ref)
     if ref is None:
         return True
-    diff = profit_diff_pct(side, price, ref)
+    diff = profit_diff_pct(side, px_val, ref)
     src = "the window" if window_ref is not None else "the provider"
-    print(f"[GUARD] {side} {symbol} (mode={mode}): ref {ref} ({src}), price {price}, "
-          f"diff {diff:.2f}%, threshold {profit_percentage}%")
-    if diff < profit_percentage:
-        print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
+    print(f"[GUARD] {side} {symbol} (mode={mode}): ref {ref} ({src}), price {px_val}, "
+          f"diff {diff:.2f}%, threshold {prof_pct}%")
+    if diff < prof_pct:
+        print(f"Percentage difference ({diff:.2f}%) below threshold {prof_pct}%. "
               f"The {side} order is BLOCKED.")
         return False
     return True
@@ -1859,8 +1942,8 @@ def profit_guard(
         ):
             return False
 
-    has_valid_qty = qty is not None and not (isinstance(qty, (int, float)) and qty <= 0)
-    has_valid_notional = notional_eur is not None and isinstance(notional_eur, (int, float)) and notional_eur > 0
+    has_valid_qty = _clean_pos_float(qty, 0.0) > 0.0
+    has_valid_notional = _clean_pos_float(notional_eur, 0.0) > 0.0
     if not evaluate_intelligence or (not has_valid_qty and not has_valid_notional):
         return True
 

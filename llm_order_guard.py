@@ -15,6 +15,7 @@ Single symmetric coordinator for all LLM-powered trading guards:
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -23,6 +24,27 @@ logger = logging.getLogger("llm_order_guard")
 
 _LLM_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
 _GEO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
+
+
+def _pos_float(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if (math.isfinite(f) and f > 0.0) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_now_ts(now: Any) -> float:
+    if now is not None and not isinstance(now, bool):
+        try:
+            f = float(now)
+            if math.isfinite(f) and f > 0.0:
+                return f
+        except (TypeError, ValueError):
+            pass
+    return time.time()
 
 
 # ============================================================================
@@ -61,8 +83,10 @@ def evaluate_high_stake_order_guard(
         return True, "ok", 1.0
 
     min_notional = resolve_high_stake_min_notional_usd(margins, side=side, require_key=True)
-    if computed_notional is None or computed_notional < min_notional:
+    comp_notional = _pos_float(computed_notional, 0.0)
+    if comp_notional <= 0.0 or comp_notional < min_notional:
         return True, "ok", 1.0
+    computed_notional = comp_notional
 
     decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
     entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}
@@ -78,6 +102,9 @@ def evaluate_high_stake_order_guard(
         and not (isinstance(decisions_map, dict) and cache_key in decisions_map)
     ):
         prev_notional = fallback_notional
+
+    prev_notional_f = _pos_float(prev_notional, -1.0)
+    prev_notional = prev_notional_f if prev_notional_f > 0.0 else None
 
     notional_jump = (
         prev_notional is not None
@@ -136,8 +163,8 @@ def evaluate_high_stake_order_guard(
             )
 
         if notify_on_eval:
-            now_ts = float(now) if now is not None else time.time()
-            cd_key = (symbol, side)
+            now_ts = _resolve_now_ts(now)
+            cd_key = (str(symbol or "").strip().upper().replace("/", ""), side)
             if not (0.0 <= (now_ts - _LLM_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                 _LLM_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                 try:
@@ -251,8 +278,8 @@ def check_geopolitical_order_guards(
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
                 if geo_mode == "shadow" and shadow_notify:
-                    cd_key = (symbol, order_side)
-                    now_ts = float(now) if now is not None else time.time()
+                    cd_key = (str(symbol or "").strip().upper().replace("/", ""), order_side)
+                    now_ts = _resolve_now_ts(now)
                     if not (0.0 <= (now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                         _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                         try:
@@ -333,7 +360,10 @@ def check_llm_order_guards(
     effective_scale = 1.0
     active_reason = "ok"
 
-    computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
+    notional_f = _pos_float(notional_eur, 0.0)
+    px_f = _pos_float(price, 0.0)
+    qty_f = _pos_float(qty, 0.0)
+    computed_notional = notional_f if notional_f > 0.0 else ((px_f * qty_f) if (px_f > 0.0 and qty_f > 0.0) else 0.0)
 
     # 1. GLLM1: High-Stake LLM Pre-Trade Guard (symmetric for BUY & SELL >= high_stake_min_notional_usd)
     valid_context = False

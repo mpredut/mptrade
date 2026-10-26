@@ -6418,3 +6418,94 @@ def test_iteration33_zero_timestamp_fidelity_and_monitortrades_reentry_nan_safet
     assert len(captured_trough) == 1 and math.isfinite(captured_trough[0]) and captured_trough[0] == 102.0
 
 
+def test_iteration34_order_guard_reference_nan_safety_and_llm_order_guard(monkeypatch):
+    """Iteration 34 regression suite:
+    1. order_guard.resolve_high_stake_min_notional_usd sanitizes NaN/bool/non-positive values to 700.0
+       so GLLM1 is never silently disabled by NaN or triggered on $2 orders by True.
+    2. order_guard.select_extreme_reference and _aggregate_reference_prices filter out NaN/bool prices
+       and timestamps (preventing IndexError when a first valid_opp item has ts=NaN).
+    3. order_guard.check_math_profit_reference rejects NaN/bool price and profit_percentage instead of
+       returning True when diff=NaN (`NaN < profit_percentage` is False), and rejects bool window_ref.
+    4. order_guard.compute_weight_capped_qty sanitizes NaN/bool inputs instead of returning NaN.
+    5. llm_order_guard.evaluate_high_stake_order_guard and check_llm_order_guards sanitize NaN
+       computed_notional, prev_notional, and cooldown timestamps.
+    """
+    import math
+    from types import SimpleNamespace
+    import order_guard as og
+    import llm_order_guard as log_mod
+
+    # 1. resolve_high_stake_min_notional_usd
+    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": float("nan")}) == 700.0
+    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": True}) == 700.0
+    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": -50.0}) == 700.0
+    assert og.resolve_high_stake_min_notional_usd({"high_stake_min_notional_usd": 850.0}) == 850.0
+
+    # 2. select_extreme_reference & _aggregate_reference_prices with NaN/bool
+    assert og.select_extreme_reference([float("nan"), True, 100.0, 95.0], "BUY", strict=True) == 95.0
+    assert og.select_extreme_reference([float("nan"), True, 100.0, 95.0], "SELL", strict=True) == 100.0
+    ref_last = og._aggregate_reference_prices(
+        active_lots=[(float("nan"), 100.0), (2.0, 105.0)],
+        valid_opp=[(float("nan"), 1.0, 100.0), (1700000000.0, 2.0, 105.0)],
+        side="BUY",
+        mode="last",
+    )
+    assert ref_last == 105.0
+
+    # 3. check_math_profit_reference rejects NaN/bool price or profit_percentage
+    dummy_prov = SimpleNamespace(name="binance", last_opposite_fill=lambda s, o: 100.0)
+    assert og.check_math_profit_reference(
+        dummy_prov, "BTCUSDC", "SELL", float("nan"), 1.0, reference_mode="strict"
+    ) is False
+    assert og.check_math_profit_reference(
+        dummy_prov, "BTCUSDC", "SELL", True, 1.0, reference_mode="strict"
+    ) is False
+    assert og.check_math_profit_reference(
+        dummy_prov, "BTCUSDC", "SELL", 105.0, float("nan"), reference_mode="strict"
+    ) is False
+
+    # 4. compute_weight_capped_qty with NaN/bool
+    assert og.compute_weight_capped_qty(0.1, 100.0, float("nan"), 10.0, 0.0) == 0.0
+    assert og.compute_weight_capped_qty(0.1, True, 5.0, 10.0, 0.0) == 0.0
+    capped = og.compute_weight_capped_qty(0.2, 100.0, 5.0, 10.0, float("nan"))
+    assert math.isclose(capped, 2.0)
+
+    # 5. evaluate_high_stake_order_guard with NaN computed_notional does not invoke HighStakeGuard
+    called_hs = []
+
+    class _FailIfCalledHS:
+        def __init__(self, *a, **kw):
+            pass
+
+        def check(self, *a, **kw):
+            called_hs.append((a, kw))
+            return SimpleNamespace(allowed=False, reason="veto", suggested_scale=0.0, brake_action="VETO")
+
+    import intelligence.sentiment.guards.high_stake_guard as hs_mod
+    monkeypatch.setattr(hs_mod, "HighStakeGuard", _FailIfCalledHS)
+    monkeypatch.setattr(hs_mod, "is_llm_guard_exempt", lambda: False)
+
+    ok_nan, r_nan, sc_nan = log_mod.evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=85000.0,
+        qty=0.001,
+        computed_notional=float("nan"),
+        regime_context=None,
+        valid_context=False,
+        cache_key=("BUY", frozenset()),
+        margins={
+            "intelligence_guards_mode": "enforce",
+            "llm_guard_mode": "enforce",
+            "high_stake_min_notional_usd": 700.0,
+            "llm_timeout_sec": 3.0,
+            "llm_fallback": "allow",
+        },
+        bypassed=set(),
+        now=float("nan"),
+        notify_on_eval=False,
+    )
+    assert ok_nan is True and sc_nan == 1.0 and len(called_hs) == 0
+
+
+
