@@ -48,23 +48,32 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
         return 0.0
     if not math.isfinite(t_val):
         return 0.0
-    if 0 < t_val < 10_000_000_000 and fund[0][0] >= 10_000_000_000:
+    clean_fund: list[tuple[float, float]] = []
+    for item in fund:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        ts_raw, rate_raw = item[0], item[1]
+        if isinstance(ts_raw, bool) or isinstance(rate_raw, bool):
+            continue
+        try:
+            ts_f = float(ts_raw)
+            rate_f = float(rate_raw)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(ts_f) and math.isfinite(rate_f):
+            clean_fund.append((ts_f, rate_f))
+    if not clean_fund:
+        return 0.0
+    if 0 < t_val < 10_000_000_000 and clean_fund[0][0] >= 10_000_000_000:
         t_val = t_val * 1000
-    lo, hi = 0, len(fund)
+    lo, hi = 0, len(clean_fund)
     while lo < hi:
         mid = (lo + hi) // 2
-        if fund[mid][0] <= t_val:
+        if clean_fund[mid][0] <= t_val:
             lo = mid + 1
         else:
             hi = mid
-    raw_rate = fund[lo - 1][1] if lo > 0 else (fund[0][1] if fund else 0.0)
-    if raw_rate is None or isinstance(raw_rate, bool):
-        return 0.0
-    try:
-        r_f = float(raw_rate)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    return r_f if math.isfinite(r_f) else 0.0
+    return clean_fund[lo - 1][1] if lo > 0 else clean_fund[0][1]
 
 
 def run_replay(
@@ -182,6 +191,15 @@ def _run_once(
     open_side = "buy" if strategy.sign > 0 else "sell"
     close_side = "sell" if strategy.sign > 0 else "buy"
     order_placed_bar: dict[str, int] = {}
+    valid_bar_minutes: float | None = None
+    if bar_minutes is not None and not isinstance(bar_minutes, bool):
+        try:
+            bm_f = float(bar_minutes)
+            if math.isfinite(bm_f) and bm_f > 0:
+                valid_bar_minutes = bm_f
+        except (TypeError, ValueError, OverflowError):
+            pass
+    eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
 
     for i in range(len(ohlc)):
         o, h, l, c = ohlc[i]
@@ -191,7 +209,7 @@ def _run_once(
         qty = strategy.s["qty"]
         if qty > 1e-12:
             rate = funding_at(fund, t_ms)
-            f = rate * qty * c * ((bar_minutes or 60.0) / 60.0)
+            f = rate * qty * c * (eff_bar_minutes / 60.0)
             funding += (f if strategy.sign < 0 else -f)
 
         # 2. Check active limit orders against the bar range
@@ -277,7 +295,7 @@ def _run_once(
         if open_order:
             oid = open_order.get("oid", "")
             placed_b = order_placed_bar.setdefault(oid, i)
-            elapsed_min = (i - placed_b) * (bar_minutes or 60.0)
+            elapsed_min = (i - placed_b) * eff_bar_minutes
             if strategy._open_is_stale(open_order, c, elapsed_min=elapsed_min):
                 strategy._remove(open_order)
                 order_placed_bar.pop(oid, None)
@@ -320,8 +338,8 @@ def _run_once(
         final_open_fee = (fee_pct_eff / 100.0) * cost
         total_fees += final_open_fee
 
-    if periods_per_year is None and bar_minutes:
-        periods_per_year = 365.0 * 24 * 60 / bar_minutes
+    if periods_per_year is None and valid_bar_minutes is not None:
+        periods_per_year = 365.0 * 24 * 60 / valid_bar_minutes
 
     performance = calculate_performance_metrics(
         equity_curve,

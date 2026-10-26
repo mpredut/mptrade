@@ -211,6 +211,13 @@ class ShadowLiveTest(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(shadow.main(), 1)
 
+    def test_get_anchor_replaces_non_positive_persisted_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(shadow, "LOG_DIR", tmp):
+            anchor_file = Path(tmp) / "HYPEUSD_240m.anchor"
+            anchor_file.write_text("0\n", encoding="utf-8")
+            self.assertEqual(shadow._get_anchor("HYPEUSD", 240, 1700000000), 1700000000)
+            self.assertEqual(anchor_file.read_text(encoding="utf-8").strip(), "1700000000")
+
 
 if __name__ == "__main__":
     unittest.main()

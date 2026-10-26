@@ -569,7 +569,7 @@ def last_store_activity() -> float:
 
 
 def mode_ui_sync_check(idle_sec: int) -> int:
-    if idle_sec <= 0:
+    if isinstance(idle_sec, bool) or idle_sec <= 0:
         raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
@@ -591,7 +591,8 @@ def mode_ui_sync_check(idle_sec: int) -> int:
     if os.path.exists(UI_SYNC_STATE):
         try:
             with open(UI_SYNC_STATE, encoding="utf-8") as f:
-                state = json.load(f)
+                loaded = json.load(f)
+            state = loaded if isinstance(loaded, dict) else {}
         except (OSError, ValueError):
             state = {}
     if state.get("fingerprint") == fingerprint:
@@ -611,26 +612,32 @@ def main(argv) -> int:
                         handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)])
     lock = open(LOCK, "w")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        log.error("another agy_store_fix is running")
-        return 3
-    try:
-        if mode == "pre":
-            return mode_pre(force="--force" in argv)
-        if mode == "post":
-            return mode_post()
-        if mode == "check":
-            return mode_check()
-        if mode == "ui-sync-check":
-            if "--idle-sec" not in argv or argv.index("--idle-sec") + 1 >= len(argv):
-                raise ValueError("ui-sync-check requires --idle-sec <seconds>")
-            return mode_ui_sync_check(int(argv[argv.index("--idle-sec") + 1]))
-        print(__doc__)
-        return 1
-    except Exception:
-        log.exception("agy_store_fix %s failed", mode)
-        return 1
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log.error("another agy_store_fix is running")
+            return 3
+        try:
+            if mode == "pre":
+                return mode_pre(force="--force" in argv)
+            if mode == "post":
+                return mode_post()
+            if mode == "check":
+                return mode_check()
+            if mode == "ui-sync-check":
+                if "--idle-sec" not in argv or argv.index("--idle-sec") + 1 >= len(argv):
+                    raise ValueError("ui-sync-check requires --idle-sec <seconds>")
+                return mode_ui_sync_check(int(argv[argv.index("--idle-sec") + 1]))
+            print(__doc__)
+            return 1
+        except Exception:
+            log.exception("agy_store_fix %s failed", mode)
+            return 1
+    finally:
+        try:
+            lock.close()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

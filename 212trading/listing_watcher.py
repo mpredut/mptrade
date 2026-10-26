@@ -8,6 +8,7 @@ pre-listing placeholder for trading. Reused by t212_bot.py for every awaited ass
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from datetime import datetime
@@ -44,10 +45,15 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
     Return True at launch and False if `stop` is set first. Optional `on_launch(info)`
     receives the market dictionary at launch, for example to send a notification.
     """
-    log(f"    [{label}] waiting for the launch... (poll {interval}s)")
+    eff_interval = (
+        max(float(interval), 1.0)
+        if not isinstance(interval, bool) and isinstance(interval, (int, float)) and math.isfinite(float(interval))
+        else 60.0
+    )
+    log(f"    [{label}] waiting for the launch... (poll {eff_interval:g}s)")
     while not (stop is not None and stop.is_set()):
         if market_hours_only and not in_market_window():
-            _wait(stop, min(interval * 5, 600))
+            _wait(stop, min(eff_interval * 5, 600))
             continue
         m = check_market(yahoo_symbol)
         # 'launched' means prior real-volume trading, even if the market is closed now.
@@ -66,5 +72,5 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
                 f"vol={m.get('volume')} state={m.get('state')} age={m.get('age_min')}min")
         else:
             log(f"    [{label}] ping — symbol unavailable on feed")
-        _wait(stop, interval)
+        _wait(stop, eff_interval)
     return False

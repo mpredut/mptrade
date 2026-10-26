@@ -164,7 +164,15 @@ def _run_once(
     client = _ReplayClient()
     clock = _SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
-    trend_closes.extend(float(row[3]) for row in warmup_ohlc)
+    for row in warmup_ohlc or ():
+        if not isinstance(row, (list, tuple)) or len(row) < 4 or isinstance(row[3], bool):
+            continue
+        try:
+            cf = float(row[3])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(cf) and cf > 0:
+            trend_closes.append(cf)
     original_log = _strat.log
     original_notify = _strat.notify
     _strat.log = lambda *_args, **_kwargs: None
@@ -292,7 +300,7 @@ def _run_once(
     avg = engine._avg_cost()
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-    rounded = lambda value: round(float(value), 10)
+    rounded = lambda value: round(float(value), 10) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else value
     result = {
         "realized": rounded(engine.s["realized_pnl_usd"]),
         "net": rounded(engine.s["realized_net_usd"]),

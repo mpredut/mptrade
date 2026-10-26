@@ -156,7 +156,9 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as fh:
-                return int(fh.read().strip())
+                val = int(fh.read().strip())
+            if val > 0:
+                return val
         except (OSError, ValueError):
             pass
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -367,16 +369,17 @@ def main() -> int:
         print(f"[shadow_live] skipped: {reason}")
         return 0
 
+    loop_min = args.loop if math.isfinite(args.loop) and args.loop > 0 else 0.0
     while True:
         try:
             snapshot(pair, args.interval, args.fee, quiet=args.quiet)
         except Exception as e:  # in loop mode, one failed fetch does not stop monitoring
             print(f"[shadow_live] error: {e}", file=sys.stderr)
-            if args.loop <= 0:
+            if loop_min <= 0:
                 return 1
-        if args.loop <= 0:
+        if loop_min <= 0:
             return 0
-        time.sleep(args.loop * 60.0)
+        time.sleep(loop_min * 60.0)
 
 
 if __name__ == "__main__":

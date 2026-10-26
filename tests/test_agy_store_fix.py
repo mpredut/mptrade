@@ -96,9 +96,20 @@ def test_restart_gated_by_idle_and_not_repeated_for_same_divergence(store):
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
 
-def test_invalid_idle_fails_fast(store):
+def test_invalid_idle_fails_fast(store, tmp_path):
     with pytest.raises(ValueError):
         asf.mode_ui_sync_check(0)
+    with pytest.raises(ValueError):
+        asf.mode_ui_sync_check(True)
+
+    # Non-dict JSON in UI_SYNC_STATE does not raise AttributeError
+    cli, d1, _ = store
+    (d1 / "new.db").write_text("y")
+    _set_rows(["new"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1000)
+    (tmp_path / "ui_sync_state.json").write_text("[]")
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
 
 def test_mirrored_5min_topic_thread_does_not_block_idle_sync(store, tmp_path):
