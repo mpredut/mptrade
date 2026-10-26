@@ -51,9 +51,15 @@ def fetch_ohlc_candles(
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read())
+    if not isinstance(data, dict):
+        raise RuntimeError(f"invalid Kraken OHLC payload: {data!r}")
     if data.get("error"):
-        raise RuntimeError(", ".join(data["error"]))
-    res = data.get("result", {})
+        err_val = data["error"]
+        err_msg = ", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val)
+        raise RuntimeError(err_msg)
+    res = data.get("result")
+    if not isinstance(res, dict):
+        return []
     key = next((k for k in res if k != "last"), None)
     if not key:
         return []

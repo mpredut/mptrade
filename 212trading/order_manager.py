@@ -582,7 +582,7 @@ def place_order_with_retry(
                source="T212 order", price=price_r, desktop=desktop)
         return True
 
-    record["submit_error"] = f"T212 HTTP {status}: {json.dumps(data)[:400]}"
+    record["submit_error"] = f"T212 HTTP {status}: {json.dumps(data, default=str)[:400]}"
     _persist_marker(record, marker_path)
     log(f"  ! [ORDER] {record['submit_error']} — retry non-blocant la ciclul urmator")
     return False

@@ -129,8 +129,11 @@ class HLClient:
     # ----- metadata / prices --------------------------------------------------
     def _meta(self) -> dict:
         if not self._meta_cache:
-            for a in self.info.meta().get("universe", []):
-                self._meta_cache[a["name"]] = a
+            raw_meta = self.info.meta()
+            universe = raw_meta.get("universe") if isinstance(raw_meta, dict) else None
+            for a in (universe if isinstance(universe, list) else ()):
+                if isinstance(a, dict) and a.get("name"):
+                    self._meta_cache[a["name"]] = a
         return self._meta_cache
 
     def sz_decimals(self, coin: str) -> int:
@@ -174,6 +177,8 @@ class HLClient:
     def mid(self, coin: str) -> float | None:
         try:
             mids = self.info.all_mids()
+            if not isinstance(mids, dict):
+                return None
             v = mids.get(coin)
             if v is None or isinstance(v, bool):
                 return None
@@ -187,15 +192,20 @@ class HLClient:
     def _user_state(self) -> dict:
         if not self.address:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
-        return self.info.user_state(self.address)
+        st = self.info.user_state(self.address)
+        if not isinstance(st, dict):
+            raise HLError(f"Invalid user_state payload: {type(st).__name__}")
+        return st
 
     def position_strict(self, coin: str) -> tuple[float, float]:
         """Return position data while propagating API errors.
         Use when code must distinguish no position (0) from unknown state, such as
         delta-neutral logic where a false zero could open a duplicate leg."""
-        for ap in self._user_state().get("assetPositions", []):
-            p = ap.get("position", {})
-            if p.get("coin") == coin:
+        for ap in (self._user_state().get("assetPositions") or []):
+            if not isinstance(ap, dict):
+                continue
+            p = ap.get("position")
+            if isinstance(p, dict) and p.get("coin") == coin:
                 raw_szi = p.get("szi")
                 raw_entry = p.get("entryPx")
                 if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
@@ -252,12 +262,18 @@ class HLClient:
         such as HYPE -> @107, USOL -> @156, or PURR -> PURR/USDC."""
         try:
             m = self.info.spot_meta()
-            tokens = {t.get("name"): t.get("index") for t in m.get("tokens", [])}
+            if not isinstance(m, dict):
+                return None
+            tokens = {
+                t.get("name"): t.get("index")
+                for t in (m.get("tokens") or [])
+                if isinstance(t, dict)
+            }
             ti, usdc = tokens.get(token), tokens.get("USDC")
             if ti is None or usdc is None:
                 return None
-            for u in m.get("universe", []):
-                if u.get("tokens") == [ti, usdc]:
+            for u in (m.get("universe") or []):
+                if isinstance(u, dict) and u.get("tokens") == [ti, usdc]:
                     return u.get("name")
         except Exception as e:  # noqa: BLE001
             log(f"  ! resolve_spot_pair({token}) failed: {e}")
@@ -266,7 +282,10 @@ class HLClient:
     def spot_mid(self, pair: str) -> float | None:
         """Return the spot price for an @index pair, e.g. @107 = HYPE/USDC."""
         try:
-            v = self.info.all_mids().get(pair)
+            mids = self.info.all_mids()
+            if not isinstance(mids, dict):
+                return None
+            v = mids.get(pair)
             if v is None or isinstance(v, bool):
                 return None
             px = float(v)
@@ -279,8 +298,11 @@ class HLClient:
         """Return spot balance while propagating API errors; see position_strict."""
         if not self.address:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
-        for b in self.info.spot_user_state(self.address).get("balances", []):
-            if b.get("coin") == token:
+        st = self.info.spot_user_state(self.address)
+        if not isinstance(st, dict):
+            raise HLError(f"Invalid spot_user_state payload: {type(st).__name__}")
+        for b in (st.get("balances") or []):
+            if isinstance(b, dict) and b.get("coin") == token:
                 raw_tot = b.get("total")
                 if isinstance(raw_tot, bool):
                     raise HLError(f"Invalid boolean spot balance for {token}")
@@ -303,8 +325,11 @@ class HLClient:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
         try:
             meta, ctxs = self.info.meta_and_asset_ctxs()
-            for i, a in enumerate(meta["universe"]):
-                if a["name"] == coin:
+            universe = (meta.get("universe") or []) if isinstance(meta, dict) else []
+            if not isinstance(ctxs, list):
+                return None
+            for i, a in enumerate(universe):
+                if isinstance(a, dict) and a.get("name") == coin and i < len(ctxs) and isinstance(ctxs[i], dict):
                     raw_f = ctxs[i].get("funding")
                     if isinstance(raw_f, bool):
                         return None
@@ -317,9 +342,11 @@ class HLClient:
     def position_full(self, coin: str) -> dict | None:
         """Return the complete perpetual position including szi, entryPx, liquidationPx, and PnL."""
         try:
-            for ap in self._user_state().get("assetPositions", []):
-                p = ap.get("position", {})
-                if p.get("coin") == coin:
+            for ap in (self._user_state().get("assetPositions") or []):
+                if not isinstance(ap, dict):
+                    continue
+                p = ap.get("position")
+                if isinstance(p, dict) and p.get("coin") == coin:
                     return p
         except Exception as e:  # noqa: BLE001
             log(f"  ! position_full failed: {e}")

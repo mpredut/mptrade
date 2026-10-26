@@ -75,12 +75,16 @@ def fetch_yahoo_candles(
         raise RuntimeError(
             f"Yahoo refused {symbol} {range_}/{interval}: HTTP {exc.code} {detail}"
         ) from exc
-    result = (payload.get("chart", {}).get("result") or [None])[0]
-    if not result:
-        error = payload.get("chart", {}).get("error")
+    chart = payload.get("chart") if isinstance(payload, dict) else None
+    chart = chart if isinstance(chart, dict) else {}
+    result = (chart.get("result") or [None])[0]
+    if not isinstance(result, dict) or not result:
+        error = chart.get("error")
         raise RuntimeError(f"Yahoo returned no data for {symbol}: {error}")
     timestamps = result.get("timestamp") or []
-    quote = (result.get("indicators", {}).get("quote") or [{}])[0] or {}
+    indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
+    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
+    quote = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
     opens = quote.get("open") or []
     highs = quote.get("high") or []
     lows = quote.get("low") or []
@@ -142,12 +146,19 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
         return None, []
     try:
         data = json.loads(body)
-        result = (data.get("chart", {}).get("result") or [None])[0]
-        if not result:
+        if not isinstance(data, dict):
             return None, []
-        meta = result.get("meta", {})
+        chart = data.get("chart")
+        if not isinstance(chart, dict):
+            return None, []
+        result = (chart.get("result") or [None])[0]
+        if not isinstance(result, dict) or not result:
+            return None, []
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
         ts = result.get("timestamp") or []
-        q = ((result.get("indicators", {}).get("quote") or [{}])[0])
+        indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
+        quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
+        q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
         closes = q.get("close") or []
         vols = q.get("volume") or []
         bars = []

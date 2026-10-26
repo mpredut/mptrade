@@ -12,10 +12,21 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if sys.path[:1] != [_HERE]:
+    if _HERE in sys.path:
+        sys.path.remove(_HERE)
+    sys.path.insert(0, _HERE)
+for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
+    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
+    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
+        sys.modules.pop(_mod_name, None)
 
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
@@ -400,7 +411,11 @@ class Strategy:
             ),
             audit=self.execution_audit, venue="T212",
         )
-        self.fx_to_usd = self._fx_to_usd(params.currency) if fx_to_usd is None else fx_to_usd
+        self.fx_to_usd = (
+            self._fx_to_usd(params.currency)
+            if fx_to_usd is None
+            else (_clean_pos_float(fx_to_usd) or 1.0)
+        )
         self.state_file = state_path_for(ticker)
         self._state_write_failed = False
         self.s = initial_state if initial_state is not None else self._load()
@@ -1024,15 +1039,16 @@ class Strategy:
             last = (i == len(remaining_sorted) - 1)
             q = round(held - acc - buf, 2) if last else round(held * frac / total, 2)
             acc += q
-            if q > 0:
-                desired[lvl] = (q, round(avg * (1 + lvl / 100.0), 2))
+            lim_px = round(avg * (1 + lvl / 100.0), 2)
+            if q > 0 and lim_px > 0:
+                desired[lvl] = (q, lim_px)
         open_sells = {o.get("level"): o for o in self.s["orders"]
                       if o["side"] == "SELL" and o.get("level") is not None}
         cancelled_by_level = {}
         # Cancel unwanted orders or orders whose price/quantity changed after DCA.
         for lvl, o in list(open_sells.items()):
             d = desired.get(lvl)
-            if d is None or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o["qty"] - d[0]) > 1e-6:
+            if d is None or d[1] <= 0 or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o["qty"] - d[0]) > 1e-6:
                 cancelled_by_level[lvl] = dict(o)
                 if self._cancel_specific(o) and o not in self.s["orders"]:
                     open_sells.pop(lvl, None)
@@ -1955,16 +1971,17 @@ class Strategy:
                 self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
             else:
                 target = avg * (1 + self.p.takeprofit_pct / 100)
-                sell_qty = self._sellable_qty(held, target)
-                sell = self._find_open("SELL")
-                if sell is None:
-                    self._place_sell(sell_qty, target)
-                elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
-                    old_sell = dict(sell)
-                    if self._cancel_open("SELL") and sell not in self.s["orders"]:
-                        if not self._place_sell(sell_qty, target):
-                            if not self.s.get("pending_submit"):
-                                self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
+                if target > 0:
+                    sell_qty = self._sellable_qty(held, target)
+                    sell = self._find_open("SELL")
+                    if sell is None:
+                        self._place_sell(sell_qty, target)
+                    elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
+                        old_sell = dict(sell)
+                        if self._cancel_open("SELL") and sell not in self.s["orders"]:
+                            if not self._place_sell(sell_qty, target):
+                                if not self.s.get("pending_submit"):
+                                    self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
 
         prag_dca = (self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100)
                     if self.s["last_buy_price"] else None)

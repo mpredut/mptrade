@@ -503,8 +503,9 @@ class Strategy:
         if self.s["entry_price"] is None: self.s["entry_price"] = fp
         if is_dca: self.s["dca_buys"] += 1
         if real_qty is not None:
-            self.s["qty"] = real_qty; self.s["cost"] = real_qty * real_avg
-            self.s["spent"] = round(real_qty * real_avg, 2)
+            eff_avg = real_avg if (real_avg is not None and real_avg > 0) else fp
+            self.s["qty"] = real_qty; self.s["cost"] = real_qty * eff_avg
+            self.s["spent"] = round(real_qty * eff_avg, 2)
         else:
             self.s["qty"] += fq; self.s["cost"] += fq * fp
             self.s["spent"] += amount or fq * fp
@@ -643,12 +644,13 @@ class Strategy:
         avg = self._avg()
         if self.p.enable_takeprofit and avg:
             target = avg * (1 + self.sign * self.p.takeprofit_pct/100)
-            o = self._close_order()
-            if o is None:
-                self._place("close", held, target, "TP")
-            elif abs(o["px"]-target)/target > 0.001 or abs(o["sz"]-held) > 1e-9:
-                if self._cancel_close():
+            if target > 0:
+                o = self._close_order()
+                if o is None:
                     self._place("close", held, target, "TP")
+                elif abs(o["px"]-target)/target > 0.001 or abs(o["sz"]-held) > 1e-9:
+                    if self._cancel_close():
+                        self._place("close", held, target, "TP")
         # DCA after price moves drop% AGAINST the position. Compare PRICE with a PRICE
         # threshold, not a percentage with a percentage: are_close is relative to the
         # magnitude of compared values and is correct only between two prices, matching

@@ -103,8 +103,18 @@ def main() -> int:
         print("    (none — the cash is not locked by orders)")
     for o in orders:
         q = _sf(o, "quantity")
+        if q == 0.0:
+            q = _sf(o, "orderedQuantity", _sf(o, "qty"))
         lp = o.get("limitPrice", o.get("price"))
-        side = "BUY" if q > 0 else "SELL"
+        raw_side = str(o.get("side") or "").strip().upper()
+        if raw_side in ("BUY", "SELL"):
+            side = raw_side
+        elif q > 0:
+            side = "BUY"
+        elif q < 0:
+            side = "SELL"
+        else:
+            side = "UNKNOWN"
         inst = o.get("instrument") if isinstance(o.get("instrument"), dict) else {}
         ticker = o.get("ticker") or inst.get("ticker") or ""
         print(f"    {str(ticker):<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={o.get('id','')}")

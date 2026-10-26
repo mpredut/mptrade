@@ -12,19 +12,24 @@ import json
 import math
 import statistics
 import sys
+import urllib.parse
 import urllib.request
 
 
 def fetch_ohlc(sym: str, rng: str, interval: str):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval={interval}"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(str(sym or ''))}?range={rng}&interval={interval}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=25) as r:
         data = json.loads(r.read())
-    res = (data.get("chart", {}).get("result") or [None])[0]
-    if not res:
+    chart = data.get("chart") if isinstance(data, dict) else None
+    chart = chart if isinstance(chart, dict) else {}
+    res = (chart.get("result") or [None])[0]
+    if not isinstance(res, dict) or not res:
         return [], {}
     ts = res.get("timestamp") or []
-    q = (res.get("indicators", {}).get("quote") or [{}])[0]
+    indicators = res.get("indicators") if isinstance(res.get("indicators"), dict) else {}
+    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
+    q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
     o, h, l, c, v = (q.get(k) or [] for k in ("open", "high", "low", "close", "volume"))
     n_ohlc = min(len(o), len(h), len(l), len(c))
     out = []
@@ -39,7 +44,8 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
                 continue
             if all(math.isfinite(val) and val > 0 for val in (of, hf, lf, cf)):
                 out.append((t, of, hf, lf, cf, vf if math.isfinite(vf) and vf > 0 else 0))
-    return out, res.get("meta", {})
+    meta = res.get("meta")
+    return out, meta if isinstance(meta, dict) else {}
 
 
 def pct(a, b):

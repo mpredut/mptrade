@@ -1601,4 +1601,108 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
         pass
 
 
+def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):
+    """Verify null-safe Yahoo/Kraken/Hyperliquid payloads and T212/HL strategy edge cases."""
+    import importlib.util
+    import io
+    import os
+    from unittest.mock import MagicMock
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    import sys
+
+    def _load_mod(name: str, rel_path: str):
+        spec = importlib.util.spec_from_file_location(name, os.path.join(root_dir, rel_path))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    # 1. 212trading.market_data._chart and fetch_yahoo_candles handle null chart/indicators/quote
+    t212_md = _load_mod("t212_md_test", "212trading/market_data.py")
+    monkeypatch.setattr(t212_md, "http_get", lambda *a, **k: (200, b'{"chart": null}'))
+    assert t212_md._chart("NVDA") == (None, [])
+    monkeypatch.setattr(
+        t212_md,
+        "http_get",
+        lambda *a, **k: (200, b'{"chart": {"result": [{"meta": null, "indicators": {"quote": [null]}}]}}'),
+    )
+    assert t212_md._chart("NVDA") == ({}, [])
+
+    # 2. 212trading.analyze_volatility.fetch_ohlc handles null chart/indicators/meta
+    t212_av = _load_mod("t212_av_test", "212trading/analyze_volatility.py")
+
+    class _DummyResp:
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(t212_av.urllib.request, "urlopen", lambda *a, **k: _DummyResp(b'{"chart": null}'))
+    assert t212_av.fetch_ohlc("RGNT", "1d", "5m") == ([], {})
+
+    # 3. kraken.market_data.fetch_ohlc_candles handles null result
+    from kraken import market_data as kr_md
+    monkeypatch.setattr(kr_md.urllib.request, "urlopen", lambda *a, **k: _DummyResp(b'{"error": [], "result": null}'))
+    assert kr_md.fetch_ohlc_candles("HYPEUSD", 60) == []
+
+    # 4. hyperliquid.hl_client.HLClient handles malformed/null info payloads safely
+    hl_client_mod = _load_mod("hl_client_test", "hyperliquid/hl_client.py")
+    HLClient = hl_client_mod.HLClient
+    hl_c = HLClient.__new__(HLClient)
+    hl_c.address = "0x123"
+    hl_c._meta_cache = {}
+    hl_c.info = MagicMock()
+    hl_c.info.meta.return_value = {"universe": None}
+    assert hl_c._meta() == {}
+    hl_c.info.all_mids.return_value = None
+    assert hl_c.mid("HYPE") is None
+    assert hl_c.spot_mid("@107") is None
+    hl_c.info.spot_meta.return_value = {"tokens": None, "universe": None}
+    assert hl_c.resolve_spot_pair("HYPE") is None
+    hl_c.info.meta_and_asset_ctxs.return_value = ({"universe": [{"name": "HYPE"}]}, None)
+    assert hl_c.funding_rate("HYPE") is None
+
+    # 5. 212trading.strategy.Strategy sanitizes invalid explicit fx_to_usd
+    saved_path = list(sys.path)
+    try:
+        t212_strat = _load_mod("t212_strat_test", "212trading/strategy.py")
+        p_t212 = t212_strat.StratParams(
+            currency="USD",
+            entry_amount=50.0,
+            entry_discount_pct=0.2,
+            dca_amount=25.0,
+            dca_drop_pct=2.0,
+            check_minutes=5.0,
+            takeprofit_pct=1.5,
+            max_budget=200.0,
+            max_dca_buys=4,
+            validity="DAY",
+            enable_takeprofit=True,
+            order_ttl_min=60.0,
+            stop_loss_pct=8.0,
+        )
+        st_t212 = t212_strat.Strategy(
+            client=None,
+            ticker="NVDA_US_EQ",
+            params=p_t212,
+            dry_run=True,
+            replay_mode=True,
+            fx_to_usd=0.0,
+            initial_state=t212_strat._new_state(),
+        )
+        assert st_t212.fx_to_usd == 1.0
+    finally:
+        sys.path[:] = saved_path
+
+
+
 
