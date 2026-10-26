@@ -86,23 +86,28 @@ class WeibullExhaustionGuard:
         if self.policy == "off":
             return GuardDecision.allow("WeibullExhaustionGuard", "weibull_policy_off")
 
-        side_u = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        side_u = str(side or "").strip().upper() if isinstance(side, str) else ""
+        if side_u == "B":
+            side_u = "BUY"
+        elif side_u == "S":
+            side_u = "SELL"
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("WeibullExhaustionGuard", "unsupported_side")
 
-        if trend_direction is not None:
+        if trend_direction is not None and not isinstance(trend_direction, bool):
             raw_dir = str(trend_direction).strip().lower()
-            if raw_dir in ("up", "bull"):
-                dir_norm = "bull"
-            elif raw_dir in ("down", "bear"):
-                dir_norm = "bear"
-            else:
-                dir_norm = "flat"
-            if (side_u == "BUY" and dir_norm != "bull") or (side_u == "SELL" and dir_norm != "bear"):
-                return GuardDecision.allow(
-                    "WeibullExhaustionGuard",
-                    f"trend_direction_favorable ({dir_norm})",
-                )
+            if raw_dir not in ("", "unknown", "none"):
+                if raw_dir in ("up", "bull"):
+                    dir_norm = "bull"
+                elif raw_dir in ("down", "bear"):
+                    dir_norm = "bear"
+                else:
+                    dir_norm = "flat"
+                if (side_u == "BUY" and dir_norm != "bull") or (side_u == "SELL" and dir_norm != "bear"):
+                    return GuardDecision.allow(
+                        "WeibullExhaustionGuard",
+                        f"trend_direction_favorable ({dir_norm})",
+                    )
 
         dur_sec = _pos_finite(trend_duration_seconds, None)
         if dur_sec is None:

@@ -99,13 +99,32 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         except (TypeError, ValueError):
             return 0.0
 
+    def _order_side(o: Dict[str, Any]) -> str:
+        raw_s = o.get("side") if o.get("side") is not None else o.get("type")
+        if isinstance(raw_s, str):
+            su = raw_s.strip().upper()
+            if su in ("B", "BUY"):
+                return "BUY"
+            if su in ("S", "SELL"):
+                return "SELL"
+        is_buyer = o.get("isBuyer")
+        if isinstance(is_buyer, bool):
+            return "BUY" if is_buyer else "SELL"
+        if isinstance(is_buyer, str):
+            ib_low = is_buyer.strip().lower()
+            if ib_low in ("true", "1", "yes"):
+                return "BUY"
+            if ib_low in ("false", "0", "no"):
+                return "SELL"
+        return ""
+
     ordered = sorted(
         enumerate(valid),
         key=lambda item: (_safe_order_ts(item[1]), item[0]),
     )
     chron = [o for _, o in ordered]
-    last_buy = next((o for o in reversed(chron) if str(o.get("side") or "").strip().upper() == "BUY"), None)
-    last_sell = next((o for o in reversed(chron) if str(o.get("side") or "").strip().upper() == "SELL"), None)
+    last_buy = next((o for o in reversed(chron) if _order_side(o) == "BUY"), None)
+    last_sell = next((o for o in reversed(chron) if _order_side(o) == "SELL"), None)
     last_any = chron[-1]
 
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
@@ -142,7 +161,7 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
     for o in chron:
-        side_o = str(o.get("side") or "").strip().upper()
+        side_o = _order_side(o)
         p_f, q_f, ts_raw = _norm_fill(o)
         if side_o == "BUY":
             buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
@@ -162,7 +181,7 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     lb_norm = _norm_fill(last_buy) if last_buy else (None, None, None)
     ls_norm = _norm_fill(last_sell) if last_sell else (None, None, None)
     return {
-        "last_action_side": last_any.get("side"),
+        "last_action_side": _order_side(last_any) or last_any.get("side"),
         "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
         "last_buy": (
             {"price": lb_norm[0], "qty": lb_norm[1], "ts_ms": lb_norm[2]}
@@ -542,7 +561,11 @@ class HighStakeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
-        side_norm = str(side or "").strip().upper()
+        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
+        if side_norm == "B":
+            side_norm = "BUY"
+        elif side_norm == "S":
+            side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")
 

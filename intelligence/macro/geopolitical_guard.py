@@ -42,7 +42,7 @@ class GeopoliticalShockGuard:
     ) -> GuardDecision:
         """Evaluate order against current geopolitical threat assessment."""
         # Only BUY orders are restrained; SELL / Stop-Loss orders always pass freely
-        if isinstance(side, bool) or str(side or "").strip().upper() != "BUY":
+        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B"):
             return GuardDecision.allow("GeopoliticalShockGuard", "sell_permitted_in_shock")
 
         if assessment is None:

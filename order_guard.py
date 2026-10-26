@@ -1013,7 +1013,14 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     )
     available = _clean_pos_float(available_qty, 0.0)
     px_clean = _clean_pos_float(price, 0.0)
-    req_clean = _clean_pos_float(required_qty, 0.0)
+    if required_qty is None or isinstance(required_qty, bool):
+        req_clean = 0.0
+    else:
+        try:
+            rf = float(required_qty)
+            req_clean = rf if (not math.isnan(rf) and rf > 0.0) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            req_clean = 0.0
     adjusted = compute_weight_capped_qty(weight, px_clean, req_clean, available, traded_value)
     total_ref = traded_value + available * px_clean
     max_trade_value = total_ref * weight

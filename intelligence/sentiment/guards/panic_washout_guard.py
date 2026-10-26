@@ -54,7 +54,7 @@ class PanicWashoutGuard:
     ) -> GuardDecision:
         """Evaluate order against macro panic and market-wide capitulation."""
         # Only guard BUY orders; stop-losses or exits are never impeded
-        if isinstance(side, bool) or str(side or "").strip().upper() != "BUY":
+        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B"):
             return GuardDecision.allow("PanicWashoutGuard", "sell_permitted_in_panic")
 
         # 1. Check severe accelerating Fear & Greed free-fall

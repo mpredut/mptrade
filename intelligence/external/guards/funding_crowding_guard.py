@@ -43,7 +43,7 @@ class FundingCrowdingGuard:
         self.max_long_funding_rate = max_long if max_long > 0.0 else 0.0005
         min_short = _safe_float(min_short_funding_rate, -0.0005)
         self.min_short_funding_rate = min_short if min_short < 0.0 else -0.0005
-        pol_norm = str(crowding_policy or "downscale").strip().lower()
+        pol_norm = str(crowding_policy or "downscale").strip().lower() if not isinstance(crowding_policy, bool) else "downscale"
         self.crowding_policy = pol_norm if pol_norm in ("downscale", "defer") else "downscale"
         scale_f = _safe_float(crowded_scale, 0.50)
         self.crowded_scale = scale_f if 0.0 < scale_f <= 1.0 else 0.50
@@ -56,7 +56,11 @@ class FundingCrowdingGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
-        side_norm = str(side or "").strip().upper()
+        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
+        if side_norm == "B":
+            side_norm = "BUY"
+        elif side_norm == "S":
+            side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="FundingCrowdingGuard",

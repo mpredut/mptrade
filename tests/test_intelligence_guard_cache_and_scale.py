@@ -10989,4 +10989,108 @@ def test_iteration100_core_guard_hierarchy_qlimit_external_llm_and_order_guard_s
     assert order_guard.active_cycle_window_ref([{"price": 100.0, "qty": 1.0, "time": 1000}], order_type=True) is None
 
 
+def test_iteration101_intelligence_guards_side_and_fill_extraction_safety():
+    """Iteration 101: Verify internal/external/sentiment/macro guard side handling, Weibull unknown direction, and fill extraction."""
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, extract_symbol_recent_fills
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+
+    # 1. WeibullExhaustionGuard: bool/empty/unknown trend_direction must not bypass exhaustion check as 'flat'
+    wg = WeibullExhaustionGuard(default_p90_days=5.0, policy="veto")
+    dec_bool_dir = wg.check("BTCUSDC", " b ", trend_duration_seconds=10 * 86400.0, trend_direction=True)
+    assert dec_bool_dir.allowed is False and "trend_exhausted" in dec_bool_dir.reason
+    dec_empty_dir = wg.check("BTCUSDC", "BUY", trend_duration_seconds=10 * 86400.0, trend_direction="  ")
+    assert dec_empty_dir.allowed is False and "trend_exhausted" in dec_empty_dir.reason
+    dec_unk_dir = wg.check("BTCUSDC", "BUY", trend_duration_seconds=10 * 86400.0, trend_direction="unknown")
+    assert dec_unk_dir.allowed is False and "trend_exhausted" in dec_unk_dir.reason
+    dec_flat_dir = wg.check("BTCUSDC", "BUY", trend_duration_seconds=10 * 86400.0, trend_direction="flat")
+    assert dec_flat_dir.allowed is True and "trend_direction_favorable" in dec_flat_dir.reason
+    assert wg.check("BTCUSDC", True, trend_duration_seconds=10 * 86400.0).allowed is True
+
+    # 2. Parabolic, Funding, Orderbook, Cascade, Whale, HighStake, ExtremeGreed, PanicWashout, Geopolitical side safety
+    pg = ParabolicSurgeGuard()
+    assert pg.check("BTCUSDC", True, 100.0).reason == "unsupported_side_skipped"
+    assert pg.check("BTCUSDC", " b ", 100.0).reason == "normal_market_structure"
+
+    fg = FundingCrowdingGuard(crowding_policy=True)
+    assert fg.crowding_policy == "downscale"
+    assert fg.check("BTCUSDC", True).reason == "unsupported_side_allowed"
+    assert fg.check("BTCUSDC", " b ").reason == "no_telemetry_data"
+
+    obg = OrderbookWallGuard()
+    assert obg.check("BTCUSDC", True).reason == "unsupported_side_allowed"
+    assert obg.check("BTCUSDC", " s ").reason == "no_orderbook_snapshot"
+
+    cg = LiquidationCascadeGuard()
+    assert cg.check("BTCUSDC", True).reason == "unsupported_side_allowed"
+    assert cg.check("BTCUSDC", " b ").reason == "no_liquidation_data"
+
+    wdg = WhaleDivergenceGuard()
+    assert wdg.check("BTCUSDC", True).reason == "unsupported_side_allowed"
+    assert wdg.check("BTCUSDC", " s ").reason == "no_whale_snapshot_data"
+
+    hsg = HighStakeGuard(min_notional_usd=700.0)
+    assert hsg.check("BTCUSDC", True, 100.0, 10.0).reason == "unsupported_side_exempt"
+    assert "below_high_stake_threshold" in hsg.check("BTCUSDC", " b ", 100.0, 1.0).reason
+
+    egg = ExtremeGreedGuard()
+    assert egg.check("BTCUSDC", True, snapshot=type("S", (), {"value": 95, "classification": "Extreme Greed"})()).allowed is True
+    assert egg.check("BTCUSDC", " b ", snapshot=type("S", (), {"value": 95, "classification": "Extreme Greed"})()).allowed is False
+
+    pwg = PanicWashoutGuard()
+    assert pwg.check("BTCUSDC", " b ").reason == "macro_conditions_stable"
+
+    gsg = GeopoliticalShockGuard()
+    assert gsg.check("BTCUSDC", " b ", assessment=type("A", (), {"threat_level": "CRITICAL_SHOCK", "recommended_brake": "HARD_VETO_NEW_BUYS", "summary": "test", "risk_score": 0.9})()).allowed is False
+
+    # 3. SmartStopLossGuard mode=False handling
+    sslg = SmartStopLossGuard(mode=False)
+    ok_sl, reason_sl, _ = sslg.evaluate("BTCUSDC", 0.04, 0.03)
+    assert ok_sl is True and reason_sl == "smart_sl_disabled"
+
+    # 4. extract_symbol_recent_fills supports Binance ("isBuyer") and Kraken ("type") formats
+    fills_binance = extract_symbol_recent_fills([
+        {"isBuyer": True, "price": "100.0", "executedQty": "2.0", "time": 1000},
+        {"isBuyer": "false", "price": "110.0", "executedQty": "1.0", "time": 2000},
+    ])
+    assert fills_binance is not None
+    assert fills_binance["last_action_side"] == "SELL"
+    assert fills_binance["last_buy"]["price"] == pytest.approx(100.0)
+    assert fills_binance["last_sell"]["price"] == pytest.approx(110.0)
+    assert fills_binance["active_avg_buy_px"] == pytest.approx(100.0)
+
+    fills_kraken = extract_symbol_recent_fills([
+        {"type": "buy", "price": "50.0", "qty": "4.0", "timestamp": 1000},
+        {"type": "s", "price": "55.0", "qty": "4.0", "timestamp": 2000},
+    ])
+    assert fills_kraken is not None
+    assert fills_kraken["last_action_side"] == "SELL"
+    assert fills_kraken["last_buy"]["price"] == pytest.approx(50.0)
+    assert fills_kraken["last_sell"]["price"] == pytest.approx(55.0)
+    assert fills_kraken["active_avg_buy_px"] is None
+
+    # 5. order_guard.weight_limit preserves float("inf") for auto-quantity (requested_qty=None)
+    import order_guard
+    from unittest.mock import patch
+    class _DummyProvider:
+        name = "Dummy"
+        def get_orders(self, sym, side, sec):
+            return []
+    with patch.object(order_guard, "resolve_trade_weight", return_value=0.10):
+        capped_inf = order_guard.weight_limit(_DummyProvider(), "BTCUSDC", "BUY", 100.0, float("inf"), available_qty=10.0)
+        assert capped_inf == pytest.approx(1.0)
+        capped_bool = order_guard.weight_limit(_DummyProvider(), "BTCUSDC", "BUY", 100.0, True, available_qty=10.0)
+        assert capped_bool == 0.0
+
+
+
+
 

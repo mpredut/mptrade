@@ -52,7 +52,11 @@ class OrderbookWallGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order book liquidity and limit walls."""
-        side_norm = str(side or "").strip().upper()
+        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
+        if side_norm == "B":
+            side_norm = "BUY"
+        elif side_norm == "S":
+            side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="OrderbookWallGuard",

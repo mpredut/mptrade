@@ -261,7 +261,12 @@ class SmartStopLossGuard:
         min_whale_long_pct: float = 0.60,
         min_taker_ratio: float = 0.85,
     ) -> None:
-        self.mode = str(mode or "enforce").strip().lower()
+        if mode is False:
+            self.mode = "off"
+        elif mode is True:
+            self.mode = "enforce"
+        else:
+            self.mode = str(mode or "enforce").strip().lower()
         max_t = _safe_float(max_threshold_pct, 6.0)
         self.max_threshold_pct = max_t if max_t > 0.0 else 6.0
         grace_s = _safe_float(grace_seconds, 120.0)
@@ -309,7 +314,7 @@ class SmartStopLossGuard:
         }
 
         # 0. Global Mode Switch
-        if self.mode in ("off", "0", "disabled"):
+        if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
             return True, "smart_sl_disabled", meta
 
         # 1. Wide Stops (> max_threshold_pct, e.g. 20-30% trailing stops) bypass immediately
