@@ -223,8 +223,9 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     # Exclusively applies to BUY entries; exits and SELL orders must never be shrunk by entry risk guards.
     scale_applied = False
     applied_scale = 1.0
-    effective_scale = scale
-    if effective_scale is None and regime_context is not None and str(side).upper() == "BUY":
+    is_buy_side = str(side or "").strip().upper() == "BUY"
+    effective_scale = scale if is_buy_side else None
+    if effective_scale is None and regime_context is not None and is_buy_side:
         effective_scale = getattr(regime_context, "suggested_scale", None)
 
     eff_scale_f = None

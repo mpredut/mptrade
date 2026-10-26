@@ -37,8 +37,18 @@ def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> b
     if v is None and folder is not None:
         v = env_value(folder, key)
     if v is None:
-        return default
-    return v.strip().lower() == "true"
+        return bool(default)
+    if isinstance(v, bool):
+        return v
+    cleaned = str(v).strip()
+    if not (cleaned.startswith('"') or cleaned.startswith("'")):
+        cleaned = cleaned.split("#", 1)[0].strip()
+    cleaned = cleaned.strip('"').strip("'").strip().lower()
+    if cleaned in ("1", "true", "yes", "on"):
+        return True
+    if cleaned in ("0", "false", "no", "off"):
+        return False
+    return bool(default)
 
 
 _TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts")
@@ -766,7 +776,16 @@ class MarketDataProvider(ABC):
             module=module,
             reference_mode=reference_mode,
         )
-        if window_s is None or isinstance(window_s, bool) or not math.isfinite(float(window_s)) or float(window_s) <= 0:
+        win_valid = False
+        if window_s is not None and not isinstance(window_s, bool):
+            try:
+                win_f = float(window_s)
+                if math.isfinite(win_f) and win_f > 0:
+                    window_s = win_f
+                    win_valid = True
+            except (TypeError, ValueError, OverflowError):
+                win_valid = False
+        if not win_valid:
             sb_val = 0.0
             if safeback_sec is not None and not isinstance(safeback_sec, bool):
                 try:

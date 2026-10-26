@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+import math
 
 
 class BinanceFilterError(ValueError):
@@ -21,12 +22,21 @@ def binance_filter_refusal_reason(error: Exception) -> str:
 
 def _parse_bool(value, default: bool = False) -> bool:
     if value is None:
-        return default
+        return bool(default)
     if isinstance(value, bool):
         return value
+    if isinstance(value, (int, float)):
+        if not math.isfinite(float(value)):
+            return bool(default)
+        return bool(value)
     if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    return bool(value)
+        cleaned = value.strip().lower()
+        if cleaned in ("1", "true", "yes", "on"):
+            return True
+        if cleaned in ("0", "false", "no", "off", ""):
+            return False
+        return bool(default)
+    return bool(default)
 
 
 def _decimal(value, *, name: str, allow_zero: bool = True) -> Decimal:
@@ -99,8 +109,12 @@ class BinanceOrderRules:
         else:
             min_notional = max_notional = Decimal(0)
             min_market = max_market = False
-        base = str(info.get("baseAsset") or "").strip()
-        quote = str(info.get("quoteAsset") or "").strip()
+        raw_base = info.get("baseAsset")
+        raw_quote = info.get("quoteAsset")
+        if isinstance(raw_base, bool) or isinstance(raw_quote, bool):
+            raise BinanceFilterError("baseAsset and quoteAsset must not be boolean")
+        base = str(raw_base or "").strip()
+        quote = str(raw_quote or "").strip()
         if not base or not quote:
             raise BinanceFilterError("baseAsset and quoteAsset are mandatory")
         return cls(

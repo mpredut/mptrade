@@ -9910,3 +9910,54 @@ def test_iteration84_spot_rules_state_store_execution_audit_and_http_resilience(
     assert http_resilience.mount_connect_retry(sess, attempts=2, backoff=0.2) is True
 
 
+def test_iteration85_decide_quantity_sell_scale_bool_env_and_binance_filters(monkeypatch):
+    """Verify Iteration 85 decide_quantity never downscales SELL even with explicit scale, bool_env inline comments/tokens, and binance_filters safety."""
+    import pytest
+    from providers.quantity import decide_quantity
+    from providers.base import bool_env
+    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _parse_bool
+
+    # 1. decide_quantity must never downscale SELL orders even when explicit scale=0.5 is passed (Theme 3)
+    class _DummyProvider:
+        def free_balance(self, _asset):
+            return 10.0
+
+        def policy_cap_quantity(self, *_a, **_k):
+            return 10.0
+
+        def fee_cap_quantity(self, _sym, _side, _px, bal_cap):
+            return bal_cap
+
+    prov = _DummyProvider()
+    sell_dec = decide_quantity(prov, "BTCUSDC", "SELL", 65000.0, 2.0, scale=0.5)
+    assert sell_dec.final_qty == 2.0
+    assert sell_dec.scale_applied is False
+    assert sell_dec.applied_scale == 1.0
+
+    buy_dec = decide_quantity(prov, "BTCUSDC", "BUY", 10.0, 1.0, scale=0.5)
+    assert buy_dec.final_qty == 0.5
+    assert buy_dec.scale_applied is True
+    assert buy_dec.applied_scale == 0.5
+
+    # 2. providers.base.bool_env strips inline comments/quotes and supports 1/yes/on and default fallback
+    monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "1 # inline comment")
+    assert bool_env("TEST_BOOL_ENV_FLAG", default=False) is True
+    monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "'false'")
+    assert bool_env("TEST_BOOL_ENV_FLAG", default=True) is False
+    monkeypatch.setenv("TEST_BOOL_ENV_FLAG", "invalid_token")
+    assert bool_env("TEST_BOOL_ENV_FLAG", default=True) is True
+
+    # 3. providers.binance_filters._parse_bool handles NaN and BinanceOrderRules rejects boolean baseAsset/quoteAsset
+    assert _parse_bool(float("nan"), default=False) is False
+    assert _parse_bool("unknown", default=True) is True
+    with pytest.raises(BinanceFilterError, match="baseAsset and quoteAsset must not be boolean"):
+        BinanceOrderRules.from_symbol_info({
+            "baseAsset": True,
+            "quoteAsset": "USDC",
+            "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01", "minPrice": "0.01", "maxPrice": "100000"},
+                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "1000"},
+            ],
+        })
+
+
