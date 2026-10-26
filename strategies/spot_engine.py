@@ -607,29 +607,29 @@ class Strategy:
         )
 
     def _order_from_pending(self, pending: dict) -> dict:
-        req_qty = float(pending.get("requested_qty") or 0.0)
-        sub_qty = pending.get("submitted_qty")
-        eff_vol = req_qty
-        if sub_qty is not None:
-            try:
-                sq = float(sub_qty)
-                if math.isfinite(sq) and sq > 0.0:
-                    eff_vol = sq
-            except (TypeError, ValueError, OverflowError):
-                pass
-        amount = float(pending.get("amount") or 0.0)
+        req_qty = _clean_pos_float(pending.get("requested_qty")) or 0.0
+        sub_qty = _clean_pos_float(pending.get("submitted_qty"))
+        eff_vol = sub_qty if sub_qty is not None else req_qty
+        meta = pending.get("metadata")
+        meta_amount = meta.get("amount") if isinstance(meta, dict) else None
+        amount = _clean_nonneg_float(pending.get("amount")) or _clean_nonneg_float(meta_amount) or 0.0
         if 0.0 < eff_vol < req_qty and amount > 0.0:
             amount = amount * (eff_vol / req_qty)
+        price = _clean_pos_float(pending.get("requested_price")) or 0.0
+        ts = _clean_pos_float(pending.get("created_at")) or self._now()
+        market_val = pending.get("market")
+        if market_val is None and isinstance(meta, dict):
+            market_val = meta.get("market")
         return {
             "txid": str(pending["order_id"]),
             "side": str(pending["side"]).lower(),
             "vol": eff_vol,
-            "price": float(pending.get("requested_price") or 0.0),
+            "price": price,
             "amount": amount,
             "kind": pending.get("kind"),
-            "market": bool(pending.get("market")),
+            "market": bool(market_val),
             "intent_id": pending.get("intent_id"),
-            "ts": float(pending.get("created_at") or self._now()),
+            "ts": ts,
         }
 
     def _adopt_pending_order(self, pending: dict) -> None:
@@ -738,7 +738,12 @@ class Strategy:
 
     def _placement_backoff_remaining(self, side: str, kind: str) -> float:
         key = self._placement_backoff_key(side, kind)
-        record = self.s.get("placement_backoffs", {}).get(key) or {}
+        records = self.s.get("placement_backoffs")
+        if not isinstance(records, dict):
+            return 0.0
+        record = records.get(key)
+        if not isinstance(record, dict):
+            return 0.0
         raw_until = record.get("until")
         if raw_until is None or isinstance(raw_until, bool):
             return 0.0
@@ -756,10 +761,21 @@ class Strategy:
 
     def _record_placement_backoff(self, side: str, kind: str, error) -> None:
         key = self._placement_backoff_key(side, kind)
-        records = self.s.setdefault("placement_backoffs", {})
-        previous = records.get(key) or {}
+        records = self.s.get("placement_backoffs")
+        if not isinstance(records, dict):
+            records = {}
+            self.s["placement_backoffs"] = records
+        previous = records.get(key)
+        if not isinstance(previous, dict):
+            previous = {}
+        raw_attempts = previous.get("attempts")
         try:
-            attempts = max(0, int(previous.get("attempts") or 0)) + 1
+            prev_attempts = (
+                0
+                if raw_attempts is None or isinstance(raw_attempts, bool)
+                else max(0, int(float(raw_attempts)))
+            )
+            attempts = prev_attempts + 1
         except (TypeError, ValueError, OverflowError):
             attempts = 1
         base = max(60.0, float(self.p.check_minutes) * 60.0)
@@ -776,8 +792,11 @@ class Strategy:
         )
 
     def _clear_placement_backoff(self, side: str, kind: str) -> None:
-        self.s.setdefault("placement_backoffs", {}).pop(
-            self._placement_backoff_key(side, kind), None)
+        records = self.s.get("placement_backoffs")
+        if not isinstance(records, dict):
+            self.s["placement_backoffs"] = {}
+            return
+        records.pop(self._placement_backoff_key(side, kind), None)
 
     # -- Placement -------------------------------------------------------------
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
@@ -995,7 +1014,7 @@ class Strategy:
         reconcile/step resumes this request, even after restart or a rebound.
         """
         pending = self.s.get("pending_exit")
-        if pending is None or (kind == "STOP" and pending["kind"] != "STOP"):
+        if not isinstance(pending, dict) or (kind == "STOP" and pending.get("kind") != "STOP"):
             self.s["pending_exit"] = {"kind": kind, "soft_floor": soft_floor}
             if min_profit_pct is not None and kind != "STOP":
                 # Freeze the signal's floor across retries, config changes, and restart.
@@ -1003,7 +1022,10 @@ class Strategy:
         return self._continue_market_exit(price)
 
     def _continue_market_exit(self, price: float) -> bool:
-        pending = self.s["pending_exit"]
+        pending = self.s.get("pending_exit")
+        if not isinstance(pending, dict):
+            self.s["pending_exit"] = None
+            return False
         if self.s.get("pending_intent") or self._has_pending_market_exit():
             return False
         # This boundary also covers resumption after an earlier failed save.
@@ -1017,7 +1039,7 @@ class Strategy:
             if "fill_price" in pending:
                 self._finalize_cycle_if_flat(pending, pending["fill_price"])
             return False
-        kind = pending["kind"]
+        kind = str(pending.get("kind") or "TP")
         factor = 0.995 if kind == "STOP" else 0.999
         reference = round(price * factor, self.price_dec)
         if "min_profit_pct" in pending and kind != "STOP":
@@ -1799,10 +1821,28 @@ class Strategy:
         closes: list[float], interval_minutes: float,
     ) -> float | None:
         """Return log-return deviation normalized to one hour for a fixed cadence."""
-        closes_slice = tuple(closes[-90:])
-        if len(closes_slice) < 20 or interval_minutes <= 0:
+        if not closes or isinstance(interval_minutes, bool):
             return None
-        cache_key = (closes_slice, float(interval_minutes))
+        try:
+            itv_f = float(interval_minutes)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(itv_f) or itv_f <= 0:
+            return None
+        clean_closes = []
+        for c in closes[-90:]:
+            if c is None or isinstance(c, bool):
+                continue
+            try:
+                cf = float(c)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(cf) and cf > 0:
+                clean_closes.append(cf)
+        closes_slice = tuple(clean_closes)
+        if len(closes_slice) < 20:
+            return None
+        cache_key = (closes_slice, itv_f)
         if cache_key in Strategy._HOURLY_VOL_CACHE:
             return Strategy._HOURLY_VOL_CACHE[cache_key]
         returns = [
@@ -1821,7 +1861,7 @@ class Strategy:
                 var_r += diff * diff
             var_r /= (n_r - 1)
             std = math.sqrt(var_r)
-            val = std * math.sqrt(60.0 / interval_minutes) * 100.0
+            val = std * math.sqrt(60.0 / itv_f) * 100.0
         if len(Strategy._HOURLY_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
             Strategy._HOURLY_VOL_CACHE.clear()
         Strategy._HOURLY_VOL_CACHE[cache_key] = val

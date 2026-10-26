@@ -515,6 +515,8 @@ class PositionExitManager:
             (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
         """
         episode = self.sl_episode_state.get(symbol)
+        if not isinstance(episode, dict):
+            episode = None
         same_buy = False
         if episode is not None and episode.get("buy_price") is not None:
             try:
@@ -663,6 +665,9 @@ class PositionExitManager:
 
         # Stop-loss boundary check
         existing_bounce = self.sl_bounce_state.get(symbol)
+        if existing_bounce is not None and not isinstance(existing_bounce, dict):
+            self.sl_bounce_state.pop(symbol, None)
+            existing_bounce = None
         if existing_bounce is not None and existing_bounce.get("buy_price") is not None:
             try:
                 if not math.isclose(float(existing_bounce["buy_price"]), buy_price, rel_tol=1e-9, abs_tol=1e-12):
@@ -1082,6 +1087,9 @@ class PositionExitManager:
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
 
         existing_ride = self.tp_ride_state.get(symbol)
+        if existing_ride is not None and not isinstance(existing_ride, dict):
+            self.tp_ride_state.pop(symbol, None)
+            existing_ride = None
         if existing_ride is not None and existing_ride.get("buy_price") is not None:
             try:
                 if not math.isclose(float(existing_ride["buy_price"]), buy_price, rel_tol=1e-9, abs_tol=1e-12):
@@ -1094,7 +1102,8 @@ class PositionExitManager:
             if symbol in self.tp_ride_state:
                 ride_state = self.tp_ride_state.pop(symbol)
                 try:
-                    peak_px = float(ride_state.get("peak_price") or current_price)
+                    raw_peak = ride_state.get("peak_price") if isinstance(ride_state, dict) else None
+                    peak_px = float(raw_peak or current_price)
                     if not math.isfinite(peak_px) or peak_px <= 0:
                         peak_px = current_price
                 except (TypeError, ValueError):
@@ -1121,6 +1130,9 @@ class PositionExitManager:
             return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
 
         ride_state = self.tp_ride_state.get(symbol)
+        if ride_state is not None and not isinstance(ride_state, dict):
+            self.tp_ride_state.pop(symbol, None)
+            ride_state = None
         if ride_state is None:
             if snapshot.trend_up and self.config.tp_trend_ride_enabled:
                 self.tp_ride_state[symbol] = {
@@ -1364,6 +1376,9 @@ class PositionExitManager:
                 )
 
         existing_state = self.reentry_state.get(symbol)
+        if existing_state is not None and not isinstance(existing_state, dict):
+            self.reentry_state.pop(symbol, None)
+            existing_state = None
         if existing_state and sell_time_s is not None:
             st_sell_time = _valid_ts(existing_state.get("sell_time"))
             st_started = _valid_ts(existing_state.get("started_at"))
@@ -1383,6 +1398,15 @@ class PositionExitManager:
             "started_at": now,
             "sell_time": sell_time_s,
         })
+        if not isinstance(state, dict):
+            state = {
+                "trough": default_trough,
+                "peak": default_peak,
+                "peak_bounce": current_price,
+                "started_at": now,
+                "sell_time": sell_time_s,
+            }
+            self.reentry_state[symbol] = state
         if sell_time_s is not None and _valid_ts(state.get("sell_time")) is None:
             state["sell_time"] = sell_time_s
 

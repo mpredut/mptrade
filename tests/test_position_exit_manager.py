@@ -952,6 +952,111 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertTrue(dec3.should_exit)
         self.assertIn("mdhtp_peak_pullback", dec3.reason)
 
+    def test_corrupted_state_and_strategy_helpers_safety(self):
+        from strategies.rtrade_pair import OrderSnapshot, PairPolicy
+        from strategies.spot_engine import Strategy, StratParams, _new_state
+        from strategies.spot_replay import _ReplayClient
+
+        # 1. PositionExitManager corrupted state entries
+        self.mgr.sl_bounce_state["BTCUSDT"] = "corrupt"
+        self.mgr.sl_episode_state["BTCUSDT"] = "corrupt"
+        self.mgr.tp_ride_state["BTCUSDT"] = "corrupt"
+        self.mgr.reentry_state["BTCUSDT"] = "corrupt"
+
+        snap_sl = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=94.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        dec_sl = self.mgr.evaluate_stop_loss(snap_sl)
+        self.assertEqual(dec_sl.action, ExitAction.HOLD)
+        self.assertIsInstance(self.mgr.sl_bounce_state.get("BTCUSDT"), dict)
+
+        snap_tp = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=108.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        dec_tp = self.mgr.evaluate_take_profit(snap_tp)
+        self.assertEqual(dec_tp.action, ExitAction.HOLD)
+        self.assertIsInstance(self.mgr.tp_ride_state.get("BTCUSDT"), dict)
+
+        snap_re = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=90.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        dec_re = self.mgr.evaluate_reentry(snap_re)
+        self.assertEqual(dec_re.action, ReentryAction.WAIT)
+        self.assertIsInstance(self.mgr.reentry_state.get("BTCUSDT"), dict)
+
+        # 2. Strategy helpers with corrupted/non-finite inputs
+        client = _ReplayClient(1000.0)
+        params = StratParams(
+            currency="EUR",
+            entry_amount=100.0,
+            entry_discount_pct=0.5,
+            dca_amount=100.0,
+            dca_drop_pct=5.0,
+            check_minutes=1.0,
+            takeprofit_pct=5.0,
+            max_budget=500.0,
+            max_dca_buys=4,
+            enable_takeprofit=True,
+            order_ttl_min=60.0,
+        )
+        strat = Strategy(
+            client,
+            "REPLAY",
+            params,
+            dry_run=True,
+            initial_state=_new_state(),
+            replay_mode=True,
+        )
+        strat.s["placement_backoffs"] = "corrupt"
+        self.assertEqual(strat._placement_backoff_remaining("buy", "ENTRY"), 0.0)
+        strat._record_placement_backoff("buy", "ENTRY", "insufficient funds")
+        self.assertGreater(strat._placement_backoff_remaining("buy", "ENTRY"), 0.0)
+        strat._clear_placement_backoff("buy", "ENTRY")
+        self.assertEqual(strat._placement_backoff_remaining("buy", "ENTRY"), 0.0)
+
+        order = strat._order_from_pending({
+            "order_id": "ORD-1",
+            "side": "BUY",
+            "requested_qty": "nan",
+            "submitted_qty": "1.5",
+            "requested_price": "100.0",
+            "metadata": {"amount": "150.0", "market": 1},
+            "created_at": "bad_ts",
+        })
+        self.assertEqual(order["vol"], 1.5)
+        self.assertEqual(order["price"], 100.0)
+        self.assertEqual(order["amount"], 150.0)
+        self.assertTrue(order["market"])
+
+        # _hourly_vol_from_closes with inf/nan/bool closes
+        closes_bad = [100.0 + i * 0.1 for i in range(25)] + [float("inf"), float("nan"), True]
+        vol_h = Strategy._hourly_vol_from_closes(closes_bad, 60.0)
+        self.assertIsNotNone(vol_h)
+        self.assertIsNone(Strategy._hourly_vol_from_closes(closes_bad, float("nan")))
+
+        # 3. rtrade_pair OrderSnapshot and PairPolicy normalization
+        osnap = OrderSnapshot(status="OPEN", filled_qty="1.25", cost="250.0", fee="0.5")
+        self.assertEqual(osnap.status, "open")
+        self.assertEqual(osnap.filled_qty, 1.25)
+        self.assertEqual(osnap.cost, 250.0)
+        self.assertEqual(osnap.fee, 0.5)
+        policy = PairPolicy(adjustment_fraction="0.02", quote_ttl_sec="30.0")
+        self.assertEqual(policy.adjustment_fraction, 0.02)
+        self.assertEqual(policy.quote_ttl_sec, 30.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

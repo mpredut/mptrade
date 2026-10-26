@@ -64,11 +64,28 @@ class OrderSnapshot:
     fee: float = 0.0
 
     def __post_init__(self):
-        if self.status not in {"open", "closed", "canceled", "expired"}:
+        norm_status = (
+            ""
+            if self.status is None or isinstance(self.status, bool)
+            else str(self.status).strip().lower()
+        )
+        if norm_status not in {"open", "closed", "canceled", "expired"}:
             raise ValueError(f"invalid rtrade order status: {self.status}")
-        if any(isinstance(value, bool) or not math.isfinite(float(value)) or float(value) < 0
-               for value in (self.filled_qty, self.cost, self.fee)):
-            raise ValueError("invalid rtrade financial snapshot")
+        object.__setattr__(self, "status", norm_status)
+        for name, value in (
+            ("filled_qty", self.filled_qty),
+            ("cost", self.cost),
+            ("fee", self.fee),
+        ):
+            if isinstance(value, bool):
+                raise ValueError("invalid rtrade financial snapshot")
+            try:
+                f = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("invalid rtrade financial snapshot") from exc
+            if not math.isfinite(f) or f < 0:
+                raise ValueError("invalid rtrade financial snapshot")
+            object.__setattr__(self, name, f)
 
 
 @dataclass(frozen=True)
@@ -83,13 +100,24 @@ class PairPolicy:
     price_decimals: int = 4
 
     def __post_init__(self):
-        numeric = (
-            self.adjustment_fraction, self.quote_ttl_sec, self.poll_sec,
-            self.fast_fill_ratio, self.min_edge_fraction,
-            self.shock_hard_stop_fraction, self.hard_stop_fraction,
-        )
-        if any(isinstance(value, bool) or not math.isfinite(float(value)) for value in numeric):
-            raise ValueError("the rtrade policy must hold finite values")
+        for name, value in (
+            ("adjustment_fraction", self.adjustment_fraction),
+            ("quote_ttl_sec", self.quote_ttl_sec),
+            ("poll_sec", self.poll_sec),
+            ("fast_fill_ratio", self.fast_fill_ratio),
+            ("min_edge_fraction", self.min_edge_fraction),
+            ("shock_hard_stop_fraction", self.shock_hard_stop_fraction),
+            ("hard_stop_fraction", self.hard_stop_fraction),
+        ):
+            if isinstance(value, bool):
+                raise ValueError("the rtrade policy must hold finite values")
+            try:
+                f = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("the rtrade policy must hold finite values") from exc
+            if not math.isfinite(f):
+                raise ValueError("the rtrade policy must hold finite values")
+            object.__setattr__(self, name, f)
         if not 0 < self.adjustment_fraction < 1:
             raise ValueError("adjustment_fraction must be in (0, 1)")
         if self.quote_ttl_sec <= 0 or self.poll_sec <= 0:
