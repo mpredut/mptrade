@@ -79,9 +79,15 @@ class BinanceOrderRules:
     def from_symbol_info(cls, info: dict) -> "BinanceOrderRules":
         if not isinstance(info, dict):
             raise BinanceFilterError("missing Binance symbol metadata")
+        raw_filters = info.get("filters")
+        if raw_filters is not None and not isinstance(raw_filters, (list, tuple)):
+            raise BinanceFilterError("PRICE_FILTER and LOT_SIZE are mandatory")
         filters = {
-            str(row.get("filterType")): row
-            for row in (info.get("filters") or []) if isinstance(row, dict)
+            row.get("filterType").strip(): row
+            for row in (raw_filters or [])
+            if isinstance(row, dict)
+            and isinstance(row.get("filterType"), str)
+            and row.get("filterType").strip()
         }
         price = filters.get("PRICE_FILTER")
         lot = filters.get("LOT_SIZE")
@@ -113,8 +119,10 @@ class BinanceOrderRules:
         raw_quote = info.get("quoteAsset")
         if isinstance(raw_base, bool) or isinstance(raw_quote, bool):
             raise BinanceFilterError("baseAsset and quoteAsset must not be boolean")
-        base = str(raw_base or "").strip()
-        quote = str(raw_quote or "").strip()
+        if not isinstance(raw_base, str) or not isinstance(raw_quote, str):
+            raise BinanceFilterError("baseAsset and quoteAsset are mandatory")
+        base = raw_base.strip()
+        quote = raw_quote.strip()
         if not base or not quote:
             raise BinanceFilterError("baseAsset and quoteAsset are mandatory")
         return cls(

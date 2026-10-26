@@ -125,9 +125,10 @@ def handle_binance_ws_event(
     if not isinstance(event, dict):
         return
     print("cacheManager handler call from binance ....")
-    event_type = event.get("e")
-    if not event_type:
+    raw_event_type = event.get("e")
+    if not isinstance(raw_event_type, str) or not raw_event_type.strip():
         return
+    event_type = raw_event_type.strip()
 
     _ws_event_stats[event_type] += 1
     should_log = (

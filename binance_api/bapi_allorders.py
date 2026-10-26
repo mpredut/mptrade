@@ -107,10 +107,20 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     return out
 
 
+def _normalize_side(order_type):
+    if isinstance(order_type, str):
+        cleaned = order_type.strip().upper()
+        if cleaned == "B":
+            return "BUY"
+        if cleaned == "S":
+            return "SELL"
+        return cleaned
+    return order_type
+
+
 def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False):
     try:
-        if isinstance(order_type, str):
-            order_type = order_type.strip().upper()
+        order_type = _normalize_side(order_type)
         sym.validate_symbols(symbol)
         sym.validate_ordertype(order_type)
         if startTime is None or isinstance(startTime, bool):
@@ -250,8 +260,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # into callers such as order_retry_worker.
     cache_order_manager = cm.get_cache_manager("Order", start_sync=False)
 
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
 
@@ -337,7 +346,7 @@ def get_total_traded_stats(symbol, period_seconds=86400):
     for t in trades or []:
         if not isinstance(t, dict):
             continue
-        side = str(t.get('side') or '').upper()
+        side = _normalize_side(t.get('side'))
         if side in stats:
             raw_px = t.get('price')
             raw_qty = t.get('quantity', t.get('qty'))

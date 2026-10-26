@@ -186,11 +186,9 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
         One of 'rtrade', 'tradeall', 'monitororder', 'monitortrades',
         'spot_dca', 'assetguardian', 'server', 'manual', 'unspecified', or 'alt:...'.
     """
-    if client_order_id is None or isinstance(client_order_id, bool):
+    if not isinstance(client_order_id, str):
         return "unspecified"
-    if isinstance(client_order_id, float) and not math.isfinite(client_order_id):
-        return "unspecified"
-    cid = str(client_order_id or "").strip()
+    cid = client_order_id.strip()
     if not cid:
         return "unspecified"
     for prefix, bot in sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):

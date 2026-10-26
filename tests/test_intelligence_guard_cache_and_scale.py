@@ -11477,6 +11477,95 @@ def test_iteration107_binance_cache_health_market_regime_and_order_outcomes_safe
     assert parts[14] == ""
 
 
+def test_iteration108_binance_filters_bapi_ws_normalize_and_bapi_safety():
+    """Iteration 108: Verify binance_filters, bapi_ws_normalize, bapi_ws_bridge, bapi, and order_id_context safety."""
+    from providers.binance_filters import BinanceFilterError, BinanceOrderRules
+    from binance_api import bapi
+    from binance_api import bapi_allorders
+    from binance_api import bapi_trades
+    from binance_api import bapi_ws_bridge as ws_bridge
+    from binance_api import bapi_ws_normalize as ws_norm
+    from binance_api import order_id_context as rc
+
+    # 1. BinanceOrderRules.from_symbol_info rejects non-iterable filters and non-str base/quote
+    with pytest.raises(BinanceFilterError):
+        BinanceOrderRules.from_symbol_info({"filters": True})
+    with pytest.raises(BinanceFilterError):
+        BinanceOrderRules.from_symbol_info(
+            {
+                "baseAsset": 123,
+                "quoteAsset": "USDC",
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+                ],
+            }
+        )
+
+    # 2. bapi_ws_normalize: parse_order_execution_report rejects non-integer float orderId or boolean side
+    assert ws_norm.parse_order_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 100, "i": float("nan"), "S": "BUY", "l": "1.0", "L": "100.0"}
+    ) is None
+    assert ws_norm.parse_order_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 100, "i": 200, "S": True, "l": "1.0", "L": "100.0"}
+    ) is None
+
+    # parse_trade_execution_report sanitizes fallback trade_id and commission fields
+    res_trade = ws_norm.parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "S": "BUY",
+            "t": None,
+            "i": 555,
+            "T": True,
+            "L": "100.0",
+            "l": "1.0",
+            "n": "nan",
+            "N": 12345,
+        },
+        now_ms=1700000000000,
+    )
+    assert res_trade is not None
+    _sym, trade_row = res_trade
+    assert trade_row["id"] == "555-1700000000000"
+    assert "commission" not in trade_row
+    assert "commissionAsset" not in trade_row
+
+    # 3. bapi_ws_bridge: handle_binance_ws_event ignores unhashable or boolean event types
+    ws_bridge.handle_binance_ws_event({"e": ["unhashable"]})
+    ws_bridge.handle_binance_ws_event({"e": True})
+
+    # 4. bapi / bapi_allorders / bapi_trades / order_id_context
+    assert bapi.update_price(True) is None
+    assert bapi.get_current_price(True) is None
+    assert bapi._normalize_side(" b ") == "BUY"
+    assert bapi_allorders._normalize_side(" s ") == "SELL"
+    assert bapi_trades._normalize_side(" b ") == "BUY"
+    assert rc.resolve_order_owner([1, 2, 3]) == "unspecified"
+    assert rc.resolve_order_owner(12345) == "unspecified"
+
+    agg = bapi_trades.aggregate_trades(
+        [
+            {
+                "orderId": "999",
+                "id": "1",
+                "symbol": True,
+                "price": "100.0",
+                "qty": "1.0",
+                "side": "BUY",
+                "isMaker": "yes",
+                "isBestMatch": 123,
+            }
+        ]
+    )
+    assert len(agg) == 1
+    assert agg[0]["symbol"] == ""
+    assert agg[0]["isMaker"] is None
+    assert agg[0]["isBestMatch"] is None
+
+
+
 
 
 

@@ -63,13 +63,22 @@ def parse_order_execution_report(
 
     try:
         raw_t = event.get("t")
-        if isinstance(raw_t, bool) or isinstance(event.get("i"), bool):
-            raise ValueError("boolean Binance trade/order ID")
+        raw_i = event.get("i")
+        raw_s = event.get("S")
+        if isinstance(raw_t, bool) or isinstance(raw_i, bool) or isinstance(raw_s, bool):
+            raise ValueError("boolean Binance trade/order ID or side")
         if isinstance(raw_t, float) and (not math.isfinite(raw_t) or not raw_t.is_integer()):
             raise ValueError("non-integer Binance trade ID")
+        if isinstance(raw_i, float):
+            if not math.isfinite(raw_i) or not raw_i.is_integer():
+                raise ValueError("non-integer Binance order ID")
+            raw_i = int(raw_i)
+        elif isinstance(raw_i, str):
+            raw_i = raw_i.strip() or None
         fill_id = int(raw_t)
         if fill_id < 0:
             raise ValueError("missing Binance trade ID")
+        side = extract_order_side(event)
         raw_l = event.get("l")
         last_quantity = float(raw_l) if _is_positive_finite(raw_l) else 0.0
         if last_quantity <= 0 and event.get("X") == "FILLED":
@@ -98,14 +107,14 @@ def parse_order_execution_report(
         if ts_ms is None or ts_ms <= 0:
             ts_ms = fallback_ms
         order_item = {
-            "orderId": event.get("i"),
+            "orderId": raw_i,
             # Store one immutable fill. A cumulative Z/z aggregate cannot name all
             # constituent fill IDs after reconnect, so REST backfill could count the
             # older fills twice. L/l plus t is exactly deduplicable across both paths.
             "price": last_price,
             "quantity": last_quantity,
             "timestamp": int(ts_ms),
-            "side": extract_order_side(event) or event.get("S"),
+            "side": side,
             "status": event.get("X"),
             "symbol": symbol,
             "eventType": event.get("x"),
@@ -173,9 +182,12 @@ def parse_trade_execution_report(
     if raw_trade_id is None and raw_order_id is None:
         builtins.print("[cacheManager][WS] rejected Trade report with missing trade and order ID")
         return None
+    ts_ms = extract_timestamp_ms(event)
+    if ts_ms is None or ts_ms <= 0:
+        ts_ms = _clean_now_ms(now_ms)
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
-        else f"{raw_order_id}-{event.get('T')}"
+        else f"{raw_order_id}-{int(ts_ms)}"
     )
     raw_price = event.get("L")
     if not _is_positive_finite(raw_price):
@@ -200,13 +212,10 @@ def parse_trade_execution_report(
                 cum_qty = float(raw_cum_qty) if _is_positive_finite(raw_cum_qty) else qty_f
                 if cum_quote > 0 and cum_qty > 0:
                     raw_price = str(cum_quote / cum_qty)
-    ts_ms = extract_timestamp_ms(event)
-    if ts_ms is None or ts_ms <= 0:
-        ts_ms = _clean_now_ms(now_ms)
     trade_item: dict[str, Any] = {
         "symbol": symbol,
         "id": trade_id,
-        "orderId": event.get("i"),
+        "orderId": raw_order_id if raw_order_id is not None else event.get("i"),
         "price": raw_price,
         "qty": raw_qty,
         "time": int(ts_ms),
@@ -214,8 +223,13 @@ def parse_trade_execution_report(
     }
     raw_n = event.get("n")
     if raw_n is not None and not isinstance(raw_n, bool):
-        trade_item["commission"] = str(raw_n)
+        try:
+            nf = float(raw_n)
+            if math.isfinite(nf) and nf >= 0:
+                trade_item["commission"] = str(raw_n).strip()
+        except (TypeError, ValueError, OverflowError):
+            pass
     raw_N = event.get("N")
-    if raw_N is not None and not isinstance(raw_N, bool):
-        trade_item["commissionAsset"] = str(raw_N)
+    if isinstance(raw_N, str) and raw_N.strip():
+        trade_item["commissionAsset"] = raw_N.strip()
     return symbol, trade_item

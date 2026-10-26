@@ -49,6 +49,17 @@ trade_cache = []
 #######      get_my_trades     #######
 #######
 
+def _normalize_side(order_type):
+    if isinstance(order_type, str):
+        cleaned = order_type.strip().upper()
+        if cleaned == "B":
+            return "BUY"
+        if cleaned == "S":
+            return "SELL"
+        return cleaned
+    return order_type
+
+
 def _valid_fill_id(val):
     if val is None or isinstance(val, bool):
         return None
@@ -96,7 +107,8 @@ def aggregate_trades(trades):
             aggregated_trades[orderId]['id'] = 0 if (raw_tid is None or isinstance(raw_tid, bool)) else raw_tid
         aggregated_trades[orderId]['count'] += 1
         aggregated_trades[orderId]['orderId'] = orderId
-        aggregated_trades[orderId]['symbol'] = trade.get('symbol', '')
+        raw_sym = trade.get('symbol', '')
+        aggregated_trades[orderId]['symbol'] = raw_sym.strip() if isinstance(raw_sym, str) else ''
         raw_px = trade.get('price')
         try:
             has_pos_raw_px = (
@@ -144,8 +156,10 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['commissionAsset'] = comm_asset
         aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], ts_ms)
         aggregated_trades[orderId]['isBuyer'] = is_buyer
-        aggregated_trades[orderId]['isMaker'] = trade.get('isMaker')
-        aggregated_trades[orderId]['isBestMatch'] = trade.get('isBestMatch')
+        raw_maker = trade.get('isMaker')
+        raw_best = trade.get('isBestMatch')
+        aggregated_trades[orderId]['isMaker'] = raw_maker if isinstance(raw_maker, bool) else None
+        aggregated_trades[orderId]['isBestMatch'] = raw_best if isinstance(raw_best, bool) else None
 
     # Build the aggregate list.
     aggregated_list = []
@@ -206,8 +220,7 @@ def _clean_non_neg_int(val, default: int = 0) -> int:
 
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     days_ago = _clean_non_neg_int(days_ago, default=0)
@@ -308,8 +321,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
 
 def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
     
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     backdays = _clean_non_neg_int(backdays, default=3)
@@ -349,8 +361,7 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
         
 def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
 
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     backdays = _clean_non_neg_int(backdays, default=3)
@@ -392,8 +403,7 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
 
 # Append newly fetched fills to an existing file.
 def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=2):
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     limit = _clean_non_neg_int(limit, default=1000) or 1000
@@ -516,8 +526,7 @@ def load_trades_from_file(filename):
 # Return recent BUY or SELL fills from the manager cache.
 def get_trade_orders(order_type, symbol, max_age_seconds):
    
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     

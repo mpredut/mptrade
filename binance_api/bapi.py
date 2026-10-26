@@ -59,8 +59,21 @@ except (ValueError, AttributeError):
 cprice = {}
 cprice_time = {}
 
+def _normalize_side(order_type):
+    if isinstance(order_type, str):
+        cleaned = order_type.strip().upper()
+        if cleaned == "B":
+            return "BUY"
+        if cleaned == "S":
+            return "SELL"
+        return cleaned
+    return order_type
+
+
 def update_price(symbol):
     """Refresh one REST quote without making an older value look fresh."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        return None
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         raw_px = ticker["price"]
@@ -80,6 +93,8 @@ def update_price(symbol):
 
 def get_current_price(symbol):
     """Return a bounded-age REST quote, failing closed after refresh failure."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        return None
     now = time.time()
     cached_at = cprice_time.get(symbol)
     cached = cprice.get(symbol)
@@ -186,8 +201,7 @@ def get_account_assets_balances(raise_errors=False):
 
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
 
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
         
     try:
@@ -200,7 +214,8 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 continue
             if extract_order_side(order) != order_type.upper():
                 continue
-            cid = str(order.get('clientOrderId') or '')
+            raw_cid = order.get('clientOrderId')
+            cid = raw_cid.strip() if isinstance(raw_cid, str) else ''
             if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
                 if cid.startswith("OR_"):
                     if accepted_owner_map is None:
@@ -289,8 +304,7 @@ def cancel_order(symbol, order_id):
 
 def cancel_open_orders(order_type, symbol, allowed_owners=None):
     
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol) 
     
     try:
@@ -309,8 +323,7 @@ def cancel_open_orders(order_type, symbol, allowed_owners=None):
 
 def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
     if expire_time is None or isinstance(expire_time, bool):
         return
@@ -351,8 +364,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
 
 def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=None):
 
-    if isinstance(order_type, str):
-        order_type = order_type.strip().upper()
+    order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
     if max_age_seconds is None or isinstance(max_age_seconds, bool):
         return
