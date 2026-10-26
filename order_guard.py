@@ -804,7 +804,13 @@ def window_reference(
     for BUY and SELL according to the resolved difficulty mode ('on'/'strict', 'average',
     'last', 'hybrid', 'dynamic', or 'off').
     Return None for an empty or disabled window. Read errors propagate so the caller fails closed."""
-    if not window_s or window_s <= 0:
+    if window_s is None or isinstance(window_s, bool):
+        return None
+    try:
+        window_s_f = float(window_s)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(window_s_f) or window_s_f <= 0:
         return None
     side = (order_type or "").upper()
     eff_mode = get_profit_guard_mode_cfg(
@@ -813,7 +819,7 @@ def window_reference(
     if eff_mode == "off":
         return None
     opp = opposite_side(side)
-    recent = provider.get_orders(symbol, opp, window_s)
+    recent = provider.get_orders(symbol, opp, window_s_f)
     if recent is None:
         raise ProviderError(f"window_reference({symbol}): failed to read order history")
     prices = [extract_order_price(o, default=0.0) for o in recent if extract_order_price(o, default=0.0) > 0]
@@ -824,7 +830,7 @@ def window_reference(
         for o in recent
     ):
         try:
-            same_orders = provider.get_orders(symbol, side, window_s) or []
+            same_orders = provider.get_orders(symbol, side, window_s_f) or []
         except Exception:
             same_orders = []
         if same_orders or eff_mode in ("average", "last", "hybrid"):

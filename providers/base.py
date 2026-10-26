@@ -482,8 +482,15 @@ def aggregate_fills_by_order_id(
                 break
         norm = normalize_order(r)
         ts_ms = norm["timestamp"]
-        if cutoff_ms is not None and (ts_ms is None or float(ts_ms) < cutoff_ms):
-            continue
+        if cutoff_ms is not None:
+            if isinstance(cutoff_ms, bool):
+                continue
+            try:
+                cutoff_f = float(cutoff_ms)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(cutoff_f) or ts_ms is None or float(ts_ms) < cutoff_f:
+                continue
         if want and norm["side"] != want:
             continue
         if parent_oid:

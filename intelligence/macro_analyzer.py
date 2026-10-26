@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -181,12 +182,57 @@ class MacroAnalyzer:
                         continue
                     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
                     raw_hist = fg_data.get("historical_values") or ()
+                    raw_val = fg_data.get("value")
+                    fg_val = 50
+                    if raw_val is not None and not isinstance(raw_val, bool):
+                        try:
+                            v_f = float(raw_val)
+                            if math.isfinite(v_f):
+                                fg_val = int(v_f)
+                        except (TypeError, ValueError, OverflowError):
+                            fg_val = 50
+                    raw_cls = fg_data.get("classification")
+                    if raw_cls is None or isinstance(raw_cls, bool) or not str(raw_cls).strip():
+                        raw_cls = fg_data.get("sentiment")
+                    fg_cls = (
+                        str(raw_cls).strip()
+                        if (raw_cls is not None and not isinstance(raw_cls, bool) and str(raw_cls).strip())
+                        else "Neutral"
+                    )
+                    raw_fg_ts = fg_data.get("ts")
+                    fg_ts = eval_now
+                    if raw_fg_ts is not None and not isinstance(raw_fg_ts, bool):
+                        try:
+                            ts_f = float(raw_fg_ts)
+                            if math.isfinite(ts_f) and ts_f > 0:
+                                fg_ts = ts_f
+                        except (TypeError, ValueError, OverflowError):
+                            fg_ts = eval_now
+                    raw_t7d = fg_data.get("trend_7d_change")
+                    fg_t7d = 0
+                    if raw_t7d is not None and not isinstance(raw_t7d, bool):
+                        try:
+                            t7_f = float(raw_t7d)
+                            if math.isfinite(t7_f):
+                                fg_t7d = int(t7_f)
+                        except (TypeError, ValueError, OverflowError):
+                            fg_t7d = 0
+                    hist_vals = []
+                    if isinstance(raw_hist, (list, tuple)):
+                        for v in raw_hist:
+                            if v is not None and not isinstance(v, bool):
+                                try:
+                                    hv_f = float(v)
+                                    if math.isfinite(hv_f):
+                                        hist_vals.append(int(hv_f))
+                                except (TypeError, ValueError, OverflowError):
+                                    pass
                     fg_snap = FearGreedSnapshot(
-                        value=int(fg_data.get("value", 50)),
-                        classification=str(fg_data.get("classification", fg_data.get("sentiment", "Neutral"))),
-                        timestamp=float(fg_data.get("ts", eval_now)),
-                        historical_values=tuple(int(v) for v in raw_hist),
-                        trend_7d_change=int(fg_data.get("trend_7d_change", 0)),
+                        value=fg_val,
+                        classification=fg_cls,
+                        timestamp=fg_ts,
+                        historical_values=tuple(hist_vals),
+                        trend_7d_change=fg_t7d,
                         is_extreme_fear=bool(fg_data.get("is_extreme_fear", False)),
                         is_extreme_greed=bool(fg_data.get("is_extreme_greed", False)),
                     )
@@ -205,18 +251,60 @@ class MacroAnalyzer:
                     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
                     raw_gainers = mb_data.get("top_gainers") or ()
                     raw_losers = mb_data.get("top_losers") or ()
+
+                    def _mb_float(val: Any, default: float) -> float:
+                        if val is None or isinstance(val, bool):
+                            return default
+                        try:
+                            f = float(val)
+                            return f if math.isfinite(f) else default
+                        except (TypeError, ValueError, OverflowError):
+                            return default
+
+                    def _mb_int(val: Any, default: int) -> int:
+                        if val is None or isinstance(val, bool):
+                            return default
+                        try:
+                            f = float(val)
+                            return int(f) if math.isfinite(f) else default
+                        except (TypeError, ValueError, OverflowError):
+                            return default
+
+                    raw_adv = mb_data.get("advancing_count")
+                    if raw_adv is None:
+                        raw_adv = mb_data.get("advancing")
+                    raw_dec = mb_data.get("declining_count")
+                    if raw_dec is None:
+                        raw_dec = mb_data.get("declining")
+                    raw_tot = mb_data.get("total_count")
+                    if raw_tot is None:
+                        raw_tot = mb_data.get("total_symbols")
+                    raw_reg = mb_data.get("regime")
+                    mb_regime = (
+                        str(raw_reg).strip()
+                        if (raw_reg is not None and not isinstance(raw_reg, bool) and str(raw_reg).strip())
+                        else "NEUTRAL"
+                    )
                     mb_snap = MarketBreadthSnapshot(
-                        advance_ratio=float(mb_data.get("advance_ratio", 0.5)),
-                        advancing_count=int(mb_data.get("advancing_count", mb_data.get("advancing", 0))),
-                        declining_count=int(mb_data.get("declining_count", mb_data.get("declining", 0))),
-                        total_count=int(mb_data.get("total_count", mb_data.get("total_symbols", 0))),
-                        median_change_pct=float(mb_data.get("median_change_pct", 0.0)),
-                        mean_change_pct=float(mb_data.get("mean_change_pct", 0.0)),
-                        dispersion_std=float(mb_data.get("dispersion_std", 0.0)),
-                        regime=str(mb_data.get("regime", "NEUTRAL")),
-                        top_gainers=tuple((str(x[0]), float(x[1])) for x in raw_gainers if isinstance(x, (list, tuple)) and len(x) >= 2),
-                        top_losers=tuple((str(x[0]), float(x[1])) for x in raw_losers if isinstance(x, (list, tuple)) and len(x) >= 2),
-                        ts=float(mb_data.get("ts", eval_now)),
+                        advance_ratio=_mb_float(mb_data.get("advance_ratio"), 0.5),
+                        advancing_count=_mb_int(raw_adv, 0),
+                        declining_count=_mb_int(raw_dec, 0),
+                        total_count=_mb_int(raw_tot, 0),
+                        median_change_pct=_mb_float(mb_data.get("median_change_pct"), 0.0),
+                        mean_change_pct=_mb_float(mb_data.get("mean_change_pct"), 0.0),
+                        dispersion_std=_mb_float(mb_data.get("dispersion_std"), 0.0),
+                        regime=mb_regime,
+                        top_gainers=tuple(
+                            (str(x[0]), _mb_float(x[1], 0.0))
+                            for x in (raw_gainers if isinstance(raw_gainers, (list, tuple)) else ())
+                            if isinstance(x, (list, tuple)) and len(x) >= 2 and x[0] is not None
+                        ),
+                        top_losers=tuple(
+                            (str(x[0]), _mb_float(x[1], 0.0))
+                            for x in (raw_losers if isinstance(raw_losers, (list, tuple)) else ())
+                            if isinstance(x, (list, tuple)) and len(x) >= 2 and x[0] is not None
+                        ),
+                        ts=_mb_float(mb_data.get("ts"), eval_now),
                     )
                     break
                 except Exception as mb_err:

@@ -5330,6 +5330,147 @@ def test_iteration25_smart_sl_clock_skew_post_stop_nan_internal_sentiment_guards
     assert adv._cached_assessment.key_risks == []
 
 
+def test_iteration26_spot_rules_nan_backoff_clamp_macro_null_json_and_window_ref_nan(tmp_path):
+    """Iteration 26:
+    1. spot_rules.check_slow_grind_exhaustion, check_parabolic_surge_exhaustion, and check_fast_profit_reversal
+       must reject NaN timestamps/thresholds rather than letting < comparisons evaluate to False and trigger exits.
+    2. Strategy._placement_backoff_remaining must clamp clock-skewed future 'until' to _PLACEMENT_BACKOFF_CAP_SEC
+       and fail open on NaN/bool 'until'.
+    3. MacroAnalyzer.assess_market_advisor must tolerate null JSON fields in fear_greed_collect.json and
+       market_breadth_collect.json without raising TypeError.
+    4. order_guard.window_reference, providers.base.aggregate_fills_by_order_id, KrakenProvider.get_orders,
+       and HyperliquidProvider.get_orders must reject NaN/negative window/cutoff rather than letting all
+       historical fills bypass the cutoff check.
+    """
+    import json
+    from types import SimpleNamespace
+    from strategies import spot_rules
+    from strategies.spot_engine import Strategy, _PLACEMENT_BACKOFF_CAP_SEC
+    from intelligence.macro_analyzer import MacroAnalyzer
+    import order_guard
+    from providers.base import aggregate_fills_by_order_id
+    from providers.kraken_provider import KrakenProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+
+    # 1. spot_rules NaN hardening
+    trig_sg, reason_sg = spot_rules.check_slow_grind_exhaustion(
+        current_price=120.0,
+        avg_cost=100.0,
+        entry_ts=float("nan"),
+        current_ts=1_700_000_000.0,
+        min_days=7.0,
+        min_gain_pct=15.0,
+        recent_peak=130.0,
+        shadow_prices=[(1_700_000_000.0, 130.0)],
+        flash_window_sec=900.0,
+        flash_drop_pct=1.5,
+        structural_drop_pct=2.5,
+    )
+    assert trig_sg is False and reason_sg == ""
+
+    trig_ps, reason_ps = spot_rules.check_parabolic_surge_exhaustion(
+        current_price=95.0,
+        avg_cost=100.0,
+        surge_peak=125.0,
+        surge_gain_pct=18.0,
+        exit_pullback_pct=5.0,
+        surge_active=True,
+        min_profit_pct=float("nan"),
+    )
+    assert trig_ps is False and reason_ps == ""
+
+    trig_fp, gain_fp, drop_fp = spot_rules.check_fast_profit_reversal(
+        current_price=115.0,
+        avg_cost=100.0,
+        base_tp_pct=5.0,
+        mult=2.0,
+        shadow_prices=[(1000.0, float("nan")), (1005.0, 120.0)],
+        window_sec=300.0,
+        drop_pct=3.0,
+        current_time=1010.0,
+    )
+    assert trig_fp is True
+    assert drop_fp > 3.0
+
+    # 2. Strategy._placement_backoff_remaining clamping & NaN safety
+    dummy_strat = SimpleNamespace(
+        s={
+            "placement_backoffs": {
+                "buy:DCA": {"until": 1_700_000_000.0 + 999999.0},
+                "sell:TP": {"until": float("nan")},
+            }
+        },
+        _now=lambda: 1_700_000_000.0,
+        _placement_backoff_key=Strategy._placement_backoff_key,
+    )
+    rem_dca = Strategy._placement_backoff_remaining(dummy_strat, "BUY", "DCA")
+    assert rem_dca == _PLACEMENT_BACKOFF_CAP_SEC
+    rem_tp = Strategy._placement_backoff_remaining(dummy_strat, "SELL", "TP")
+    assert rem_tp == 0.0
+
+    # 3. MacroAnalyzer.assess_market_advisor null JSON fields
+    (tmp_path / "fear_greed_collect.json").write_text(
+        json.dumps({
+            "value": None,
+            "classification": None,
+            "ts": None,
+            "historical_values": [None, 45],
+            "trend_7d_change": None,
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "market_breadth_collect.json").write_text(
+        json.dumps({
+            "advance_ratio": None,
+            "advancing_count": None,
+            "declining_count": None,
+            "total_count": None,
+            "median_change_pct": None,
+            "mean_change_pct": None,
+            "dispersion_std": None,
+            "regime": None,
+            "top_gainers": [["BTC", None]],
+            "top_losers": [["ETH", None]],
+            "ts": None,
+        }),
+        encoding="utf-8",
+    )
+    captured_fg = []
+    captured_mb = []
+    macro = MacroAnalyzer(symbols=["BTCUSDC"], cache_dir=str(tmp_path))
+    macro.gemini_advisor = SimpleNamespace(
+        review=lambda fear_greed=None, breadth=None, **kw: (
+            captured_fg.append(fear_greed),
+            captured_mb.append(breadth),
+            SimpleNamespace(is_fallback=False, market_bias="NEUTRAL", risk_level="LOW", recommended_action="HOLD", summary="ok", ts=1_700_000_000.0),
+        )[-1]
+    )
+    assert macro.assess_market_advisor(force=True, now=1_700_000_000.0) is True
+    assert len(captured_fg) == 1 and captured_fg[0].value == 50 and captured_fg[0].classification == "Neutral"
+    assert len(captured_mb) == 1 and captured_mb[0].advance_ratio == 0.5 and captured_mb[0].regime == "NEUTRAL"
+
+    # 4. aggregate_fills_by_order_id, window_reference, KrakenProvider.get_orders, HyperliquidProvider.get_orders with NaN
+    rows = [{"orderId": "1", "side": "SELL", "price": 100.0, "qty": 1.0, "timestamp": 1_700_000_000_000}]
+    assert aggregate_fills_by_order_id(rows, cutoff_ms=float("nan")) == []
+
+    called_get_orders = []
+    dummy_prov = SimpleNamespace(
+        name="kraken",
+        get_orders=lambda sym, side, win: (called_get_orders.append(win), rows)[-1],
+    )
+    assert order_guard.window_reference(dummy_prov, "TAOUSD", "BUY", float("nan")) is None
+    assert called_get_orders == []
+
+    kp = KrakenProvider()
+    assert kp.get_orders("TAOUSD", "BUY", float("nan")) == []
+    assert kp.get_orders("TAOUSD", "BUY", -10.0) == []
+
+    hp = HyperliquidProvider()
+    assert hp.get_orders("HYPEUSDC", "BUY", float("nan")) == []
+    assert hp.get_orders("HYPEUSDC", "BUY", -5.0) == []
+
+
+
 
 
 

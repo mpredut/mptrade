@@ -242,24 +242,53 @@ def check_fast_profit_reversal(
     1. current_gain_pct >= mult * base_tp_pct (e.g. >= 10.0%)
     2. micro_drop_pct >= drop_pct from the highest price in the last window_sec.
     """
-    if avg_cost <= 0 or current_price <= 0 or base_tp_pct <= 0 or mult <= 0 or drop_pct <= 0:
+    if (
+        not (
+            math.isfinite(float(avg_cost))
+            and math.isfinite(float(current_price))
+            and math.isfinite(float(base_tp_pct))
+            and math.isfinite(float(mult))
+            and math.isfinite(float(drop_pct))
+        )
+        or avg_cost <= 0
+        or current_price <= 0
+        or base_tp_pct <= 0
+        or mult <= 0
+        or drop_pct <= 0
+    ):
         return False, 0.0, 0.0
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
     required_gain = base_tp_pct * mult
-    if current_gain_pct < required_gain:
+    if not (current_gain_pct >= required_gain):
         return False, current_gain_pct, 0.0
-    if not shadow_prices:
+    valid_shadows = [
+        (float(t), float(p))
+        for t, p in (shadow_prices or ())
+        if t is not None
+        and p is not None
+        and not isinstance(t, bool)
+        and not isinstance(p, bool)
+        and math.isfinite(float(t))
+        and math.isfinite(float(p))
+        and float(p) > 0
+    ]
+    if not valid_shadows:
         return False, current_gain_pct, 0.0
-    now = current_time if current_time is not None else shadow_prices[-1][0]
-    cutoff = now - max(0.0, window_sec)
-    recent = [p for t, p in shadow_prices if t >= cutoff]
+    now = (
+        float(current_time)
+        if (current_time is not None and not isinstance(current_time, bool) and math.isfinite(float(current_time)))
+        else valid_shadows[-1][0]
+    )
+    win_s = float(window_sec) if (window_sec is not None and not isinstance(window_sec, bool) and math.isfinite(float(window_sec))) else 0.0
+    cutoff = now - max(0.0, win_s)
+    recent = [p for t, p in valid_shadows if t >= cutoff]
     if not recent:
-        recent = [shadow_prices[-1][1]]
+        recent = [valid_shadows[-1][1]]
     local_peak = max(max(recent), current_price)
     if local_peak <= 0:
         return False, current_gain_pct, 0.0
     micro_drop_pct = (local_peak - current_price) / local_peak * 100.0
-    triggered = micro_drop_pct >= drop_pct
+    triggered = bool(micro_drop_pct >= drop_pct)
     return triggered, current_gain_pct, micro_drop_pct
 
 
@@ -294,7 +323,20 @@ def check_parabolic_surge_exhaustion(
     the minimum surge profit floor (min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)).
     If surge is active and price >= floor, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
     """
-    if avg_cost <= 0 or current_price <= 0 or surge_peak <= 0 or exit_pullback_pct <= 0:
+    if (
+        not (
+            math.isfinite(float(avg_cost))
+            and math.isfinite(float(current_price))
+            and math.isfinite(float(surge_peak))
+            and math.isfinite(float(surge_gain_pct))
+            and math.isfinite(float(exit_pullback_pct))
+            and math.isfinite(float(min_profit_pct))
+        )
+        or avg_cost <= 0
+        or current_price <= 0
+        or surge_peak <= 0
+        or exit_pullback_pct <= 0
+    ):
         return False, ""
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
     peak_gain_pct = (surge_peak - avg_cost) / avg_cost * 100.0
@@ -303,12 +345,19 @@ def check_parabolic_surge_exhaustion(
     # It must never execute below the minimum surge profit floor!
     min_floor = parabolic_surge_profit_floor_pct(
         surge_gain_pct, exit_pullback_pct, min_profit_pct)
-    if current_gain_pct < min_floor:
+    if not (math.isfinite(min_floor) and current_gain_pct >= min_floor):
         return False, ""
 
     pos_surge = surge_gain_pct > 0 and (current_gain_pct >= surge_gain_pct or peak_gain_pct >= surge_gain_pct)
-    win_surge = (window_move_pct is not None and surge_move_pct > 0 and window_move_pct >= surge_move_pct
-                 and current_gain_pct >= surge_gain_pct * 0.8)
+    win_surge = (
+        window_move_pct is not None
+        and not isinstance(window_move_pct, bool)
+        and math.isfinite(float(window_move_pct))
+        and math.isfinite(float(surge_move_pct))
+        and surge_move_pct > 0
+        and window_move_pct >= surge_move_pct
+        and current_gain_pct >= surge_gain_pct * 0.8
+    )
     if not (surge_active or pos_surge or win_surge):
         return False, ""
     pullback = (surge_peak - current_price) / surge_peak * 100.0
@@ -340,30 +389,62 @@ def check_slow_grind_exhaustion(
     - Structural sensor: price drops >= structural_drop_pct from recent_peak (e.g. 2.5%), OR
     - SMA break: sma_value is provided and current_price < sma_value.
     """
-    if avg_cost <= 0 or current_price <= 0 or entry_ts is None:
+    if (
+        entry_ts is None
+        or isinstance(entry_ts, bool)
+        or not (
+            math.isfinite(float(avg_cost))
+            and math.isfinite(float(current_price))
+            and math.isfinite(float(entry_ts))
+            and math.isfinite(float(current_ts))
+            and math.isfinite(float(min_days))
+            and math.isfinite(float(min_gain_pct))
+        )
+        or avg_cost <= 0
+        or current_price <= 0
+    ):
         return False, ""
     elapsed_days = (current_ts - entry_ts) / 86400.0
-    if elapsed_days < min_days:
+    if not (elapsed_days >= min_days):
         return False, ""
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
-    if current_gain_pct < min_gain_pct:
+    if not (current_gain_pct >= min_gain_pct):
         return False, ""
     # Check flash drop
-    cutoff = current_ts - max(0.0, flash_window_sec)
-    recent = [p for t, p in shadow_prices if t >= cutoff]
-    if flash_drop_pct > 0 and recent:
+    win_s = float(flash_window_sec) if (flash_window_sec is not None and not isinstance(flash_window_sec, bool) and math.isfinite(float(flash_window_sec))) else 0.0
+    cutoff = current_ts - max(0.0, win_s)
+    recent = [
+        float(p)
+        for t, p in (shadow_prices or ())
+        if t is not None
+        and p is not None
+        and not isinstance(t, bool)
+        and not isinstance(p, bool)
+        and math.isfinite(float(t))
+        and math.isfinite(float(p))
+        and float(p) > 0
+        and float(t) >= cutoff
+    ]
+    if math.isfinite(float(flash_drop_pct)) and flash_drop_pct > 0 and recent:
         local_flash_peak = max(max(recent), current_price)
         if local_flash_peak > 0:
             flash_drop = (local_flash_peak - current_price) / local_flash_peak * 100.0
             if flash_drop >= flash_drop_pct:
                 return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{flash_drop_pct:.2f}%"
     # Check structural drop
-    if structural_drop_pct > 0 and recent_peak and recent_peak > 0:
+    if (
+        math.isfinite(float(structural_drop_pct))
+        and structural_drop_pct > 0
+        and recent_peak is not None
+        and not isinstance(recent_peak, bool)
+        and math.isfinite(float(recent_peak))
+        and recent_peak > 0
+    ):
         struct_drop = (recent_peak - current_price) / recent_peak * 100.0
         if struct_drop >= structural_drop_pct:
             return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{structural_drop_pct:.2f}%"
     # Check SMA break
-    if sma_value is not None and current_price < sma_value:
+    if sma_value is not None and not isinstance(sma_value, bool) and math.isfinite(float(sma_value)) and current_price < sma_value:
         return True, f"slow_grind_sma_break_{current_price:.4f}_lt_{sma_value:.4f}"
     return False, ""
 

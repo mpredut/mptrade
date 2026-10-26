@@ -262,6 +262,14 @@ class HyperliquidProvider(MarketDataProvider):
         Exclude perpetual HYPE fills to avoid mixing delta-neutral activity.
         """
         self.validate_symbol(symbol)
+        if since_s is None or isinstance(since_s, bool):
+            return []
+        try:
+            since_val = float(since_s)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(since_val) or since_val < 0:
+            return []
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -270,7 +278,7 @@ class HyperliquidProvider(MarketDataProvider):
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             if not addr:
                 raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
-            cutoff_ms = (time.time() - float(since_s)) * 1000.0
+            cutoff_ms = (time.time() - since_val) * 1000.0
             fills = c.info.user_fills(addr)
             if fills is None:
                 raise ProviderError(f"get_orders({symbol}): user_fills returned None")

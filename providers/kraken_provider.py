@@ -251,12 +251,20 @@ class KrakenProvider(MarketDataProvider):
         with BinanceProvider.get_orders().
         """
         try:
+            if since_s is None or isinstance(since_s, bool):
+                return []
+            try:
+                since_val = float(since_s)
+            except (TypeError, ValueError, OverflowError):
+                return []
+            if not math.isfinite(since_val) or since_val < 0:
+                return []
             rows = self._fills_from_cache(symbol)
             if rows is None:                                  # Missing or stale cache: direct API.
                 rows = self._fills_from_api(symbol)
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
-            cutoff_ms = (time.time() - since_s) * 1000.0
+            cutoff_ms = (time.time() - since_val) * 1000.0
             from .base import aggregate_fills_by_order_id
             return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:

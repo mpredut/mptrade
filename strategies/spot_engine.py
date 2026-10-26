@@ -697,8 +697,16 @@ class Strategy:
     def _placement_backoff_remaining(self, side: str, kind: str) -> float:
         key = self._placement_backoff_key(side, kind)
         record = self.s.get("placement_backoffs", {}).get(key) or {}
+        raw_until = record.get("until")
+        if raw_until is None or isinstance(raw_until, bool):
+            return 0.0
         try:
-            return max(0.0, float(record.get("until") or 0.0) - self._now())
+            until_f = float(raw_until)
+            now_f = float(self._now())
+            if not (math.isfinite(until_f) and math.isfinite(now_f)):
+                return 0.0
+            rem = max(0.0, until_f - now_f)
+            return min(_PLACEMENT_BACKOFF_CAP_SEC, rem)
         except (TypeError, ValueError, OverflowError):
             # Corrupt observational cooldown state must fail open; order lifecycle
             # and venue preflight remain the financial safety boundaries.
