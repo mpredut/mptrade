@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -56,8 +57,11 @@ def _kraken_price(pair: str):
 
 
 def _f(x, default=0.0):
+    if x is None or isinstance(x, bool):
+        return default
     try:
-        return float(x)
+        v = float(x)
+        return v if math.isfinite(v) else default
     except (TypeError, ValueError):
         return default
 
@@ -176,7 +180,8 @@ def run_alerts(kr: list[dict]) -> list[str]:
             st.pop(r["engine"], None)  # Back under the threshold -> reset.
             continue
         prev = st.get(r["engine"], {})
-        prev_dd = prev.get("dd", 0.0)
+        prev = prev if isinstance(prev, dict) else {}
+        prev_dd = _f(prev.get("dd"), 0.0)
         prev_ts = prev.get("ts")
         stale = True
         if prev_ts:

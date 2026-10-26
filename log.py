@@ -1,5 +1,6 @@
 from __future__ import annotations
 import builtins
+import math
 import os
 import sys
 import re
@@ -123,17 +124,17 @@ def configure(
             os.makedirs(resolved, exist_ok=True)
             _log_folder = resolved
         if max_size is not None:
-            if max_size <= 0:
+            if isinstance(max_size, bool) or not isinstance(max_size, (int, float)) or not math.isfinite(max_size) or int(max_size) <= 0:
                 raise ValueError("max_size must be > 0")
-            _max_size = max_size
+            _max_size = int(max_size)
         if check_every is not None:
-            if check_every <= 0:
+            if isinstance(check_every, bool) or not isinstance(check_every, (int, float)) or not math.isfinite(check_every) or int(check_every) <= 0:
                 raise ValueError("check_every must be > 0")
-            _check_every = check_every
+            _check_every = int(check_every)
         if min_free_percent is not None:
-            if not (0.0 <= min_free_percent <= 100.0):
+            if isinstance(min_free_percent, bool) or not isinstance(min_free_percent, (int, float)) or not math.isfinite(min_free_percent) or not (0.0 <= float(min_free_percent) <= 100.0):
                 raise ValueError("min_free_percent must be between 0 and 100")
-            _min_free_percent = min_free_percent
+            _min_free_percent = float(min_free_percent)
 
 
 # ── Background cleanup thread ─────────────────────────────────────────────────

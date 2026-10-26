@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import sys
 import urllib.request
@@ -50,10 +51,33 @@ def _perc(xs, pct):
 
 def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
     """PURE (testable): from the price series -> (up, down, up_median, down_median)."""
+    if (
+        not prices
+        or isinstance(window, bool)
+        or isinstance(pct, bool)
+    ):
+        return None
+    try:
+        win_i = int(window)
+        pct_f = float(pct)
+    except (TypeError, ValueError):
+        return None
+    if win_i <= 0 or not math.isfinite(pct_f) or not (0.0 < pct_f <= 100.0):
+        return None
+    clean_prices = []
+    for p in prices:
+        if p is None or isinstance(p, bool):
+            continue
+        try:
+            pf = float(p)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(pf) and pf > 0:
+            clean_prices.append(pf)
     ups, downs = [], []
-    for i in range(window, len(prices)):
-        win = prices[i - window:i + 1]
-        mn, mx, cur = min(win), max(win), prices[i]
+    for i in range(win_i, len(clean_prices)):
+        win = clean_prices[i - win_i:i + 1]
+        mn, mx, cur = min(win), max(win), clean_prices[i]
         if mn > 0:
             ups.append((cur - mn) / mn * 100)
         if mx > 0:
@@ -61,8 +85,8 @@ def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
     if not ups or not downs:
         return None
     return (
-        max(round(_perc(ups, pct), 1), FLOOR),
-        max(round(_perc(downs, pct), 1), FLOOR),
+        max(round(_perc(ups, pct_f), 1), FLOOR),
+        max(round(_perc(downs, pct_f), 1), FLOOR),
         round(statistics.median(ups), 1),
         round(statistics.median(downs), 1),
     )

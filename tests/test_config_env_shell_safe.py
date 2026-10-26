@@ -1327,20 +1327,30 @@ def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
     assert "$100.50" in summary_txt and "BUY $12.50" in summary_txt
 
 
+def test_log_configure_and_verify_tools_hardening():
+    import pytest
+    import log as log_mod
+    from verify_tools.gen_alert_thresholds import thresholds_from_prices
+    from verify_tools import portfolio_snapshot as ps
 
+    with pytest.raises(ValueError):
+        log_mod.configure(max_size=True)
+    with pytest.raises(ValueError):
+        log_mod.configure(check_every=True)
+    with pytest.raises(ValueError):
+        log_mod.configure(min_free_percent=float("nan"))
+    with pytest.raises(ValueError):
+        log_mod.configure(min_free_percent=True)
 
+    assert thresholds_from_prices([], window=20, pct=85) is None
+    assert thresholds_from_prices([100.0, 200.0], window=True, pct=85) is None
+    assert thresholds_from_prices([100.0, 200.0], window=1, pct=float("nan")) is None
+    res_t = thresholds_from_prices([None, True, float("nan"), -5.0, 100.0, 110.0, 95.0], window=1, pct=85)
+    assert res_t is not None and len(res_t) == 4 and all(v >= 3.0 for v in res_t[:2])
 
-
-
-
-
-
-
-
-
-
-
-
-
+    assert ps._f(True, 0.0) == 0.0
+    assert ps._f(float("nan"), 0.0) == 0.0
+    assert ps._f(float("inf"), 1.5) == 1.5
+    assert ps._f("42.5", 0.0) == 42.5
 
 

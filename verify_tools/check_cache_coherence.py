@@ -3,6 +3,7 @@
 # for ALL symbols (Binance and non-Binance entries from instruments.conf). Exits 1 if anything is stale.
 # Run periodically (cron/loop) to detect a frozen cache.
 import json
+import math
 import os
 import sys
 import time
@@ -65,12 +66,14 @@ for s in exp:
     ts = e.get("ts", 0)
     try:
         ts_val = float(ts) if ts is not None and not isinstance(ts, bool) else 0.0
+        if not math.isfinite(ts_val):
+            ts_val = 0.0
     except (TypeError, ValueError):
         ts_val = 0.0
     age = now - ts_val if ts_val > 0 else 1e9
     px = e.get("current_price")
     try:
-        px_ok = px is not None and not isinstance(px, bool) and float(px) > 0
+        px_ok = px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
     except (TypeError, ValueError):
         px_ok = False
     ok = -5.0 <= age < STALE_S and px_ok
@@ -99,6 +102,10 @@ for s in exp:
     try:
         ts_ms_val = float(ts_ms) if ts_ms is not None and not isinstance(ts_ms, bool) else 0.0
         px_val = float(price) if price is not None and not isinstance(price, bool) else 0.0
+        if not math.isfinite(ts_ms_val):
+            ts_ms_val = 0.0
+        if not math.isfinite(px_val):
+            px_val = 0.0
     except (TypeError, ValueError):
         ts_ms_val, px_val = 0.0, 0.0
     age = (now - ts_ms_val / 1000.0) if ts_ms_val > 0 else 1e9
