@@ -210,12 +210,20 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         accepted_owner_map.get(str(extract_order_id(order) or ''))
                         or accepted_owner_map.get(cid)
                     )
-                    allowed_set = (
-                        {allowed_owners.lower()}
-                        if isinstance(allowed_owners, str)
-                        else {str(o).lower() for o in allowed_owners}
-                    )
-                    if not inferred or inferred.lower() not in allowed_set:
+                    if isinstance(allowed_owners, bool):
+                        allowed_set = set()
+                    elif isinstance(allowed_owners, str):
+                        allowed_set = {allowed_owners.strip().lower()} if allowed_owners.strip() else set()
+                    else:
+                        try:
+                            allowed_set = {
+                                str(o).strip().lower()
+                                for o in allowed_owners
+                                if o is not None and not isinstance(o, bool) and str(o).strip()
+                            }
+                        except TypeError:
+                            allowed_set = set()
+                    if not inferred or str(inferred).strip().lower() not in allowed_set:
                         continue
                 else:
                     continue
@@ -234,7 +242,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                     raw_time = float(order['time'])
                     if math.isfinite(raw_time) and raw_time >= 0.0:
                         ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     pass
             raw_oid = (
                 order['orderId']

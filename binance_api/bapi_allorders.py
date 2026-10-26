@@ -82,7 +82,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
             if not isinstance(tail, dict) or isinstance(tail.get("id"), bool):
                 raise ValueError("invalid tail trade id")
             next_from_id = int(tail["id"]) + 1   # Continue from the next fill ID.
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             if strict:
                 raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")
             break
@@ -264,7 +264,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         if max_age_seconds is None or isinstance(max_age_seconds, bool):
             return []
         max_age_val = float(max_age_seconds)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return []
     if not math.isfinite(max_age_val) or max_age_val < 0:
         return []

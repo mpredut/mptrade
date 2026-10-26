@@ -192,7 +192,7 @@ def fetch_ohlc_candles(
                 h_v = float(item[2])
                 l_v = float(item[3])
                 c_v = float(item[4])
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if open_time_ms <= 0 or close_time_ms <= 0:
                 continue

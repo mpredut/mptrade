@@ -8985,3 +8985,58 @@ def test_iteration66_notify_engine_and_market_monitor_safety(tmp_path, monkeypat
     assert _safe_num(10**400, 1.5) == 1.5
 
 
+def test_iteration67_binance_ws_client_context_and_api_safety():
+    """Iteration 67: BinancePriceStream._process_message timestamp fallback, BinanceAccountStream._watchdog_loop inf age safety, order_id_context._base36 safety, and aggregate_trades OverflowError safety."""
+    import json
+    from binance_api.bapi_ws import BinancePriceStream, BinanceAccountStream
+    from binance_api.order_id_context import _base36
+    from binance_api.bapi_trades import aggregate_trades
+
+    # 1. BinancePriceStream._process_message preserves valid price when event timestamp E is float string or invalid
+    ps = BinancePriceStream(symbols=["BTCUSDC"])
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64500.5", "E": "1700000000000.0"}}))
+    assert ps.get_price("BTCUSDC") == 64500.5
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64600.25", "E": "not-a-ts"}}))
+    assert ps.get_price("BTCUSDC") == 64600.25
+
+    # 2. BinanceAccountStream._watchdog_loop handles _last_event_ts == 0.0 (age == inf) without OverflowError
+    unhealthy_called = []
+    acc_stream = BinanceAccountStream(
+        on_event=lambda _e: None,
+        on_unhealthy=lambda: (unhealthy_called.append(True), acc_stream._stop_event.set()),
+        loss_timeout_sec=0.01,
+    )
+    acc_stream._available = True
+    acc_stream._healthy = True
+    acc_stream._last_event_ts = 0.0
+    acc_stream._watchdog_loop()
+    assert unhealthy_called == [True]
+
+    # 3. _base36 handles None, bool, inf, nan, and invalid strings safely
+    assert _base36(None) == "0"
+    assert _base36(True) == "0"
+    assert _base36(float("inf")) == "0"
+    assert _base36(float("nan")) == "0"
+    assert _base36("bad") == "0"
+    assert _base36(36) == "10"
+
+    # 4. aggregate_trades handles OverflowError on quoteQty/commission gracefully
+    agg = aggregate_trades([
+        {
+            "orderId": 101,
+            "symbol": "BTCUSDC",
+            "qty": "0.5",
+            "price": "60000.0",
+            "quoteQty": 10**400,
+            "commission": 10**400,
+            "commissionAsset": "USDC",
+            "time": 1700000000000,
+            "isBuyer": True,
+        }
+    ])
+    assert len(agg) == 1
+    assert float(agg[0]["quoteQty"]) == 30000.0
+    assert float(agg[0]["commission"]) == 0.0
+
+
+

@@ -336,9 +336,14 @@ class BinancePriceStream(BinanceWSBase):
                 if not isinstance(data.get("E"), bool) and data.get("E") is not None
                 else data.get("C")
             )
-            if isinstance(raw_ts, bool):
-                raw_ts = None
-            ts_ms = int(raw_ts) if raw_ts is not None else int(time.time() * 1000)
+            ts_ms = 0
+            if raw_ts is not None and not isinstance(raw_ts, bool):
+                try:
+                    ts_f = float(raw_ts)
+                    if math.isfinite(ts_f) and ts_f > 0:
+                        ts_ms = int(ts_f)
+                except (TypeError, ValueError, OverflowError):
+                    ts_ms = 0
             if ts_ms <= 0:
                 ts_ms = int(time.time() * 1000)
             with self._lock:
@@ -446,10 +451,11 @@ class BinanceAccountStream(BinanceWSBase):
 
     def start(self, name: str = "WSUserData", daemon: bool = True) -> "BinanceAccountStream":
         super().start(name=name, daemon=daemon)
-        if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
-            self._watchdog_thread = threading.Thread(
-                target=self._watchdog_loop, name="WSUserDataWatchdog", daemon=True)
-            self._watchdog_thread.start()
+        with self._start_lock:
+            if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
+                self._watchdog_thread = threading.Thread(
+                    target=self._watchdog_loop, name="WSUserDataWatchdog", daemon=True)
+                self._watchdog_thread.start()
         return self
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
@@ -557,7 +563,8 @@ class BinanceAccountStream(BinanceWSBase):
                 age = max(0.0, now - self._last_event_ts) if self._last_event_ts else float("inf")
                 available, healthy = self._available, self._healthy
             if available and healthy and age > self.loss_timeout_sec:
-                logger.warning("[WS][WARN] No WS events for %ds -> falling back to polling.", int(age))
+                age_s = str(int(age)) if math.isfinite(age) else "inf"
+                logger.warning("[WS][WARN] No WS events for %ss -> falling back to polling.", age_s)
                 self._mark_unhealthy()
             self._stop_event.wait(5)
 

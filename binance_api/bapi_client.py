@@ -26,6 +26,7 @@ _resync_started = False
 _resync_thread = None
 _resync_stop_event = threading.Event()
 _resync_lock = threading.Lock()
+_client_lock = threading.Lock()
 
 
 def _install_retry(cl):
@@ -168,16 +169,20 @@ def stop_periodic_resync(timeout=2.0):
 
 def getClient():
     global _client
-    if _client is None:
-        from keys.apikeys import api_key, api_secret
-        if not api_key or not api_secret:
-            raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET are required for the REST client")
-        _client = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
-        _client.REQUEST_RECVWINDOW = REQUEST_RECVWINDOW_MS
-        _install_retry(_client)             # Retry transient GET failures, never POST/order placement.
-        _install_recvwindow_retry(_client)  # Re-sync and re-sign once on -1021 recvWindow rejection.
-        sync_time()                         # Initial server-time alignment.
-        _start_periodic_resync()            # Maintain alignment over time.
+    if _client is not None:
+        return _client
+    with _client_lock:
+        if _client is None:
+            from keys.apikeys import api_key, api_secret
+            if not api_key or not api_secret:
+                raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET are required for the REST client")
+            cl = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
+            cl.REQUEST_RECVWINDOW = REQUEST_RECVWINDOW_MS
+            _install_retry(cl)             # Retry transient GET failures, never POST/order placement.
+            _install_recvwindow_retry(cl)  # Re-sync and re-sign once on -1021 recvWindow rejection.
+            _client = cl
+            sync_time()                    # Initial server-time alignment.
+            _start_periodic_resync()       # Maintain alignment over time.
     return _client
 
 

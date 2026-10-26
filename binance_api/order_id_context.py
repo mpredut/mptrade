@@ -126,7 +126,13 @@ def _sanitize_name(value, default="unknown"):
 
 def _base36(value):
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    value = 0 if isinstance(value, bool) else max(0, int(value))
+    if value is None or isinstance(value, bool):
+        value = 0
+    else:
+        try:
+            value = max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            value = 0
     if value == 0:
         return "0"
 

@@ -72,7 +72,7 @@ def aggregate_trades(trades):
         try:
             raw_qq = 0.0 if (raw_qq_val is None or isinstance(raw_qq_val, bool)) else float(raw_qq_val)
             quote_qty = raw_qq if math.isfinite(raw_qq) and raw_qq > 0 else (px * qty)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             quote_qty = px * qty
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
         side = extract_order_side(trade)
@@ -94,7 +94,7 @@ def aggregate_trades(trades):
                 and math.isfinite(float(raw_px))
                 and float(raw_px) > 0
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             has_pos_raw_px = False
         aggregated_trades[orderId]['price'] = (
             raw_px
@@ -116,10 +116,10 @@ def aggregate_trades(trades):
         fee_info = extract_order_fee(trade)
         raw_comm = trade.get('commission', 0.0)
         try:
-            comm_val = 0.0 if (raw_comm is None or isinstance(raw_comm, bool)) else float(raw_comm)
+            comm_val = 0.0 if (raw_comm is None or isinstance(raw_comm_val := raw_comm, bool)) else float(raw_comm_val)
             if not math.isfinite(comm_val) or comm_val < 0:
                 comm_val = 0.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             comm_val = 0.0
         if comm_val == 0.0 and fee_info is not None:
             comm_val = fee_info['fee']
@@ -517,7 +517,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         if max_age_seconds is None or isinstance(max_age_seconds, bool):
             return []
         max_age_val = float(max_age_seconds)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return []
     if not math.isfinite(max_age_val) or max_age_val < 0:
         return []
