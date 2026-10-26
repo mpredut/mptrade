@@ -850,7 +850,10 @@ class HyperliquidProvider(MarketDataProvider):
                 if raw_f_oid is None or isinstance(raw_f_oid, bool):
                     continue
                 try:
-                    f_oid = int(raw_f_oid)
+                    f_oid_f = float(raw_f_oid)
+                    if not math.isfinite(f_oid_f) or not f_oid_f.is_integer():
+                        continue
+                    f_oid = int(f_oid_f)
                 except (TypeError, ValueError, OverflowError):
                     continue
                 if f_oid != oid:

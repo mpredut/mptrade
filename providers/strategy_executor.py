@@ -139,8 +139,8 @@ class OrderStatus:
                 if not math.isfinite(orig_val):
                     raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
                 object.__setattr__(self, "orig_qty", orig_val)
-            except (TypeError, OverflowError):
-                raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}") from exc
 
     @property
     def terminal(self) -> bool:
@@ -175,10 +175,12 @@ class PairPrecision:
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
             try:
                 raw_f = float(raw)
-                raw_i = int(raw)
+                if not math.isfinite(raw_f) or not raw_f.is_integer():
+                    raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
+                raw_i = int(raw_f)
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}") from exc
-            if not math.isfinite(raw_f) or raw_i != raw_f or raw_i < 0:
+            if raw_i < 0:
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
             object.__setattr__(self, name, raw_i)
         if isinstance(self.order_min, bool):
@@ -202,13 +204,16 @@ _CANDLE_INTERVALS = {
 
 def candle_interval(interval_min: int) -> str:
     """Return the canonical venue interval or reject an unsupported horizon."""
-    if isinstance(interval_min, bool):
+    if isinstance(interval_min, bool) or interval_min is None:
         raise ProviderError(f"invalid candle interval: {interval_min!r}")
     try:
-        minutes = int(interval_min)
+        itv_f = float(interval_min)
+        if not math.isfinite(itv_f) or not itv_f.is_integer():
+            raise ProviderError(f"invalid candle interval: {interval_min!r}")
+        minutes = int(itv_f)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ProviderError(f"invalid candle interval: {interval_min!r}") from exc
-    if minutes != interval_min or minutes not in _CANDLE_INTERVALS:
+    if minutes not in _CANDLE_INTERVALS:
         raise ProviderError(f"unsupported candle interval: {interval_min!r} minutes")
     return _CANDLE_INTERVALS[minutes]
 

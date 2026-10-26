@@ -176,6 +176,34 @@ class ExecutionAuditTest(unittest.TestCase):
             self.executor.reconciliation_capabilities(),
         )
 
+    def test_audit_ohlc_series_and_strategy_executor_validation(self):
+        from providers.strategy_executor import candle_interval
+
+        for bad_itv in (True, False, None, 0, -5, 1.5, float("nan"), float("inf"), "bad"):
+            with self.assertRaises(ProviderError):
+                self.wrapped.ohlc_series("ABC", bad_itv)
+
+        series_f = self.wrapped.ohlc_series("ABC", 240.0)
+        self.assertEqual(series_f.interval_min, 240)
+
+        self.wrapped._remember(" ABC ", " OID-99 ", "intent-99")
+        self.assertEqual(self.wrapped._intent("ABC", "OID-99"), "intent-99")
+
+        pp = PairPrecision("2.0", 4.0, "0.01", " ABC ")
+        self.assertEqual(pp.price_decimals, 2)
+        self.assertEqual(pp.volume_decimals, 4)
+        self.assertEqual(pp.base_asset, "ABC")
+        with self.assertRaises(ValueError):
+            PairPrecision("2.5", 4, 0.01, "ABC")
+
+        self.assertEqual(candle_interval(60.0), "1h")
+        self.assertEqual(candle_interval("60"), "1h")
+        with self.assertRaises(ProviderError):
+            candle_interval("60.5")
+
+        with self.assertRaisesRegex(ValueError, "invalid orig_qty"):
+            OrderStatus("open", 0.0, 0.0, 0.0, orig_qty="not_a_number")
+
 
 if __name__ == "__main__":
     unittest.main()

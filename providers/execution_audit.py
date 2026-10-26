@@ -174,8 +174,10 @@ class AuditedStrategyExecutor:
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
         if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
             return
+        sym_key = "" if symbol is None or isinstance(symbol, bool) else str(symbol).strip()
+        oid_key = str(order_id).strip()
         with self._lock:
-            key = (symbol, str(order_id))
+            key = (sym_key, oid_key)
             self._intent_by_order[key] = intent_id
             self._intent_by_order.move_to_end(key)
             while len(self._intent_by_order) > _CACHE_MAX:
@@ -186,8 +188,10 @@ class AuditedStrategyExecutor:
             self._remember(symbol, order_id, explicit)
             return explicit
         if order_id is not None and not isinstance(order_id, bool):
+            sym_key = "" if symbol is None or isinstance(symbol, bool) else str(symbol).strip()
+            oid_key = str(order_id).strip()
             with self._lock:
-                known = self._intent_by_order.get((symbol, str(order_id)))
+                known = self._intent_by_order.get((sym_key, oid_key))
             if known:
                 return known
         return f"recovered-{_slug(self.name).lower()}-{_slug(symbol)}-{_slug(order_id)}"
@@ -374,8 +378,19 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "ohlc_series", None)
         if callable(reader):
             return reader(symbol, interval_min)
+        if isinstance(interval_min, bool) or interval_min is None:
+            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+        try:
+            itv_f = float(interval_min)
+            if not math.isfinite(itv_f) or not itv_f.is_integer():
+                raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+            interval_i = int(itv_f)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}") from exc
+        if interval_i <= 0:
+            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         from market_regime import ClosedPriceSeries
         return ClosedPriceSeries(
-            tuple(self._executor.ohlc_closes(symbol, interval_min) or ()),
-            int(interval_min),
+            tuple(self._executor.ohlc_closes(symbol, interval_i) or ()),
+            interval_i,
         )

@@ -212,7 +212,17 @@ class BinanceProvider(MarketDataProvider):
                 side=extract_order_side(row),
                 base_fee=fee_info["base_fee"],
                 quote_fee=fee_info["quote_fee"]))
-        normalized.sort(key=lambda row: (int(row["timestamp"]), int(row["id"])))
+        def _trade_sort_key(item: dict) -> tuple[int, int, str]:
+            raw_id = item.get("id")
+            if not isinstance(raw_id, bool):
+                try:
+                    id_int = int(raw_id)
+                    return (int(item["timestamp"]), 0, f"{id_int:020d}")
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            return (int(item["timestamp"]), 1, str(raw_id or ""))
+
+        normalized.sort(key=_trade_sort_key)
         return remaining_average_cost(normalized, held_qty)
 
     def open_orders(self, symbol: str) -> List[dict]:
