@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -73,8 +74,13 @@ def yahoo_last(sym: str) -> float | None:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (watch)"})
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read())
-        res = (data.get("chart", {}).get("result") or [None])[0]
-        return (res or {}).get("meta", {}).get("regularMarketPrice")
+        chart = data.get("chart") if isinstance(data, dict) and isinstance(data.get("chart"), dict) else {}
+        res = (chart.get("result") or [None])[0]
+        raw_px = (res or {}).get("meta", {}).get("regularMarketPrice") if isinstance(res, dict) else None
+        if raw_px is None or isinstance(raw_px, bool):
+            return None
+        px = float(raw_px)
+        return px if math.isfinite(px) and px > 0 else None
     except Exception as e:  # noqa: BLE001
         log(f"  ! yahoo {sym}: {e}")
         return None
@@ -88,7 +94,18 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
     except KrakenError as e:
         log(f"  ! the balance is unavailable ({e}) — continuing with the public watch only")
         return
-    assets = {a: float(q) for a, q in bal.items() if float(q) > 0}
+    if not isinstance(bal, dict):
+        return
+    assets: dict[str, float] = {}
+    for a, q in bal.items():
+        try:
+            qf = float(q)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(qf) and qf > 0:
+            assets[a] = qf
+    if not isinstance(st.get("known_assets"), dict):
+        st["known_assets"] = {}
     if not st["known_assets"]:
         st["known_assets"] = assets
         log(f"  snapshot initial balanta: {len(assets)} active ({', '.join(sorted(assets))})")
@@ -153,21 +170,28 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
 def check_levels(client: KrakenClient, st: dict, alloc_price: float,
                  tp_pct: float, sl_pct: float, yahoo_sym: str, desktop: bool) -> None:
     """Alert once at +tp% or -sl% relative to the allocation price."""
-    if not st["allocated"] or alloc_price <= 0:
+    allocated = st.get("allocated")
+    if not isinstance(allocated, dict) or alloc_price <= 0:
         return
     price = None
-    if st["pair"]:
+    if st.get("pair"):
         try:
             price = client.last_price(st["pair"])
         except KrakenError:
             pass
     if price is None and yahoo_sym:
         price = yahoo_last(yahoo_sym)
-    if not price:
+    if not price or not math.isfinite(float(price)) or float(price) <= 0:
         return
+    price = float(price)
     chg = (price - alloc_price) / alloc_price * 100
     log(f"  price {price} vs allocation {alloc_price} ({chg:+.1f}%)")
-    qty = st["allocated"].get("qty", 0)
+    try:
+        qty = float(allocated.get("qty", 0) or 0)
+    except (TypeError, ValueError):
+        qty = 0.0
+    if not math.isfinite(qty) or qty < 0:
+        qty = 0.0
     if not st["alerted_tp"] and chg >= tp_pct:
         st["alerted_tp"] = True
         notify(title=f"📈 xStock {chg:+.1f}% above the allocation ({price})",

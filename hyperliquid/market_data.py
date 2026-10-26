@@ -8,8 +8,14 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import sys
 import time
 import urllib.request
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 try:
     from hyperliquid.common import log

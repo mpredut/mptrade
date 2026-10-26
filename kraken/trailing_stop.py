@@ -334,9 +334,13 @@ class KrakenTrailing:
             meta = result.intent.get("metadata") if isinstance(result.intent.get("metadata"), dict) else {}
             notify_action = str(result.intent.get("action") or meta.get("action") or "ORDER")
             notify_asset = result.intent.get("asset") or meta.get("asset") or result.intent.get("symbol")
-            qty = result.status.filled_qty
-            avg = (result.status.cost / qty
-                   if result.status.cost > 0 else result.intent["requested_price"])
+            qty = float(result.status.filled_qty)
+            cost = float(getattr(result.status, "cost", 0.0) or 0.0)
+            try:
+                req_px = float(result.intent.get("requested_price") or 0.0)
+            except (TypeError, ValueError):
+                req_px = 0.0
+            avg = cost / qty if cost > 0 and qty > 0 else req_px
             notify(
                 title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
                       f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
@@ -448,8 +452,12 @@ class KrakenTrailing:
                  f"(peak {peak:.4f}, -{trail}%)  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        try:
+            low_val = float((rb.get("low") if isinstance(rb, dict) else None) or price)
+        except (TypeError, ValueError):
+            low_val = float(price)
         self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{price:.4f}  "
-                 f"(a pullback from the low {rb['low']:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
+                 f"(a pullback from the low {low_val:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
         self.log(f"  [TRAIL-K] {asset}: {price:.4f}  varf {peak:.4f}  "
@@ -498,12 +506,18 @@ def main() -> int:
     if args.status:
         st = ts._load()
         for a, t in TRAIL_PCT.items():
-            e = st.get(a, {})
-            peak = e.get("peak")
-            rb = e.get("rebuy")
+            e = st.get(a, {}) if isinstance(st, dict) else {}
+            if not isinstance(e, dict):
+                e = {}
+            peak_raw = e.get("peak")
+            try:
+                peak = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
+            except (TypeError, ValueError):
+                peak = None
+            rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
             print(f"{a}: varf={peak} trailing={t}% " +
                   (f"sells below {peak*(1-t/100):.4f}" if peak else "(no peak yet)") +
-                  (f"  | re-buy ARMAT (qty {rb['qty']}, min {rb.get('low')})" if rb else ""))
+                  (f"  | re-buy ARMAT (qty {rb.get('qty')}, min {rb.get('low')})" if rb else ""))
         print(f"ENABLED={ts.enabled}  REBUY={REBUY_ENABLED} (bounce {REBUY_BOUNCE_PCT}%)")
         return 0
     if args.once:

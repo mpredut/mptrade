@@ -153,11 +153,14 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     Subsequent runs reuse it, so the window grows instead of sliding."""
     path = _anchor_path(pair, interval)
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as fh:
-            return int(fh.read().strip())
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return int(fh.read().strip())
+        except (OSError, ValueError):
+            pass
     os.makedirs(LOG_DIR, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(str(default_ts))
+    with atomic_text_writer(path) as fh:
+        fh.write(f"{int(default_ts)}\n")
     return default_ts
 
 
@@ -165,9 +168,22 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     path = _history_path(pair, interval)
     if not os.path.exists(path):
         return []
-    with open(path, encoding="utf-8") as fh:
-        rows = json.load(fh)
-    return [(int(row[0]), *(float(value) for value in row[1:])) for row in rows]
+    from state_io import read_recovering_previous
+    try:
+        rows = read_recovering_previous(path, json.loads, default=[])
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        return []
+    out: list[tuple[int, float, float, float, float]] = []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) != 5:
+            continue
+        try:
+            out.append((int(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4])))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _save_history(pair: str, interval: int, bars) -> None:
@@ -244,8 +260,8 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
             include_decision_trace=include_decision_trace,
         )
         rows[name] = {
-            "net_pct": round(m["net"] / budget * 100.0, 4),
-            "total_pct": round(m["total"] / budget * 100.0, 4),  # includes open unrealized PnL
+            "net_pct": round(m["net"] / budget * 100.0, 4) if budget > 0 else 0.0,
+            "total_pct": round(m["total"] / budget * 100.0, 4) if budget > 0 else 0.0,  # includes open unrealized PnL
             "maxdd_pct": round(m.get("max_drawdown_pct") or 0.0, 4),
             "cycles": m.get("cycles", 0),
             "open_qty": m.get("open_qty", 0.0),
@@ -272,7 +288,7 @@ def snapshot(pair: str, interval: int, fee_pct: float, quiet: bool = False) -> d
     fwd4 = [(o, h, l, c) for (_t, o, h, l, c) in fwd_bars]
 
     def _bh(seg):
-        return round((seg[-1][3] / seg[0][3] - 1.0) * 100.0, 4) if len(seg) >= 2 else None
+        return round((seg[-1][3] / seg[0][3] - 1.0) * 100.0, 4) if len(seg) >= 2 and seg[0][3] > 0 else None
 
     snap = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),

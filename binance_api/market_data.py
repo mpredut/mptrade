@@ -10,6 +10,7 @@ and incomplete bar handling for walk-forward evaluation and offline research.
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.parse
 import urllib.request
@@ -45,6 +46,8 @@ INTERVALS_STR_TO_MIN["1M"] = 43200
 
 def parse_interval_minutes(interval: int | str) -> int:
     """Convert an interval in minutes or string notation (e.g. '1h', 60) into minutes."""
+    if isinstance(interval, bool):
+        raise ValueError(f"interval must be positive integer or string, not bool: {interval}")
     if isinstance(interval, str):
         cleaned = interval.strip()
         if cleaned in INTERVALS_STR_TO_MIN:
@@ -149,8 +152,19 @@ def fetch_ohlc_candles(
             # 9: Taker buy base asset volume
             # 10: Taker buy quote asset volume
             # 11: Ignore
-            open_time_ms = int(item[0])
-            close_time_ms = int(item[6])
+            if not isinstance(item, (list, tuple)) or len(item) < 7:
+                continue
+            try:
+                open_time_ms = int(item[0])
+                close_time_ms = int(item[6])
+                o_v = float(item[1])
+                h_v = float(item[2])
+                l_v = float(item[3])
+                c_v = float(item[4])
+            except (TypeError, ValueError):
+                continue
+            if not all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
+                continue
             ts_sec = open_time_ms // 1000
 
             # If drop_incomplete is True and the candle has not closed yet, skip it
@@ -163,10 +177,10 @@ def fetch_ohlc_candles(
 
             records.append({
                 "timestamp": ts_sec,
-                "open": float(item[1]),
-                "high": float(item[2]),
-                "low": float(item[3]),
-                "close": float(item[4]),
+                "open": o_v,
+                "high": h_v,
+                "low": l_v,
+                "close": c_v,
             })
 
         last_open_time = int(raw[-1][0])

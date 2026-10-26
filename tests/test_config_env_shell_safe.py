@@ -320,6 +320,29 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
     assert hl_pa.analyze(_DummyClient(), "HYPE") is None
 
 
+def test_trailing_and_shadow_hardening(tmp_path, monkeypatch):
+    import pytest
+    from binance_api import market_data as b_md
+    from binance_api import trailing_stop as b_ts
+    from kraken import shadow_live
+
+    with pytest.raises(ValueError):
+        b_md.parse_interval_minutes(True)
+    with pytest.raises(ValueError):
+        b_ts._finite(True, name="test_bool")
+
+    monkeypatch.setattr(shadow_live, "LOG_DIR", str(tmp_path))
+    anchor_file = tmp_path / "HYPEUSD_240m.anchor"
+    anchor_file.write_text("corrupted_int", encoding="utf-8")
+    assert shadow_live._get_anchor("HYPEUSD", 240, 1700000000) == 1700000000
+
+    hist_file = tmp_path / "HYPEUSD_240m.ohlc.json"
+    hist_file.write_text('[[1700000000, 10, 12, 9, 11], ["bad"]]', encoding="utf-8")
+    loaded = shadow_live._load_history("HYPEUSD", 240)
+    assert loaded == [(1700000000, 10.0, 12.0, 9.0, 11.0)]
+
+
+
 
 
 

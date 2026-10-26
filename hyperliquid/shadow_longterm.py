@@ -84,19 +84,24 @@ def _variants(interval: int):
 
 def _fetch_with_ts(_pair: str, interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm candles")
+    import math
     from hl_client import HLClient
 
     token = os.environ.get("HL_SPOT_TOKEN") or "HYPE"
     client = HLClient.public()  # the unsigned client cannot submit orders
     candles = client.candles(token, "4h", lookback_hours=5000 * 4)
-    rows = sorted(
-        (
-            int(item["t"]) // 1000,
-            float(item["o"]), float(item["h"]),
-            float(item["l"]), float(item["c"]),
-        )
-        for item in candles
-    )
+    parsed: list[tuple[int, float, float, float, float]] = []
+    for item in candles or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = int(item["t"]) // 1000
+            o_v, h_v, l_v, c_v = float(item["o"]), float(item["h"]), float(item["l"]), float(item["c"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ts > 0 and all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
+            parsed.append((ts, o_v, h_v, l_v, c_v))
+    rows = sorted(parsed)
     # The final candle may still be forming; remove it as the Kraken runner does.
     return rows[:-1]
 

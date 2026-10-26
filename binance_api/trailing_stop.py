@@ -112,6 +112,8 @@ if not 1 <= REBUY_TREND_DAYS < 1000:
 
 def _finite(value, *, name: str, minimum=None, maximum=None) -> float:
     """Normalize one financial/runtime input or fail before the live loop starts."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric")
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -494,8 +496,12 @@ class TrailingStop:
                  f"[set TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        try:
+            low_val = float((rb.get("low") if isinstance(rb, dict) else None) or price)
+        except (TypeError, ValueError):
+            low_val = float(price)
         self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price:.4f}  "
-                 f"(a pullback from the low {rb['low']:.4f})  [TRAILING_ENABLED=true for it to execute]")
+                 f"(a pullback from the low {low_val:.4f})  [TRAILING_ENABLED=true for it to execute]")
 
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
         self.log(f"  [TRAIL] {pair}: {price:.4f}  varf {peak:.4f}  "
@@ -545,8 +551,14 @@ def main() -> int:
     if args.status:
         state = ts._load()
         for s, _asset, _pair, tr in ts.assets():
-            st = state.get(s, {})
-            peak = st.get("peak")
+            st = state.get(s, {}) if isinstance(state, dict) else {}
+            if not isinstance(st, dict):
+                st = {}
+            peak_raw = st.get("peak")
+            try:
+                peak = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
+            except (TypeError, ValueError):
+                peak = None
             mode = ("pending order" if st.get("pending_order") else
                     "warming up" if "warmup_at" in st else
                     "waiting for rebuy" if st.get("rebuy") else
