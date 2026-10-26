@@ -38,6 +38,7 @@ import dataclasses
 import difflib
 import io
 import json
+import math
 import os
 import sys
 import time
@@ -179,9 +180,15 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) != 5:
             continue
+        if any(isinstance(row[i], bool) for i in range(5)):
+            continue
         try:
-            out.append((int(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4])))
-        except (TypeError, ValueError):
+            ts_f = float(row[0])
+            o_f, h_f, l_f, c_f = float(row[1]), float(row[2]), float(row[3]), float(row[4])
+            if not all(math.isfinite(v) and v > 0 for v in (ts_f, o_f, h_f, l_f, c_f)):
+                continue
+            out.append((int(ts_f), o_f, h_f, l_f, c_f))
+        except (TypeError, ValueError, OverflowError):
             continue
     return out
 

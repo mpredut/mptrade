@@ -7746,3 +7746,112 @@ def test_iteration51_binance_api_and_providers_nan_bool_safety(monkeypatch):
     with pytest.raises(ProviderError):
         tp.order_status("NVDA_US_EQ", "ORD1")
 
+
+def test_iteration52_binance_market_data_and_kraken_modules_nan_bool_safety(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import market_data as b_md
+    from kraken import market_data as k_md
+    from kraken import trailing_stop as k_ts
+    from kraken import kraken_bot as k_bot
+    from kraken import kraken_xstock_watch as k_xw
+    from kraken import shadow_live as k_sl
+
+    # 1. binance_api/market_data: parse_interval_minutes & fetch_ohlc_candles reject float/Inf/NaN/bool
+    with pytest.raises(ValueError):
+        b_md.parse_interval_minutes(float("inf"))
+    with pytest.raises(ValueError):
+        b_md.parse_interval_minutes(60.5)
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, timeout=True)
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, timeout=float("nan"))
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, end_ms=float("inf"))
+    with pytest.raises(ValueError):
+        b_md.fetch_ohlc_candles("BTCUSDC", 60, start_ms=-5, end_ms=1000)
+
+    # 2. kraken/market_data: fetch_ohlc_candles rejects bool/NaN/Inf/<=0 interval and timeout
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", True)
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", 60, timeout=True)
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", float("nan"))
+    with pytest.raises(ValueError):
+        k_md.fetch_ohlc_candles("HYPEUSD", 0)
+
+    # 3. kraken/trailing_stop: KrakenTrailing.reconcile_pending & execute_rebuy NaN/bool safety
+    kt = k_ts.KrakenTrailing(
+        client=SimpleNamespace(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file=str(tmp_path / "kt_state.json"),
+    )
+    kt.order_lifecycle = SimpleNamespace(
+        reconcile=lambda pending, persist: SimpleNamespace(
+            outcome="terminal",
+            status=SimpleNamespace(status="closed", filled_qty=float("nan"), cost=float("nan"), fee=0.0),
+            intent=pending,
+        ),
+        new_intent=lambda **kw: kw,
+    )
+    st_dict = {"retry_counts": {}}
+    persist_fn = lambda _val: None
+    persist_fn.st = st_dict
+    pending_obj = {"symbol": "HYPEUSD", "action": "SELL", "submitted_qty": float("nan"), "attempt": True}
+    res = kt.reconcile_pending(pending_obj, persist_fn)
+    assert res.outcome == "terminal"
+    assert st_dict["retry_counts"]["SELL"] == 1
+
+    captured_intent = {}
+    kt._submit_lifecycle_order = lambda intent, *a, **kw: (
+        captured_intent.update(intent) or SimpleNamespace(outcome="refused", intent=intent)
+    )
+    kt.execute_rebuy(
+        "HYPE", "HYPE", "HYPEUSD", 1.0, 25.0,
+        {"low": float("nan"), "sell_price": True},
+        persist_fn,
+    )
+    assert captured_intent["metadata"]["anchor"] == 25.0
+    assert captured_intent["metadata"]["sell_price"] == 0.0
+
+    # 4. kraken/kraken_bot._cmd_balance ignores bool/NaN/Inf balances without crashing
+    logged_lines = []
+    monkeypatch.setattr(k_bot, "log", lambda msg: logged_lines.append(msg))
+    fake_kcli = SimpleNamespace(
+        balance=lambda: {"ZUSD": "100.5", "BAD_BOOL": True, "BAD_NAN": "nan", "BAD_INF": "inf", "ZERO": "0"}
+    )
+    assert k_bot._cmd_balance(fake_kcli) == 0
+    assert any("ZUSD" in ln for ln in logged_lines)
+    assert not any("BAD_" in ln for ln in logged_lines)
+
+    # 5. kraken/kraken_xstock_watch.check_levels ignores bool/NaN/Inf alloc_price, tp_pct, sl_pct, price
+    xw_st = {"allocated": {"asset": "SPCX", "qty": True}, "pair": "SPCXUSD", "alerted_tp": False, "alerted_sl": False}
+    k_xw.check_levels(
+        SimpleNamespace(last_price=lambda _p: 150.0),
+        xw_st,
+        alloc_price=float("nan"),
+        tp_pct=10.0,
+        sl_pct=10.0,
+        yahoo_sym="",
+        desktop=False,
+    )
+    assert xw_st["alerted_tp"] is False
+
+    # 6. kraken/shadow_live._load_history filters out bool/NaN/Inf/non-positive bars
+    monkeypatch.setattr(k_sl, "LOG_DIR", str(tmp_path))
+    hist_file = tmp_path / "HYPEUSD_240m.ohlc.json"
+    hist_file.write_text(
+        json.dumps([
+            [1700000000, 20.0, 21.0, 19.5, 20.5],
+            [True, 20.0, 21.0, 19.5, 20.5],
+            [1700014400, -1.0, 21.0, 19.5, 20.5],
+        ]),
+        encoding="utf-8",
+    )
+    loaded_bars = k_sl._load_history("HYPEUSD", 240)
+    assert loaded_bars == [(1700000000, 20.0, 21.0, 19.5, 20.5)]
+
+

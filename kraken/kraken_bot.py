@@ -19,6 +19,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -209,9 +210,16 @@ def _cmd_balance(client: KrakenClient) -> int:
         log(f"! balance: {e}")
         return 1
     log("=== Kraken balances ===")
-    for asset, amt in bal.items():
-        if float(amt) > 0:
-            log(f"  {asset:<8} {amt}")
+    if isinstance(bal, dict):
+        for asset, amt in bal.items():
+            if isinstance(amt, bool):
+                continue
+            try:
+                amt_f = float(amt)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(amt_f) and amt_f > 0:
+                log(f"  {asset:<8} {amt}")
     return 0
 
 

@@ -58,7 +58,12 @@ def parse_interval_minutes(interval: int | str) -> int:
                 raise ValueError(f"interval must be positive: {interval}")
             return val
         raise ValueError(f"unsupported Binance interval: {interval}")
-    val = int(interval)
+    if isinstance(interval, float) and (not math.isfinite(interval) or not interval.is_integer()):
+        raise ValueError(f"interval must be a finite integer number of minutes: {interval}")
+    try:
+        val = int(interval)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"interval must be positive integer: {interval}") from exc
     if val <= 0:
         raise ValueError(f"interval must be positive: {interval}")
     return val
@@ -99,18 +104,38 @@ def fetch_ohlc_candles(
     interval_ms = interval_min * 60 * 1000
 
     now_ms = int(time.time() * 1000)
-    if isinstance(end_ms, bool) or isinstance(start_ms, bool) or isinstance(lookback_days, bool) or isinstance(limit_per_batch, bool):
+    if (
+        isinstance(end_ms, bool)
+        or isinstance(start_ms, bool)
+        or isinstance(lookback_days, bool)
+        or isinstance(limit_per_batch, bool)
+        or isinstance(timeout, bool)
+    ):
         raise ValueError("OHLC time window parameters must not be boolean")
-    final_end = int(end_ms) if end_ms is not None else now_ms
-    if start_ms is not None:
-        final_start = int(start_ms)
-    elif lookback_days is not None:
-        if int(lookback_days) <= 0:
-            raise ValueError(f"lookback_days must be positive: {lookback_days}")
-        final_start = final_end - int(lookback_days) * 86400 * 1000
-    else:
-        # Default to ~30 days of history
-        final_start = final_end - 30 * 86400 * 1000
+    try:
+        timeout_f = float(timeout)
+        if not math.isfinite(timeout_f) or timeout_f <= 0:
+            raise ValueError(f"timeout must be finite and positive: {timeout}")
+        final_end = int(end_ms) if end_ms is not None else now_ms
+        if final_end <= 0:
+            raise ValueError(f"end_ms must be positive: {end_ms}")
+        if start_ms is not None:
+            final_start = int(start_ms)
+            if final_start < 0:
+                raise ValueError(f"start_ms must be non-negative: {start_ms}")
+        elif lookback_days is not None:
+            lb_days = int(lookback_days)
+            if lb_days <= 0:
+                raise ValueError(f"lookback_days must be positive: {lookback_days}")
+            final_start = final_end - lb_days * 86400 * 1000
+        else:
+            # Default to ~30 days of history
+            final_start = final_end - 30 * 86400 * 1000
+        batch_limit_raw = int(limit_per_batch)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid OHLC window parameters: {exc}") from exc
+    if batch_limit_raw <= 0:
+        raise ValueError(f"limit_per_batch must be positive: {limit_per_batch}")
 
     if final_start >= final_end:
         raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")
@@ -118,7 +143,7 @@ def fetch_ohlc_candles(
     records: list[dict] = []
     seen_timestamps: set[int] = set()
     current_start = final_start
-    batch_limit = min(1000, max(1, int(limit_per_batch)))
+    batch_limit = min(1000, max(1, batch_limit_raw))
 
     while current_start < final_end:
         params = {
@@ -191,7 +216,18 @@ def fetch_ohlc_candles(
                 "close": c_v,
             })
 
-        last_open_time = int(raw[-1][0])
+        last_open_time = None
+        for item in reversed(raw):
+            if isinstance(item, (list, tuple)) and len(item) >= 1 and not isinstance(item[0], bool):
+                try:
+                    cand_ot = float(item[0])
+                    if math.isfinite(cand_ot) and cand_ot > 0:
+                        last_open_time = int(cand_ot)
+                        break
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        if last_open_time is None:
+            break
         next_start = last_open_time + interval_ms
         if next_start <= current_start or len(raw) < batch_limit:
             break

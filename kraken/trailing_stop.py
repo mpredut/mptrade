@@ -318,11 +318,21 @@ class KrakenTrailing:
         retry_key = (pair, action)
         st = getattr(persist, "st", None)
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
+        raw_rc_act = rc.get(action, 0)
+        raw_att = pending.get("attempt")
+        try:
+            rc_act = 0 if isinstance(raw_rc_act, bool) else int(raw_rc_act or 0)
+        except (TypeError, ValueError, OverflowError):
+            rc_act = 0
+        try:
+            att_val = 1 if isinstance(raw_att, bool) else int(raw_att or 1)
+        except (TypeError, ValueError, OverflowError):
+            att_val = 1
         try:
             attempt_base = max(
                 int(self._retry_counts.get(retry_key, 0)),
-                int(rc.get(action, 0) or 0),
-                max(0, int(pending.get("attempt") or 1) - 1),
+                rc_act,
+                max(0, att_val - 1),
             )
         except (TypeError, ValueError):
             attempt_base = int(self._retry_counts.get(retry_key, 0))
@@ -333,8 +343,18 @@ class KrakenTrailing:
                 st.setdefault("retry_counts", {})[action] = new_count
                 persist(None)
         elif result.outcome == "terminal":
-            filled = float(getattr(result.status, "filled_qty", 0.0) or 0.0)
-            req_qty = float(pending.get("submitted_qty") or pending.get("requested_qty") or 0.0)
+            raw_filled = getattr(result.status, "filled_qty", 0.0)
+            raw_req = pending.get("submitted_qty") or pending.get("requested_qty") or 0.0
+            try:
+                filled_f = float(0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else raw_filled)
+                filled = filled_f if (math.isfinite(filled_f) and filled_f >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                filled = 0.0
+            try:
+                req_f = float(0.0 if (raw_req is None or isinstance(raw_req, bool)) else raw_req)
+                req_qty = req_f if (math.isfinite(req_f) and req_f >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                req_qty = 0.0
             st_name = str(getattr(result.status, "status", "") or "").lower()
             if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
                 new_count = attempt_base + 1
@@ -347,23 +367,30 @@ class KrakenTrailing:
                     st["retry_counts"].pop(action, None)
                     if not st["retry_counts"]:
                         st.pop("retry_counts", None)
-        if result.outcome == "terminal" and result.status.filled_qty > 0:
-            meta = result.intent.get("metadata") if isinstance(result.intent.get("metadata"), dict) else {}
-            notify_action = str(result.intent.get("action") or meta.get("action") or "ORDER")
-            notify_asset = result.intent.get("asset") or meta.get("asset") or result.intent.get("symbol")
-            qty = float(result.status.filled_qty)
-            cost = float(getattr(result.status, "cost", 0.0) or 0.0)
-            try:
-                req_px = float(result.intent.get("requested_price") or 0.0)
-            except (TypeError, ValueError):
-                req_px = 0.0
-            avg = cost / qty if cost > 0 and qty > 0 else req_px
-            notify(
-                title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
-                      f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
-                body=f"status={result.status.status} fee={result.status.fee}",
-                source="kraken-trail", price=avg, desktop=False,
-            )
+            if filled > 0:
+                meta = result.intent.get("metadata") if isinstance(result.intent.get("metadata"), dict) else {}
+                notify_action = str(result.intent.get("action") or meta.get("action") or "ORDER")
+                notify_asset = result.intent.get("asset") or meta.get("asset") or result.intent.get("symbol")
+                qty = filled
+                raw_cost = getattr(result.status, "cost", 0.0)
+                try:
+                    cost_f = float(0.0 if (raw_cost is None or isinstance(raw_cost, bool)) else raw_cost)
+                    cost = cost_f if (math.isfinite(cost_f) and cost_f >= 0.0) else 0.0
+                except (TypeError, ValueError, OverflowError):
+                    cost = 0.0
+                raw_req_px = result.intent.get("requested_price")
+                try:
+                    req_px_f = float(0.0 if (raw_req_px is None or isinstance(raw_req_px, bool)) else raw_req_px)
+                    req_px = req_px_f if (math.isfinite(req_px_f) and req_px_f >= 0.0) else 0.0
+                except (TypeError, ValueError, OverflowError):
+                    req_px = 0.0
+                avg = cost / qty if cost > 0 and qty > 0 else req_px
+                notify(
+                    title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
+                          f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
+                    body=f"status={result.status.status} fee={result.status.fee}",
+                    source="kraken-trail", price=avg, desktop=False,
+                )
         return result
 
     def _submit_lifecycle_order(self, intent, persist, pair, side, qty, price,
@@ -455,10 +482,22 @@ class KrakenTrailing:
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
         limit = price * 1.005
         self._sync_retry_count_from_state(pair, "REBUY", persist)
+        raw_low = rb.get("low") if isinstance(rb, dict) else None
+        try:
+            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
+            anchor_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
+        except (TypeError, ValueError, OverflowError):
+            anchor_val = float(price)
+        raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
+        try:
+            sp_f = float(raw_sp) if raw_sp is not None and not isinstance(raw_sp, bool) else 0.0
+            sell_price_val = sp_f if math.isfinite(sp_f) and sp_f >= 0 else 0.0
+        except (TypeError, ValueError, OverflowError):
+            sell_price_val = 0.0
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, limit,
-            anchor=float(rb.get("low") or price),
-            sell_price=float(rb.get("sell_price") or 0.0))
+            anchor=anchor_val,
+            sell_price=sell_price_val)
         result = self._submit_lifecycle_order(
             intent, persist, pair, "BUY", qty, limit,
             kind="TRAIL_REBUY", bypass_guards={"math_reference"})
@@ -479,9 +518,11 @@ class KrakenTrailing:
                  f"(peak {peak:.4f}, -{trail}%)  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        raw_low = rb.get("low") if isinstance(rb, dict) else None
         try:
-            low_val = float((rb.get("low") if isinstance(rb, dict) else None) or price)
-        except (TypeError, ValueError):
+            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
+            low_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
+        except (TypeError, ValueError, OverflowError):
             low_val = float(price)
         self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{price:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
@@ -538,8 +579,9 @@ def main() -> int:
                 e = {}
             peak_raw = e.get("peak")
             try:
-                peak = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
-            except (TypeError, ValueError):
+                cand_peak = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
+                peak = cand_peak if (cand_peak is not None and math.isfinite(cand_peak) and cand_peak > 0) else None
+            except (TypeError, ValueError, OverflowError):
                 peak = None
             rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
             print(f"{a}: varf={peak} trailing={t}% " +

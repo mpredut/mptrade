@@ -34,6 +34,16 @@ def fetch_ohlc_candles(
     Excludes the final still-forming candle when drop_incomplete is True to ensure
     reproducible historical backtests and avoid lookahead bias.
     """
+    if isinstance(interval, bool) or isinstance(timeout, bool):
+        raise ValueError("interval and timeout must not be boolean")
+    try:
+        itv_f = float(interval)
+        to_f = float(timeout)
+        if not (math.isfinite(itv_f) and math.isfinite(to_f)) or int(itv_f) <= 0 or to_f <= 0:
+            raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
+        interval = int(itv_f)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}") from exc
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     req = urllib.request.Request(

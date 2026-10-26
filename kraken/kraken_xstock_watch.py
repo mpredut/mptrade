@@ -181,8 +181,20 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
                  tp_pct: float, sl_pct: float, yahoo_sym: str, desktop: bool) -> None:
     """Alert once at +tp% or -sl% relative to the allocation price."""
     allocated = st.get("allocated")
-    if not isinstance(allocated, dict) or alloc_price <= 0:
+    if (
+        not isinstance(allocated, dict)
+        or any(isinstance(v, bool) for v in (alloc_price, tp_pct, sl_pct))
+    ):
         return
+    try:
+        alloc_f = float(alloc_price)
+        tp_f = float(tp_pct)
+        sl_f = float(sl_pct)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not all(math.isfinite(v) for v in (alloc_f, tp_f, sl_f)) or alloc_f <= 0:
+        return
+    alloc_price, tp_pct, sl_pct = alloc_f, tp_f, sl_f
     price = None
     if st.get("pair"):
         try:
@@ -191,14 +203,15 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
             pass
     if price is None and yahoo_sym:
         price = yahoo_last(yahoo_sym)
-    if not price or not math.isfinite(float(price)) or float(price) <= 0:
+    if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
         return
     price = float(price)
     chg = (price - alloc_price) / alloc_price * 100
     log(f"  price {price} vs allocation {alloc_price} ({chg:+.1f}%)")
+    raw_qty = allocated.get("qty", 0)
     try:
-        qty = float(allocated.get("qty", 0) or 0)
-    except (TypeError, ValueError):
+        qty = 0.0 if isinstance(raw_qty, bool) else float(raw_qty or 0)
+    except (TypeError, ValueError, OverflowError):
         qty = 0.0
     if not math.isfinite(qty) or qty < 0:
         qty = 0.0
