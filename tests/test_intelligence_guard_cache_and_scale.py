@@ -10041,5 +10041,77 @@ def test_iteration87_kraken_hyperliquid_t212_provider_side_and_cloid_safety():
     assert tp.pair_precision("  AAPL_US_EQ  ").base_asset == "AAPL_US_EQ"
 
 
+def test_iteration88_market_regime_context_and_order_retry_enqueue_safety(monkeypatch, tmp_path):
+    """Verify Iteration 88 MarketRegimeContext.from_decision provider object & boolean safety, MarketRegimeService interval=0/bool validation, and order_retry.enqueue symbol/side normalization."""
+    import pytest
+    from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvidence, MarketRegimeService
+    import order_retry
+
+    # 1. MarketRegimeContext.from_decision accepts provider objects with .name and rejects booleans
+    dec = MarketRegimeDecision(
+        regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="directional_signal"
+    )
+
+    class _ProvObj:
+        name = "Binance"
+
+    ctx = MarketRegimeContext.from_decision(
+        dec,
+        evaluated_at=1000.0,
+        symbol=" btcusdc ",
+        provider=_ProvObj(),
+        trend_duration_seconds=True,
+        benchmark_symbol=True,
+    )
+    assert ctx.symbol == "BTCUSDC"
+    assert ctx.provider == "binance"
+    assert ctx.trend_duration_seconds == 0.0
+    assert ctx.benchmark_symbol is None
+
+    # 2. MarketRegimeEvidence.temporal_state handles non-numeric max_age_seconds without ValueError
+    ev = MarketRegimeEvidence(
+        role="asset_short",
+        family="price_trend",
+        classifier="linear_noise_v1",
+        provider="Binance",
+        symbol="BTCUSDC",
+        decision=dec,
+        evaluated_at=1000.0,
+        observed_at=990.0,
+        max_age_seconds="bad_age",
+    )
+    assert ev.temporal_state == "stale"
+
+    # 3. MarketRegimeService rejects boolean now / interval_min and does not silently replace interval_min=0 with default
+    svc = MarketRegimeService()
+    with pytest.raises(ValueError, match="now must be a positive"):
+        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", now=True)
+    with pytest.raises(ValueError, match="regime interval"):
+        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", interval_min=True)
+    with pytest.raises(ValueError, match="regime interval"):
+        svc.resolve_with_evidence(_ProvObj(), "BTCUSDC", interval_min=0)
+
+    # 4. order_retry.enqueue rejects whitespace-only/boolean symbols and normalizes short-form B/S sides
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
+    monkeypatch.setattr(order_retry, "RETRY_ENABLED", True)
+
+    assert order_retry.enqueue("   ", "BUY", 1.0) is None
+    assert order_retry.enqueue(True, "BUY", 1.0) is None
+    assert order_retry.enqueue("BTCUSDC", True, 1.0) is None
+
+    rec_id = order_retry.enqueue(" btcusdc ", " b ", 1.0, requested_price=65000.0)
+    assert rec_id is not None
+    loaded = order_retry.load_validated()
+    assert len(loaded) == 1
+    assert loaded[0]["symbol"] == "btcusdc"
+    assert loaded[0]["side"] == "BUY"
+    assert order_retry.price_gate_ok({"side": "b", "requested_price": 65000.0}, 64000.0, tol=0.0) is True
+    assert order_retry.resolve(" btcusdc ", " b ") == 1
+
+
+
 
 

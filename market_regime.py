@@ -215,14 +215,44 @@ class MarketRegimeContext:
         benchmark_decision: Optional[MarketRegimeDecision] = None,
     ) -> "MarketRegimeContext":
         trend = "flat" if decision.regime == "sideways" else decision.regime
+        if evaluated_at is None or isinstance(evaluated_at, bool):
+            eval_ts = time.time()
+        else:
+            try:
+                eval_ts = float(evaluated_at)
+            except (TypeError, ValueError, OverflowError):
+                eval_ts = 0.0
+        if trend_duration_seconds is None or isinstance(trend_duration_seconds, bool):
+            dur_s = 0.0
+        else:
+            try:
+                dur_s = float(trend_duration_seconds)
+            except (TypeError, ValueError, OverflowError):
+                dur_s = -1.0
+        sym_norm = (
+            symbol.strip().upper()
+            if isinstance(symbol, str) and symbol.strip()
+            else None
+        )
+        p_raw = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
+        prov_norm = (
+            str(p_raw).strip().lower()
+            if isinstance(p_raw, str) and p_raw.strip()
+            else None
+        )
+        bench_norm = (
+            benchmark_symbol.strip().upper()
+            if isinstance(benchmark_symbol, str) and benchmark_symbol.strip()
+            else None
+        )
         return cls(
             decision=decision,
             resolved_trend=trend,
-            evaluated_at=time.time() if evaluated_at is None else float(evaluated_at),
-            symbol=symbol.strip().upper() if symbol else None,
-            provider=provider.strip().lower() if provider else None,
-            trend_duration_seconds=float(trend_duration_seconds or 0.0),
-            benchmark_symbol=benchmark_symbol.strip().upper() if benchmark_symbol else None,
+            evaluated_at=eval_ts,
+            symbol=sym_norm,
+            provider=prov_norm,
+            trend_duration_seconds=dur_s,
+            benchmark_symbol=bench_norm,
             benchmark_decision=benchmark_decision,
         )
 
@@ -294,12 +324,13 @@ class MarketRegimeEvidence:
         if age < -5.0:
             return "future"
         if self.max_age_seconds is not None:
-            if (
-                isinstance(self.max_age_seconds, bool)
-                or not math.isfinite(float(self.max_age_seconds))
-                or float(self.max_age_seconds) <= 0
-                or age > float(self.max_age_seconds)
-            ):
+            if isinstance(self.max_age_seconds, bool):
+                return "stale"
+            try:
+                max_age_f = float(self.max_age_seconds)
+            except (TypeError, ValueError, OverflowError):
+                return "stale"
+            if not math.isfinite(max_age_f) or max_age_f <= 0 or age > max_age_f:
                 return "stale"
         if self.max_age_seconds is None:
             return "unbounded"
@@ -609,6 +640,8 @@ class MarketRegimeService:
         correlation_key=None,
     ):
         if max_age_seconds is not None:
+            if isinstance(max_age_seconds, bool):
+                raise ValueError("max_age_seconds must be finite and positive")
             max_age_seconds = float(max_age_seconds)
             if not math.isfinite(max_age_seconds) or max_age_seconds <= 0:
                 raise ValueError("max_age_seconds must be finite and positive")
@@ -676,6 +709,8 @@ class MarketRegimeService:
         """
         parsed = MarketRegimeHorizon.parse(horizon)
         role = role or f"asset_{parsed.value}"
+        if isinstance(now, bool):
+            raise ValueError("now must be a positive finite Unix timestamp")
         evaluated_at = time.time() if now is None else float(now)
         if not math.isfinite(evaluated_at) or evaluated_at <= 0:
             raise ValueError("now must be a positive finite Unix timestamp")
@@ -722,9 +757,11 @@ class MarketRegimeService:
 
         configured = _HORIZON_SOURCES[parsed]
         if interval_min is not None or window_seconds is not None:
+            if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
+                raise ValueError("the regime interval and window must be positive")
             primary = (
-                int(interval_min or configured[0][0]),
-                float(window_seconds or configured[0][1]),
+                int(configured[0][0] if interval_min is None else interval_min),
+                float(configured[0][1] if window_seconds is None else window_seconds),
             )
             configured = (primary,) + tuple(
                 item for item in configured if item != primary
@@ -1044,6 +1081,8 @@ class MarketRegimeService:
 
     def _evaluate_provider_source(self, provider, symbol: str, *,
                                   interval_min=1, window_seconds=900.0):
+        if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
+            raise ValueError("the regime interval and window must be positive")
         interval_min = int(interval_min)
         window_seconds = float(window_seconds)
         if interval_min <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0:
@@ -1122,6 +1161,8 @@ class MarketRegimeService:
     @staticmethod
     def horizon_sample_capacity(horizon="short", interval_min=None) -> int:
         """Return the maximum samples in the canonical horizon window."""
+        if isinstance(interval_min, bool):
+            raise ValueError("the regime interval must be positive")
         parsed = MarketRegimeHorizon.parse(horizon)
         configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
         interval = configured_interval if interval_min is None else int(interval_min)

@@ -539,15 +539,23 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         producer_pid = None
         producer_process_start_id = None
     if (
-        isinstance(qty, bool)
+        isinstance(symbol, bool)
+        or not isinstance(symbol, str)
+        or isinstance(side, bool)
+        or isinstance(qty, bool)
         or isinstance(now, bool)
         or isinstance(created_ts, bool)
         or isinstance(attempts, bool)
         or isinstance(last_attempt_ts, bool)
     ):
         return None
+    symbol = symbol.strip()
     now = now if now is not None else time.time()
-    side_u = (side or "").upper()
+    side_u = str(side or "").strip().upper()
+    if side_u == "B":
+        side_u = "BUY"
+    elif side_u == "S":
+        side_u = "SELL"
     try:
         qty = float(qty)
         now = float(now)
@@ -1736,14 +1744,21 @@ def resolve(symbol, side):
     Accepted trackers are venue truth and can only be removed by exact terminal
     reconciliation. New code should use ``mark_accepted``/``complete_claim``.
     """
-    side_u = (side or "").upper()
+    if isinstance(symbol, bool) or isinstance(side, bool):
+        return 0
+    target_sym = str(symbol or "").strip()
+    side_u = str(side or "").strip().upper()
+    if side_u == "B":
+        side_u = "BUY"
+    elif side_u == "S":
+        side_u = "SELL"
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
         remaining = [
             rec for rec in existing
-            if not (rec.get("symbol") == symbol
-                    and (rec.get("side") or "").upper() == side_u
+            if not (str(rec.get("symbol") or "").strip() == target_sym
+                    and str(rec.get("side") or "").strip().upper() == side_u
                     and str(rec.get("lifecycle") or "submit_pending").lower()
                     == "submit_pending")
         ]
@@ -1874,10 +1889,11 @@ def price_gate_ok(rec, current_price, tol=None):
             not math.isfinite(req) or req <= 0 or
             not math.isfinite(tol) or tol < 0):
         return False
-    side = (rec.get("side") or "").upper()
-    if side == "SELL":
+    raw_side = rec.get("side")
+    side = str(raw_side or "").strip().upper() if not isinstance(raw_side, bool) else ""
+    if side in {"SELL", "S"}:
         return current_price >= req * (1.0 - tol)
-    if side == "BUY":
+    if side in {"BUY", "B"}:
         return current_price <= req * (1.0 + tol)
     return False
 
