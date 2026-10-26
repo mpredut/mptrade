@@ -726,6 +726,20 @@ def test_external_order_guard_rtrade_pair_and_monitortrades_hardening(monkeypatc
     monkeypatch.setitem(mt._SL_BOUNCE_STATE, "BTCUSDC", {"peak_bounce_price": None, "started_at": None})
     mt._log_sl_hold_state("BTCUSDC", snap, ExitDecision(ExitAction.HOLD, False, "bounce", metadata={"disaster_floor": None}), 0.05)
 
+    # 4. order_rollback.extract_order_restore_params and restore_cancelled_orders reject NaN/bool/inf
+    import order_rollback as orb
+
+    nan_params = orb.extract_order_restore_params({"side": "SELL", "price": float("nan"), "qty": 2.0, "amount": True})
+    assert nan_params["price"] == 0.0
+    assert nan_params["amount"] == 0.0
+    called = []
+    assert orb.restore_cancelled_orders(
+        [{"side": "SELL", "price": float("nan"), "qty": 2.0}, {"side": "SELL", "price": 100.0, "qty": 2.0, "amount": True}],
+        restore_fn=lambda p: called.append(p) or True,
+    ) == 1
+    assert len(called) == 1 and called[0]["amount"] == 200.0
+
+
 
 
 
