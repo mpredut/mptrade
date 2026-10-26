@@ -48,6 +48,8 @@ class WhalePositioningSnapshot:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
         import math
+        if not isinstance(data, dict):
+            data = {}
 
         def _f(key: str, default: float) -> float:
             raw = data.get(key)

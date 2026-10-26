@@ -2598,4 +2598,64 @@ def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
     assert yahoo.supports_symbol("   ") is False
 
 
+def test_monitortrades_agy_paths_and_external_collectors_robustness(tmp_path, monkeypatch):
+    """Verify monitortrades, orchestratorOS.agy.paths, and external collectors handle malformed payloads and non-numeric state values."""
+    from types import SimpleNamespace
+    import monitortrades as mt
+    from orchestratorOS.agy import paths as agy_paths
+    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
+
+    # 1. WhalePositioningSnapshot.from_dict handles non-dict payload gracefully
+    snap = WhalePositioningSnapshot.from_dict(None)  # type: ignore[arg-type]
+    assert snap.symbol == ""
+    assert snap.divergence_regime == "neutral"
+
+    # 2. orchestratorOS.agy.paths handles bools, Path objects, and ~ in visible_conversations_dir
+    assert agy_paths.expand_config_path(True) == ""  # type: ignore[arg-type]
+    assert agy_paths.expand_config_path(tmp_path) == str(tmp_path)  # type: ignore[arg-type]
+    vis_dir = agy_paths.visible_conversations_dir(str(tmp_path / ".gemini" / "antigravity-cli"))
+    assert vis_dir.endswith(os.path.join(".gemini", "antigravity", "conversations"))
+
+    # 3. monitortrades._extract_trade_uid and check_and_notify_executed_trades with malformed/tradeId items
+    assert mt._extract_trade_uid(None) == ""
+    assert mt._extract_trade_uid({"tradeId": 999}) == "999"
+    assert mt._extract_trade_uid({"id": True}) == ""
+
+    mt.reset_trades_monitor_state_for_test()
+    monkeypatch.setattr(
+        mt.apitrades,
+        "get_trade_orders",
+        lambda side, sym, maxage: ["not_a_dict", {"tradeId": "t100", "orderId": "o1", "price": "50000", "qty": "0.01", "side": "BUY"}],
+    )
+    mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
+    assert "t100" in mt._notified_trade_ids
+
+    # 4. monitortrades.get_available_qty rejects bools, negative numbers, and non-finite strings
+    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: True)) is None
+    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: -1.5)) is None
+    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: "bad")) is None
+    assert mt.get_available_qty("BTCUSDC", api=SimpleNamespace(free_balance=lambda base: "1.25")) == 1.25
+
+    # 5. monitortrades._place_guarded and _log_tp_hold_state / _log_sl_hold_state tolerate malformed numeric strings
+    placed_calls = []
+    dummy_inst = SimpleNamespace(symbol="BTCUSDC", place=lambda *a, **kw: placed_calls.append((a, kw)) or {"orderId": "1"})
+    assert mt._place_guarded(dummy_inst, "BUY", 100.0, 0.5, "not_a_float") is True
+    assert len(placed_calls) == 1
+
+    pos_snap = PositionSnapshot(
+        symbol="BTCUSDC",
+        current_price=105.0,
+        avg_buy_price=100.0,
+        sellable_qty=1.0,
+        current_time_s=1000.0,
+    )
+    dec = ExitDecision(action=ExitAction.HOLD, should_exit=False, reason="hold", metadata={"disaster_floor": "corrupt_floor"})
+    monkeypatch.setitem(mt._TP_RIDE_STATE, "BTCUSDC", {"peak_price": "corrupt", "last_peak_time": "corrupt", "peak_gain": "corrupt"})
+    monkeypatch.setitem(mt._SL_BOUNCE_STATE, "BTCUSDC", {"peak_bounce_price": "corrupt", "started_at": "corrupt"})
+    mt._log_tp_hold_state("BTCUSDC", pos_snap, dec, 0.05)
+    mt._log_sl_hold_state("BTCUSDC", pos_snap, dec, 0.05)
+
+
+
 

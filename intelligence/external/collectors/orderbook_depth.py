@@ -233,6 +233,8 @@ class OrderbookDepthCollector:
             req = urllib.request.Request(url, headers={"User-Agent": "mptrade-orderbook/1.0"})
             with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError(f"Unexpected depth payload for {lookup_sym}: {type(data).__name__}")
 
             def _parse_side(rows: Any) -> List[Tuple[float, float]]:
                 out: List[Tuple[float, float]] = []

@@ -946,10 +946,11 @@ def get_available_qty(symbol, api=None):
     try:
         if api is mkt:
             value = _as_instrument(symbol).free()
-            return None if value is None else float(value)
-        base = u.base_asset(symbol)
-        value = api.free_balance(base)
-        return None if value is None else float(value)
+        else:
+            base = u.base_asset(symbol)
+            value = api.free_balance(base)
+        val_f = _safe_f(value, None)
+        return val_f if (val_f is not None and val_f >= 0.0) else None
     except Exception as e:
         print(f"get_available_qty {symbol}: {e}")
     return None
@@ -980,7 +981,8 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     if not math.isfinite(price_f) or price_f <= 0:
         print(f"[{inst.symbol}] {side} skip: price={price}")
         return False
-    if min_qty and not isinstance(min_qty, bool) and math.isfinite(float(min_qty)) and qty_f < float(min_qty):
+    min_qty_f = _safe_f(min_qty, 0.0) or 0.0
+    if min_qty_f > 0.0 and qty_f < min_qty_f:
         print(f"[{inst.symbol}] {side} skip: qty {qty} < volum minim venue {min_qty}")
         return False
     result = inst.place(side, price_f, qty_f, **kwargs)
@@ -1212,14 +1214,14 @@ def _evaluate_hard_take_profit(
 
 def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, gain_threshold: float):
     ride_state = _TP_RIDE_STATE.get(symbol, {})
-    raw_peak = ride_state.get("peak_price")
-    peak_px = float(raw_peak) if (raw_peak is not None and not isinstance(raw_peak, bool) and math.isfinite(float(raw_peak)) and float(raw_peak) > 0) else snapshot.current_price
+    raw_peak_f = _safe_f(ride_state.get("peak_price"), 0.0) or 0.0
+    peak_px = raw_peak_f if raw_peak_f > 0.0 else snapshot.current_price
     pullback_from_peak = snapshot.pullback_ratio(peak_px)
-    raw_lpt = ride_state.get("last_peak_time")
-    lpt = float(raw_lpt) if (raw_lpt is not None and not isinstance(raw_lpt, bool) and math.isfinite(float(raw_lpt))) else snapshot.current_time_s
+    lpt = _safe_f(ride_state.get("last_peak_time"), snapshot.current_time_s)
+    if lpt is None:
+        lpt = snapshot.current_time_s
     stagnation_elapsed = snapshot.current_time_s - lpt
-    raw_pg = ride_state.get("peak_gain")
-    peak_gain = float(raw_pg) if (raw_pg is not None and not isinstance(raw_pg, bool) and math.isfinite(float(raw_pg))) else 0.0
+    peak_gain = _safe_f(ride_state.get("peak_gain"), 0.0) or 0.0
     profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
     if decision.metadata.get("state") == "initiated":
         print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={snapshot.gain_pct:.2f}%, "
@@ -1326,13 +1328,16 @@ def _execute_take_profit(
 
 def _log_sl_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, lost_threshold: float):
     bounce_state = _SL_BOUNCE_STATE.get(symbol, {})
-    raw_peak = bounce_state.get("peak_bounce_price")
-    peak_px = float(raw_peak) if (raw_peak is not None and not isinstance(raw_peak, bool) and math.isfinite(float(raw_peak)) and float(raw_peak) > 0) else snapshot.current_price
-    raw_st = bounce_state.get("started_at")
-    st_f = float(raw_st) if (raw_st is not None and not isinstance(raw_st, bool) and math.isfinite(float(raw_st))) else snapshot.current_time_s
+    raw_peak_f = _safe_f(bounce_state.get("peak_bounce_price"), 0.0) or 0.0
+    peak_px = raw_peak_f if raw_peak_f > 0.0 else snapshot.current_price
+    st_f = _safe_f(bounce_state.get("started_at"), snapshot.current_time_s)
+    if st_f is None:
+        st_f = snapshot.current_time_s
     elapsed = snapshot.current_time_s - st_f
-    raw_df = decision.metadata.get("disaster_floor")
-    disaster_floor = float(raw_df) if (raw_df is not None and not isinstance(raw_df, bool) and math.isfinite(float(raw_df))) else (lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
+    default_df = lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT
+    disaster_floor = _safe_f(decision.metadata.get("disaster_floor"), default_df)
+    if disaster_floor is None:
+        disaster_floor = default_df
     if decision.metadata.get("state") == "initiated":
         print(f"[{symbol}] Stop-Loss entered bounce watch (trend up): dip={snapshot.loss_pct:.2f}%, "
               f"disaster_floor={disaster_floor*100:.2f}%, starting {MT_SL_TREND_DEFER_MAX_SEC:.0f}s timer")

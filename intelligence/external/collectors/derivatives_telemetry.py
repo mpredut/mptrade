@@ -174,6 +174,8 @@ class DerivativesTelemetryCollector:
             req = urllib.request.Request(url_fund, headers={"User-Agent": "mptrade-intelligence/1.0"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data_fund = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data_fund, dict):
+                raise ValueError(f"Unexpected premiumIndex payload for {lookup_sym}: {type(data_fund).__name__}")
 
             def _safe_float(raw, default: float = 0.0) -> float:
                 if raw is None or isinstance(raw, bool):
@@ -192,6 +194,8 @@ class DerivativesTelemetryCollector:
             req_oi = urllib.request.Request(url_oi, headers={"User-Agent": "mptrade-intelligence/1.0"})
             with urllib.request.urlopen(req_oi, timeout=5) as resp:
                 data_oi = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data_oi, dict):
+                raise ValueError(f"Unexpected openInterest payload for {lookup_sym}: {type(data_oi).__name__}")
 
             oi = max(0.0, _safe_float(data_oi.get("openInterest"), 0.0))
             mark_price = max(0.0, _safe_float(data_fund.get("markPrice"), 0.0))
