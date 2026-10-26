@@ -91,7 +91,8 @@ def main() -> int:
     ap.add_argument("--test-strategy", metavar="PAIR", help="Run the strategy NOW on the given pair")
     args = ap.parse_args()
     if args.test_strategy:
-        single_instance(f"kraken_bot_{args.test_strategy.strip().upper()}")
+        args.test_strategy = args.test_strategy.strip().upper()
+        single_instance(f"kraken_bot_{args.test_strategy.strip()}")
     elif not any(getattr(args, a, None) for a in ("balance", "find_pair", "price")):
         # Use one instance PER PAIR so HYPE, ADA, WIF, etc. can run concurrently with
         # separate locks. The former fixed 'kraken_bot' key blocked a second pair.

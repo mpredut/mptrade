@@ -204,11 +204,11 @@ class KrakenClient:
         res = self._public("AssetPairs", {"pair": pair})
         if not res:
             return None
-        return next(iter(res.values()))
+        return next((v for v in res.values() if isinstance(v, dict)), None)
 
     def ticker(self, pair: str) -> dict | None:
         res = self._public("Ticker", {"pair": pair})
-        return next(iter(res.values())) if res else None
+        return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
     def ohlc_closes_with_timestamps(
         self, pair: str, interval: int,
@@ -351,11 +351,13 @@ class KrakenClient:
         return self._private("QueryOrders", {"txid": txids})
 
     def open_orders(self) -> dict:
-        return self._private("OpenOrders").get("open", {})
+        raw = self._private("OpenOrders").get("open")
+        return raw if isinstance(raw, dict) else {}
 
     def closed_orders(self) -> dict:
         """Return recent closed orders for deterministic client-ID recovery."""
-        return self._private("ClosedOrders").get("closed", {})
+        raw = self._private("ClosedOrders").get("closed")
+        return raw if isinstance(raw, dict) else {}
 
 
 # ---------------------------------------------------------------------------

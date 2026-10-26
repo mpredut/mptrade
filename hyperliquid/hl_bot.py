@@ -63,7 +63,8 @@ def main() -> int:
     strat_dry = args.paper or not (strategy_enabled and venue_enabled)
     observe_only = str(os.environ.get("HL_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "true", "yes", "on")
     if args.test_strategy:
-        single_instance(f"hl_bot_{token}")
+        args.test_strategy = args.test_strategy.strip().upper()
+        single_instance(f"hl_bot_{args.test_strategy.strip()}")
     elif not any(a in sys.argv for a in ()):  # reserved for future one-shot commands
         single_instance(f"hl_bot_{token}")   # one instance per token
 

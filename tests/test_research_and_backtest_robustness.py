@@ -2152,5 +2152,41 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     monkeypatch.setattr(t212_st2, "get_eur_usd", lambda: None)
     assert t212_st2.Strategy._fx_to_usd(None, " eur ") == 1.08
 
+    # 13. KrakenClient null open/closed order maps and T212Client non-list/non-dict payload guards
+    from kraken.kraken_client import KrakenClient
+    kc = KrakenClient("k", "c2VjcmV0")
+    monkeypatch.setattr(kc, "_private", lambda method, data=None, fresh=False: {"open": None, "closed": None})
+    assert kc.open_orders() == {}
+    assert kc.closed_orders() == {}
+    monkeypatch.setattr(kc, "_public", lambda method, params=None, fresh=False: {"last": 123, "HYPEUSD": {"pair_decimals": 3}})
+    assert kc.pair_info("HYPEUSD") == {"pair_decimals": 3}
+
+    orig_path = list(sys.path)
+    try:
+        if t212_dir not in sys.path:
+            sys.path.insert(0, t212_dir)
+        spec_tc = importlib.util.spec_from_file_location("_test_t212_cli2", os.path.join(t212_dir, "t212_client.py"))
+        t212_cli_mod = importlib.util.module_from_spec(spec_tc)
+        sys.modules["_test_t212_cli2"] = t212_cli_mod
+        spec_tc.loader.exec_module(t212_cli_mod)
+        spec_tb = importlib.util.spec_from_file_location("_test_t212_bot2", os.path.join(t212_dir, "t212_bot.py"))
+        t212_bot_mod = importlib.util.module_from_spec(spec_tb)
+        sys.modules["_test_t212_bot2"] = t212_bot_mod
+        spec_tb.loader.exec_module(t212_bot_mod)
+    finally:
+        sys.modules.pop("_test_t212_cli2", None)
+        sys.modules.pop("_test_t212_bot2", None)
+        sys.path[:] = orig_path
+
+    tc = t212_cli_mod.T212Client("k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    monkeypatch.setattr(t212_cli_mod, "http_get", lambda url, headers=None: (200, b'{"not": "a_list"}'))
+    assert tc.list_instruments() is None
+    monkeypatch.setattr(t212_cli_mod, "http_get", lambda url, headers=None: (200, b'["bad", {"ticker": "NVDA_US_EQ", "isin": ""}]'))
+    assert tc.list_instruments() == [{"ticker": "NVDA_US_EQ", "isin": ""}]
+    assert t212_bot_mod.verify_isin(tc, " nvda_us_eq ", "US67066G1040") is True
+    monkeypatch.setattr(t212_cli_mod, "http_post_json", lambda url, payload=None, headers=None: (200, b'["unexpected_list"]'))
+    st_code, payload_dict = tc._place_order("limit", {"ticker": "NVDA_US_EQ"})
+    assert st_code == 200 and isinstance(payload_dict, dict)
+
 
 

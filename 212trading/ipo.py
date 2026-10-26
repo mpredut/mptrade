@@ -68,16 +68,19 @@ def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bo
         log("  ! cannot verify the ISIN (metadata unavailable) — continuing on the explicit ticker")
         return True
     match = next(
-        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).upper() == ticker.upper()),
+        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).strip().upper() == str(ticker).strip().upper()),
         None,
     )
     if not match:
         log(f"  ! {ticker} does not appear in the T212 metadata yet — continuing (it may be a delay)")
         return True
-    if str(match.get("isin", "")) != expected_isin:
-        log(f"  ! ISIN {match.get('isin')} != asteptat {expected_isin} — OPRESC (instrument gresit).")
+    found_isin = str(match.get("isin") or "").strip()
+    if not found_isin:
+        return True
+    if found_isin.upper() != expected_isin.strip().upper():
+        log(f"  ! ISIN {found_isin} != asteptat {expected_isin} — OPRESC (instrument gresit).")
         notify(title=f"⚠ {ticker}: ISIN nepotrivit!",
-               body=f"Found isin={match.get('isin')}, expected {expected_isin}. Not trading.",
+               body=f"Found isin={found_isin}, expected {expected_isin}. Not trading.",
                source="verify")
         return False
     log(f"  [verify] {ticker} confirmat (isin {expected_isin})")
@@ -120,8 +123,12 @@ def main() -> int:
     for i, a in enumerate(sys.argv):
         if a == "--env-file" and i + 1 < len(sys.argv):
             env_file = sys.argv[i + 1]
+        elif a.startswith("--env-file="):
+            env_file = a.split("=", 1)[1]
         if a in ("--profile", "-p") and i + 1 < len(sys.argv):
             profile = sys.argv[i + 1]
+        elif a.startswith("--profile="):
+            profile = a.split("=", 1)[1]
     profile_file = None
     if profile:                                            # versioned per-profile config: config.<profile>.env
         cfg_dir = os.path.dirname(env_file) or "."

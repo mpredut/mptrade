@@ -61,15 +61,18 @@ def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
     if not instruments or not isinstance(instruments, list):
         return True
     match = next(
-        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).upper() == ticker.upper()),
+        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).strip().upper() == str(ticker).strip().upper()),
         None,
     )
     if not match:
         return True
-    if str(match.get("isin", "")) != expected_isin:
-        log(f"  ! [{ticker}] ISIN {match.get('isin')} != the expected {expected_isin} — NOT trading")
+    found_isin = str(match.get("isin") or "").strip()
+    if not found_isin:
+        return True
+    if found_isin.upper() != expected_isin.strip().upper():
+        log(f"  ! [{ticker}] ISIN {found_isin} != the expected {expected_isin} — NOT trading")
         notify(title=f"⚠ {ticker}: ISIN mismatch", source="T212",
-               body=f"Found {match.get('isin')}, we expected {expected_isin}.", symbol=ticker)
+               body=f"Found {found_isin}, we expected {expected_isin}.", symbol=ticker)
         return False
     return True
 

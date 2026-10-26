@@ -153,8 +153,11 @@ class T212Client:
             return None
         try:
             data = json.loads(body)
-            self._instr_cache = (time.monotonic(), data)
-            return data
+            if not isinstance(data, list):
+                return None
+            clean = [i for i in data if isinstance(i, dict)]
+            self._instr_cache = (time.monotonic(), clean)
+            return clean
         except ValueError:
             return None
 
@@ -165,6 +168,8 @@ class T212Client:
             return None
         hits = []
         for ins in instruments:
+            if not isinstance(ins, dict):
+                continue
             ticker = str(ins.get("ticker", ""))
             name   = str(ins.get("name", "")).lower()
             short  = str(ins.get("shortName", "")).lower()
@@ -189,7 +194,8 @@ class T212Client:
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         try:
-            data = json.loads(body) if body else {}
+            parsed = json.loads(body) if body else {}
+            data = parsed if isinstance(parsed, dict) else {"raw": parsed}
         except ValueError:
             data = {"raw": body.decode(errors="replace")[:500]}
         # Invalidate unconditionally on non-429 (including ambiguous failure),
