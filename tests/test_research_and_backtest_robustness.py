@@ -2701,6 +2701,83 @@ def test_monitororder_tradeall_and_assetguardian_edge_cases(monkeypatch):
     assert ag.evaluate_symbol(" unconfigured_sym ") is False
 
 
+def test_position_exit_manager_rtrade_pair_and_bapi_placeorder_hardening():
+    """Verify PositionExitManager, rtrade_pair, trailing_stop, and bapi_placeorder handle malformed inputs safely."""
+    import pytest
+    from binance_api import bapi_placeorder as bpo
+    from binance_api.trailing_stop import TRAIL_PCT, TrailingStop
+    from providers.strategy_executor import SubmissionRefused
+    from strategies.position_exit_manager import (
+        ExitAction,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentryAction,
+        ReentrySnapshot,
+    )
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+
+    # 1. PositionSnapshot / ReentrySnapshot geometry properties handle None/NaN/bool/corrupt strings safely
+    bad_pos = PositionSnapshot(symbol="BTCUSDC", current_price=None, avg_buy_price=float("nan"))  # type: ignore[arg-type]
+    assert bad_pos.is_valid_price is False
+    assert bad_pos.price_change_ratio == 0.0
+    assert bad_pos.gain_ratio == 0.0
+    assert bad_pos.loss_ratio == 0.0
+    assert bad_pos.bounce_ratio(float("nan")) == 0.0
+    assert bad_pos.pullback_ratio(None) == 0.0  # type: ignore[arg-type]
+    assert bad_pos.has_bounced(100.0, float("nan")) is False
+
+    bad_re = ReentrySnapshot(symbol="BTCUSDC", current_price=100.0, last_sell_price="not_a_float")  # type: ignore[arg-type]
+    assert bad_re.sale_drop_ratio == 0.0
+    mgr = PositionExitManager()
+    re_dec = mgr.evaluate_reentry(bad_re, custom_drop_pct=True)  # type: ignore[arg-type]
+    assert re_dec.action == ReentryAction.ENTER
+    assert re_dec.should_enter is True
+
+    valid_pos = PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1000.0)
+    sl_dec = mgr.evaluate(valid_pos, sl_threshold=True, tp_threshold="invalid")  # type: ignore[arg-type]
+    assert sl_dec.action == ExitAction.SELL
+
+    # 2. rtrade_pair OrderTicket and PairCoordinator.from_state reject non-integer/overflow revisions and normalize side
+    ticket = OrderTicket(order_id=" 123 ", side=" buy ", price="100.5", qty="0.1", revision=2.0)  # type: ignore[arg-type]
+    assert ticket.order_id == "123"
+    assert ticket.side == "BUY"
+    assert ticket.revision == 2
+    with pytest.raises(ValueError):
+        OrderTicket(order_id="123", side="BUY", price=100.0, qty=0.1, revision=1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        OrderTicket(order_id="123", side="BUY", price=100.0, qty=0.1, revision=float("inf"))  # type: ignore[arg-type]
+
+    policy = PairPolicy(adjustment_fraction=0.01)
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            None,
+            policy,
+            {
+                "pair_id": "p1",
+                "qty": 1.0,
+                "start_side": "BUY",
+                "phase": "quoting",
+                "tickets": [],
+                "limit_revisions": {"BUY": 1.5, "SELL": 0},
+            },
+        )
+
+    # 3. bapi_placeorder.issue_account_cache_submit_permit rejects None/bool symbol or side before cache I/O
+    with pytest.raises(SubmissionRefused):
+        bpo.issue_account_cache_submit_permit(None, "BUY", 1.0, market=True)
+    with pytest.raises(SubmissionRefused):
+        bpo.issue_account_cache_submit_permit(True, "BUY", 1.0, market=True)
+    with pytest.raises(SubmissionRefused):
+        bpo.issue_account_cache_submit_permit("BTCUSDC", None, 1.0, market=True)
+
+    # 4. TrailingStop.trail_pct_for normalizes symbol case/whitespace
+    if TRAIL_PCT:
+        sample_sym = next(iter(TRAIL_PCT))
+        ts_dummy = object.__new__(TrailingStop)
+        assert ts_dummy.trail_pct_for(f" {sample_sym.lower()} ") == TRAIL_PCT[sample_sym]
+
+
+
 
 
 

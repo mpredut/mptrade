@@ -288,8 +288,10 @@ def _require_submit_permit_headroom(status):
 def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
                                       market=False, kind=None, api_client=None):
     """Authorize one narrowly scoped submit after a complete cache validation."""
-    side = str(side).upper()
-    symbol = str(symbol).upper()
+    if side is None or isinstance(side, bool) or symbol is None or isinstance(symbol, bool):
+        raise SubmissionRefused("invalid_order_parameters")
+    side = str(side).strip().upper()
+    symbol = str(symbol).strip().upper()
     if isinstance(qty, bool) or (not market and isinstance(price, bool)):
         raise SubmissionRefused("invalid_order_parameters")
     try:
@@ -375,8 +377,10 @@ def _consume_account_cache_submit_permit(
             and time.time() <= scope.expires_at_wall
             and bool(scope.order_cache_version)
             and bool(scope.trade_cache_version)
-            and scope.symbol == str(symbol).upper()
-            and scope.side == str(side).upper()
+            and symbol is not None and not isinstance(symbol, bool)
+            and side is not None and not isinstance(side, bool)
+            and scope.symbol == str(symbol).strip().upper()
+            and scope.side == str(side).strip().upper()
             and scope.market is bool(market)
             and scope.kind == str(kind or "")
             and math.isfinite(actual_qty)
@@ -392,7 +396,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
                           cache_permit=None, permit_requested_price=None,
                           kind=None, cancel_opposite_requested_price=None):
     """Single low-level dispatch after common filter normalization."""
-    side = str(order_type).upper()
+    side = "" if order_type is None or isinstance(order_type, bool) else str(order_type).strip().upper()
     if isinstance(qty, bool) or (not market and isinstance(price, bool)):
         raise SubmissionRefused("invalid_order_parameters")
     try:
@@ -718,7 +722,8 @@ def place_safe_order(order_type, symbol, price, qty=None,
                      cancelorders=False, hours=PLACE_ORDER_HOURS,
                      _reason_out=None, **kwargs):
     """Adapt the compatible safe API to the common pipeline without smart repricing."""
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     # ``None`` is the legacy "maximum permitted" request. Preserve it until the
     # shared QuantityDecision has loaded balance and policy caps; a synthetic
     # infinity here would be indistinguishable from an invalid explicit value.
@@ -767,7 +772,8 @@ def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivat
 # Retain ``pair`` only for compatibility with callers that explicitly pass it. It is
 # intentionally ignored legacy code; do not remove it without updating those callers.
 def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None, _reason_out=None, **kwargs):
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(
         order_type, symbol, price, 1.0 if qty is None else qty)
     call_kwargs = dict(kwargs)

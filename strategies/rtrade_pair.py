@@ -32,16 +32,24 @@ class OrderTicket:
             self.order_id is None
             or isinstance(self.order_id, bool)
             or not str(self.order_id).strip()
+            or self.side is None
+            or isinstance(self.side, bool)
             or isinstance(self.price, bool)
             or isinstance(self.qty, bool)
             or isinstance(self.revision, bool)
         ):
             raise ValueError("ticket rtrade invalid")
         self.order_id = str(self.order_id).strip()
-        self.side = str(self.side).upper()
-        self.price = float(self.price)
-        self.qty = float(self.qty)
-        self.revision = int(self.revision)
+        self.side = str(self.side).strip().upper()
+        try:
+            self.price = float(self.price)
+            self.qty = float(self.qty)
+            rev_f = float(self.revision)
+            if not math.isfinite(rev_f) or rev_f != int(rev_f):
+                raise ValueError("ticket rtrade invalid")
+            self.revision = int(rev_f)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("ticket rtrade invalid") from exc
         if (self.side not in {"BUY", "SELL"} or not math.isfinite(self.price)
                 or self.price <= 0 or not math.isfinite(self.qty) or self.qty <= 0
                 or not 0 <= self.revision <= _MAX_LIMIT_REVISION):
@@ -176,7 +184,7 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
       SELL: (sell-buy)/sell >= edge  -> sell >= buy/(1-edge)
       BUY:  (sell-buy)/sell >= edge  -> buy <= sell*(1-edge)
     """
-    side = exit_side.upper()
+    side = "" if exit_side is None or isinstance(exit_side, bool) else str(exit_side).strip().upper()
     if (isinstance(fill_price, bool) or isinstance(current_price, bool)
             or not math.isfinite(float(fill_price))
             or not math.isfinite(float(current_price))
@@ -216,7 +224,9 @@ class PairCoordinator:
         if not math.isfinite(self.qty) or self.qty <= 0:
             raise ValueError("rtrade qty must be finite and positive")
         self.policy = policy
-        self.start_side = start_side.upper()
+        if start_side is None or isinstance(start_side, bool):
+            raise ValueError("start_side must be BUY or SELL")
+        self.start_side = str(start_side).strip().upper()
         if self.start_side not in {"BUY", "SELL"}:
             raise ValueError("start_side must be BUY or SELL")
         self.clock = clock
@@ -442,14 +452,26 @@ class PairCoordinator:
             raw_rev = stored_limit_revisions.get(side, 0)
             if isinstance(raw_rev, bool):
                 raise ValueError(f"invalid {side} limit revision: {raw_rev}")
-            revision = int(raw_rev or 0)
+            try:
+                rev_f = 0.0 if raw_rev is None else float(raw_rev)
+                if not math.isfinite(rev_f) or rev_f != int(rev_f):
+                    raise ValueError(f"invalid {side} limit revision: {raw_rev}")
+                revision = int(rev_f)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid {side} limit revision: {raw_rev}") from exc
             if not 0 <= revision <= _MAX_LIMIT_REVISION:
                 raise ValueError(f"invalid {side} limit revision: {revision}")
             obj.limit_revisions[side] = revision
         raw_hs_rev = state.get("hard_stop_revision", 0)
         if isinstance(raw_hs_rev, bool):
             raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}")
-        hs_revision = int(raw_hs_rev or 0)
+        try:
+            hs_rev_f = 0.0 if raw_hs_rev is None else float(raw_hs_rev)
+            if not math.isfinite(hs_rev_f) or hs_rev_f != int(hs_rev_f):
+                raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}")
+            hs_revision = int(hs_rev_f)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}") from exc
         if not 0 <= hs_revision <= _MAX_LIMIT_REVISION:
             raise ValueError(f"invalid hard-stop revision: {hs_revision}")
         obj.hard_stop_revision = hs_revision

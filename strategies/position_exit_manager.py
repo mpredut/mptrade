@@ -63,62 +63,85 @@ class ExitDecision:
 class PriceGeometrySnapshot:
     """Base mixin providing unified, fuzzy-tolerant price geometry primitives."""
 
+    @staticmethod
+    def _finite_pos_float(val: Any) -> Optional[float]:
+        if val is None or isinstance(val, bool):
+            return None
+        try:
+            f = float(val)
+            return f if (math.isfinite(f) and f > 0.0) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     @property
     def is_valid_price(self) -> bool:
         """Verify whether current market price is valid and strictly positive."""
-        if self.current_price is None or isinstance(self.current_price, bool):
-            return False
-        try:
-            cp = float(self.current_price)
-            return math.isfinite(cp) and cp > 0
-        except (TypeError, ValueError):
-            return False
+        return self._finite_pos_float(getattr(self, "current_price", None)) is not None
 
     def bounce_ratio(self, trough_price: float) -> float:
         """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
-        if trough_price <= 0:
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        tp = self._finite_pos_float(trough_price)
+        if cp is None or tp is None:
             return 0.0
-        diff = self.current_price - trough_price
-        return diff / trough_price if diff > 0.0 else 0.0
+        diff = cp - tp
+        return diff / tp if diff > 0.0 else 0.0
 
     def pullback_ratio(self, peak_price: float) -> float:
         """Normalized pullback ratio from peak: (peak - current) / peak."""
-        if peak_price <= 0:
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        pp = self._finite_pos_float(peak_price)
+        if cp is None or pp is None:
             return 0.0
-        diff = peak_price - self.current_price
-        return diff / peak_price if diff > 0.0 else 0.0
+        diff = pp - cp
+        return diff / pp if diff > 0.0 else 0.0
 
     def discount_drop_ratio(self, reference_price: float) -> float:
         """Calculate price discount ratio below reference sale: (reference - current) / reference."""
-        if reference_price <= 0:
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        rp = self._finite_pos_float(reference_price)
+        if cp is None or rp is None:
             return 0.0
-        return (reference_price - self.current_price) / reference_price
+        return (rp - cp) / rp
 
     def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has bounced above trough honoring fuzzy tolerance."""
-        if trough_price <= 0 or threshold <= 0:
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        tp = self._finite_pos_float(trough_price)
+        th = self._finite_pos_float(threshold)
+        if cp is None or tp is None or th is None:
             return False
-        if self.bounce_ratio(trough_price) >= threshold:
+        if self.bounce_ratio(tp) >= th:
             return True
-        return tol_pct > 0 and are_close(self.current_price, trough_price * (1.0 + threshold), tol_pct)
+        return tol_pct > 0 and are_close(cp, tp * (1.0 + th), tol_pct)
 
     def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has pulled back from peak honoring fuzzy tolerance."""
-        if peak_price <= 0 or threshold <= 0:
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        pp = self._finite_pos_float(peak_price)
+        th = self._finite_pos_float(threshold)
+        if cp is None or pp is None or th is None:
             return False
-        if self.pullback_ratio(peak_price) >= threshold:
+        if self.pullback_ratio(pp) >= th:
             return True
-        return tol_pct > 0 and are_close(self.current_price, peak_price * (1.0 - threshold), tol_pct)
+        return tol_pct > 0 and are_close(cp, pp * (1.0 - th), tol_pct)
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
-        if reference_price <= 0:
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        rp = self._finite_pos_float(reference_price)
+        if cp is None or rp is None or threshold is None or isinstance(threshold, bool):
             return False
-        target = reference_price * (1.0 - threshold)
-        px = self.current_price
-        if px <= target:
+        try:
+            th = float(threshold)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(th):
+            return False
+        target = rp * (1.0 - th)
+        if cp <= target:
             return True
-        return tol_pct > 0 and are_close(px, target, tol_pct)
+        return tol_pct > 0 and are_close(cp, target, tol_pct)
 
 
 @dataclass
@@ -152,26 +175,30 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def price_change_ratio(self) -> float:
         """Normalized price change relative to cost: (current - buy) / buy."""
-        if self.avg_buy_price <= 0:
+        if not self.is_valid_price:
             return 0.0
-        return (self.current_price - self.avg_buy_price) / self.avg_buy_price
+        bp = float(self.avg_buy_price)
+        cp = float(self.current_price)
+        return (cp - bp) / bp
 
     @property
     def gain_ratio(self) -> float:
         """Positive price gain ratio, or 0.0 if position is in loss."""
-        bp = self.avg_buy_price
-        if bp <= 0:
+        if not self.is_valid_price:
             return 0.0
-        diff = self.current_price - bp
+        bp = float(self.avg_buy_price)
+        cp = float(self.current_price)
+        diff = cp - bp
         return diff / bp if diff > 0.0 else 0.0
 
     @property
     def loss_ratio(self) -> float:
         """Positive price loss ratio, or 0.0 if position is in profit."""
-        bp = self.avg_buy_price
-        if bp <= 0:
+        if not self.is_valid_price:
             return 0.0
-        diff = bp - self.current_price
+        bp = float(self.avg_buy_price)
+        cp = float(self.current_price)
+        diff = bp - cp
         return diff / bp if diff > 0.0 else 0.0
 
     @property
@@ -263,7 +290,7 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     @property
     def sale_drop_ratio(self) -> float:
         """Calculate price discount ratio below last_sell_price."""
-        return self.discount_drop_ratio(self.last_sell_price) if self.last_sell_price else 0.0
+        return self.discount_drop_ratio(self.last_sell_price) if self._finite_pos_float(self.last_sell_price) is not None else 0.0
 
     @property
     def sale_drop_pct(self) -> float:
@@ -360,6 +387,28 @@ def _resolve_now_s(current_time_s: Optional[float]) -> float:
         except (TypeError, ValueError):
             pass
     return time.time()
+
+
+def _resolve_positive_threshold(custom_val: Any, default_val: float) -> float:
+    if custom_val is not None and not isinstance(custom_val, bool):
+        try:
+            cf = float(custom_val)
+            if math.isfinite(cf) and cf > 0.0:
+                return cf
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return float(default_val)
+
+
+def _resolve_nonneg_threshold(custom_val: Any, default_val: float) -> float:
+    if custom_val is not None and not isinstance(custom_val, bool):
+        try:
+            cf = float(custom_val)
+            if math.isfinite(cf) and cf >= 0.0:
+                return cf
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return float(default_val)
 
 
 PERSISTED_EXIT_STATE_KEYS: Tuple[str, ...] = (
@@ -533,9 +582,14 @@ class PositionExitManager:
                         eff_vol = 0.0
             elif getattr(self.config, "allow_external_cache", True):
                 cached = resolve_cached_volatility_1h(symbol)
-                if cached is not None and not isinstance(cached, bool) and math.isfinite(float(cached)) and float(cached) > 0:
-                    eff_vol = float(cached)
-                    eff_src = "cache"
+                if cached is not None and not isinstance(cached, bool):
+                    try:
+                        cf = float(cached)
+                        if math.isfinite(cf) and cf > 0.0:
+                            eff_vol = cf
+                            eff_src = "cache"
+                    except (TypeError, ValueError, OverflowError):
+                        pass
 
         buf_b = eff_vol * self.config.sl_disaster_vol_multiplier if eff_vol > 0 else 0.0
         min_floor = self.config.sl_disaster_buffer_min_pct
@@ -600,7 +654,7 @@ class PositionExitManager:
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
         now = _resolve_now_s(snapshot.current_time_s)
-        lost_threshold = custom_threshold if custom_threshold is not None else self.config.lost_threshold
+        lost_threshold = _resolve_positive_threshold(custom_threshold, self.config.lost_threshold)
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
@@ -935,8 +989,13 @@ class PositionExitManager:
                         eff_vol = 0.0
             elif getattr(self.config, "allow_external_cache", True):
                 cached = resolve_cached_volatility_1h(symbol)
-                if cached is not None and not isinstance(cached, bool) and math.isfinite(float(cached)) and float(cached) > 0:
-                    eff_vol = float(cached)
+                if cached is not None and not isinstance(cached, bool):
+                    try:
+                        cf = float(cached)
+                        if math.isfinite(cf) and cf > 0.0:
+                            eff_vol = cf
+                    except (TypeError, ValueError, OverflowError):
+                        pass
 
         anomaly_a = gain_threshold * 1.5
         anomaly_b = (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0
@@ -975,7 +1034,7 @@ class PositionExitManager:
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
         now = _resolve_now_s(snapshot.current_time_s)
-        gain_threshold = custom_threshold if custom_threshold is not None else self.config.gain_threshold
+        gain_threshold = _resolve_positive_threshold(custom_threshold, self.config.gain_threshold)
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
@@ -1264,10 +1323,11 @@ class PositionExitManager:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")
 
         # Case 0: No prior sale reference to constrain re-entry
-        if last_sell is None or isinstance(last_sell, bool) or not math.isfinite(float(last_sell)) or float(last_sell) <= 0:
+        last_sell_f = snapshot._finite_pos_float(last_sell)
+        if last_sell_f is None:
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
-        last_sell = float(last_sell)
+        last_sell = last_sell_f
         current_price = float(current_price)
 
         def _valid_px(val, fallback: float) -> float:
@@ -1426,7 +1486,7 @@ class PositionExitManager:
                 metadata={"peak": peak, "pullback_ratio": pullback_ratio},
             )
         else:
-            drop_required = custom_drop_pct if custom_drop_pct is not None else self.config.reentry_drop_pct
+            drop_required = _resolve_nonneg_threshold(custom_drop_pct, self.config.reentry_drop_pct)
             if drop_required > 0:
                 if not snapshot.has_dropped(last_sell, drop_required, self.config.reentry_tolerance_pct):
                     discount_target = last_sell * (1.0 - drop_required)
@@ -1487,13 +1547,13 @@ class PositionExitManager:
 
         # Check Stop-Loss (unless an active MDHTP profit ride is in progress, in which
         # case evaluate_take_profit must fire mdhtp_profit_floor_breached immediately)
-        eff_sl = sl_threshold if sl_threshold is not None else self.config.lost_threshold
+        eff_sl = _resolve_positive_threshold(sl_threshold, self.config.lost_threshold)
         in_sl = (snapshot.symbol not in self.tp_ride_state) and (
             snapshot.in_sl_territory(eff_sl, self.config.are_close_tolerance_pct)
             or (snapshot.symbol in self.sl_bounce_state)
         )
         if in_sl:
-            sl_decision = self.evaluate_stop_loss(snapshot, custom_threshold=sl_threshold)
+            sl_decision = self.evaluate_stop_loss(snapshot, custom_threshold=eff_sl)
             if sl_decision.should_exit:
                 self.tp_ride_state.pop(snapshot.symbol, None)
                 return sl_decision
@@ -1507,13 +1567,13 @@ class PositionExitManager:
             self.reset_sl_episode(snapshot.symbol)
 
         # Check Take-Profit
-        eff_tp = tp_threshold if tp_threshold is not None else self.config.gain_threshold
+        eff_tp = _resolve_positive_threshold(tp_threshold, self.config.gain_threshold)
         in_tp = (
             snapshot.in_tp_territory(eff_tp, self.config.are_close_tolerance_pct)
             or (snapshot.symbol in self.tp_ride_state)
         )
         if in_tp:
-            tp_decision = self.evaluate_take_profit(snapshot, custom_threshold=tp_threshold)
+            tp_decision = self.evaluate_take_profit(snapshot, custom_threshold=eff_tp)
             if tp_decision.should_exit:
                 self.sl_bounce_state.pop(snapshot.symbol, None)
                 self.reset_sl_episode(snapshot.symbol)

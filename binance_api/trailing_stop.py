@@ -172,26 +172,34 @@ class TrailingStop:
         self.core.save(state)
 
     def trail_pct_for(self, symbol: str) -> float:
+        sym_norm = str(symbol or "").strip().upper()
+        if sym_norm in TRAIL_PCT:
+            return TRAIL_PCT[sym_norm]
         return TRAIL_PCT[symbol]
 
     def rebuy_enabled_for(self, symbol: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy): on/off, or 'auto' to follow
         the long-term trend. A symbol not in the trailing registry uses the global
         default (TRAILING_REBUY_ENABLED)."""
-        mode = REBUY_MODE_BY_SYMBOL.get(symbol)
+        sym_norm = str(symbol or "").strip().upper()
+        mode = REBUY_MODE_BY_SYMBOL.get(sym_norm)
+        if mode is None and symbol in REBUY_MODE_BY_SYMBOL:
+            mode = REBUY_MODE_BY_SYMBOL.get(symbol)
         if mode is None:
             return REBUY_ENABLED
         if mode == "on":
             return True
         if mode == "off":
             return False
-        return self._long_trend_up(symbol)                    # auto
+        return self._long_trend_up(sym_norm or symbol)                    # auto
 
     def rebuy_configured_for(self, symbol: str) -> bool:
         """Auto keeps a sold-position recovery intent even while its trend is down."""
-        if REBUY_MODE_BY_SYMBOL.get(symbol) == "auto":
+        sym_norm = str(symbol or "").strip().upper()
+        mode = REBUY_MODE_BY_SYMBOL.get(sym_norm, REBUY_MODE_BY_SYMBOL.get(symbol))
+        if mode == "auto":
             return True
-        return self.rebuy_enabled_for(symbol)
+        return self.rebuy_enabled_for(sym_norm or symbol)
 
     def _long_trend_up(self, symbol: str) -> bool:
         """Compare a fresh price with a complete, contiguous closed-day SMA.
