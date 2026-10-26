@@ -18,10 +18,16 @@ import time
 import uuid
 from state_io import atomic_write_json
 
-from ipo_common import log, now_str
-from ipo_notify import notify
-from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
-from t212_client import T212Client
+try:
+    from .ipo_common import log, now_str
+    from .ipo_notify import notify
+    from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
+    from .t212_client import T212Client
+except ImportError:
+    from ipo_common import log, now_str
+    from ipo_notify import notify
+    from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
+    from t212_client import T212Client
 
 # Legacy marker retained only for conservative migration of pre-v2 SPCX intents.
 ORDER_MARKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".spcx_order_placed")
@@ -106,7 +112,8 @@ def _safe_marker_component(value: str) -> str:
 def _marker_path(ticker: str, *, test: bool = False) -> str:
     """Namespace one-shot state by profile and ticker, never across accounts."""
     profile = _safe_marker_component(os.environ.get("IPO_PROFILE") or "default")
-    symbol = _safe_marker_component(ticker.upper())
+    raw_ticker = "" if isinstance(ticker, bool) or not isinstance(ticker, str) else ticker.strip().upper()
+    symbol = _safe_marker_component(raw_ticker)
     suffix = ".test" if test else ""
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -265,7 +272,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       desktop: bool) -> str:
     """Return complete, terminal_failed, waiting, or retryable."""
     order_id = record.get("order_id")
-    if order_id:
+    if order_id is not None and not isinstance(order_id, bool) and str(order_id).strip():
         info = poll_order_until_terminal(client, order_id, record["ticker"], desktop)
         if info is None:
             return "waiting"
@@ -339,9 +346,9 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
     matches = _matching_active_orders(client, record)
     if matches is None:
         return "waiting"
-    if len(matches) == 1 and matches[0].get("id") is not None:
+    if len(matches) == 1 and matches[0].get("id") is not None and not isinstance(matches[0].get("id"), bool) and str(matches[0].get("id")).strip():
         record.update({
-            "order_id": str(matches[0]["id"]), "lifecycle": "accepted",
+            "order_id": str(matches[0]["id"]).strip(), "lifecycle": "accepted",
             "lookup_misses": 0, "last_observed_at": now,
         })
         _persist_marker(record, marker_path)
@@ -415,6 +422,14 @@ def place_order_with_retry(
     it eligible for a later invocation. There is no in-process retry loop.
     """
 
+    if isinstance(ticker, bool) or not isinstance(ticker, str) or not ticker.strip():
+        log("  ! [ORDER] ticker invalid")
+        return False
+    ticker = ticker.strip()
+    if isinstance(validity, bool) or not isinstance(validity, str) or not validity.strip():
+        log("  ! [ORDER] validity invalid")
+        return False
+    validity = validity.strip().upper()
     if isinstance(quantity, bool) or isinstance(limit_price, bool) or isinstance(retry_delay, bool):
         log("  ! [ORDER] parametri numerici invalizi: bool nu este permis")
         return False
@@ -555,8 +570,8 @@ def place_order_with_retry(
         log(f"  ! [ORDER] raspuns submit ambiguu ({exc}) — intentia ramane pending")
         return False
 
-    if status in (200, 201) and isinstance(data, dict) and data.get("id") is not None:
-        oid = str(data["id"])
+    if status in (200, 201) and isinstance(data, dict) and data.get("id") is not None and not isinstance(data.get("id"), bool) and str(data.get("id")).strip():
+        oid = str(data["id"]).strip()
         venue_status = str(data.get("status") or "").upper()
         lifecycle = "filled" if venue_status == "FILLED" else "accepted"
         if venue_status in {"CANCELLED", "CANCELED", "EXPIRED"}:

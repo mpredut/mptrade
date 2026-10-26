@@ -27,15 +27,17 @@ def resolve_bot_home_dir() -> str:
 
 def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
     """Antigravity store used by autonomous LLM calls: explicit path or AGY_BOT_HOME/.gemini/antigravity-cli."""
-    if cli_base:
-        return expand_config_path(cli_base)
+    expanded = expand_config_path(cli_base) if isinstance(cli_base, str) else ""
+    if expanded:
+        return expanded
     return os.path.join(resolve_bot_home_dir(), AGY_STORE_SUBDIR)
 
 
 def resolve_ui_cli_base(ui_cli_base: Optional[str] = None) -> str:
     """Antigravity store served by the Web UI daemon (AGY_UI_CLI_BASE)."""
-    if ui_cli_base:
-        return expand_config_path(ui_cli_base)
+    expanded = expand_config_path(ui_cli_base) if isinstance(ui_cli_base, str) else ""
+    if expanded:
+        return expanded
     return expand_config_path(required_env("AGY_UI_CLI_BASE"))
 
 
@@ -44,7 +46,10 @@ def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
 
     Existence is checked by the caller at invocation time (the CLI may be absent on CI hosts).
     """
-    return expand_config_path(cli_path or required_env("AGY_BOT_BIN"))
+    expanded = expand_config_path(cli_path) if isinstance(cli_path, str) else ""
+    if expanded:
+        return expanded
+    return expand_config_path(required_env("AGY_BOT_BIN"))
 
 
 def visible_conversations_dir(cli_base: str) -> str:
@@ -54,6 +59,8 @@ def visible_conversations_dir(cli_base: str) -> str:
 
 def resolve_store_lock_path(home_dir: Optional[str] = None) -> str:
     """Shared flock file coordinating agy_store_fix and ui_mirror store operations."""
-    base = expand_config_path(home_dir) if home_dir else (os.environ.get("AGY_FIX_HOME") or os.path.expanduser("~"))
+    expanded_home = expand_config_path(home_dir) if isinstance(home_dir, str) else ""
+    expanded_env = expand_config_path(os.environ.get("AGY_FIX_HOME") or "")
+    base = expanded_home or expanded_env or os.path.expanduser("~")
     return os.path.join(base, ".agy_store_fix.lock")
 

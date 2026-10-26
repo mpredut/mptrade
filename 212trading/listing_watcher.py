@@ -13,8 +13,12 @@ import threading
 import time
 from datetime import datetime
 
-from ipo_common import ET, log
-from market_data import check_market
+try:
+    from .ipo_common import ET, log
+    from .market_data import check_market
+except ImportError:
+    from ipo_common import ET, log
+    from market_data import check_market
 
 
 def in_market_window() -> bool:

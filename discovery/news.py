@@ -5,6 +5,7 @@ prints reports immediately when imported; it is not a side-effect-free library.
 The request paths below do not set timeouts or call ``raise_for_status``.
 """
 
+import math
 import time
 import requests
 import pandas as pd
@@ -34,19 +35,30 @@ def get_coinmarketcap_coins():
         }
         time.sleep(5)
         response = requests.get(url_cmc, headers=headers_cmc, params=params_cmc, timeout=15)
-        data = response.json()
-        if data is None or 'data' not in data:
+        try:
+            data = response.json()
+        except ValueError:
+            break
+        if not isinstance(data, dict) or not isinstance(data.get('data'), list):
             break
 
         # Convert the current response page to local rows.
         for coin in data['data']:
-            name = coin['name']
-            symbol = coin['symbol']
-            launch_date = pd.to_datetime(coin['date_added'])
-            price = coin['quote']['USD']['price']
-            website_slug = coin['slug']  # Retained as an additional identifier.
-            change_24h = coin['quote']['USD']['percent_change_24h']
-            change_7d = coin['quote']['USD']['percent_change_7d']
+            if not isinstance(coin, dict):
+                continue
+            name = coin.get('name')
+            symbol = coin.get('symbol')
+            if not symbol:
+                continue
+            launch_date = pd.to_datetime(coin.get('date_added'), errors='coerce')
+            quote = coin.get('quote')
+            usd_quote = quote.get('USD') if isinstance(quote, dict) else None
+            if not isinstance(usd_quote, dict):
+                usd_quote = {}
+            price = usd_quote.get('price')
+            website_slug = coin.get('slug')  # Retained as an additional identifier.
+            change_24h = usd_quote.get('percent_change_24h')
+            change_7d = usd_quote.get('percent_change_7d')
             coins.append({
                 "name": name,
                 "symbol": symbol,
@@ -79,13 +91,28 @@ def get_coinmarketcap_coins():
 def get_binance_coins():
     url_binance = "https://api.binance.com/api/v3/ticker/price"
     response = requests.get(url_binance, timeout=15)
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    if not isinstance(data, list):
+        return {}
     
     # Build the symbol-to-price mapping returned to the comparison routine.
     binance_data = {}
     for coin in data:
+        if not isinstance(coin, dict) or 'symbol' not in coin or 'price' not in coin:
+            continue
+        raw_px = coin['price']
+        if isinstance(raw_px, bool):
+            continue
+        try:
+            price = float(raw_px)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(price) or price <= 0:
+            continue
         symbol = str(coin['symbol']).removesuffix('USDT')
-        price = float(coin['price'])
         binance_data[symbol] = price
     return binance_data
 
@@ -93,27 +120,41 @@ def get_binance_coins():
 def find_common_coins_and_sort(topn, df_cmc, binance_data):
     # Keep CoinMarketCap symbols that exist in the Binance-derived mapping.
     common_coins = []
+    if isinstance(topn, bool):
+        topn_i = 10
+    else:
+        try:
+            topn_i = max(0, int(topn))
+        except (TypeError, ValueError, OverflowError):
+            topn_i = 10
     
     for index, row in df_cmc.iterrows():
         symbol = row['symbol']
         price_cmc = row['price']
         
-        if symbol in binance_data:
+        if isinstance(binance_data, dict) and symbol in binance_data:
             price_binance = binance_data[symbol]
+            if isinstance(price_cmc, bool) or isinstance(price_binance, bool):
+                continue
+            try:
+                px_cmc_f = float(price_cmc)
+                px_bin_f = float(price_binance)
+            except (TypeError, ValueError, OverflowError):
+                continue
             # Use price proximity as a weak cross-source identity check.
             if (
-                price_cmc is not None
-                and pd.notna(price_cmc)
-                and price_cmc > 0
-                and price_binance is not None
-                and abs(price_cmc - price_binance) / price_cmc < 0.05
+                math.isfinite(px_cmc_f)
+                and px_cmc_f > 0
+                and math.isfinite(px_bin_f)
+                and px_bin_f > 0
+                and abs(px_cmc_f - px_bin_f) / px_cmc_f < 0.05
             ):  # Toleranta de 5%
                 common_coins.append({
                     "name": row['name'],
                     "symbol": symbol,
                     "launch_date": row['launch_date'],
-                    "price_cmc": price_cmc,
-                    "price_binance": price_binance,
+                    "price_cmc": px_cmc_f,
+                    "price_binance": px_bin_f,
                     "change_24h": row['change_24h'],
                     "change_7d": row['change_7d'],
                     "website_slug": row['website_slug']
@@ -134,12 +175,12 @@ def find_common_coins_and_sort(topn, df_cmc, binance_data):
     )
 
     # Produce the requested ranked views.
-    df_sorted_new = df_common.sort_values(by="launch_date", ascending=False).head(topn)
+    df_sorted_new = df_common.sort_values(by="launch_date", ascending=False).head(topn_i)
     
-    df_sorted_greatest_increase_7d = df_common.sort_values(by="change_7d", ascending=False).head(topn)
-    df_sorted_greatest_decrease_7d = df_common.sort_values(by="change_7d", ascending=True).head(topn)
-    df_sorted_greatest_increase_24h = df_common.sort_values(by="change_24h", ascending=False).head(topn)
-    df_sorted_greatest_decrease_24h = df_common.sort_values(by="change_24h", ascending=True).head(topn)
+    df_sorted_greatest_increase_7d = df_common.sort_values(by="change_7d", ascending=False).head(topn_i)
+    df_sorted_greatest_decrease_7d = df_common.sort_values(by="change_7d", ascending=True).head(topn_i)
+    df_sorted_greatest_increase_24h = df_common.sort_values(by="change_24h", ascending=False).head(topn_i)
+    df_sorted_greatest_decrease_24h = df_common.sort_values(by="change_24h", ascending=True).head(topn_i)
     
     return df_sorted_new, df_sorted_greatest_increase_7d, df_sorted_greatest_decrease_7d, df_sorted_greatest_increase_24h, df_sorted_greatest_decrease_24h
 

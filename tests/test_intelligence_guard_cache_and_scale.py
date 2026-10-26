@@ -10192,8 +10192,81 @@ def test_iteration90_kraken_client_cachemanager_and_t212_client_safety(monkeypat
     assert tc.get_historical_order(True) is None
 
 
+def test_iteration91_market_data_order_manager_and_trailing_core_safety(monkeypatch):
+    """Verify Iteration 91 Yahoo/Kraken market_data validation, T212 order_manager ticker/validity/order_id safety, and TrailingCore 0-fill target_exit_qty cleanup."""
+    import importlib
+    import os
+    import sys
+    import pytest
+    import kraken.market_data as kmd
+    import trailing_core as tcore
 
+    # 1. kraken.market_data.fetch_ohlc_candles, check_pair_listing, pair_precision
+    with pytest.raises(ValueError, match="invalid pair"):
+        kmd.fetch_ohlc_candles("", 5)
+    with pytest.raises(ValueError, match="invalid pair"):
+        kmd.fetch_ohlc_candles(True, 5)
 
+    class _DummyKrakenClient:
+        def pair_info(self, pair):
+            return {"status": None, "pair_decimals": 3.5, "lot_decimals": -2, "ordermin": "0.1"}
 
+    info, unlisted = kmd.check_pair_listing(_DummyKrakenClient(), "HYPEUSD")
+    assert info is not None and unlisted is False
+    p_dec, v_dec, omin = kmd.pair_precision(info)
+    assert (p_dec, v_dec, omin) == (2, 8, 0.1)
 
+    # 2. 212trading.market_data validation & future-timestamp protection
+    t212_md = importlib.import_module("212trading.market_data")
+    assert t212_md.t212_to_yahoo(True) == ""
+    assert t212_md.t212_to_yahoo(" nvda_us_eq ") == "NVDA"
+    with pytest.raises(ValueError, match="invalid symbol"):
+        t212_md.fetch_yahoo_candles("  ", "5d", "5m")
+    with pytest.raises(ValueError, match="invalid range"):
+        t212_md.fetch_yahoo_candles("NVDA", True, "5m")
+
+    # Future timestamp (>60s ahead) in check_market must not trigger fresh_series / really_trading
+    import time as _time
+    future_ts = _time.time() + 86400.0
+    monkeypatch.setattr(
+        t212_md,
+        "_chart",
+        lambda sym, rng="1d", interval="5m": (
+            {"marketState": 12345, "regularMarketPrice": 100.0, "regularMarketVolume": 0, "regularMarketTime": future_ts},
+            [(future_ts, 100.0, 500.0), (future_ts + 60, 102.0, 500.0)],
+        ),
+    )
+    cm_res = t212_md.check_market("SPCX")
+    assert cm_res["state"] == "?"
+    assert cm_res["launched"] is False
+    assert cm_res["trading"] is False
+
+    # 3. 212trading.order_manager ticker/validity validation
+    t212_om = importlib.import_module("212trading.order_manager")
+    assert t212_om.place_order_with_retry(None, "", 1.0, 100.0, "DAY", True) is False
+    assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, None, True) is False
+
+    # 4. TrailingCore._finish_pending cleans up target_exit_qty on 0-fill terminal SELL
+    tc_obj = tcore.TrailingCore(
+        adapter=type("A", (), {"assets": lambda self: []})(),
+        log=lambda *a, **k: None,
+        enabled=False,
+        state_file="dummy.json",
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=False,
+    )
+    st = {"peak": 100.0, "target_exit_qty": 5.0, "pending_order": {"action": "SELL"}}
+    res = type(
+        "R",
+        (),
+        {
+            "status": type("S", (), {"filled_qty": 0.0, "cost": 0.0, "status": "canceled"})(),
+            "intent": {"action": "SELL"},
+        },
+    )()
+    tc_obj._finish_pending(st, res, 95.0, "HYPEUSD")
+    assert "target_exit_qty" not in st
+    assert "pending_order" not in st
 

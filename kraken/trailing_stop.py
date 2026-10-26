@@ -256,6 +256,8 @@ class KrakenTrailing:
         """Cancel open SELL orders to release locked quantity for emergency stop."""
         try:
             open_ords = self.client.open_orders() or {}
+            if not isinstance(open_ords, dict):
+                return False
             cancelled_any = False
             for txid, ord_info in open_ords.items():
                 descr = ord_info.get("descr", {}) if isinstance(ord_info, dict) else {}

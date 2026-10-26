@@ -31,5 +31,5 @@ def load_shadow_environment(env_path: str, config_path: str | None = None) -> No
 
 def require_shadow_interval(interval: int, expected: int, label: str) -> None:
     """Reject a cadence for which a shadow strategy was not validated."""
-    if isinstance(interval, bool) or interval != expected:
+    if isinstance(interval, bool) or isinstance(expected, bool) or interval != expected:
         raise ValueError(f"{label} accepts only the native {expected}m interval")

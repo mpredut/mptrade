@@ -2188,5 +2188,70 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     st_code, payload_dict = tc._place_order("limit", {"ticker": "NVDA_US_EQ"})
     assert st_code == 200 and isinstance(payload_dict, dict)
 
+    # 14. discovery.news, shadow_runtime, instrument_registry, orchestratorOS.agy.paths, and watchdog_common guards
+    import pandas as pd
+    from discovery import news as d_news
+    from instrument_registry import InstrumentSpec, select_instruments
+    from orchestratorOS.agy import paths as agy_paths
+    from orchestratorOS.lib import watchdog_common as wd_common
+    from shadow_runtime import require_shadow_interval
+
+    df_cmc_sample = pd.DataFrame([
+        {"name": "Bitcoin", "symbol": "BTC", "launch_date": pd.Timestamp("2020-01-01"), "price": 60000.0, "change_24h": 1.0, "change_7d": 2.0, "website_slug": "btc"},
+        {"name": "BadBool", "symbol": "BAD_BOOL", "launch_date": pd.Timestamp("2024-01-01"), "price": True, "change_24h": 0.0, "change_7d": 0.0, "website_slug": "bb"},
+        {"name": "BadNan", "symbol": "BAD_NAN", "launch_date": pd.Timestamp("2024-01-02"), "price": float("nan"), "change_24h": 0.0, "change_7d": 0.0, "website_slug": "bn"},
+        {"name": "Ethereum", "symbol": "ETH", "launch_date": pd.Timestamp("2022-01-01"), "price": 3000.0, "change_24h": 3.0, "change_7d": 4.0, "website_slug": "eth"},
+    ])
+    df_new, *_ = d_news.find_common_coins_and_sort(
+        1,
+        df_cmc_sample,
+        {"BTC": 60010.0, "BAD_BOOL": 1.0, "BAD_NAN": 1.0, "ETH": 3005.0},
+    )
+    assert list(df_new["symbol"]) == ["ETH"]
+    df_new_bool, *_ = d_news.find_common_coins_and_sort(True, df_cmc_sample, {"BTC": 60010.0})
+    assert list(df_new_bool["symbol"]) == ["BTC"]
+
+    with pytest.raises(RuntimeError):
+        require_shadow_interval(60, expected=True, context="TEST_BOT")
+
+    spec_inst = InstrumentSpec(
+        section="BINANCE_BTC",
+        provider="binance",
+        symbol="BTCUSDC",
+        base_asset="BTC",
+        quote_asset="USDC",
+        roles=("monitor", "rtrade"),
+        settings={"gain": "3.5"},
+    )
+    assert spec_inst.has_role("  MONITOR ") is True
+    assert spec_inst.has_role(True) is False
+    assert spec_inst.setting(" GAIN ") == "3.5"
+    assert spec_inst.setting(True, "fallback") == "fallback"
+    registry_map = {"BINANCE_BTC": spec_inst}
+    assert len(select_instruments(role=" RTRADE ", provider=" BINANCE ", registry=registry_map)) == 1
+    assert select_instruments(role=True, registry=registry_map) == []
+    assert select_instruments(provider=True, registry=registry_map) == []
+
+    monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path / "bot_home"))
+    monkeypatch.setenv("AGY_UI_CLI_BASE", str(tmp_path / "ui_cli"))
+    monkeypatch.setenv("AGY_BOT_BIN", str(tmp_path / "agy_bot_bin"))
+    monkeypatch.setenv("AGY_FIX_HOME", "   ")
+    assert agy_paths.resolve_bot_cli_base("   ").startswith(str(tmp_path / "bot_home"))
+    assert agy_paths.resolve_ui_cli_base("   ") == str(tmp_path / "ui_cli")
+    assert agy_paths.resolve_agy_bot_bin("   ") == str(tmp_path / "agy_bot_bin")
+    assert agy_paths.resolve_store_lock_path("   ").endswith(".agy_store_fix.lock")
+
+    sent_urls = []
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "   ")
+    monkeypatch.setenv("PHONE_ALERT_URL", " https://ntfy.sh/fallback_topic ")
+    monkeypatch.setattr(
+        wd_common.AlertNotifier,
+        "send_phone_webhook_batch",
+        lambda events, webhook_url=None: (sent_urls.append(webhook_url) or True),
+    )
+    assert wd_common.send_ntfy("Test", "Body") is True
+    assert sent_urls == ["https://ntfy.sh/fallback_topic"]
+
+
 
 

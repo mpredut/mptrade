@@ -34,6 +34,9 @@ def fetch_ohlc_candles(
     Excludes the final still-forming candle when drop_incomplete is True to ensure
     reproducible historical backtests and avoid lookahead bias.
     """
+    if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+        raise ValueError(f"invalid pair: {pair!r}")
+    pair = pair.strip()
     if isinstance(interval, bool) or isinstance(timeout, bool):
         raise ValueError("interval and timeout must not be boolean")
     try:
@@ -133,7 +136,8 @@ def check_pair_listing(client: KrakenClient, pair: str) -> tuple[dict | None, bo
     if not info:
         return None, False
     # Status 'online' means tradable; Kraken also reports cancel/post/limit/reduce-only.
-    status = info.get("status", "online")
+    raw_status = info.get("status", "online")
+    status = raw_status.strip().lower() if isinstance(raw_status, str) and raw_status.strip() else "online"
     if status not in ("online", "limit_only", "post_only"):
         log(f"  [market] {pair} listed but status={status} (still not tradable)")
         return None, True
@@ -155,12 +159,20 @@ def pair_precision(info: dict) -> tuple[int, int, float]:
         return 2, 8, 0.0
     try:
         raw_p = info.get("pair_decimals")
-        price_dec = max(0, int(float(raw_p))) if raw_p is not None and not isinstance(raw_p, bool) else 2
+        if raw_p is not None and not isinstance(raw_p, bool):
+            p_f = float(raw_p)
+            price_dec = int(p_f) if math.isfinite(p_f) and p_f >= 0 and p_f == int(p_f) else 2
+        else:
+            price_dec = 2
     except (TypeError, ValueError, OverflowError):
         price_dec = 2
     try:
         raw_v = info.get("lot_decimals")
-        vol_dec = max(0, int(float(raw_v))) if raw_v is not None and not isinstance(raw_v, bool) else 8
+        if raw_v is not None and not isinstance(raw_v, bool):
+            v_f = float(raw_v)
+            vol_dec = int(v_f) if math.isfinite(v_f) and v_f >= 0 and v_f == int(v_f) else 8
+        else:
+            vol_dec = 8
     except (TypeError, ValueError, OverflowError):
         vol_dec = 8
     try:

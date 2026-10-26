@@ -55,9 +55,15 @@ def fetch_yahoo_candles(
     """
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
         raise ValueError(f"invalid timeout: {timeout!r}")
-    symbol = str(symbol or "").strip()
-    range_ = str(range_ or "").strip()
-    interval = str(interval or "").strip()
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError(f"invalid symbol: {symbol!r}")
+    if isinstance(range_, bool) or not isinstance(range_, str) or not range_.strip():
+        raise ValueError(f"invalid range: {range_!r}")
+    if isinstance(interval, bool) or not isinstance(interval, str) or not interval.strip():
+        raise ValueError(f"invalid interval: {interval!r}")
+    symbol = symbol.strip()
+    range_ = range_.strip()
+    interval = interval.strip()
     query = {"range": range_, "interval": interval}
     day_range = re.fullmatch(r"([1-9][0-9]*)d", range_.lower())
     if day_range:
@@ -115,6 +121,8 @@ def fetch_yahoo_candles(
         ts_i = int(ts_f)
         if ts_i <= 0 or not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)):
             continue
+        if h_f < l_f or h_f < max(o_f, c_f) or l_f > min(o_f, c_f):
+            continue
         records.append({
             "timestamp": ts_i,
             "open": o_f,
@@ -141,7 +149,9 @@ _UA = {"User-Agent": "Mozilla/5.0 (ipo-watch)"}
 
 def t212_to_yahoo(t212_ticker: str) -> str:
     """Convert NVDA_US_EQ to NVDA for Yahoo price lookup."""
-    return str(t212_ticker or "").split("_")[0]
+    if isinstance(t212_ticker, bool) or not isinstance(t212_ticker, str):
+        return ""
+    return t212_ticker.strip().split("_")[0].strip().upper()
 
 
 def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
@@ -287,7 +297,8 @@ def check_market(sym: str) -> dict | None:
                 meta_vol = v_f
         except (TypeError, ValueError, OverflowError):
             meta_vol = 0
-    state    = (meta.get("marketState") or "").upper()
+    raw_state = meta.get("marketState")
+    state    = raw_state.strip().upper() if isinstance(raw_state, str) else ""
     last_ts  = meta.get("regularMarketTime")
 
     age_sec = None
@@ -311,8 +322,8 @@ def check_market(sym: str) -> dict | None:
         cs = [c for _, c, _ in recent]
         series_moved = len(cs) >= 2 and (max(cs) - min(cs)) > 0
 
-    fresh_meta = age_sec is not None and age_sec < 15 * 60
-    fresh_series = series_age is not None and series_age < 20 * 60
+    fresh_meta = age_sec is not None and -60.0 <= age_sec < 15 * 60
+    fresh_series = series_age is not None and -60.0 <= series_age < 20 * 60
     live_state = state in ("REGULAR", "PRE", "PREPRE", "POST", "POSTPOST")
 
     # 'launched' means actual prior trading: metadata volume OR a fresh intraday series

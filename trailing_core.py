@@ -214,6 +214,8 @@ class TrailingCore:
                     f"  [TRAIL] partial exit: sold {filled:.4f} @ {avg:.4f} (accum {accum_qty:.4f}/{target_qty:.4f}), "
                     f"remaining position still protected under peak {st.get('peak', avg):.4f}"
                 )
+        elif action == "SELL" and _safe_nonneg_float(st.get("exit_sold_qty", 0.0)) <= 0:
+            st.pop("target_exit_qty", None)
         elif action == "REBUY" and filled > 0:
             rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
             submitted_qty = _safe_nonneg_float(pending.get("submitted_qty") or rb.get("qty") or 0.0)

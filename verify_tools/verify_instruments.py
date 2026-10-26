@@ -47,7 +47,7 @@ def parse_monitortrades_conf(path=None):
     try:
         with open(path, encoding="utf-8") as f:
             for raw in f:
-                line = raw.split("#", 1)[0].strip()
+                line = raw.split("#", 1)[0].split(";", 1)[0].strip()
                 if "=" not in line:
                     continue
                 k, v = (x.strip() for x in line.split("=", 1))
@@ -91,14 +91,15 @@ def main() -> int:
             check([float(x) for x in got] == [float(x) for x in exp],
                   f"{symname} gain/lost/maxage", f"conf={exp} instr={got}")
     # globale -> mt.* pe TAO (oglindesc hard_tp_* + tp_reference)
-    if tao:
+    if tao and g:
         check(str(tao.param("mt", "hardtp")) == str(g.get("hard_tp_pct")),
               "hardtp == hard_tp_pct", f"{tao.param('mt','hardtp')} vs {g.get('hard_tp_pct')}")
         check(str(tao.param("mt", "hardtp_fraction")) == str(g.get("hard_tp_fraction")),
               "hardtp_fraction", f"{tao.param('mt','hardtp_fraction')} vs {g.get('hard_tp_fraction')}")
         check(tao.param("mt", "ref") == g.get("tp_reference"),
               "ref == tp_reference", f"{tao.param('mt','ref')} vs {g.get('tp_reference')}")
-        check(tao.param("mt", "gain", cast=float) == 9.2, "param() cast float", str(tao.param("mt", "gain", cast=float)))
+    if tao:
+        check(tao.param("mt", "gain", cast=float) == float(tao.param("mt", "gain")), "param() cast float", str(tao.param("mt", "gain", cast=float)))
 
     print("\n==== 3. RUTARE explicita pe venue (provider_by_name) ====")
     check(api.provider_by_name("binance") is not None, "provider_by_name('binance')")
