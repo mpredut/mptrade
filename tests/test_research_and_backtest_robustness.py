@@ -1936,6 +1936,56 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     loaded_kc = _load_initial_cache(str(bad_kraken_cache))
     assert [r["id"] for r in loaded_kc["items"]["HYPEUSD"]] == ["T1", "T2"]
 
+    # 9. Volatility, KalmanTrigger, SmartStopLossGuard, NewsFeedCollector, and GeopoliticalThreatAnalyzer resilience
+    from intelligence.internal.state.volatility import (
+        RollingVolatilityTracker,
+        calculate_volatility_1h,
+        vol_pct_to_ratio,
+        vol_ratio_to_pct,
+    )
+    noisy_prices = [None, True] + [100.0 + (i % 3) * 0.5 for i in range(25)] + ["bad", False]
+    v1h = calculate_volatility_1h(noisy_prices, 60.0)
+    assert v1h is not None and v1h > 0.0
+    assert vol_pct_to_ratio(True) == 0.0
+    assert vol_pct_to_ratio(None) == 0.0
+    assert vol_ratio_to_pct(True) == 0.0
+    assert vol_ratio_to_pct("0.025") == 2.5
+    rvt = RollingVolatilityTracker(window_size="5")
+    assert rvt.window_size == 20
 
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrend, KalmanTrendTrigger
+    kt = KalmanTrend()
+    kt.x = [100.0, 0.0]
+    kt.last_ts = None
+    out_kt = kt.update("1000.0", "105.0", 0.01)
+    assert out_kt["trend"] == 0 and kt.last_ts == 1000.0
+    ktt = KalmanTrendTrigger()
+    ktt.filter.update(1000.0, 100.0, 0.001)
+    _, ev_kt = ktt.evaluate("BTCUSDC", "1060.0", "110.0", 0.001)
+    if ev_kt is not None:
+        assert isinstance(ev_kt.price, float) and isinstance(ev_kt.ts, float)
 
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    sl_guard = SmartStopLossGuard(
+        mode=None,
+        max_threshold_pct="bad",
+        grace_seconds=True,
+        disaster_buffer_pct=-5.0,
+        min_whale_long_pct=2.5,
+        min_taker_ratio=-1.0,
+    )
+    assert sl_guard.mode == "enforce"
+    assert sl_guard.max_threshold_pct == 6.0
+    assert sl_guard.grace_seconds == 120.0
+    assert sl_guard.disaster_buffer_pct == 0.85
+    assert sl_guard.min_whale_long_pct == 0.60
+    assert sl_guard.min_taker_ratio == 0.85
+
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    nfc = NewsFeedCollector(history_file=str(tmp_path / "news_hist.json"))
+    assert nfc._normalize_title(None) == ""
+    nfc._aggregated_pool["bad1"] = "not_a_tuple"
+    nfc._aggregated_pool["bad2"] = (True, "not_headline")
+    snap_nf = nfc.get_pool_snapshot(now_ts=2000.0)
+    assert snap_nf.total_fetched == 0
 

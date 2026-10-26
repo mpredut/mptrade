@@ -41,10 +41,20 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
         return None
     sample_rate_sec = sr_f
 
-    p0 = float(prices[0])
-    pn = float(prices[-1])
+    p0 = None
+    pn = None
+    if not isinstance(prices[0], bool) and not isinstance(prices[-1], bool):
+        try:
+            cand0 = float(prices[0])
+            candn = float(prices[-1])
+            if math.isfinite(cand0) and cand0 > 0 and math.isfinite(candn) and candn > 0:
+                p0 = cand0
+                pn = candn
+        except (TypeError, ValueError):
+            pass
+
     tbuf = getattr(prices, "_trend_buf", None)
-    if tbuf is not None:
+    if tbuf is not None and p0 is not None and pn is not None:
         blen = len(tbuf.prices)
         if (
             blen >= n
@@ -57,15 +67,38 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
                     return 0.0
                 return round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
-    cache_key = (n, p0, pn, round(float(sample_rate_sec), 3))
-    cached = _vol_memo_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    cache_key = (
+        (n, p0, pn, round(float(sample_rate_sec), 3))
+        if (p0 is not None and pn is not None)
+        else None
+    )
+    if cache_key is not None:
+        cached = _vol_memo_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
-    p = np.asarray(prices, dtype=float)
+    try:
+        if any(isinstance(x, bool) for x in prices):
+            raise TypeError("bool in prices")
+        p = np.asarray(prices, dtype=float)
+    except (TypeError, ValueError):
+        clean_p = []
+        for x in prices:
+            if x is None or isinstance(x, bool):
+                continue
+            try:
+                xf = float(x)
+                if math.isfinite(xf) and xf > 0:
+                    clean_p.append(xf)
+            except (TypeError, ValueError):
+                continue
+        p = np.asarray(clean_p, dtype=float)
+        cache_key = None
     p = p[np.isfinite(p) & (p > 0)]
     if len(p) < 20:
         return None
+    if len(p) != n:
+        cache_key = None
 
     # Single-ratio logarithm: ln(p[i+1] / p[i]) instead of 2 * log calls
     rets = np.log(p[1:] / p[:-1])
@@ -75,9 +108,10 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
     else:
         res = round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
-    if len(_vol_memo_cache) > _VOL_MEMO_MAX_ENTRIES:
-        _vol_memo_cache.clear()
-    _vol_memo_cache[cache_key] = res
+    if cache_key is not None:
+        if len(_vol_memo_cache) > _VOL_MEMO_MAX_ENTRIES:
+            _vol_memo_cache.clear()
+        _vol_memo_cache[cache_key] = res
     return res
 
 
@@ -85,9 +119,19 @@ class RollingVolatilityTracker:
     """O(1) incremental realized volatility tracker using Welford's algorithm over a sliding window."""
 
     def __init__(self, window_size: int = 100) -> None:
-        self.window_size = window_size
-        self._prices: deque[float] = deque(maxlen=window_size + 1)
-        self._rets: deque[float] = deque(maxlen=window_size)
+        ws = 100
+        if window_size is not None and not isinstance(window_size, bool):
+            try:
+                wf = float(window_size)
+                if math.isfinite(wf) and wf >= 20:
+                    ws = int(wf)
+                elif math.isfinite(wf) and wf > 0:
+                    ws = 20
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.window_size = ws
+        self._prices: deque[float] = deque(maxlen=ws + 1)
+        self._rets: deque[float] = deque(maxlen=ws)
         self._count = 0
         self._mean = 0.0
         self._m2 = 0.0
@@ -179,12 +223,24 @@ vol_1h_pct = calculate_volatility_1h
 
 def vol_pct_to_ratio(vol_pct: float) -> float:
     """Convert an hourly volatility percentage to decimal ratio (e.g. 2.5% -> 0.025, 0.05% -> 0.0005)."""
-    return float(vol_pct) / 100.0
+    if vol_pct is None or isinstance(vol_pct, bool):
+        return 0.0
+    try:
+        vf = float(vol_pct)
+        return (vf / 100.0) if math.isfinite(vf) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def vol_ratio_to_pct(vol_ratio: float) -> float:
     """Convert an hourly volatility decimal ratio to percentage (e.g. 0.025 -> 2.5%, 0.0005 -> 0.05%)."""
-    return float(vol_ratio) * 100.0
+    if vol_ratio is None or isinstance(vol_ratio, bool):
+        return 0.0
+    try:
+        vf = float(vol_ratio)
+        return (vf * 100.0) if math.isfinite(vf) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def get_kalman_state_path() -> str:

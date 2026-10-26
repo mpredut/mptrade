@@ -111,7 +111,13 @@ class KalmanTrend:
             eps = max(price * 1e-4, 1e-9)
         R = eps * eps
 
-        if self.x is None:
+        if (
+            self.x is None
+            or self.last_ts is None
+            or isinstance(self.last_ts, bool)
+            or not isinstance(self.last_ts, (int, float))
+            or not math.isfinite(float(self.last_ts))
+        ):
             self._reset_state(price, R, ts)
             return self._out(price, old_trend=self.trend)
 
@@ -201,6 +207,8 @@ class KalmanTrendTrigger:
 
         trigger_event: Optional[TriggerEvent] = None
         if trend != old_trend and trend != 0:
+            price_f = float(price)
+            ts_f = float(ts)
             confidence = (
                 abs(out["vel"]) / max(out["vel_std"], 1e-6)
                 if out["vel_std"] > 0
@@ -212,9 +220,9 @@ class KalmanTrendTrigger:
                     side=TriggerSide.BUY,
                     source="kalman_trigger",
                     symbol=symbol,
-                    price=price,
+                    price=price_f,
                     strength=confidence,
-                    ts=ts,
+                    ts=ts_f,
                     velocity=out["vel"],
                     confidence=confidence,
                     reason="kalman_transition_up",
@@ -226,9 +234,9 @@ class KalmanTrendTrigger:
                     side=TriggerSide.SELL,
                     source="kalman_trigger",
                     symbol=symbol,
-                    price=price,
+                    price=price_f,
                     strength=confidence,
-                    ts=ts,
+                    ts=ts_f,
                     velocity=out["vel"],
                     confidence=confidence,
                     reason="kalman_transition_down",

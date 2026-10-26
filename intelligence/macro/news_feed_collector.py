@@ -92,7 +92,7 @@ class NewsFeedCollector:
         return self._aggregated_pool
 
     def _normalize_title(self, title: str) -> str:
-        return re.sub(r"\s+", " ", title.strip().lower())
+        return re.sub(r"\s+", " ", str(title or "").strip().lower())
 
     def _load_history(self) -> None:
         from state_io import read_recovering_previous
@@ -214,8 +214,16 @@ class NewsFeedCollector:
                 pass
         cutoff = now - self.rolling_window_sec
         active_pool = {
-            k: v for k, v in self._aggregated_pool.items()
-            if math.isfinite(v[0]) and cutoff <= v[0] <= (now + 5.0)
+            k: v
+            for k, v in self._aggregated_pool.items()
+            if isinstance(v, tuple)
+            and len(v) == 2
+            and not isinstance(v[0], bool)
+            and isinstance(v[0], (int, float))
+            and math.isfinite(float(v[0]))
+            and cutoff <= float(v[0]) <= (now + 5.0)
+            and hasattr(v[1], "title")
+            and hasattr(v[1], "is_high_severity")
         }
         all_headlines = [
             v[1]

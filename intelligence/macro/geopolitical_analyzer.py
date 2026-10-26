@@ -184,14 +184,15 @@ class GeopoliticalThreatAnalyzer:
         is_stale = age_sec < 0.0 or age_sec >= effective_ttl
         acute_shock_alert = (
             news_snapshot is not None
-            and news_snapshot.has_critical_shock_keywords
+            and bool(getattr(news_snapshot, "has_critical_shock_keywords", False))
             and self._cached_assessment is not None
             and self._cached_assessment.threat_level == "NORMAL"
         )
         if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             return self._cached_assessment
 
-        if news_snapshot is None or len(news_snapshot.headlines) == 0:
+        raw_headlines = getattr(news_snapshot, "headlines", None) if news_snapshot is not None else None
+        if not isinstance(raw_headlines, (list, tuple)) or len(raw_headlines) == 0:
             return self._cached_assessment or GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
                 risk_score=0.1,
@@ -202,14 +203,14 @@ class GeopoliticalThreatAnalyzer:
             )
 
         # Stage 1: Local screen — if zero high-severity headlines, return NORMAL immediately
-        high_sev = [h for h in news_snapshot.headlines if h.is_high_severity]
+        high_sev = [h for h in raw_headlines if bool(getattr(h, "is_high_severity", False))]
         if not high_sev:
             normal_assessment = GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
                 risk_score=0.1,
                 summary="Calm geopolitical and energy climate. No systemic shock detected.",
                 recommended_brake="NONE",
-                headlines_analyzed=len(news_snapshot.headlines),
+                headlines_analyzed=len(raw_headlines),
                 ts=now,
             )
             self._cached_assessment = normal_assessment
