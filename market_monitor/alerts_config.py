@@ -104,22 +104,35 @@ def load_config(path: str) -> dict:
 
 def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     """Resolve a coin threshold: per_coin, then dynamic for new coins, then default."""
+    if not isinstance(alert_config, dict):
+        alert_config = {}
     per = alert_config.get("per_coin")
     if not isinstance(per, dict):
         per = {}
     sym_str = str(symbol or "").strip()
     sym_up = sym_str.upper()
-    if sym_str in per:
+    if isinstance(per.get(sym_str), dict):
         return per[sym_str]
-    if sym_up in per:
+    if isinstance(per.get(sym_up), dict):
         return per[sym_up]
     from providers.quantity import resolve_assets
     base = resolve_assets(sym_up)[0]
-    if base and base in per:
+    if base and isinstance(per.get(base), dict):
         return per[base]
-    if base and base.upper() in per:
+    if base and isinstance(per.get(base.upper()), dict):
         return per[base.upper()]
-    return alert_config["dynamic"] if is_dynamic else alert_config["default"]
+    dyn_flag = (
+        str(is_dynamic).strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(is_dynamic, str)
+        else bool(is_dynamic)
+    )
+    preferred = alert_config.get("dynamic") if dyn_flag else alert_config.get("default")
+    if isinstance(preferred, dict):
+        return preferred
+    fallback = alert_config.get("default") if dyn_flag else alert_config.get("dynamic")
+    if isinstance(fallback, dict):
+        return fallback
+    return {"up_percent": 4.1, "down_percent": 7.5}
 
 
 if __name__ == "__main__":

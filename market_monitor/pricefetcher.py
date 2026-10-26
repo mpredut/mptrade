@@ -229,8 +229,8 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             response = requests.post(self._url, headers=headers, json=payload, timeout=10)
             response.raise_for_status()
             mids = response.json()
-            if not isinstance(mids, dict):
-                raise ValueError("Hyperliquid allMids response must be a dict")
+            if not isinstance(mids, dict) or not mids:
+                raise ValueError("Hyperliquid allMids response must be a non-empty dict")
             self._all_mids = mids
             self._supported_symbols = set(self._all_mids.keys())
             print(f"[HyperliquidPlatform] Loaded {len(self._supported_symbols)} symbols")
@@ -621,7 +621,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         self.max_monitored_symbols = _safe_max_symbols(max_symbols, MAX_MONITORED_SYMBOLS)
         initial_symbols = []
         seen_bases = set()
-        for symbol in symbols:
+        for symbol in (symbols or ()):
             #print(f"{symbol}")
             base_symbol = get_base_symbol(symbol)
             if base_symbol not in seen_bases and is_valid_symbol_for_monitoring(symbol):

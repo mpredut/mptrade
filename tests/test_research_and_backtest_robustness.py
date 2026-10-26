@@ -3293,3 +3293,62 @@ def test_cooldown_and_market_monitor_hardening(tmp_path):
     assert set(removed) == {"NANSYM", "NEGSYM"}
     assert pf.symbol_added_time == {}
 
+
+def test_batch6_hardening(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from market_monitor import alerts_config
+    from market_monitor.new_coins_discovery import NewCoinsMonitor
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from visuals import drawprices
+    import cacheManager as cm
+
+    # 1. AutonomousIntentGateway._get_live_price reads latest entry ([-1]) from cache_current_price.json
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[1000, 50000.0], [2000, 62500.0], [3000, None]]}}),
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway.__new__(AutonomousIntentGateway)
+    gw.cache_dir = str(cache_dir)
+    dummy_inst = SimpleNamespace(symbol="BTCUSDC", base="BTC", _provider=SimpleNamespace())
+    assert gw._get_live_price(dummy_inst) == 62500.0
+
+    # 2. alerts_config.resolve handles missing keys, non-dict per_coin, and string is_dynamic
+    assert alerts_config.resolve(None, "BTCUSDC", "false") == {"up_percent": 4.1, "down_percent": 7.5}  # type: ignore[arg-type]
+    assert alerts_config.resolve(
+        {"default": {"up_percent": 5.0, "down_percent": 8.0}, "dynamic": {"up_percent": 15.0, "down_percent": 25.0}},
+        "BTCUSDC",
+        "false",  # type: ignore[arg-type]
+    ) == {"up_percent": 5.0, "down_percent": 8.0}
+
+    # 3. NewCoinsMonitor partial auto_add_thresholds and symbol_added_time=None
+    added_calls = []
+    pm = SimpleNamespace(
+        original_symbols=[],
+        active_symbols=set(),
+        max_monitored_symbols=10,
+        symbol_added_time=None,
+        add_symbol=lambda sym, preferred_source=None: (added_calls.append(sym), True)[1],
+    )
+    ncm = NewCoinsMonitor.__new__(NewCoinsMonitor)
+    ncm.price_monitor = pm
+    assert ncm.should_keep_monitoring("NEWCOIN") is True
+    assert ncm.add_new_coin_to_watchlist(
+        {"symbol": "NEWCOIN", "name": "New Coin", "price": 1.25, "volume_24h": 50000},
+        auto_add_thresholds={"min_volume_24h": 20000},
+    ) is True
+    assert added_calls == ["NEWCOIN"]
+
+    # 4. visuals.drawprices.get_cache_for_symbol with dict-backed entry.cache and forecast_linear
+    old_mgr = getattr(cm, "price_cache_manager", None)
+    try:
+        cm.price_cache_manager = {"BTCUSDC": SimpleNamespace(cache={"BTCUSDC": [[1700000000000, 60000.0], [1700000060000, "bad"]]})}
+        assert drawprices.get_cache_for_symbol("BTCUSDC") == [(1700000000000, 60000.0)]
+    finally:
+        cm.price_cache_manager = old_mgr
+    assert len(drawprices.forecast_linear(None, [100.0, None, "bad", True, 110.0], horizon="5")) == 5  # type: ignore[arg-type]
+    assert len(drawprices.forecast_linear(None, "bad", horizon=5)) == 0  # type: ignore[arg-type]
+
+

@@ -40,6 +40,8 @@ class BotManager:
             raise KeyError("Missing required env key 'ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC' in config.env")
         self.verbose_stdout = os.environ["ORCHESTRATOR_VERBOSE_STDOUT"].strip() in ("1", "true", "True")
         self.zombie_cooldown_sec = float(os.environ["ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC"])
+        if not math.isfinite(self.zombie_cooldown_sec) or self.zombie_cooldown_sec < 0:
+            raise ValueError(f"Invalid ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC: {self.zombie_cooldown_sec!r}")
 
     @staticmethod
     def _resolve_venv() -> str:

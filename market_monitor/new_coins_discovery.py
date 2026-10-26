@@ -218,6 +218,8 @@ class CoinGeckoSource(NewCoinsSource):
             response = requests.get(f"{self.base_url}/coins/list", timeout=15)
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, list):
+                return
             self._cache = []
             self._supported_symbols.clear()
             for coin in data:
@@ -561,7 +563,10 @@ class NewCoinsMonitor:
                 except Exception as e:
                     print(f"[NewCoinsMonitor] Error: {e}")
                 print(f"[NewCoinsMonitor] ⏳ Waiting {interval_seconds} seconds until the next check...")
-                time.sleep(interval_seconds)
+                for _ in range(max(1, int(math.ceil(float(interval_seconds))))):
+                    if not self._running:
+                        break
+                    time.sleep(min(1.0, float(interval_seconds)))
         self._thread = threading.Thread(target=run, name="NewCoinsMonitor", daemon=True)
         self._thread.start()
 
@@ -637,14 +642,21 @@ class NewCoinsMonitor:
             return False
 
         # Informational thresholds only; they do not block the add operation
-        if auto_add_thresholds is None:
-            auto_add_thresholds = {
-                "min_volume_24h": 100000,      # Minimum volume $100k
-                "min_price_usd": 0.000001,     # Minimum price
-                "max_price_usd": 100000,       # Maximum price
-                "min_change_24h": -90,         # Minimum accepted decline
-                "max_change_24h": 1000,        # Maximum accepted increase
+        default_thresholds = {
+            "min_volume_24h": 100000.0,      # Minimum volume $100k
+            "min_price_usd": 0.000001,       # Minimum price
+            "max_price_usd": 100000.0,       # Maximum price
+            "min_change_24h": -90.0,         # Minimum accepted decline
+            "max_change_24h": 1000.0,        # Maximum accepted increase
+        }
+        if isinstance(auto_add_thresholds, dict):
+            merged_thresholds = {
+                k: _safe_num(auto_add_thresholds.get(k, v), v)
+                for k, v in default_thresholds.items()
             }
+        else:
+            merged_thresholds = default_thresholds
+        auto_add_thresholds = merged_thresholds
 
         # Check thresholds for informational display only
         volume = _safe_num(coin_info.get('volume_24h', 0), 0.0)
@@ -690,9 +702,10 @@ class NewCoinsMonitor:
             return False
 
     def should_keep_monitoring(self, symbol: str) -> bool:
-        if not hasattr(self.price_monitor, 'symbol_added_time'):
+        added_map = getattr(self.price_monitor, 'symbol_added_time', None)
+        if not isinstance(added_map, dict):
             return True
-        added_time = self.price_monitor.symbol_added_time.get(symbol)
+        added_time = added_map.get(symbol)
         ts_val = _safe_num(added_time, 0.0)
         if ts_val <= 0.0:
             return True

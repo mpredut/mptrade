@@ -19,7 +19,9 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
     mgr = getattr(cm, "price_cache_manager", None)
     entry = mgr.get(symbol) if isinstance(mgr, dict) else None
     raw = getattr(entry, "cache", None) if entry is not None else None
-    if not raw:
+    if isinstance(raw, dict):
+        raw = raw.get(symbol, [])
+    if not raw or not isinstance(raw, (list, tuple)):
         return []
     out: List[Tuple[int, float]] = []
     for item in raw:
@@ -28,12 +30,14 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
         if isinstance(item[0], bool) or isinstance(item[1], bool):
             continue
         try:
-            t_val = int(float(item[0]))
+            t_f = float(item[0])
             p_val = float(item[1])
+            if not (math.isfinite(t_f) and math.isfinite(p_val)):
+                continue
+            t_val = int(t_f)
         except (TypeError, ValueError, OverflowError):
             continue
-        if math.isfinite(p_val):
-            out.append((t_val, p_val))
+        out.append((t_val, p_val))
     return out
 
 
@@ -131,16 +135,36 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     For real elapsed time, normalize milliseconds to days or hours and use the
     same formulas.
     """
-    n = len(prices)
-    if n == 0 or isinstance(horizon, bool) or horizon <= 0:
+    if prices is None or isinstance(prices, (bool, str, bytes)) or isinstance(horizon, bool):
+        return np.array([], dtype=np.float64)
+    try:
+        hz_f = float(horizon)
+        if not math.isfinite(hz_f) or int(hz_f) <= 0:
+            return np.array([], dtype=np.float64)
+        hz = int(hz_f)
+    except (TypeError, ValueError, OverflowError):
+        return np.array([], dtype=np.float64)
+    clean_p = []
+    for p in prices:
+        if p is None or isinstance(p, bool):
+            continue
+        try:
+            pf = float(p)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(pf):
+            clean_p.append(pf)
+    n = len(clean_p)
+    if n == 0:
         return np.array([], dtype=np.float64)
     if n == 1:
-        return np.full(int(horizon), float(prices[0]), dtype=np.float64)
+        return np.full(hz, clean_p[0], dtype=np.float64)
     x = np.arange(n, dtype=np.float64)
+    y = np.asarray(clean_p, dtype=np.float64)
     # fit y ~ a*x + b
-    a, b = np.polyfit(x, prices, 1)
+    a, b = np.polyfit(x, y, 1)
     # Predictions for the following steps.
-    x_future = np.arange(n, n + int(horizon), dtype=np.float64)
+    x_future = np.arange(n, n + hz, dtype=np.float64)
     y_future = a * x_future + b
     return y_future
 

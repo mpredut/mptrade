@@ -639,7 +639,8 @@ class AutonomousIntentGateway:
             from state_io import read_recovering_previous
             cdata = read_recovering_previous(cache_path, json.loads, default=None)
             if isinstance(cdata, dict):
-                items = cdata.get("items", {})
+                raw_items = cdata.get("items")
+                items = raw_items if isinstance(raw_items, dict) else {}
                 sym_u = str(inst.symbol or "").strip().upper()
                 candidates = [inst.symbol, sym_u]
                 inst_base = getattr(inst, "base", None) or (_split_symbol_assets(sym_u) or (sym_u, ""))[0]
@@ -648,31 +649,37 @@ class AutonomousIntentGateway:
                         cand = f"{str(inst_base).upper()}{suffix}"
                         if cand not in candidates:
                             candidates.append(cand)
+
+                def _latest_valid_px(entries: Any) -> Optional[float]:
+                    if not isinstance(entries, (list, tuple)):
+                        return None
+                    for entry in reversed(entries):
+                        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                            continue
+                        raw_v = entry[1]
+                        if raw_v is None or isinstance(raw_v, bool):
+                            continue
+                        try:
+                            px_f = float(raw_v)
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if math.isfinite(px_f) and px_f > 0:
+                            return px_f
+                    return None
+
                 for cand in candidates:
                     if cand in items and items[cand]:
-                        try:
-                            raw_v = items[cand][0][1]
-                            if raw_v is None or isinstance(raw_v, bool):
-                                continue
-                            px_f = float(raw_v)
-                            if math.isfinite(px_f) and px_f > 0:
-                                return px_f
-                        except (TypeError, ValueError, IndexError, OverflowError):
-                            continue
+                        px_f = _latest_valid_px(items[cand])
+                        if px_f is not None:
+                            return px_f
                 if inst_base:
                     base_u = str(inst_base).upper()
                     for k, v in items.items():
                         k_base = (_split_symbol_assets(str(k)) or (str(k).upper(), ""))[0]
                         if k_base == base_u and v:
-                            try:
-                                raw_v = v[0][1]
-                                if raw_v is None or isinstance(raw_v, bool):
-                                    continue
-                                px_f = float(raw_v)
-                                if math.isfinite(px_f) and px_f > 0:
-                                    return px_f
-                            except (TypeError, ValueError, IndexError, OverflowError):
-                                continue
+                            px_f = _latest_valid_px(v)
+                            if px_f is not None:
+                                return px_f
         except Exception:
             pass
 
