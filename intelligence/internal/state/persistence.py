@@ -16,23 +16,25 @@ import numpy as np
 def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
     if prices is None or isinstance(prices, (str, bytes, bool)):
         return np.empty(0, dtype=float)
+    if isinstance(prices, np.ndarray):
+        if prices.dtype == np.bool_:
+            return np.empty(0, dtype=float)
+        if prices.dtype.kind in ("f", "i", "u"):
+            arr = prices.astype(float, copy=False).ravel()
+            return arr[np.isfinite(arr)]
+    vals = []
     try:
-        arr = np.asarray(prices, dtype=float).ravel()
-        return arr[np.isfinite(arr)]
-    except (TypeError, ValueError):
-        vals = []
-        try:
-            for p in prices:
-                if p is not None and not isinstance(p, bool):
-                    try:
-                        pf = float(p)
-                        if math.isfinite(pf):
-                            vals.append(pf)
-                    except (TypeError, ValueError, OverflowError):
-                        pass
-        except TypeError:
-            pass
-        return np.asarray(vals, dtype=float)
+        for p in prices:
+            if p is not None and not isinstance(p, bool):
+                try:
+                    pf = float(p)
+                    if math.isfinite(pf):
+                        vals.append(pf)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+    except TypeError:
+        pass
+    return np.asarray(vals, dtype=float)
 
 
 def calculate_mann_kendall(prices: Sequence[float]) -> tuple[int, float, float]:
@@ -106,8 +108,22 @@ def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -
         return "unknown"
     if not math.isfinite(h_f):
         return "unknown"
-    if h_f > hi:
+    try:
+        lo_f = float(lo) if lo is not None and not isinstance(lo, bool) else 0.45
+        if not math.isfinite(lo_f):
+            lo_f = 0.45
+    except (TypeError, ValueError):
+        lo_f = 0.45
+    try:
+        hi_f = float(hi) if hi is not None and not isinstance(hi, bool) else 0.55
+        if not math.isfinite(hi_f):
+            hi_f = 0.55
+    except (TypeError, ValueError):
+        hi_f = 0.55
+    if lo_f > hi_f:
+        lo_f, hi_f = hi_f, lo_f
+    if h_f > hi_f:
         return "persistent"
-    if h_f < lo:
+    if h_f < lo_f:
         return "mean_reverting"
     return "random_walk"

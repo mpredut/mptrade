@@ -44,7 +44,14 @@ def block_slopes(ts, px, window_h, step_h):
     out_t, out_s = [], []
     if ts is None or px is None or len(ts) == 0 or len(px) == 0:
         return np.array(out_t), np.array(out_s)
-    w, s = float(window_h) * 3600.0, float(step_h) * 3600.0
+    n_common = min(len(ts), len(px))
+    ts = ts[:n_common]
+    px = px[:n_common]
+    w_h = _pos_float(window_h, 0.0)
+    s_h = _pos_float(step_h, 0.0)
+    if w_h <= 0.0 or s_h <= 0.0:
+        return np.array(out_t), np.array(out_s)
+    w, s = w_h * 3600.0, s_h * 3600.0
     if not (math.isfinite(w) and w > 0.0 and math.isfinite(s) and s > 0.0):
         return np.array(out_t), np.array(out_s)
     t = ts[0] + w
@@ -124,7 +131,11 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     """Return hybrid T by combining empirical data with prior."""
     prior_f = _pos_float(prior_T, 14.0)
     k_f = _pos_float(k, 30.0)
-    if dur_hours is None or len(dur_hours) == 0:
+    t_min_f = _pos_float(t_min, 4.0)
+    t_max_f = _pos_float(t_max, 30.0)
+    if t_min_f > t_max_f:
+        t_min_f, t_max_f = t_max_f, t_min_f
+    if dur_hours is None or isinstance(dur_hours, (str, bytes, bool)):
         return {
             "T": int(round(prior_f)),
             "n": 0,
@@ -133,15 +144,24 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
             "p90_d": None,
             "T_emp": None,
         }
-    try:
-        d = np.asarray(dur_hours, dtype=float).ravel() / 24.0
-        d = d[np.isfinite(d) & (d > 0)]
-    except (TypeError, ValueError):
+    if isinstance(dur_hours, np.ndarray):
+        if dur_hours.dtype == np.bool_:
+            d = np.empty(0, dtype=float)
+        elif dur_hours.dtype.kind in ("f", "i", "u"):
+            arr = dur_hours.astype(float, copy=False).ravel() / 24.0
+            d = arr[np.isfinite(arr) & (arr > 0)]
+        else:
+            vals = [_pos_float(v, 0.0) / 24.0 for v in dur_hours.ravel() if _pos_float(v, 0.0) > 0.0]
+            d = np.asarray(vals, dtype=float)
+    else:
         vals = []
-        for v in dur_hours:
-            vf = _pos_float(v, 0.0)
-            if vf > 0.0:
-                vals.append(vf / 24.0)
+        try:
+            for v in dur_hours:
+                vf = _pos_float(v, 0.0)
+                if vf > 0.0:
+                    vals.append(vf / 24.0)
+        except TypeError:
+            pass
         d = np.asarray(vals, dtype=float)
     n = len(d)
     if n == 0:
@@ -156,7 +176,7 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     med, p90 = float(np.median(d)), float(np.percentile(d, 90))
     t_emp = max(p90, 2.0 * med)
     w = n / (n + k_f)
-    T = min(max(w * t_emp + (1 - w) * prior_f, t_min), t_max)
+    T = min(max(w * t_emp + (1 - w) * prior_f, t_min_f), t_max_f)
     return {
         "T": int(round(T)),
         "n": n,
@@ -215,6 +235,8 @@ def estimate_T(
     ttl_days: float = 7.0,
 ) -> dict:
     """Estimate asset-specific trend lifetime T empirically from historical candlesticks."""
+    prior_f = _pos_float(prior_T, 14.0)
+    ttl_f = _pos_float(ttl_days, 7.0)
     loaded_cache = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
     cache = loaded_cache if isinstance(loaded_cache, dict) else {}
 
@@ -228,7 +250,7 @@ def estimate_T(
                 if (
                     math.isfinite(ts_val)
                     and ts_val > 0.0
-                    and -60.0 <= (now_curr - ts_val) < float(ttl_days) * 86400.0
+                    and -60.0 <= (now_curr - ts_val) < ttl_f * 86400.0
                 ):
                     return ent
             except (TypeError, ValueError):
@@ -257,7 +279,7 @@ def estimate_T(
         if ent:
             return ent
         return {
-            "T": int(round(prior_T)),
+            "T": int(round(prior_f)),
             "n": 0,
             "w": 0.0,
             "source_symbol": None,
@@ -270,7 +292,7 @@ def estimate_T(
     bt, bs = block_slopes(ts, px, window_h, step_h)
     eps = episodes(bt, bs, window_h)
     durs = [e["dur_h"] for e in eps]
-    res = hybrid_T(durs, prior_T=prior_T)
+    res = hybrid_T(durs, prior_T=prior_f)
 
     d = np.asarray(durs, dtype=float)
     p_cont = {}

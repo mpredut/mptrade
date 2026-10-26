@@ -51,7 +51,7 @@ class ParabolicSurgeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
-        side_u = str(side or "").upper()
+        side_u = str(side or "").strip().upper() if not isinstance(side, bool) else ""
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
 
@@ -74,9 +74,11 @@ class ParabolicSurgeGuard:
                 pass
         if ts_now <= 0.0 and price_history:
             try:
-                hf = float(price_history[-1][0])
-                if math.isfinite(hf) and hf > 0:
-                    ts_now = hf
+                raw_last_ts = price_history[-1][0]
+                if not isinstance(raw_last_ts, bool):
+                    hf = float(raw_last_ts)
+                    if math.isfinite(hf) and hf > 0:
+                        ts_now = hf
             except (TypeError, ValueError, IndexError):
                 pass
 

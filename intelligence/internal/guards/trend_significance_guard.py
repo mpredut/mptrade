@@ -11,6 +11,7 @@ from typing import Any, Optional, Sequence
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.internal.state.persistence import (
+    _extract_finite_prices,
     calculate_mann_kendall,
     calculate_hurst_exponent,
     classify_hurst_regime,
@@ -58,14 +59,15 @@ class TrendSignificanceGuard:
                 reason="not_an_entry_trigger",
             )
 
-        if price_history is None or len(price_history) < 8:
+        clean_prices = _extract_finite_prices(price_history)
+        if len(clean_prices) < 8:
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",
                 reason="insufficient_history_for_mk_test",
             )
 
         # 1. Non-parametric Mann-Kendall significance test
-        s, z, p = calculate_mann_kendall(price_history)
+        s, z, p = calculate_mann_kendall(clean_prices)
 
         # If direction from trigger conflicts with statistical trend direction
         if trigger.side == TriggerSide.BUY and z < 0:
@@ -86,8 +88,8 @@ class TrendSignificanceGuard:
             )
 
         # 2. Hurst exponent check (if required and enough data points)
-        if self.min_hurst is not None and len(price_history) >= 65:
-            h = calculate_hurst_exponent(price_history)
+        if self.min_hurst is not None and len(clean_prices) >= 65:
+            h = calculate_hurst_exponent(clean_prices)
             regime = classify_hurst_regime(h)
             if h is not None and h < self.min_hurst:
                 return GuardDecision.defer(

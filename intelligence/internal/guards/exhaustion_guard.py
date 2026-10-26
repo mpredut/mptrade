@@ -69,8 +69,8 @@ class WeibullExhaustionGuard:
         exhausted_scale: float = 0.25,
     ):
         self.default_p90_days = _pos_finite(default_p90_days, 7.0) or 7.0
-        self.policy = str(policy or "downscale").lower()
-        self.exhausted_scale = _pos_finite(exhausted_scale, 0.25) or 0.25
+        self.policy = str(policy or "downscale").strip().lower() if not isinstance(policy, bool) else "downscale"
+        self.exhausted_scale = min(1.0, _pos_finite(exhausted_scale, 0.25) or 0.25)
 
     def check(
         self,
@@ -86,7 +86,7 @@ class WeibullExhaustionGuard:
         if self.policy == "off":
             return GuardDecision.allow("WeibullExhaustionGuard", "weibull_policy_off")
 
-        side_u = str(side or "").upper()
+        side_u = str(side or "").strip().upper() if not isinstance(side, bool) else ""
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("WeibullExhaustionGuard", "unsupported_side")
 

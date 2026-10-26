@@ -2257,6 +2257,70 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert wd_common.send_ntfy("Test", "Body") is True
     assert sent_urls == ["https://ntfy.sh/fallback_topic"]
 
+    # 15. persistence, survival, mean_reversion_trigger, trend_significance_guard, exhaustion_guard, parabolic_guard, and pricefetcher guards
+    import numpy as np
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.state.persistence import (
+        _extract_finite_prices,
+        calculate_mann_kendall,
+        classify_hurst_regime,
+    )
+    from intelligence.internal.state.survival import block_slopes, hybrid_T
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from market_monitor.pricefetcher import StockYahooPricePlatform
+
+    assert list(_extract_finite_prices([True, 100.0, False, 102.0])) == [100.0, 102.0]
+    assert len(_extract_finite_prices(np.array([True, False]))) == 0
+    assert calculate_mann_kendall([True, False, 100.0, 101.0, 102.0, 103.0, 104.0, 105.0]) == (0, 0.0, 1.0)
+    assert classify_hurst_regime(0.60, lo="bad", hi=True) == "persistent"
+    assert classify_hurst_regime(0.50, lo=0.60, hi=0.40) == "random_walk"
+
+    bt_arr, bs_arr = block_slopes(np.arange(10, dtype=float) * 3600.0, np.arange(8, dtype=float) + 100.0, window_h=True, step_h="bad")
+    assert len(bt_arr) == 0 and len(bs_arr) == 0
+    ht_bool = hybrid_T([True, False], prior_T="12.0", t_min=30, t_max=4)
+    assert ht_bool["n"] == 0 and ht_bool["T"] == 12
+    assert hybrid_T(True)["n"] == 0
+
+    mrt = MeanReversionTrigger(mode=" RSI ", bb_k=-1.0)
+    assert mrt.mode == "rsi" and mrt.bb_k == 2.0
+
+    tsg = TrendSignificanceGuard(max_p_value=0.05)
+    entry_trig = TriggerEvent(
+        action=TriggerAction.ENTRY,
+        side=TriggerSide.BUY,
+        source="test",
+        symbol="BTCUSDC",
+        price=100.0,
+        strength=1.0,
+    )
+    dec_sparse = tsg.evaluate(entry_trig, [None, True, False, float("nan"), 100.0, 101.0, 102.0, 103.0, 104.0])
+    assert dec_sparse.allowed is True and dec_sparse.reason == "insufficient_history_for_mk_test"
+
+    weg = WeibullExhaustionGuard(policy=" OFF ", exhausted_scale=2.5)
+    assert weg.policy == "off" and weg.exhausted_scale == 1.0
+    weg_enforced = WeibullExhaustionGuard(policy=" VETO ")
+    assert weg_enforced.check("BTCUSDC", True, 86400.0 * 10).allowed is True
+
+    psg = ParabolicSurgeGuard()
+    assert psg.check("BTCUSDC", True, 100.0).allowed is True
+    assert psg.check("BTCUSDC", " buy ", 100.0, price_history=[(True, 99.0)]).allowed is True
+
+    yp = StockYahooPricePlatform(tickers=["NVDA_US_EQ"])
+
+    class _DummyYahooResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"chart": None}
+
+    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda *a, **k: _DummyYahooResp())
+    assert yp.get_price("NVDA_US_EQ") is None
+
+
 
 
 

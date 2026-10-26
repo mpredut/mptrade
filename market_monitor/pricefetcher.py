@@ -88,12 +88,19 @@ class BinancePricePlatform(PricePlatformInterface):
             response = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
             response.raise_for_status()
             data = response.json()
-            
+            if not isinstance(data, dict):
+                raise ValueError("Binance exchangeInfo response must be a dict")
+            raw_symbols = data.get("symbols")
+            if not isinstance(raw_symbols, list):
+                raise ValueError("Binance exchangeInfo symbols must be a list")
+
             usdc_pairs = set()
             supported_symbols = set()
             symbol_mapping = {}
-            
-            for symbol_info in data.get("symbols", []):
+
+            for symbol_info in raw_symbols:
+                if not isinstance(symbol_info, dict):
+                    continue
                 symbol = symbol_info.get("symbol")
                 base_asset = symbol_info.get("baseAsset")
                 quote_asset = symbol_info.get("quoteAsset")
@@ -316,8 +323,12 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             )
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get('data'), list):
+                raise ValueError("CoinMarketCap listings response must contain a data list")
             self._supported_symbols.clear()
-            for crypto in data.get('data', []):
+            for crypto in data['data']:
+                if not isinstance(crypto, dict):
+                    continue
                 symbol = crypto.get('symbol')
                 if symbol:
                     self._supported_symbols.add(symbol)
@@ -472,10 +483,20 @@ class StockYahooPricePlatform(PricePlatformInterface):
             url = self._YAHOO.format(sym=sym_y) + "?range=1d&interval=5m"
             resp = requests.get(url, headers=self._UA, timeout=10)
             resp.raise_for_status()
-            result = (resp.json().get("chart", {}).get("result") or [None])[0]
-            if not result:
+            payload = resp.json()
+            if not isinstance(payload, dict):
                 return None
-            q = (result.get("indicators", {}).get("quote") or [{}])[0]
+            chart = payload.get("chart")
+            if not isinstance(chart, dict):
+                return None
+            result = (chart.get("result") or [None])[0]
+            if not isinstance(result, dict):
+                return None
+            indicators = result.get("indicators")
+            quote_list = indicators.get("quote") if isinstance(indicators, dict) else None
+            q = (quote_list or [{}])[0] if isinstance(quote_list, list) else {}
+            if not isinstance(q, dict):
+                q = {}
             closes = []
             for c in (q.get("close") or []):
                 if c is not None and not isinstance(c, bool):
@@ -487,7 +508,8 @@ class StockYahooPricePlatform(PricePlatformInterface):
                         pass
             if closes:
                 return closes[-1]                      # freshest intraday bar
-            price = (result.get("meta", {}) or {}).get("regularMarketPrice")  # metadata fallback
+            meta = result.get("meta")
+            price = meta.get("regularMarketPrice") if isinstance(meta, dict) else None  # metadata fallback
             if price is not None and not isinstance(price, bool):
                 pf = float(price)
                 if math.isfinite(pf) and pf > 0:
