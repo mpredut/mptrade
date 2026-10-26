@@ -84,7 +84,12 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['symbol'] = trade.get('symbol', '')
         raw_px = trade.get('price')
         try:
-            has_pos_raw_px = raw_px is not None and not isinstance(raw_px, bool) and float(raw_px) > 0
+            has_pos_raw_px = (
+                raw_px is not None
+                and not isinstance(raw_px, bool)
+                and math.isfinite(float(raw_px))
+                and float(raw_px) > 0
+            )
         except (TypeError, ValueError):
             has_pos_raw_px = False
         aggregated_trades[orderId]['price'] = (
@@ -353,7 +358,8 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     if os.path.exists(filename):
         with open(filename, 'r') as f:
             try:
-                all_trades_list = json.load(f)  # The on-disk structure is a list.
+                loaded = json.load(f)  # The on-disk structure is a list.
+                all_trades_list = loaded if isinstance(loaded, list) else []
                 print(f"Loaded {len(all_trades_list)} total trades from {filename}.")
             except json.JSONDecodeError:
                 print(f"Warning: Failed to decode JSON from {filename}. Starting with an empty list.")
@@ -434,7 +440,8 @@ def load_trades_from_file(filename):
     if os.path.exists(filename):
         with open(filename, 'r') as f:
             try:
-                trade_cache = json.load(f)
+                loaded = json.load(f)
+                trade_cache = loaded if isinstance(loaded, list) else []
                 print(f"Cache loaded with {len(trade_cache)} trades.")
             except json.JSONDecodeError:
                 print("Error reading file.")

@@ -330,8 +330,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             self._last_refresh = time.time()
             try:
                 os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
-                with open(self._cache_file, "w", encoding="utf-8") as f:
-                    json.dump(self._all_listings, f)
+                atomic_write_json(self._cache_file, self._all_listings)
             except Exception:
                 pass
         except Exception as e:
@@ -358,11 +357,16 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         return base in self._supported_symbols
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
-        coin_data = data.get('data', {}).get(symbol)
+        if not isinstance(data, dict):
+            return None
+        data_map = data.get('data')
+        coin_data = data_map.get(symbol) if isinstance(data_map, dict) else None
         if isinstance(coin_data, list):
             coin_data = coin_data[0] if coin_data else None
         if isinstance(coin_data, dict):
-            price = coin_data.get('quote', {}).get('USD', {}).get('price')
+            quote = coin_data.get('quote')
+            usd = quote.get('USD') if isinstance(quote, dict) else None
+            price = usd.get('price') if isinstance(usd, dict) else None
             if price is not None and not isinstance(price, bool):
                 val = float(price)
                 if math.isfinite(val) and val > 0:
@@ -967,7 +971,7 @@ def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbo
 
 
 def is_valid_symbol_for_monitoring(symbol: str) -> bool:
-    if not symbol:
+    if not symbol or not isinstance(symbol, str):
         return False
     if len(symbol) < 1 or len(symbol) > 10:
         return False

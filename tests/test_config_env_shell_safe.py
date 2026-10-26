@@ -512,3 +512,24 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
     assert aop._accepted_is_durable(_DummyRetry, {"id": "c1", "place_kwargs": "bad"}, {}) is False
 
 
+def test_order_id_context_and_pricefetcher_hardening(tmp_path):
+    from binance_api import bapi_trades
+    from binance_api import order_id_context as oic
+    from market_monitor import pricefetcher as pf
+
+    assert oic._base36(-5) == "0"
+    cid = oic.create_client_order_id("VERY_LONG_PROCESS_NAME_EXCEEDING_THIRTY_SIX_CHARS")
+    assert len(cid) <= oic.CLIENT_ORDER_ID_MAX_LEN
+
+    assert pf.is_valid_symbol_for_monitoring(123) is False
+    cmc = pf.CoinMarketCapPricePlatform(api_key=None)
+    assert cmc._extract_usd_price("BTC", {"data": None}) is None
+    assert cmc._extract_usd_price("BTC", {"data": {"BTC": {"quote": None}}}) is None
+    assert cmc._extract_usd_price("BTC", {"data": {"BTC": {"quote": {"USD": None}}}}) is None
+
+    bad_file = tmp_path / "trades.json"
+    bad_file.write_text('{"not": "a_list"}', encoding="utf-8")
+    bapi_trades.load_trades_from_file(str(bad_file))
+    assert bapi_trades.trade_cache == []
+
+

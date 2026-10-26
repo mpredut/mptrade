@@ -124,7 +124,7 @@ def _sanitize_name(value, default="unknown"):
 
 def _base36(value):
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    value = int(value)
+    value = max(0, int(value))
     if value == 0:
         return "0"
 
@@ -160,7 +160,7 @@ def create_client_order_id(process_name=None):
     max_prefix_len = CLIENT_ORDER_ID_MAX_LEN - len(suffix)
 
     if len(prefix) > max_prefix_len:
-        prefix = prefix[:max_prefix_len].rstrip("_-") or pname
+        prefix = (prefix[:max_prefix_len].rstrip("_-") or pname)[:max_prefix_len].rstrip("_-") or "PY"
 
     return f"{prefix}{suffix}"
 

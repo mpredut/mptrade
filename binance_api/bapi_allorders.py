@@ -269,7 +269,7 @@ def get_total_traded_stats(symbol, period_seconds=86400):
     }
 
     for t in trades:
-        side = t['side'].upper()
+        side = str(t.get('side') or '').upper()
         if side in stats:
             stats[side]['total_quantity'] += t['quantity']
             stats[side]['total_value'] += t['price'] * t['quantity']

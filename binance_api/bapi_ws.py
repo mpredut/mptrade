@@ -505,6 +505,10 @@ class BinanceAccountStream(BinanceWSBase):
 
             while not self._stop_event.is_set():
                 now = time.time()
+                if now < last_keepalive:
+                    last_keepalive = now
+                if now < last_ping:
+                    last_ping = now
                 if now - last_keepalive >= self.keepalive_sec:
                     await ws.send(self._signed_logon_msg("keepalive"))
                     last_keepalive = now
@@ -550,7 +554,7 @@ class BinanceAccountStream(BinanceWSBase):
         while not self._stop_event.is_set():
             now = time.time()
             with self._health_lock:
-                age = now - self._last_event_ts if self._last_event_ts else float("inf")
+                age = max(0.0, now - self._last_event_ts) if self._last_event_ts else float("inf")
                 available, healthy = self._available, self._healthy
             if available and healthy and age > self.loss_timeout_sec:
                 logger.warning("[WS][WARN] No WS events for %ds -> falling back to polling.", int(age))
