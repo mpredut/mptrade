@@ -746,11 +746,19 @@ class HyperliquidLongtermShadowTest(unittest.TestCase):
         self.assertEqual(rows, [(1, 1.0, 2.0, 0.5, 1.5)])
 
     def test_snapshot_injects_isolated_log_dir_and_public_fetch(self):
-        with patch.object(self.module.shadow, "snapshot", return_value={"ok": True}) as call:
+        observed = {}
+
+        def _fake_snapshot(*_args, **_kwargs):
+            observed["log_dir"] = self.module.shadow.LOG_DIR
+            observed["fetch"] = self.module.shadow._fetch_with_ts
+            return {"ok": True}
+
+        with patch.object(self.module.shadow, "snapshot", side_effect=_fake_snapshot) as call:
             result = self.module.snapshot(quiet=True)
         self.assertEqual(result, {"ok": True})
         call.assert_called_once_with("HYPE-HL", 240, 0.07, quiet=True)
-        self.assertEqual(self.module.shadow.LOG_DIR, self.module.LOG_DIR)
+        self.assertEqual(observed["log_dir"], self.module.LOG_DIR)
+        self.assertIs(observed["fetch"], self.module._fetch_with_ts)
 
 
 class HyperliquidDatasetTest(unittest.TestCase):
