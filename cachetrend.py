@@ -243,7 +243,17 @@ class CacheShortTrendManager(CacheManagerInterface):
         self.writer = bool(writer)   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
         secs = list(window_seconds) if window_seconds else list(self.WINDOW_SECONDS)
-        self.window_seconds = sorted(round(float(s), 6) for s in secs)
+        valid_secs = []
+        for s in secs:
+            if s is None or isinstance(s, bool):
+                continue
+            try:
+                sf = float(s)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(sf) and sf > 0:
+                valid_secs.append(round(sf, 6))
+        self.window_seconds = sorted(valid_secs) if valid_secs else sorted(round(float(s), 6) for s in self.WINDOW_SECONDS)
         # Thresholds may be callable, keyed by window, keyed by symbol and window, or None.
         self._threshold_fn = self._build_threshold_fn(thresholds)
         self._live_windows = {}
@@ -266,9 +276,14 @@ class CacheShortTrendManager(CacheManagerInterface):
         self._full_eval_thread = None
         self._flush_thread = None
 
-        effective_sync_ts = (
-            float(sync_ts) if sync_ts is not None else self.FULL_EVAL_INTERVAL_SEC
-        )
+        effective_sync_ts = self.FULL_EVAL_INTERVAL_SEC
+        if sync_ts is not None and not isinstance(sync_ts, bool):
+            try:
+                st_f = float(sync_ts)
+                if math.isfinite(st_f) and st_f > 0:
+                    effective_sync_ts = st_f
+            except (TypeError, ValueError, OverflowError):
+                pass
         effective_api = api_client if api_client is not None else _cm_attr("api", None)
         effective_read_only = (
             (not self.writer) if read_only is None else bool(read_only)
@@ -390,7 +405,15 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def threshold_for(self, symbol, seconds):
         """Return the percentage threshold for one symbol window."""
-        return self._threshold_fn(symbol, round(float(seconds), 6))
+        if seconds is None or isinstance(seconds, bool):
+            sec_val = self.window_seconds[0]
+        else:
+            try:
+                sf = float(seconds)
+                sec_val = round(sf, 6) if (math.isfinite(sf) and sf > 0) else self.window_seconds[0]
+            except (TypeError, ValueError, OverflowError):
+                sec_val = self.window_seconds[0]
+        return self._threshold_fn(symbol, sec_val)
 
     # ── Writer: build windows and subscribe to Cache24 ───────────────────────
     def start_computation(
@@ -1319,7 +1342,16 @@ class CacheShortTrendManager(CacheManagerInterface):
                     ):
                         fetchtime[sym] = int(float(ts_val) * 1000)
                     elif sym in self.fetchtime_per_symbol:
-                        fetchtime[sym] = int(self.fetchtime_per_symbol[sym] or 0)
+                        raw_ft = self.fetchtime_per_symbol[sym]
+                        if (
+                            isinstance(raw_ft, (int, float))
+                            and not isinstance(raw_ft, bool)
+                            and math.isfinite(raw_ft)
+                            and raw_ft >= 0
+                        ):
+                            fetchtime[sym] = int(raw_ft)
+                        else:
+                            fetchtime[sym] = 0
                 self.fetchtime_per_symbol = dict(fetchtime)
                 self._rest_sync_cursor_per_symbol = dict(fetchtime)
                 counts = {sym: 1 for sym in snapshot_mem}

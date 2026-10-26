@@ -232,25 +232,31 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
 
 
 def format_summary(result: dict) -> str:
-    summary = result.get("summary", {})
-    notional = summary.get("pending_notional", {})
-    exposures = summary.get("net_exposures", {})
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    notional = summary.get("pending_notional") if isinstance(summary.get("pending_notional"), dict) else {}
+    exposures = summary.get("net_exposures") if isinstance(summary.get("net_exposures"), dict) else {}
+    total_cost_val = _finite_float(exposures.get("total_cost"), default=0.0) or 0.0
+    total_buy_val = _finite_float(notional.get("total_buy"), default=0.0) or 0.0
+    total_sell_val = _finite_float(notional.get("total_sell"), default=0.0) or 0.0
     lines = [
         "=" * 60,
         "ACTIVE INTENTS & EXPOSURE SUMMARY",
         "=" * 60,
-        f"Total active intents:  {len(result.get('intents', []))}",
-        f"Total open positions:  {len(exposures.get('positions', []))}",
-        f"Total cost basis:      ${exposures.get('total_cost', 0.0):.2f}",
-        f"Pending BUY notional:  ${notional.get('total_buy', 0.0):.2f}",
-        f"Pending SELL notional: ${notional.get('total_sell', 0.0):.2f}",
+        f"Total active intents:  {len(result.get('intents') or [])}",
+        f"Total open positions:  {len(exposures.get('positions') or [])}",
+        f"Total cost basis:      ${total_cost_val:.2f}",
+        f"Pending BUY notional:  ${total_buy_val:.2f}",
+        f"Pending SELL notional: ${total_sell_val:.2f}",
         "",
         "Net Exposures:",
     ]
-    positions = exposures.get("positions", [])
+    positions = exposures.get("positions") or []
     if positions:
         for pos in positions:
-            cost_str = f" (${pos['cost']:.2f})" if pos.get("cost") is not None else ""
+            if not isinstance(pos, dict):
+                continue
+            pos_cost = _finite_float(pos.get("cost"), default=None)
+            cost_str = f" (${pos_cost:.2f})" if pos_cost is not None else ""
             lines.append(
                 f"  - {pos.get('symbol')}: {pos.get('qty')}{cost_str} [{pos.get('venue')}]"
             )
@@ -259,14 +265,18 @@ def format_summary(result: dict) -> str:
 
     lines.append("")
     lines.append("Pending Notional by Symbol:")
-    by_sym = notional.get("by_symbol", {})
+    by_sym = notional.get("by_symbol") if isinstance(notional.get("by_symbol"), dict) else {}
     if by_sym:
         for sym, amounts in by_sym.items():
+            if not isinstance(amounts, dict):
+                continue
             parts = []
-            if amounts.get("buy"):
-                parts.append(f"BUY ${amounts['buy']:.2f}")
-            if amounts.get("sell"):
-                parts.append(f"SELL ${amounts['sell']:.2f}")
+            buy_v = _finite_float(amounts.get("buy"), default=0.0) or 0.0
+            sell_v = _finite_float(amounts.get("sell"), default=0.0) or 0.0
+            if buy_v:
+                parts.append(f"BUY ${buy_v:.2f}")
+            if sell_v:
+                parts.append(f"SELL ${sell_v:.2f}")
             lines.append(f"  - {sym}: {', '.join(parts)}")
     else:
         lines.append("  (none)")

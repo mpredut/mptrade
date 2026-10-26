@@ -1288,6 +1288,46 @@ def test_new_coins_discovery_and_pricefetcher_hardening():
     assert yahoo.supports_symbol("NVDA") is True
 
 
+def test_liquidation_signal_cachetrend_and_active_intents_hardening(tmp_path):
+    import json
+    import math
+    import liquidation_signal as ls
+    import cachetrend as ct
+    import active_intents as ai
+
+    sig = ls.LiquidationSignal(symbols=["", "BTCUSDT"], retention_sec=float("nan"))
+    assert sig._symbols == ["BTCUSDT"] and sig._retention == ls.MAX_RETENTION_SEC
+    sig._ingest(json.dumps({"topic": "allLiquidation.BTCUSDT", "data": [{"s": "BTCUSDT", "S": "Buy", "v": True, "p": "75000"}]}))
+    assert sig.get_signal("BTCUSDT", window_sec=float("nan"))["long_liq_usd"] == 0.0
+    sig._ingest(json.dumps({"topic": "allLiquidation.BTCUSDT", "data": [{"s": "BTCUSDT", "S": "Buy", "v": "1.0", "p": "75000"}]}))
+    out = sig.get_signal("BTCUSDT", window_sec=True)
+    assert out["window_sec"] == 300.0 and out["long_liq_usd"] == 75000.0
+    assert math.isfinite(sig.capitulation_ratio("BTCUSDT", window_sec=float("nan"), baseline_sec=True))
+
+    mgr = ct.CacheShortTrendManager(
+        ["BTCUSDC"],
+        filename=str(tmp_path / "st.json"),
+        writer=False,
+        window_seconds=[True, float("nan"), -5.0],
+        sync_ts=float("nan"),
+    )
+    assert len(mgr.window_seconds) == 2 and all(w > 0 for w in mgr.window_seconds)
+    assert math.isfinite(mgr.threshold_for("BTCUSDC", float("nan")))
+    assert math.isfinite(mgr.threshold_for("BTCUSDC", True))
+
+    summary_txt = ai.format_summary(
+        {
+            "intents": None,
+            "summary": {
+                "pending_notional": {"total_buy": "bad", "total_sell": None, "by_symbol": {"BTC": {"buy": "12.5", "sell": True}}},
+                "net_exposures": {"total_cost": float("nan"), "positions": [{"symbol": "BTC", "qty": 1.0, "cost": "100.5", "venue": "binance"}]},
+            },
+        }
+    )
+    assert "$100.50" in summary_txt and "BUY $12.50" in summary_txt
+
+
+
 
 
 

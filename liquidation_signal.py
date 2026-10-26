@@ -65,14 +65,26 @@ _LONG = "LONG"     # a long position was liquidated -> forced selling (down / pa
 _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
 
 
+def _safe_pos_float(val, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return default
+    return f if (math.isfinite(f) and f > 0.0) else default
+
+
 class LiquidationSignal:
     """Background thread holding a rolling window of Bybit liquidations and
     exposing an aggregated per-symbol signal. Thread-safe."""
 
     def __init__(self, symbols: Optional[List[str]] = None,
                  retention_sec: float = MAX_RETENTION_SEC):
-        self._symbols = [s.upper() for s in (symbols or DEFAULT_SYMBOLS)]
-        self._retention = retention_sec
+        self._symbols = [str(s).strip().upper() for s in (symbols or DEFAULT_SYMBOLS) if str(s or "").strip()]
+        if not self._symbols:
+            self._symbols = list(DEFAULT_SYMBOLS)
+        self._retention = _safe_pos_float(retention_sec, MAX_RETENTION_SEC)
         # symbol -> deque[(ts, LONG|SHORT, notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
         self._lock = threading.Lock()
@@ -182,6 +194,8 @@ class LiquidationSignal:
                     side = _SHORT
                 else:
                     continue
+                if isinstance(item.get("v"), bool) or isinstance(item.get("p"), bool):
+                    continue
                 vol = float(item["v"])
                 px = float(item["p"])
                 if not (math.isfinite(vol) and vol > 0 and math.isfinite(px) and px > 0):
@@ -205,9 +219,10 @@ class LiquidationSignal:
         short_liq_usd = shorts liquidated (forced buying -> upward squeeze)
         net_usd       = short_liq_usd - long_liq_usd  (>0 squeeze up, <0 capitulation)
         """
-        symbol = symbol.upper()
+        symbol = str(symbol or "").strip().upper()
+        eff_win = _safe_pos_float(window_sec, 300.0)
         now = time.time()
-        cutoff = now - window_sec
+        cutoff = now - eff_win
         long_usd = short_usd = 0.0
         long_n = short_n = 0
         last_ts = 0.0
@@ -225,7 +240,7 @@ class LiquidationSignal:
                 short_n += 1
         return {
             "symbol": symbol,
-            "window_sec": window_sec,
+            "window_sec": eff_win,
             "long_liq_usd": long_usd,
             "short_liq_usd": short_usd,
             "long_count": long_n,
@@ -241,10 +256,12 @@ class LiquidationSignal:
         to the average rate over ``baseline_sec``. >1 = above average; a threshold
         like >=3 is a reasonable "capitulation" trigger, but the strategy owns the
         final number. Returns 0.0 until there is enough baseline history."""
-        recent = self.get_signal(symbol, window_sec)["long_liq_usd"]
-        base = self.get_signal(symbol, baseline_sec)["long_liq_usd"]
-        recent_rate = recent / max(window_sec, 1.0)
-        base_rate = base / max(baseline_sec, 1.0)
+        eff_win = _safe_pos_float(window_sec, 120.0)
+        eff_base = _safe_pos_float(baseline_sec, 3600.0)
+        recent = self.get_signal(symbol, eff_win)["long_liq_usd"]
+        base = self.get_signal(symbol, eff_base)["long_liq_usd"]
+        recent_rate = recent / max(eff_win, 1.0)
+        base_rate = base / max(eff_base, 1.0)
         return recent_rate / base_rate if base_rate > 0 else 0.0
 
 
