@@ -50,6 +50,15 @@ class LinearGradientTrigger:
         ):
             return "unknown", None
 
+        ts_f = 0.0
+        if ts is not None and not isinstance(ts, bool):
+            try:
+                tf = float(ts)
+                if math.isfinite(tf) and tf > 0.0:
+                    ts_f = tf
+            except (TypeError, ValueError, OverflowError):
+                ts_f = 0.0
+
         strength = abs(gradient) / epsilon
         regime = "sideways"
         if strength > self.strength_threshold:
@@ -65,7 +74,7 @@ class LinearGradientTrigger:
                     symbol=symbol,
                     price=price,
                     strength=strength,
-                    ts=ts or 0.0,
+                    ts=ts_f,
                     velocity=gradient,
                     confidence=strength,
                     reason="gradient_breakout_bull",
@@ -79,7 +88,7 @@ class LinearGradientTrigger:
                     symbol=symbol,
                     price=price,
                     strength=strength,
-                    ts=ts or 0.0,
+                    ts=ts_f,
                     velocity=gradient,
                     confidence=strength,
                     reason="gradient_breakout_bear",

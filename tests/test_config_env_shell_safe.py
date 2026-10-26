@@ -896,6 +896,56 @@ def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
     assert inst.min_qty() == 0.001
 
 
+def test_persistence_survival_and_triggers_hardening():
+    from types import SimpleNamespace
+    import numpy as np
+    from intelligence.internal.state import persistence as pers
+    from intelligence.internal.state import survival as surv
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+
+    # 1. persistence.calculate_mann_kendall and calculate_hurst_exponent handle None/mixed sequences safely
+    assert pers.calculate_mann_kendall([100.0, None, True, 102.0]) == (0, 0.0, 1.0)
+    assert pers.calculate_hurst_exponent([100.0, None, True]) is None
+
+    # 2. survival.block_slopes and hybrid_T handle zero/negative step_h and non-finite prior_T/k safely
+    bt, bs = surv.block_slopes(np.array([0.0, 3600.0]), np.array([100.0, 101.0]), 24, 0)
+    assert len(bt) == 0 and len(bs) == 0
+    ht = surv.hybrid_T([24.0, None, float("nan"), 48.0], prior_T=float("nan"), k=-2.0)
+    assert ht["T"] >= 4 and ht["n"] == 2
+
+    # 3. LinearGradientTrigger sanitizes ts
+    gt = LinearGradientTrigger(strength_threshold=2.0)
+    regime, ev = gt.evaluate("BTCUSDC", 85000.0, 5.0, 1.0, ts=float("nan"))
+    assert regime == "bull" and ev is not None and ev.ts == 0.0
+
+    # 4. WhaleAccumulationTrigger validates price, now, and snapshot fields
+    wt = WhaleAccumulationTrigger()
+    bad_snap = SimpleNamespace(
+        top_traders_long_pct=0.70,
+        taker_buy_sell_ratio=1.5,
+        open_interest_1h_change_pct=2.0,
+        divergence_regime="accumulation",
+    )
+    assert wt.evaluate("BTCUSDC", float("nan"), snapshot=bad_snap) is None
+    assert wt.evaluate("BTCUSDC", 0.0, snapshot=bad_snap) is None
+    ev_w = wt.evaluate("BTCUSDC", 85000.0, snapshot=bad_snap, now=float("nan"))
+    assert ev_w is not None and ev_w.ts > 0.0
+
+    # 5. SentimentContrarianTrigger handles None/malformed historical_values
+    st = SentimentContrarianTrigger()
+    fg_snap = SimpleNamespace(
+        value=15,
+        classification="Extreme Fear",
+        historical_values=None,
+        trend_7d_change=-5,
+    )
+    sig, ev_s = st.evaluate("BTCUSDC", 85000.0, fg_snap)
+    assert sig == "CONTRARIAN_BUY" and ev_s is not None
+
+
+
 
 
 

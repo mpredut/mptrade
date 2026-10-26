@@ -65,11 +65,21 @@ class SentimentContrarianTrigger:
         if val <= self.extreme_fear_entry:
             # Check for stabilization if history exists: avoid buying if sentiment is in free-fall (>10 pt drop today)
             history = snapshot.historical_values
-            if len(history) >= 2:
-                recent_drop = history[1] - history[0]
-                if recent_drop > 10:
-                    # Still in sharp acceleration of fear, wait for stabilization
-                    return None, None
+            if isinstance(history, (list, tuple)) and len(history) >= 2:
+                h0, h1 = history[0], history[1]
+                if (
+                    h0 is not None
+                    and h1 is not None
+                    and not isinstance(h0, bool)
+                    and not isinstance(h1, bool)
+                ):
+                    try:
+                        recent_drop = float(h1) - float(h0)
+                        if math.isfinite(recent_drop) and recent_drop > 10:
+                            # Still in sharp acceleration of fear, wait for stabilization
+                            return None, None
+                    except (TypeError, ValueError, OverflowError):
+                        pass
 
             strength = round(max(0.60, min(1.0, 1.0 - (val / 100.0))), 2)
             event = TriggerEvent(

@@ -42,7 +42,11 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
 def block_slopes(ts, px, window_h, step_h):
     """Return slope signs for each [t-window, t] window stepped by step_h."""
     out_t, out_s = [], []
-    w, s = window_h * 3600.0, step_h * 3600.0
+    if ts is None or px is None or len(ts) == 0 or len(px) == 0:
+        return np.array(out_t), np.array(out_s)
+    w, s = float(window_h) * 3600.0, float(step_h) * 3600.0
+    if not (math.isfinite(w) and w > 0.0 and math.isfinite(s) and s > 0.0):
+        return np.array(out_t), np.array(out_s)
     t = ts[0] + w
     while t <= ts[-1]:
         lo = int(np.searchsorted(ts, t - w, "left"))
@@ -118,21 +122,31 @@ def verdict(cont: dict, mid: float) -> str:
 
 def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, t_max: int = 30) -> dict:
     """Return hybrid T by combining empirical data with prior."""
+    prior_f = _pos_float(prior_T, 14.0)
+    k_f = _pos_float(k, 30.0)
     if dur_hours is None or len(dur_hours) == 0:
         return {
-            "T": int(round(prior_T)),
+            "T": int(round(prior_f)),
             "n": 0,
             "w": 0.0,
             "median_d": None,
             "p90_d": None,
             "T_emp": None,
         }
-    d = np.asarray(dur_hours, dtype=float) / 24.0
-    d = d[np.isfinite(d) & (d > 0)]
+    try:
+        d = np.asarray(dur_hours, dtype=float).ravel() / 24.0
+        d = d[np.isfinite(d) & (d > 0)]
+    except (TypeError, ValueError):
+        vals = []
+        for v in dur_hours:
+            vf = _pos_float(v, 0.0)
+            if vf > 0.0:
+                vals.append(vf / 24.0)
+        d = np.asarray(vals, dtype=float)
     n = len(d)
     if n == 0:
         return {
-            "T": int(round(prior_T)),
+            "T": int(round(prior_f)),
             "n": 0,
             "w": 0.0,
             "median_d": None,
@@ -141,8 +155,8 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
         }
     med, p90 = float(np.median(d)), float(np.percentile(d, 90))
     t_emp = max(p90, 2.0 * med)
-    w = n / (n + k)
-    T = min(max(w * t_emp + (1 - w) * prior_T, t_min), t_max)
+    w = n / (n + k_f)
+    T = min(max(w * t_emp + (1 - w) * prior_f, t_min), t_max)
     return {
         "T": int(round(T)),
         "n": n,

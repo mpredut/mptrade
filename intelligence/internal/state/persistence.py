@@ -13,14 +13,35 @@ from typing import Sequence
 import numpy as np
 
 
+def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
+    if prices is None or isinstance(prices, (str, bytes, bool)):
+        return np.empty(0, dtype=float)
+    try:
+        arr = np.asarray(prices, dtype=float).ravel()
+        return arr[np.isfinite(arr)]
+    except (TypeError, ValueError):
+        vals = []
+        try:
+            for p in prices:
+                if p is not None and not isinstance(p, bool):
+                    try:
+                        pf = float(p)
+                        if math.isfinite(pf):
+                            vals.append(pf)
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+        except TypeError:
+            pass
+        return np.asarray(vals, dtype=float)
+
+
 def calculate_mann_kendall(prices: Sequence[float]) -> tuple[int, float, float]:
     """Calculate Mann-Kendall test statistic S, normalized Z score, and two-sided p-value.
     
     A small p-value (e.g. p < 0.05) rejects the null hypothesis of no trend (pure noise).
     Returns (S, Z, p-value). Sequences with fewer than 8 observations return (0, 0.0, 1.0).
     """
-    y = np.asarray(prices, dtype=float)
-    y = y[np.isfinite(y)]
+    y = _extract_finite_prices(prices)
     n = len(y)
     if n < 8:
         return 0, 0.0, 1.0
@@ -49,8 +70,7 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
     
     Returns None if series has fewer than 65 points or non-positive values.
     """
-    y = np.asarray(prices, dtype=float)
-    y = y[np.isfinite(y)]
+    y = _extract_finite_prices(prices)
     if len(y) < 65 or np.any(y <= 0):
         return None
         
@@ -63,7 +83,7 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
         agg = r[:m].reshape(-1, k).sum(axis=1)
         if len(agg) >= 8:
             v = float(np.var(agg))
-            if v > 0:
+            if v > 0 and math.isfinite(v):
                 ks.append(k)
                 vs.append(v)
         k *= 2
@@ -72,7 +92,8 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
         return None
         
     slope, _ = np.polyfit(np.log(ks), np.log(vs), 1)
-    return float(slope / 2.0)
+    h_val = float(slope / 2.0)
+    return h_val if math.isfinite(h_val) else None
 
 
 def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -> str:
