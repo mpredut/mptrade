@@ -338,7 +338,7 @@ def get_post_stop_reentry_guard(
         m = _load_margins()
     else:
         m = margins
-    mode = str(m.get("post_stop_reentry_mode", "enforce") or "enforce").strip().lower()
+    mode = str(m["post_stop_reentry_mode"]).strip().lower()
     intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
     llm_master = str(m.get("llm_guard_mode", "enforce") or "enforce").strip().lower()
     if intel_master == "off" or llm_master == "off":
@@ -355,12 +355,12 @@ def get_post_stop_reentry_guard(
         except (TypeError, ValueError, OverflowError):
             return default
 
-    timeout = _safe_pos_f(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
+    timeout = _safe_pos_f(m["post_stop_reentry_timeout_sec"], DEFAULT_TIMEOUT_SEC)
     if timeout <= 0.0:
         timeout = DEFAULT_TIMEOUT_SEC
-    fallback = str(m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK) or DEFAULT_FALLBACK).strip().lower()
-    notify_en = str(m.get("post_stop_reentry_notify", "1")).strip().lower() not in ("0", "0.0", "false", "no", "off", "")
-    cache_ttl = _safe_pos_f(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
+    fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
+    notify_en = str(m["post_stop_reentry_notify"]).strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+    cache_ttl = _safe_pos_f(m["post_stop_reentry_cache_ttl_sec"], DEFAULT_POST_STOP_CACHE_TTL_SEC)
 
     if gemini_client is not None:
         return PostStopReentryGuard(

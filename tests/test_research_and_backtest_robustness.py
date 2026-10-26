@@ -2514,7 +2514,16 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
 
     psg = PostStopReentryGuard(notify_enabled="false")  # type: ignore[arg-type]
     assert psg.notify_enabled is False
-    psg_partial = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "shadow"})
-    assert psg_partial.mode == "shadow"
+    psg_cfg = get_post_stop_reentry_guard(
+        margins={
+            "post_stop_reentry_mode": "shadow",
+            "post_stop_reentry_timeout_sec": "0",
+            "post_stop_reentry_fallback": "allow",
+            "post_stop_reentry_notify": "false",
+            "post_stop_reentry_cache_ttl_sec": "600",
+        },
+        gemini_client=SimpleNamespace(_custom_runner=None),
+    )
+    assert psg_cfg.mode == "shadow" and psg_cfg.notify_enabled is False
 
 
