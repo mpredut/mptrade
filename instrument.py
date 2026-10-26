@@ -157,23 +157,39 @@ class Instrument:
         applied_scale: float, side_u: str = "BUY"
     ) -> tuple[float, float, Optional[str]]:
         """Scale down quantity if intelligence guards recommended risk reduction after initial calculation."""
-        if regime_context is None or qty <= 0 or side_u != "BUY":
+        if regime_context is None or isinstance(qty, bool) or side_u != "BUY":
             return qty, applied_scale, None
-        scale = getattr(regime_context, "suggested_scale", None)
-        if scale is not None and 0.0 < float(scale) < float(applied_scale):
-            ratio = float(scale) / float(applied_scale)
-            scaled_qty = qty * ratio
+        try:
+            qty_f = float(qty)
+        except (TypeError, ValueError, OverflowError):
+            return qty, applied_scale, None
+        if not math.isfinite(qty_f) or qty_f <= 0.0:
+            return qty, applied_scale, None
+        scale_raw = getattr(regime_context, "suggested_scale", None)
+        if scale_raw is None or isinstance(scale_raw, bool):
+            return qty, applied_scale, None
+        try:
+            scale_f = float(scale_raw)
+            app_f = 1.0 if isinstance(applied_scale, bool) else float(applied_scale)
+        except (TypeError, ValueError, OverflowError):
+            return qty, applied_scale, None
+        if not math.isfinite(scale_f) or not math.isfinite(app_f) or app_f <= 0.0:
+            return qty, applied_scale, None
+        if 0.0 < scale_f < app_f:
+            ratio = scale_f / app_f
+            scaled_qty = qty_f * ratio
             round_fn = getattr(self._provider, "round_amount", None)
             if round_fn is None:
                 round_fn = getattr(self._provider, "round_quantity", None)
             if callable(round_fn):
                 res = round_fn(self.symbol, scaled_qty)
-                try:
-                    res_f = float(res)
-                    if math.isfinite(res_f):
-                        scaled_qty = res_f
-                except (TypeError, ValueError):
-                    pass
+                if not isinstance(res, bool):
+                    try:
+                        res_f = float(res)
+                        if math.isfinite(res_f):
+                            scaled_qty = res_f
+                    except (TypeError, ValueError, OverflowError):
+                        pass
             filter_check = getattr(self._provider, "order_filter_refusal", None)
             refusal = (
                 filter_check(
@@ -184,8 +200,8 @@ class Instrument:
             if refusal:
                 print(f"[{self.symbol}] {side_u} late-scaled qty {scaled_qty} refused by filter: {refusal}")
                 return 0.0, applied_scale, str(refusal)
-            print(f"[{self.symbol}] {side_u} late-scaled by intelligence guard: {qty} -> {scaled_qty} (scale={float(scale):.2f})")
-            return scaled_qty, float(scale), None
+            print(f"[{self.symbol}] {side_u} late-scaled by intelligence guard: {qty} -> {scaled_qty} (scale={scale_f:.2f})")
+            return scaled_qty, scale_f, None
         return qty, applied_scale, None
 
     # -- Provider identity and access. -----------------------------------------
@@ -405,14 +421,22 @@ class Instrument:
         regime_context = kwargs.pop("regime_context", None)
         raw_applied_scale = kwargs.pop("applied_scale", None)
         caller_applied_scale = 1.0
-        if raw_applied_scale is not None:
+        if raw_applied_scale is not None and not isinstance(raw_applied_scale, bool):
             try:
                 cas_f = float(raw_applied_scale)
                 if math.isfinite(cas_f) and 0.0 < cas_f < 1.0:
                     caller_applied_scale = cas_f
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 pass
         applied_scale = caller_applied_scale
+        profit_margin = None
+        if caller_profit_margin is not None and not isinstance(caller_profit_margin, bool):
+            try:
+                pm_f = float(caller_profit_margin)
+                if math.isfinite(pm_f):
+                    profit_margin = pm_f
+            except (TypeError, ValueError, OverflowError):
+                profit_margin = None
         # Reconstruct this call exactly for retry after bypass/smart were popped;
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
@@ -421,8 +445,8 @@ class Instrument:
         retry_kwargs["smart"] = smart
         if caller_applied_scale < 1.0:
             retry_kwargs["applied_scale"] = caller_applied_scale
-        if caller_profit_margin is not None:
-            retry_kwargs["profit_margin"] = caller_profit_margin
+        if profit_margin is not None:
+            retry_kwargs["profit_margin"] = profit_margin
         if profit_reference_mode is not None:
             retry_kwargs["reference_mode"] = profit_reference_mode
         if caller_module is not None:
@@ -445,12 +469,6 @@ class Instrument:
         else:
             enforce_business_minimum = not (
                 bypass_profit_guard and side_u == "SELL" and is_market)
-        profit_margin = None
-        if caller_profit_margin is not None:
-            try:
-                profit_margin = float(caller_profit_margin)
-            except (TypeError, ValueError):
-                profit_margin = None
         profit_window_ref = None
         retry_requested_price = None
         retry_price_tolerance = None
@@ -493,18 +511,20 @@ class Instrument:
             # separate opposing-order cancellation is held until after finite quantity
             # resolution, durable intent persistence, and exact permit issuance.
             # Other providers retain their existing combined hook behavior.
-            if smart:
+            if smart and not isinstance(price, bool):
                 price = self._provider.adjust_order_price(
                     self.symbol, side_u, price,
                     cancel_opposite=not defers_smart_cancel)
-            if not is_market and price is not None:
+            if not is_market and price is not None and not isinstance(price, bool):
                 round_px = getattr(self._provider, "round_price", None)
                 if callable(round_px):
                     try:
-                        px_f = float(round_px(self.symbol, price))
-                        if math.isfinite(px_f) and px_f > 0:
-                            price = px_f
-                    except (TypeError, ValueError):
+                        res_px = round_px(self.symbol, price)
+                        if not isinstance(res_px, bool):
+                            px_f = float(res_px)
+                            if math.isfinite(px_f) and px_f > 0:
+                                price = px_f
+                    except (TypeError, ValueError, OverflowError):
                         pass
 
             # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
@@ -518,10 +538,20 @@ class Instrument:
             # Stage 0: Vendor Pre-flight & Unified Account Balance Check
             # Resolve target asset (quote for BUY, base for SELL) and query free balance exactly once
             # as the Single Source of Truth for this order placement across all providers.
-            if side_u == "BUY" and price is not None and (not math.isfinite(price) or price <= 0):
-                print(f"[{self.symbol}] BUY preflight refused: price invalid {price!r}")
-                reason = "invalid_price"
-                return None
+            if isinstance(price, bool) or (price is not None and (side_u == "BUY" or not is_market)):
+                price_ok = False
+                if not isinstance(price, bool):
+                    try:
+                        price_f = float(price)
+                        if math.isfinite(price_f) and price_f > 0:
+                            price = price_f
+                            price_ok = True
+                    except (TypeError, ValueError, OverflowError):
+                        price_ok = False
+                if not price_ok:
+                    print(f"[{self.symbol}] {side_u} preflight refused: price invalid {price!r}")
+                    reason = "invalid_price"
+                    return None
 
             from providers.quantity import resolve_assets
             base_asset, quote_asset = resolve_assets(self.symbol, self.base, self.quote)
@@ -530,19 +560,34 @@ class Instrument:
             known_balance = None
             if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance) and target_asset:
                 try:
-                    known_balance = self._provider.free_balance(target_asset)
-                    if known_balance is not None and known_balance <= 0:
-                        print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
-                        reason = "balance_unavailable"
-                        return None
+                    raw_kb = self._provider.free_balance(target_asset)
+                    if raw_kb is not None:
+                        if isinstance(raw_kb, bool):
+                            known_balance = None
+                        elif isinstance(raw_kb, (int, float)):
+                            kb_f = float(raw_kb)
+                            if not math.isfinite(kb_f):
+                                known_balance = None
+                            elif kb_f <= 0:
+                                print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
+                                reason = "balance_unavailable"
+                                return None
+                            else:
+                                known_balance = kb_f
+                        elif raw_kb <= 0:
+                            print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
+                            reason = "balance_unavailable"
+                            return None
+                        else:
+                            known_balance = raw_kb
                 except Exception:
                     known_balance = None
 
             quantity_price = price
             if is_market:
-                quantity_price = self._provider.get_current_price(self.symbol)
+                raw_q_px = self._provider.get_current_price(self.symbol)
                 try:
-                    quantity_price = float(quantity_price)
+                    quantity_price = float("nan") if isinstance(raw_q_px, bool) else float(raw_q_px)
                 except (TypeError, ValueError, OverflowError):
                     quantity_price = float("nan")
                 if not math.isfinite(quantity_price) or quantity_price <= 0:
@@ -879,10 +924,10 @@ class Instrument:
             final_profit_check = (not bypass_profit_guard and is_market)
             if is_market and (final_profit_check
                               or retry_constraint_supplied):
-                final_market_price = self._provider.get_current_price(
+                raw_fm_px = self._provider.get_current_price(
                     self.symbol)
                 try:
-                    final_market_price = float(final_market_price)
+                    final_market_price = float("nan") if isinstance(raw_fm_px, bool) else float(raw_fm_px)
                 except (TypeError, ValueError, OverflowError):
                     final_market_price = float("nan")
                 if (not math.isfinite(final_market_price) or

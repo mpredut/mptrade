@@ -126,9 +126,23 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
 
 def fee_cap_quantity(available_qty: float, fee_rate: float) -> float:
     """Return the base-quantity cap after reserving for fees."""
-    available = max(0.0, float(available_qty))
-    fee = max(0.0, float(fee_rate))
-    return available / (1.0 + fee)
+    if available_qty is None or isinstance(available_qty, bool):
+        return 0.0
+    try:
+        available_f = float(available_qty)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(available_f) or available_f <= 0.0:
+        return 0.0
+    fee_f = 0.0
+    if fee_rate is not None and not isinstance(fee_rate, bool):
+        try:
+            cand_fee = float(fee_rate)
+            if math.isfinite(cand_fee) and cand_fee > 0.0:
+                fee_f = cand_fee
+        except (TypeError, ValueError, OverflowError):
+            fee_f = 0.0
+    return available_f / (1.0 + fee_f)
 
 
 def decide_quantity(provider, symbol: str, side: str, price: float,

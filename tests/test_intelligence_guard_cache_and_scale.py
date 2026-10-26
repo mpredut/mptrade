@@ -6508,4 +6508,78 @@ def test_iteration34_order_guard_reference_nan_safety_and_llm_order_guard(monkey
     assert ok_nan is True and sc_nan == 1.0 and len(called_hs) == 0
 
 
+def test_iteration35_compute_weight_inf_auto_qty_and_instrument_nan_bool_safety():
+    import math
+    from types import SimpleNamespace
+    import order_guard as og
+    from providers.quantity import fee_cap_quantity
+    from instrument import Instrument
+
+    # 1. compute_weight_capped_qty must accept required_qty=float('inf') (auto-quantity from decide_quantity)
+    capped_inf = og.compute_weight_capped_qty(
+        weight=0.5,
+        price=100.0,
+        required_qty=float("inf"),
+        available_qty=10.0,
+        traded_24h_value=0.0,
+    )
+    assert math.isclose(capped_inf, 5.0)
+
+    # required_qty=NaN or bool must still return 0.0
+    assert og.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
+    assert og.compute_weight_capped_qty(0.5, 100.0, True, 10.0, 0.0) == 0.0
+
+    # 2. fee_cap_quantity NaN/bool safety
+    assert fee_cap_quantity(True, 0.001) == 0.0
+    assert fee_cap_quantity(float("nan"), 0.001) == 0.0
+    assert math.isclose(fee_cap_quantity(10.0, True), 10.0)
+    assert math.isclose(fee_cap_quantity(10.0, float("nan")), 10.0)
+
+    # 3. Instrument._apply_late_intelligence_scale NaN/bool safety
+    class _DummyProvider:
+        name = "kraken"
+        def validate_symbol(self, symbol):
+            return True
+        def guards_internally(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def round_amount(self, symbol, q):
+            return round(float(q), 4)
+        def free_balance(self, asset):
+            return 1000.0
+
+    dummy_prov = _DummyProvider()
+    inst = Instrument(
+        name="BTCUSDC",
+        provider="kraken",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        api=SimpleNamespace(provider_by_name=lambda _n: dummy_prov),
+    )
+    q_bool, sc_bool, ref_bool = inst._apply_late_intelligence_scale(
+        1.0, 100.0, False, True, SimpleNamespace(suggested_scale=True), 1.0, side_u="BUY"
+    )
+    assert q_bool == 1.0 and sc_bool == 1.0 and ref_bool is None
+
+    q_nan, sc_nan, ref_nan = inst._apply_late_intelligence_scale(
+        1.0, 100.0, False, True, SimpleNamespace(suggested_scale=float("nan")), 1.0, side_u="BUY"
+    )
+    assert q_nan == 1.0 and sc_nan == 1.0 and ref_nan is None
+
+    # 4. Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'
+    for side in ("BUY", "SELL"):
+        for bad_px in (True, False, float("nan"), -5.0, 0.0):
+            out = {}
+            res = inst.place(
+                side, bad_px, 1.0, smart=False, wait_for_trend=False,
+                bypass_guards={"all"}, _outcome_context=out, caller_owns_retry=True,
+            )
+            assert res is None
+            assert out.get("reason") == "invalid_price"
+
+
+
 
