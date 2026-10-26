@@ -218,10 +218,14 @@ class PriceChecker:
     def _should_send_alert(self, symbol: str, alert_type: str) -> bool:
         """Check whether we can send a new alert (spam prevention)."""
         key = f"{symbol}_{alert_type}"
+        now = time.time()
         last_time = self._last_alert_time.get(key, 0)
+        if last_time > now:
+            last_time = 0.0
+            self._last_alert_time[key] = 0.0
         cooldown_seconds = self.config["cooldown_minutes"] * 60
 
-        return (time.time() - last_time) >= cooldown_seconds
+        return (now - last_time) >= cooldown_seconds
 
     def _is_dynamic_symbol(self, symbol: str) -> bool:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
@@ -350,7 +354,7 @@ class PriceChecker:
                     print(f"[Checker] Error in main loop: {e}")
 
                 print(f"[Checker] Waiting {interval_seconds} seconds until next check...")
-                for _ in range(interval_seconds):
+                for _ in range(max(1, int(interval_seconds))):
                     if not self._running:
                         break
                     time.sleep(1)

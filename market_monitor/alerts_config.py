@@ -13,6 +13,7 @@ aborts startup instead of silently selecting a trading/alerting policy.
 """
 from __future__ import annotations
 
+import math
 import os
 
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
@@ -31,7 +32,11 @@ _BUCKET_ALIAS = {"default": "default", "new_coin": "dynamic"}
 def _pair(val: str) -> dict:
     """'6 / 10' -> {'up_percent': 6.0, 'down_percent': 10.0}."""
     up, _, down = val.partition("/")
-    return {"up_percent": float(up.strip()), "down_percent": float(down.strip())}
+    up_v = float(up.strip())
+    down_v = float(down.strip())
+    if not (math.isfinite(up_v) and math.isfinite(down_v) and up_v > 0 and down_v > 0):
+        raise ValueError("up/down thresholds must be finite and positive")
+    return {"up_percent": up_v, "down_percent": down_v}
 
 
 def load_config(path: str) -> dict:
@@ -59,7 +64,13 @@ def load_config(path: str) -> dict:
                     cfg[key] = [norm(x.strip()) for x in val.split(",") if x.strip()]
                 elif key in _SETTING_KEYS:
                     typ, where = _SETTING_KEYS[key]
-                    v = typ(float(val))
+                    fval = float(val)
+                    if not math.isfinite(fval):
+                        raise ValueError("setting must be finite")
+                    v = typ(fval)
+                    min_allowed = 0 if key == "cooldown_minutes" else 1
+                    if v < min_allowed:
+                        raise ValueError(f"setting must be >= {min_allowed}")
                     (ac if where == "ac" else cfg)[key] = v
                 elif "/" in val:                          # An UP/DOWN threshold.
                     pair = _pair(val)
@@ -69,7 +80,7 @@ def load_config(path: str) -> dict:
                         ac["per_coin"][key.upper()] = pair
                 else:
                     raise ValueError(f"Unknown alert configuration key: {key}")
-            except ValueError as exc:
+            except (ValueError, OverflowError) as exc:
                 raise ValueError(
                     f"Invalid alert configuration for {key}: {val!r}") from exc
 

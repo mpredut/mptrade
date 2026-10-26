@@ -49,6 +49,8 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,24}$")
 
 
 def _positive_finite(value, name, *, minimum=0.001):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be finite and >= {minimum}")
     value = float(value)
     if not math.isfinite(value) or value < minimum:
         raise ValueError(f"{name} must be finite and >= {minimum}")

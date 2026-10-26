@@ -342,6 +342,35 @@ def test_trailing_and_shadow_hardening(tmp_path, monkeypatch):
     assert loaded == [(1700000000, 10.0, 12.0, 9.0, 11.0)]
 
 
+def test_market_monitor_and_pricewindow_hardening():
+    import time
+    import pytest
+    import tradeall_price_archiver
+    from market_monitor import alerts_config
+    from market_monitor.pricechecker import PriceChecker
+    from pricewindow import IncrementalTrendBuffer, PriceWindow
+
+    with pytest.raises(ValueError):
+        alerts_config._pair("-5 / 10")
+    with pytest.raises(ValueError):
+        alerts_config._pair("nan / 10")
+    with pytest.raises(ValueError):
+        tradeall_price_archiver._positive_finite(True, "test")
+
+    checker = PriceChecker(cachePriceAll=None)
+    checker._last_alert_time["BTC_up"] = time.time() + 7200.0
+    assert checker._should_send_alert("BTC", "up") is True
+
+    buf = IncrementalTrendBuffer()
+    buf.sync_entries([[1000, 50.0], [2000, 51.0]])
+    buf.sync_entries([["bad_ts", "bad_px"], [2000, 51.0], [3000, 52.0]])
+    assert len(buf.prices) == 2
+
+    pw = PriceWindow("BTCUSDC", 0)
+    assert pw.window_size == 1
+
+
+
 
 
 

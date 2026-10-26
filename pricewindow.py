@@ -248,9 +248,17 @@ class IncrementalTrendBuffer:
             return
         if not self.timestamps:
             for e in entries:
-                self.append(e[1], e[0])
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    self.append(e[1], e[0])
             return
-        first_ts, first_p = int(entries[0][0]), float(entries[0][1])
+        try:
+            first_ts, first_p = int(entries[0][0]), float(entries[0][1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            self.clear()
+            for e in entries:
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    self.append(e[1], e[0])
+            return
         if self.timestamps[0] < first_ts:
             trim_idx = bisect_left(self.timestamps, first_ts)
             if trim_idx > 0:
@@ -263,18 +271,28 @@ class IncrementalTrendBuffer:
         ):
             self.clear()
             for e in entries:
-                self.append(e[1], e[0])
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    self.append(e[1], e[0])
             return
         cur_len = len(self.timestamps)
-        last_ts, last_p = int(entries[cur_len - 1][0]), float(entries[cur_len - 1][1])
+        try:
+            last_ts, last_p = int(entries[cur_len - 1][0]), float(entries[cur_len - 1][1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            self.clear()
+            for e in entries:
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    self.append(e[1], e[0])
+            return
         if self.timestamps[-1] != last_ts or self.prices[-1] != last_p:
             self.clear()
             for e in entries:
-                self.append(e[1], e[0])
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    self.append(e[1], e[0])
             return
         for idx in range(cur_len, len(entries)):
             e = entries[idx]
-            self.append(e[1], e[0])
+            if isinstance(e, (list, tuple)) and len(e) >= 2:
+                self.append(e[1], e[0])
 
     def eval_slice(self, a: int, b: int, sample_rate_sec: float = DEFAULT_SAMPLE_RATE_SEC,
                    eps_k: float = 1.0, window_seconds: float | None = None):
@@ -360,7 +378,7 @@ class PriceWindow:
     def __init__(self, symbol, window_size, sample_rate_sec=None, initial_prices=None,
                  window_seconds=None):
         self.symbol = symbol
-        self.window_size = int(window_size)
+        self.window_size = max(1, int(window_size))
         if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
             try:
                 _sr = float(sample_rate_sec)

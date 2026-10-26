@@ -115,12 +115,15 @@ class CoinMarketCapSource(NewCoinsSource):
                 self._cache = []
                 self._supported_symbols.clear()
                 for coin in data['data']:
-                    symbol = coin['symbol']
-                    name = coin.get('name', symbol)
-                    slug = coin.get('slug', '')
+                    if not isinstance(coin, dict):
+                        continue
+                    symbol = str(coin.get('symbol') or '')
+                    name = coin.get('name') or symbol
+                    slug = coin.get('slug') or ''
                     if is_trackable_symbol(symbol, name=name, slug=slug):
                         self._supported_symbols.add(symbol)
-                        usd_quote = coin.get('quote', {}).get('USD') or {}
+                        quote_map = coin.get('quote') if isinstance(coin.get('quote'), dict) else {}
+                        usd_quote = quote_map.get('USD') if isinstance(quote_map.get('USD'), dict) else {}
                         self._cache.append({
                             "symbol": symbol,
                             "name": name,
@@ -186,12 +189,14 @@ class CoinGeckoSource(NewCoinsSource):
             self._cache = []
             self._supported_symbols.clear()
             for coin in data:
-                symbol = coin.get('symbol', '').upper()
+                if not isinstance(coin, dict):
+                    continue
+                symbol = str(coin.get('symbol') or '').upper()
                 if symbol and symbol not in EXCLUDED_SYMBOLS:
                     self._supported_symbols.add(symbol)
                     self._cache.append({
                         "symbol": symbol,
-                        "name": coin.get('name', symbol),
+                        "name": coin.get('name') or symbol,
                         "added_at": None,
                         "source": self.get_name(),
                         "price": None, "volume_24h": None, "market_cap": None,
@@ -318,14 +323,17 @@ class DexScreenerSource(NewCoinsSource):
                 for profile in profiles[:100]:
                     if not isinstance(profile, dict):
                         continue
-                    symbol = profile.get('symbol', '').upper()
-                    name = profile.get('name', symbol)
-                    chain = profile.get('chainId', 'unknown')
-                    token_address = profile.get('tokenAddress', '')
+                    symbol = str(profile.get('symbol') or '').upper()
+                    name = profile.get('name') or symbol
+                    chain = profile.get('chainId') or 'unknown'
+                    token_address = profile.get('tokenAddress') or ''
                     listed_at = profile.get('listedAt', None)
                     if symbol and len(symbol) <= 10 and symbol.isalnum() and symbol not in EXCLUDED_SYMBOLS:
                         self._supported_symbols.add(symbol)
-                        added_time = datetime.fromtimestamp(listed_at / 1000) if listed_at else None
+                        try:
+                            added_time = datetime.fromtimestamp(float(listed_at) / 1000) if listed_at else None
+                        except (TypeError, ValueError, OSError, OverflowError):
+                            added_time = None
                         self._cache.append({
                             "symbol": symbol, "name": name, "added_at": added_time,
                             "source": self.get_name(), "chain": chain, "token_address": token_address,
