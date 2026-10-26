@@ -17,7 +17,10 @@ import urllib.request
 
 
 def fetch_ohlc(sym: str, rng: str, interval: str):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(str(sym or ''))}?range={rng}&interval={interval}"
+    q_sym = urllib.parse.quote(str(sym or "").strip(), safe="")
+    q_rng = urllib.parse.quote(str(rng or "").strip(), safe="")
+    q_int = urllib.parse.quote(str(interval or "").strip(), safe="")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{q_sym}?range={q_rng}&interval={q_int}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=25) as r:
         data = json.loads(r.read())
@@ -42,7 +45,7 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
                 vf = float(v[i]) if i < len(v) and v[i] is not None and not isinstance(v[i], bool) else 0.0
             except (TypeError, ValueError, OverflowError):
                 continue
-            if all(math.isfinite(val) and val > 0 for val in (of, hf, lf, cf)):
+            if all(math.isfinite(val) and val > 0 for val in (of, hf, lf, cf)) and hf >= lf:
                 out.append((t, of, hf, lf, cf, vf if math.isfinite(vf) and vf > 0 else 0))
     meta = res.get("meta")
     return out, meta if isinstance(meta, dict) else {}

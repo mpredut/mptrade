@@ -17,8 +17,22 @@ try:
     from .ipo_common import ET, log
     from .market_data import check_market
 except ImportError:
+    import os as _os
+    import sys as _sys
+    _HERE = _os.path.dirname(_os.path.abspath(__file__))
+    if _HERE not in _sys.path:
+        _sys.path.insert(0, _HERE)
     from ipo_common import ET, log
-    from market_data import check_market
+    try:
+        from market_data import check_market
+    except ImportError:
+        import importlib.util
+        _md_spec = importlib.util.spec_from_file_location(
+            "t212_listing_watcher_md", _os.path.join(_HERE, "market_data.py")
+        )
+        _md_mod = importlib.util.module_from_spec(_md_spec)
+        _md_spec.loader.exec_module(_md_mod)
+        check_market = _md_mod.check_market
 
 
 def in_market_window() -> bool:

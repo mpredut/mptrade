@@ -180,10 +180,17 @@ def _run_once(
         warmup_step = bar_minutes * 60 if bar_minutes else 1.0
         for index, w_row in enumerate(
                 warmup_ohlc, start=-len(warmup_ohlc)):
-            close = w_row[3]
-            strategy._shadow_prices.append((index * warmup_step, float(close)))
+            if not isinstance(w_row, (list, tuple)) or len(w_row) < 4 or isinstance(w_row[3], bool):
+                continue
+            try:
+                close_f = float(w_row[3])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(close_f) or close_f <= 0:
+                continue
+            strategy._shadow_prices.append((index * warmup_step, close_f))
             if strategy._surge_replay_closes is not None:
-                strategy._surge_replay_closes.append(float(close))
+                strategy._surge_replay_closes.append(close_f)
         strategy.set_simulated_time(0.0)
         strategy._save = _silent
         decision_trace = []
@@ -242,7 +249,7 @@ def _run_once(
         side_order = execution.side_order()
 
         for bar_index, row in enumerate(ohlc):
-            open_, high, low, close = row[0], row[1], row[2], row[3]
+            open_, high, low, close = float(row[0]), float(row[1]), float(row[2]), float(row[3])
             current_bar = bar_index
             replay_time = bar_index * bar_step_sec
             strategy.set_simulated_time(replay_time)
@@ -346,7 +353,7 @@ def _run_once(
         for order in list(strategy.s["orders"]):
             if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
                 volume = min(float(order["vol"]), strategy.s["qty"])
-                price = execution.market_price("sell", ohlc[-1][3])
+                price = execution.market_price("sell", float(ohlc[-1][3]))
                 gross_before = strategy.s["realized_gross"]
                 fee = fee_model.rate_pct(market=True) / 100.0 * volume * price
                 if cash is not None:
@@ -373,7 +380,7 @@ def _run_once(
 
     qty = strategy.s["qty"]
     final_upnl = (
-        (ohlc[-1][3] - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
+        (float(ohlc[-1][3]) - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
     )
     periods_per_year = 365.0 * 24 * 60 / bar_minutes if bar_minutes else None
     performance = calculate_performance_metrics(

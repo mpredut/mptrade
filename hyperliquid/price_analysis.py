@@ -52,9 +52,14 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     try:
         wh_f = float(window_hours)
         sh_f = float(step_hours)
-        mcb_i = int(min_consecutive_blocks)
-        nt_i = int(noise_tolerance)
-        mpw_i = int(min_points_per_window)
+        mcb_f = float(min_consecutive_blocks)
+        nt_f = float(noise_tolerance)
+        mpw_f = float(min_points_per_window)
+        if not (math.isfinite(mcb_f) and mcb_f.is_integer() and math.isfinite(nt_f) and nt_f.is_integer() and math.isfinite(mpw_f) and mpw_f.is_integer()):
+            return None
+        mcb_i = int(mcb_f)
+        nt_i = int(nt_f)
+        mpw_i = int(mpw_f)
     except (TypeError, ValueError, OverflowError):
         return None
     if not (math.isfinite(wh_f) and wh_f > 0.0 and math.isfinite(sh_f) and sh_f > 0.0):

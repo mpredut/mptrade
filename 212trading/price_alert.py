@@ -24,18 +24,33 @@ _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 sys.path.insert(0, _ROOT)
 from ipo_common import load_t212_environment, log  # noqa: E402
-from market_data import get_price_usd  # noqa: E402
+try:
+    from .market_data import get_price_usd  # noqa: E402
+except ImportError:
+    try:
+        from market_data import get_price_usd  # noqa: E402
+    except ImportError:
+        import importlib.util
+        _md_spec = importlib.util.spec_from_file_location(
+            "t212_price_alert_md", os.path.join(_HERE, "market_data.py")
+        )
+        _md_mod = importlib.util.module_from_spec(_md_spec)
+        _md_spec.loader.exec_module(_md_mod)
+        get_price_usd = _md_mod.get_price_usd
 from alertnotifiers import AlertNotifier  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 
 
 def push(topic: str, title: str, body: str) -> bool:
+    clean_topic = str(topic or "").strip()
+    if not clean_topic:
+        return False
     alert = {
         "type": "bot_event", "symbol": title.split(" ", 1)[0],
         "name": title, "source": "price_alert", "body": body,
     }
     return AlertNotifier.send_phone_webhook_batch(
-        [alert], webhook_url=f"https://ntfy.sh/{topic}",
+        [alert], webhook_url=f"https://ntfy.sh/{clean_topic}",
     )
 
 
@@ -53,7 +68,7 @@ def main() -> int:
     # since the secrets moved there; loading only 212trading/.env left the alert mute.
     load_t212_environment(args.env_file)
     # PRICE alerts use the dedicated NTFY_TOPIC_PRICE.
-    topic = args.topic or os.environ.get("NTFY_TOPIC_PRICE")
+    topic = str(args.topic or os.environ.get("NTFY_TOPIC_PRICE") or "").strip()
     if not topic:
         log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"); return 1
     if args.below is None and args.above is None:
@@ -73,7 +88,7 @@ def main() -> int:
     if not math.isfinite(price) or price <= 0:
         log(f"  [{args.symbol}] price unavailable — skipping"); return 0
 
-    safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=") or "unknown"
+    safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
     st = {}
     if os.path.exists(state_path):

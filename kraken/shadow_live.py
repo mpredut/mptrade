@@ -141,12 +141,18 @@ def _fetch_with_ts(pair: str, interval: int):
     return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
+def _safe_pair(pair: str) -> str:
+    import re
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(pair or "").strip()).strip("._")
+    return cleaned or "UNKNOWN"
+
+
 def _anchor_path(pair: str, interval: int) -> str:
-    return os.path.join(LOG_DIR, f"{pair}_{interval}m.anchor")
+    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.anchor")
 
 
 def _history_path(pair: str, interval: int) -> str:
-    return os.path.join(LOG_DIR, f"{pair}_{interval}m.ohlc.json")
+    return os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.ohlc.json")
 
 
 def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
@@ -164,7 +170,7 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     os.makedirs(LOG_DIR, exist_ok=True)
     with atomic_text_writer(path) as fh:
         fh.write(f"{int(default_ts)}\n")
-    return default_ts
+    return int(default_ts)
 
 
 def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, float, float]]:
@@ -187,7 +193,7 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
         try:
             ts_f = float(row[0])
             o_f, h_f, l_f, c_f = float(row[1]), float(row[2]), float(row[3]), float(row[4])
-            if not all(math.isfinite(v) and v > 0 for v in (ts_f, o_f, h_f, l_f, c_f)):
+            if not all(math.isfinite(v) and v > 0 for v in (ts_f, o_f, h_f, l_f, c_f)) or h_f < l_f:
                 continue
             out.append((int(ts_f), o_f, h_f, l_f, c_f))
         except (TypeError, ValueError, OverflowError):
@@ -346,7 +352,7 @@ def _print(snap: dict) -> None:
 
 def _append_jsonl(pair: str, interval: int, snap: dict) -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
-    path = os.path.join(LOG_DIR, f"{pair}_{interval}m.jsonl")
+    path = os.path.join(LOG_DIR, f"{_safe_pair(pair)}_{interval}m.jsonl")
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(snap) + "\n")
 

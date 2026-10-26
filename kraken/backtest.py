@@ -16,9 +16,11 @@ import argparse
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+for _p in (_HERE, _ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary
@@ -56,7 +58,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
         tp_trail_pct=base.get("trail", p.tp_trail_pct),
         reentry_drop_pct=base.get("reentry_fallback", base.get("reentry_drop", base.get("reentry", p.reentry_drop_pct))),
     )
-    interval = base.get("interval", 60)
+    interval = base.get("interval") if base.get("interval") is not None else 60
     if float(interval) != float(p.trend_interval):
         fields.update(
             trend_overlay=False,
@@ -94,8 +96,8 @@ def simulate(ohlc, P, reentry_arr=None, sl_bounce_pct=None):
     res = rp.run_replay(
         ohlc,
         params,
-        fee_pct=P.get("fee", 0.25),
-        bar_minutes=P.get("interval", 60),
+        fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
+        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
         reentry_series=reentry_arr,
     )
     res.setdefault("blocked_ticks", 0)
@@ -119,7 +121,10 @@ def main() -> int:
     # Load live STRAT_* configuration so the faithful engine uses production
     # re-entry, tranche, and tolerance values.
     import os as _os
-    from kraken_common import load_dotenv as _load_dotenv
+    try:
+        from kraken.kraken_common import load_dotenv as _load_dotenv
+    except ImportError:
+        from kraken_common import load_dotenv as _load_dotenv
     _load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.env"))
 
     try:

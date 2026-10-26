@@ -107,11 +107,16 @@ def run_replay(
                         init_cap = bf
                 except (TypeError, ValueError, OverflowError):
                     pass
-        ccy = (
+        raw_ccy = (
             getattr(params, "currency", "USDC")
             if isinstance(params, StratParams)
             else params.get("currency", "USDC")
             if isinstance(params, dict)
+            else "USDC"
+        )
+        ccy = (
+            str(raw_ccy).strip().upper()
+            if raw_ccy is not None and not isinstance(raw_ccy, bool) and str(raw_ccy).strip()
             else "USDC"
         )
         return {

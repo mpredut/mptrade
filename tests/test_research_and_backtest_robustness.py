@@ -2937,11 +2937,83 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
     assert hl_s_inst.reconcile(True) is False  # type: ignore[arg-type]
 
 
+def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
+    import importlib.util
+    import json
+    import os
+    import sys
 
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    # 1. hyperliquid/price_analysis.py rejects fractional float block/point counts
+    spec_hl_pa = importlib.util.spec_from_file_location(
+        "hl_pa_local", os.path.join(repo_root, "hyperliquid", "price_analysis.py")
+    )
+    hl_pa = importlib.util.module_from_spec(spec_hl_pa)
+    sys.modules[spec_hl_pa.name] = hl_pa
+    spec_hl_pa.loader.exec_module(hl_pa)
+    ts = [i * 3600 for i in range(100)]
+    px = [100.0 + i * 0.5 for i in range(100)]
+    assert hl_pa.detect_long_term_trend(ts, px, min_consecutive_blocks=1.5) is None
+    assert hl_pa.detect_long_term_trend(ts, px, noise_tolerance=0.5) is None
+    assert hl_pa.detect_long_term_trend(ts, px, min_points_per_window=2.5) is None
 
+    # 2. hyperliquid/replay.py sanitizes currency on empty OHLC
+    spec_hl_rp = importlib.util.spec_from_file_location(
+        "hl_rp_local", os.path.join(repo_root, "hyperliquid", "replay.py")
+    )
+    hl_rp = importlib.util.module_from_spec(spec_hl_rp)
+    sys.modules[spec_hl_rp.name] = hl_rp
+    spec_hl_rp.loader.exec_module(hl_rp)
+    assert hl_rp.run_replay([], [], [], [], {"currency": " usdc "})["account_currency"] == "USDC"
+    assert hl_rp.run_replay([], [], [], [], {"currency": True})["account_currency"] == "USDC"
+    assert hl_rp.run_replay([], [], [], [], {"currency": None})["account_currency"] == "USDC"
 
+    # 3. strategies/spot_replay.py handles numeric-string OHLC and malformed warmup_ohlc
+    from strategies import spot_engine, spot_replay
+    p_spot = spot_engine.StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.2,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=1,
+        takeprofit_pct=2.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=10,
+    )
+    res_spot = spot_replay.run_replay(
+        [("100.0", "105.0", "95.0", "102.0"), ("102.0", "106.0", "101.0", "104.0")],
+        p_spot,
+        bar_minutes=240.0,
+        warmup_ohlc=[("bad",), (100, 101, 99, True), (100, 101, 99, -5.0), (100, 101, 99, 98.5)],
+    )
+    assert res_spot["initial_capital"] > 0
 
+    # 4. kraken/shadow_live.py sanitizes pair path, returns int anchor, and skips h < l history bars
+    from kraken import shadow_live as k_sl
+    monkeypatch.setattr(k_sl, "LOG_DIR", str(tmp_path))
+    assert k_sl._safe_pair("HYPE/USD") == "HYPE_USD"
+    anchor_val = k_sl._get_anchor("HYPE/USD", 240, 1700000000.0)  # type: ignore[arg-type]
+    assert isinstance(anchor_val, int) and anchor_val == 1700000000
+    hist_path = k_sl._history_path("HYPE/USD", 240)
+    with open(hist_path, "w", encoding="utf-8") as fh:
+        json.dump([[1700000000, 10.0, 9.0, 9.5, 9.2], [1700014400, 10.0, 12.0, 9.5, 11.0]], fh)
+    assert k_sl._load_history("HYPE/USD", 240) == [(1700014400, 10.0, 12.0, 9.5, 11.0)]
 
+    # 5. kraken/backtest.py handles None interval/fee in _bt_params and simulate
+    from kraken import backtest as k_bt
+    bt_p = k_bt._bt_params({"interval": None})
+    assert bt_p.entry_amount > 0
 
+    # 6. 212trading/price_alert.py push rejects blank/whitespace topic
+    spec_pa = importlib.util.spec_from_file_location(
+        "t212_pa_local", os.path.join(repo_root, "212trading", "price_alert.py")
+    )
+    t212_pa = importlib.util.module_from_spec(spec_pa)
+    sys.modules[spec_pa.name] = t212_pa
+    spec_pa.loader.exec_module(t212_pa)
+    assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
