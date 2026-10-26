@@ -18,6 +18,7 @@ import json
 import math
 import statistics
 import sys
+import urllib.parse
 import urllib.request
 
 WINDOW = 24       # Approximate hourly observations in a 24-hour window (CoinGecko hourly granularity).
@@ -34,13 +35,16 @@ def _get(url):
 
 def resolve_id(symbol):
     """Map a symbol to (coingecko_id, symbol, name), preferring an exact symbol match."""
-    coins = _get(f"https://api.coingecko.com/api/v3/search?query={symbol}").get("coins", [])
+    q = urllib.parse.quote(str(symbol or "").strip())
+    resp = _get(f"https://api.coingecko.com/api/v3/search?query={q}")
+    coins = resp.get("coins", []) if isinstance(resp, dict) else []
+    coins = [c for c in coins if isinstance(c, dict) and c.get("id") and c.get("symbol")]
     for c in coins:
-        if c["symbol"].upper() == symbol.upper():
-            return c["id"], c["symbol"].upper(), c.get("name", "")
+        if str(c["symbol"]).upper() == str(symbol).upper():
+            return str(c["id"]), str(c["symbol"]).upper(), str(c.get("name") or "")
     if coins:
         c = coins[0]
-        return c["id"], c["symbol"].upper(), c.get("name", "")
+        return str(c["id"]), str(c["symbol"]).upper(), str(c.get("name") or "")
     return None, None, None
 
 
@@ -97,7 +101,11 @@ def suggest(symbol, days=DAYS):
     if not cid:
         return None
     data = _get(f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart?vs_currency=usd&days={days}")
-    prices = [p[1] for p in data.get("prices", []) if p and p[1]]
+    raw_prices = data.get("prices", []) if isinstance(data, dict) else []
+    prices = [
+        p[1] for p in raw_prices
+        if isinstance(p, (list, tuple)) and len(p) >= 2 and p[1] is not None
+    ]
     if len(prices) < WINDOW + 5:
         return None
     res = thresholds_from_prices(prices)

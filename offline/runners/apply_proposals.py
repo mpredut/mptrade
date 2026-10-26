@@ -22,7 +22,7 @@ import math
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
@@ -106,9 +106,12 @@ def main():
         if last and isinstance(last, dict) and last.get("ts"):
             try:
                 last_ts = datetime.fromisoformat(str(last["ts"]))
-                if last_ts.tzinfo is not None:
-                    last_ts = last_ts.replace(tzinfo=None)
-                if datetime.now() - last_ts < timedelta(days=sp.MIN_DAYS_BETWEEN_CHANGES):
+                elapsed = (
+                    datetime.now(timezone.utc) - last_ts.astimezone(timezone.utc)
+                    if last_ts.tzinfo is not None
+                    else datetime.now() - last_ts
+                )
+                if elapsed < timedelta(days=sp.MIN_DAYS_BETWEEN_CHANGES):
                     rec["action"] = "rate_limited"
                     rec["reason"] = f"last changed at {last['ts']} (< {sp.MIN_DAYS_BETWEEN_CHANGES} days)"
                     sp._append_audit(rec)

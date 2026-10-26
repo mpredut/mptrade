@@ -42,7 +42,8 @@ def _load_state(pair: str) -> dict | None:
         return None
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
 
@@ -152,7 +153,8 @@ def _ntfy(title: str, body: str) -> None:
 def _alert_state() -> dict:
     try:
         with open(ALERT_STATE, encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -189,10 +191,11 @@ def run_alerts(kr: list[dict]) -> list[str]:
         stale = True
         if prev_ts:
             try:
-                stale = (
-                    now - datetime.fromisoformat(prev_ts)
-                ).total_seconds() > realert_hours * 3600
-            except ValueError:
+                parsed_ts = datetime.fromisoformat(str(prev_ts))
+                if parsed_ts.tzinfo is None:
+                    parsed_ts = parsed_ts.replace(tzinfo=timezone.utc)
+                stale = (now - parsed_ts).total_seconds() > realert_hours * 3600
+            except (TypeError, ValueError):
                 stale = True
         if stale or dd <= prev_dd - worsen_pct:
             _ntfy(

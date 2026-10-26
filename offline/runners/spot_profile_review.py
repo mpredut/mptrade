@@ -12,6 +12,7 @@ from dataclasses import asdict, replace
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -34,13 +35,16 @@ from offline.runners.kraken_financial_benchmark import DEFAULT_DATASET, DEFAULT_
 
 def revision_params(spec: str) -> StratParams:
     text = subprocess.run(["git", "show", spec], check=True, capture_output=True,
-                          text=True).stdout
+                          text=True, cwd=ROOT).stdout
     env = dict(dotenv_values(stream=io.StringIO(text), interpolate=False))
     with patch.dict(os.environ, env, clear=True):
         return StratParams.from_env()
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:
+    if isinstance(cash, bool) or not math.isfinite(float(cash)) or float(cash) <= 0:
+        raise ValueError("cash must be a finite positive number")
+    cash = float(cash)
     records = validate_dataset(load_dataset(DEFAULT_DATASET), interval_minutes=240)
     digest = dataset_sha256(records)
     manifest = json.loads(DEFAULT_MANIFEST.read_text())
@@ -89,7 +93,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
                 }
             reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,
-            "code": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "code": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip(),
             "source_sha256": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
                               for name in ("strategies/spot_engine.py", "strategies/spot_replay.py", "offline/runners/spot_profile_review.py")},
             "cash_scenario": cash, "profiles": reports,

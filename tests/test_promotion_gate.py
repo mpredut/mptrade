@@ -191,6 +191,26 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
         res = evaluate_promotion(baseline, candidate)
         self.assertFalse(res["promote"])
 
+    def test_spot_profile_review_rejects_invalid_cash_and_snapshot_handles_non_dict_json(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from offline.runners.spot_profile_review import review
+        from verify_tools import portfolio_snapshot as ps
+
+        for bad_cash in (0, -100, float("nan"), float("inf"), True):
+            with self.assertRaisesRegex(ValueError, "cash must be a finite positive number"):
+                review("HEAD:kraken/config.env", "HEAD:kraken/config.env", bad_cash)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / ".state_HYPEUSD.json"
+            state_file.write_text("[]", encoding="utf-8")
+            alert_file = Path(tmp) / "alerts.json"
+            alert_file.write_text("[]", encoding="utf-8")
+            with patch.object(ps, "KRAKEN_DIR", tmp), patch.object(ps, "ALERT_STATE", str(alert_file)):
+                self.assertIsNone(ps._load_state("HYPEUSD"))
+                self.assertEqual(ps._alert_state(), {})
+
 
 if __name__ == "__main__":
     unittest.main()

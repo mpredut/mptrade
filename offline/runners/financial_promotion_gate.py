@@ -25,6 +25,8 @@ def main() -> int:
         baseline = json.load(handle)
     with args.candidate.expanduser().resolve().open(encoding="utf-8") as handle:
         candidate = json.load(handle)
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("baseline and candidate reports must be JSON objects")
     result = evaluate_dual_promotion(baseline, candidate)
     paths = "/".join(result["promotion_paths"])
     print(f"PROMOTE {paths}" if paths else "DO NOT PROMOTE")
