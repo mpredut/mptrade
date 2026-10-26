@@ -1593,12 +1593,36 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
     except ProviderError:
         pass
 
-    # 4. T212Provider._signed_qty rejects non-positive quantities
+    # 4. T212Provider._signed_qty rejects non-positive quantities, and _client resolves runtime.env pacing
     try:
         T212Provider._signed_qty("BUY", -1.0)
         raise AssertionError("Expected ProviderError for negative T212 quantity")
     except ProviderError:
         pass
+    (cfg_dir / "runtime.env").write_text(
+        "T212_ENV=demo\nT212_MIN_GAP_SEC=0.3\nT212_PORTFOLIO_TTL_SEC=6.0\nT212_ORDER_MIN_GAP_SEC=2.1\n",
+        encoding="utf-8",
+    )
+    (cfg_dir / ".env").write_text("T212_API_KEY=k1\nT212_API_SECRET=s1\n", encoding="utf-8")
+    assert env_value(str(cfg_dir), "T212_MIN_GAP_SEC") == "0.3"
+    import providers.t212_provider as t212_prov_mod
+    old_t212_dir = t212_prov_mod._T212_DIR
+    saved_env = {
+        k: os.environ.pop(k, None)
+        for k in ("T212_API_KEY", "T212_API_SECRET", "T212_ENV", "T212_MIN_GAP_SEC", "T212_PORTFOLIO_TTL_SEC", "T212_ORDER_MIN_GAP_SEC")
+    }
+    try:
+        t212_prov_mod._T212_DIR = str(cfg_dir)
+        cli = T212Provider()._client()
+        assert cli.env == "demo"
+        assert cli._min_gap == 0.3
+        assert cli._pf_ttl == 6.0
+        assert cli._order_min_gap == 2.1
+    finally:
+        t212_prov_mod._T212_DIR = old_t212_dir
+        for k, v in saved_env.items():
+            if v is not None:
+                os.environ[k] = v
 
 
 def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):

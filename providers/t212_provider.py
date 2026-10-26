@@ -116,7 +116,25 @@ class T212Provider(MarketDataProvider):
         env = os.environ.get("T212_ENV") or env_value(_T212_DIR, "T212_ENV")
         if not env:
             raise RuntimeError("T212_ENV is missing (212trading/.env or environment)")
-        self._cli = T212Client(credentials.key, credentials.secret, env)
+
+        def _opt_float(key: str) -> Optional[float]:
+            raw = os.environ.get(key) or env_value(_T212_DIR, key)
+            if raw is None or not str(raw).strip():
+                return None
+            try:
+                val = float(str(raw).strip())
+                return val if math.isfinite(val) and val >= 0.0 else None
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        self._cli = T212Client(
+            credentials.key,
+            credentials.secret,
+            env,
+            min_gap_sec=_opt_float("T212_MIN_GAP_SEC"),
+            portfolio_ttl_sec=_opt_float("T212_PORTFOLIO_TTL_SEC"),
+            order_min_gap_sec=_opt_float("T212_ORDER_MIN_GAP_SEC"),
+        )
         return self._cli
 
     def _position(self, symbol: str, *, strict: bool = False) -> Optional[dict]:

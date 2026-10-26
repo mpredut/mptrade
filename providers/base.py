@@ -7,8 +7,8 @@ from typing import Any, List, Optional
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
-    """Read one key from ``.env``/``config.env`` without mutating ``os.environ``."""
-    for fname in (".env", "config.env"):
+    """Read one key from ``.env``/``config.env``/``runtime.env`` without mutating ``os.environ``."""
+    for fname in (".env", "config.env", "runtime.env"):
         path = os.path.join(folder, fname)
         if not os.path.exists(path):
             continue
