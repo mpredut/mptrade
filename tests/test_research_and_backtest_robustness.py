@@ -2916,6 +2916,27 @@ def test_t212_strategy_order_manager_and_ipo_hardening():
     assert t212_ipo.verify_instrument(None, True, "") is False  # type: ignore[arg-type]
     assert t212_ipo._cmd_find_ticker(None, "   ") == 1  # type: ignore[arg-type]
 
+    # 5. kraken_bot._cmd_find_pair and hyperliquid/strategy.py state_path_for & reconcile hardening
+    import importlib.util
+    from kraken import kraken_bot
+    assert kraken_bot._cmd_find_pair(None, "   ") == 1  # type: ignore[arg-type]
+    assert kraken_bot._cmd_find_pair(None, True) == 1  # type: ignore[arg-type]
+
+    import sys
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec_hl_s = importlib.util.spec_from_file_location(
+        "hl_strategy_local", os.path.join(repo_root, "hyperliquid", "strategy.py")
+    )
+    hl_strat = importlib.util.module_from_spec(spec_hl_s)
+    sys.modules[spec_hl_s.name] = hl_strat
+    spec_hl_s.loader.exec_module(hl_strat)
+    assert hl_strat.state_path_for(True, "---").endswith(".state_unknown_long.json")  # type: ignore[arg-type]
+    hl_s_inst = hl_strat.Strategy(None, "HYPE", hl_strat.StratParams(), dry_run=True, replay_mode=True)
+    assert hl_s_inst.reconcile(float("nan")) is False
+    assert hl_s_inst.reconcile(-5.0) is False
+    assert hl_s_inst.reconcile(True) is False  # type: ignore[arg-type]
+
+
 
 
 

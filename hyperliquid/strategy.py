@@ -49,8 +49,15 @@ HL_FEE_PCT = required_float_env("HL_FEE_PCT")
 
 
 def state_path_for(coin: str, direction: str) -> str:
-    safe = "".join(c for c in coin if c.isalnum() or c in "._-")
-    return os.path.join(_HERE, f".state_{safe}_{direction}.json")
+    if isinstance(coin, bool) or not isinstance(coin, str):
+        safe = "unknown"
+    else:
+        safe = "".join(c for c in coin if c.isalnum() or c in "._-").strip("._-") or "unknown"
+    if isinstance(direction, bool) or not isinstance(direction, str):
+        dir_safe = "long"
+    else:
+        dir_safe = "".join(c for c in direction.strip().lower() if c.isalnum() or c in "._-").strip("._-") or "long"
+    return os.path.join(_HERE, f".state_{safe}_{dir_safe}.json")
 
 
 @dataclass
@@ -364,6 +371,14 @@ class Strategy:
 
     # -- reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> bool:
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not math.isfinite(float(price))
+            or float(price) <= 0.0
+        ):
+            return False
+        price = float(price)
         if self.dry_run:
             self._reconcile_paper(price)
             return True

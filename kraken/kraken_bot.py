@@ -190,6 +190,10 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
 
 
 def _cmd_find_pair(client: KrakenClient, term: str) -> int:
+    if not term or isinstance(term, bool) or not str(term).strip():
+        log("! invalid search term")
+        return 1
+    term = str(term).strip()
     try:
         pairs = client.asset_pairs()
     except KrakenError as e:
