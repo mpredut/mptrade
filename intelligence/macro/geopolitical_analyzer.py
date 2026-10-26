@@ -102,7 +102,8 @@ class GeopoliticalThreatAnalyzer:
                 data = read_recovering_previous(cand, json.loads, default=None)
                 if not isinstance(data, dict):
                     continue
-                summary_str = str(data.get("summary", ""))
+                raw_summary = data.get("summary")
+                summary_str = raw_summary.strip() if isinstance(raw_summary, str) else ""
                 raw_fb = data.get("is_fallback")
                 if raw_fb is None:
                     is_fb = "LLM fallback" in summary_str
@@ -136,10 +137,12 @@ class GeopoliticalThreatAnalyzer:
                             hl_cnt = int(hl_f)
                     except (TypeError, ValueError, OverflowError):
                         hl_cnt = 0
-                tl_norm = str(data.get("threat_level") or "NORMAL").strip().upper()
+                raw_tl = data.get("threat_level")
+                tl_norm = raw_tl.strip().upper() if isinstance(raw_tl, str) else "NORMAL"
                 if tl_norm not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
                     tl_norm = "NORMAL"
-                rb_norm = str(data.get("recommended_brake") or "NONE").strip().upper()
+                raw_rb = data.get("recommended_brake")
+                rb_norm = raw_rb.strip().upper() if isinstance(raw_rb, str) else "NONE"
                 if rb_norm not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
                     rb_norm = "NONE"
                 self._cached_assessment = GeopoliticalThreatAssessment(
@@ -152,7 +155,8 @@ class GeopoliticalThreatAnalyzer:
                     is_fallback=is_fb,
                 )
                 self._last_eval_ts = self._cached_assessment.ts
-                self._last_headlines_digest = str(data.get("headlines_digest", ""))
+                raw_digest = data.get("headlines_digest")
+                self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
                 return
             except Exception as e:
                 logger.debug("Could not load cached geopolitical state %s: %s", cand, e)
@@ -319,7 +323,8 @@ class GeopoliticalThreatAnalyzer:
             self._save_to_disk(fallback_assessment)
             return fallback_assessment
 
-        threat_level = str(resp.get("threat_level") or "NORMAL").upper().strip()
+        raw_tl = resp.get("threat_level")
+        threat_level = raw_tl.upper().strip() if isinstance(raw_tl, str) else "NORMAL"
         if threat_level not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
             threat_level = "NORMAL"
         raw_score = resp.get("risk_score")
@@ -332,8 +337,10 @@ class GeopoliticalThreatAnalyzer:
                     risk_score = 0.5
             except (TypeError, ValueError):
                 risk_score = 0.5
-        summary = str(resp.get("summary") or "")
-        recommended_brake = str(resp.get("recommended_brake") or "NONE").upper().strip()
+        raw_sum = resp.get("summary")
+        summary = raw_sum.strip() if isinstance(raw_sum, str) else ""
+        raw_rb = resp.get("recommended_brake")
+        recommended_brake = raw_rb.upper().strip() if isinstance(raw_rb, str) else "NONE"
         if recommended_brake not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
             recommended_brake = "NONE"
 

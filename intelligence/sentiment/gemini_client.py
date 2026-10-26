@@ -186,8 +186,11 @@ class GeminiClient:
                         return raw, None
                     if not isinstance(payload, dict):
                         return raw, None
-                    text_out = str(payload.get("response") or "").strip()
-                    return (text_out or None), (payload.get("conversation_id") or None)
+                    raw_resp = payload.get("response")
+                    text_out = raw_resp.strip() if isinstance(raw_resp, str) else ""
+                    raw_cid = payload.get("conversation_id")
+                    cid_out = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
+                    return (text_out or None), cid_out
 
                 output, turn_cid = None, None
                 proc = None

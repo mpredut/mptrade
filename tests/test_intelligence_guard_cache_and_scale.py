@@ -11231,6 +11231,83 @@ def test_iteration103_external_collectors_and_t212_ipo_import_safety():
     assert fg_snap is not None and fg_snap.value == 82 and fg_snap.classification == "Neutral" and fg_snap.timestamp > 0
 
 
+def test_iteration104_macro_sentiment_and_order_retry_safety(tmp_path):
+    """Iteration 104: Verify geopolitical_analyzer, news_feed_collector, market_breadth_collector, and order_retry non-dict/bool safety."""
+    import json
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    import order_retry as oq
+    import order_retry_worker as orw
+
+    # 1. GeopoliticalThreatAnalyzer _load_from_disk with bool summary / threat_level / headlines_digest
+    state_file = tmp_path / "geo_state.json"
+    state_file.write_text(
+        json.dumps({
+            "threat_level": True,
+            "recommended_brake": True,
+            "summary": True,
+            "headlines_digest": True,
+            "risk_score": 0.4,
+            "headlines_analyzed": 2,
+            "ts": 1000.0,
+            "is_fallback": False,
+        }),
+        encoding="utf-8",
+    )
+    gta = GeopoliticalThreatAnalyzer(state_file=str(state_file))
+    assert gta._cached_assessment is not None
+    assert gta._cached_assessment.threat_level == "NORMAL"
+    assert gta._cached_assessment.recommended_brake == "NONE"
+    assert gta._cached_assessment.summary == ""
+    assert gta._last_headlines_digest == ""
+
+    # 2. NewsFeedCollector _normalize_title, _load_history, get_pool_snapshot, and parse_rss_xml
+    hist_file = tmp_path / "news_hist.json"
+    import time
+    now_ts = time.time()
+    hist_file.write_text(
+        json.dumps([
+            {"title": True, "source": "Test", "first_seen_ts": now_ts},
+            {"title": "  Breaking War Escalation  ", "source": True, "pub_date": True, "url": True, "matched_keywords": [True, "war"], "is_high_severity": True, "first_seen_ts": now_ts},
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(hist_file))
+    assert nfc._normalize_title(True) == ""
+    assert nfc.parse_rss_xml(True) is None
+    snap = nfc.get_pool_snapshot(now_ts=now_ts)
+    assert snap.total_fetched == 1
+    assert snap.headlines[0].title == "Breaking War Escalation"
+    assert snap.headlines[0].source == ""
+    assert snap.headlines[0].matched_keywords == ("war",)
+
+    # Synthetic headline with non-str title in pool does not raise AttributeError
+    nfc._aggregated_pool["bad_title"] = (now_ts, NewsHeadline(title=None, source="", pub_date="", url="", matched_keywords=(), is_high_severity=True))
+    snap2 = nfc.get_pool_snapshot(now_ts=now_ts)
+    assert snap2.total_fetched == 2
+
+    # 3. MarketBreadthCollector.parse_tickers ignores non-str symbol
+    tickers = [
+        {"symbol": True, "quoteVolume": "10000000", "priceChangePercent": "5.0"},
+        {"symbol": "BTCUSDT", "quoteVolume": "10000000", "priceChangePercent": "2.0"},
+        {"symbol": "ETHUSDT", "quoteVolume": "10000000", "priceChangePercent": "3.0"},
+        {"symbol": "SOLUSDT", "quoteVolume": "10000000", "priceChangePercent": "4.0"},
+        {"symbol": "BNBUSDT", "quoteVolume": "10000000", "priceChangePercent": "1.0"},
+        {"symbol": "XRPUSDT", "quoteVolume": "10000000", "priceChangePercent": "-1.0"},
+    ]
+    mb_snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=1_000_000.0, now_ts=1000.0)
+    assert mb_snap is not None and mb_snap.total_count == 5
+
+    # 4. order_retry & order_retry_worker non-dict / bool safety
+    assert oq.complete_claim(None, "release") is False
+    assert oq.activate_claimed_replacement(None, 1.0) is None
+    ctx = orw._format_record_context({"side": True, "symbol": True, "provider_name": True, "last_failure_reason": True})
+    assert "Order: ? 0 ? (? · ROUTED)" in ctx
+    assert "reason=none" in ctx
+
+
+
 
 
 

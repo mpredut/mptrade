@@ -92,7 +92,10 @@ class MarketBreadthCollector:
         for item in tickers:
             if not isinstance(item, dict):
                 continue
-            symbol = str(item.get("symbol") or "").strip().upper()
+            raw_sym = item.get("symbol")
+            if not isinstance(raw_sym, str):
+                continue
+            symbol = raw_sym.strip().upper()
             if not symbol.endswith("USDT"):
                 continue
             # Exclude leveraged tokens or stablecoin pairs

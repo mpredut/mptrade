@@ -1372,6 +1372,8 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
     for only the unfilled remainder. ``success`` removes a filled or intentionally
     canceled terminal order.
     """
+    if not isinstance(claimed, dict):
+        return False
     allowed = {
         "success", "failure", "deferred", "release", "accepted",
         "observed", "status_error", "retry_terminal",
@@ -1527,7 +1529,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
     concurrently; the generic worker may claim the intent only after the lease
     expires, when the replaced venue order is already confirmed canceled.
     """
-    if isinstance(qty, bool) or isinstance(now, bool):
+    if not isinstance(claimed, dict) or isinstance(qty, bool) or isinstance(now, bool):
         return None
     try:
         now = float(time.time() if now is None else now)

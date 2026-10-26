@@ -91,8 +91,10 @@ class NewsFeedCollector:
         """Backward-compatible alias for _aggregated_pool."""
         return self._aggregated_pool
 
-    def _normalize_title(self, title: str) -> str:
-        return re.sub(r"\s+", " ", str(title or "").strip().lower())
+    def _normalize_title(self, title: Any) -> str:
+        if not isinstance(title, str):
+            return ""
+        return re.sub(r"\s+", " ", title.strip().lower())
 
     def _load_history(self) -> None:
         from state_io import read_recovering_previous
@@ -118,13 +120,23 @@ class NewsFeedCollector:
                     except (TypeError, ValueError):
                         continue
                     if 0.0 <= (now - ts) < self.rolling_window_sec:
+                        raw_title = item.get("title")
+                        if not isinstance(raw_title, str) or not raw_title.strip():
+                            continue
                         kws = item.get("matched_keywords")
-                        matched_kws = tuple(str(k) for k in kws) if isinstance(kws, (list, tuple)) else ()
+                        matched_kws = (
+                            tuple(str(k).strip() for k in kws if isinstance(k, str) and str(k).strip())
+                            if isinstance(kws, (list, tuple))
+                            else ()
+                        )
+                        raw_src = item.get("source")
+                        raw_pub = item.get("pub_date")
+                        raw_url = item.get("url")
                         h = NewsHeadline(
-                            title=str(item.get("title") or ""),
-                            source=str(item.get("source") or ""),
-                            pub_date=str(item.get("pub_date") or ""),
-                            url=str(item.get("url") or ""),
+                            title=raw_title.strip(),
+                            source=raw_src.strip() if isinstance(raw_src, str) else "",
+                            pub_date=raw_pub.strip() if isinstance(raw_pub, str) else "",
+                            url=raw_url.strip() if isinstance(raw_url, str) else "",
                             matched_keywords=matched_kws,
                             is_high_severity=bool(item.get("is_high_severity", False)),
                         )
@@ -188,9 +200,12 @@ class NewsFeedCollector:
                 reverse=True,
             )
         ]
-        high_sev = [h for h in all_headlines if h.is_high_severity]
+        high_sev = [h for h in all_headlines if getattr(h, "is_high_severity", False)]
         has_shock = len(high_sev) >= 3 or any(
-            any(w in h.title.lower() for w in ("declared war", "nuclear", "strait of hormuz", "major offensive"))
+            any(
+                w in (h.title.lower() if isinstance(getattr(h, "title", None), str) else "")
+                for w in ("declared war", "nuclear", "strait of hormuz", "major offensive")
+            )
             for h in high_sev
         )
 
@@ -233,9 +248,12 @@ class NewsFeedCollector:
                 reverse=True,
             )
         ]
-        high_sev = [h for h in all_headlines if h.is_high_severity]
+        high_sev = [h for h in all_headlines if getattr(h, "is_high_severity", False)]
         has_shock = len(high_sev) >= 3 or any(
-            any(w in h.title.lower() for w in ("declared war", "nuclear", "strait of hormuz", "major offensive"))
+            any(
+                w in (h.title.lower() if isinstance(getattr(h, "title", None), str) else "")
+                for w in ("declared war", "nuclear", "strait of hormuz", "major offensive")
+            )
             for h in high_sev
         )
         return NewsFeedSnapshot(
@@ -249,7 +267,7 @@ class NewsFeedCollector:
     @staticmethod
     def parse_rss_xml(xml_bytes: bytes, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
         """Parse raw XML RSS feed and extract matched high-severity headlines."""
-        if not xml_bytes:
+        if not xml_bytes or not isinstance(xml_bytes, (bytes, bytearray, str)):
             return None
 
         now = time.time()

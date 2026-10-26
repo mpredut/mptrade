@@ -845,9 +845,12 @@ def _format_ts(ts):
 
 def _format_record_context(rec, *, include_lease=False):
     """Build a structured summary of order time, base asset qty/price, and quote value."""
-    side = str(rec.get("side") or "?").upper()
-    symbol = str(rec.get("symbol") or "?")
-    provider = str(rec.get("provider_name") or "routed").upper()
+    raw_side = rec.get("side")
+    side = raw_side.strip().upper() if isinstance(raw_side, str) and raw_side.strip() else "?"
+    raw_sym = rec.get("symbol")
+    symbol = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else "?"
+    raw_prov = rec.get("provider_name")
+    provider = raw_prov.strip().upper() if isinstance(raw_prov, str) and raw_prov.strip() else "ROUTED"
     base_asset, quote_asset = _resolve_display_assets(symbol)
     try:
         raw_qty = rec.get("qty")
@@ -898,7 +901,12 @@ def _format_record_context(rec, *, include_lease=False):
         attempts = int(raw_att) if raw_att is not None and not isinstance(raw_att, bool) else 0
     except (TypeError, ValueError, OverflowError):
         attempts = 0
-    last_reason = str(rec.get("last_failure_reason") or "none")
+    raw_reason = rec.get("last_failure_reason")
+    last_reason = (
+        str(raw_reason).strip()
+        if raw_reason is not None and not isinstance(raw_reason, bool) and str(raw_reason).strip()
+        else "none"
+    )
     time_parts = [f"Created: {created_str}"]
     if last_attempt_str != "N/A":
         time_parts.append(f"Last attempt: {last_attempt_str}")
