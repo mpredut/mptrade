@@ -215,7 +215,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
     first_valid_by_venue = {}
     for order in sorted(
         supported_client_ids,
-        key=lambda item: float(item.get("accepted_ts") or 0.0),
+        key=lambda item: _f(item.get("accepted_ts"), 0.0),
     ):
         venue = str(order.get("venue") or "")
         if order["client_order_id_valid"] and venue not in first_valid_by_venue:

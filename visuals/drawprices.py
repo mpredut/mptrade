@@ -148,9 +148,12 @@ def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarr
 # ==========================
 
 def make_sequences(series: np.ndarray, window: int):
+    win = max(1, int(window)) if not isinstance(window, bool) else 1
+    if len(series) <= win:
+        return np.empty((0, win, 1), dtype=np.float64), np.empty((0,), dtype=np.float64)
     X, y = [], []
-    for i in range(window, len(series)):
-        X.append(series[i-window:i])
+    for i in range(win, len(series)):
+        X.append(series[i-win:i])
         y.append(series[i])
     X = np.array(X)
     y = np.array(y)
@@ -177,6 +180,11 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     ok, tf_or_err, Sequential, LSTM, Dense = try_import_tf()
     if not ok:
         return None, f"LSTM indisponibil: {tf_or_err}"
+
+    window = max(1, int(window)) if not isinstance(window, bool) else 20
+    epochs = max(1, int(epochs)) if not isinstance(epochs, bool) else 50
+    batch_size = max(1, int(batch_size)) if not isinstance(batch_size, bool) else 16
+    horizon = max(1, int(horizon)) if not isinstance(horizon, bool) else 20
 
     if len(prices) < window + 5:
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."

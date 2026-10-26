@@ -65,6 +65,14 @@ def _finite(value) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _diff(left, right) -> float:
+    lv = _finite(left)
+    rv = _finite(right)
+    if lv is None or rv is None:
+        return float("nan")
+    return lv - rv
+
+
 def _relative_change(baseline, candidate) -> float | None:
     """Relative change only for a positive, comparable base."""
     base = _finite(baseline)
@@ -100,8 +108,7 @@ def evaluate_promotion(
         if set(base_windows) != set(cand_windows):
             raise ValueError(f"different windows in scenario {name}")
         deltas = [
-            float(cand_windows[key]["return_pct"])
-            - float(base_windows[key]["return_pct"])
+            _diff(cand_windows[key].get("return_pct"), base_windows[key].get("return_pct"))
             for key in sorted(base_windows)
         ]
         all_deltas_finite = all(
@@ -118,17 +125,17 @@ def evaluate_promotion(
         sign_pvalue = _one_sided_sign_pvalue(wins, losses)
         base_aggregate = base["aggregate"]
         candidate_aggregate = cand["aggregate"]
-        mean_delta = (
-            float(candidate_aggregate["mean_return_pct"])
-            - float(base_aggregate["mean_return_pct"])
+        mean_delta = _diff(
+            candidate_aggregate.get("mean_return_pct"),
+            base_aggregate.get("mean_return_pct"),
         )
-        worst_delta = (
-            float(candidate_aggregate["worst_return_pct"])
-            - float(base_aggregate["worst_return_pct"])
+        worst_delta = _diff(
+            candidate_aggregate.get("worst_return_pct"),
+            base_aggregate.get("worst_return_pct"),
         )
-        drawdown_delta = (
-            float(candidate_aggregate["worst_max_drawdown_pct"])
-            - float(base_aggregate["worst_max_drawdown_pct"])
+        drawdown_delta = _diff(
+            candidate_aggregate.get("worst_max_drawdown_pct"),
+            base_aggregate.get("worst_max_drawdown_pct"),
         )
         checks = {
             "enough_windows": all_deltas_finite and len(deltas) >= limits.min_windows,
@@ -207,8 +214,7 @@ def evaluate_risk_adjusted_promotion(
             raise ValueError(f"different windows in scenario {name}")
 
         drawdown_improvements = [
-            float(base_windows[key]["max_drawdown_pct"])
-            - float(cand_windows[key]["max_drawdown_pct"])
+            _diff(base_windows[key].get("max_drawdown_pct"), cand_windows[key].get("max_drawdown_pct"))
             for key in sorted(base_windows)
         ]
         all_dd_finite = all(
@@ -226,17 +232,17 @@ def evaluate_risk_adjusted_promotion(
         base_aggregate = base["aggregate"]
         candidate_aggregate = cand["aggregate"]
         cand_mean_return = _finite(candidate_aggregate.get("mean_return_pct"))
-        mean_delta = (
-            float(candidate_aggregate["mean_return_pct"])
-            - float(base_aggregate["mean_return_pct"])
+        mean_delta = _diff(
+            candidate_aggregate.get("mean_return_pct"),
+            base_aggregate.get("mean_return_pct"),
         )
-        worst_return_delta = (
-            float(candidate_aggregate["worst_return_pct"])
-            - float(base_aggregate["worst_return_pct"])
+        worst_return_delta = _diff(
+            candidate_aggregate.get("worst_return_pct"),
+            base_aggregate.get("worst_return_pct"),
         )
-        worst_drawdown_improvement = (
-            float(base_aggregate["worst_max_drawdown_pct"])
-            - float(candidate_aggregate["worst_max_drawdown_pct"])
+        worst_drawdown_improvement = _diff(
+            base_aggregate.get("worst_max_drawdown_pct"),
+            candidate_aggregate.get("worst_max_drawdown_pct"),
         )
         base_cvar = _finite(base_aggregate.get("worst_cvar_95_pct"))
         candidate_cvar = _finite(candidate_aggregate.get("worst_cvar_95_pct"))

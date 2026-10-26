@@ -260,7 +260,7 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
                     continue
                 try:
                     rec = json.loads(line)
-                    if rec.get("s") == symbol:
+                    if isinstance(rec, dict) and rec.get("s") == symbol and "i" in rec:
                         entries.append(rec["i"])
                 except (json.JSONDecodeError, KeyError, TypeError):
                     continue
@@ -270,7 +270,8 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("items", {}).get(symbol, [])
+        items = data.get("items") if isinstance(data, dict) else None
+        return items.get(symbol, []) if isinstance(items, dict) else []
     except (OSError, json.JSONDecodeError, ValueError):
         return []   # Another process may be writing the file; skip this cycle.
 
@@ -299,7 +300,7 @@ def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
                 continue
             try:
                 rec = json.loads(line)
-                if rec.get("s") == symbol:
+                if isinstance(rec, dict) and rec.get("s") == symbol and "i" in rec:
                     entries.append(rec["i"])
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
@@ -709,6 +710,8 @@ def render_chart(symbol, window_label, window_start, window_end,
                 fontsize=8, family="monospace",
                 bbox=dict(boxstyle="round", fc="#fffbe6", ec="#d4a017", alpha=0.95))
 
+    if window_end <= window_start:
+        window_end = window_start + 60.0
     ax.set_xlim(datetime.fromtimestamp(window_start), datetime.fromtimestamp(window_end))
     ax.set_title(f"{symbol} — {window_label}  (updated {datetime.now().strftime('%H:%M:%S')})")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
@@ -945,9 +948,15 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
         print(f"[tradeall_observe] {symbol}: no data for the frames yet")
         return []
 
-    chunk_sec = chunk_hours * 3600
+    try:
+        ch_f = float(chunk_hours) if not isinstance(chunk_hours, bool) else 24.0
+    except (TypeError, ValueError):
+        ch_f = 24.0
+    if not math.isfinite(ch_f) or ch_f <= 0:
+        ch_f = 24.0
+    chunk_sec = ch_f * 3600
     range_start, range_end = min(all_ts), max(all_ts)
-    n_chunks = int((range_end - range_start) // chunk_sec) + 1
+    n_chunks = max(1, int((range_end - range_start) // chunk_sec) + 1)
 
     paths = []
     for i in range(n_chunks):

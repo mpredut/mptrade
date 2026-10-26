@@ -191,6 +191,15 @@ class RiskAdjustedPromotionGateTest(unittest.TestCase):
         res = evaluate_promotion(baseline, candidate)
         self.assertFalse(res["promote"])
 
+        candidate_none = _report(
+            mean=None, worst=None, drawdown=None,
+            returns=(None,) * 20,
+            drawdowns=(None,) * 20,
+        )
+        dual_none = evaluate_dual_promotion(baseline, candidate_none)
+        self.assertFalse(dual_none["promote"])
+        self.assertEqual(dual_none["promotion_paths"], [])
+
     def test_spot_profile_review_rejects_invalid_cash_and_snapshot_handles_non_dict_json(self):
         import tempfile
         from pathlib import Path

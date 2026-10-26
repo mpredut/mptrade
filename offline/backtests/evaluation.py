@@ -51,9 +51,17 @@ def assess_decision_evidence(
         0.0,
         (int(records[-1]["timestamp"]) - int(records[0]["timestamp"])) / 86_400.0,
     )
-    fold_count = int(aggregate.get("fold_count", 0))
-    cycles = int(aggregate.get("total_cycles", 0))
-    worst_return = float(aggregate.get("worst_return_pct", 0.0))
+    fold_count = int(aggregate.get("fold_count") or 0)
+    cycles = int(aggregate.get("total_cycles") or 0)
+    raw_worst = aggregate.get("worst_return_pct")
+    try:
+        worst_return = (
+            float(raw_worst)
+            if raw_worst is not None and not isinstance(raw_worst, bool) and math.isfinite(float(raw_worst))
+            else 0.0
+        )
+    except (TypeError, ValueError):
+        worst_return = 0.0
     data_issues = []
     if fold_count < minimum_folds:
         data_issues.append(f"folds {fold_count} < {minimum_folds}")
@@ -239,7 +247,7 @@ def evaluate_walk_forward(
             "total_cycles": summary["total_cycles"],
             "total_fills": summary["total_fills"],
             "total_ambiguous_bars": sum(
-                int(window["ambiguous_bars"]) for window in test_windows
+                int(window.get("ambiguous_bars") or 0) for window in test_windows
             ),
             "intrabar_policy_selected_counts": dict(Counter(
                 window["intrabar_policy_selected"] for window in test_windows

@@ -1106,6 +1106,40 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
         rp = spr.revision_params("HEAD:hyperliquid/config.env")
         assert rp.entry_amount > 0
 
+    # 10. assess_decision_evidence, calibrate_execution_events, walk_forward.run_compare, tradeall_observe, drawprices
+    from offline.backtests.evaluation import assess_decision_evidence
+    from offline.backtests.execution_calibration import calibrate_execution_events
+    from offline.runners import walk_forward as wf_disp
+    from visuals import drawprices as dp, tradeall_observe as tob
+
+    ev = assess_decision_evidence(
+        [{"timestamp": 1700000000}, {"timestamp": 1700086400}],
+        {"fold_count": None, "total_cycles": None, "worst_return_pct": None},
+    )
+    assert ev["decision_grade_data"] is False
+
+    cal = calibrate_execution_events([
+        {"intent_id": "i1", "event": "submit_requested", "venue": "kraken", "symbol": "HYPEUSD", "qty": 1.0},
+        {"intent_id": "i1", "event": "submit_accepted", "venue": "kraken", "symbol": "HYPEUSD", "accepted_ts": "bad_ts", "ts": "bad_ts", "client_order_id": "a" * 32, "order_id": "o1"},
+    ])
+    assert cal["client_order_id_validation"]["valid_client_order_ids"] == 1
+
+    with patch("offline.runners.walk_forward_compare.main", return_value=0) as mock_wfc:
+        assert wf_disp.run_compare(["--venue=kraken", "rep.json"], venue="kraken") == 0
+        mock_wfc.assert_called_once_with(["--venue=kraken", "rep.json"])
+
+    X_empty, y_empty = dp.make_sequences(dp.np.array([1.0]), window=0)
+    assert X_empty.shape == (0, 1, 1)
+    assert y_empty.shape == (0,)
+
+    c_dir = tmp_path / "cachedb"
+    c_dir.mkdir(exist_ok=True)
+    (c_dir / "cache_365_price_TEST.jsonl").write_text('123\n[1,2]\n{"s": "TEST", "i": [1000, 50.0]}\n', encoding="utf-8")
+    (c_dir / "cache_24_price_TEST.json").write_text('{"items": []}', encoding="utf-8")
+    monkeypatch.setattr(tob, "ROOT", str(tmp_path))
+    assert tob._load_cachedb_price_entries("cache_365_price_TEST.jsonl", "TEST") == [[1000, 50.0]]
+    assert tob._load_cachedb_price_entries("cache_24_price_TEST.json", "TEST") == []
+
 
 
 

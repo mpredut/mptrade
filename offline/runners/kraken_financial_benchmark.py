@@ -19,8 +19,8 @@ KRAKEN_DIR = ROOT / "kraken"
 sys.path.insert(0, str(KRAKEN_DIR))
 sys.path.insert(0, str(ROOT))
 
-from kraken_common import load_dotenv  # noqa: E402
-import replay as kraken_replay  # noqa: E402
+from kraken.kraken_common import load_dotenv  # noqa: E402
+from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
@@ -363,10 +363,10 @@ def main() -> int:
     for name, scenario in report["scenarios"].items():
         aggregate = scenario["aggregate"]
         print(
-            f"{name}: mean={aggregate['mean_return_pct']:+.3f}% "
-            f"meanUSD={aggregate['mean_net_pnl_usd_per_window']:+.2f} "
-            f"worst={aggregate['worst_return_pct']:+.3f}% "
-            f"worstDD={aggregate['worst_max_drawdown_pct']:.3f}%"
+            f"{name}: mean={_format(aggregate.get('mean_return_pct'), signed=True)}% "
+            f"meanUSD={_format(aggregate.get('mean_net_pnl_usd_per_window'), signed=True)} "
+            f"worst={_format(aggregate.get('worst_return_pct'), signed=True)}% "
+            f"worstDD={_format(aggregate.get('worst_max_drawdown_pct'))}%"
         )
 
     if args.verify:

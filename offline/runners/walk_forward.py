@@ -72,7 +72,7 @@ def run_compare(argv: list[str] | None = None, venue: str | None = None) -> int:
     from offline.runners import walk_forward_compare
 
     forward_args = list(argv or [])
-    if venue and "--venue" not in forward_args:
+    if venue and not any(a == "--venue" or a.startswith("--venue=") for a in forward_args):
         forward_args.extend(["--venue", canonical_venue(venue)])
     return walk_forward_compare.main(forward_args)
 

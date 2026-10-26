@@ -213,8 +213,8 @@ def main() -> int:
         central = candidate["scenarios"]["central"]
         stress = candidate["scenarios"]["stress"]
         print(
-            f"{name}: central={central['mean_return_pct']:+.3f}% "
-            f"stress={stress['mean_return_pct']:+.3f}% "
+            f"{name}: central={_fmt(central.get('mean_return_pct'), signed=True)}% "
+            f"stress={_fmt(stress.get('mean_return_pct'), signed=True)}% "
             f"gate={'/'.join(candidate['promotion_gate']['promotion_paths']) or 'FAIL'}"
         )
     return 0
