@@ -1,4 +1,5 @@
 # new_coins_discovery.py
+import math
 import time
 import threading
 import requests
@@ -40,14 +41,36 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 }
 
 
+def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
+    if days_back is None or isinstance(days_back, bool):
+        return float(default)
+    try:
+        d = float(days_back)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(d) or d <= 0:
+        return float(default)
+    return d
+
+
+def _safe_num(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
-    if not symbol:
+    if not symbol or not isinstance(symbol, str):
         return False
     if not symbol.isalnum():
         return False
     if symbol in EXCLUDED_SYMBOLS:
         return False
-    searchable_name = f"{name} {slug}".lower()
+    searchable_name = f"{name or ''} {slug or ''}".lower()
     return not any(keyword in searchable_name for keyword in EXCLUDED_ASSET_NAME_KEYWORDS)
 
 # ============================================
@@ -146,13 +169,16 @@ class CoinMarketCapSource(NewCoinsSource):
         if not self._cache:
             self.refresh()
         from datetime import timezone
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
+        eff_days = _safe_days_back(days_back)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=eff_days)
         new_coins = []
         for coin in self._cache:
-            added_at = coin['added_at']
-            if added_at and added_at.tzinfo is None:
+            added_at = coin.get('added_at')
+            if added_at is None or pd.isna(added_at):
+                continue
+            if getattr(added_at, 'tzinfo', None) is None:
                 added_at = added_at.replace(tzinfo=timezone.utc)
-            if added_at and added_at >= cutoff_date:
+            if added_at >= cutoff_date:
                 new_coins.append(coin)
         return new_coins
 
@@ -279,8 +305,9 @@ class BinanceNewListingsSource(NewCoinsSource):
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
         if not self._new_listings:
             return []
-        cutoff_date = datetime.now() - timedelta(days=days_back)
-        return [item for item in self._new_listings if item['added_at'] and item['added_at'] >= cutoff_date]
+        eff_days = _safe_days_back(days_back)
+        cutoff_date = datetime.now() - timedelta(days=eff_days)
+        return [item for item in self._new_listings if item.get('added_at') and item['added_at'] >= cutoff_date]
 
 # ============================================
 # Source 4: DexScreener
@@ -352,8 +379,9 @@ class DexScreenerSource(NewCoinsSource):
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
         if not self._cache:
             return []
-        cutoff_date = datetime.now() - timedelta(days=days_back)
-        return [token for token in self._cache if token['added_at'] and token['added_at'] >= cutoff_date][:50]
+        eff_days = _safe_days_back(days_back)
+        cutoff_date = datetime.now() - timedelta(days=eff_days)
+        return [token for token in self._cache if token.get('added_at') and token['added_at'] >= cutoff_date][:50]
 
 # ============================================
 # Factory for new-coin data sources.
@@ -487,6 +515,14 @@ class NewCoinsMonitor:
 
                 
     def start_monitoring(self, interval_seconds: int = REFRESH_INTERVAL_SECONDS):
+        if (
+            interval_seconds is None
+            or isinstance(interval_seconds, bool)
+            or not isinstance(interval_seconds, (int, float))
+            or not math.isfinite(interval_seconds)
+            or interval_seconds <= 0
+        ):
+            raise ValueError("interval_seconds must be a finite positive number")
         if self._running:
             return
         self._running = True
@@ -528,8 +564,10 @@ class NewCoinsMonitor:
                 report += f"\n📡 SOURCE: {source_name.upper()} ({len(coins)} coins)\n"
                 report += "-" * 40 + "\n"
                 for coin in coins[:15]:
-                    added_str = coin['added_at'].strftime('%Y-%m-%d') if coin['added_at'] else 'N/A'
-                    price_str = f"${coin['price']:.6f}" if coin.get('price') else 'N/A'
+                    raw_added = coin.get('added_at')
+                    added_str = raw_added.strftime('%Y-%m-%d') if (raw_added is not None and not pd.isna(raw_added) and hasattr(raw_added, 'strftime')) else 'N/A'
+                    px_val = _safe_num(coin.get('price'), 0.0)
+                    price_str = f"${px_val:.6f}" if px_val > 0 else 'N/A'
                     report += f"   🆕 {coin['symbol']} - {coin.get('name', coin['symbol'])}\n"
                     report += f"      📅 Added: {added_str} | 💰 Price: {price_str}\n"
                     if coin.get('url'):
@@ -586,9 +624,9 @@ class NewCoinsMonitor:
             }
 
         # Check thresholds for informational display only
-        volume = coin_info.get('volume_24h', 0)
-        price = coin_info.get('price', 0)
-        change = coin_info.get('change_24h', 0)
+        volume = _safe_num(coin_info.get('volume_24h', 0), 0.0)
+        price = _safe_num(coin_info.get('price', 0), 0.0)
+        change = _safe_num(coin_info.get('change_24h', 0), 0.0)
 
         issues = []
 
@@ -630,9 +668,10 @@ class NewCoinsMonitor:
         if not hasattr(self.price_monitor, 'symbol_added_time'):
             return True
         added_time = self.price_monitor.symbol_added_time.get(symbol)
-        if not added_time:
+        ts_val = _safe_num(added_time, 0.0)
+        if ts_val <= 0.0:
             return True
-        age_days = (time.time() - added_time) / (24 * 3600)
+        age_days = (time.time() - ts_val) / (24 * 3600)
         if age_days > NEW_COIN_CLEANUP_MAX_AGE_DAYS:
             return False
         return True

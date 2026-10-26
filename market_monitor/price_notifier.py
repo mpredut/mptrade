@@ -126,7 +126,12 @@ def new_coin_alerts_handler(alerts):
         print(f"   📅 Added: {added_at}")
 
         if has_price:
-            print(f"   💰 Price: ${(coin_info.get('price') or 0.0):.8f}")
+            raw_px = coin_info.get('price')
+            try:
+                px_val = 0.0 if (raw_px is None or isinstance(raw_px, bool)) else float(raw_px)
+            except (TypeError, ValueError):
+                px_val = 0.0
+            print(f"   💰 Price: ${px_val:.8f}")
             print(f"   ✅ Auto-added: {auto_added}")
         else:
             print("   ⚠️ Informational only")

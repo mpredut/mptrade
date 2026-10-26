@@ -1242,6 +1242,53 @@ def test_external_sentiment_parabolic_and_composite_guards_hardening():
     assert ev.metrics["fear_greed"] is None and ev.metrics["market_regime"] is None and ev.metrics["geopolitical_threat"] is None
 
 
+def test_new_coins_discovery_and_pricefetcher_hardening():
+    from types import SimpleNamespace
+    import pandas as pd
+    import pytest
+    from market_monitor import new_coins_discovery as ncd
+    from market_monitor import pricefetcher as pf
+
+    assert ncd.is_trackable_symbol(123) is False
+    assert ncd.is_trackable_symbol(True) is False
+    assert ncd.is_trackable_symbol("NEWCOIN", name=None, slug=None) is True
+    assert ncd._safe_days_back(float("nan")) == float(ncd.NEW_COINS_AGE_DAYS)
+    assert ncd._safe_days_back(True) == float(ncd.NEW_COINS_AGE_DAYS)
+
+    dummy_factory = SimpleNamespace(
+        get_all_new_coins=lambda _d: {
+            "coinmarketcap": [
+                {"symbol": "NEWCOIN", "name": "New", "added_at": pd.NaT, "price": "0.1234", "volume_24h": "bad", "change_24h": None}
+            ]
+        },
+        get_available_sources=lambda: ["coinmarketcap"],
+        refresh_all=lambda: None,
+    )
+    dummy_pm = SimpleNamespace(
+        original_symbols=[],
+        active_symbols=set(),
+        max_monitored_symbols=10,
+        symbol_added_time={"NEWCOIN": True},
+        add_symbol=lambda _s, preferred_source=None: True,
+    )
+    mon = ncd.NewCoinsMonitor(price_monitor=dummy_pm, factory=dummy_factory)
+    assert "$0.123400" in mon.get_report()
+    assert mon.add_new_coin_to_watchlist(mon.all_new_coins["coinmarketcap"][0]) is True
+    assert mon.should_keep_monitoring("NEWCOIN") is True
+    with pytest.raises(ValueError):
+        mon.start_monitoring(interval_seconds=True)
+    with pytest.raises(ValueError):
+        mon.start_monitoring(interval_seconds=float("nan"))
+
+    assert pf._safe_max_symbols(float("nan")) == pf.MAX_MONITORED_SYMBOLS
+    assert pf._safe_max_symbols(True) == pf.MAX_MONITORED_SYMBOLS
+    assert pf._safe_max_symbols(12) == 12
+    yahoo = pf.StockYahooPricePlatform(tickers=["NVDA"])
+    assert yahoo.supports_symbol(None) is False
+    assert yahoo.supports_symbol("NVDA") is True
+
+
+
 
 
 
