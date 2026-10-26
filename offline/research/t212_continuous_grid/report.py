@@ -2,6 +2,7 @@
 """Summarise results.jsonl from grid.py into REPORT.md."""
 from collections import defaultdict
 import json
+import math
 import os
 import statistics as st
 import sys
@@ -12,7 +13,19 @@ HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
 
 
 def g(r, itv, k):
-    return (r.get(itv) or {}).get(k)
+    sub = r.get(itv) if isinstance(r, dict) else None
+    if not isinstance(sub, dict):
+        return None
+    val = sub.get(k)
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        fval = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(fval):
+        return None
+    return int(fval) if isinstance(val, int) else fval
 
 
 def generate_report(exp_dir=None):
@@ -58,7 +71,12 @@ def generate_report(exp_dir=None):
             if not r:
                 continue
             w = r.get("w90") or []
-            w_rets = [x[0] for x in w if isinstance(x, (list, tuple)) and len(x) > 0 and x[0] is not None]
+            w_rets = [
+                float(x[0]) for x in w
+                if isinstance(x, (list, tuple)) and len(x) > 0
+                and isinstance(x[0], (int, float)) and not isinstance(x[0], bool)
+                and math.isfinite(float(x[0]))
+            ]
             wm = st.mean(w_rets) if w_rets else None
             wp = (100.0 * sum(ret > 0 for ret in w_rets) / len(w_rets)) if w_rets else None
             ret_1h = g(r, "1h", "ret")

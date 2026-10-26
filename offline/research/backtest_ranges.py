@@ -34,7 +34,7 @@ from typing import Dict, List, Optional
 
 _SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$')
 _BACKTEST_RE = re.compile(r'^\s*#\s*BACKTEST:\s*(.+?)\s*$')
-_KEY_RE = re.compile(r'^\s*([A-Za-z0-9_.]+)\s*=\s*(.+?)\s*$')
+_KEY_RE = re.compile(r'^\s*(?:export\s+)?([A-Za-z0-9_.]+)\s*=\s*(.+?)\s*$')
 
 
 def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
@@ -50,7 +50,7 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
     pending: Optional[List[str]] = None
     with open(path, encoding="utf-8") as f:
         for raw in f:
-            line = raw.rstrip("\n")
+            line = raw.rstrip("\r\n")
             sm = _SECTION_RE.match(line)
             if sm:
                 section = sm.group(1).strip() or None
@@ -58,7 +58,8 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
                 continue
             m = _BACKTEST_RE.match(line)
             if m:
-                vals = [v.strip() for v in m.group(1).split(",") if v.strip()]
+                raw_vals = m.group(1).split("#", 1)[0]
+                vals = [v.strip() for v in raw_vals.split(",") if v.strip()]
                 pending = vals if vals else None
                 continue
             m2 = _KEY_RE.match(line)

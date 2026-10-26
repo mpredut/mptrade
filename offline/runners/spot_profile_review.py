@@ -34,7 +34,9 @@ from offline.runners.kraken_financial_benchmark import DEFAULT_DATASET, DEFAULT_
 
 
 def revision_params(spec: str) -> StratParams:
-    text = subprocess.run(["git", "show", spec], check=True, capture_output=True,
+    if not isinstance(spec, str) or not spec.strip() or spec.strip().startswith("-"):
+        raise ValueError(f"Invalid git revision spec: {spec!r}")
+    text = subprocess.run(["git", "show", spec.strip()], check=True, capture_output=True,
                           text=True, cwd=ROOT).stdout
     env = {
         k: str(v)

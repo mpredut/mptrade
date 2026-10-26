@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Aggregate results2.jsonl (wave 2) into REPORT2.md."""
 import json
+import math
 import os
 import statistics as st
 from collections import defaultdict
@@ -71,24 +72,35 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             L.append(f"| {'SELECTOR' if c == '__selector__' else c} | {v:+.1f} |")
 
     # ---------------------------------------------------------------- fine grid + fee
-    views = [r for r in rows if r.get("kind") == "views"]
+    views = [r for r in rows if r.get("kind") == "views" and "cfg" in r and "fee" in r and "asset" in r]
     by = defaultdict(dict)
     for r in views:
         by[(r["cfg"], r["fee"])][r["asset"]] = r
     for r in wave1:
-        if "error" not in r:
+        if "error" not in r and "cfg" in r and "asset" in r:
             by.setdefault((r["cfg"], "std"), {}).setdefault(r["asset"], r)
     assets = sorted({r["asset"] for r in views})
 
     def summ(key):
         d = by[key]
-        if not assets or not all(a in d for a in assets):
+        if not assets or not all(a in d and isinstance(d[a].get("full"), dict) for a in assets):
             return None
         live = by.get(("live", "std"), {})
-        full = [d[a]["full"]["ret"] for a in assets]
-        dd = [d[a]["full"]["dd"] for a in assets]
-        w90_means = [st.mean(x[0] for x in d[a]["w90"]) for a in assets if d[a].get("w90")]
-        w90pos_vals = [100.0 * sum(x[0] > 0 for x in d[a]["w90"]) / len(d[a]["w90"]) for a in assets if d[a].get("w90")]
+        full = [float(d[a]["full"].get("ret") or 0.0) for a in assets]
+        dd = [float(d[a]["full"].get("dd") or 0.0) for a in assets]
+        if not all(math.isfinite(x) for x in full + dd):
+            return None
+        w90_means = []
+        w90pos_vals = []
+        for a in assets:
+            w90_valid = [
+                float(x[0]) for x in (d[a].get("w90") or [])
+                if isinstance(x, (list, tuple)) and x and isinstance(x[0], (int, float))
+                and not isinstance(x[0], bool) and math.isfinite(float(x[0]))
+            ]
+            if w90_valid:
+                w90_means.append(st.mean(w90_valid))
+                w90pos_vals.append(100.0 * sum(v > 0 for v in w90_valid) / len(w90_valid))
         beat_live = sum(d[a]["full"]["ret"] > live.get(a, {}).get("full", {}).get("ret", float("-inf")) for a in assets)
         return {"cfg": key[0], "fee": key[1],
                 "beat": beat_live,
@@ -107,7 +119,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                      f"{s['dd_med']:.1f} | {s['dd_max']:.1f} | {s['calmar']:+.2f} | {s['w90']:+.2f} | {s['w90pos']:.0f} |")
 
     fine = [s for s in (summ(k) for k in by if k[1] == "std") if s]
-    table(sorted(fine, key=lambda s: -s["calmar"])[:40], "Fine grid + wave-1 configs, top 40 by median return/DD")
+    table(sorted(fine, key=lambda s: -(s["calmar"] if math.isfinite(s["calmar"]) else float("-inf")))[:40], "Fine grid + wave-1 configs, top 40 by median return/DD")
     fee = []
     for k in by:
         if k[1] == "stress":

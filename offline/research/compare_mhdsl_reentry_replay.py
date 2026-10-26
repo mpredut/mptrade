@@ -26,9 +26,9 @@ def run_comparison(csv_path=None):
         for r in reader:
             try:
                 bar = (float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if all(math.isfinite(v) and v > 0 for v in bar):
+            if all(math.isfinite(v) and v > 0 for v in bar) and bar[1] >= bar[2]:
                 bars.append(bar)
 
     if not bars:
@@ -101,13 +101,16 @@ def run_comparison(csv_path=None):
 
 
 def main():
+    has_orig_log = hasattr(strat, "log")
     orig_log = getattr(strat, "log", None)
     strat.log = lambda *a, **k: None
     try:
         run_comparison()
     finally:
-        if orig_log is not None:
+        if has_orig_log:
             strat.log = orig_log
+        elif hasattr(strat, "log"):
+            delattr(strat, "log")
 
 
 if __name__ == "__main__":

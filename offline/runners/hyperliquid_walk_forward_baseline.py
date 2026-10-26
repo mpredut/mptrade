@@ -28,6 +28,7 @@ _md_spec = importlib.util.spec_from_file_location(
     "hl_wf_md", str(HL_DIR / "market_data.py")
 )
 _hl_md = importlib.util.module_from_spec(_md_spec)
+sys.modules[_md_spec.name] = _hl_md
 _md_spec.loader.exec_module(_hl_md)
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
 fetch_funding_history = _hl_md.fetch_funding_history
@@ -36,6 +37,7 @@ _replay_spec = importlib.util.spec_from_file_location(
     "hl_wf_replay", str(HL_DIR / "replay.py")
 )
 _hl_replay = importlib.util.module_from_spec(_replay_spec)
+sys.modules[_replay_spec.name] = _hl_replay
 _replay_spec.loader.exec_module(_hl_replay)
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
 StratParams = _hl_replay.StratParams

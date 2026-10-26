@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Aggregate results3.jsonl (finite 3900 USD cash, continuous history) into REPORT3.md."""
 import json
+import math
 import os
 import statistics as st
 from collections import defaultdict
@@ -50,15 +51,17 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         for cfg, d in by.items():
             if not all(a in d for a in assets):
                 continue
-            if any(fee not in d[a] for a in assets):
+            if any(not isinstance(d[a].get(fee), dict) for a in assets):
                 continue
-            ret = [d[a][fee]["ret"] for a in assets]
-            dd = [d[a][fee]["dd"] for a in assets]
+            ret = [float(d[a][fee].get("ret") or 0.0) for a in assets]
+            dd = [float(d[a][fee].get("dd") or 0.0) for a in assets]
+            if not all(math.isfinite(x) for x in ret + dd):
+                continue
             live_cfg = by.get("live", {})
             live = [live_cfg.get(a, {}).get(fee, {}).get("ret", float("-inf")) for a in assets]
             refused = [d[a][fee].get("refused", 0) for a in assets]
             score = st.median(r / max(x, 1.0) for r, x in zip(ret, dd)) if ret else 0.0
-            items.append((score, cfg, ret, dd, live, refused))
+            items.append((score if math.isfinite(score) else float("-inf"), cfg, ret, dd, live, refused))
         for score, cfg, ret, dd, live, refused in sorted(items, reverse=True):
             if not ret:
                 continue

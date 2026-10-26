@@ -9453,3 +9453,38 @@ def test_iteration74_tradeall_trigger_gate_adaptive_kalman_and_continuous_grid_s
     st = k_rep.win_stats({"w30": [(float("nan"), 0.0, 5.0), (5.0, 1.0, 15.0)]}, "w30")
     assert st["mean"] == 5.0 and st["pos"] == 100.0
 
+
+def test_iteration75_walk_forward_runners_grid_reports_and_backtest_ranges_safety(tmp_path):
+    """Verify Iteration 75 hardening across walk-forward baseline runners, spot_profile_review, grid reports, run_equities, and backtest_ranges."""
+    import sys
+    from offline.runners import spot_profile_review as spr
+    from offline.research import backtest_ranges as br
+    from offline.research.t212_continuous_grid import report as t_rep
+    from offline.research.hybrid_reentry import run_equities as req
+
+    # 1. spot_profile_review.revision_params rejects empty or flag-like specs
+    with pytest.raises(ValueError, match="Invalid git revision spec"):
+        spr.revision_params("")
+    with pytest.raises(ValueError, match="Invalid git revision spec"):
+        spr.revision_params("--help")
+
+    # 2. backtest_ranges.scan_backtest_ranges handles export KEY=val, CRLF, and inline comments
+    cfg_f = tmp_path / "test.env"
+    cfg_f.write_bytes(b"# BACKTEST: 1.0, 2.0, 3.0 # comment\r\nexport MY_PARAM = 2.0\r\n")
+    ranges = br.scan_backtest_ranges(str(cfg_f))
+    assert ranges == {"MY_PARAM": ["1.0", "2.0", "3.0"]}
+
+    # 3. t212_continuous_grid.report.g safely rejects non-dict sub-entries, bools, and NaN
+    assert t_rep.g({"1h": "corrupt"}, "1h", "ret") is None
+    assert t_rep.g({"1h": {"ret": True}}, "1h", "ret") is None
+    assert t_rep.g({"1h": {"ret": float("nan")}}, "1h", "ret") is None
+    assert t_rep.g({"1h": {"ret": 4.5}}, "1h", "ret") == 4.5
+
+    # 4. hybrid_reentry.run_equities._import_t212 restores sys.path and sys.modules
+    path_before = list(sys.path)
+    strat_mod, rp_mod = req._import_t212()
+    assert hasattr(strat_mod, "StratParams")
+    assert hasattr(rp_mod, "run_replay")
+    assert sys.path == path_before
+
+

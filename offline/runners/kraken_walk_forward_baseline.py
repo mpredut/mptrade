@@ -25,8 +25,8 @@ sys.path.insert(0, str(KRAKEN_DIR))
 sys.path.insert(0, str(ROOT))
 
 from botcore import parse_dotenv  # noqa: E402
-import market_data as kraken_market_data  # noqa: E402
-import replay as kraken_replay  # noqa: E402
+from kraken import market_data as kraken_market_data  # noqa: E402
+from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
