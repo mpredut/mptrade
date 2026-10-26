@@ -458,15 +458,19 @@ Check the fleet: systemctl is-active python_orchestrator.service ."
     # `systemctl restart` stopped binance and its start lost the VPN-gate race, leaving it
     # down -- and a CLEAN stop does not trigger the unit's own Restart=always, so nothing
     # recovered it. Skipped while a maintenance pause flag is present.
+    pia_state=$(systemctl show -p ActiveState --value pia.service 2>/dev/null || echo "")
     if systemctl is-enabled --quiet pia.service 2>/dev/null \
-       && ! systemctl is-active --quiet pia.service 2>/dev/null; then
+       && [ "$pia_state" != "active" ] && [ "$pia_state" != "activating" ] \
+       && [ "$pia_state" != "deactivating" ] && [ "$pia_state" != "reloading" ]; then
         log "pia.service enabled but inactive/failed while PIA is healthy -> starting it"
         systemctl reset-failed pia.service >/dev/null 2>&1 || true
         systemctl start pia.service >/dev/null 2>&1 || true
     fi
+    orch_state=$(systemctl show -p ActiveState --value python_orchestrator.service 2>/dev/null || echo "")
     if [ ! -e "$ROOT/FLEET_PAUSED" ] \
        && systemctl is-enabled --quiet python_orchestrator.service 2>/dev/null \
-       && ! systemctl is-active --quiet python_orchestrator.service 2>/dev/null; then
+       && [ "$orch_state" != "active" ] && [ "$orch_state" != "activating" ] \
+       && [ "$orch_state" != "deactivating" ] && [ "$orch_state" != "reloading" ]; then
         log "python_orchestrator.service enabled but inactive while PIA is healthy -> starting it"
         systemctl start python_orchestrator.service >/dev/null 2>&1
         alert "Fleet restarted ($(hostname))" \

@@ -60,7 +60,7 @@ def _managed_script(proc):
 def _restart_allowed(state, script, now):
     history = state.setdefault("restart_history", {}).setdefault(script, [])
     cutoff = now - RESTART_WINDOW_H * 3600
-    history[:] = [stamp for stamp in history if stamp >= cutoff]
+    history[:] = [stamp for stamp in history if isinstance(stamp, (int, float)) and cutoff <= stamp <= now]
     if history and now - history[-1] < RESTART_COOLDOWN_MIN * 60:
         return False
     return len(history) < RESTART_MAX
@@ -161,12 +161,18 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         if proc["rss_mb"] >= MEMORY_THRESHOLD_MB:
             reasons.append(f"RSS {proc['rss_mb']:.0f} MB")
         item = tracked.get(key, {"high": 0, "normal": 0, "alerted": False, "last_alert": 0})
+        if not isinstance(item, dict):
+            item = {"high": 0, "normal": 0, "alerted": False, "last_alert": 0}
+        last_alert = float(item.get("last_alert", 0) or 0)
+        if last_alert > now:
+            last_alert = 0.0
+            item["last_alert"] = 0.0
         if reasons:
             item["high"] = int(item.get("high", 0)) + 1
             item["normal"] = 0
             item["last_reasons"] = reasons
             if item["high"] >= CONSECUTIVE and (not item.get("alerted") or
-                    now - item.get("last_alert", 0) >= COOLDOWN_MIN * 60):
+                    now - last_alert >= COOLDOWN_MIN * 60):
                 offenders.append((proc, reasons, item["high"]))
                 item["alerted"] = True
                 item["last_alert"] = now

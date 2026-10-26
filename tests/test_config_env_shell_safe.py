@@ -81,6 +81,32 @@ def test_env_common_env_get_works_under_set_u_without_home():
     with open(os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh"), encoding="utf-8") as fh:
         wd_text = fh.read()
     assert "pia.service enabled but inactive/failed while PIA is healthy -> starting it" in wd_text
+    assert 'orch_state=$(systemctl show -p ActiveState --value python_orchestrator.service' in wd_text
+    assert '[ "$orch_state" != "deactivating" ]' in wd_text
+
+
+def test_watchdog_and_gateway_hardening(tmp_path):
+    import pytest
+    from orchestratorOS.lib import watchdog_common as wc
+    from orchestratorOS.livecheck import os_resources_watchdog as rw
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    bad_state = tmp_path / "bad_state.json"
+    bad_state.write_text("[1, 2, 3]", encoding="utf-8")
+    assert wc.load_state(bad_state) == {}
+
+    st = {"restart_history": {"bot.py": [9999999999.0]}}
+    assert rw._restart_allowed(st, "bot.py", 1000.0) is True
+    assert st["restart_history"]["bot.py"] == []
+
+    with pytest.raises(ValueError):
+        AutonomousIntentGateway(min_confidence=float("nan"))
+    with pytest.raises(ValueError):
+        AutonomousIntentGateway(min_confidence=1.5)
+    with pytest.raises(ValueError):
+        AutonomousIntentGateway(min_confidence=True)
+    with pytest.raises(ValueError):
+        AutonomousIntentGateway(max_notional_usd=True)
 
 
 def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():

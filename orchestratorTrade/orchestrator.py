@@ -1,6 +1,7 @@
 import asyncio
 from collections import defaultdict, deque
 import logging
+import math
 import os
 import re
 import signal
@@ -74,7 +75,12 @@ class BotManager:
                     if cmd and role in ("bot", "fleet"):
                         name = label or pat
                         hblog_str = hblog.replace("$ROOT", ROOT_DIR) if hblog else ""
-                        hb_stale_sec = float(hbstale) if hbstale and hbstale.isdigit() else 0.0
+                        try:
+                            hb_stale_sec = float(hbstale) if hbstale else 0.0
+                            if not math.isfinite(hb_stale_sec) or hb_stale_sec < 0:
+                                hb_stale_sec = 0.0
+                        except (TypeError, ValueError):
+                            hb_stale_sec = 0.0
 
                         clean_stem = (label or pat).replace(".py", "")
                         log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
@@ -383,6 +389,9 @@ class BotManager:
                 proc = self.processes.get(name)
                 if proc is None or proc.returncode is not None:
                     next_allowed = self.restart_backoff.get(name, 0)
+                    if next_allowed > now + 65.0:
+                        next_allowed = now
+                        self.restart_backoff[name] = now
                     if now >= next_allowed:
                         self.starting.add(name)
                         asyncio.create_task(self.start_bot(bot))
@@ -392,6 +401,9 @@ class BotManager:
                     hb_stale_s = bot.get("hb_stale_s", 0.0)
                     if hb_stale_s > 0 and hb_files:
                         proc_start = self.process_start_times.get(name, now)
+                        if proc_start > now:
+                            proc_start = now
+                            self.process_start_times[name] = now
                         if (now - proc_start) > hb_stale_s:
                             is_hung = False
                             stale_file = ""
@@ -428,7 +440,10 @@ class BotManager:
                                 )
                                 self.zombie_killing.add(name)
                                 zombie_cd = self.zombie_cooldown_sec
-                                if now >= self.zombie_alert_cooldowns.get(name, 0.0):
+                                cd_until = self.zombie_alert_cooldowns.get(name, 0.0)
+                                if cd_until > now + zombie_cd + 5.0:
+                                    cd_until = 0.0
+                                if now >= cd_until:
                                     self.zombie_alert_cooldowns[name] = now + zombie_cd
                                     alert_body = (
                                         f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} "

@@ -39,7 +39,8 @@ def load_env():
 def load_state(state_file):
     try:
         with open(state_file, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 

@@ -270,6 +270,8 @@ class AutonomousIntentGateway:
             raise ValueError(f"Invalid autonomous_trading_min_notional_usd {self.min_notional_usd!r}")
 
         if max_notional_usd is not None:
+            if isinstance(max_notional_usd, bool):
+                raise ValueError(f"Invalid autonomous_trading_max_notional_usd {max_notional_usd!r}")
             self.max_notional_usd = float(max_notional_usd)
         else:
             if "autonomous_trading_max_notional_usd" not in conf:
@@ -282,18 +284,30 @@ class AutonomousIntentGateway:
             )
 
         if min_confidence is not None:
+            if isinstance(min_confidence, bool):
+                raise ValueError(f"Invalid autonomous_trading_min_confidence {min_confidence!r}")
             self.min_confidence = float(min_confidence)
         else:
             if "autonomous_trading_min_confidence" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
             self.min_confidence = float(conf["autonomous_trading_min_confidence"])
+        if not (math.isfinite(self.min_confidence) and 0.0 <= self.min_confidence <= 1.0):
+            raise ValueError(
+                f"Invalid autonomous_trading_min_confidence {self.min_confidence!r}; must be in [0.0, 1.0]"
+            )
 
         if notify_enabled is not None:
             self.notify_enabled = bool(notify_enabled)
         else:
             if "autonomous_trading_notify" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_notify' in order_guard.conf")
-            self.notify_enabled = bool(int(float(conf["autonomous_trading_notify"])))
+            raw_notify = str(conf["autonomous_trading_notify"]).strip().lower()
+            if raw_notify in ("1", "true", "yes", "on"):
+                self.notify_enabled = True
+            elif raw_notify in ("0", "false", "no", "off"):
+                self.notify_enabled = False
+            else:
+                self.notify_enabled = bool(int(float(raw_notify)))
 
     def _load_conf(self) -> Dict[str, str]:
         """Loads configuration from order_guard.conf / config.env, overlaying workspace-specific overrides."""
@@ -375,8 +389,14 @@ class AutonomousIntentGateway:
             }
             intent["status"] = "EXECUTED"
             intent["execution_payload"] = exec_payload
+            try:
+                rec_ts = float(rec.get("ts") or time.time())
+                if not math.isfinite(rec_ts) or rec_ts <= 0:
+                    rec_ts = time.time()
+            except (TypeError, ValueError):
+                rec_ts = time.time()
             intent.setdefault("history", []).append({
-                "ts": float(rec.get("ts") or time.time()),
+                "ts": rec_ts,
                 "action": "RECONCILED_EXECUTED",
                 "order_id": rec.get("order_id"),
                 "payload": exec_payload,
