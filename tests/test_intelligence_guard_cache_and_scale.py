@@ -10535,4 +10535,64 @@ def test_iteration94_t212_client_bot_kraken_client_and_price_analysis_safety(mon
     assert hl_pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
 
 
+def test_iteration95_t212_kraken_and_hyperliquid_provider_safety():
+    from providers.hyperliquid_provider import HyperliquidProvider, _spot_symbol_alias
+    from providers.kraken_provider import KrakenProvider, _kraken_pair_matches
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+
+    # 1. T212Provider string live_enabled, empty symbol in _position, and side validation in get_orders
+    t212_p = T212Provider(
+        client=type("C", (), {"get_portfolio": lambda self: [{"ticker": "", "quantity": 10.0, "averagePrice": 50.0}]})(),
+        live_enabled="false",
+    )
+    assert t212_p.execution_enabled() is False
+    assert t212_p._position("") is None
+    with pytest.raises(ProviderError, match="invalid symbol"):
+        t212_p._position("  ", strict=True)
+    assert t212_p.get_orders("SPCX_US_EQ", True, 3600.0) == []
+    assert t212_p.get_orders("SPCX_US_EQ", "INVALID", 3600.0) == []
+
+    # 2. KrakenProvider _kraken_pair_matches, free_balance normalization, negative fee rejection, non-integer ohlc_series
+    assert _kraken_pair_matches("", "---") is False
+    assert _kraken_pair_matches(True, "BTCUSD") is False
+    kp = KrakenProvider(
+        client=type(
+            "KC",
+            (),
+            {
+                "balance": lambda self: {"XXBT": "1.25"},
+                "query_orders": lambda self, oid: {
+                    oid: {"status": "closed", "vol_exec": "1.0", "cost": "100.0", "fee": "-0.5", "vol": "1.0"}
+                },
+            },
+        )()
+    )
+    assert kp.free_balance("") is None
+    assert kp.free_balance(True) is None
+    assert kp.free_balance(" btc ") == pytest.approx(1.25)
+    assert kp.free_balance("xbt") == pytest.approx(1.25)
+    with pytest.raises(ProviderError, match="invalid fill values"):
+        kp.order_status("XXBTZUSD", "OID-1")
+    with pytest.raises(ProviderError, match="invalid interval_min"):
+        kp.ohlc_series("XXBTZUSD", 60.5)
+
+    # 3. HyperliquidProvider token/live_enabled/order_id/ohlc_series validation
+    assert _spot_symbol_alias(True, "HYPE") is False
+    with pytest.raises(ValueError, match="invalid Hyperliquid token"):
+        HyperliquidProvider(token=True)
+    hl_p = HyperliquidProvider(token=" hype ", live_enabled="false")
+    assert hl_p._token == "HYPE"
+    assert hl_p.execution_enabled() is False
+    assert hl_p.free_balance("") is None
+    assert hl_p.free_balance(True) is None
+    with pytest.raises(ProviderError, match="invalid interval_min"):
+        hl_p.ohlc_series("HYPEUSDC", 15.5)
+    with pytest.raises(ProviderError, match="invalid order id"):
+        hl_p.order_status("HYPEUSDC", 123.7)
+    with pytest.raises(ProviderError, match="invalid order id"):
+        hl_p.cancel_order("HYPEUSDC", 123.7)
+
+
+
 

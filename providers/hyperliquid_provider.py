@@ -66,10 +66,12 @@ def _mainnet_setting() -> bool:
 
 def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
     """Return whether a symbol is an exact alias of the configured USDC pair."""
-    if not symbol or not token:
+    if not symbol or not token or isinstance(symbol, bool) or isinstance(token, bool):
         return False
     normalized = str(symbol).strip().upper()
     base = str(token).strip().upper()
+    if not normalized or not base:
+        return False
     return normalized in {
         base,
         f"{base}USDC",
@@ -104,7 +106,9 @@ class HyperliquidProvider(MarketDataProvider):
 
     #: Served spot token, defaulting to HYPE.
     def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None):
-        self._token = (token or "HYPE").upper()
+        if isinstance(token, bool):
+            raise ValueError(f"invalid Hyperliquid token: {token!r}")
+        self._token = str(token or "HYPE").strip().upper() or "HYPE"
         self._live_enabled = live_enabled
         self._lock = threading.Lock()
         self._client = None          # HLClient read-only (lazy)
@@ -118,7 +122,11 @@ class HyperliquidProvider(MarketDataProvider):
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real spot order."""
-        return bool_env(_LIVE_ENV) if self._live_enabled is None else bool(self._live_enabled)
+        if self._live_enabled is None:
+            return bool_env(_LIVE_ENV)
+        if isinstance(self._live_enabled, str):
+            return self._live_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._live_enabled)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -257,6 +265,9 @@ class HyperliquidProvider(MarketDataProvider):
     # -- Read-only spot account access. ----------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         """Return available spot balance as total minus hold for supported assets."""
+        if not asset or isinstance(asset, bool) or not str(asset).strip():
+            return None
+        asset_u = str(asset).strip().upper()
         c = self._hl()
         if c is None:
             return None
@@ -273,7 +284,7 @@ class HyperliquidProvider(MarketDataProvider):
             for b in balances:
                 if not isinstance(b, dict):
                     continue
-                if b.get("coin") == asset:
+                if str(b.get("coin") or "").strip().upper() == asset_u:
                     raw_total = b.get("total")
                     raw_hold = b.get("hold")
                     if isinstance(raw_total, bool) or isinstance(raw_hold, bool):
@@ -544,7 +555,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
-        if isinstance(interval_min, bool):
+        if isinstance(interval_min, bool) or interval_min is None:
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         client = self._hl()
         pair = self._pair()
@@ -552,7 +563,10 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(
                 f"ohlc_series({symbol}): client/pair unavailable")
         try:
-            interval = int(interval_min)
+            itv_f = float(interval_min)
+            if not math.isfinite(itv_f) or not itv_f.is_integer():
+                raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+            interval = int(itv_f)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}") from exc
         if interval <= 0:
@@ -766,11 +780,14 @@ class HyperliquidProvider(MarketDataProvider):
 
     def order_status(self, symbol: str, order_id: str):
         self.validate_symbol(symbol)
-        if isinstance(order_id, bool):
+        if isinstance(order_id, bool) or order_id is None:
             raise ProviderError(f"order_status({order_id}): invalid order id")
         try:
-            oid = int(order_id)
-        except (TypeError, ValueError) as exc:
+            oid_f = float(order_id)
+            if not math.isfinite(oid_f) or not oid_f.is_integer():
+                raise ProviderError(f"order_status({order_id}): invalid order id")
+            oid = int(oid_f)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ProviderError(f"order_status({order_id}): invalid order id") from exc
         if oid <= 0:
             raise ProviderError(f"order_status({order_id}): invalid order id")
@@ -910,11 +927,14 @@ class HyperliquidProvider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         self.validate_symbol(symbol)
-        if isinstance(order_id, bool):
+        if isinstance(order_id, bool) or order_id is None:
             raise ProviderError(f"cancel_order({order_id}): invalid order id")
         try:
-            oid = int(order_id)
-        except (TypeError, ValueError) as exc:
+            oid_f = float(order_id)
+            if not math.isfinite(oid_f) or not oid_f.is_integer():
+                raise ProviderError(f"cancel_order({order_id}): invalid order id")
+            oid = int(oid_f)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ProviderError(f"cancel_order({order_id}): invalid order id") from exc
         if oid <= 0:
             raise ProviderError(f"cancel_order({order_id}): invalid order id")

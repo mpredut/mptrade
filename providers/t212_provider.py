@@ -76,7 +76,11 @@ class T212Provider(MarketDataProvider):
         self._order_validity = order_validity
 
     def _orders_live(self) -> bool:
-        return _live() if self._live_enabled is None else bool(self._live_enabled)
+        if self._live_enabled is None:
+            return _live()
+        if isinstance(self._live_enabled, str):
+            return self._live_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._live_enabled)
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real T212 order."""
@@ -117,11 +121,15 @@ class T212Provider(MarketDataProvider):
 
     def _position(self, symbol: str, *, strict: bool = False) -> Optional[dict]:
         """Return the portfolio position for the ticker, or None."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            if strict:
+                raise ProviderError(f"portfolio({symbol}): invalid symbol")
+            return None
         try:
             port = self._client().get_portfolio()
             if port is None or not isinstance(port, list):
                 raise ProviderError("the T212 portfolio is unavailable")
-            target_sym = str(symbol or "").strip().upper()
+            target_sym = str(symbol).strip().upper()
             for p in port:
                 if not isinstance(p, dict):
                     continue
@@ -239,8 +247,10 @@ class T212Provider(MarketDataProvider):
             return []
         if not math.isfinite(since_val) or since_val <= 0:
             return []
-        want = (side or "").upper()
-        if want == "SELL":
+        if isinstance(side, bool):
+            return []
+        want = str(side or "").strip().upper()
+        if want and want not in {"BUY", "B"}:
             return []                         # Historical sells are not modeled.
         # Financial guards must block on account errors rather than mistake them
         # for a legitimately empty portfolio.

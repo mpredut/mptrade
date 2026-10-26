@@ -64,7 +64,11 @@ def _kraken_pair_key(value: str) -> str:
 
 
 def _kraken_pair_matches(expected: str, actual: str) -> bool:
-    return bool(actual) and _kraken_pair_key(expected) == _kraken_pair_key(actual)
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return False
+    k_exp = _kraken_pair_key(expected)
+    k_act = _kraken_pair_key(actual)
+    return bool(k_exp and k_act and k_exp == k_act)
 
 
 def _normalize_kraken_fill(raw: dict) -> dict:
@@ -247,11 +251,14 @@ class KrakenProvider(MarketDataProvider):
 
     # -- Credentialed account access. -----------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
+        if not asset or isinstance(asset, bool) or not str(asset).strip():
+            return None
+        asset_u = str(asset).strip().upper()
         try:
             bal = self._client().balance() or {}
-            candidates = [asset, "X" + asset, "Z" + asset, asset + ".F"]
-            if str(asset or "").upper() == "BTC":
-                candidates.extend(["XBT", "XXBT", "XBT.F", "XXBT.F"])
+            candidates = [asset_u, "X" + asset_u, "Z" + asset_u, asset_u + ".F"]
+            if asset_u in {"BTC", "XBT"}:
+                candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
             for key in candidates:
                 if key in bal:
                     raw_val = bal[key]
@@ -360,6 +367,8 @@ class KrakenProvider(MarketDataProvider):
 
     def _fills_from_cache(self, symbol: str):
         """Read symbol fills from the shared cache, or return None for API fallback."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
         data = read_recovering_previous(_KRAKEN_CACHE_FILE, json.loads, default=None)
         if not isinstance(data, dict):
             return None
@@ -367,10 +376,17 @@ class KrakenProvider(MarketDataProvider):
         ft = data.get("fetchtime")
         if not isinstance(items, dict) or not isinstance(ft, dict):
             return None
-        su = symbol.upper()
+        su = str(symbol).strip().upper()
         key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
         if key is None:
-            key = next((k for k in items if su in k.upper() or k.upper() in su), None)
+            key = next(
+                (
+                    k
+                    for k in items
+                    if isinstance(k, str) and k.strip() and (su in k.upper() or k.strip().upper() in su)
+                ),
+                None,
+            )
         if key is None or not isinstance(items.get(key), list):
             return None
         raw_ft = ft.get(key)
@@ -626,7 +642,7 @@ class KrakenProvider(MarketDataProvider):
         except (TypeError, ValueError, OverflowError) as exc:
             raise ProviderError(f"order_status {order_id}: invalid fill values") from exc
         if (not all(math.isfinite(v) for v in (filled_qty, cost, fee, orig_qty))
-                or filled_qty < 0.0 or cost < 0.0 or orig_qty < 0.0):
+                or filled_qty < 0.0 or cost < 0.0 or fee < 0.0 or orig_qty < 0.0):
             raise ProviderError(f"order_status {order_id}: invalid fill values")
         return OrderStatus(
             status=norm_status,
@@ -727,10 +743,13 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        if isinstance(interval_min, bool):
+        if isinstance(interval_min, bool) or interval_min is None:
             raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
         try:
-            interval_i = int(interval_min)
+            itv_f = float(interval_min)
+            if not math.isfinite(itv_f) or not itv_f.is_integer():
+                raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
+            interval_i = int(itv_f)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}") from exc
         if interval_i <= 0:
