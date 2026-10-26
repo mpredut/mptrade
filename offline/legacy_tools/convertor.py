@@ -24,5 +24,6 @@ def convert_price_cache(input_file: str, output_file: str, symbol: str):
 
 
 
-convert_price_cache("cache_price_BTCUSDC.json", "btc_converted.json", "BTCUSDC")
-convert_price_cache("cache_price_TAOUSDC.json", "tao_converted.json", "TAOUSDC")
+if __name__ == "__main__":
+    convert_price_cache("cache_price_BTCUSDC.json", "btc_converted.json", "BTCUSDC")
+    convert_price_cache("cache_price_TAOUSDC.json", "tao_converted.json", "TAOUSDC")

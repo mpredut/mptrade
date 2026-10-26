@@ -21,17 +21,23 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-private_key = Ed25519PrivateKey.generate()
-public_key = private_key.public_key()
+def generate_ed25519_keypair(priv_path: str = 'ed25519_private.pem', pub_path: str = 'ed25519_public.pem') -> str:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
 
-pub_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-priv_bytes = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+    pub_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    priv_bytes = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
 
-with open('ed25519_private.pem', 'wb') as f:
-    f.write(priv_bytes)
-with open('ed25519_public.pem', 'wb') as f:
-    f.write(pub_bytes)
+    with open(priv_path, 'wb') as f:
+        f.write(priv_bytes)
+    with open(pub_path, 'wb') as f:
+        f.write(pub_bytes)
 
-print('Keys generated: ed25519_private.pem and ed25519_public.pem')
-print('Public key base64:')
-print(base64.b64encode(pub_bytes).decode())
+    return base64.b64encode(pub_bytes).decode()
+
+
+if __name__ == "__main__":
+    pub_b64 = generate_ed25519_keypair()
+    print('Keys generated: ed25519_private.pem and ed25519_public.pem')
+    print('Public key base64:')
+    print(pub_b64)

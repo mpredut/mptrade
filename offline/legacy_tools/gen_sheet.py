@@ -49,6 +49,6 @@ def genereaza_fisa_pontaj(month, year):
  
 
 # Exemplo de utilizare
-
-genereaza_fisa_pontaj(9, 2024)
+if __name__ == "__main__":
+    genereaza_fisa_pontaj(9, 2024)
 

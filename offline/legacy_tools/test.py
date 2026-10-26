@@ -1,5 +1,6 @@
 """A historical offline experiment; it is not an automated test."""
 
+import math
 import pandas as pd
 import requests
 import datetime
@@ -31,9 +32,9 @@ def analyze_drops(df):
         return 0, 0, 0.0
 
     for i in range(total_intervals):
-        start_price = df['close'].iloc[i]
-        end_price = df['close'].iloc[i + 20]
-        if start_price <= 0:
+        start_price = float(df['close'].iloc[i])
+        end_price = float(df['close'].iloc[i + 20])
+        if not (math.isfinite(start_price) and start_price > 0 and math.isfinite(end_price) and end_price >= 0):
             continue
         drop_percent = (start_price - end_price) / start_price * 100
 

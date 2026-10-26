@@ -1,5 +1,6 @@
 """A historical offline experiment; it is not an automated test."""
 
+import math
 import pandas as pd
 import requests
 import datetime
@@ -33,26 +34,27 @@ def fetch_data():
 
 import matplotlib.pyplot as plt
 
-def analyze_drops_with_distribution(df):
+def analyze_drops_with_distribution(df, show_plot: bool = False):
     drops = []
     total_intervals = max(0, len(df) - 2 * 60)  # Intervale de 2*60 de minute
     if total_intervals == 0:
         return 0, 0.0, 0, 0.0, 0, 0.0
 
     for i in range(total_intervals):
-        start_price = df['close'].iloc[i]
-        end_price = df['close'].iloc[i + 2 * 60]
-        if start_price <= 0:
+        start_price = float(df['close'].iloc[i])
+        end_price = float(df['close'].iloc[i + 2 * 60])
+        if not (math.isfinite(start_price) and start_price > 0 and math.isfinite(end_price) and end_price >= 0):
             continue
         drop_percent = (start_price - end_price) / start_price * 100
         drops.append(drop_percent)
 
-    # Verificam distributia scaderilor
-    plt.hist(drops, bins=50, edgecolor='black')
-    plt.title('Distributia scaderilor procentuale in 2*60 de minute')
-    plt.xlabel('Procent de scadere')
-    plt.ylabel('Frecventa')
-    plt.show()
+    if show_plot and drops:
+        # Verificam distributia scaderilor
+        plt.hist(drops, bins=50, edgecolor='black')
+        plt.title('Distributia scaderilor procentuale in 2*60 de minute')
+        plt.xlabel('Procent de scadere')
+        plt.ylabel('Frecventa')
+        plt.show()
 
     count_drops_5 = sum(1 for drop in drops if drop >= 5)
     count_drops_3 = sum(1 for drop in drops if drop >= 3)
@@ -69,7 +71,7 @@ if __name__ == "__main__":
     # Fetch data and analyze
     df = fetch_data()
     # Analyze with distribution
-    count_drops_5, probability_5, count_drops_3, probability_3, count_drops_2, probability_2 = analyze_drops_with_distribution(df)
+    count_drops_5, probability_5, count_drops_3, probability_3, count_drops_2, probability_2 = analyze_drops_with_distribution(df, show_plot=True)
 
     print(f"Numar de scaderi de 5% in 20 de minute: {count_drops_5}")
     print(f"Probabilitatea unei scaderi de 5% in 20 de minute: {probability_5:.2f}%")

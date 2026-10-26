@@ -54,11 +54,25 @@ class MeanReversionTracker:
     def __init__(self, tag, symbol, *, mode, rsi_period=14, rsi_low=30.0, rsi_high=70.0,
                  bb_period=20, bb_k=2.0, pb_low=0.0, pb_high=1.0):
         self.mode = mode                      # "rsi" | "pb" | "both"
+        if isinstance(rsi_period, bool) or not isinstance(rsi_period, (int, float)) or not math.isfinite(float(rsi_period)):
+            rsi_period = 14
+        if isinstance(bb_period, bool) or not isinstance(bb_period, (int, float)) or not math.isfinite(float(bb_period)):
+            bb_period = 20
+        if isinstance(bb_k, bool) or not isinstance(bb_k, (int, float)) or not math.isfinite(float(bb_k)) or float(bb_k) <= 0:
+            bb_k = 2.0
+        if isinstance(rsi_low, bool) or not isinstance(rsi_low, (int, float)) or not math.isfinite(float(rsi_low)):
+            rsi_low = 30.0
+        if isinstance(rsi_high, bool) or not isinstance(rsi_high, (int, float)) or not math.isfinite(float(rsi_high)):
+            rsi_high = 70.0
+        if isinstance(pb_low, bool) or not isinstance(pb_low, (int, float)) or not math.isfinite(float(pb_low)):
+            pb_low = 0.0
+        if isinstance(pb_high, bool) or not isinstance(pb_high, (int, float)) or not math.isfinite(float(pb_high)):
+            pb_high = 1.0
         self.rsi_period = max(1, int(rsi_period))
-        self.rsi_low, self.rsi_high = rsi_low, rsi_high
+        self.rsi_low, self.rsi_high = float(rsi_low), float(rsi_high)
         self.bb_period = max(1, int(bb_period))
-        self.bb_k = bb_k
-        self.pb_low, self.pb_high = pb_low, pb_high
+        self.bb_k = float(bb_k)
+        self.pb_low, self.pb_high = float(pb_low), float(pb_high)
 
         self.prev_price = None
         self.avg_gain = None
@@ -105,7 +119,10 @@ class MeanReversionTracker:
         if sd == 0.0:
             return 0.5
         upper, lower = mean + self.bb_k * sd, mean - self.bb_k * sd
-        return (price - lower) / (upper - lower)
+        span = upper - lower
+        if not math.isfinite(span) or span <= 0.0:
+            return 0.5
+        return (price - lower) / span
 
     # -- combined contrarian sign --------------------------------------------
     def update_sign(self, price):

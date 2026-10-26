@@ -43,7 +43,11 @@ class RsiGate:
     """Wilder RSI fed the bar closes; oversold() gates the DCA trigger."""
 
     def __init__(self, period, low):
-        self.period, self.low = max(1, int(period)), low
+        if isinstance(period, bool) or not isinstance(period, (int, float)) or not math.isfinite(float(period)):
+            period = 14
+        if isinstance(low, bool) or not isinstance(low, (int, float)) or not math.isfinite(float(low)):
+            low = 35.0
+        self.period, self.low = max(1, int(period)), float(low)
         self.prev = None
         self.ag = self.al = None
         self.seed = []
@@ -80,7 +84,7 @@ _orig_step = _strat.Strategy.step
 
 def _step_feed_rsi(self, price, *args, **kwargs):
     if _gate is not None:
-        _gate.update(float(price))
+        _gate.update(price)
     return _orig_step(self, price, *args, **kwargs)
 
 

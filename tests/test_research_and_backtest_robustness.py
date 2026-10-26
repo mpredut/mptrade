@@ -3442,5 +3442,46 @@ def test_batch8_hardening():
     assert isinstance(dr.should_wait("BTCUSDC", "BUY", 60.0, use_noise_gate=True, epsilon_k=float("nan")), bool)
 
 
+def test_batch9_hardening(tmp_path):
+    import pandas as pd
+    from offline.research.tradeall_trigger_gate.experiment_rsi_bollinger import MeanReversionTracker
+    from offline.research.tradeall_trigger_gate.experiment_rsi_dca_filter import RsiGate
+    from offline.legacy_tools import convertor, gen_cryptography, test as legacy_test, test2 as legacy_test2
+
+    # 1. MeanReversionTracker sanitizes bool/NaN/zero bb_k and avoids ZeroDivisionError
+    mrt = MeanReversionTracker(
+        "test", "BTCUSDC", mode="both",
+        rsi_period=float("nan"), rsi_low=True, rsi_high=False,
+        bb_period=float("inf"), bb_k=0.0, pb_low=float("nan"), pb_high=float("nan"),
+    )
+    assert mrt.rsi_period == 14
+    assert mrt.bb_period == 20
+    assert mrt.bb_k == 2.0
+    for px in [100.0 + i * 0.5 for i in range(25)]:
+        mrt.update_sign(px)
+    assert mrt.sign in (-1, 0, 1)
+
+    # 2. RsiGate sanitizes bool/NaN period and low
+    rg = RsiGate(period=float("nan"), low=True)
+    assert rg.period == 14
+    assert rg.low == 35.0
+    rg.update(True)
+    assert rg.prev is None
+
+    # 3. legacy_tools convertor, gen_cryptography, test, test2 are import-safe and handle NaN
+    p_priv = tmp_path / "priv.pem"
+    p_pub = tmp_path / "pub.pem"
+    pub_b64 = gen_cryptography.generate_ed25519_keypair(str(p_priv), str(p_pub))
+    assert isinstance(pub_b64, str) and len(pub_b64) > 10
+    assert p_priv.exists() and p_pub.exists()
+
+    df = pd.DataFrame({"close": [100.0] * 60 + [float("nan")] * 10 + [90.0] * 80})
+    c_drops, t_int, prob = legacy_test.analyze_drops(df)
+    assert t_int > 0 and prob >= 0.0
+    res2 = legacy_test2.analyze_drops_with_distribution(df, show_plot=False)
+    assert len(res2) == 6
+
+
+
 
 
