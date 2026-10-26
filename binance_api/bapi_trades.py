@@ -422,8 +422,8 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     if most_recent_trade_time == 0:
         backdays = years_to_keep * 365
     else:
-        time_diff_ms = current_time_ms - most_recent_trade_time
-        backdays = time_diff_ms // (24 * 60 * 60 * 1000) + 1
+        time_diff_ms = max(0, current_time_ms - most_recent_trade_time)
+        backdays = max(1, time_diff_ms // (24 * 60 * 60 * 1000) + 1)
 
     print(f"Fetching trades from the last {backdays} days for {symbol}, order type {order_type}.")
 

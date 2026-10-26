@@ -8577,6 +8577,79 @@ def test_iteration60_hl_strategy_price_analysis_xstock_and_t212_client_safety(tm
     assert hist["fillPrice"] == pytest.approx(50.0)
 
 
+def test_iteration61_ws_normalize_t212_eur_replay_and_bapi_sync_safety(tmp_path, monkeypatch):
+    """Iteration 61: bapi_ws_normalize Y/z fallback, T212Provider EUR balance & negative fee guard, ReplayProvider input safety, and bapi_client sync_time."""
+    import json
+    from binance_api import bapi_ws_normalize, bapi_client
+    from providers.t212_provider import T212Provider, ProviderError
+    from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+
+    # 1. parse_trade_execution_report derives price from Y/z when L, p, l are NaN/0
+    sym_t, trd = bapi_ws_normalize.parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "X": "FILLED",
+            "t": 9,
+            "i": 11,
+            "l": "nan",
+            "z": "0.5",
+            "L": "nan",
+            "p": "0",
+            "Y": "25000",
+            "S": "BUY",
+            "T": 1000,
+        }
+    )
+    assert sym_t == "BTCUSDC"
+    assert float(trd["qty"]) == pytest.approx(0.5)
+    assert float(trd["price"]) == pytest.approx(50000.0)
+
+    # 2. T212Provider.free_balance("EUR") converts RON using usd_ron * eur_usd, and order_status rejects negative fee
+    fake_cli = MagicMock()
+    fake_cli.get_cash.return_value = {"free": 496.8}
+    tp = T212Provider(client=fake_cli, live_enabled=False)
+    fake_md = MagicMock()
+    fake_md.get_usd_ron.return_value = 4.60
+    fake_md.get_eur_usd.return_value = 1.08
+    monkeypatch.setattr("importlib.import_module", lambda name: fake_md if name == "212trading.market_data" else __import__(name))
+    assert tp.free_balance("USD") == pytest.approx(108.0)
+    assert tp.free_balance("EUR") == pytest.approx(100.0)
+
+    fake_cli.get_order_status.return_value = {
+        "status": "FILLED",
+        "ticker": "NVDA_US_EQ",
+        "filledQuantity": 1.0,
+        "filledValue": 100.0,
+        "fee": -1.5,
+    }
+    with pytest.raises(ProviderError, match="invalid fill values"):
+        tp.order_status("NVDA_US_EQ", "ord-1")
+
+    # 3. ReplayMarketDataProvider.place_order safely returns None on non-numeric price/qty, and load_price_series skips ts <= 0
+    jsonl_file = tmp_path / "prices.jsonl"
+    jsonl_file.write_text(
+        json.dumps({"s": "BTCUSDC", "i": [-1000, 50000.0]}) + "\n"
+        + json.dumps({"s": "BTCUSDC", "i": [2000, 51000.0]}) + "\n",
+        encoding="utf-8",
+    )
+    series = load_price_series(str(jsonl_file), "BTCUSDC")
+    assert series == [(2.0, 51000.0)]
+    rp = ReplayMarketDataProvider({"BTCUSDC": series})
+    rp.advance("BTCUSDC")
+    assert rp.place_order("BTCUSDC", "BUY", "not-a-price", 1.0) is None
+    assert rp.place_order("BTCUSDC", "BUY", 51000.0, None) is None
+
+    # 4. bapi_client.sync_time rejects boolean/invalid serverTime without corrupting timestamp_offset
+    fake_bclient = MagicMock()
+    fake_bclient.timestamp_offset = 0
+    fake_bclient.get_server_time.return_value = {"serverTime": True}
+    monkeypatch.setattr(bapi_client, "_client", fake_bclient)
+    assert bapi_client.sync_time(safety_margin_ms=float("nan")) is None
+    assert fake_bclient.timestamp_offset == 0
+
+
+
 
 
 

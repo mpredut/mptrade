@@ -52,11 +52,22 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
     if _client is None:
         return None
     try:
+        margin_ms = TIME_SAFETY_MARGIN_MS
+        if safety_margin_ms is not None and not isinstance(safety_margin_ms, bool):
+            cand_m = float(safety_margin_ms)
+            if cand_m == cand_m and abs(cand_m) != float("inf") and cand_m >= 0:
+                margin_ms = int(cand_m)
         t0_ms = int(time.time() * 1000)
-        server_ms = _client.get_server_time()["serverTime"]
+        srv_resp = _client.get_server_time()
+        raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
+        if raw_srv is None or isinstance(raw_srv, bool):
+            raise ValueError("invalid serverTime in Binance response")
+        server_ms = int(raw_srv)
+        if server_ms <= 0:
+            raise ValueError(f"non-positive serverTime: {server_ms}")
         t1_ms = int(time.time() * 1000)
         local_ms = (t0_ms + t1_ms) // 2
-        _client.timestamp_offset = server_ms - local_ms - safety_margin_ms
+        _client.timestamp_offset = server_ms - local_ms - margin_ms
         return _client.timestamp_offset
     except Exception as e:
         print(f"[bapi_client] sync_time failed: {e}")

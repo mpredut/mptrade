@@ -51,10 +51,10 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
                     continue
                 ts_sec = float(ts_ms) / 1000.0
                 px_val = float(price)
-                if not (ts_sec == ts_sec and abs(ts_sec) != float("inf") and px_val == px_val and abs(px_val) != float("inf") and px_val > 0):
+                if not (ts_sec == ts_sec and abs(ts_sec) != float("inf") and ts_sec > 0 and px_val == px_val and abs(px_val) != float("inf") and px_val > 0):
                     continue
                 out.append((ts_sec, px_val))
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 continue
     out.sort(key=lambda x: x[0])
     return out
@@ -264,10 +264,16 @@ class ReplayMarketDataProvider(MarketDataProvider):
         side = str(side or "").upper()
         if side not in ("BUY", "SELL") or isinstance(price, bool) or isinstance(qty, bool):
             return None
-        price = float(price)
+        try:
+            price = float(price)
+            qty_f = float(qty)
+        except (TypeError, ValueError, OverflowError):
+            return None
         if not (price == price and abs(price) != float("inf") and price > 0):
             return None
-        qty = self.round_quantity(symbol, float(qty))
+        if not (qty_f == qty_f and abs(qty_f) != float("inf") and qty_f > 0):
+            return None
+        qty = self.round_quantity(symbol, qty_f)
         if not (qty == qty and abs(qty) != float("inf") and qty > 0):
             return None
         ts_ms = int(self.now(symbol) * 1000)

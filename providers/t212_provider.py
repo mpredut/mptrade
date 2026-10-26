@@ -185,9 +185,21 @@ class T212Provider(MarketDataProvider):
                     raw_fx = market_data.get_usd_ron()
                     usd_ron = float(raw_fx or 4.6) if not isinstance(raw_fx, bool) else 4.6
                 except Exception:
+                    market_data = None
                     usd_ron = 4.6
                 if not math.isfinite(usd_ron) or usd_ron <= 0:
                     usd_ron = 4.6
+                if asset_u == "EUR":
+                    eur_usd = 1.08
+                    if market_data is not None and hasattr(market_data, "get_eur_usd"):
+                        try:
+                            raw_eu = market_data.get_eur_usd()
+                            cand_eu = float(raw_eu or 1.08) if not isinstance(raw_eu, bool) else 1.08
+                            if math.isfinite(cand_eu) and cand_eu > 0:
+                                eur_usd = cand_eu
+                        except Exception:
+                            eur_usd = 1.08
+                    return round(free_ron / (usd_ron * eur_usd), 2)
                 return round(free_ron / usd_ron, 2)
             except Exception as e:
                 print(f"[T212] cash balance {asset}: {e}")
@@ -386,7 +398,7 @@ class T212Provider(MarketDataProvider):
             fee = float(raw.get("fee", raw.get("commission", 0.0)) or 0.0)
         except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(f"order_status({order_id}): invalid fill values") from e
-        if not all(math.isfinite(v) for v in (filled_qty, cost, fee)):
+        if not all(math.isfinite(v) for v in (filled_qty, cost, fee)) or fee < 0:
             raise ProviderError(f"order_status({order_id}): invalid fill values")
 
         fee_currencies = {

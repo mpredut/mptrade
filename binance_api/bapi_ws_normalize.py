@@ -141,7 +141,7 @@ def parse_trade_execution_report(
         if raw_trade_id is not None and int(raw_trade_id) < 0:
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
             return None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
@@ -158,6 +158,18 @@ def parse_trade_execution_report(
         extracted_px = extract_order_price(event, default=0.0)
         if _is_positive_finite(extracted_px):
             raw_price = str(extracted_px)
+        elif _is_positive_finite(raw_qty):
+            qty_f = float(raw_qty)
+            raw_y = event.get("Y")
+            if _is_positive_finite(raw_y):
+                raw_price = str(float(raw_y) / qty_f)
+            else:
+                raw_cum_quote = event.get("Z")
+                raw_cum_qty = event.get("z")
+                cum_quote = float(raw_cum_quote) if _is_positive_finite(raw_cum_quote) else 0.0
+                cum_qty = float(raw_cum_qty) if _is_positive_finite(raw_cum_qty) else qty_f
+                if cum_quote > 0 and cum_qty > 0:
+                    raw_price = str(cum_quote / cum_qty)
     ts_ms = extract_timestamp_ms(event)
     if ts_ms is None or ts_ms <= 0:
         ts_ms = _clean_now_ms(now_ms)
