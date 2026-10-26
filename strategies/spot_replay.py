@@ -118,9 +118,16 @@ def run_replay(
     fill notional/fees; it does not inject capital after losses or cycle resets.
     """
     _validate_replay(ohlc, params, bar_minutes)
-    if initial_cash is not None and (isinstance(initial_cash, bool)
-            or not math.isfinite(initial_cash) or initial_cash <= 0):
-        raise ValueError("initial_cash must be finite and positive")
+    if initial_cash is not None:
+        if isinstance(initial_cash, bool):
+            raise ValueError("initial_cash must be finite and positive")
+        try:
+            ic_f = float(initial_cash)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("initial_cash must be finite and positive") from exc
+        if not math.isfinite(ic_f) or ic_f <= 0:
+            raise ValueError("initial_cash must be finite and positive")
+        initial_cash = ic_f
     model = execution or ExecutionModel()
     fees = fee_model or FeeModel(fee_pct, fee_pct)
     return choose_intrabar_scenario(
@@ -467,7 +474,7 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
         bm_f = float(bar_minutes)
     except (TypeError, ValueError, OverflowError):
         return params
-    if not math.isfinite(bm_f) or bm_f <= 0:
+    if not math.isfinite(bm_f) or bm_f <= 0 or int(bm_f) <= 0:
         return params
     itv = int(bm_f)
     cap = _strat.MarketRegimeService.horizon_sample_capacity("long", itv)

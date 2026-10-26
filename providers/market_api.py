@@ -93,8 +93,17 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
 
 def _step_decimals(step: str) -> int:
     """Return significant decimals in a Binance stepSize/tickSize."""
-    s = str(step).rstrip("0")
-    return len(s.split(".")[1]) if "." in s and s.split(".", 1)[1] else 0
+    if step is None or isinstance(step, bool):
+        return 0
+    try:
+        from decimal import Decimal
+        d = Decimal(str(step))
+        if not d.is_finite() or d <= 0:
+            return 0
+        return decimal_places(d)
+    except Exception:
+        s = str(step).rstrip("0")
+        return len(s.split(".")[1]) if "." in s and s.split(".", 1)[1] else 0
 
 
 class BinanceProvider(MarketDataProvider):
@@ -158,9 +167,14 @@ class BinanceProvider(MarketDataProvider):
         from instrument_registry import select_instruments
         from .quantity import remaining_average_cost
 
-        if isinstance(since_s, bool) or not math.isfinite(float(since_s)) or float(since_s) <= 0:
+        if isinstance(since_s, bool) or since_s is None:
             raise ValueError("since_s must be finite and positive")
-        since_s = float(since_s)
+        try:
+            since_s = float(since_s)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("since_s must be finite and positive") from exc
+        if not math.isfinite(since_s) or since_s <= 0:
+            raise ValueError("since_s must be finite and positive")
         spec = next(
             (item for item in select_instruments("binance").values() if item.symbol == symbol),
             None,
@@ -229,14 +243,21 @@ class BinanceProvider(MarketDataProvider):
                 raise ProviderError(f"open_orders({symbol}): invalid numeric field in order") from exc
             if not all(math.isfinite(v) and v >= 0.0 for v in (price_f, orig_f, exec_f)):
                 raise ProviderError(f"open_orders({symbol}): non-finite or negative field in order")
+            raw_oid = order.get("orderId")
+            if raw_oid is None or isinstance(raw_oid, bool) or not str(raw_oid).strip():
+                raise ProviderError(f"open_orders({symbol}): missing or invalid orderId in order")
+            raw_side = order.get("side")
+            raw_status = order.get("status")
+            if isinstance(raw_side, bool) or isinstance(raw_status, bool):
+                raise ProviderError(f"open_orders({symbol}): boolean status/side field in order")
             normalized.append({
-                "orderId": str(order.get("orderId")),
+                "orderId": str(raw_oid).strip(),
                 "clientOrderId": order.get("clientOrderId"),
-                "side": str(order.get("side") or "").upper(),
+                "side": str(raw_side or "").upper(),
                 "price": price_f,
                 "origQty": orig_f,
                 "executedQty": exec_f,
-                "status": str(order.get("status") or "NEW"),
+                "status": str(raw_status or "NEW"),
             })
         return normalized
 
@@ -575,7 +596,8 @@ class BinanceProvider(MarketDataProvider):
             if raw_tid is None or isinstance(raw_tid, bool):
                 continue
             try:
-                if int(raw_tid) != order_id:
+                tid_f = float(raw_tid)
+                if not math.isfinite(tid_f) or not tid_f.is_integer() or int(tid_f) != order_id:
                     continue
             except (TypeError, ValueError, OverflowError):
                 continue
@@ -650,7 +672,10 @@ class BinanceProvider(MarketDataProvider):
             "NEW": "open",
             "PARTIALLY_FILLED": "open",
         }
-        venue_status = str(o.get("status") or "").strip().upper()
+        raw_venue_status = o.get("status")
+        if isinstance(raw_venue_status, bool):
+            raise ProviderError(f"order_status({order_id}): invalid order status")
+        venue_status = str(raw_venue_status or "").strip().upper()
         return OrderStatus(
             status=st_map.get(venue_status, "open"),
             filled_qty=executed_qty,
@@ -713,6 +738,8 @@ class MarketApi:
         return provider
 
     def _provider_for(self, symbol: str) -> MarketDataProvider:
+        if not isinstance(symbol, str):
+            return self._providers[0]
         provider = self._route.get(symbol)
         if provider is not None:
             return provider
@@ -794,18 +821,26 @@ class MarketApi:
             side = "SELL"
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
-        if isinstance(since_s, bool):
+        if isinstance(since_s, bool) or since_s is None:
             raise ValueError("since_s must be finite and positive")
-        since_s = float(since_s)
-        if isinstance(since_s, bool) or not math.isfinite(float(since_s)) or float(since_s) <= 0:
+        try:
+            since_s = float(since_s)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("since_s must be finite and positive") from exc
+        if not math.isfinite(since_s) or since_s <= 0:
             raise ValueError("since_s must be finite and positive")
-        since_s = float(since_s)
         if isinstance(min_notional, bool):
             raise ValueError("min_notional must be finite and non-negative")
         if isinstance(max_notional, bool):
             raise ValueError("max_notional must be finite and non-negative")
-        min_value = None if min_notional is None else float(min_notional)
-        max_value = None if max_notional is None else float(max_notional)
+        try:
+            min_value = None if min_notional is None else float(min_notional)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("min_notional must be finite and non-negative") from exc
+        try:
+            max_value = None if max_notional is None else float(max_notional)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("max_notional must be finite and non-negative") from exc
         if min_value is not None and (not math.isfinite(min_value) or min_value < 0):
             raise ValueError("min_notional must be finite and non-negative")
         if max_value is not None and (not math.isfinite(max_value) or max_value < 0):
@@ -875,6 +910,8 @@ class MarketApi:
         if not callable(method):
             raise ProviderError(
                 f"{provider.name}: declared order_by_client_id is missing")
+        if client_order_id is None or isinstance(client_order_id, bool) or not str(client_order_id).strip():
+            raise ProviderError(f"{provider.name}: invalid client_order_id")
         return method(symbol, str(client_order_id))
 
     def order_status(self, symbol: str, order_id: str, *,
@@ -887,6 +924,8 @@ class MarketApi:
         method = getattr(provider, "order_status", None)
         if not callable(method):
             raise ProviderError(f"{provider.name}: declared order_status is missing")
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            raise ProviderError(f"{provider.name}: invalid order_id")
         try:
             status = method(symbol, str(order_id))
         except ProviderError:
@@ -909,6 +948,8 @@ class MarketApi:
         method = getattr(provider, "cancel_order", None)
         if not callable(method):
             raise ProviderError(f"{provider.name}: declared cancel_order is missing")
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            raise ProviderError(f"{provider.name}: invalid order_id")
         method(symbol, str(order_id))
 
     def tracked_order_lifecycle(self, *, provider_name: str, venue=None,
@@ -963,7 +1004,10 @@ class MarketApi:
         """Resolve one reusable short-horizon context at the composition root."""
         if isinstance(now, bool):
             raise ValueError("now must be finite")
-        evaluated_at = time.time() if now is None else float(now)
+        try:
+            evaluated_at = time.time() if now is None else float(now)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("now must be finite") from exc
         if not math.isfinite(evaluated_at):
             raise ValueError("now must be finite")
         if snapshot_max_age_seconds is None:
@@ -1086,7 +1130,10 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         if isinstance(now, bool):
             raise ValueError("now must be finite")
-        evaluated_at = time.time() if now is None else float(now)
+        try:
+            evaluated_at = time.time() if now is None else float(now)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("now must be finite") from exc
         if not math.isfinite(evaluated_at):
             raise ValueError("now must be finite")
         if snapshot_max_age_seconds is None:

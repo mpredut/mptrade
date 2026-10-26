@@ -11822,3 +11822,68 @@ def test_iteration111_kraken_hyperliquid_and_t212_provider_safety():
     assert t_prov.pair_precision(123) is None
     assert t_prov.pair_precision("   ") is None
 
+
+def test_iteration112_market_api_spot_rules_and_spot_replay_safety(monkeypatch):
+    """Iteration 112: Verify market_api, spot_rules, and spot_replay input/payload hardening."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    import providers.market_api as ma
+    import strategies.spot_rules as sr
+    import strategies.spot_replay as srep
+
+    # 1. _step_decimals handles scientific notation and rejects bool/None
+    assert ma._step_decimals("1e-05") == 5
+    assert ma._step_decimals(True) == 0
+    assert ma._step_decimals(None) == 0
+
+    # 2. BinanceProvider.open_orders rejects missing/bool orderId and bool status/side
+    b_prov = ma.BinanceProvider()
+    monkeypatch.setattr(
+        ma,
+        "_get_bapi",
+        lambda: SimpleNamespace(
+            client=SimpleNamespace(
+                get_open_orders=lambda symbol: [{"orderId": None, "price": "100", "origQty": "1", "executedQty": "0"}]
+            )
+        ),
+    )
+    with pytest.raises(ProviderError):
+        b_prov.open_orders("BTCUSDC")
+
+    # 3. MarketApi rejects bool/None/blank order_id and client_order_id before str() coercion
+    with pytest.raises(ProviderError):
+        ma.api.order_by_client_id("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        ma.api.order_status("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        ma.api.order_status("BTCUSDC", "   ")
+    with pytest.raises(ProviderError):
+        ma.api.cancel_order("BTCUSDC", None)
+
+    # 4. MarketApi.latest_fill_price and market_regime_context raise ValueError on None/non-numeric
+    with pytest.raises(ValueError):
+        ma.api.latest_fill_price("BTCUSDC", "BUY", None)
+    with pytest.raises(ValueError):
+        ma.api.latest_fill_price("BTCUSDC", "BUY", 60.0, min_notional="bad")
+    with pytest.raises(ValueError):
+        ma.api.market_regime_context("BTCUSDC", now="bad")
+
+    # 5. spot_rules string 'false' boolean flag handling
+    blocked, reason = sr.reentry_hybrid_blocked(
+        price=99.0,
+        last_sell=100.0,
+        post_sell_peak=105.0,
+        is_bull="false",
+        drop_pct=5.0,
+        pullback_pct=1.0,
+    )
+    assert blocked is True
+    assert reason == "range_drop_pending"
+    assert sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, surge_guard_active="false") == 8.0
+
+    # 6. spot_replay: align_spot_interval_params with sub-minute bar_minutes < 1.0 and run_replay bad initial_cash
+    dummy_params = SimpleNamespace(trend_interval=60, tp_trail_vol_interval=60, dca_vol_interval=60, regime_min_samples=20)
+    assert srep.align_spot_interval_params(dummy_params, 0.5) is dummy_params
+
+

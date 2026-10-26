@@ -25,6 +25,14 @@ def _finite_float(val, default=None):
     return f if math.isfinite(f) else default
 
 
+def _bool_flag(val: object) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(val)
+
+
 def diff_percent(v1: float, v2: float) -> float:
     """Return symmetric percentage difference relative to the absolute mean.
     Identical to botcore.diff_percent but self-contained for isolated backtests."""
@@ -182,7 +190,7 @@ def reentry_hybrid_blocked(
     if px_f is None or px_f <= 0:
         return True, "invalid_price"
 
-    if is_bull:
+    if _bool_flag(is_bull):
         peak_cand = _finite_float(post_sell_peak)
         peak = max(sell_f, peak_cand if (peak_cand is not None and peak_cand > 0) else px_f, px_f)
         pullback_f = _finite_float(pullback_pct, 0.0)
@@ -286,7 +294,7 @@ def dynamic_trend_trail_pct(
     """
     base = max(0.0, float(_finite_float(base_trail_pct, 8.0)))
     min_t = float(_finite_float(min_trail_pct, 3.0))
-    eff_min = max(min_t, 5.0) if surge_guard_active else min_t
+    eff_min = max(min_t, 5.0) if _bool_flag(surge_guard_active) else min_t
     floor = min(base, max(0.0, eff_min))
     thresh = max(0.0, float(_finite_float(gain_threshold_pct, 6.0)))
     k = max(0.0, float(_finite_float(ratchet_k, 0.5)))
@@ -435,7 +443,7 @@ def check_parabolic_surge_exhaustion(
         and wm_f >= sm_f
         and current_gain_pct >= sg_f * 0.8
     )
-    if not (surge_active or pos_surge or win_surge):
+    if not (_bool_flag(surge_active) or pos_surge or win_surge):
         return False, ""
     pullback = (peak_f - px_f) / peak_f * 100.0
     if pullback >= ep_f:
