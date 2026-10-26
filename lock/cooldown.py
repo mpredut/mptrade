@@ -30,17 +30,35 @@ def _is_active_entry(last, now: float, ttl: float) -> bool:
     if not isinstance(last, dict):
         return False
     raw_ts = last.get("timestamp")
-    if raw_ts is None or isinstance(raw_ts, bool):
+    if (
+        raw_ts is None
+        or isinstance(raw_ts, bool)
+        or ttl is None
+        or isinstance(ttl, bool)
+        or now is None
+        or isinstance(now, bool)
+    ):
         return False
     try:
         ts = float(raw_ts)
         ttl_f = float(ttl)
+        now_f = float(now)
     except (TypeError, ValueError):
         return False
-    if not (math.isfinite(ts) and math.isfinite(ttl_f)):
+    if not (math.isfinite(ts) and math.isfinite(ttl_f) and math.isfinite(now_f)):
         return False
-    age = now - ts
+    age = now_f - ts
     return 0.0 <= age < ttl_f
+
+
+def _sanitize_json_payload(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _sanitize_json_payload(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json_payload(v) for v in value]
+    return value
 
 
 class Reservation:
@@ -99,7 +117,7 @@ class Cooldown:
         return loaded if isinstance(loaded, dict) else {}
 
     def _write(self, state):
-        save_json_state(self.state_path, state, indent=2)
+        save_json_state(self.state_path, _sanitize_json_payload(state), indent=2)
 
     # ── API ──────────────────────────────────────────────────────────────────
     def reserve(self, key, ttl, **meta):

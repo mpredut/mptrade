@@ -1185,6 +1185,20 @@ def test_news_feed_history_macro_analyzer_and_pricechecker_hardening(tmp_path):
         pc.start_monitoring(interval_seconds=float("nan"))
 
 
+def test_cooldown_bool_ttl_and_nan_meta_hardening(tmp_path):
+    from lock import cooldown as cd_mod
+
+    assert cd_mod._is_active_entry({"timestamp": 100.0}, 100.5, True) is False
+    assert cd_mod._is_active_entry({"timestamp": 100.0}, True, 10.0) is False
+    assert cd_mod._is_active_entry({"timestamp": 100.0}, 100.5, 10.0) is True
+
+    cd = cd_mod.Cooldown("test_nan", base_dir=str(tmp_path))
+    allowed, entry = cd.reserve("BTCUSDC", 60.0, price=float("nan"), extra={"spread": float("inf")})
+    assert allowed is True
+    saved = cd.get("BTCUSDC")
+    assert saved is not None and saved["price"] is None and saved["extra"]["spread"] is None
+
+
 
 
 
