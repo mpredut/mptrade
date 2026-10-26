@@ -459,22 +459,25 @@ def enable_print() -> None:
     builtins.print = _patched_print
 
 
-def _patched_stderr_write(message: str) -> None:
+def _patched_stderr_write(message: str) -> int:
     """Mirror stderr writes to the log file, stripping ANSI codes."""
-    _original_stderr_write(message)
+    if not isinstance(message, str):
+        message = str(message)
+    written = _original_stderr_write(message)
 
     if not message.strip():
-        return
+        return written if isinstance(written, int) else len(message)
 
     if _bump_counter():
         _cleanup_event.set()
 
     clean = (_ANSI_RE.sub("", message) if "\x1b" in message else message).rstrip("\n")
     if not clean.strip():
-        return
+        return written if isinstance(written, int) else len(message)
 
     caller = _get_caller_info()
     _file_logger.info(f"{caller} [STDERR] {clean}")
+    return written if isinstance(written, int) else len(message)
 
 
 def _patched_stderr_writelines(lines) -> None:

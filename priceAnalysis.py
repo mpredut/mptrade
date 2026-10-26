@@ -234,11 +234,25 @@ def trend_wma(symbol: str, window_hours: int = 6):
 def slope_tolerance_per_(symbol, price,
                               base_tolerance = 0.0015,
                               ):
-  
-    min_tol = 0.0005 
+    min_tol = 0.0005
     max_tol = 2000.0
-                              
-    relative_tolerance = base_tolerance * price
+    if price is None or isinstance(price, bool):
+        return min_tol
+    try:
+        price_f = float(price)
+    except (TypeError, ValueError, OverflowError):
+        return min_tol
+    if not math.isfinite(price_f) or price_f <= 0.0:
+        return min_tol
+    base_f = 0.0015
+    if base_tolerance is not None and not isinstance(base_tolerance, bool):
+        try:
+            bf = float(base_tolerance)
+            if math.isfinite(bf) and bf > 0.0:
+                base_f = bf
+        except (TypeError, ValueError, OverflowError):
+            pass
+    relative_tolerance = base_f * price_f
     adaptive_tolerance = min(max(relative_tolerance, min_tol), max_tol)
     return adaptive_tolerance
 
@@ -942,6 +956,18 @@ def get_trade_weight(T, trend_len, trend, order_type,
         return np.array([]), np.array([])
     T = T_f
     trend_len = trend_len_f
+    def _clean_param(val, default):
+        if val is None or isinstance(val, bool):
+            return default
+        try:
+            vf = float(val)
+            return vf if math.isfinite(vf) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+    exceed_percent = max(0.0, _clean_param(exceed_percent, 0.4))
+    max_against_trend = max(0.0, _clean_param(max_against_trend, 0.15))
+    peak_weight = max(0.0, _clean_param(peak_weight, 0.95))
+    min_weight = max(0.0, _clean_param(min_weight, 0.02))
     side_u = order_type.strip().upper()
     if side_u == "B":
         side_u = "BUY"

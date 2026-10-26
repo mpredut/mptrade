@@ -529,7 +529,10 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
 
 def _effective_portfolio_growth_threshold(sell_mult=1.0):
     """Return effective 24h portfolio growth threshold (%) scaled by P3B sell_mult."""
-    return PORTFOLIO_GROWTH_PERCENT * float(sell_mult)
+    sm = _finite_float(sell_mult, positive=True)
+    if sm is None:
+        sm = 1.0
+    return PORTFOLIO_GROWTH_PERCENT * sm
 
 
 def _portfolio_sell_multiplier(portfolio_growth_pct=None, sell_mult=1.0):
@@ -551,20 +554,31 @@ def _trigger_threshold_for_sell_tier(
       and portfolio growth multiplier down to SELL_REARM_GROWTH_PERCENT + 2.0 (4.0%),
       preserving strict ordering above the hybrid tier.
     """
-    thr = float(canonical_threshold)
+    thr = _finite_float(canonical_threshold, positive=True)
+    if thr is None:
+        thr = float(SELL_TIERS[0][0])
+    sm = _finite_float(sell_mult, positive=True)
+    if sm is None:
+        sm = 1.0
     static_thresholds = {float(t) for t, _ in SELL_TIERS}
     if thr not in static_thresholds and abs(thr - PORTFOLIO_ASSET_MIN_GROWTH_PERCENT) <= 1e-9:
-        return max(SELL_REARM_GROWTH_PERCENT + 1.5, thr * float(sell_mult))
-    pg_mult = _portfolio_sell_multiplier(portfolio_growth_pct, sell_mult)
+        return max(SELL_REARM_GROWTH_PERCENT + 1.5, thr * sm)
+    pg_mult = _portfolio_sell_multiplier(portfolio_growth_pct, sm)
     return max(
         SELL_REARM_GROWTH_PERCENT + 2.0,
-        thr * float(sell_mult) * float(pg_mult),
+        thr * sm * float(pg_mult),
     )
 
 
 def _trigger_threshold_for_buy_tier(canonical_threshold, buy_mult=1.0):
     """Return effective drawdown trigger (%) for a canonical BUY tier."""
-    return max(RECOVERY_RESET_PERCENT + 0.5, float(canonical_threshold) * float(buy_mult))
+    thr = _finite_float(canonical_threshold, positive=True)
+    if thr is None:
+        thr = float(BUY_TIERS[0][0])
+    bm = _finite_float(buy_mult, positive=True)
+    if bm is None:
+        bm = 1.0
+    return max(RECOVERY_RESET_PERCENT + 0.5, thr * bm)
 
 
 _LAST_SUBMIT_OUTCOME: dict = {}

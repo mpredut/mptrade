@@ -47,7 +47,21 @@ def effective_recent_gradient_seconds(window_seconds=None) -> float:
 
 class PriceTrendAnalyzer:
     def __init__(self, prices):
-        self.prices = prices
+        clean = []
+        if prices is not None and not isinstance(prices, (bool, str, bytes)):
+            try:
+                for p in prices:
+                    if p is None or isinstance(p, bool):
+                        continue
+                    try:
+                        pf = float(p)
+                        if math.isfinite(pf):
+                            clean.append(pf)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+            except TypeError:
+                pass
+        self.prices = clean
 
     def linear_regression_trend(self):
         n = len(self.prices)
@@ -505,9 +519,26 @@ class PriceWindow:
     @staticmethod
     def _sample_rate_from_entries(entries) -> float:
         """Return the median sampling gap in seconds for [ts_ms, price] entries."""
-        if len(entries) < 2:
+        if not entries or isinstance(entries, (bool, str, bytes)):
             return DEFAULT_SAMPLE_RATE_SEC
-        timestamps_sec = [e[0] / 1000.0 for e in entries]
+        timestamps_sec = []
+        try:
+            for e in entries:
+                if not isinstance(e, (list, tuple)) or len(e) < 1:
+                    continue
+                ts_raw = e[0]
+                if ts_raw is None or isinstance(ts_raw, bool):
+                    continue
+                try:
+                    ts_f = float(ts_raw) / 1000.0
+                    if math.isfinite(ts_f):
+                        timestamps_sec.append(ts_f)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        except TypeError:
+            return DEFAULT_SAMPLE_RATE_SEC
+        if len(timestamps_sec) < 2:
+            return DEFAULT_SAMPLE_RATE_SEC
         gaps = [timestamps_sec[i+1] - timestamps_sec[i]
                 for i in range(len(timestamps_sec) - 1)
                 if timestamps_sec[i+1] > timestamps_sec[i]]

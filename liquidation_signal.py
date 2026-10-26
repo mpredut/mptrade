@@ -81,7 +81,17 @@ class LiquidationSignal:
 
     def __init__(self, symbols: Optional[List[str]] = None,
                  retention_sec: float = MAX_RETENTION_SEC):
-        self._symbols = [str(s).strip().upper() for s in (symbols or DEFAULT_SYMBOLS) if str(s or "").strip()]
+        if isinstance(symbols, str):
+            raw_syms = [s for s in symbols.split(",")]
+        elif isinstance(symbols, (list, tuple, set)):
+            raw_syms = list(symbols)
+        else:
+            raw_syms = list(DEFAULT_SYMBOLS)
+        self._symbols = [
+            str(s).strip().upper()
+            for s in raw_syms
+            if s is not None and not isinstance(s, bool) and str(s).strip()
+        ]
         if not self._symbols:
             self._symbols = list(DEFAULT_SYMBOLS)
         self._retention = _safe_pos_float(retention_sec, MAX_RETENTION_SEC)
@@ -107,7 +117,7 @@ class LiquidationSignal:
     def stop(self, timeout: float = 8.0) -> None:
         self._stop.set()
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+            self._thread.join(timeout=_safe_pos_float(timeout, 8.0))
 
     @property
     def is_running(self) -> bool:
@@ -182,8 +192,11 @@ class LiquidationSignal:
         topic = str(msg.get("topic") or "")
         if not topic.startswith("allLiquidation."):
             return
+        raw_data = msg.get("data")
+        if not isinstance(raw_data, list):
+            return
         now = time.time()
-        for item in msg.get("data", []) or []:
+        for item in raw_data:
             if not isinstance(item, dict):
                 continue
             try:

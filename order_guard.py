@@ -374,25 +374,31 @@ def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
 
 
-def select_extreme_reference(prices, order_type: str, *, strict: bool = True) -> float:
+def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
     """Select the directional extreme reference symmetrically for BUY and SELL."""
     side = _normalize_side_token(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    if prices is None or isinstance(prices, (bool, str, bytes)):
+        return None
     clean_prices: List[float] = []
-    for p in prices:
-        if p is None or isinstance(p, bool):
-            continue
-        try:
-            pf = float(p)
-            if math.isfinite(pf) and pf > 0.0:
-                clean_prices.append(pf)
-        except (TypeError, ValueError):
-            continue
-    target = clean_prices if clean_prices else prices
+    try:
+        for p in prices:
+            if p is None or isinstance(p, bool):
+                continue
+            try:
+                pf = float(p)
+                if math.isfinite(pf) and pf > 0.0:
+                    clean_prices.append(pf)
+            except (TypeError, ValueError, OverflowError):
+                continue
+    except TypeError:
+        return None
+    if not clean_prices:
+        return None
     if strict:
-        return min(target) if side == "BUY" else max(target)
-    return max(target) if side == "BUY" else min(target)
+        return min(clean_prices) if side == "BUY" else max(clean_prices)
+    return max(clean_prices) if side == "BUY" else min(clean_prices)
 
 
 def get_profit_guard_mode_cfg(
@@ -758,10 +764,19 @@ def _order_ts_qty_price(o):
 
 def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
     """Aggregate active lots into a reference price symmetrically for BUY and SELL."""
-    active_prices = [
-        float(px) for _, px in active_lots
-        if px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
-    ]
+    active_prices = []
+    valid_weighted = []
+    for item in (active_lots or []):
+        try:
+            q_raw, px_raw = item
+        except (TypeError, ValueError):
+            continue
+        px_f = _clean_pos_float(px_raw, 0.0)
+        if px_f > 0.0:
+            active_prices.append(px_f)
+            q_f = _clean_pos_float(q_raw, 0.0)
+            if q_f > 0.0:
+                valid_weighted.append((q_f, px_f))
     if not active_prices:
         return None
     strict_ref = select_extreme_reference(active_prices, side, strict=True)
@@ -769,21 +784,21 @@ def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
         return strict_ref
     if mode == "off":
         return None
-    valid_weighted = [
-        (float(q), float(px)) for q, px in active_lots
-        if q is not None and not isinstance(q, bool) and math.isfinite(float(q)) and float(q) > 0
-        and px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
-    ]
     weighted_qty = sum(q for q, _ in valid_weighted)
     if weighted_qty > 0:
         avg_ref = sum(q * px for q, px in valid_weighted) / weighted_qty
     else:
         avg_ref = sum(active_prices) / len(active_prices)
-    finite_ts_opp = [
-        (float(ts), float(px)) for ts, _, px in (valid_opp or [])
-        if ts is not None and not isinstance(ts, bool) and math.isfinite(float(ts)) and float(ts) > 0
-        and px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
-    ]
+    finite_ts_opp = []
+    for item in (valid_opp or []):
+        try:
+            ts_raw, _, px_raw = item
+        except (TypeError, ValueError):
+            continue
+        ts_f = _clean_pos_float(ts_raw, -1.0)
+        px_f = _clean_pos_float(px_raw, 0.0)
+        if ts_f >= 0.0 and px_f > 0.0:
+            finite_ts_opp.append((ts_f, px_f))
     if finite_ts_opp:
         max_ts = max(ts for ts, _ in finite_ts_opp)
         last_ref = [px for ts, px in finite_ts_opp if ts == max_ts][-1]

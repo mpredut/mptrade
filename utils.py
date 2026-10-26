@@ -52,10 +52,19 @@ def value_diff_to_percent(value1, value2):
     return percent
 
 def slope(val1, idx1, val2, idx2):
-    if idx1 == idx2:
-        return 0
-    
-    return (val2 - val1) / (idx2 - idx1)
+    if any(v is None or isinstance(v, bool) for v in (val1, idx1, val2, idx2)):
+        return 0.0
+    try:
+        v1 = float(val1)
+        i1 = float(idx1)
+        v2 = float(val2)
+        i2 = float(idx2)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not all(math.isfinite(v) for v in (v1, i1, v2, i2)) or i1 == i2:
+        return 0.0
+    res = (v2 - v1) / (i2 - i1)
+    return res if math.isfinite(res) else 0.0
 
 # Values lie within an interval around the percentage.
 def are_difference_equal_with_aprox_proc(value1, value2, target_percent = 10.0):
@@ -208,9 +217,24 @@ def exponential_decrease(initial_procent, expired_duration, passs, half_life_dur
     return init_f * math.exp(-(exp_f * pass_f) / hl_f)
     
 def decrese_value_by_increment_exp(increment_factor, value, coeficient=0.05):
-    adjustment_v0 = value / (increment_factor + 1)
-    adjustment_v1 = value / (1 + coeficient * increment_factor**2)
-    adjustment_v2 = value * math.exp(-coeficient * increment_factor)
+    if any(v is None or isinstance(v, bool) for v in (increment_factor, value, coeficient)):
+        return 0.0, 0.0
+    try:
+        inc_f = float(increment_factor)
+        val_f = float(value)
+        coef_f = float(coeficient)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, 0.0
+    if not all(math.isfinite(v) for v in (inc_f, val_f, coef_f)):
+        return 0.0, 0.0
+    denom = 1.0 + coef_f * (inc_f ** 2)
+    adjustment_v1 = val_f / denom if (math.isfinite(denom) and denom != 0.0) else 0.0
+    exp_arg = max(-700.0, min(700.0, -coef_f * inc_f))
+    adjustment_v2 = val_f * math.exp(exp_arg)
+    if not math.isfinite(adjustment_v1):
+        adjustment_v1 = 0.0
+    if not math.isfinite(adjustment_v2):
+        adjustment_v2 = 0.0
     return adjustment_v1, adjustment_v2
 
 
