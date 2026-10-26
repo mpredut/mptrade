@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import math
 import os
 import sys
 from typing import Any
@@ -35,24 +36,29 @@ def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
     rows = []
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
-        header = next(reader, None)
-        # Identify columns
-        col_map = {col.lower(): idx for idx, col in enumerate(header)} if header else {}
-        o_idx = col_map.get("open", 1)
-        h_idx = col_map.get("high", 2)
-        l_idx = col_map.get("low", 3)
-        c_idx = col_map.get("close", 4)
-        for line in reader:
-            if not line or len(line) < 5:
+        first = next(reader, None)
+        if not first:
+            return rows
+        col_map = {col.strip().lower(): idx for idx, col in enumerate(first)}
+        has_header = any(k in col_map for k in ("open", "high", "low", "close", "timestamp", "time", "date"))
+        o_idx = col_map.get("open", 1) if has_header else 1
+        h_idx = col_map.get("high", 2) if has_header else 2
+        l_idx = col_map.get("low", 3) if has_header else 3
+        c_idx = col_map.get("close", 4) if has_header else 4
+        min_len = max(o_idx, h_idx, l_idx, c_idx) + 1
+        iterable = reader if has_header else [first, *reader]
+        for line in iterable:
+            if not line or len(line) < min_len:
                 continue
             try:
                 o = float(line[o_idx])
                 h = float(line[h_idx])
                 l = float(line[l_idx])
                 c = float(line[c_idx])
-                rows.append((o, h, l, c))
             except (ValueError, IndexError):
                 continue
+            if all(math.isfinite(x) and x > 0 for x in (o, h, l, c)):
+                rows.append((o, h, l, c))
     return rows
 
 
@@ -121,11 +127,12 @@ def format_ablation_result(
     capital: float,
 ) -> dict[str, Any]:
     """Format a replay result dict into the canonical ablation summary row."""
-    ret_pct = (res.get("total", 0.0) / capital * 100.0) if capital > 0 else 0.0
+    total_usd = float(res.get("total") or 0.0)
+    ret_pct = (total_usd / capital * 100.0) if capital > 0 else 0.0
     max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
     exposure_pct = float(res.get("exposure_pct") or 0.0)
-    cycles = res.get("cycles", 0)
-    wins = res.get("wins", 0)
+    cycles = int(res.get("cycles") or 0)
+    wins = int(res.get("wins") or 0)
     win_rate = (
         res["win_rate_pct"]
         if res.get("win_rate_pct") is not None
@@ -136,14 +143,14 @@ def format_ablation_result(
         "test_id": test_id,
         "variant": variant_name,
         "total_return_pct": round(ret_pct, 2),
-        "net_profit_usd": round(res.get("total", 0.0), 2),
+        "net_profit_usd": round(total_usd, 2),
         "max_drawdown_pct": round(max_dd_pct, 2),
         "exposure_pct": round(exposure_pct, 2),
         "cycles": cycles,
         "wins": wins,
         "win_rate": round(float(win_rate), 1),
         "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
-        "fills": res.get("fills", 0),
+        "fills": int(res.get("fills") or 0),
     }
 
 

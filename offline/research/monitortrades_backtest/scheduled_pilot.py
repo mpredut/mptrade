@@ -128,6 +128,8 @@ def _last_change_for(full_key):
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(entry, dict):
+                continue
             if entry.get("full_key") == full_key and entry.get("action") == "applied":
                 last = entry
     return last
@@ -379,12 +381,16 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
 
     last_change = _last_change_for(full_key)
     if last_change:
-        last_ts = datetime.fromisoformat(last_change["ts"])
-        if datetime.now() - last_ts < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
-            entry["action"] = "rate_limited"
-            entry["reason"] = (f"last changed at {last_change['ts']}, "
-                                f"waiting {MIN_DAYS_BETWEEN_CHANGES} days between changes")
-            return entry
+        try:
+            last_ts = datetime.fromisoformat(str(last_change["ts"]))
+            now_dt = datetime.now(last_ts.tzinfo) if last_ts.tzinfo is not None else datetime.now()
+            if now_dt - last_ts < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
+                entry["action"] = "rate_limited"
+                entry["reason"] = (f"last changed at {last_change['ts']}, "
+                                    f"waiting {MIN_DAYS_BETWEEN_CHANGES} days between changes")
+                return entry
+        except (KeyError, TypeError, ValueError):
+            pass
 
     new_value = round((current + winner_val) / 2, 4)
     entry["proposed_new_value"] = new_value

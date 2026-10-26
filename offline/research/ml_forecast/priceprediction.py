@@ -7,20 +7,28 @@ Used for offline research and evaluation of sequence models against Lindy baseli
 from __future__ import annotations
 
 import numpy as np
-import torch
-import torch.nn as nn
 from sklearn.preprocessing import MinMaxScaler
 
+try:
+    import torch
+    import torch.nn as nn
+except ImportError:  # pragma: no cover - optional heavy dependency
+    torch = None  # type: ignore[assignment]
+    nn = None  # type: ignore[assignment]
 
-class _LSTMNet(nn.Module):
-    def __init__(self, input_size: int = 1, hidden_size: int = 32, num_layers: int = 1):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out, _ = self.lstm(x)
-        return self.fc(out[:, -1, :])
+if nn is not None:
+    class _LSTMNet(nn.Module):
+        def __init__(self, input_size: int = 1, hidden_size: int = 32, num_layers: int = 1):
+            super().__init__()
+            self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+            self.fc = nn.Linear(hidden_size, 1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            out, _ = self.lstm(x)
+            return self.fc(out[:, -1, :])
+else:
+    _LSTMNet = None  # type: ignore[assignment,misc]
 
 
 class PricePrediction:
@@ -33,24 +41,43 @@ class PricePrediction:
         lr: float = 0.01,
         epochs: int = 30,
     ) -> None:
-        self.window_size = int(window_size)
+        self.window_size = max(2, int(window_size))
         self.prices: list[float] = []
         self.scaler = MinMaxScaler(feature_range=(0, 1))
-        self.model = _LSTMNet(input_size=1, hidden_size=hidden_size)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        self.criterion = nn.MSELoss()
+        self._fallback_weights: np.ndarray | None = None
+        if torch is not None and _LSTMNet is not None:
+            self.model = _LSTMNet(input_size=1, hidden_size=max(1, int(hidden_size)))
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+            self.criterion = nn.MSELoss()
+        else:
+            self.model = None
+            self.optimizer = None
+            self.criterion = None
         self.trained = False
-        self.epochs = epochs
+        self.epochs = max(1, int(epochs))
+
+    @staticmethod
+    def _valid_price(price: object) -> float | None:
+        if isinstance(price, bool) or price is None:
+            return None
+        try:
+            val = float(price)
+        except (TypeError, ValueError):
+            return None
+        return val if np.isfinite(val) and val > 0 else None
 
     def process_price(self, price: float) -> None:
         """Append price and trigger periodic model retraining."""
-        self.prices.append(float(price))
+        val = self._valid_price(price)
+        if val is None:
+            return
+        self.prices.append(val)
         if len(self.prices) >= self.window_size * 2:
             self.train_lstm_model()
 
     def process_prices(self, prices: list[float]) -> None:
         """Batch set prices and trigger retraining if enough points exist."""
-        self.prices = [float(p) for p in prices]
+        self.prices = [v for p in prices if (v := self._valid_price(p)) is not None]
         if len(self.prices) >= self.window_size * 2:
             self.train_lstm_model()
 
@@ -76,6 +103,14 @@ class PricePrediction:
         if len(X) < 2:
             return False
 
+        if torch is None or self.model is None or self.optimizer is None or self.criterion is None:
+            X_flat = X.reshape(len(X), -1)
+            X_aug = np.hstack([X_flat, np.ones((len(X_flat), 1), dtype=np.float32)])
+            w, _, _, _ = np.linalg.lstsq(X_aug, y, rcond=None)
+            self._fallback_weights = w.astype(np.float32)
+            self.trained = True
+            return True
+
         X_t = torch.tensor(X, dtype=torch.float32)
         y_t = torch.tensor(y, dtype=torch.float32)
 
@@ -95,10 +130,19 @@ class PricePrediction:
         if not self.trained or len(self.prices) < self.window_size:
             return None
 
+        last_seq = np.array(self.prices[-self.window_size :], dtype=np.float32).reshape(-1, 1)
+        last_seq_scaled = self.scaler.transform(last_seq).reshape(1, self.window_size, 1)
+
+        if torch is None or self.model is None:
+            if self._fallback_weights is None:
+                return None
+            x_aug = np.append(last_seq_scaled.reshape(1, -1), [[1.0]], axis=1)
+            pred_scaled = x_aug @ self._fallback_weights
+            pred = self.scaler.inverse_transform(pred_scaled)
+            return float(pred[0][0])
+
         self.model.eval()
         with torch.no_grad():
-            last_seq = np.array(self.prices[-self.window_size :], dtype=np.float32).reshape(-1, 1)
-            last_seq_scaled = self.scaler.transform(last_seq).reshape(1, self.window_size, 1)
             X_t = torch.tensor(last_seq_scaled, dtype=torch.float32)
             pred_scaled = self.model(X_t).numpy()
             pred = self.scaler.inverse_transform(pred_scaled)

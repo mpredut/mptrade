@@ -69,7 +69,10 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
     from sklearn.preprocessing import StandardScaler
 
     n = len(X)
-    start = int(n * train_frac)
+    refit_every = max(1, int(refit_every))
+    frac = float(train_frac) if np.isfinite(train_frac) else 0.7
+    frac = min(max(frac, 0.05), 0.95)
+    start = min(max(1, int(n * frac)), n)
     acc = {"lindy": [], "logit": [], "boost": []}
     mag_err, mag_base = [], []
     i = start
@@ -87,10 +90,10 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
         mag_err += list(np.abs(pm - y_mag[sl]))
         mag_base += list(np.abs(y_mag[sl]))
         i = j
-    return {m: float(np.mean(v)) for m, v in acc.items()} | {
+    return {m: (float(np.mean(v)) if v else 0.0) for m, v in acc.items()} | {
         "n_test": len(acc["boost"]),
-        "mae_move_pct": float(np.mean(mag_err) * 100),
-        "mae_baseline_pct": float(np.mean(mag_base) * 100),
+        "mae_move_pct": float(np.mean(mag_err) * 100) if mag_err else 0.0,
+        "mae_baseline_pct": float(np.mean(mag_base) * 100) if mag_base else 0.0,
     }
 
 
@@ -153,7 +156,7 @@ def main() -> int:
                 json.dump(out, f, indent=2)
             print(f"  -> {args.out}: trend={out['trend']} conf={out['confidence']} "
                   f"estimated move {out['expected_move_pct']:+.2f}% / {HORIZON_H}h")
-        if not args.loop:
+        if not (np.isfinite(args.loop) and args.loop > 0):
             return 0
         time.sleep(args.loop * 60)
 

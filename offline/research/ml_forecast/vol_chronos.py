@@ -13,7 +13,11 @@ import sys
 import time
 
 import numpy as np
-import torch
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional heavy dependency
+    torch = None  # type: ignore[assignment]
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # offline/research/ml_forecast/ -> repo root
 if _ROOT not in sys.path:
@@ -37,6 +41,8 @@ def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
 
 
 def _load_pipeline():
+    if torch is None:
+        raise RuntimeError("torch is required for ChronosPipeline")
     from chronos import ChronosPipeline
     print(f"  loading {MODEL_NAME} (zero-shot, no training)...")
     return ChronosPipeline.from_pretrained(MODEL_NAME, device_map="cpu", torch_dtype=torch.float32)
@@ -46,9 +52,21 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     """For each test hour i sampled by stride, give the model rv[:i+1] capped at
     MAX_CONTEXT and request a +horizon-hour prediction. Compare against persistence
     rv[i] and actual rv[i+horizon]."""
-    pipe = _load_pipeline()
+    horizon = max(1, int(horizon))
+    stride = max(1, int(stride))
+    warmup = max(0, int(warmup))
     n = len(rv)
     idxs = list(range(warmup, n - horizon, stride))
+    if not idxs:
+        return {
+            "n_test": 0,
+            "mae_model": 0.0,
+            "mae_baseline_persistence": 0.0,
+            "improvement_pct": None,
+            "direction_accuracy": 0.0,
+            "corr_model_vs_actual": float("nan"),
+        }
+    pipe = _load_pipeline()
     preds, bases, actuals = [], [], []
     t0 = time.time()
     for b in range(0, len(idxs), BATCH):

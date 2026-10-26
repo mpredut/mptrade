@@ -847,6 +847,78 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
         assert (tmp_path / "bwf" / "BTCUSDC_60m_baseline.json").exists()
 
 
+def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
+    """Verify edge-case guards in scheduled_pilot, slice_dense_archive, forecast, priceprediction, vol_chronos, and hybrid_reentry.harness."""
+    import numpy as np
+    from offline.research import slice_dense_archive as sda
+    from offline.research.hybrid_reentry import harness as hh
+    from offline.research.ml_forecast import forecast as ml_fc
+    from offline.research.ml_forecast import priceprediction as ml_pp
+    from offline.research.ml_forecast import vol_chronos as ml_vc
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
 
+    # 1. scheduled_pilot._last_change_for ignores non-dict JSON lines
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text(
+        '123\n["list"]\n{"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": "2026-10-26T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sp, "AUDIT_LOG", str(audit_path))
+    last = sp._last_change_for("BINANCE_BTC.mt.gain")
+    assert isinstance(last, dict)
+    assert last["ts"] == "2026-10-26T00:00:00+00:00"
 
+    # 2. slice_dense_archive.ts_of handles non-dict, empty list "i", bool, and NaN
+    assert sda.ts_of(None) == 0.0
+    assert sda.ts_of([1, 2]) == 0.0
+    assert sda.ts_of({"i": []}) == 0.0
+    assert sda.ts_of({"i": [True]}) == 0.0
+    assert sda.ts_of({"i": [float("nan")]}) == 0.0
+    assert sda.ts_of({"i": [], "t": 1700000000000}) == 1700000000000.0
+
+    # 3. ml_forecast.forecast.walk_forward clamps refit_every<=0 without infinite loop
+    X = np.random.RandomState(0).randn(20, 11)
+    y_dir = np.array([i % 2 for i in range(20)])
+    y_mag = np.linspace(-0.02, 0.02, 20)
+    rep = ml_fc.walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=0)
+    assert rep["n_test"] == 6
+    assert np.isfinite(rep["boost"])
+
+    # 4. ml_forecast.priceprediction.PricePrediction rejects invalid prices and clamps window_size
+    pp = ml_pp.PricePrediction(window_size=0, epochs=0)
+    assert pp.window_size == 2
+    assert pp.epochs == 1
+    pp.process_price(float("nan"))
+    pp.process_price(float("inf"))
+    pp.process_price(-10.0)
+    pp.process_price(True)  # type: ignore[arg-type]
+    assert pp.prices == []
+    pp.process_prices([100.0, float("nan"), 101.0, 0.0, 102.0, 103.0])
+    assert pp.prices == [100.0, 101.0, 102.0, 103.0]
+    assert pp.trained is True
+
+    # 5. ml_forecast.vol_chronos.walk_forward_vol guards stride<=0 and empty window range
+    rv = np.ones(30, dtype=float)
+    vc_rep = ml_vc.walk_forward_vol(rv, horizon=24, warmup=20, stride=0)
+    assert vc_rep["n_test"] == 0
+    assert vc_rep["improvement_pct"] is None
+
+    # 6. hybrid_reentry.harness.load_ohlc_csv preserves headerless first row and filters NaN
+    csv_no_hdr = tmp_path / "no_hdr.csv"
+    csv_no_hdr.write_text(
+        "1700000000,100.0,105.0,99.0,102.0\n1700003600,nan,106.0,98.0,101.0\n1700007200,102.0,107.0,100.0,104.0\n",
+        encoding="utf-8",
+    )
+    rows = hh.load_ohlc_csv(str(csv_no_hdr))
+    assert len(rows) == 2
+    assert rows[0] == (100.0, 105.0, 99.0, 102.0)
+
+    row_fmt = hh.format_ablation_result(
+        "BTC", "Test 0", "Baseline",
+        {"total": None, "cycles": None, "wins": None, "fills": None},
+        capital=1000.0,
+    )
+    assert row_fmt["net_profit_usd"] == 0.0
+    assert row_fmt["cycles"] == 0
+    assert row_fmt["fills"] == 0
 

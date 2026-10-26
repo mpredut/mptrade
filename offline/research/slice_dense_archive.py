@@ -9,15 +9,35 @@ rulata intreaga (14 iul->azi: ~1M puncte/simbol, ~8h/rulare la rata observata).
 Usage: slice_dense_archive.py <symbol> <days> [out_path]
 """
 import json
+import math
 import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def ts_of(r) -> float:
+    if not isinstance(r, dict):
+        return 0.0
+    i_val = r.get("i")
+    raw = i_val[0] if isinstance(i_val, list) and i_val else None
+    if raw is None:
+        raw = r.get("t")
+    if isinstance(raw, bool) or raw is None:
+        return 0.0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return val if math.isfinite(val) and val > 0 else 0.0
+
+
 def main():
     symbol = sys.argv[1]
     days = float(sys.argv[2])
+    if not (math.isfinite(days) and days > 0):
+        print(f"[slice] invalid days={days}", file=sys.stderr)
+        sys.exit(1)
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
         ROOT, "cachedb", f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
     src = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
@@ -26,15 +46,14 @@ def main():
     with open(src, encoding="utf-8") as f:
         for line in f:
             try:
-                rows.append(json.loads(line))
+                rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if ts_of(rec) > 0:
+                rows.append(rec)
     if not rows:
         print(f"[slice] {src} gol/missing", file=sys.stderr)
         sys.exit(1)
-
-    def ts_of(r):
-        return r.get("i", [None])[0] or r.get("t")
 
     rows.sort(key=ts_of)
     cutoff = ts_of(rows[-1]) - days * 86400 * 1000
