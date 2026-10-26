@@ -1,4 +1,5 @@
 import itertools
+import math
 import os
 import re
 import sys
@@ -103,6 +104,10 @@ def _script_stem():
 
 
 def _derive_process_name(stem):
+    if stem is None or isinstance(stem, bool):
+        stem = "python"
+    else:
+        stem = str(stem) or "python"
     key = stem.lower()
     if key in _PROCESS_NAME_OVERRIDES:
         return _PROCESS_NAME_OVERRIDES[key]
@@ -182,6 +187,8 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
         'spot_dca', 'assetguardian', 'server', 'manual', 'unspecified', or 'alt:...'.
     """
     if client_order_id is None or isinstance(client_order_id, bool):
+        return "unspecified"
+    if isinstance(client_order_id, float) and not math.isfinite(client_order_id):
         return "unspecified"
     cid = str(client_order_id or "").strip()
     if not cid:

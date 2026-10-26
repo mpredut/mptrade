@@ -3090,5 +3090,96 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError):
         bapi_allorders.paginate_my_trades(bad_client, "BTCUSDC", 1000, limit=2, strict=True)
 
+    # 9. bapi_ws_normalize, order_id_context, and bapi_ws stop self-join hardening
+    import threading
+    from binance_api import bapi_ws, bapi_ws_normalize, order_id_context
+
+    assert bapi_ws_normalize.parse_order_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 12.5, "i": 1, "L": "50000", "l": "0.1"}
+    ) is None
+    assert bapi_ws_normalize.parse_trade_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "t": 12.5, "i": 1, "L": "50000", "l": "0.1"}
+    ) is None
+    assert bapi_ws_normalize.parse_trade_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "t": "-5.5", "i": 1, "L": "50000", "l": "0.1"}
+    ) is None
+    assert bapi_ws_normalize.parse_trade_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "S": "BUY", "t": None, "i": "   ", "L": "50000", "l": "0.1"}
+    ) is None
+
+    assert order_id_context.resolve_order_owner(float("-inf")) == "unspecified"  # type: ignore[arg-type]
+    assert order_id_context._derive_process_name(True) == "PYTHON"
+
+    ws_base = bapi_ws.BinanceWSBase()
+    ws_base._thread = threading.current_thread()
+    assert ws_base.stop(timeout=0.01) is True
+
+
+
+def test_root_modules_batch4_hardening():
+    import assetguardian
+    import liquidation_signal
+    import log
+    import order_guard
+    import priceAnalysis
+    import pricewindow
+    import utils
+
+    # order_guard.select_extreme_reference and _aggregate_reference_prices
+    assert order_guard.select_extreme_reference([None, "bad", True, float("nan")], "BUY") is None
+    assert order_guard.select_extreme_reference(None, "SELL") is None
+    assert order_guard.select_extreme_reference([100.0, "bad", 95.0], "BUY", strict=True) == 95.0
+    assert order_guard._aggregate_reference_prices(
+        [("bad_qty", 100.0), (2.0, "110.0"), ("not_a_tuple",)],
+        [("bad_ts", 1.0, 100.0), (1000.0, 2.0, 110.0)],
+        "SELL",
+        "average",
+    ) == 110.0
+
+    # utils.slope and decrese_value_by_increment_exp
+    assert utils.slope(True, 0, 10, 5) == 0.0
+    assert utils.slope(0, 5, 10, 5) == 0.0
+    assert utils.slope(0, 0, 10, 5) == 2.0
+    v1, v2 = utils.decrese_value_by_increment_exp(-1, 100.0)
+    assert v1 > 0.0 and v2 > 0.0
+    assert utils.decrese_value_by_increment_exp(True, 100.0) == (0.0, 0.0)
+    v1_big, v2_big = utils.decrese_value_by_increment_exp(-1e6, 100.0)
+    assert v1_big >= 0.0 and v2_big >= 0.0
+
+    # priceAnalysis.slope_tolerance_per_ and get_trade_weight
+    assert priceAnalysis.slope_tolerance_per_("BTCUSDC", None) == 0.0005
+    assert priceAnalysis.slope_tolerance_per_("BTCUSDC", True) == 0.0005
+    assert priceAnalysis.slope_tolerance_per_("BTCUSDC", 100000.0, base_tolerance=True) == 150.0
+    t_seq, w_seq = priceAnalysis.get_trade_weight(
+        100, 50, "up", "BUY", exceed_percent=True, max_against_trend=None, peak_weight=float("nan"), min_weight=False
+    )
+    assert len(w_seq) > 0 and float(w_seq[0]) > 0.0
+
+    # pricewindow.PriceTrendAnalyzer and PriceWindow._sample_rate_from_entries
+    pta = pricewindow.PriceTrendAnalyzer([None, True, 100.0, "bad", 102.0, 104.0])
+    assert pta.prices == [100.0, 102.0, 104.0]
+    tl, slp, rv = pta.linear_regression_trend()
+    assert slp == 2.0
+    assert len(pta.exponential_moving_average(span=3)) == 3
+    assert pricewindow.PriceWindow._sample_rate_from_entries([None, "bad", [True, 100.0], [1000, 100.0], [3000, 101.0]]) == 2.0
+
+    # assetguardian threshold helpers
+    assert assetguardian._effective_portfolio_growth_threshold(True) == assetguardian.PORTFOLIO_GROWTH_PERCENT
+    assert assetguardian._trigger_threshold_for_sell_tier(True, sell_mult=None, portfolio_growth_pct=float("nan")) >= assetguardian.SELL_REARM_GROWTH_PERCENT + 2.0
+    assert assetguardian._trigger_threshold_for_buy_tier(None, buy_mult=True) >= assetguardian.RECOVERY_RESET_PERCENT + 0.5
+
+    # liquidation_signal.LiquidationSignal
+    ls = liquidation_signal.LiquidationSignal(symbols="btcusdt, ethusdt", retention_sec=True)
+    assert ls._symbols == ["BTCUSDT", "ETHUSDT"]
+    ls._ingest('{"topic":"allLiquidation.BTCUSDT","data":123}')
+    ls._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"1.5","p":"60000"}]}')
+    sig = ls.get_signal("BTCUSDT", window_sec=True)
+    assert sig["long_liq_usd"] == 90000.0
+
+    # log._patched_stderr_write returns int count
+    written = log._patched_stderr_write("")
+    assert isinstance(written, int)
+
+
 
 

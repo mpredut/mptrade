@@ -65,6 +65,8 @@ def parse_order_execution_report(
         raw_t = event.get("t")
         if isinstance(raw_t, bool) or isinstance(event.get("i"), bool):
             raise ValueError("boolean Binance trade/order ID")
+        if isinstance(raw_t, float) and (not math.isfinite(raw_t) or not raw_t.is_integer()):
+            raise ValueError("non-integer Binance trade ID")
         fill_id = int(raw_t)
         if fill_id < 0:
             raise ValueError("missing Binance trade ID")
@@ -141,23 +143,39 @@ def parse_trade_execution_report(
         builtins.print("[cacheManager][WS] rejected Trade report with invalid side")
         return None
     raw_trade_id = event.get("t")
-    if isinstance(raw_trade_id, bool) or isinstance(event.get("i"), bool):
+    raw_order_id = event.get("i")
+    if isinstance(raw_trade_id, bool) or isinstance(raw_order_id, bool):
         builtins.print("[cacheManager][WS] rejected Trade report with boolean ID")
         return None
-    if isinstance(raw_trade_id, str):
+    if isinstance(raw_trade_id, float):
+        if not math.isfinite(raw_trade_id) or not raw_trade_id.is_integer():
+            builtins.print("[cacheManager][WS] rejected Trade report with non-integer float trade ID")
+            return None
+        raw_trade_id = int(raw_trade_id)
+    elif isinstance(raw_trade_id, str):
         raw_trade_id = raw_trade_id.strip() or None
+        if raw_trade_id is not None and raw_trade_id.startswith("-"):
+            builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
+            return None
+    if isinstance(raw_order_id, float):
+        if not math.isfinite(raw_order_id) or not raw_order_id.is_integer():
+            raw_order_id = None
+        else:
+            raw_order_id = int(raw_order_id)
+    elif isinstance(raw_order_id, str):
+        raw_order_id = raw_order_id.strip() or None
     try:
         if raw_trade_id is not None and int(raw_trade_id) < 0:
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
             return None
     except (TypeError, ValueError, OverflowError):
         pass
-    if raw_trade_id is None and event.get("i") is None:
+    if raw_trade_id is None and raw_order_id is None:
         builtins.print("[cacheManager][WS] rejected Trade report with missing trade and order ID")
         return None
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
-        else f"{event.get('i')}-{event.get('T')}"
+        else f"{raw_order_id}-{event.get('T')}"
     )
     raw_price = event.get("L")
     if not _is_positive_finite(raw_price):

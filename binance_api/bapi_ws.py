@@ -90,7 +90,7 @@ class BinanceWSBase:
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         self._stop_event.set()
-        if self._thread and self._thread.is_alive():
+        if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=timeout)
             if self._thread.is_alive():
                 logger.warning("WS thread did not stop within %.1fs", timeout)
@@ -469,7 +469,11 @@ class BinanceAccountStream(BinanceWSBase):
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         ok = super().stop(timeout=timeout)              # Set stop event and join run thread.
-        if self._watchdog_thread and self._watchdog_thread.is_alive():
+        if (
+            self._watchdog_thread
+            and self._watchdog_thread.is_alive()
+            and self._watchdog_thread is not threading.current_thread()
+        ):
             self._watchdog_thread.join(timeout=timeout)  # Stop the watchdog cleanly too.
         return ok
 
