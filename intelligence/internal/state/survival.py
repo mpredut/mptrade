@@ -118,8 +118,7 @@ def verdict(cont: dict, mid: float) -> str:
 
 def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, t_max: int = 30) -> dict:
     """Return hybrid T by combining empirical data with prior."""
-    n = len(dur_hours)
-    if n == 0:
+    if dur_hours is None or len(dur_hours) == 0:
         return {
             "T": int(round(prior_T)),
             "n": 0,
@@ -129,6 +128,17 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
             "T_emp": None,
         }
     d = np.asarray(dur_hours, dtype=float) / 24.0
+    d = d[np.isfinite(d) & (d > 0)]
+    n = len(d)
+    if n == 0:
+        return {
+            "T": int(round(prior_T)),
+            "n": 0,
+            "w": 0.0,
+            "median_d": None,
+            "p90_d": None,
+            "T_emp": None,
+        }
     med, p90 = float(np.median(d)), float(np.percentile(d, 90))
     t_emp = max(p90, 2.0 * med)
     w = n / (n + k)

@@ -370,8 +370,36 @@ def test_market_monitor_and_pricewindow_hardening():
     assert pw.window_size == 1
 
 
+def test_cooldown_and_internal_state_hardening(tmp_path):
+    import numpy as np
+    from lock.cooldown import Cooldown
+    from intelligence.internal.state.volatility import RollingVolatilityTracker, adaptive_thresholds
+    from intelligence.internal.state.persistence import classify_hurst_regime
+    from intelligence.internal.state.survival import hybrid_T
 
+    cd = Cooldown("test", base_dir=str(tmp_path))
+    cd._write({"BTCUSDC": {"timestamp": None}, "ETHUSDC": "corrupted", "SOLUSDC": {"timestamp": 9999999999.0}})
+    assert cd.reserve("BTCUSDC", ttl=60)[0] is True
+    assert cd.reserve("SOLUSDC", ttl=60)[0] is True
+    assert cd.last_age("ETHUSDC") is None
+    cd.update("ETHUSDC", order_id=1)
 
+    tracker = RollingVolatilityTracker(window_size=25)
+    for i in range(22):
+        tracker.add_price(100.0 + i * 0.1, sample_rate_sec=60.0)
+    assert tracker.add_price(float("nan"), sample_rate_sec=60.0) is None
+    assert tracker.add_price(True, sample_rate_sec=60.0) is None
+    vol = tracker.add_price(103.0, sample_rate_sec=60.0)
+    assert vol is not None and np.isfinite(vol)
 
+    assert adaptive_thresholds(float("nan")) == (None, None)
+    assert adaptive_thresholds(True) == (None, None)
+
+    assert classify_hurst_regime(float("nan")) == "unknown"
+    assert classify_hurst_regime(True) == "unknown"
+
+    durs = [24.0, 48.0, float("nan"), -5.0, 72.0]
+    t_res = hybrid_T(durs)
+    assert isinstance(t_res, dict) and isinstance(t_res["T"], int) and t_res["n"] == 3
 
 

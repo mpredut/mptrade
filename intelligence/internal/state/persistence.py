@@ -77,10 +77,16 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
 
 def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -> str:
     """Categorize Hurst exponent into descriptive market regimes."""
-    if h is None:
+    if h is None or isinstance(h, bool):
         return "unknown"
-    if h > hi:
+    try:
+        h_f = float(h)
+    except (TypeError, ValueError):
+        return "unknown"
+    if not math.isfinite(h_f):
+        return "unknown"
+    if h_f > hi:
         return "persistent"
-    if h < lo:
+    if h_f < lo:
         return "mean_reverting"
     return "random_walk"

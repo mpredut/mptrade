@@ -15,6 +15,7 @@ deadlocks under the lock. State persists; the lock does not.
 """
 import os
 import json
+import math
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 import time
 import socket
@@ -23,6 +24,23 @@ import multiprocessing
 import contextlib
 
 from .file_lock import FileLock
+
+
+def _is_active_entry(last, now: float, ttl: float) -> bool:
+    if not isinstance(last, dict):
+        return False
+    raw_ts = last.get("timestamp")
+    if raw_ts is None or isinstance(raw_ts, bool):
+        return False
+    try:
+        ts = float(raw_ts)
+        ttl_f = float(ttl)
+    except (TypeError, ValueError):
+        return False
+    if not (math.isfinite(ts) and math.isfinite(ttl_f)):
+        return False
+    age = now - ts
+    return 0.0 <= age < ttl_f
 
 
 class Reservation:
@@ -94,7 +112,7 @@ class Cooldown:
             state = self._read()
             last = state.get(key)
             now = time.time()
-            if last and (now - last.get("timestamp", 0)) < ttl:
+            if _is_active_entry(last, now, ttl):
                 return False, last
             entry = {
                 "timestamp": now,
@@ -122,7 +140,7 @@ class Cooldown:
             state = self._read()
             last = state.get(key)
             now = time.time()
-            active = bool(last and (now - last.get("timestamp", 0)) < ttl)
+            active = _is_active_entry(last, now, ttl)
             if active:
                 if last.get("group_id") != group_id:
                     return False, last
@@ -163,7 +181,7 @@ class Cooldown:
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
-            if not entry or entry.get("group_id") != group_id:
+            if not isinstance(entry, dict) or entry.get("group_id") != group_id:
                 return
             pending = list(entry.get("group_pending") or [])
             if member in pending:
@@ -189,7 +207,7 @@ class Cooldown:
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
-            if not entry or entry.get("group_id") != group_id:
+            if not isinstance(entry, dict) or entry.get("group_id") != group_id:
                 return
             if member in (entry.get("group_committed") or []):
                 return
@@ -215,7 +233,7 @@ class Cooldown:
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
-            if not entry or entry.get("group_id") != group_id:
+            if not isinstance(entry, dict) or entry.get("group_id") != group_id:
                 return False
             entry["group_members"] = [
                 m for m in (entry.get("group_members") or []) if m != member]
@@ -245,7 +263,7 @@ class Cooldown:
         """Add fields, such as a resulting ID, to an existing reservation."""
         with FileLock(self.lock_path):
             state = self._read()
-            if key in state:
+            if isinstance(state.get(key), dict):
                 state[key].update(fields)
                 self._write(state)
 
@@ -255,9 +273,18 @@ class Cooldown:
     def last_age(self, key):
         """Return the latest reservation age in seconds, or None."""
         last = self._read().get(key)
-        if not last or not last.get("timestamp"):
+        if not isinstance(last, dict):
             return None
-        return time.time() - last["timestamp"]
+        raw_ts = last.get("timestamp")
+        if raw_ts is None or isinstance(raw_ts, bool):
+            return None
+        try:
+            ts = float(raw_ts)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(ts) or ts <= 0:
+            return None
+        return max(0.0, time.time() - ts)
 
     @contextlib.contextmanager
     def slot(self, key, ttl, **meta):

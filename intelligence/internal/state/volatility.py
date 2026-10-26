@@ -13,7 +13,10 @@ import numpy as np
 def _f_env(name: str, default: float) -> float:
     try:
         raw = os.environ.get(name, "").strip()
-        return float(raw) if raw else default
+        if not raw:
+            return default
+        val = float(raw)
+        return val if math.isfinite(val) else default
     except ValueError:
         return default
 
@@ -53,7 +56,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
         return cached
 
     p = np.asarray(prices, dtype=float)
-    p = p[p > 0]
+    p = p[np.isfinite(p) & (p > 0)]
     if len(p) < 20:
         return None
 
@@ -84,7 +87,13 @@ class RollingVolatilityTracker:
 
     def add_price(self, price: float, sample_rate_sec: float) -> Optional[float]:
         """Add a price tick and return updated 1h volatility in O(1)."""
-        if price <= 0:
+        if price is None or isinstance(price, bool):
+            return None
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(price) or price <= 0:
             return None
         if len(self._prices) > 0:
             prev = self._prices[-1]
@@ -124,9 +133,15 @@ def adaptive_thresholds(
     k_dca: float = K_DCA_DEFAULT,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Return adaptive reentry and DCA percentages as multipliers of hourly volatility."""
-    if vol1h is None:
+    if vol1h is None or isinstance(vol1h, bool):
         return None, None
-    return round(k_reentry * vol1h, 3), round(k_dca * vol1h, 3)
+    try:
+        vol_f = float(vol1h)
+    except (TypeError, ValueError):
+        return None, None
+    if not math.isfinite(vol_f) or vol_f < 0:
+        return None, None
+    return round(k_reentry * vol_f, 3), round(k_dca * vol_f, 3)
 
 
 # Direct backwards-compatible alias
