@@ -21,7 +21,9 @@ logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 
 def _extract_base_asset(symbol: str) -> str:
-    s = (symbol or "").upper().strip()
+    if not isinstance(symbol, str):
+        return ""
+    s = symbol.upper().strip()
     if s == "USDCUSDT":
         return s
     if "/" in s:
@@ -37,7 +39,9 @@ def _extract_base_asset(symbol: str) -> str:
 
 
 def _resolve_binance_lookup_symbol(symbol: str) -> str:
-    s = (symbol or "").upper().strip()
+    if not isinstance(symbol, str):
+        return ""
+    s = symbol.upper().strip()
     if s == "USDCUSDT":
         return s
     base = _extract_base_asset(s)
@@ -47,7 +51,9 @@ def _resolve_binance_lookup_symbol(symbol: str) -> str:
 
 
 def _symbol_variants(symbol: str) -> List[str]:
-    s = (symbol or "").upper().strip()
+    if not isinstance(symbol, str):
+        return []
+    s = symbol.upper().strip()
     safe_s = s.replace("/", "").replace("-", "").replace("_", "")
     variants: List[str] = []
     for cand in (safe_s, s):
@@ -97,17 +103,19 @@ class OrderbookSnapshot:
             except (TypeError, ValueError):
                 return default
 
+        raw_sym = data.get("symbol")
+        sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         return cls(
-            symbol=str(data.get("symbol") or ""),
-            mid_price=_f("mid_price", 0.0),
-            bid_depth_usd=_f("bid_depth_usd", 0.0),
-            ask_depth_usd=_f("ask_depth_usd", 0.0),
-            imbalance_ratio=_f("imbalance_ratio", 0.5),
-            largest_bid_wall_usd=_f("largest_bid_wall_usd", 0.0),
-            largest_bid_wall_price=_f("largest_bid_wall_price", 0.0),
-            largest_ask_wall_usd=_f("largest_ask_wall_usd", 0.0),
-            largest_ask_wall_price=_f("largest_ask_wall_price", 0.0),
-            ts=_f("ts", 0.0),
+            symbol=sym_str,
+            mid_price=max(0.0, _f("mid_price", 0.0)),
+            bid_depth_usd=max(0.0, _f("bid_depth_usd", 0.0)),
+            ask_depth_usd=max(0.0, _f("ask_depth_usd", 0.0)),
+            imbalance_ratio=min(1.0, max(0.0, _f("imbalance_ratio", 0.5))),
+            largest_bid_wall_usd=max(0.0, _f("largest_bid_wall_usd", 0.0)),
+            largest_bid_wall_price=max(0.0, _f("largest_bid_wall_price", 0.0)),
+            largest_ask_wall_usd=max(0.0, _f("largest_ask_wall_usd", 0.0)),
+            largest_ask_wall_price=max(0.0, _f("largest_ask_wall_price", 0.0)),
+            ts=max(0.0, _f("ts", 0.0)),
         )
 
 
@@ -150,7 +158,7 @@ class OrderbookDepthCollector:
         self._cache: Dict[str, tuple[float, OrderbookSnapshot]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
-        if not self.cache_dir:
+        if not self.cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return None
         cache_dir = self.cache_dir
         if cache_dir == "cachedb":
@@ -199,7 +207,9 @@ class OrderbookDepthCollector:
     ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance public API."""
         import math
-        symbol = str(symbol or "").strip().upper()
+        if not isinstance(symbol, str):
+            return None
+        symbol = symbol.strip().upper()
         if not symbol:
             return None
         try:

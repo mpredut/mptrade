@@ -173,13 +173,19 @@ class BybitLiquidationCollector:
             if not isinstance(item, dict):
                 continue
             try:
-                symbol = str(item["s"]).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+                raw_sym = item["s"]
+                if not isinstance(raw_sym, str):
+                    continue
+                symbol = raw_sym.strip().upper().replace("/", "").replace("-", "").replace("_", "")
                 if not symbol:
                     continue
-                raw_side = str(item["S"]).strip().upper()
-                if raw_side in ("BUY", "LONG"):
+                raw_s = item["S"]
+                if not isinstance(raw_s, str):
+                    continue
+                raw_side = raw_s.strip().upper()
+                if raw_side in ("BUY", "LONG", "B"):
                     side = "LONG"
-                elif raw_side in ("SELL", "SHORT"):
+                elif raw_side in ("SELL", "SHORT", "S"):
                     side = "SHORT"
                 else:
                     continue
@@ -201,7 +207,7 @@ class BybitLiquidationCollector:
 
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
-        if notional_usd is None or isinstance(notional_usd, bool):
+        if notional_usd is None or isinstance(notional_usd, bool) or not isinstance(symbol, str) or not isinstance(side, str):
             return
         try:
             notional = float(notional_usd)
@@ -209,13 +215,13 @@ class BybitLiquidationCollector:
             return
         if not math.isfinite(notional) or notional <= 0:
             return
-        sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym_norm = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
         if not sym_norm:
             return
-        raw_side = str(side or "").strip().upper()
-        if raw_side in ("LONG", "BUY"):
+        raw_side = side.strip().upper()
+        if raw_side in ("LONG", "BUY", "B"):
             side_norm = "LONG"
-        elif raw_side in ("SHORT", "SELL"):
+        elif raw_side in ("SHORT", "SELL", "S"):
             side_norm = "SHORT"
         else:
             return
@@ -245,7 +251,7 @@ class BybitLiquidationCollector:
         now: Optional[float] = None,
     ) -> LiquidationSummary:
         """Aggregate liquidation metrics for symbol over window_sec."""
-        symbol = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        symbol = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "") if isinstance(symbol, str) else ""
         now_ts = time.time()
         if now is not None and not isinstance(now, bool):
             try:

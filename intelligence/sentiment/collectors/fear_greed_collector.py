@@ -71,12 +71,18 @@ class FearGreedCollector:
             if not math.isfinite(val_f):
                 return None
             val = max(0, min(100, int(round(val_f))))
-            classification = str(current.get("value_classification") or "Neutral")
-            ts = float(raw_ts) if raw_ts is not None and not isinstance(raw_ts, bool) else time.time()
-            if not math.isfinite(ts) or ts <= 0:
-                ts = time.time()
         except (ValueError, TypeError):
             return None
+        raw_cls = current.get("value_classification")
+        classification = raw_cls.strip() if isinstance(raw_cls, str) and raw_cls.strip() else "Neutral"
+        ts = time.time()
+        if raw_ts is not None and not isinstance(raw_ts, bool):
+            try:
+                ts_f = float(raw_ts)
+                if math.isfinite(ts_f) and ts_f > 0:
+                    ts = ts_f
+            except (ValueError, TypeError):
+                pass
 
         history: list[int] = []
         for item in data:

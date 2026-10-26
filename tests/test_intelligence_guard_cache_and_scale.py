@@ -11165,6 +11165,74 @@ def test_iteration102_composite_priceanalysis_survival_and_volatility_safety():
     assert volatility._extract_vol_ratio_from_file("some_path.json", True) is None
 
 
+def test_iteration103_external_collectors_and_t212_ipo_import_safety():
+    """Iteration 103: Verify external collectors symbol/side/from_dict safety and 212trading.ipo self-contained import."""
+    import importlib
+    from intelligence.external.collectors.orderbook_depth import (
+        OrderbookDepthCollector,
+        OrderbookSnapshot,
+        _extract_base_asset,
+        _resolve_binance_lookup_symbol,
+        _symbol_variants,
+    )
+    from intelligence.external.collectors.derivatives_telemetry import (
+        DerivativesTelemetry,
+        DerivativesTelemetryCollector,
+    )
+    from intelligence.external.collectors.whale_positioning import (
+        WhalePositioningCollector,
+        WhalePositioningSnapshot,
+    )
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+
+    # 1. orderbook_depth helpers & collector
+    assert _extract_base_asset(True) == ""
+    assert _resolve_binance_lookup_symbol(True) == ""
+    assert _symbol_variants(True) == []
+    obs = OrderbookSnapshot.from_dict({"symbol": True, "mid_price": -10, "imbalance_ratio": 2.5})
+    assert obs.symbol == "" and obs.mid_price == 0.0 and obs.imbalance_ratio == 1.0
+    obc = OrderbookDepthCollector(cache_dir=None)
+    assert obc.fetch(True, allow_network=False) is None
+
+    # 2. derivatives_telemetry collector & from_dict
+    dt = DerivativesTelemetry.from_dict({"symbol": True, "open_interest": -5, "open_interest_usd": -100, "ts": -1})
+    assert dt.symbol == "" and dt.open_interest == 0.0 and dt.open_interest_usd == 0.0 and dt.ts == 0.0
+    dtc = DerivativesTelemetryCollector(cache_dir=None)
+    assert dtc.fetch(True, allow_network=False) is None
+
+    # 3. whale_positioning collector & from_dict
+    wps = WhalePositioningSnapshot.from_dict({"symbol": True, "divergence_regime": True, "top_traders_long_pct": 1.8})
+    assert wps.symbol == "" and wps.divergence_regime == "neutral" and wps.top_traders_long_pct == 1.0
+    wpc = WhalePositioningCollector(cache_dir="cachedb")
+    assert wpc.fetch(True, allow_network=False) is None
+    assert wpc._resolve_price_1h_change_pct(True) == 0.0
+    assert wpc._resolve_cached_funding_rate(True) is None
+    assert wpc._resolve_cached_funding_rate("BTCUSDC", now="bad_now") is None or isinstance(wpc._resolve_cached_funding_rate("BTCUSDC", now="bad_now"), float)
+
+    # 4. bybit_liquidations record_event & get_summary
+    blc = BybitLiquidationCollector()
+    blc.record_event(True, "LONG", 50000.0)
+    blc.record_event("BTCUSDT", True, 50000.0)
+    blc.record_event("BTCUSDT", " b ", 25000.0, ts=1000.0)
+    blc.record_event("BTCUSDT", " s ", 15000.0, ts=1000.0)
+    s_ok = blc.get_summary("BTC/USDT", window_sec=300.0, now=1050.0)
+    assert s_ok.long_liq_usd == pytest.approx(25000.0)
+    assert s_ok.short_liq_usd == pytest.approx(15000.0)
+    s_bool = blc.get_summary(True, window_sec=300.0, now=1050.0)
+    assert s_bool.symbol == "" and s_bool.total_usd == 0.0
+
+    # 5. 212trading.ipo import works even when 212trading is not at sys.path[0]
+    mod_ipo = importlib.import_module("212trading.ipo")
+    assert hasattr(mod_ipo, "in_market_window")
+
+    # 6. FearGreedCollector.parse_payload tolerates malformed timestamp and bool value_classification
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    fg_snap = FearGreedCollector.parse_payload({"data": [{"value": "82", "value_classification": True, "timestamp": "bad_ts"}]})
+    assert fg_snap is not None and fg_snap.value == 82 and fg_snap.classification == "Neutral" and fg_snap.timestamp > 0
+
+
+
+
 
 
 

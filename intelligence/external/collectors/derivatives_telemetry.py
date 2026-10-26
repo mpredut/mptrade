@@ -53,13 +53,15 @@ class DerivativesTelemetry:
             except (TypeError, ValueError):
                 return default
 
+        raw_sym = data.get("symbol")
+        sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         return cls(
-            symbol=str(data.get("symbol") or ""),
+            symbol=sym_str,
             funding_rate=_f("funding_rate", 0.0),
             predicted_funding_rate=_f("predicted_funding_rate", 0.0),
-            open_interest=_f("open_interest", 0.0),
-            open_interest_usd=_f("open_interest_usd", 0.0),
-            ts=_f("ts", 0.0),
+            open_interest=max(0.0, _f("open_interest", 0.0)),
+            open_interest_usd=max(0.0, _f("open_interest_usd", 0.0)),
+            ts=max(0.0, _f("ts", 0.0)),
         )
 
 
@@ -89,7 +91,7 @@ class DerivativesTelemetryCollector:
         self._cache: Dict[str, tuple[float, DerivativesTelemetry]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
-        if not self.cache_dir:
+        if not self.cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return None
         cache_dir = self.cache_dir
         if cache_dir == "cachedb":
@@ -138,7 +140,9 @@ class DerivativesTelemetryCollector:
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
         import math
-        symbol = str(symbol or "").strip().upper()
+        if not isinstance(symbol, str):
+            return None
+        symbol = symbol.strip().upper()
         if not symbol:
             return None
         try:

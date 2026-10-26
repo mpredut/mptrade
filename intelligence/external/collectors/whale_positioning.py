@@ -70,17 +70,21 @@ class WhalePositioningSnapshot:
                     fr_val = cand
             except (TypeError, ValueError):
                 fr_val = None
+        raw_sym = data.get("symbol")
+        sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
+        raw_reg = data.get("divergence_regime")
+        reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         return cls(
-            symbol=str(data.get("symbol") or ""),
-            top_traders_long_ratio=_f("top_traders_long_ratio", 1.0),
-            top_traders_long_pct=_f("top_traders_long_pct", 0.5),
-            taker_buy_sell_ratio=_f("taker_buy_sell_ratio", 1.0),
-            taker_buy_vol_usd=_f("taker_buy_vol_usd", 0.0),
-            taker_sell_vol_usd=_f("taker_sell_vol_usd", 0.0),
-            open_interest_usd=_f("open_interest_usd", 0.0),
+            symbol=sym_str,
+            top_traders_long_ratio=max(0.0, _f("top_traders_long_ratio", 1.0)),
+            top_traders_long_pct=min(1.0, max(0.0, _f("top_traders_long_pct", 0.5))),
+            taker_buy_sell_ratio=max(0.0, _f("taker_buy_sell_ratio", 1.0)),
+            taker_buy_vol_usd=max(0.0, _f("taker_buy_vol_usd", 0.0)),
+            taker_sell_vol_usd=max(0.0, _f("taker_sell_vol_usd", 0.0)),
+            open_interest_usd=max(0.0, _f("open_interest_usd", 0.0)),
             open_interest_1h_change_pct=_f("open_interest_1h_change_pct", 0.0),
-            divergence_regime=str(data.get("divergence_regime") or "neutral"),
-            ts=_f("ts", 0.0),
+            divergence_regime=reg_str,
+            ts=max(0.0, _f("ts", 0.0)),
             funding_rate=fr_val,
         )
 
@@ -123,7 +127,7 @@ class WhalePositioningCollector:
 
     def _disk_path(self, symbol: str) -> Optional[str]:
         cache_dir = self._effective_cache_dir()
-        if not cache_dir:
+        if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return None
         safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
         return os.path.join(cache_dir, f"whale_snapshot_{safe_sym}.json")
@@ -162,7 +166,7 @@ class WhalePositioningCollector:
     def _resolve_price_1h_change_pct(self, symbol: str) -> float:
         """Resolve 1-hour price change percentage from cached price history (0 ms local)."""
         cache_dir = self._effective_cache_dir()
-        if not cache_dir:
+        if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return 0.0
         try:
             sym_u = symbol.upper()
@@ -229,14 +233,17 @@ class WhalePositioningCollector:
         """Lookup cached funding rate from derivatives telemetry if available and fresh."""
         import math
         cache_dir = self._effective_cache_dir()
-        if not cache_dir:
+        if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return None
         try:
-            now_ts = (
-                float(now)
-                if (now is not None and not isinstance(now, bool) and math.isfinite(float(now)) and float(now) > 0.0)
-                else time.time()
-            )
+            now_ts = time.time()
+            if now is not None and not isinstance(now, bool):
+                try:
+                    nf = float(now)
+                    if math.isfinite(nf) and nf > 0.0:
+                        now_ts = nf
+                except (TypeError, ValueError, OverflowError):
+                    pass
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             variants = _symbol_variants(symbol)
             for s in variants:
@@ -378,7 +385,9 @@ class WhalePositioningCollector:
     ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         import math
-        symbol = str(symbol or "").strip().upper()
+        if not isinstance(symbol, str):
+            return None
+        symbol = symbol.strip().upper()
         if not symbol:
             return None
         try:
