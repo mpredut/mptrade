@@ -122,9 +122,16 @@ def fetch_ohlc_candles(
     """
     if isinstance(interval, str):
         rev_intervals = {v: k for k, v in INTERVALS.items()}
-        interval_str = interval
-        interval_min = rev_intervals.get(interval)
-        if interval_min is None:
+        cleaned = interval.strip()
+        if cleaned in rev_intervals:
+            interval_str = cleaned
+            interval_min = rev_intervals[cleaned]
+        elif cleaned.isdigit():
+            interval_min = int(cleaned)
+            interval_str = INTERVALS.get(interval_min)
+            if interval_str is None:
+                raise ValueError(f"unsupported Hyperliquid interval: {interval}")
+        else:
             raise ValueError(f"unsupported Hyperliquid interval: {interval}")
     else:
         if isinstance(interval, bool):
@@ -140,15 +147,18 @@ def fetch_ohlc_candles(
         if interval_str is None:
             raise ValueError(f"unsupported Hyperliquid interval: {interval} minutes")
 
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+        raise ValueError(f"invalid timeout: {timeout!r}")
+
     now_ms = int(time.time() * 1000)
     if end_ms is not None:
-        if isinstance(end_ms, bool) or not isinstance(end_ms, (int, float)) or not math.isfinite(float(end_ms)):
+        if isinstance(end_ms, bool) or not isinstance(end_ms, (int, float)) or not math.isfinite(float(end_ms)) or int(end_ms) <= 0:
             raise ValueError(f"invalid end_ms: {end_ms!r}")
         final_end = int(end_ms)
     else:
         final_end = now_ms
     if start_ms is not None:
-        if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)):
+        if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)) or int(start_ms) < 0:
             raise ValueError(f"invalid start_ms: {start_ms!r}")
         final_start = int(start_ms)
     elif lookback_hours is not None:
@@ -162,6 +172,8 @@ def fetch_ohlc_candles(
         final_start = int(final_end - float(lookback_hours) * 3600 * 1000)
     else:
         final_start = final_end - 30 * 24 * 3600 * 1000
+    if final_start >= final_end:
+        raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")
 
     payload = _post_info({
         "type": "candleSnapshot",

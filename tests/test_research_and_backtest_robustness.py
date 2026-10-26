@@ -2024,4 +2024,74 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     from strategies.spot_engine import _parse_tranches
     assert _parse_tranches(None) == []
 
+    # 11. Binance API & Hyperliquid helper guards (order_type normalization, _last_opposite_fill_price_api, HL cancel/market_data/signals)
+    import importlib.util
+    from types import SimpleNamespace
+    import time
+    from binance_api import bapi, bapi_placeorder
+
+    def _load_hl_mod(mod_name: str, filename: str):
+        hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+        orig_path = list(sys.path)
+        try:
+            if hl_dir not in sys.path:
+                sys.path.insert(0, hl_dir)
+            spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+        finally:
+            sys.path[:] = orig_path
+
+    hl_client = _load_hl_mod("_test_hl_client", "hl_client.py")
+    hl_md = _load_hl_mod("_test_hl_md", "market_data.py")
+    hl_signals = _load_hl_mod("_test_hl_signals", "signals.py")
+
+    with pytest.raises(ValueError):
+        bapi.get_open_orders(True, "BTCUSDC")
+    with pytest.raises(ValueError):
+        bapi_placeorder.order_candidate_price(True, 50000.0, 50000.0)
+    assert bapi_placeorder.order_candidate_price(" buy ", 50000.0, 49000.0) == 49000.0
+
+    monkeypatch.setattr(
+        bapi_placeorder.client,
+        "get_my_trades",
+        lambda symbol, limit=200: [
+            {"isBuyer": False, "price": "51000.0"},
+            {"isBuyer": False, "price": "0.0"},
+        ],
+    )
+    assert bapi_placeorder._last_opposite_fill_price_api("BTCUSDC", " buy ") == 51000.0
+    monkeypatch.setattr(bapi_placeorder.client, "get_my_trades", lambda symbol, limit=200: None)
+    assert bapi_placeorder._last_opposite_fill_price_api("BTCUSDC", "BUY") is None
+
+    dummy_hl = object.__new__(hl_client.HLClient)
+    captured_cancel = []
+    dummy_hl.exchange = SimpleNamespace(
+        cancel=lambda coin, oid: (captured_cancel.append((coin, oid)) or {"status": "ok", "response": {"data": {"statuses": ["success"]}}})
+    )
+    assert dummy_hl.cancel("HYPE", "42") is True
+    assert captured_cancel == [("HYPE", 42)]
+    assert dummy_hl.cancel("HYPE", "-5") is False
+    assert dummy_hl.cancel("HYPE", "not_an_oid") is False
+
+    monkeypatch.setattr(hl_md, "_post_info", lambda body, timeout=25: [])
+    assert hl_md.fetch_ohlc_candles("HYPE", " 60 ", lookback_hours=2) == []
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", "1h", start_ms=2000, end_ms=1000)
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", "1h", timeout=0)
+
+    sig_file = tmp_path / "hl_signal_ms.json"
+    sig_file.write_text(
+        json.dumps({"trend": " UP ", "confidence": 0.8, "ts": int(time.time() * 1000)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SIGNAL_MAX_AGE_MIN", "15")
+    sig_res = hl_signals._file_signal(str(sig_file))
+    assert sig_res["trend"] == "up"
+    assert sig_res["confidence"] == 0.8
+    assert sig_res["source"] == "file"
+
+
 

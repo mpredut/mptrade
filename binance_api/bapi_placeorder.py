@@ -506,10 +506,15 @@ def _last_opposite_fill_price_api(symbol, order_type):
     This covers a new symbol or an unpopulated cache. Raise on API errors so the caller
     fails closed; return ``None`` only when Binance confirms no opposite fill exists.
     """
-    want_side = "BUY" if order_type.upper() == "SELL" else "SELL"
-    for tr in reversed(client.get_my_trades(symbol=symbol, limit=200)):
+    side = str(order_type or "").strip().upper()
+    want_side = "BUY" if side == "SELL" else "SELL"
+    for tr in reversed(client.get_my_trades(symbol=symbol, limit=200) or ()):
+        if not isinstance(tr, dict):
+            continue
         if extract_order_side(tr) == want_side:
-            return extract_order_price(tr)
+            px = extract_order_price(tr)
+            if px > 0:
+                return px
     return None
 
 
@@ -524,7 +529,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     from providers.market_api import BinanceProvider
 
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
     allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
@@ -562,16 +568,19 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
 
     try:
         current_price = api.get_current_price(symbol)
-        if (
-            current_price is not None
-            and not isinstance(current_price, bool)
-            and math.isfinite(float(current_price))
-            and float(current_price) > 0
-        ):
+        cp_val = None
+        if current_price is not None and not isinstance(current_price, bool):
+            try:
+                cand_cp = float(current_price)
+                if math.isfinite(cand_cp) and cand_cp > 0:
+                    cp_val = cand_cp
+            except (TypeError, ValueError, OverflowError):
+                cp_val = None
+        if cp_val is not None:
             if order_type == "BUY":
-                price = round(min(price, float(current_price)), 8)
+                price = round(min(price, cp_val), 8)
             else:  # SELL
-                price = round(max(price, float(current_price)), 8)
+                price = round(max(price, cp_val), 8)
         else:
             price = round(float(price), 8)
 
@@ -851,7 +860,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
 def adjust_price_and_cancel_opposite(order_type, symbol, price,
                                      cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
-    order_type = str(order_type).upper()
+    order_type = str(order_type).strip().upper()
     if isinstance(price, bool):
         raise SubmissionRefused("invalid_order_parameters")
     try:
@@ -888,7 +897,9 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
     """Return the exact price used by Binance filter normalization."""
     if market:
         return None
-    side = str(order_type).upper()
+    if isinstance(order_type, bool):
+        raise ValueError("order_type must be BUY or SELL")
+    side = str(order_type).strip().upper()
     if side not in {"BUY", "SELL"}:
         raise ValueError("order_type must be BUY or SELL")
     if isinstance(requested_price, bool):
@@ -926,7 +937,8 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     Instrument.place holds the RAII cooldown around this call. Return an accepted
     order, or raise ``SubmissionRefused`` for a deterministic filter violation.
     """
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(order_type, symbol, price, qty)
     is_market = bool(force or market or kwargs.get("market", False) or kwargs.get("force", False))
     try:

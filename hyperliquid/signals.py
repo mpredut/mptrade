@@ -83,10 +83,12 @@ def _file_signal(path: str) -> dict:
             ts_f = float(ts)
         except (TypeError, ValueError, OverflowError):
             return {**NEUTRAL, "source": "file(expirat)"}
+        if math.isfinite(ts_f) and ts_f >= 100_000_000_000.0:
+            ts_f /= 1000.0
         age = time.time() - ts_f
-        if not math.isfinite(ts_f) or age > max_age or age < -60.0:
+        if not math.isfinite(ts_f) or ts_f <= 0 or age > max_age or age < -60.0:
             return {**NEUTRAL, "source": "file(expirat)"}
-    tr = str(d.get("trend", "neutral")).lower()
+    tr = str(d.get("trend", "neutral")).strip().lower()
     if tr not in ("up", "down", "neutral"):
         tr = "neutral"
     raw_conf = d.get("confidence", 0)
@@ -104,7 +106,7 @@ def _file_signal(path: str) -> dict:
 
 
 def get_signal(client, coin: str) -> dict:
-    src = required_env("SIGNAL_SOURCE").lower()
+    src = required_env("SIGNAL_SOURCE").strip().lower()
     if src == "builtin":
         return _builtin_trend(client, coin)
     if src == "analysis":               # ported WMA/time-window slope analysis

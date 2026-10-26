@@ -141,7 +141,7 @@ def get_free_balance(asset: str):
 def get_account_assets_balances(raise_errors=False):
     try:
         account = client.get_account()
-        balances = account.get("balances", [])
+        balances = (account.get("balances") if isinstance(account, dict) else None) or []
         result = []
         for balance in balances:
             if not isinstance(balance, dict):
@@ -184,7 +184,8 @@ def get_account_assets_balances(raise_errors=False):
 
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
 
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(order_type, symbol)
         
     try:
@@ -192,7 +193,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         #print(open_orders)
         filtered_orders = {}
         accepted_owner_map = None
-        for order in open_orders:
+        for order in (open_orders or ()):
             if not isinstance(order, dict):
                 continue
             if extract_order_side(order) != order_type.upper():
@@ -286,7 +287,8 @@ def cancel_order(symbol, order_id):
 
 def cancel_open_orders(order_type, symbol, allowed_owners=None):
     
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(order_type, symbol) 
     
     try:
@@ -305,7 +307,8 @@ def cancel_open_orders(order_type, symbol, allowed_owners=None):
 
 def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(order_type, symbol)
     if expire_time is None or isinstance(expire_time, bool):
         return
@@ -346,7 +349,8 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
 
 def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=None):
 
-    order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_params(order_type, symbol)
     if max_age_seconds is None or isinstance(max_age_seconds, bool):
         return

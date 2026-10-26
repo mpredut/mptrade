@@ -95,8 +95,8 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
 
 def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False):
     try:
-        if order_type is not None:
-            order_type = order_type.upper()
+        if isinstance(order_type, str):
+            order_type = order_type.strip().upper()
         sym.validate_symbols(symbol)
         sym.validate_ordertype(order_type)
         if startTime is None or isinstance(startTime, bool):
@@ -230,8 +230,8 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # into callers such as order_retry_worker.
     cache_order_manager = cm.get_cache_manager("Order", start_sync=False)
 
-    if order_type is not None:
-        order_type = order_type.upper()
+    if isinstance(order_type, str):
+        order_type = order_type.strip().upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
 

@@ -509,7 +509,14 @@ class HLClient:
         if not self.exchange or oid is None or isinstance(oid, bool):
             return False
         try:
-            res = self.exchange.cancel(coin, oid)
+            oid_f = float(oid) if isinstance(oid, (int, float)) else float(int(str(oid).strip()))
+            if not math.isfinite(oid_f) or not oid_f.is_integer() or int(oid_f) <= 0:
+                return False
+            oid_i = int(oid_f)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        try:
+            res = self.exchange.cancel(coin, oid_i)
             if not isinstance(res, dict) or res.get("status") != "ok":
                 return False
             resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
