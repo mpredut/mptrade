@@ -10594,5 +10594,88 @@ def test_iteration95_t212_kraken_and_hyperliquid_provider_safety():
         hl_p.cancel_order("HYPEUSDC", 123.7)
 
 
+def test_iteration96_provider_base_replay_quantity_and_market_api_safety():
+    from providers.base import (
+        MarketDataProvider,
+        aggregate_fills_by_order_id,
+        extract_order_side,
+    )
+    from providers.market_api import BinanceProvider, MarketApi
+    from providers.quantity import balance_cap_quantity, resolve_assets
+    from providers.replay_provider import ReplayMarketDataProvider
+    from providers.strategy_executor import ProviderError
 
+    # 1. extract_order_side string isBuyer ("false"/"0" vs "true"/"1")
+    assert extract_order_side({"isBuyer": "false"}) == "SELL"
+    assert extract_order_side({"isBuyer": "0"}) == "SELL"
+    assert extract_order_side({"isBuyer": "true"}) == "BUY"
+    assert extract_order_side({"isBuyer": "1"}) == "BUY"
+
+    # 2. aggregate_fills_by_order_id None/invalid rows and bool/invalid side
+    assert aggregate_fills_by_order_id(None) == []
+    assert aggregate_fills_by_order_id([{"orderId": "1", "side": "BUY", "price": 100.0, "qty": 1.0}], side=True) == []
+    assert aggregate_fills_by_order_id([{"orderId": "1", "side": "BUY", "price": 100.0, "qty": 1.0}], side="INVALID") == []
+
+    # 3. MarketDataProvider.last_opposite_fill bool/invalid order_type & fractional decimals in round_quantity/round_price
+    class _DummyProvider(MarketDataProvider):
+        name = "dummy"
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def get_price_history(self, symbol: str, lookback_h: float):
+            return []
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def free_balance(self, asset: str):
+            return 100.0
+
+        def get_orders(self, symbol: str, side, since_s: float):
+            return [{"side": side or "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000}]
+
+        def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+            return None
+
+        def pair_precision(self, symbol: str):
+            return type("PP", (), {"volume_decimals": 2.5, "price_decimals": 3.5, "order_min": 0.01})()
+
+    dp = _DummyProvider()
+    assert dp.last_opposite_fill("BTCUSDC", True) is None
+    assert dp.last_opposite_fill("BTCUSDC", "INVALID") is None
+    assert dp.last_opposite_fill("BTCUSDC", "BUY") == pytest.approx(100.0)
+    assert dp.round_quantity("BTCUSDC", 1.23456) == pytest.approx(1.23456)
+    assert dp.round_price("BTCUSDC", 1.23456) == pytest.approx(1.23456)
+
+    # 4. ReplayMarketDataProvider fractional advance, case-insensitive/whitespace free_balance, and get_orders side validation
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0), (2000.0, 51000.0)]})
+    assert rp.advance("BTCUSDC", 1.5) is None
+    assert rp.advance("BTCUSDC", 1) == pytest.approx(50000.0)
+    rp.place_order("BTCUSDC", "BUY", 50000.0, 1.5)
+    assert rp.free_balance(" btc ") == pytest.approx(1.5)
+    assert rp.free_balance(True) == 0.0
+    assert rp.get_orders("BTCUSDC", True, 3600.0) == []
+    assert rp.get_orders("BTCUSDC", "INVALID", 3600.0) == []
+    assert len(rp.get_orders("BTCUSDC", "BUY", 3600.0)) == 1
+
+    # 5. resolve_assets & balance_cap_quantity bool rejection
+    assert resolve_assets("BTCUSDC", base=True, quote=False) == ("BTC", "USDC")
+    with pytest.raises(ValueError, match="side must be BUY or SELL"):
+        balance_cap_quantity(lambda _a: 100.0, "BTCUSDC", True, 100.0)
+
+    # 6. BinanceProvider.supports_symbol & non-integer float order_id rejection + MarketApi.latest_fill_price
+    bp = BinanceProvider()
+    assert bp.supports_symbol(None) is False
+    assert bp.supports_symbol(True) is False
+    assert bp.supports_symbol(" btcusdc ") is True
+    assert bp.supports_symbol(" hypeusdc ") is False
+    with pytest.raises(ProviderError, match="invalid order id"):
+        bp.order_status("BTCUSDC", 123.7)
+    with pytest.raises(ProviderError, match="invalid order id"):
+        bp.cancel_order("BTCUSDC", 123.7)
+
+    ma = MarketApi([dp])
+    with pytest.raises(ValueError, match="side must be BUY or SELL"):
+        ma.latest_fill_price("BTCUSDC", True, 60.0)
 

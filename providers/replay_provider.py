@@ -90,7 +90,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._asset_to_symbol: Dict[str, str] = {}
         self._precisions: Dict[str, PairPrecision] = {}
         for s in price_series:
-            base = _base_asset(s)
+            base = _base_asset(s).upper()
             self._asset_to_symbol[base] = s
             self._precisions[s] = PairPrecision(
                 price_decimals=2, volume_decimals=4, order_min=0.0,
@@ -107,7 +107,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         prec = self._precisions.get(symbol)
         if prec is None:
-            base = _base_asset(symbol)
+            base = _base_asset(symbol).upper()
             prec = PairPrecision(
                 price_decimals=2, volume_decimals=4, order_min=0.0,
                 base_asset=base,
@@ -125,7 +125,10 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if isinstance(steps, bool) or steps is None:
             return None
         try:
-            steps_int = int(steps)
+            steps_f = float(steps)
+            if not math.isfinite(steps_f) or not steps_f.is_integer():
+                return None
+            steps_int = int(steps_f)
         except (TypeError, ValueError, OverflowError):
             return None
         if steps_int <= 0:
@@ -184,12 +187,17 @@ class ReplayMarketDataProvider(MarketDataProvider):
     # ── Simulated offline broker account ────────────────────────────────────
     def free_balance(self, asset: str) -> Optional[float]:
         # Find the symbol whose position uses this asset as its base (BTCUSDC -> BTC).
-        sym = self._asset_to_symbol.get(asset)
+        if not asset or isinstance(asset, bool):
+            return 0.0
+        asset_norm = str(asset).strip().upper()
+        if not asset_norm:
+            return 0.0
+        sym = self._asset_to_symbol.get(asset_norm)
         if sym is not None:
             return self._positions.get(sym, (0.0, 0.0))[0]
         for symbol in self._series:
-            if _base_asset(symbol) == asset:
-                self._asset_to_symbol[asset] = symbol
+            if _base_asset(symbol).upper() == asset_norm:
+                self._asset_to_symbol[asset_norm] = symbol
                 return self._positions.get(symbol, (0.0, 0.0))[0]
         return 0.0
 
@@ -225,11 +233,15 @@ class ReplayMarketDataProvider(MarketDataProvider):
         cutoff_ms = (now - since_val) * 1000.0
         if orders[-1]["timestamp"] < cutoff_ms:
             return []
+        if isinstance(side, bool):
+            return []
         side_u = str(side or "").strip().upper() or None
         if side_u == "B":
             side_u = "BUY"
         elif side_u == "S":
             side_u = "SELL"
+        elif side_u is not None and side_u not in ("BUY", "SELL"):
+            return []
         cache_key = (symbol, side_u)
         cached = self._orders_cache.get(cache_key)
         if cached is not None:

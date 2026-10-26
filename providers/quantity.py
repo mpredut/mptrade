@@ -76,9 +76,9 @@ class QuantityDecision:
 
 def resolve_assets(symbol: str, base: Optional[str] = None,
                    quote: Optional[str] = None) -> tuple[str, Optional[str]]:
-    symbol_u = str(symbol or "").strip().upper()
-    base_u = str(base).strip().upper() if base else None
-    quote_u = str(quote).strip().upper() if quote else None
+    symbol_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
+    base_u = (str(base).strip().upper() or None) if (base and not isinstance(base, bool)) else None
+    quote_u = (str(quote).strip().upper() or None) if (quote and not isinstance(quote, bool)) else None
     if base_u and quote_u:
         return base_u, quote_u
     if base_u and symbol_u.startswith(base_u) and symbol_u != base_u:
@@ -98,6 +98,8 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
                          quote: Optional[str] = None
                          ) -> tuple[Optional[float], Optional[str]]:
     base, quote = resolve_assets(symbol, base, quote)
+    if isinstance(side, bool):
+        raise ValueError("side must be BUY or SELL")
     side = str(side or "").strip().upper()
     if side == "B":
         side = "BUY"

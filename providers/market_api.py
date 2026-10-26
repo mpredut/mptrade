@@ -133,9 +133,12 @@ class BinanceProvider(MarketDataProvider):
         # The operational Binance account uses USDC pairs exclusively, preserving
         # the facade's Binance default. Hyperliquid owns HYPE spot symbols, so
         # exclude them before Binance's broad USDC claim can capture HYPEUSDC.
-        if symbol.upper().startswith("HYPE"):
+        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return False
-        return symbol.endswith("USDC")
+        sym_norm = symbol.strip().upper()
+        if sym_norm.startswith("HYPE"):
+            return False
+        return sym_norm.endswith("USDC")
 
     # -- Account data, repackaged through the facade without semantic changes. --
     def free_balance(self, asset: str) -> Optional[float]:
@@ -596,11 +599,11 @@ class BinanceProvider(MarketDataProvider):
         return total
 
     def order_status(self, symbol: str, order_id: str):
-        if isinstance(order_id, bool):
+        if isinstance(order_id, bool) or (isinstance(order_id, float) and (not math.isfinite(order_id) or not order_id.is_integer())):
             raise ProviderError(f"order_status({order_id}): invalid order id")
         try:
             oid = int(order_id)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, OverflowError) as exc:
             raise ProviderError(f"order_status({order_id}): invalid order id") from exc
         if oid <= 0:
             raise ProviderError(f"order_status({order_id}): invalid order id")
@@ -658,7 +661,7 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        if isinstance(order_id, bool):
+        if isinstance(order_id, bool) or (isinstance(order_id, float) and (not math.isfinite(order_id) or not order_id.is_integer())):
             raise ProviderError(f"cancel_order({order_id}): invalid order id")
         try:
             oid = int(order_id)
@@ -782,7 +785,13 @@ class MarketApi:
                           provider_name=None, min_notional=None,
                           max_notional=None) -> Optional[float]:
         """Return the newest normalized fill without a Binance-specific API."""
-        side = str(side).upper()
+        if isinstance(side, bool):
+            raise ValueError("side must be BUY or SELL")
+        side = str(side or "").strip().upper()
+        if side == "B":
+            side = "BUY"
+        elif side == "S":
+            side = "SELL"
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
         if isinstance(since_s, bool):
@@ -1300,8 +1309,9 @@ class MarketApi:
                 base = u.base_asset(symbol)
             except Exception:
                 base = None
-        if quote is None and base and symbol.upper().startswith(base.upper()) and symbol.upper() != base.upper():
-            quote = symbol[len(base):].lstrip("/-_") or None   # For example, BTCUSDC or HYPE/USDC gives BTC/HYPE and USDC.
+        sym_str = str(symbol or "").strip() if not isinstance(symbol, bool) else ""
+        if quote is None and base and sym_str.upper().startswith(base.upper()) and sym_str.upper() != base.upper():
+            quote = sym_str[len(base):].lstrip("/-_").strip() or None   # For example, BTCUSDC or HYPE/USDC gives BTC/HYPE and USDC.
         if quote is None and str(prov_name).lower() == "hyperliquid":
             quote = "USDC"
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
@@ -1309,6 +1319,8 @@ class MarketApi:
         return inst.place(side, price, qty, **kwargs)
 
     def supports_symbol(self, symbol: str) -> bool:
+        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
+            return False
         return any(p.supports_symbol(symbol) for p in self._providers)
 
     def provider_name_for(self, symbol: str) -> str:

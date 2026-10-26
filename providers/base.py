@@ -191,7 +191,18 @@ def extract_order_side(order: Any) -> str:
     ):
         return str(raw_type).strip().upper()
     if "isBuyer" in order and order.get("isBuyer") is not None:
-        return "BUY" if bool(order["isBuyer"]) else "SELL"
+        raw_buyer = order["isBuyer"]
+        if isinstance(raw_buyer, bool):
+            return "BUY" if raw_buyer else "SELL"
+        if isinstance(raw_buyer, (int, float)):
+            if math.isfinite(float(raw_buyer)):
+                return "BUY" if float(raw_buyer) != 0.0 else "SELL"
+        elif isinstance(raw_buyer, str):
+            b_norm = raw_buyer.strip().lower()
+            if b_norm in ("true", "1", "yes", "b", "buy"):
+                return "BUY"
+            if b_norm in ("false", "0", "no", "s", "sell"):
+                return "SELL"
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
         signed_qty = order.get(sq_key)
         if signed_qty is not None and not isinstance(signed_qty, bool):
@@ -483,11 +494,17 @@ def aggregate_fills_by_order_id(
     volume-weighted average ``price``, summed ``qty``, and ``max(timestamp)``,
     matching ``BinanceProvider.get_orders()``.
     """
+    if rows is None or isinstance(rows, (str, bytes, bool)):
+        return []
+    if isinstance(side, bool):
+        return []
     want = str(side or "").strip().upper()
     if want == "B":
         want = "BUY"
     elif want == "S":
         want = "SELL"
+    elif want and want not in ("BUY", "SELL"):
+        return []
     out: List[dict] = []
     grouped: dict[tuple[str, str], dict] = {}
     for r in rows:
@@ -679,11 +696,13 @@ class MarketDataProvider(ABC):
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
             dec_raw = getattr(pp, "volume_decimals", None) if pp is not None else None
             if dec_raw is not None and not isinstance(dec_raw, bool):
-                dec = int(dec_raw)
-                if dec >= 0:
-                    dec = min(dec, 18)
-                    factor = 10 ** dec
-                    return math.floor(qty_f * factor + 1e-12) / factor
+                dec_f = float(dec_raw)
+                if math.isfinite(dec_f) and dec_f.is_integer():
+                    dec = int(dec_f)
+                    if dec >= 0:
+                        dec = min(dec, 18)
+                        factor = 10 ** dec
+                        return math.floor(qty_f * factor + 1e-12) / factor
         except Exception:
             pass
         return qty_f
@@ -706,9 +725,11 @@ class MarketDataProvider(ABC):
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
             dec_raw = getattr(pp, "price_decimals", None) if pp is not None else None
             if dec_raw is not None and not isinstance(dec_raw, bool):
-                dec = int(dec_raw)
-                if dec >= 0:
-                    return round(price_f, min(dec, 18))
+                dec_f = float(dec_raw)
+                if math.isfinite(dec_f) and dec_f.is_integer():
+                    dec = int(dec_f)
+                    if dec >= 0:
+                        return round(price_f, min(dec, 18))
         except Exception:
             pass
         return price_f
@@ -808,8 +829,15 @@ class MarketDataProvider(ABC):
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
+        if isinstance(order_type, bool):
+            return None
         ot_norm = str(order_type or "").strip().upper()
-        opposite = "SELL" if ot_norm in ("BUY", "B") else "BUY"
+        if ot_norm in ("BUY", "B"):
+            opposite = "SELL"
+        elif ot_norm in ("SELL", "S"):
+            opposite = "BUY"
+        else:
+            return None
         fills = self.get_orders(symbol, opposite, since_s)
         if fills is None:
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")
