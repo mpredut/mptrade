@@ -165,15 +165,27 @@ class PairPrecision:
     def __post_init__(self):
         for name in ("price_decimals", "volume_decimals"):
             raw = getattr(self, name)
-            if isinstance(raw, bool) or int(raw) != raw or int(raw) < 0:
+            if isinstance(raw, bool):
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
-            object.__setattr__(self, name, int(raw))
+            try:
+                raw_f = float(raw)
+                raw_i = int(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid {name} in PairPrecision: {raw!r}") from exc
+            if not math.isfinite(raw_f) or raw_i != raw_f or raw_i < 0:
+                raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
+            object.__setattr__(self, name, raw_i)
         if isinstance(self.order_min, bool):
             raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
-        minimum = float(self.order_min)
+        try:
+            minimum = float(self.order_min)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}") from exc
         if not math.isfinite(minimum) or minimum < 0:
             raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
         object.__setattr__(self, "order_min", minimum)
+        if isinstance(self.base_asset, bool):
+            raise ValueError(f"invalid base_asset in PairPrecision: {self.base_asset!r}")
         object.__setattr__(self, "base_asset", str(self.base_asset or "").strip())
 
 

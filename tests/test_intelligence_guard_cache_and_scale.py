@@ -9961,3 +9961,49 @@ def test_iteration85_decide_quantity_sell_scale_bool_env_and_binance_filters(mon
         })
 
 
+def test_iteration86_strategy_executor_pair_precision_and_market_api_safety(monkeypatch):
+    """Verify Iteration 86 PairPrecision validation, BinanceProvider.submit_order side validation, order_status normalization, and MarketApi safety."""
+    import pytest
+    from providers.strategy_executor import PairPrecision, SubmissionRefused
+    from providers.market_api import BinanceProvider, api
+    import providers.market_api as market_api_mod
+
+    # 1. PairPrecision rejects non-finite decimals, non-numeric order_min, and boolean base_asset with ValueError
+    with pytest.raises(ValueError, match="invalid price_decimals"):
+        PairPrecision(price_decimals=float("inf"), volume_decimals=2, order_min=0.01)
+    with pytest.raises(ValueError, match="invalid order_min"):
+        PairPrecision(price_decimals=2, volume_decimals=2, order_min="not_a_float")
+    with pytest.raises(ValueError, match="invalid base_asset"):
+        PairPrecision(price_decimals=2, volume_decimals=2, order_min=0.01, base_asset=True)
+
+    # 2. BinanceProvider.submit_order rejects invalid sides instead of mapping them to SELL or BUY
+    bp = BinanceProvider()
+    for bad_side in ("", None, "HOLD", "bad", True):
+        with pytest.raises(SubmissionRefused, match="invalid_side"):
+            bp.submit_order("BTCUSDC", bad_side, 0.01, price=65000.0)
+
+    # 3. BinanceProvider.order_status normalizes lowercase/whitespace venue status
+    class _FakeClient:
+        def get_order(self, symbol, orderId):
+            return {
+                "status": " filled ",
+                "executedQty": "0.0",
+                "cummulativeQuoteQty": "0.0",
+                "origQty": "1.0",
+            }
+
+    class _FakeBapi:
+        client = _FakeClient()
+
+    monkeypatch.setattr(market_api_mod, "_get_bapi", lambda: _FakeBapi())
+    st = bp.order_status("BTCUSDC", "12345")
+    assert st.status == "closed"
+    assert st.venue_status == "FILLED"
+
+    # 4. MarketApi.provider_by_name handles non-string safely
+    assert api.provider_by_name(True) is None
+    assert api.provider_by_name(123) is None
+    assert api.provider_by_name("binance") is not None
+
+
+

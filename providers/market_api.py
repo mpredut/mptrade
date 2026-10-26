@@ -347,11 +347,15 @@ class BinanceProvider(MarketDataProvider):
                 module=module,
                 reference_mode=reference_mode,
             )
-            sb = (
-                float(win_s)
-                if (win_s is not None and not isinstance(win_s, bool) and math.isfinite(float(win_s)) and float(win_s) > 0)
-                else _po.PLACE_ORDER_SAFEBACK_SEC
-            )
+            win_f = None
+            if win_s is not None and not isinstance(win_s, bool):
+                try:
+                    cand = float(win_s)
+                    if math.isfinite(cand) and cand > 0:
+                        win_f = cand
+                except (TypeError, ValueError, OverflowError):
+                    win_f = None
+            sb = win_f if win_f is not None else _po.PLACE_ORDER_SAFEBACK_SEC
         wr_kwargs = {}
         if reference_mode is not None:
             wr_kwargs["reference_mode"] = reference_mode
@@ -497,7 +501,13 @@ class BinanceProvider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None,
                      cache_permit=None) -> str:
-        order_type = "BUY" if (side or "").lower().startswith("b") else "SELL"
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm in {"BUY", "B"}:
+            order_type = "BUY"
+        elif s_norm in {"SELL", "S"}:
+            order_type = "SELL"
+        else:
+            raise SubmissionRefused(f"invalid_side:{side!r}")
         permit_requested_price = price
         try:
             client = _get_bapi().client
@@ -637,9 +647,9 @@ class BinanceProvider(MarketDataProvider):
             "NEW": "open",
             "PARTIALLY_FILLED": "open",
         }
-        venue_status = str(o.get("status") or "").upper()
+        venue_status = str(o.get("status") or "").strip().upper()
         return OrderStatus(
-            status=st_map.get(o.get("status"), "open"),
+            status=st_map.get(venue_status, "open"),
             filled_qty=executed_qty,
             cost=cost_val,
             fee=fee,
@@ -1083,7 +1093,9 @@ class MarketApi:
         normalized_benchmarks = []
         seen_benchmarks = set()
         for item in benchmark_candidates:
-            benchmark = str(item or "").strip()
+            if isinstance(item, bool) or not isinstance(item, str):
+                raise ValueError("benchmark symbols must be non-empty")
+            benchmark = item.strip()
             if not benchmark:
                 raise ValueError("benchmark symbols must be non-empty")
             identity = benchmark.upper().replace("/", "")
@@ -1309,7 +1321,9 @@ class MarketApi:
         Instrument uses this for explicit venue routing so identical assets on
         multiple venues are not inferred from the symbol string.
         """
-        return self._by_name.get((name or "").strip().lower())
+        if not isinstance(name, str):
+            return None
+        return self._by_name.get(name.strip().lower())
 
     @property
     def providers(self) -> List[MarketDataProvider]:
