@@ -625,5 +625,53 @@ def test_qlimit_tradeall_and_order_retry_hardening(monkeypatch):
     assert called == ["BTCUSDC"]
 
 
+def test_assetguardian_rtrade_and_spot_rules_hardening(monkeypatch):
+    from types import SimpleNamespace
+    import assetguardian as ag
+    import rtrade as rt
+    from strategies import spot_rules as sr
+
+    # 1. assetguardian._finite_float rejects bool and _completed_tier_values / _safe_tier_attempt handle malformed state
+    assert ag._finite_float(True, positive=True) is None
+    assert ag._completed_tier_values({"completed_tiers": [True, 2.5, "bad"]}) == {2.5}
+    assert ag._completed_tier_values("corrupted") == set()
+    assert ag._safe_tier_attempt({"2.5": "bad"}, "2.5") == 1
+    assert ag._safe_tier_attempt({"2.5": True}, "2.5") == 1
+
+    # 2. rtrade._followup_exit_price and _whale_flow_blocks_side handle NaN/None safely
+    monkeypatch.setattr(rt.api, "get_current_price", lambda sym: float("nan"))
+    sell_px = rt._followup_exit_price("TAOUSDC", "SELL", 200.0)
+    assert sell_px > 200.0
+
+    monkeypatch.setattr(rt, "_is_gi_whale_enforced", lambda bg=None: True)
+    import external_order_guard as eog
+    monkeypatch.setattr(
+        eog,
+        "get_whale_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                taker_buy_sell_ratio=None,
+                open_interest_1h_change_pct=None,
+                divergence_regime="aggressive_shorting",
+            )
+        ),
+    )
+    blocked, reason = rt._whale_flow_blocks_side("TAOUSDC", "BUY")
+    assert blocked is True
+    assert "aggressive_shorting_divergence" in reason
+
+    # 3. spot_rules reentry barriers fail closed on NaN price and reject bool/None in exhaustion checks
+    assert sr.reentry_stop_blocked(float("nan"), 100.0, 2.0, 0.05) is True
+    assert sr.reentry_drop_blocked(float("nan"), 100.0, 2.0, 0.05) is True
+    assert sr.reentry_hybrid_blocked(float("nan"), 100.0, 105.0, True, 2.0, 1.0)[0] is True
+    assert sr.dynamic_surge_gain_pct(True, fallback_gain_pct=25.0) == 25.0
+    assert sr.dynamic_flat_tp_pct(True, base_tp_pct=5.0) == 5.0
+    assert sr.dynamic_trend_trail_pct(float("nan"), base_trail_pct=8.0) == 8.0
+    assert sr.check_fast_profit_reversal(None, 100.0, 5.0, 2.0, [], 60.0, 1.0) == (False, 0.0, 0.0)
+    assert sr.check_parabolic_surge_exhaustion(None, 100.0, 130.0, 25.0, 2.0) == (False, "")
+    assert sr.check_slow_grind_exhaustion(None, 100.0, 1000.0, 900000.0, 7.0, 15.0, 120.0, [], 900.0, 1.5, 2.5) == (False, "")
+
+
+
 
 

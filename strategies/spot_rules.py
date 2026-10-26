@@ -47,21 +47,43 @@ def hit_stop(avg: float, price: float, sl_pct: float) -> bool:
     return (avg - price) / avg * 100 >= sl_pct
 
 
+def _finite_float(val, default=None):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def reentry_stop_blocked(price: float, sl_low: float, bounce_pct: float, tol_pct: float) -> bool:
     """After STOP-LOSS, block until price rebounds `bounce_pct`%% above the post-sale low.
     True means reentry remains blocked."""
-    prag = sl_low * (1 + bounce_pct / 100)
-    return price < prag and not are_close(price, prag, tol_pct)
+    low_f = _finite_float(sl_low)
+    bounce_f = _finite_float(bounce_pct)
+    if low_f is None or low_f <= 0 or bounce_f is None or bounce_f <= 0:
+        return False
+    px_f = _finite_float(price)
+    if px_f is None or px_f <= 0:
+        return True
+    prag = low_f * (1 + bounce_f / 100)
+    return px_f < prag and not are_close(px_f, prag, tol_pct)
 
 
 def reentry_drop_blocked(price: float, last_sell: float, drop_pct: float, tol_pct: float) -> bool:
     """After take profit, block until price falls `drop_pct`%% below the sale price.
     True means reentry remains blocked. A non-positive drop or missing sale disables
     the barrier."""
-    if drop_pct <= 0 or not last_sell:
+    drop_f = _finite_float(drop_pct)
+    sell_f = _finite_float(last_sell)
+    if drop_f is None or drop_f <= 0 or sell_f is None or sell_f <= 0:
         return False
-    prag = last_sell * (1 - drop_pct / 100)
-    return price > prag and not are_close(price, prag, tol_pct)
+    px_f = _finite_float(price)
+    if px_f is None or px_f <= 0:
+        return True
+    prag = sell_f * (1 - drop_f / 100)
+    return px_f > prag and not are_close(px_f, prag, tol_pct)
 
 
 def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float) -> bool:
@@ -119,30 +141,42 @@ def reentry_hybrid_blocked(
     Returns:
       (blocked: bool, reason: str)
     """
-    if not last_sell or last_sell <= 0:
+    sell_f = _finite_float(last_sell)
+    if sell_f is None or sell_f <= 0:
         return False, "no_last_sell"
 
-    if (ttl_sec is not None and ttl_sec > 0
-            and elapsed_sec is not None and elapsed_sec >= ttl_sec):
+    ttl_f = _finite_float(ttl_sec)
+    elapsed_f = _finite_float(elapsed_sec)
+    if (ttl_f is not None and ttl_f > 0
+            and elapsed_f is not None and elapsed_f >= ttl_f):
         return False, "ttl_expired"
 
+    px_f = _finite_float(price)
+    if px_f is None or px_f <= 0:
+        return True, "invalid_price"
+
     if is_bull:
-        peak = max(float(last_sell), float(post_sell_peak or price), float(price))
-        if pullback_pct <= 0:
+        peak_cand = _finite_float(post_sell_peak)
+        peak = max(sell_f, peak_cand if (peak_cand is not None and peak_cand > 0) else px_f, px_f)
+        pullback_f = _finite_float(pullback_pct, 0.0)
+        if pullback_f <= 0:
             return False, "bull_immediate"
-        prag = peak * (1.0 - pullback_pct / 100.0)
-        blocked = price > prag and not are_close(price, prag, tol_pct)
+        prag = peak * (1.0 - pullback_f / 100.0)
+        blocked = px_f > prag and not are_close(px_f, prag, tol_pct)
         return blocked, ("bull_pullback_pending" if blocked else "bull_pullback_met")
 
-    if drop_pct <= 0:
+    drop_f = _finite_float(drop_pct, 0.0)
+    if drop_f <= 0:
         return False, "range_immediate"
-    prag = float(last_sell) * (1.0 - drop_pct / 100.0)
-    if price > prag and not are_close(price, prag, tol_pct):
+    prag = sell_f * (1.0 - drop_f / 100.0)
+    if px_f > prag and not are_close(px_f, prag, tol_pct):
         return True, "range_drop_pending"
-    if bounce_pct > 0:
-        trough = min(float(last_sell), float(post_sell_trough or price), float(price))
-        prag_bounce = trough * (1.0 + bounce_pct / 100.0)
-        if price < prag_bounce and not are_close(price, prag_bounce, tol_pct):
+    bounce_f = _finite_float(bounce_pct, 0.0)
+    if bounce_f > 0:
+        trough_cand = _finite_float(post_sell_trough)
+        trough = min(sell_f, trough_cand if (trough_cand is not None and trough_cand > 0) else px_f, px_f)
+        prag_bounce = trough * (1.0 + bounce_f / 100.0)
+        if px_f < prag_bounce and not are_close(px_f, prag_bounce, tol_pct):
             return True, "range_bounce_pending"
         return False, "range_bounce_met"
     return False, "range_drop_met"
@@ -164,9 +198,10 @@ def dynamic_surge_gain_pct(
     - Highly volatile assets scale up to max_gain_pct (32.0%), allowing explosive
       candle bursts room to develop before arming the tight exhaustion exit.
     """
-    if hourly_volatility_pct is None or not math.isfinite(hourly_volatility_pct) or hourly_volatility_pct <= 0:
+    vol_f = _finite_float(hourly_volatility_pct)
+    if vol_f is None or vol_f <= 0:
         return float(fallback_gain_pct)
-    raw = float(hourly_volatility_pct) * float(vol_multiplier)
+    raw = vol_f * float(vol_multiplier)
     min_g = min(float(min_gain_pct), float(max_gain_pct))
     max_g = max(float(min_gain_pct), float(max_gain_pct))
     return max(min_g, min(max_g, raw))
@@ -186,10 +221,12 @@ def dynamic_flat_tp_pct(
     When strength approaches strength_threshold (breakout cusp), returns near tp_max_pct.
     Falls back safely to base_tp_pct if strength is None, negative, or non-finite.
     """
-    if strength is None or not math.isfinite(strength) or strength < 0:
+    str_f = _finite_float(strength)
+    if str_f is None or str_f < 0:
         return float(base_tp_pct)
-    thresh = float(strength_threshold) if strength_threshold > 0 else 2.0
-    c_flat = min(1.0, max(0.0, float(strength) / thresh))
+    thresh_f = _finite_float(strength_threshold)
+    thresh = thresh_f if (thresh_f is not None and thresh_f > 0) else 2.0
+    c_flat = min(1.0, max(0.0, str_f / thresh))
     min_tp = min(float(tp_min_pct), float(tp_max_pct))
     max_tp = max(float(tp_min_pct), float(tp_max_pct))
     return min_tp + c_flat * (max_tp - min_tp)
@@ -213,13 +250,14 @@ def dynamic_trend_trail_pct(
     to preserve a healthy breathing cushion (preventing 3-4% pullbacks from prematurely
     liquidating the position before it can reach the 25% parabolic surge trigger).
     """
-    base = max(0.0, float(base_trail_pct))
-    eff_min = max(float(min_trail_pct), 5.0) if surge_guard_active else float(min_trail_pct)
+    base = max(0.0, float(_finite_float(base_trail_pct, 8.0)))
+    min_t = float(_finite_float(min_trail_pct, 3.0))
+    eff_min = max(min_t, 5.0) if surge_guard_active else min_t
     floor = min(base, max(0.0, eff_min))
-    thresh = max(0.0, float(gain_threshold_pct))
-    k = max(0.0, float(ratchet_k))
-    gain = float(peak_gain_pct)
-    if gain <= thresh or k == 0.0:
+    thresh = max(0.0, float(_finite_float(gain_threshold_pct, 6.0)))
+    k = max(0.0, float(_finite_float(ratchet_k, 0.5)))
+    gain = _finite_float(peak_gain_pct)
+    if gain is None or gain <= thresh or k == 0.0:
         return base
     ratcheted = base - k * (gain - thresh)
     return max(floor, min(base, ratcheted))
@@ -242,23 +280,26 @@ def check_fast_profit_reversal(
     1. current_gain_pct >= mult * base_tp_pct (e.g. >= 10.0%)
     2. micro_drop_pct >= drop_pct from the highest price in the last window_sec.
     """
+    avg_f = _finite_float(avg_cost)
+    px_f = _finite_float(current_price)
+    tp_f = _finite_float(base_tp_pct)
+    mult_f = _finite_float(mult)
+    drop_f = _finite_float(drop_pct)
     if (
-        not (
-            math.isfinite(float(avg_cost))
-            and math.isfinite(float(current_price))
-            and math.isfinite(float(base_tp_pct))
-            and math.isfinite(float(mult))
-            and math.isfinite(float(drop_pct))
-        )
-        or avg_cost <= 0
-        or current_price <= 0
-        or base_tp_pct <= 0
-        or mult <= 0
-        or drop_pct <= 0
+        avg_f is None
+        or px_f is None
+        or tp_f is None
+        or mult_f is None
+        or drop_f is None
+        or avg_f <= 0
+        or px_f <= 0
+        or tp_f <= 0
+        or mult_f <= 0
+        or drop_f <= 0
     ):
         return False, 0.0, 0.0
-    current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
-    required_gain = base_tp_pct * mult
+    current_gain_pct = (px_f - avg_f) / avg_f * 100.0
+    required_gain = tp_f * mult_f
     if not (current_gain_pct >= required_gain):
         return False, current_gain_pct, 0.0
     valid_shadows = [
@@ -323,23 +364,27 @@ def check_parabolic_surge_exhaustion(
     the minimum surge profit floor (min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)).
     If surge is active and price >= floor, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
     """
+    avg_f = _finite_float(avg_cost)
+    px_f = _finite_float(current_price)
+    peak_f = _finite_float(surge_peak)
+    sg_f = _finite_float(surge_gain_pct)
+    ep_f = _finite_float(exit_pullback_pct)
+    mp_f = _finite_float(min_profit_pct)
     if (
-        not (
-            math.isfinite(float(avg_cost))
-            and math.isfinite(float(current_price))
-            and math.isfinite(float(surge_peak))
-            and math.isfinite(float(surge_gain_pct))
-            and math.isfinite(float(exit_pullback_pct))
-            and math.isfinite(float(min_profit_pct))
-        )
-        or avg_cost <= 0
-        or current_price <= 0
-        or surge_peak <= 0
-        or exit_pullback_pct <= 0
+        avg_f is None
+        or px_f is None
+        or peak_f is None
+        or sg_f is None
+        or ep_f is None
+        or mp_f is None
+        or avg_f <= 0
+        or px_f <= 0
+        or peak_f <= 0
+        or ep_f <= 0
     ):
         return False, ""
-    current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
-    peak_gain_pct = (surge_peak - avg_cost) / avg_cost * 100.0
+    current_gain_pct = (px_f - avg_f) / avg_f * 100.0
+    peak_gain_pct = (peak_f - avg_f) / avg_f * 100.0
 
     # Invariant: A parabolic surge exhaustion exit is a TAKE-PROFIT guard.
     # It must never execute below the minimum surge profit floor!
@@ -389,26 +434,28 @@ def check_slow_grind_exhaustion(
     - Structural sensor: price drops >= structural_drop_pct from recent_peak (e.g. 2.5%), OR
     - SMA break: sma_value is provided and current_price < sma_value.
     """
+    avg_f = _finite_float(avg_cost)
+    px_f = _finite_float(current_price)
+    ent_f = _finite_float(entry_ts)
+    cur_t_f = _finite_float(current_ts)
+    md_f = _finite_float(min_days)
+    mg_f = _finite_float(min_gain_pct)
     if (
-        entry_ts is None
-        or isinstance(entry_ts, bool)
-        or not (
-            math.isfinite(float(avg_cost))
-            and math.isfinite(float(current_price))
-            and math.isfinite(float(entry_ts))
-            and math.isfinite(float(current_ts))
-            and math.isfinite(float(min_days))
-            and math.isfinite(float(min_gain_pct))
-        )
-        or avg_cost <= 0
-        or current_price <= 0
+        avg_f is None
+        or px_f is None
+        or ent_f is None
+        or cur_t_f is None
+        or md_f is None
+        or mg_f is None
+        or avg_f <= 0
+        or px_f <= 0
     ):
         return False, ""
-    elapsed_days = (current_ts - entry_ts) / 86400.0
-    if not (elapsed_days >= min_days):
+    elapsed_days = (cur_t_f - ent_f) / 86400.0
+    if not (elapsed_days >= md_f):
         return False, ""
-    current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
-    if not (current_gain_pct >= min_gain_pct):
+    current_gain_pct = (px_f - avg_f) / avg_f * 100.0
+    if not (current_gain_pct >= mg_f):
         return False, ""
     # Check flash drop
     win_s = float(flash_window_sec) if (flash_window_sec is not None and not isinstance(flash_window_sec, bool) and math.isfinite(float(flash_window_sec))) else 0.0

@@ -188,6 +188,16 @@ class _IntentRecoveryPending(RuntimeError):
     """A persisted venue intent is not yet safe to submit or discard."""
 
 
+def _finite_pos_float(raw, default=0.0):
+    if raw is None or isinstance(raw, bool):
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return val if (math.isfinite(val) and val > 0.0) else default
+
+
 class _LivePairVenue:
     """Thin adapter between the pure coordinator and the current Binance venue."""
 
@@ -313,14 +323,14 @@ class _LivePairVenue:
         order_id = pending.get("order_id")
         if not order_id:
             return None
-        ticket_price = float(
+        ticket_price = _finite_pos_float(
             pending.get("submitted_price")
-            or pending.get("requested_price") or 0.0)
+            or pending.get("requested_price"), 0.0)
         if ticket_price <= 0:
             # Old hard-stop intents stored no limit price. Use a live reference
             # only to reconstruct the ticket; venue status remains authoritative
             # for fill quantity, cost, and fees.
-            ticket_price = float(self.current_price() or 0.0)
+            ticket_price = _finite_pos_float(self.current_price(), 0.0)
         ticket = PairOrderTicket(
             order_id=str(order_id), side=str(pending["side"]).upper(),
             price=ticket_price,
@@ -766,7 +776,7 @@ class _LivePairVenue:
                 self._last_place_failures[side] = (
                     f"{side.lower()}_recovery_pending")
                 return None
-        price = float(self.current_price() or 0.0)
+        price = _finite_pos_float(self.current_price(), 0.0)
         if price <= 0:
             print(f"[{self.symbol}] {side} hard-stop BLOCKED: price unavailable")
             return None
@@ -963,16 +973,23 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tu
         snap = collector.fetch(symbol, allow_network=False)
         if snap is None:
             return False, "no_snapshot"
+        ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0)
+        raw_oi = getattr(snap, "open_interest_1h_change_pct", None)
+        try:
+            oi_pct = float(raw_oi) if (raw_oi is not None and not isinstance(raw_oi, bool) and math.isfinite(float(raw_oi))) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            oi_pct = 0.0
+        div_regime = getattr(snap, "divergence_regime", None)
         if side_u == "BUY":
-            if snap.taker_buy_sell_ratio < 0.80:
-                return True, f"taker_sell_dominance (ratio={snap.taker_buy_sell_ratio:.2f} < 0.80)"
-            if snap.divergence_regime == "aggressive_shorting":
-                return True, f"aggressive_shorting_divergence (OI={snap.open_interest_1h_change_pct:+.1f}%)"
+            if 0.0 < ratio < 0.80:
+                return True, f"taker_sell_dominance (ratio={ratio:.2f} < 0.80)"
+            if div_regime == "aggressive_shorting":
+                return True, f"aggressive_shorting_divergence (OI={oi_pct:+.1f}%)"
         elif side_u == "SELL":
-            if snap.taker_buy_sell_ratio > 1.25:
-                return True, f"taker_buy_dominance (ratio={snap.taker_buy_sell_ratio:.2f} > 1.25)"
-            if snap.divergence_regime in ("short_squeeze", "short_squeeze_primed"):
-                return True, f"short_squeeze_divergence (OI={snap.open_interest_1h_change_pct:+.1f}%)"
+            if ratio > 1.25:
+                return True, f"taker_buy_dominance (ratio={ratio:.2f} > 1.25)"
+            if div_regime in ("short_squeeze", "short_squeeze_primed"):
+                return True, f"short_squeeze_divergence (OI={oi_pct:+.1f}%)"
     except Exception as exc:
         return False, f"error:{exc}"
     return False, "ok"
@@ -987,7 +1004,8 @@ def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypas
         collector = get_whale_collector()
         if collector is not None:
             snap = collector.fetch(symbol, allow_network=False)
-            if snap is not None and (snap.taker_buy_sell_ratio < 0.90 or snap.taker_buy_sell_ratio > (1.0 / 0.90)):
+            ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) if snap is not None else 0.0
+            if ratio > 0.0 and (ratio < 0.90 or ratio > (1.0 / 0.90)):
                 # Widen grid spacing by 50% to quote deeper on dips/rips rather than top/bottom ticks
                 return base_adjustment * 1.5
     except Exception:
@@ -1086,10 +1104,11 @@ def _followup_exit_price(symbol, side, fill_ref_price):
     For SELL: price must be at least fill_ref_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT).
     For BUY: price must be at most fill_ref_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT).
     """
-    current_price = api.get_current_price(symbol)
-    if fill_ref_price is None or fill_ref_price <= 0:
-        fill_ref_price = current_price or 0.0
-    if current_price is None or current_price <= 0:
+    current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
+    fill_ref_price = _finite_pos_float(fill_ref_price, 0.0)
+    if fill_ref_price <= 0:
+        fill_ref_price = current_price
+    if current_price <= 0:
         current_price = fill_ref_price
     side_u = str(side).upper()
     if side_u == "SELL":
@@ -1142,7 +1161,7 @@ class TradingBot:
         self.symbol = symbol
         self.qty = qty
         self.transaction_state = "COMPLETED"  # Initial state.
-        current_price = api.get_current_price(symbol)
+        current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
         self.filled_buy_price = round(current_price * (1 - RTRADE_INITIAL_SPREAD_PCT), 4)
         self.filled_sell_price = round(current_price * (1 + RTRADE_INITIAL_SPREAD_PCT), 4)
         self.buy_filled = False
@@ -1263,12 +1282,13 @@ class TradingBot:
                 if getattr(self, "_round_aborted", False) and not self.is_sell_filled:
                     print(f"[{self.symbol}] Aborting BUY loop because SELL worker exited without fill.")
                     return _complete_buy_followup()
-                latest_price = api.get_current_price(self.symbol)
-                if latest_price is not None and latest_price > 0:
+                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                if latest_price > 0:
                     current_price = latest_price
-                if current_price is None or current_price <= 0:
-                    current_price = filled_sell_price
-                if current_price is None or current_price <= 0:
+                current_price = _finite_pos_float(current_price, 0.0)
+                if current_price <= 0:
+                    current_price = _finite_pos_float(filled_sell_price, 0.0)
+                if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
                     if failure_count > max_failures:
@@ -1397,8 +1417,8 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent SELL follow-up (2)")
                     return _complete_buy_followup(target_buy_qty, filled_buy_price)
 
-                latest_price = api.get_current_price(self.symbol)
-                if latest_price is not None and latest_price > 0:
+                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                if latest_price > 0:
                     current_price = latest_price
                 if current_price > filled_sell_price and not u.are_close(current_price, filled_sell_price, RTRADE_BAD_DAY_TOLERANCE_PCT):
                     print(f"[{self.symbol}] Bed day :-(. Trying BUY at current price - x2 {current_price:.2f}")
@@ -1490,12 +1510,13 @@ class TradingBot:
                 if getattr(self, "_round_aborted", False) and not self.is_buy_filled:
                     print(f"[{self.symbol}] Aborting SELL loop because BUY worker exited without fill.")
                     return _complete_sell_followup()
-                latest_price = api.get_current_price(self.symbol)
-                if latest_price is not None and latest_price > 0:
+                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                if latest_price > 0:
                     current_price = latest_price
-                if current_price is None or current_price <= 0:
-                    current_price = filled_buy_price
-                if current_price is None or current_price <= 0:
+                current_price = _finite_pos_float(current_price, 0.0)
+                if current_price <= 0:
+                    current_price = _finite_pos_float(filled_buy_price, 0.0)
+                if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
                     if failure_count > max_failures:
@@ -1625,8 +1646,8 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent BUY follow-up (2)")
                     return _complete_sell_followup(target_sell_qty, filled_sell_price)
 
-                latest_price = api.get_current_price(self.symbol)
-                if latest_price is not None and latest_price > 0:
+                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                if latest_price > 0:
                     current_price = latest_price
                 if current_price < filled_buy_price and not u.are_close(current_price, filled_buy_price, RTRADE_BAD_DAY_TOLERANCE_PCT):
                     print(f"[{self.symbol}] Bed day :-(. Trying SELL at current price + x2 {current_price:.2f}")
@@ -2003,8 +2024,8 @@ class TradingBot:
                     and now - last_start_at >= RTRADE_PAIR_START_INTERVAL_SEC
                 )
                 if can_start and not _trend_too_strong(self.symbol):
-                    current_price = venue.current_price()
-                    if current_price is not None:
+                    current_price = _finite_pos_float(venue.current_price(), 0.0)
+                    if current_price > 0:
                         start_side = None
                         for _ in range(len(RTRADE_PAIR_DIRECTIONS)):
                             candidate = RTRADE_PAIR_DIRECTIONS[next_direction]
@@ -2096,8 +2117,8 @@ class TradingBot:
             while True:
                 _touch_rtrade_heartbeat()
                 try:
-                    current_price = api.get_current_price(self.symbol)
-                    if current_price is None:
+                    current_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
+                    if current_price <= 0:
                         print(f"[{self.symbol}] Failed to fetch current price. Retrying in {WAIT_FOR_ORDER} seconds...")
                         time.sleep(WAIT_FOR_ORDER)
                         continue

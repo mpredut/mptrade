@@ -284,6 +284,8 @@ ORDER_LIFECYCLE = mkt.tracked_order_lifecycle(
 
 
 def _finite_float(raw, *, positive=False):
+    if raw is None or isinstance(raw, bool):
+        return None
     try:
         value = float(raw)
     except (TypeError, ValueError, OverflowError):
@@ -632,8 +634,13 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
             print(f" Invalid cash ratio for buy: {cash_ratio}")
             _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_cash_ratio")
             return False
+        provider = mkt.provider_by_name("binance")
+        if provider is None:
+            print(f"[{buy_symbol}] Binance provider unavailable; skip BUY fail-closed.")
+            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="provider_unavailable")
+            return False
         free_cash = _finite_float(
-            mkt.provider_by_name("binance").free_balance(quote_asset),
+            provider.free_balance(quote_asset),
             positive=True,
         )
         current_price = _finite_float(api.get_current_price(buy_symbol), positive=True)
@@ -697,7 +704,12 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
 
 def _completed_tier_values(state):
     completed = set()
-    for raw in state.get("completed_tiers", []):
+    if not isinstance(state, dict):
+        return completed
+    raw_tiers = state.get("completed_tiers", [])
+    if not isinstance(raw_tiers, (list, tuple, set)):
+        return completed
+    for raw in raw_tiers:
         value = _finite_float(raw, positive=True)
         if value is not None:
             completed.add(value)
@@ -892,8 +904,10 @@ def _buy_remaining_cash(state, threshold, allocation):
     if initial_cash is None:
         return None, None, None
     target_cash = initial_cash * BUY_USE_CASH_RATIO * float(allocation)
+    raw_spent_map = state.get("spent_quote_by_tier")
+    spent_map = dict(raw_spent_map) if isinstance(raw_spent_map, dict) else {}
     prior_spent = _finite_float(
-        dict(state.get("spent_quote_by_tier") or {}).get(
+        spent_map.get(
             _tier_key(threshold))) or 0.0
     return max(0.0, target_cash - prior_spent), target_cash, prior_spent
 
@@ -1361,11 +1375,23 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     return None, state, growth
 
 
+def _safe_tier_attempt(attempts_map, key):
+    raw_val = attempts_map.get(key) if isinstance(attempts_map, dict) else None
+    if raw_val is None or isinstance(raw_val, bool):
+        return 1
+    try:
+        val = int(raw_val)
+    except (TypeError, ValueError, OverflowError):
+        return 1
+    return max(0, val) + 1
+
+
 def _submit_sell_tier(symbol, current_price, tier, state):
     threshold, allocation, qty = tier
     key = _tier_key(threshold)
-    attempts = dict(state.get("attempts_by_tier") or {})
-    attempt = int(attempts.get(key) or 0) + 1
+    raw_attempts = state.get("attempts_by_tier")
+    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
+    attempt = _safe_tier_attempt(attempts, key)
     attempts[key] = attempt
     client_order_id = _sell_client_order_id(symbol, state, threshold, attempt)
     state = dict(state)
@@ -1415,13 +1441,17 @@ def _submit_buy_tier(symbol, current_price, cash_amount, tier, state):
     # Only the first/shallowest dip tier respects the anti-chasing guard.
     respect_guard = (GUARDED_BUY_THRESHOLD is not None
                      and threshold == GUARDED_BUY_THRESHOLD)
+    cash_f = _finite_float(cash_amount, positive=True)
+    px_f = _finite_float(current_price, positive=True)
+    if cash_f is None or px_f is None:
+        return False
     key = _tier_key(threshold)
-    attempts = dict(state.get("attempts_by_tier") or {})
-    attempt = int(attempts.get(key) or 0) + 1
+    raw_attempts = state.get("attempts_by_tier")
+    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
+    attempt = _safe_tier_attempt(attempts, key)
     attempts[key] = attempt
     client_order_id = _buy_client_order_id(symbol, state, threshold, attempt)
-    qty = _finite_float(cash_amount, positive=True) / _finite_float(
-        current_price, positive=True)
+    qty = cash_f / px_f
     state = dict(state)
     state["attempts_by_tier"] = attempts
     intent = ORDER_LIFECYCLE.new_intent(
