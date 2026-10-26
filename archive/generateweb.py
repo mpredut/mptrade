@@ -174,5 +174,6 @@ def save_html(html, file_name="index.html"):
     print(f"File {file_name} was generated successfully!")
 
 # Generate and save.
-html_content = generate_html(coins)
-save_html(html_content, "index.html")
+if __name__ == "__main__":
+    html_content = generate_html(coins)
+    save_html(html_content, "index.html")

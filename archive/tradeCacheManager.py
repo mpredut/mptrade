@@ -53,7 +53,10 @@ class TradeCacheManager:
 
         if not last_times:
             # Fall back to the file timestamp.
-            fallback_time = int(os.path.getmtime(self.filename) * 1000) - 60_000
+            if os.path.exists(self.filename):
+                fallback_time = int(os.path.getmtime(self.filename) * 1000) - 60_000
+            else:
+                fallback_time = 0
             return {symbol: fallback_time for symbol in self.get_all_symbols_from_cache()}
         
         return dict(last_times)
@@ -82,7 +85,7 @@ class TradeCacheManager:
             new_trades = api.client.get_my_trades(symbol=symbol, startTime=startTime)
         except Exception as e:
             print(f"[Error] Binance API for {symbol}: {e}")
-            return
+            return []
 
         # Deduplicate by ID when present, otherwise by time and symbol.
         existing_keys = set(
@@ -129,5 +132,6 @@ def periodic_sync():
     t.start()
 
 
-cache_manager = TradeCacheManager("cache.json")
-periodic_sync()
+if __name__ == "__main__":
+    cache_manager = TradeCacheManager("cache.json")
+    periodic_sync()

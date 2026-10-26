@@ -3482,6 +3482,32 @@ def test_batch9_hardening(tmp_path):
     assert len(res2) == 6
 
 
+def test_batch10_archive_hardening(tmp_path):
+    from market_regime import MarketRegimeEvaluator, MarketRegimeService
+    from archive.market_regime_backtest import evaluate_forward_classifications
+    from archive.monitortrades_legacy import ProcentDistributor, adjust_monitor_interval
+    from archive.tradeCacheManager import TradeCacheManager
+
+    evaluator = MarketRegimeEvaluator()
+    bull = evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
+    decision = MarketRegimeService().compose(bull, bull)
+    with pytest.raises(ValueError):
+        evaluate_forward_classifications([(decision, True)])
+
+    assert adjust_monitor_interval(20, 5, 0, -10) == 5
+    with pytest.raises(ValueError):
+        ProcentDistributor(0, 600, float("nan"), 0.01)
+    with pytest.raises(ValueError):
+        ProcentDistributor(0, 600, 0.1, True)
+    pd_inst = ProcentDistributor(0, 600, 0.1, 0.01)
+    pd_inst.update_tick(passed=1, half_life_duration=0)
+    assert pd_inst.max_procent == 0.1
+
+    tcm = TradeCacheManager(str(tmp_path / "nonexistent_cache.json"))
+    assert tcm.last_fetch_time_per_symbol == {}
+
+
+
 
 
 

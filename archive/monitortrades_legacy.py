@@ -3,6 +3,7 @@
 # monitortrades.py. Singura referinta externa este tests/testdistributor.py.
 # The imports below exist only so the file stays parseable and runnable standalone as a reference.
 
+import math
 import sys
 import time
 import threading
@@ -23,7 +24,7 @@ import utils as u
 
 
 def adjust_monitor_interval(initial_interval, min_interval, total_duration, elapsed_time):
-    if elapsed_time >= total_duration:
+    if total_duration <= 0 or elapsed_time >= total_duration:
         return min_interval
     
     interval_range = initial_interval - min_interval
@@ -69,7 +70,7 @@ def sell_order_gradually(order, start_time, end_time):
          
         print(f"Monitor interval: {monitor_interval:.2f} seconds")
 
-        current_price = get_current_price(symbol)
+        current_price = api.get_current_price(symbol)
 
         if current_price is None:
             print("Failed to obtain the price. Retrying in a few seconds.")
@@ -308,7 +309,14 @@ trades = []
 class ProcentDistributor:
 
     def __init__(self, start_time, expired_duration, max_procent, min_procent=0.008, unitate_timp=60, momentum_weight=0.5):
-        if min_procent < 0 or max_procent < min_procent:
+        if (
+            isinstance(min_procent, bool)
+            or isinstance(max_procent, bool)
+            or not math.isfinite(float(min_procent))
+            or not math.isfinite(float(max_procent))
+            or min_procent < 0
+            or max_procent < min_procent
+        ):
             raise ValueError("Invalid procent values")
 
         self.start_time = start_time
@@ -358,7 +366,7 @@ class ProcentDistributor:
 
     def update_tick(self, passed=0, half_life_duration=24*60*60):
 
-        if passed <= 0:
+        if passed <= 0 or half_life_duration <= 0:
             return
 
         decay_factor = 0.5 ** (passed * self.expired_duration / half_life_duration)

@@ -16,6 +16,8 @@ def evaluate_forward_classifications(samples):
     by_pattern = {}
     for decision, raw_return in samples:
         total += 1
+        if isinstance(raw_return, bool):
+            raise ValueError("forward returns must be finite")
         value = float(raw_return)
         if not math.isfinite(value):
             raise ValueError("forward returns must be finite")

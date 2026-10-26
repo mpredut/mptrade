@@ -1,7 +1,10 @@
 import unittest
 
 from market_regime import MarketRegimeEvaluator, MarketRegimeService
-from market_regime_backtest import evaluate_forward_classifications
+try:
+    from archive.market_regime_backtest import evaluate_forward_classifications
+except ImportError:
+    from market_regime_backtest import evaluate_forward_classifications
 
 
 class MarketRegimeBacktestTest(unittest.TestCase):
