@@ -6955,3 +6955,67 @@ def test_iteration41_t212_provider_bapi_and_bapi_allorders_nan_bool_safety(monke
     assert st["BUY"]["total_value"] == pytest.approx(200.0)
     assert st["SELL"]["trade_count"] == 0
 
+
+def test_iteration42_order_id_context_bapi_ws_normalize_and_bapi_trades_nan_bool_safety():
+    import pytest
+    from binance_api import order_id_context, bapi_ws_normalize, bapi_trades
+
+    # 1. order_id_context: boolean clientOrderId & case-insensitive allowed_owners
+    assert order_id_context.resolve_order_owner(True) == "unspecified"
+    assert order_id_context.resolve_order_owner(False) == "unspecified"
+    assert order_id_context.order_matches_owner("TA_main_1234", "TRADEALL") is True
+    assert order_id_context.order_matches_owner("MO_TA_1234", ["MonitorOrder"]) is True
+    assert order_id_context.order_matches_owner("TA_main_1234", True) is False
+    assert order_id_context.order_matches_owner("TA_main_1234", [True, None, ""]) is False
+
+    # 2. bapi_ws_normalize: now_ms=True / NaN falls back to current epoch ms; boolean commission ignored
+    ev = {
+        "s": "BTCUSDC",
+        "x": "TRADE",
+        "X": "FILLED",
+        "S": "BUY",
+        "i": 1001,
+        "t": 2002,
+        "l": "0.5",
+        "L": "60000.0",
+        "n": True,
+        "N": False,
+    }
+    sym1, ord_row = bapi_ws_normalize.parse_order_execution_report(ev, now_ms=True)
+    assert sym1 == "BTCUSDC"
+    assert ord_row["timestamp"] > 1_700_000_000_000
+    sym2, ord_row2 = bapi_ws_normalize.parse_order_execution_report(ev, now_ms=float("nan"))
+    assert sym2 == "BTCUSDC"
+    assert ord_row2["timestamp"] > 1_700_000_000_000
+    sym3, tr_row = bapi_ws_normalize.parse_trade_execution_report(ev, now_ms=True)
+    assert sym3 == "BTCUSDC"
+    assert tr_row["time"] > 1_700_000_000_000
+    assert "commission" not in tr_row
+    assert "commissionAsset" not in tr_row
+
+    # 3. bapi_trades.aggregate_trades: rejects boolean orderId, quoteQty, commission, commissionAsset
+    agg = bapi_trades.aggregate_trades([
+        {"orderId": True, "symbol": "BTCUSDC", "qty": "1.0", "price": "50000", "isBuyer": True},
+        {
+            "orderId": 777,
+            "id": True,
+            "symbol": "BTCUSDC",
+            "qty": "0.5",
+            "price": "50000",
+            "quoteQty": True,
+            "commission": True,
+            "commissionAsset": True,
+            "isBuyer": "not-a-bool",
+            "side": "SELL",
+            "time": 1700000000000,
+        },
+    ])
+    assert len(agg) == 1
+    assert agg[0]["orderId"] == 777
+    assert agg[0]["id"] == 0
+    assert float(agg[0]["quoteQty"]) == pytest.approx(25000.0)
+    assert float(agg[0]["commission"]) == pytest.approx(0.0)
+    assert agg[0]["commissionAsset"] == ""
+    assert agg[0]["side"] == "SELL"
+
+

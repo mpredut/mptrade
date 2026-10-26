@@ -60,25 +60,29 @@ def aggregate_trades(trades):
     for trade in trades or ():
         if not isinstance(trade, dict):
             continue
-        orderId = trade['orderId'] if trade.get('orderId') is not None else extract_order_id(trade)
-        if orderId is None:
+        raw_oid = trade.get('orderId')
+        orderId = raw_oid if (raw_oid is not None and not isinstance(raw_oid, bool)) else extract_order_id(trade)
+        if orderId is None or isinstance(orderId, bool):
             continue
         qty = extract_order_qty(trade)
         px = extract_order_price(trade)
         if qty <= 0 or px <= 0:
             continue
+        raw_qq_val = trade.get('quoteQty', 0.0)
         try:
-            raw_qq = float(trade.get('quoteQty', 0.0) or 0.0)
+            raw_qq = 0.0 if (raw_qq_val is None or isinstance(raw_qq_val, bool)) else float(raw_qq_val)
             quote_qty = raw_qq if math.isfinite(raw_qq) and raw_qq > 0 else (px * qty)
         except (TypeError, ValueError):
             quote_qty = px * qty
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
         side = extract_order_side(trade)
-        is_buyer = trade.get('isBuyer') if 'isBuyer' in trade else (side == 'BUY')
+        raw_is_buyer = trade.get('isBuyer')
+        is_buyer = raw_is_buyer if isinstance(raw_is_buyer, bool) else (side == 'BUY')
 
         # Aggregate fields belonging to the same order.
         if aggregated_trades[orderId]['count'] == 0:
-            aggregated_trades[orderId]['id'] = trade.get('id', 0)
+            raw_tid = trade.get('id', 0)
+            aggregated_trades[orderId]['id'] = 0 if (raw_tid is None or isinstance(raw_tid, bool)) else raw_tid
         aggregated_trades[orderId]['count'] += 1
         aggregated_trades[orderId]['orderId'] = orderId
         aggregated_trades[orderId]['symbol'] = trade.get('symbol', '')
@@ -110,15 +114,21 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['quoteQty'] += quote_qty
         aggregated_trades[orderId]['weightedCost'] += px * qty
         fee_info = extract_order_fee(trade)
+        raw_comm = trade.get('commission', 0.0)
         try:
-            comm_val = float(trade.get('commission', 0.0) or 0.0)
+            comm_val = 0.0 if (raw_comm is None or isinstance(raw_comm, bool)) else float(raw_comm)
             if not math.isfinite(comm_val) or comm_val < 0:
                 comm_val = 0.0
         except (TypeError, ValueError):
             comm_val = 0.0
         if comm_val == 0.0 and fee_info is not None:
             comm_val = fee_info['fee']
-        comm_asset = trade.get('commissionAsset') or (fee_info['fee_asset'] if fee_info is not None else '')
+        raw_comm_asset = trade.get('commissionAsset')
+        comm_asset = (
+            raw_comm_asset
+            if (raw_comm_asset and not isinstance(raw_comm_asset, bool))
+            else (fee_info['fee_asset'] if fee_info is not None else '')
+        )
         aggregated_trades[orderId]['commission'] += comm_val
         aggregated_trades[orderId]['commissionAsset'] = comm_asset
         aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], ts_ms)
@@ -171,12 +181,26 @@ def aggregate_trades(trades):
 
     return aggregated_list
     
+def _clean_non_neg_int(val, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        if math.isfinite(f) and f >= 0:
+            return int(f)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return default
+
+
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     
     if order_type is not None:
         order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
+    days_ago = _clean_non_neg_int(days_ago, default=0)
+    limit = _clean_non_neg_int(limit, default=1000) or 1000
     
     
     all_trades = []
@@ -272,6 +296,8 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
         order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
+    backdays = _clean_non_neg_int(backdays, default=3)
+    limit = _clean_non_neg_int(limit, default=1000) or 1000
     
     all_trades = []
     
@@ -311,6 +337,8 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
         order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
+    backdays = _clean_non_neg_int(backdays, default=3)
+    limit = _clean_non_neg_int(limit, default=1000) or 1000
 
     try:
         from . import bapi_allorders as apiorders

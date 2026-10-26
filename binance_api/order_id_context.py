@@ -118,13 +118,15 @@ def _derive_process_name(stem):
 
 
 def _sanitize_name(value, default="unknown"):
+    if isinstance(value, bool):
+        value = ""
     safe = _SAFE_NAME_RE.sub("_", str(value or "")).strip("_")
     return safe or default
 
 
 def _base36(value):
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    value = max(0, int(value))
+    value = 0 if isinstance(value, bool) else max(0, int(value))
     if value == 0:
         return "0"
 
@@ -173,6 +175,8 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
         One of 'rtrade', 'tradeall', 'monitororder', 'monitortrades',
         'spot_dca', 'assetguardian', 'server', 'manual', 'unspecified', or 'alt:...'.
     """
+    if client_order_id is None or isinstance(client_order_id, bool):
+        return "unspecified"
     cid = str(client_order_id or "").strip()
     if not cid:
         return "unspecified"
@@ -204,13 +208,26 @@ def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[st
     """Check if an order's clientOrderId matches any of the allowed owners."""
     if allowed_owners is None:
         return True
+    if isinstance(allowed_owners, bool):
+        return False
     if isinstance(allowed_owners, str):
-        allowed_set = {allowed_owners}
+        clean_owner = allowed_owners.strip().lower()
+        allowed_set = {clean_owner} if clean_owner else set()
     else:
-        allowed_set = set(allowed_owners)
-    owner = resolve_order_owner(client_order_id)
+        try:
+            allowed_set = {
+                str(o).strip().lower()
+                for o in allowed_owners
+                if o is not None and not isinstance(o, bool) and str(o).strip()
+            }
+        except TypeError:
+            return False
+    if not allowed_set:
+        return False
+    owner = resolve_order_owner(client_order_id).lower()
     if owner in allowed_set:
         return True
-    if "monitororder" in allowed_set and str(client_order_id or "").startswith("MO_"):
+    cid_str = "" if client_order_id is None or isinstance(client_order_id, bool) else str(client_order_id).strip()
+    if "monitororder" in allowed_set and cid_str.startswith("MO_"):
         return True
     return False

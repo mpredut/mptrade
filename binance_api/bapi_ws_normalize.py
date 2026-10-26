@@ -23,6 +23,17 @@ def _is_positive_finite(val: Any) -> bool:
         return False
 
 
+def _clean_now_ms(now_ms: Any) -> int:
+    if now_ms is not None and not isinstance(now_ms, bool):
+        try:
+            f = float(now_ms)
+            if math.isfinite(f) and f > 0:
+                return int(f)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return int(time.time() * 1000)
+
+
 def parse_order_execution_report(
     event: dict[str, Any],
     *,
@@ -77,7 +88,7 @@ def parse_order_execution_report(
                 cum_qty = float(raw_cum_qty) if _is_positive_finite(raw_cum_qty) else last_quantity
                 if cum_quote > 0 and cum_qty > 0:
                     last_price = cum_quote / cum_qty
-        fallback_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        fallback_ms = _clean_now_ms(now_ms)
         order_item = {
             "orderId": event.get("i"),
             # Store one immutable fill. A cumulative Z/z aggregate cannot name all
@@ -149,7 +160,7 @@ def parse_trade_execution_report(
             raw_price = str(extracted_px)
     ts_ms = extract_timestamp_ms(event)
     if ts_ms is None or ts_ms <= 0:
-        ts_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        ts_ms = _clean_now_ms(now_ms)
     trade_item: dict[str, Any] = {
         "symbol": symbol,
         "id": trade_id,
@@ -159,8 +170,10 @@ def parse_trade_execution_report(
         "time": int(ts_ms),
         "isBuyer": side == "BUY",
     }
-    if event.get("n") is not None:
-        trade_item["commission"] = str(event.get("n"))
-    if event.get("N") is not None:
-        trade_item["commissionAsset"] = str(event.get("N"))
+    raw_n = event.get("n")
+    if raw_n is not None and not isinstance(raw_n, bool):
+        trade_item["commission"] = str(raw_n)
+    raw_N = event.get("N")
+    if raw_N is not None and not isinstance(raw_N, bool):
+        trade_item["commissionAsset"] = str(raw_N)
     return symbol, trade_item
