@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import signal
 import sys
@@ -179,7 +180,14 @@ class IntelligenceTelemetryDaemon:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating tasks whose scheduled interval has elapsed."""
-        current_ts = now if now is not None else time.time()
+        current_ts = time.time()
+        if now is not None and not isinstance(now, bool):
+            try:
+                now_f = float(now)
+                if math.isfinite(now_f) and now_f > 0.0:
+                    current_ts = now_f
+            except (TypeError, ValueError, OverflowError):
+                pass
         results: Dict[str, Any] = {
             "ts": current_ts,
             "symbols": list(self.symbols),

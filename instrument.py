@@ -666,11 +666,20 @@ class Instrument:
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             # Balance, fee, and venue filters are mechanics, not optional profit
             # policy. Apply them even when an emergency flow bypasses profit/weight.
+            raw_hours = kwargs.get("hours", 5)
+            hours_f = 5.0
+            if raw_hours is not None and not isinstance(raw_hours, bool):
+                try:
+                    hf = float(raw_hours)
+                    if math.isfinite(hf) and hf > 0.0:
+                        hours_f = hf
+                except (TypeError, ValueError, OverflowError):
+                    pass
             decision = self._provider.quantity_decision(
                 self.symbol, side_u, quantity_price, qty,
                 base=base_asset, quote=quote_asset,
                 cancelorders=bool(kwargs.get("cancelorders", False)),
-                hours=float(kwargs.get("hours", 5) or 5),
+                hours=hours_f,
                 apply_policy=not bypass_quantity_policy,
                 market=is_market,
                 enforce_business_minimum=enforce_business_minimum,
@@ -678,8 +687,16 @@ class Instrument:
                 known_balance=known_balance,
             )
             qty = decision.final_qty
-            dec_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
-            applied_scale = min(float(caller_applied_scale), float(dec_scale))
+            raw_dec_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
+            dec_scale = 1.0
+            if raw_dec_scale is not None and not isinstance(raw_dec_scale, bool):
+                try:
+                    dsf = float(raw_dec_scale)
+                    if math.isfinite(dsf) and dsf > 0.0:
+                        dec_scale = dsf
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            applied_scale = min(float(caller_applied_scale), dec_scale)
             if qty <= 0:
                 print(f"[{self.symbol}] {side_u} qty refused: "
                       f"{decision.refuse_reason} asset={decision.balance_asset}")
@@ -786,10 +803,12 @@ class Instrument:
                         round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
                         if callable(round_fn) and qty > 0:
                             try:
-                                res_f = float(round_fn(self.symbol, qty))
-                                if math.isfinite(res_f):
-                                    qty = res_f
-                            except (TypeError, ValueError):
+                                raw_res = round_fn(self.symbol, qty)
+                                if not isinstance(raw_res, bool):
+                                    res_f = float(raw_res)
+                                    if math.isfinite(res_f):
+                                        qty = res_f
+                            except (TypeError, ValueError, OverflowError):
                                 pass
                         print(f"[{self.symbol}] {side_u} scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
                         if qty <= 0:
@@ -1167,7 +1186,12 @@ class Instrument:
                             queue_qty = orig_qty
                             use_resolved_qty = False
                             try:
-                                if queue_qty is None or not math.isfinite(float(queue_qty)) or float(queue_qty) <= 0:
+                                if (
+                                    queue_qty is None
+                                    or isinstance(queue_qty, bool)
+                                    or not math.isfinite(float(queue_qty))
+                                    or float(queue_qty) <= 0
+                                ):
                                     use_resolved_qty = True
                             except (TypeError, ValueError, OverflowError):
                                 use_resolved_qty = True
@@ -1177,8 +1201,9 @@ class Instrument:
                                     retry_kwargs["applied_scale"] = float(applied_scale)
                             can_enqueue = False
                             try:
-                                q_f = float(queue_qty)
-                                can_enqueue = math.isfinite(q_f) and q_f > 0
+                                if queue_qty is not None and not isinstance(queue_qty, bool):
+                                    q_f = float(queue_qty)
+                                    can_enqueue = math.isfinite(q_f) and q_f > 0
                             except (TypeError, ValueError, OverflowError):
                                 can_enqueue = False
                             if can_enqueue:
@@ -1202,7 +1227,11 @@ class Instrument:
     def min_qty(self) -> float:
         """Return the venue minimum order quantity; ``0`` means no known minimum."""
         try:
-            return float(self._provider.min_order_qty(self.symbol) or 0.0)
+            raw = self._provider.min_order_qty(self.symbol)
+            if raw is None or isinstance(raw, bool):
+                return 0.0
+            val = float(raw)
+            return val if (math.isfinite(val) and val > 0.0) else 0.0
         except Exception:  # noqa: BLE001
             return 0.0
 

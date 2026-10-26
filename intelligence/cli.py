@@ -8,21 +8,50 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
 from typing import Any, Dict, Optional
 
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _format_age(seconds: float) -> str:
     """Format duration in human-readable string."""
-    if seconds < 0:
+    if seconds is None or isinstance(seconds, bool):
+        return "unknown"
+    try:
+        sec_f = float(seconds)
+    except (TypeError, ValueError, OverflowError):
+        return "unknown"
+    if not math.isfinite(sec_f):
+        return "unknown"
+    if sec_f < 0:
         return "now"
-    if seconds < 60:
-        return f"{seconds:.1f}s ago"
-    if seconds < 3600:
-        return f"{seconds / 60:.1f}m ago"
-    return f"{seconds / 3600:.1f}h ago"
+    if sec_f < 60:
+        return f"{sec_f:.1f}s ago"
+    if sec_f < 3600:
+        return f"{sec_f / 60:.1f}m ago"
+    return f"{sec_f / 3600:.1f}h ago"
 
 
 def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
@@ -43,9 +72,9 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
         return {"running": False, "reason": "no_heartbeat_file"}
 
     try:
-        pid = int(data.get("pid", 0))
-        ts = float(data.get("ts", 0.0))
-        age = time.time() - ts
+        pid = _safe_int(data.get("pid", 0), 0)
+        ts = _safe_float(data.get("ts", 0.0), 0.0)
+        age = (time.time() - ts) if ts > 0.0 else float("inf")
 
         is_alive = False
         if pid > 0:
@@ -61,7 +90,7 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
             "running": is_alive and age < 120.0,
             "pid": pid,
             "status": status_str,
-            "age_seconds": round(age, 1),
+            "age_seconds": round(age, 1) if math.isfinite(age) else None,
             "age_formatted": _format_age(age),
             "symbols": data.get("symbols", []),
             "intervals": data.get("intervals", {}),
@@ -82,9 +111,9 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
         data = read_recovering_previous(hb_path, json.loads, default=None)
         if not isinstance(data, dict):
             return {"running": False, "reason": "no_heartbeat_file"}
-        pid = int(data.get("pid", 0))
-        ts = float(data.get("ts", 0.0))
-        age = time.time() - ts
+        pid = _safe_int(data.get("pid", 0), 0)
+        ts = _safe_float(data.get("ts", 0.0), 0.0)
+        age = (time.time() - ts) if ts > 0.0 else float("inf")
 
         is_alive = False
         if pid > 0:
@@ -99,7 +128,7 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
             "running": is_alive and age < 300.0,
             "pid": pid,
             "status": status_str,
-            "age_seconds": round(age, 1),
+            "age_seconds": round(age, 1) if math.isfinite(age) else None,
             "age_formatted": _format_age(age),
             "intervals": data.get("intervals", {}),
             "last_run": data.get("last_run", {}),
@@ -145,8 +174,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         ob_path = os.path.join(cache_dir, f"orderbook_depth_{symbol}.json")
         ob_data = read_recovering_previous(ob_path, json.loads, default=None)
         if isinstance(ob_data, dict):
-            ob_data["age_seconds"] = round(now - ob_data.get("ts", 0), 1)
-            ob_data["age_formatted"] = _format_age(now - ob_data.get("ts", 0))
+            ob_ts = _safe_float(ob_data.get("ts"), 0.0)
+            ob_data["age_seconds"] = round(now - ob_ts, 1)
+            ob_data["age_formatted"] = _format_age(now - ob_ts)
             result["pillar2_external"]["orderbook"] = ob_data
         else:
             result["pillar2_external"]["orderbook"] = None
@@ -155,8 +185,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         deriv_path = os.path.join(cache_dir, f"derivatives_telemetry_{symbol}.json")
         deriv_data = read_recovering_previous(deriv_path, json.loads, default=None)
         if isinstance(deriv_data, dict):
-            deriv_data["age_seconds"] = round(now - deriv_data.get("ts", 0), 1)
-            deriv_data["age_formatted"] = _format_age(now - deriv_data.get("ts", 0))
+            deriv_ts = _safe_float(deriv_data.get("ts"), 0.0)
+            deriv_data["age_seconds"] = round(now - deriv_ts, 1)
+            deriv_data["age_formatted"] = _format_age(now - deriv_ts)
             result["pillar2_external"]["derivatives"] = deriv_data
         else:
             result["pillar2_external"]["derivatives"] = None
@@ -165,8 +196,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         whale_path = os.path.join(cache_dir, f"whale_snapshot_{symbol}.json")
         whale_data = read_recovering_previous(whale_path, json.loads, default=None)
         if isinstance(whale_data, dict):
-            whale_data["age_seconds"] = round(now - whale_data.get("ts", 0), 1)
-            whale_data["age_formatted"] = _format_age(now - whale_data.get("ts", 0))
+            whale_ts = _safe_float(whale_data.get("ts"), 0.0)
+            whale_data["age_seconds"] = round(now - whale_ts, 1)
+            whale_data["age_formatted"] = _format_age(now - whale_ts)
             result["pillar2_external"]["whale"] = whale_data
         else:
             result["pillar2_external"]["whale"] = None
@@ -182,7 +214,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 fg_data = cand_fg
                 break
         if isinstance(fg_data, dict):
-            fg_data["age_formatted"] = _format_age(now - fg_data.get("ts", 0))
+            fg_ts = _safe_float(fg_data.get("ts"), 0.0)
+            fg_data["age_formatted"] = _format_age(now - fg_ts)
             result["pillar3_sentiment"]["fear_greed"] = fg_data
         else:
             result["pillar3_sentiment"]["fear_greed"] = None
@@ -194,7 +227,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 gem_data = cand_adv
                 break
         if isinstance(gem_data, dict):
-            gem_data["age_formatted"] = _format_age(now - gem_data.get("ts", 0))
+            gem_ts = _safe_float(gem_data.get("ts"), 0.0)
+            gem_data["age_formatted"] = _format_age(now - gem_ts)
             result["pillar3_sentiment"]["sentiment_advisor"] = gem_data
             result["pillar3_sentiment"]["gemini_macro"] = gem_data
         else:
@@ -212,8 +246,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 geo_data = cand_geo
                 break
         if isinstance(geo_data, dict):
-            geo_data["age_seconds"] = round(now - geo_data.get("ts", 0), 1)
-            geo_data["age_formatted"] = _format_age(now - geo_data.get("ts", 0))
+            geo_ts = _safe_float(geo_data.get("ts"), 0.0)
+            geo_data["age_seconds"] = round(now - geo_ts, 1)
+            geo_data["age_formatted"] = _format_age(now - geo_ts)
             result["pillar4_macro"] = geo_data
         else:
             result["pillar4_macro"] = None
@@ -224,7 +259,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
     try:
         from order_guard import check_intelligence_guards
         ob_item = result.get("pillar2_external", {}).get("orderbook")
-        mid_px = float(ob_item.get("mid_price", 100.0)) if ob_item else 100.0
+        mid_px_raw = _safe_float(ob_item.get("mid_price"), 100.0) if isinstance(ob_item, dict) else 100.0
+        mid_px = mid_px_raw if mid_px_raw > 0.0 else 100.0
         # BUY evaluation with standard 250 EUR notional
         allowed, reason, scale = check_intelligence_guards(
             provider="binance",

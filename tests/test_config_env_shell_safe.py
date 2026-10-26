@@ -840,6 +840,63 @@ def test_shadow_signals_utils_and_volatility_hardening():
     assert vol.adaptive_thresholds(2.5, k_reentry=True, k_dca=1.0) == (None, None)
 
 
+def test_intelligence_cli_macro_analyzer_and_instrument_hardening(tmp_path):
+    import json
+    import math
+    from intelligence import cli as icli
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from instrument import Instrument
+
+    # 1. intelligence.cli._format_age and get_daemon_status handle None/NaN/bool safely
+    assert icli._format_age(None) == "unknown"
+    assert icli._format_age(float("nan")) == "unknown"
+    assert icli._format_age(True) == "unknown"
+    assert icli._format_age(-5.0) == "now"
+
+    hb = tmp_path / "globaltelemetry_collector.heartbeat"
+    hb.write_text(json.dumps({"pid": None, "ts": None}), encoding="utf-8")
+    status = icli.get_daemon_status(str(tmp_path))
+    assert status["running"] is False
+    assert status["pid"] == 0
+    assert status["age_seconds"] is None
+    assert status["age_formatted"] == "unknown"
+
+    # 2. MacroAnalyzer._resolve_now handles NaN/bool/None safely
+    now_res = MacroAnalyzer._resolve_now(float("nan"))
+    assert math.isfinite(now_res) and now_res > 0
+    now_bool = MacroAnalyzer._resolve_now(True)
+    assert math.isfinite(now_bool) and now_bool > 1000.0
+
+    # 3. Instrument.min_qty handles bool/NaN/negative safely
+    class _DummyProvider:
+        name = "dummy"
+        raw_min = float("nan")
+
+        def validate_symbol(self, sym):
+            pass
+
+        def min_order_qty(self, sym):
+            return self.raw_min
+
+    class _DummyApi:
+        def __init__(self, p):
+            self._p = p
+
+        def provider_by_name(self, name):
+            return self._p
+
+    prov = _DummyProvider()
+    inst = Instrument("test", "BTCUSDC", "dummy", api=_DummyApi(prov))
+    assert inst.min_qty() == 0.0
+    prov.raw_min = True
+    assert inst.min_qty() == 0.0
+    prov.raw_min = -5.0
+    assert inst.min_qty() == 0.0
+    prov.raw_min = 0.001
+    assert inst.min_qty() == 0.001
+
+
+
 
 
 

@@ -77,11 +77,19 @@ class MacroAnalyzer:
         self.llm_advisor = self.sentiment_advisor
         self.gemini_advisor = self.sentiment_advisor
 
-        cached_geo_ts = float(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0) or 0.0)
-        cached_adv_ts = float(
-            getattr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts", 0.0)
+        def _safe_pos_ts(val: Any) -> float:
+            if val is None or isinstance(val, bool):
+                return 0.0
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+
+        cached_geo_ts = _safe_pos_ts(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0))
+        cached_adv_ts = _safe_pos_ts(
+            getattr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts", None)
             or getattr(self.sentiment_advisor, "_last_eval_ts", 0.0)
-            or 0.0
         )
         self._last_macro_llm_ts: float = cached_geo_ts
         self._last_notified_geo_ts: float = cached_geo_ts
@@ -92,10 +100,21 @@ class MacroAnalyzer:
 
         self.heartbeat_path = os.path.join(self.cache_dir, "macro_analyzer.heartbeat")
 
+    @staticmethod
+    def _resolve_now(now: Optional[float]) -> float:
+        if now is not None and not isinstance(now, bool):
+            try:
+                f = float(now)
+                if math.isfinite(f) and f > 0.0:
+                    return f
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return time.time()
+
     def assess_geopolitical_threat(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
         try:
-            eval_now = float(now) if now is not None else time.time()
+            eval_now = self._resolve_now(now)
             from intelligence.macro.news_feed_collector import NewsFeedCollector
             news_snap = None
             for fname in ("news_feed_collect.json", "news_feed_history.json"):
@@ -169,7 +188,7 @@ class MacroAnalyzer:
     def assess_market_advisor(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Synthesize multi-source sentiment & whale telemetry into a macro perspective."""
         try:
-            eval_now = float(now) if now is not None else time.time()
+            eval_now = self._resolve_now(now)
             from state_io import read_recovering_previous
 
             # 1. Read cached Fear & Greed (collect file with legacy fallback)
@@ -415,7 +434,7 @@ class MacroAnalyzer:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, publishing assessments whose interval has elapsed."""
-        current_ts = now if now is not None else time.time()
+        current_ts = self._resolve_now(now)
         results: Dict[str, Any] = {
             "ts": current_ts,
             "geopolitical_updated": False,
