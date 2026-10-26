@@ -49,9 +49,15 @@ def snapshot_data_version(items: dict[str, Any], fetchtime: dict[str, Any] | Non
 
 def trade_data_version(stream_id: str, revision: int) -> str:
     """Format a monotonic ``<stream_id>:<revision>`` version string for Trade JSONL."""
-    if isinstance(revision, bool):
+    if (
+        not isinstance(stream_id, str)
+        or not stream_id.strip()
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 0
+    ):
         raise ValueError("invalid Trade stream revision")
-    return f"{stream_id}:{int(revision)}"
+    return f"{stream_id}:{revision}"
 
 
 def trade_records_digest(
@@ -83,32 +89,63 @@ def trade_records_digest(
     return "chain:" + state.hex()
 
 
+def _strict_int_field(val: Any) -> int:
+    if isinstance(val, bool) or val is None:
+        raise ValueError("invalid Trade row field type")
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if not val.is_integer():
+            raise ValueError("invalid Trade row field type")
+        return int(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            raise ValueError("invalid Trade row field type")
+        return int(s)
+    raise ValueError("invalid Trade row field type")
+
+
 def trade_semantic_signature(item: dict[str, Any]) -> tuple[Any, ...]:
     """Normalize the immutable financial fields shared by REST and WebSocket."""
-    if (
-        isinstance(item["id"], bool)
-        or isinstance(item["orderId"], bool)
-        or isinstance(item["time"], bool)
-        or not isinstance(item["isBuyer"], bool)
-        or isinstance(item["price"], bool)
-        or isinstance(item["qty"], bool)
-    ):
+    if not isinstance(item, dict):
         raise ValueError("invalid Trade row field type")
     try:
-        price_dec = Decimal(str(item["price"])).normalize()
-        qty_dec = Decimal(str(item["qty"])).normalize()
+        raw_sym = item["symbol"]
+        raw_id = item["id"]
+        raw_order_id = item["orderId"]
+        raw_time = item["time"]
+        raw_buyer = item["isBuyer"]
+        raw_price = item["price"]
+        raw_qty = item["qty"]
+    except KeyError as exc:
+        raise ValueError("invalid Trade row field type") from exc
+    if (
+        not isinstance(raw_sym, str)
+        or not raw_sym.strip()
+        or not isinstance(raw_buyer, bool)
+        or isinstance(raw_price, bool)
+        or isinstance(raw_qty, bool)
+    ):
+        raise ValueError("invalid Trade row field type")
+    trade_id_int = _strict_int_field(raw_id)
+    order_id_int = _strict_int_field(raw_order_id)
+    time_int = _strict_int_field(raw_time)
+    try:
+        price_dec = Decimal(str(raw_price)).normalize()
+        qty_dec = Decimal(str(raw_qty)).normalize()
     except ArithmeticError as exc:
         raise ValueError("invalid Trade price or qty") from exc
     if not (price_dec.is_finite() and qty_dec.is_finite()):
         raise ValueError("non-finite Trade price or qty")
     return (
-        str(item["symbol"]).upper(),
-        int(item["id"]),
-        int(item["orderId"]),
+        raw_sym.strip().upper(),
+        trade_id_int,
+        order_id_int,
         price_dec,
         qty_dec,
-        int(item["time"]),
-        item["isBuyer"],
+        time_int,
+        raw_buyer,
     )
 
 
@@ -117,10 +154,8 @@ def dedupe_trade_items_by_id(items: Iterable[dict[str, Any]]) -> list[dict[str, 
     seen: dict[str, tuple[Any, ...]] = {}
     deduped: list[dict[str, Any]] = []
     for item in items:
-        if isinstance(item["id"], bool):
-            raise ValueError("invalid Trade id")
-        trade_id = str(int(item["id"]))
         signature = trade_semantic_signature(item)
+        trade_id = str(signature[1])
         if trade_id in seen:
             if seen[trade_id] != signature:
                 raise ValueError(
@@ -179,16 +214,20 @@ def build_account_meta_snapshot(
     }
     if committed_bytes is not None:
         if (
-            isinstance(revision, bool)
+            not isinstance(stream_id, str)
+            or not stream_id.strip()
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
             or isinstance(committed_bytes, bool)
-            or int(revision) < 0
-            or int(committed_bytes) < 0
+            or not isinstance(committed_bytes, int)
+            or revision < 0
+            or committed_bytes < 0
         ):
             raise ValueError("invalid Trade stream metadata")
         payload.update({
             "stream_id": stream_id,
-            "revision": int(revision),
-            "committed_bytes": int(committed_bytes),
+            "revision": revision,
+            "committed_bytes": committed_bytes,
             "content_digest": content_digest,
         })
     return payload

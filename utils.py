@@ -187,11 +187,11 @@ def gaussian_weights_from_idx(T, idx: int):
     try:
         t_f = float(T)
         idx_f = float(idx)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return np.array([]), np.array([])
     if not (math.isfinite(t_f) and math.isfinite(idx_f)):
         return np.array([]), np.array([])
-    t_steps = max(1, int(round(t_f))) if t_f > 0 else 0
+    t_steps = min(100000, max(1, int(round(t_f)))) if t_f > 0 else 0
     idx_int = max(0, int(idx_f))
     if idx_int >= t_steps or t_steps <= 0:
         return np.array([]), np.array([])

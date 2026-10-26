@@ -9221,6 +9221,78 @@ def test_iteration70_t212_replay_bot_kraken_watch_and_trailing_core_safety(tmp_p
     assert "pending_order" not in st_coin
 
 
+def test_iteration71_cacheintegrity_rtrade_store_shadow_signals_and_utils_safety(tmp_path):
+    """Verify Iteration 71 hardening across cacheintegrity, rtrade_pair_store,
+    order_rollback, shadow_signals, utils, and log.configure."""
+    import pytest
+    from types import SimpleNamespace
+    import cacheintegrity
+    from rtrade_pair_store import RTradePairStore
+    from order_rollback import extract_order_restore_params
+    from shadow_signals import KalmanStateTracker
+    import utils
+    import log
+
+    # 1. cacheintegrity.trade_data_version & trade_semantic_signature & build_account_meta_snapshot
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("", 1)
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("stream1", 1.5)
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_data_version("stream1", -1)
+    assert cacheintegrity.trade_data_version("stream1", 2) == "stream1:2"
+
+    with pytest.raises(ValueError):
+        cacheintegrity.trade_semantic_signature({
+            "symbol": "BTCUSDC", "id": 10.5, "orderId": 20,
+            "price": "100", "qty": "1", "time": 1000, "isBuyer": True,
+        })
+    with pytest.raises(ValueError):
+        cacheintegrity.build_account_meta_snapshot(
+            data_version="s:1", fetchtime={}, counts={},
+            stream_id="s", revision=1.5, committed_bytes=10, content_digest="chain:" + "00" * 16,
+        )
+
+    # 2. RTradePairStore rejects boolean IDs and non-finite quantities in _validate_intent and persist_intent
+    with pytest.raises(ValueError):
+        RTradePairStore._validate_intent("p1", "BTCUSDC", "limit:BUY", {
+            "side": "BUY", "kind": "limit", "client_order_id": True, "qty": 1.0,
+        })
+    with pytest.raises(ValueError):
+        RTradePairStore._validate_intent("p1", "BTCUSDC", "limit:BUY", {
+            "side": "BUY", "kind": "limit", "client_order_id": "c1", "qty": 1.0, "order_id": True,
+        })
+    store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"))
+    store.begin("BTCUSDC", "p1", "BUY", 1.0)
+    with pytest.raises(ValueError):
+        store.persist_intent("p1", "BUY", "limit", {"client_order_id": "c1", "qty": float("nan")})
+
+    # 3. order_rollback.extract_order_restore_params guards against qty * price overflow
+    restored_params = extract_order_restore_params({"side": "BUY", "price": 1e200, "origQty": 1e200})
+    assert restored_params["amount"] == 0.0
+
+    # 4. KalmanStateTracker.current_trend rejects non-integer kalman_trend like 1.9 and handles OverflowError
+    tracker = KalmanStateTracker(state_path=None, journal=SimpleNamespace(log_transition=lambda *a: None))
+    tracker._state["BTCUSDC"] = {"ts": 1000.0, "kalman_trend": 1.9}
+    tracker._now = lambda: 1005.0
+    assert tracker.current_trend("BTCUSDC") == (None, 1e18)
+    tracker._state["BTCUSDC"] = {"ts": 1000.0, "kalman_trend": -1.0}
+    assert tracker.current_trend("BTCUSDC") == (-1, 5.0)
+    res_upd = tracker.update("BTCUSDC", 10**400, 100.0, 10**400, [], 10**400)
+    assert res_upd["kalman_trend"] == 0
+
+    # 5. utils.gaussian_weights_from_idx handles OverflowError and clamps huge T
+    t_arr, w_arr = utils.gaussian_weights_from_idx(10**400, 0)
+    assert len(t_arr) == 0 and len(w_arr) == 0
+
+    # 6. log.configure rejects fractional max_size and check_every
+    with pytest.raises(ValueError):
+        log.configure(max_size=1024.5)
+    with pytest.raises(ValueError):
+        log.configure(check_every=10.5)
+
+
+
 
 
 

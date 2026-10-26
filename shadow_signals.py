@@ -169,7 +169,7 @@ class KalmanStateTracker:
         try:
             ts_f = float(raw_ts)
             now_f = float(self._now())
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None, 1e18
         if not (math.isfinite(ts_f) and ts_f > 0 and math.isfinite(now_f)):
             return None, 1e18
@@ -180,7 +180,7 @@ class KalmanStateTracker:
             kt_f = float(raw_kt)
         except (TypeError, ValueError, OverflowError):
             return None, 1e18
-        if not math.isfinite(kt_f) or int(kt_f) not in (-1, 0, 1):
+        if not math.isfinite(kt_f) or kt_f not in (-1.0, 0.0, 1.0):
             return None, 1e18
         age = now_f - ts_f
         if age < -60.0:
@@ -222,7 +222,7 @@ class KalmanStateTracker:
         try:
             ts = float(ts)
             price = float(price)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             k = self._last_kfields.get(
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
@@ -254,7 +254,7 @@ class KalmanStateTracker:
                 sr_f = float(big_sample_rate)
                 if math.isfinite(sr_f) and sr_f > 0:
                     sr_val = sr_f
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 sr_val = 1.0
         eps_val = 0.0
         if epsilon is not None and not isinstance(epsilon, bool):
@@ -262,7 +262,7 @@ class KalmanStateTracker:
                 eps_f = float(epsilon)
                 if math.isfinite(eps_f) and eps_f >= 0:
                     eps_val = eps_f
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 eps_val = 0.0
         last_fed = self._last_fed.get(symbol, -1e18)
         if last_fed > ts:

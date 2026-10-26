@@ -50,7 +50,8 @@ class RTradePairStore:
         kind = str(intent.get("kind") or "")
         if side not in {"BUY", "SELL"} or not kind or key != f"{kind}:{side}":
             raise ValueError(f"invalid rtrade intent identity {key!r}")
-        if not str(intent.get("client_order_id") or "").strip():
+        raw_coid = intent.get("client_order_id")
+        if isinstance(raw_coid, bool) or not str(raw_coid or "").strip():
             raise ValueError(f"invalid rtrade intent client ID {key!r}")
         if intent.get("pair_id") not in (None, pair_id):
             raise ValueError(f"rtrade intent {key!r} belongs to another pair")
@@ -62,10 +63,10 @@ class RTradePairStore:
         if requested_price is not None:
             cls._finite_positive(requested_price, f"intent {key!r} price")
         order_id = intent.get("order_id")
-        if order_id is not None and not str(order_id).strip():
+        if order_id is not None and (isinstance(order_id, bool) or not str(order_id).strip()):
             raise ValueError(f"invalid rtrade intent order ID {key!r}")
         intent_id = intent.get("intent_id")
-        if intent_id is not None and not str(intent_id).strip():
+        if intent_id is not None and (isinstance(intent_id, bool) or not str(intent_id).strip()):
             raise ValueError(f"invalid rtrade tracked intent ID {key!r}")
 
     @classmethod
@@ -140,7 +141,8 @@ class RTradePairStore:
                     if not isinstance(ticket, dict):
                         raise ValueError(
                             f"invalid rtrade checkpoint ticket for {pair_id!r}")
-                    order_id = str(ticket.get("order_id") or "").strip()
+                    raw_ticket_oid = ticket.get("order_id")
+                    order_id = "" if isinstance(raw_ticket_oid, bool) else str(raw_ticket_oid or "").strip()
                     side = str(ticket.get("side") or "").upper()
                     if (not order_id or order_id in ticket_ids
                             or side not in {"BUY", "SELL"}):
@@ -297,15 +299,17 @@ class RTradePairStore:
                 rec["updated_ts"] = now
                 return True
 
+            if not isinstance(pending, dict):
+                raise ValueError("tracked rtrade intent must be a dict")
             value = dict(pending)
             requested_qty = value.get("requested_qty", value.get("qty", qty))
             if requested_qty is None:
                 raise ValueError("tracked rtrade intent missing requested_qty")
-            requested_qty = float(requested_qty)
+            requested_qty = self._finite_positive(requested_qty, f"intent {key!r} quantity")
             requested_price = value.get(
                 "requested_price", value.get("price"))
             if requested_price is not None:
-                requested_price = float(requested_price)
+                requested_price = self._finite_positive(requested_price, f"intent {key!r} price")
 
             if rec is None:
                 if not symbol:

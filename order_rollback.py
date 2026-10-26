@@ -43,7 +43,8 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
         if (raw_kind is not None and not isinstance(raw_kind, bool) and str(raw_kind).strip())
         else ("TP" if side == "SELL" else "ENTRY")
     )
-    computed_amount = qty * price if qty > 0.0 and price > 0.0 else 0.0
+    prod = qty * price if qty > 0.0 and price > 0.0 else 0.0
+    computed_amount = prod if math.isfinite(prod) and prod > 0.0 else 0.0
     amount = _finite_pos_float(raw_amount, default=computed_amount)
 
     return {
