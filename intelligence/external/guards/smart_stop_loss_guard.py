@@ -70,7 +70,7 @@ def _resolve_now(now: Any) -> float:
     if now is not None and not isinstance(now, bool):
         try:
             f = float(now)
-            if math.isfinite(f) and f > 0.0:
+            if math.isfinite(f) and f >= 0.0:
                 return f
         except (TypeError, ValueError):
             pass
@@ -394,7 +394,7 @@ class SmartStopLossGuard:
                 active_grace = None
             if active_grace is not None:
                 existing_start = _safe_float(active_grace.get("start_ts"), -1.0)
-                if existing_start <= 0.0 or existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
+                if existing_start < 0.0 or existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
                     active_grace = None
             if active_grace is not None and buy_price is not None:
                 saved_buy = _safe_float(active_grace.get("buy_price"), 0.0)
@@ -460,8 +460,8 @@ class SmartStopLossGuard:
                     active_grace["current_price"] = cp_clean
                 if bp_clean > 0.0 and active_grace.get("buy_price") is None:
                     active_grace["buy_price"] = bp_clean
-                start_ts = _safe_float(active_grace.get("start_ts"), now_ts)
-                if start_ts <= 0.0:
+                start_ts = _safe_float(active_grace.get("start_ts"), -1.0)
+                if start_ts < 0.0:
                     start_ts = now_ts
                 elapsed = max(0.0, now_ts - start_ts)
                 meta["grace_elapsed_sec"] = round(elapsed, 1)
@@ -559,8 +559,8 @@ class SmartStopLossGuard:
             now_ts = _resolve_now(now)
             price_decrease = _safe_float(price_decrease, 0.0)
             lost_threshold = _safe_float(lost_threshold, 0.0)
-            start_ts = _safe_float(grace_info.get("start_ts"), now_ts)
-            if start_ts <= 0.0 or start_ts > now_ts + 5.0:
+            start_ts = _safe_float(grace_info.get("start_ts"), -1.0)
+            if start_ts < 0.0 or start_ts > now_ts + 5.0:
                 return False
             elapsed = max(0.0, now_ts - start_ts)
             if elapsed > 3600.0:
