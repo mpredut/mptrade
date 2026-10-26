@@ -8,19 +8,31 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
+def _load_jsonl_dicts(path: str) -> list[dict]:
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                rows.append(rec)
+    return rows
+
+
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
     results2_path = os.path.join(exp, "results2.jsonl")
-    rows = []
-    if os.path.exists(results2_path):
-        with open(results2_path) as fh:
-            rows = [json.loads(l) for l in fh if l.strip()]
+    rows = _load_jsonl_dicts(results2_path)
     results_path = os.path.join(exp, "results.jsonl")
-    wave1 = []
-    if os.path.exists(results_path):
-        with open(results_path) as fh:
-            wave1 = [json.loads(l) for l in fh if l.strip()]
+    wave1 = _load_jsonl_dicts(results_path)
     errors = [r for r in rows if r.get("kind") == "error"]
     L = ["# Overnight wave 2: selection, fine overlay grid, fee stress\n"]
 
@@ -107,7 +119,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     if errors:
         L.append("\n## Errors\n")
         for e in errors[:20]:
-            L.append(f"- {e['args']}: `{e['error'].strip().splitlines()[-1]}`")
+            err_lines = str(e.get("error") or "").strip().splitlines()
+            last_err = err_lines[-1] if err_lines else "unknown"
+            L.append(f"- {e.get('args', '?')}: `{last_err}`")
     with open(os.path.join(exp, "REPORT2.md"), "w") as f:
         f.write("\n".join(L) + "\n")
     return L

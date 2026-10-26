@@ -27,9 +27,11 @@ def generate_report(exp_dir=None):
             line = line.strip()
             if line:
                 try:
-                    rows.append(json.loads(line))
+                    rec = json.loads(line)
                 except Exception:
                     continue
+                if isinstance(rec, dict):
+                    rows.append(rec)
 
     errors = [r for r in rows if "error" in r]
     valid_rows = [r for r in rows if "error" not in r]
@@ -113,7 +115,7 @@ def generate_report(exp_dir=None):
     if errors:
         L.append("\n## Errors\n")
         for e in errors[:15]:
-            err_line = e.get("error", "").strip().splitlines()
+            err_line = str(e.get("error") or "").strip().splitlines()
             last_err = err_line[-1] if err_line else "unknown"
             L.append(f"- {e.get('profile')} {e.get('variant')} {e.get('asset')}: `{last_err}`")
 

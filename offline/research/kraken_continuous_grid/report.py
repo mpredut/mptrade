@@ -9,19 +9,41 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
+def _load_jsonl_dicts(path: str) -> list[dict]:
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                rows.append(rec)
+    return rows
+
+
 def q(xs, p):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, max(0, int(p * (len(xs) - 1))))] if xs else float("nan")
 
 
 def win_stats(r, key):
-    w = r.get(key, [])
-    rets = [x[0] for x in w]
+    w = r.get(key) or []
+    valid = [
+        x for x in w
+        if isinstance(x, (list, tuple)) and len(x) >= 3 and x[0] is not None and x[2] is not None
+    ]
+    rets = [float(x[0]) for x in valid]
     if not rets:
         return {"mean": float("nan"), "pos": float("nan"), "p10": float("nan"),
                 "down": float("nan"), "up": float("nan")}
-    down_vals = [x[0] for x in w if x[2] < -10]
-    up_vals = [x[0] for x in w if x[2] > 10]
+    down_vals = [float(x[0]) for x in valid if float(x[2]) < -10]
+    up_vals = [float(x[0]) for x in valid if float(x[2]) > 10]
     return {"mean": st.mean(rets), "pos": 100.0 * sum(x > 0 for x in rets) / len(rets),
             "p10": q(rets, 0.10),
             "down": st.mean(down_vals) if down_vals else float("nan"),
@@ -32,12 +54,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
     results_path = os.path.join(exp, "results.jsonl")
-    rows = []
-    if os.path.exists(results_path):
-        with open(results_path) as fh:
-            rows = [json.loads(l) for l in fh if l.strip()]
+    rows = _load_jsonl_dicts(results_path)
     errors = [r for r in rows if "error" in r]
-    rows = [r for r in rows if "error" not in r]
+    rows = [r for r in rows if "error" not in r and "cfg" in r and "asset" in r]
     by = defaultdict(dict)
     for r in rows:
         by[r["cfg"]][r["asset"]] = r
@@ -139,7 +158,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     if errors:
         L.append("\n## Errors\n")
         for e in errors[:20]:
-            L.append(f"- {e['asset']} {e['cfg']}: `{e['error'].strip().splitlines()[-1]}`")
+            err_lines = str(e.get("error") or "").strip().splitlines()
+            last_err = err_lines[-1] if err_lines else "unknown"
+            L.append(f"- {e.get('asset', '?')} {e.get('cfg', '?')}: `{last_err}`")
 
     with open(os.path.join(exp, "REPORT.md"), "w") as f:
         f.write("\n".join(L) + "\n")

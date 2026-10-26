@@ -8,16 +8,31 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
+def _load_jsonl_dicts(path: str) -> list[dict]:
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                rows.append(rec)
+    return rows
+
+
 def generate_report(exp_dir: str | None = None) -> list[str]:
     exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
     results3_path = os.path.join(exp, "results3.jsonl")
-    rows = []
-    if os.path.exists(results3_path):
-        with open(results3_path) as fh:
-            rows = [json.loads(line) for line in fh if line.strip()]
+    rows = _load_jsonl_dicts(results3_path)
     errors = [r for r in rows if "error" in r]
-    rows = [r for r in rows if "error" not in r]
+    rows = [r for r in rows if "error" not in r and "cfg" in r and "asset" in r]
     by = defaultdict(dict)
     for r in rows:
         by[r["cfg"]][r["asset"]] = r
@@ -65,7 +80,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     if errors:
         L.append("\n## Errors\n")
         for e in errors[:20]:
-            L.append(f"- {e.get('asset', '?')} {e.get('cfg', '?')}: `{e.get('error', '').strip().splitlines()[-1]}`")
+            err_lines = str(e.get("error") or "").strip().splitlines()
+            last_err = err_lines[-1] if err_lines else "unknown"
+            L.append(f"- {e.get('asset', '?')} {e.get('cfg', '?')}: `{last_err}`")
 
     with open(os.path.join(exp, "REPORT3.md"), "w") as f:
         f.write("\n".join(L) + "\n")

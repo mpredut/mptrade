@@ -953,4 +953,26 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert verify_adaptive_dca.run() == ({}, {})
     assert verify_adaptive_reentry.run() == ({}, {})
 
+    # 4. kraken_continuous_grid report/report2/report3 and t212 report handle malformed JSONL and empty errors
+    from offline.research.kraken_continuous_grid import report as kr_rep1, report2 as kr_rep2, report3 as kr_rep3
+    (tmp_path / "results.jsonl").write_text(
+        '123\nnot_json\n{"asset": "HYPE", "cfg": "live", "error": ""}\n'
+        '{"asset": "HYPE", "cfg": "live", "full": {"ret": 5.0, "dd": 2.0, "expo": 50.0, "bh": 3.0}, "w90": null, "w30": [[1.0, 0.5, null]]}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "results2.jsonl").write_text(
+        'null\n{"kind": "error", "args": ["views", "HYPE"], "error": null}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "results3.jsonl").write_text(
+        '"str"\n{"asset": "HYPE", "cfg": "live", "error": "   "}\n',
+        encoding="utf-8",
+    )
+    assert any("unknown" in line for line in kr_rep1.generate_report(str(tmp_path)))
+    assert any("unknown" in line for line in kr_rep2.generate_report(str(tmp_path)))
+    assert any("unknown" in line for line in kr_rep3.generate_report(str(tmp_path)))
+    t212_out = t212_report.generate_report(str(tmp_path))
+    assert "unknown" in t212_out
+
+
 
