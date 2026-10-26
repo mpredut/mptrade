@@ -163,6 +163,14 @@ class T212Client:
 
     def search_instruments(self, ticker_substr: str, name_patterns: tuple[str, ...]) -> list[dict] | None:
         """Search by ticker substring or name/shortName pattern."""
+        t_q = str(ticker_substr or "").strip().upper() if not isinstance(ticker_substr, bool) else ""
+        clean_patterns = tuple(
+            str(p).strip().lower()
+            for p in (name_patterns or ())
+            if not isinstance(p, bool) and str(p or "").strip()
+        )
+        if not t_q and not clean_patterns:
+            return None
         instruments = self.list_instruments()
         if instruments is None:
             return None
@@ -174,9 +182,9 @@ class T212Client:
             name   = str(ins.get("name", "")).lower()
             short  = str(ins.get("shortName", "")).lower()
             if (
-                ticker_substr.upper() in ticker.upper()
-                or any(p in name  for p in name_patterns)
-                or any(p in short for p in name_patterns)
+                (t_q and t_q in ticker.upper())
+                or any(p in name  for p in clean_patterns)
+                or any(p in short for p in clean_patterns)
             ):
                 hits.append(ins)
         return hits or None
@@ -360,9 +368,12 @@ class T212Client:
         return result
 
     def get_order_status(self, order_id) -> dict | None:
-        status, body = http_get(f"{self.base}/equity/orders/{order_id}", headers=self._headers())
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            return None
+        target_oid = str(order_id).strip()
+        status, body = http_get(f"{self.base}/equity/orders/{target_oid}", headers=self._headers())
         if status == 404:
-            return self.get_historical_order(order_id)
+            return self.get_historical_order(target_oid)
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         if status != 200:
@@ -380,18 +391,21 @@ class T212Client:
 
     def cancel_order(self, order_id) -> bool:
         """Cancel an order by id and return whether the request was accepted."""
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            return False
+        target_oid = str(order_id).strip()
         try:
             from .ipo_common import http_request
         except ImportError:
             from ipo_common import http_request
         self._pace_order()
-        status, _ = http_request("DELETE", f"{self.base}/equity/orders/{order_id}",
+        status, _ = http_request("DELETE", f"{self.base}/equity/orders/{target_oid}",
                                  headers=self._headers())
         if status == 429:
             self.notify_rate_limit(max(5.0, self._pf_ttl))
         ok = status in (200, 201, 204)
         if not ok:
-            log(f"  ! [T212] cancel order {order_id} -> HTTP {status}")
+            log(f"  ! [T212] cancel order {target_oid} -> HTTP {status}")
         if status != 429:
             with self._lock:
                 self._ord_cache = None   # Order list changed; force a fresh read.
@@ -481,7 +495,7 @@ class T212Client:
         A brief shared TTL coalesces all asset-thread requests into one call.
         """
         res = self._read_cached("_pf_cache", "/equity/portfolio", "portofoliu")
-        return res if isinstance(res, list) else None
+        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def list_active_orders(self) -> list[dict] | None:
         """Return pending orders; executed orders disappear into the portfolio.
@@ -491,7 +505,7 @@ class T212Client:
         them or marking a take-profit tranche as sold.
         """
         res = self._read_cached("_ord_cache", "/equity/orders", "active orders")
-        return res if isinstance(res, list) else None
+        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def get_cash(self) -> dict | None:
         """Return account cash breakdown (free, invested, blocked, total) in account base currency."""

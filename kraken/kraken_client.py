@@ -201,13 +201,17 @@ class KrakenClient:
 
     def pair_info(self, pair: str) -> dict | None:
         """Return pair price/volume precision and minimum order, or None if absent."""
-        res = self._public("AssetPairs", {"pair": pair})
+        if not pair or isinstance(pair, bool) or not str(pair).strip():
+            return None
+        res = self._public("AssetPairs", {"pair": str(pair).strip()})
         if not res:
             return None
         return next((v for v in res.values() if isinstance(v, dict)), None)
 
     def ticker(self, pair: str) -> dict | None:
-        res = self._public("Ticker", {"pair": pair})
+        if not pair or isinstance(pair, bool) or not str(pair).strip():
+            return None
+        res = self._public("Ticker", {"pair": str(pair).strip()})
         return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
     def ohlc_closes_with_timestamps(
@@ -285,9 +289,11 @@ class KrakenClient:
             info = self.pair_info(pair)
             raw_dec = info.get("pair_decimals") if isinstance(info, dict) else None
             if raw_dec is not None and not isinstance(raw_dec, bool):
-                dec = int(raw_dec)
-                if 0 <= dec <= 18:
-                    return dec
+                dec_f = float(raw_dec)
+                if math.isfinite(dec_f) and dec_f.is_integer():
+                    dec = int(dec_f)
+                    if 0 <= dec <= 18:
+                        return dec
         except Exception:  # noqa: BLE001 — conservatively fall back without blocking the order
             pass
         return 2
@@ -300,6 +306,9 @@ class KrakenClient:
         mechanical protection for every Kraken caller (trailing/bot/xstock), analogous
         to Binance place_order_mechanics. Without it, Kraken rejects excess precision
         with 'price can only be specified up to N decimals' and the order fails."""
+        if not pair or isinstance(pair, bool) or not str(pair).strip():
+            raise ValueError(f"invalid Kraken pair: {pair!r}")
+        pair_s = str(pair).strip()
         if isinstance(volume, bool) or volume is None:
             raise ValueError(f"invalid Kraken order volume: {volume!r}")
         try:
@@ -319,7 +328,7 @@ class KrakenClient:
         if ot_norm not in {"limit", "market"}:
             raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")
         data = {
-            "pair": pair,
+            "pair": pair_s,
             "type": side_val,
             "ordertype": ot_norm,
             "volume": f"{vol_f}",
@@ -333,7 +342,9 @@ class KrakenClient:
                 raise ValueError(f"invalid Kraken limit price: {price!r}") from exc
             if not math.isfinite(px_f) or px_f <= 0.0:
                 raise ValueError(f"invalid Kraken limit price: {price!r}")
-            price = round(px_f, self.price_decimals(pair))
+            price = round(px_f, self.price_decimals(pair_s))
+            if price <= 0.0:
+                raise ValueError(f"invalid Kraken rounded limit price: {price!r}")
             data["price"] = f"{price}"
         if cl_ord_id is not None:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
@@ -344,11 +355,15 @@ class KrakenClient:
         return self._private("AddOrder", data)
 
     def cancel_order(self, txid: str) -> dict:
-        return self._private("CancelOrder", {"txid": txid})
+        if not txid or isinstance(txid, bool) or not str(txid).strip():
+            raise ValueError(f"invalid Kraken txid: {txid!r}")
+        return self._private("CancelOrder", {"txid": str(txid).strip()})
 
     def query_orders(self, txids: str) -> dict:
         """Return order status by txid, including closed orders without T212-style 404s."""
-        return self._private("QueryOrders", {"txid": txids})
+        if not txids or isinstance(txids, bool) or not str(txids).strip():
+            raise ValueError(f"invalid Kraken txid: {txids!r}")
+        return self._private("QueryOrders", {"txid": str(txids).strip()})
 
     def open_orders(self) -> dict:
         raw = self._private("OpenOrders").get("open")

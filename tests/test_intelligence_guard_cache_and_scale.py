@@ -10421,10 +10421,12 @@ def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypa
         _parse_tranches(True)
 
     # 3. hyperliquid.replay validation
+    import os
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setitem(sys.modules, "strategy", sys.modules.get("strategy"))
     spec_hl_r = importlib.util.spec_from_file_location(
-        "hl_replay_iter93", "/home/mariusp/mptrade/hyperliquid/replay.py"
+        "hl_replay_iter93", os.path.join(root_dir, "hyperliquid", "replay.py")
     )
     hl_replay = importlib.util.module_from_spec(spec_hl_r)
     monkeypatch.setitem(sys.modules, "hl_replay_iter93", hl_replay)
@@ -10436,7 +10438,7 @@ def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypa
 
     # 4. 212trading.strategy ladder validation & owned parsing
     spec_t212 = importlib.util.spec_from_file_location(
-        "t212_strategy_iter93", "/home/mariusp/mptrade/212trading/strategy.py"
+        "t212_strategy_iter93", os.path.join(root_dir, "212trading", "strategy.py")
     )
     t212_strat = importlib.util.module_from_spec(spec_t212)
     monkeypatch.setitem(sys.modules, "t212_strategy_iter93", t212_strat)
@@ -10452,5 +10454,85 @@ def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypa
 
     with pytest.raises(ValueError, match="Invalid STRAT_TP_LADDER"):
         t212_strat.StratParams.from_env({"STRATEGY_MODE": "avg_tp", "STRAT_TP_LADDER": "0.0:50"})
+
+
+def test_iteration94_t212_client_bot_kraken_client_and_price_analysis_safety(monkeypatch):
+    import importlib
+    import importlib.util
+    import os
+    import sys
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # 1. T212Client.search_instruments empty ticker_substr & case-insensitive name_patterns, plus get_order_status / cancel_order
+    t212_client_mod = importlib.import_module("212trading.t212_client")
+    cli = t212_client_mod.T212Client(
+        "k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0
+    )
+    monkeypatch.setattr(
+        cli,
+        "list_instruments",
+        lambda: [
+            {"ticker": "AAPL_US_EQ", "name": "Apple Inc", "shortName": "AAPL"},
+            {"ticker": "SPCX_US_EQ", "name": "SpaceX Corp", "shortName": "SPCX"},
+        ],
+    )
+    # Empty ticker_substr must not match every instrument; uppercase name_patterns must match
+    hits = cli.search_instruments("", ("SpaceX",))
+    assert hits == [{"ticker": "SPCX_US_EQ", "name": "SpaceX Corp", "shortName": "SPCX"}]
+    assert cli.search_instruments("", ()) is None
+    assert cli.get_order_status("") is None
+    assert cli.get_order_status(True) is None
+    assert cli.cancel_order("  ") is False
+    assert cli.cancel_order(False) is False
+
+    # 2. 212trading.t212_bot relative import isolation & verify_isin validation
+    monkeypatch.setitem(sys.modules, "strategy", object())
+    t212_bot_mod = importlib.import_module("212trading.t212_bot")
+    assert t212_bot_mod.verify_isin(cli, "", "US123") is False
+    assert t212_bot_mod.verify_isin(cli, True, "US123") is False
+    assert t212_bot_mod.verify_isin(cli, "SPCX_US_EQ", "") is True
+
+    # 3. KrakenClient validation on pair, txid, and price_decimals non-integer rejection
+    from kraken.kraken_client import KrakenClient
+
+    kc = KrakenClient("k", "s")
+    assert kc.pair_info("") is None
+    assert kc.pair_info(True) is None
+    assert kc.ticker("  ") is None
+    monkeypatch.setattr(kc, "pair_info", lambda _p: {"pair_decimals": 3.5})
+    assert kc.price_decimals("XXBTZUSD") == 2
+    with pytest.raises(ValueError, match="invalid Kraken pair"):
+        kc.add_order("  ", "buy", 1.0, price=100.0)
+    with pytest.raises(ValueError, match="invalid Kraken txid"):
+        kc.cancel_order("")
+    with pytest.raises(ValueError, match="invalid Kraken txid"):
+        kc.query_orders(True)
+
+    # 4. priceAnalysis & hyperliquid.price_analysis flat-window and invalid step_hours protection
+    import priceAnalysis as pa
+
+    ts_flat = [1000.0 + i * 3600.0 for i in range(60)]
+    px_flat = [100.0 for _ in range(60)]
+    assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
+    assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=0) is None
+    assert pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=-4) is None
+
+    # Unsorted timestamps should still detect valid uptrend and blocks copy must not mutate cache
+    px_up = [100.0 + i * 1.5 for i in range(60)]
+    res1 = pa.detect_long_term_trend(list(reversed(ts_flat)), list(reversed(px_up)), window_hours=24, step_hours=8)
+    assert res1 is not None and res1["direction"] == "up"
+    res1["blocks"].clear()
+    res2 = pa.detect_long_term_trend(ts_flat, px_up, window_hours=24, step_hours=8)
+    assert res2 is not None and len(res2["blocks"]) >= 3
+
+    spec_hl_pa = importlib.util.spec_from_file_location(
+        "hl_pa_iter94", os.path.join(root_dir, "hyperliquid", "price_analysis.py")
+    )
+    hl_pa = importlib.util.module_from_spec(spec_hl_pa)
+    monkeypatch.setitem(sys.modules, "hl_pa_iter94", hl_pa)
+    spec_hl_pa.loader.exec_module(hl_pa)
+    assert hl_pa.detect_long_term_trend(ts_flat, px_flat, window_hours=24, step_hours=8) is None
+
 
 

@@ -28,14 +28,24 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ipo_common import (  # noqa: E402
-    load_t212_environment, log, parse_dotenv, single_instance,
-    required_env, required_float_env, required_bool_env,
-)
-from ipo_notify import notify  # noqa: E402
-from listing_watcher import wait_for_launch  # noqa: E402
-from strategy import Strategy, StratParams  # noqa: E402
-from t212_client import T212Client  # noqa: E402
+try:
+    from .ipo_common import (  # noqa: E402
+        load_t212_environment, log, parse_dotenv, single_instance,
+        required_env, required_float_env, required_bool_env,
+    )
+    from .ipo_notify import notify  # noqa: E402
+    from .listing_watcher import wait_for_launch  # noqa: E402
+    from .strategy import Strategy, StratParams  # noqa: E402
+    from .t212_client import T212Client  # noqa: E402
+except ImportError:
+    from ipo_common import (  # noqa: E402
+        load_t212_environment, log, parse_dotenv, single_instance,
+        required_env, required_float_env, required_bool_env,
+    )
+    from ipo_notify import notify  # noqa: E402
+    from listing_watcher import wait_for_launch  # noqa: E402
+    from strategy import Strategy, StratParams  # noqa: E402
+    from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,13 +65,16 @@ def discover_assets(cfg_dir: str) -> list[tuple[str, str]]:
 def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
     """Return False only for a proven ISIN mismatch identifying the wrong instrument.
     Otherwise return True best-effort and continue with the explicit ticker if metadata is absent."""
-    if not expected_isin:
+    if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+        return False
+    if not expected_isin or isinstance(expected_isin, bool) or not str(expected_isin).strip():
         return True
     instruments = client.list_instruments()
     if not instruments or not isinstance(instruments, list):
         return True
+    t_norm = str(ticker).strip().upper()
     match = next(
-        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).strip().upper() == str(ticker).strip().upper()),
+        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).strip().upper() == t_norm),
         None,
     )
     if not match:
@@ -69,7 +82,7 @@ def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
     found_isin = str(match.get("isin") or "").strip()
     if not found_isin:
         return True
-    if found_isin.upper() != expected_isin.strip().upper():
+    if found_isin.upper() != str(expected_isin).strip().upper():
         log(f"  ! [{ticker}] ISIN {found_isin} != the expected {expected_isin} — NOT trading")
         notify(title=f"⚠ {ticker}: ISIN mismatch", source="T212",
                body=f"Found {found_isin}, we expected {expected_isin}.", symbol=ticker)

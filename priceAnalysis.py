@@ -427,7 +427,12 @@ def _store_trend_memo(cache_key: tuple, value):
     if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
         _trend_memo_cache.clear()
     _trend_memo_cache[cache_key] = _TREND_MEMO_NONE if value is None else value
-    return None if value is None else dict(value)
+    if value is None:
+        return None
+    out = dict(value)
+    if "blocks" in out and isinstance(out["blocks"], list):
+        out["blocks"] = list(out["blocks"])
+    return out
 
 
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
@@ -444,17 +449,55 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     estimated_future_hours, current_slope_h, blocks(index pairs for plotting)}``
     or ``None``.
     """
+    if timestamps is None or prices is None:
+        return None
+    if any(
+        isinstance(v, bool)
+        for v in (
+            window_hours,
+            step_hours,
+            min_consecutive_blocks,
+            noise_tolerance,
+            min_points_per_window,
+            detection_lag_hours,
+        )
+    ):
+        return None
+    try:
+        wh_f = float(window_hours)
+        sh_f = float(step_hours)
+        mcb_i = int(min_consecutive_blocks)
+        nt_i = int(noise_tolerance)
+        mpw_i = int(min_points_per_window)
+        lag_f = float(detection_lag_hours)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (math.isfinite(wh_f) and wh_f > 0.0 and math.isfinite(sh_f) and sh_f > 0.0 and math.isfinite(lag_f) and lag_f >= 0.0):
+        return None
+    if mcb_i < 1 or nt_i < 0 or mpw_i < 2:
+        return None
+    window_hours = wh_f
+    step_hours = sh_f
+    min_consecutive_blocks = mcb_i
+    noise_tolerance = nt_i
+    min_points_per_window = mpw_i
+    detection_lag_hours = lag_f
+
     timestamps = np.asarray(timestamps, dtype=float)
     prices = np.asarray(prices, dtype=float)
     if timestamps.ndim != 1 or prices.ndim != 1 or len(prices) != len(timestamps):
         return None
-    finite_mask = np.isfinite(timestamps) & np.isfinite(prices) & (prices > 0)
+    finite_mask = np.isfinite(timestamps) & (timestamps > 0) & np.isfinite(prices) & (prices > 0)
     if not np.all(finite_mask):
         timestamps = timestamps[finite_mask]
         prices = prices[finite_mask]
     n_pts = len(timestamps)
     if n_pts < 2:
         return None
+    if np.any(np.diff(timestamps) < 0):
+        order = np.argsort(timestamps, kind="mergesort")
+        timestamps = timestamps[order]
+        prices = prices[order]
 
     t_end, t_first = float(timestamps[-1]), float(timestamps[0])
     p_first = float(prices[0])
@@ -479,7 +522,12 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     if cached is _TREND_MEMO_NONE:
         return None
     if cached is not None:
-        return dict(cached) if isinstance(cached, dict) else cached
+        if isinstance(cached, dict):
+            out = dict(cached)
+            if "blocks" in out and isinstance(out["blocks"], list):
+                out["blocks"] = list(out["blocks"])
+            return out
+        return cached
 
     window_sec = window_hours * 3600.0
     step_sec = step_hours * 3600.0
@@ -497,8 +545,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
-    if cur is None:
-        return _store_trend_memo(cache_key, None)    # Insufficient recent data.
+    if cur is None or cur == 0.0:
+        return _store_trend_memo(cache_key, None)    # Insufficient recent data or flat window.
     if mk_alpha:
         # Mann-Kendall requires the current window's slope to be statistically
         # significant rather than noise before reporting a direction.
@@ -506,7 +554,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         _, _, p_mk = mann_kendall(prices[cur_idx[0]:cur_idx[1]])
         if p_mk > mk_alpha:
             return _store_trend_memo(cache_key, None)
-    current_sign = np.sign(cur) or 1.0
+    current_sign = float(np.sign(cur))
 
     blocks = [cur_idx]
     consecutive, noise = 1, 0

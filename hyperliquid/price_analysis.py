@@ -20,7 +20,10 @@ import numpy as np
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-from common import load_env_stack, required_int_env
+try:
+    from .common import load_env_stack, required_int_env
+except ImportError:
+    from common import load_env_stack, required_int_env
 
 load_env_stack(os.path.join(_HERE, ".env"))
 
@@ -99,9 +102,9 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
-    if cur is None or not math.isfinite(cur):
+    if cur is None or not math.isfinite(cur) or cur == 0.0:
         return None
-    current_sign = np.sign(cur) or 1.0
+    current_sign = float(np.sign(cur))
 
     blocks = [cur_idx]
     consecutive, noise = 1, 0
