@@ -272,12 +272,13 @@ def _read_nolock(*, validate=False):
 
 def _client_order_id(record_id, revision, prefix="OR"):
     """Return a Binance-compatible stable ID for one queued intent revision."""
-    pfx = str(prefix or "OR").strip().rstrip("_")
-    rev_str = str(int(revision))
+    rev_str = str(max(0, int(revision)))
+    max_pfx_len = max(1, 36 - 1 - 8 - 1 - len(rev_str))
+    pfx = str(prefix or "OR").strip().rstrip("_")[:max_pfx_len].rstrip("_") or "OR"
     # Max allowed Binance clientOrderId length is 36.
     overhead = len(pfx) + 1 + len(rev_str) + 1  # pfx + "_" + rev_str + "_"
     hash_len = max(8, min(24, 36 - overhead))
-    return f"{pfx}_{record_id[:hash_len]}_{rev_str}"
+    return f"{pfx}_{record_id[:hash_len]}_{rev_str}"[:36]
 
 
 # Standardized canonical aliases in providers.base: extract_order_id and extract_orig_qty.
@@ -287,6 +288,13 @@ order_qty_from_response = extract_orig_qty
 
 def valid_record(rec):
     """Return whether a persisted record is safe to evaluate or submit."""
+    if (
+        not isinstance(rec, dict)
+        or isinstance(rec.get("qty"), bool)
+        or isinstance(rec.get("created_ts"), bool)
+        or isinstance(rec.get("revision"), bool)
+    ):
+        return False
     try:
         qty = float(rec.get("qty"))
         created = float(rec.get("created_ts"))
@@ -1786,10 +1794,12 @@ def price_gate_ok(rec, current_price, tol=None):
     SELL requires ``current >= requested*(1-tol)`` and BUY requires
     ``current <= requested*(1+tol)``. Missing or invalid prices fail closed.
     """
-    if current_price is None:
+    if current_price is None or isinstance(current_price, bool):
+        return False
+    if not isinstance(rec, dict):
         return False
     req = rec.get("requested_price")
-    if req is None:
+    if req is None or isinstance(req, bool) or isinstance(tol, bool):
         return False
     try:
         current_price = float(current_price)

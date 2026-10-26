@@ -186,19 +186,21 @@ KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plung
 
 def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
+    action = str(action or "").upper()
     mode = KALMAN_MODES[symbol]
     if mode == "off" or _kalman_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
-    if str(action or "").upper() == "SELL" and reason in KALMAN_BYPASS_SELL_REASONS:
+    if action == "SELL" and reason in KALMAN_BYPASS_SELL_REASONS:
         return False, mode, None        # Fast kinematic plunge exits bypass Kalman lag.
     try:
         trend, age = _kalman_ref.current_trend(symbol)
+        age_f = float(age) if (age is not None and not isinstance(age, bool)) else float("nan")
     except Exception:
         # No confirming signal (read failed): fail CLOSED for a BUY -- do not add
         # exposure blind -- but never for a SELL, so a risk-reducing exit is never
         # trapped by missing data.
         return action == "BUY", mode, None
-    if trend is None or age > GATE_STALE_SEC:
+    if trend is None or not math.isfinite(age_f) or age_f < 0 or age_f > GATE_STALE_SEC:
         return action == "BUY", mode, None   # Absent/stale signal: block a blind BUY, allow a SELL.
     wanted = 1 if action == "BUY" else -1
     if mode == "permissive":
@@ -279,11 +281,21 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
 
     # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
     # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
-    base_price = (
-        min(float(proposed_price), float(current_price) * 0.999)
-        if action == "BUY"
-        else max(float(proposed_price), float(current_price) * 1.001)
-    )
+    try:
+        if isinstance(proposed_price, bool) or isinstance(current_price, bool):
+            raise ValueError("bool price")
+        prop_f = float(proposed_price)
+        curr_f = float(current_price)
+        if not (math.isfinite(prop_f) and prop_f > 0 and math.isfinite(curr_f) and curr_f > 0):
+            base_price = float("nan")
+        else:
+            base_price = (
+                min(prop_f, curr_f * 0.999)
+                if action == "BUY"
+                else max(prop_f, curr_f * 1.001)
+            )
+    except (TypeError, ValueError, OverflowError):
+        base_price = float("nan")
 
     # Pre-submit gate check: if _fire_order will deterministically refuse this
     # signal (invalid parameters, not in TRADEALL_FIRE_SYMBOLS, or blocked by
@@ -467,7 +479,7 @@ class TrendState:
             return False
 
         trend_duration = self.get_started_trend_time() # self.get_confirmed_trend_duration()
-        if trend_duration == 0:
+        if trend_duration <= 0:
             return False
         rate = self.confirm_count * 2.5 * TIME_SLEEP_GET_PRICE / trend_duration
         print(f"uniform rate is {rate} <> {TREND_UNIFORM_RATE_THRESHOLD}")

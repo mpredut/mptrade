@@ -63,7 +63,15 @@ def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) ->
                 p90_d = _pos_finite(ent.get("p90_d"))
                 med_d = _pos_finite(ent.get("median_d"))
                 t_val = _pos_finite(ent.get("T"))
-                gauss_h = round(t_val * (1.0 + exceed_percent), 4) if t_val is not None else None
+                ex_pct = 0.4
+                if exceed_percent is not None and not isinstance(exceed_percent, bool):
+                    try:
+                        ep_f = float(exceed_percent)
+                        if math.isfinite(ep_f) and ep_f >= 0.0:
+                            ex_pct = ep_f
+                    except (TypeError, ValueError):
+                        pass
+                gauss_h = round(t_val * (1.0 + ex_pct), 4) if t_val is not None else None
                 return p90_d, med_d, gauss_h
     except Exception:
         pass
@@ -169,15 +177,26 @@ def check_qlimit2_order_guards(
                 return False, p_dec.reason, 0.0
 
     # 2. Weibull trend exhaustion check (calibrated past G_QLIMIT1's Gaussian Zone 2 when resolved from live cache)
-    explicit_duration_override = bool(trend_duration_seconds and trend_duration_seconds > 0)
-    dur_sec = trend_duration_seconds
-    if not dur_sec:
-        if regime_context is not None:
-            dur_sec = getattr(regime_context, "trend_duration_seconds", 0.0) or 0.0
-        if not dur_sec:
-            dur_sec = _resolve_trend_duration(symbol)
+    import math
 
-    if dur_sec and dur_sec > 0:
+    def _valid_dur(val: Any) -> float:
+        if val is None or isinstance(val, bool):
+            return 0.0
+        try:
+            f = float(val)
+            return f if (math.isfinite(f) and f > 0.0) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    dur_sec = _valid_dur(trend_duration_seconds)
+    explicit_duration_override = dur_sec > 0.0
+    if dur_sec <= 0.0:
+        if regime_context is not None:
+            dur_sec = _valid_dur(getattr(regime_context, "trend_duration_seconds", 0.0))
+        if dur_sec <= 0.0:
+            dur_sec = _valid_dur(_resolve_trend_duration(symbol))
+
+    if dur_sec > 0.0:
         if explicit_duration_override and getattr(regime_context, "resolved_trend", None) is None:
             trend_dir = None
         else:
@@ -209,7 +228,17 @@ def check_qlimit2_order_guards(
             if mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
-                effective_scale = min(effective_scale, e_dec.suggested_scale)
+                s_val = 0.0
+                if e_dec.suggested_scale is not None and not isinstance(e_dec.suggested_scale, bool):
+                    try:
+                        sf = float(e_dec.suggested_scale)
+                        if math.isfinite(sf) and sf > 0.0:
+                            s_val = min(1.0, sf)
+                    except (TypeError, ValueError):
+                        s_val = 0.0
+                if s_val <= 0.0:
+                    return False, e_dec.reason, 0.0
+                effective_scale = min(effective_scale, s_val)
                 active_reason = e_dec.reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale

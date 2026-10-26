@@ -579,4 +579,51 @@ def test_price_analysis_market_regime_and_monitororder_hardening(monkeypatch):
     mo.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
 
+def test_qlimit_tradeall_and_order_retry_hardening(monkeypatch):
+    from types import SimpleNamespace
+    import order_retry
+    import qlimit_order_guard as qog
+    import tradeall as ta
+
+    # 1. order_retry._client_order_id length <= 36 and bool rejection in valid_record / price_gate_ok
+    cid = order_retry._client_order_id("a" * 32, 123, prefix="VERY_LONG_PREFIX_EXCEEDING_LIMIT_36")
+    assert len(cid) <= 36
+    assert order_retry.valid_record({"id": "1", "symbol": "BTCUSDC", "side": "BUY", "qty": True, "created_ts": 1000.0}) is False
+    assert order_retry.price_gate_ok({"side": "BUY", "requested_price": 85000.0}, True) is False
+    assert order_retry.price_gate_ok({"side": "BUY", "requested_price": True}, 1.0) is False
+
+    # 2. tradeall._kalman_gate_blocks normalizes lowercase action and fails closed on NaN/None age for BUY
+    monkeypatch.setitem(ta.KALMAN_MODES, "BTCUSDC", "strict")
+    monkeypatch.setattr(ta, "_kalman_ref", SimpleNamespace(current_trend=lambda sym: (1, float("nan"))))
+    blocked_buy, _, _ = ta._kalman_gate_blocks("BTCUSDC", "buy")
+    blocked_sell, _, _ = ta._kalman_gate_blocks("BTCUSDC", "sell")
+    assert blocked_buy is True
+    assert blocked_sell is False
+
+    # 3. tradeall.track_and_place_order rejects bool/NaN prices without canceling live orders
+    assert ta.track_and_place_order("BUY", "BTCUSDC", 1, True, 85000.0, order_ids=["live1"]) == []
+
+    # 4. qlimit_order_guard falls back to _resolve_trend_duration when trend_duration_seconds is NaN/bool
+    called = []
+    monkeypatch.setattr(qog, "_resolve_trend_duration", lambda sym: called.append(sym) or 0.0)
+    qog.check_qlimit2_order_guards(
+        "BTCUSDC",
+        "BUY",
+        85000.0,
+        price_history=[],
+        trend_duration_seconds=float("nan"),
+        margins={
+            "intelligence_guards_mode": "shadow",
+            "internal_guard_mode": "shadow",
+            "parabolic_surge_pct": 10.0,
+            "parabolic_pullback_pct": 2.0,
+            "weibull_exhaustion_policy": "downscale",
+            "weibull_exhausted_scale": 0.5,
+            "weibull_p90_days": 14.0,
+        },
+    )
+    assert called == ["BTCUSDC"]
+
+
+
 
