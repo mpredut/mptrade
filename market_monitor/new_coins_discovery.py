@@ -46,11 +46,11 @@ def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
         return float(default)
     try:
         d = float(days_back)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return float(default)
     if not math.isfinite(d) or d <= 0:
         return float(default)
-    return d
+    return min(d, 3650.0)
 
 
 def _safe_num(val, default: float = 0.0) -> float:
@@ -58,7 +58,7 @@ def _safe_num(val, default: float = 0.0) -> float:
         return default
     try:
         f = float(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return f if math.isfinite(f) else default
 

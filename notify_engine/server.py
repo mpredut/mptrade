@@ -293,7 +293,7 @@ class NotificationServer:
                     try:
                         ra_f = float(retry_after)
                         time.sleep(min(ra_f, 30.0) if (math.isfinite(ra_f) and ra_f >= 0.0) else 1.0)
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         time.sleep(1)
                     resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
             if hasattr(resp, "raise_for_status"):
@@ -371,9 +371,10 @@ class NotificationServer:
             alert_type = first.get("type")
             if alert_type == "price_alert" or "alert_type" in first:
                 if len(alerts) == 1:
+                    from notify_engine.alertnotifiers import _safe_float
                     sym = first.get("symbol", "N/A")
                     atype = first.get("alert_type", "alert")
-                    pchg = float(first.get("percent_change", 0.0) or 0.0)
+                    pchg = _safe_float(first.get("percent_change", 0.0), 0.0)
                     dir_str = "▲" if atype == "up" else "▼"
                     title = f"{sym} {dir_str} {pchg:+.2f}%"
                 else:
@@ -415,9 +416,10 @@ class NotificationServer:
         else:
             if hasattr(first, "alert_type"):
                 if len(alerts) == 1:
+                    from notify_engine.alertnotifiers import _safe_float
                     sym = getattr(first, "symbol", "N/A")
                     atype = getattr(first, "alert_type", "alert")
-                    pchg = float(getattr(first, "percent_change", 0.0) or 0.0)
+                    pchg = _safe_float(getattr(first, "percent_change", 0.0), 0.0)
                     dir_str = "▲" if atype == "up" else "▼"
                     title = f"{sym} {dir_str} {pchg:+.2f}%"
                 else:
@@ -559,15 +561,15 @@ class NotificationServer:
                 else:
                     payload = json.loads(line)
 
-                intent = payload.get("__orchestrator_intent__")
+                intent = payload.get("__orchestrator_intent__") if isinstance(payload, dict) else None
                 if intent == "ntfy_webhook":
                     # Direct retry or pre-formatted [auto_...] topic payload
                     if "title" in payload:
                         self._gate_and_send_ntfy(
-                            payload["title"],
-                            payload["message"],
-                            payload["priority"],
-                            payload["topic"],
+                            str(payload.get("title") or "Alert"),
+                            str(payload.get("message") or ""),
+                            str(payload.get("priority") or "default"),
+                            str(payload.get("topic") or self._resolve_topic("ERROR")),
                             alerts=payload.get("alerts"),
                             urgent=(payload.get("priority") == "urgent"),
                         )
@@ -749,8 +751,9 @@ class NotificationServer:
                                 f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
                             )
                         else:
+                            from notify_engine.alertnotifiers import _safe_float
                             failed_intents.add(intent)
-                            retries = int(payload.get("retry_count", 0)) + 1
+                            retries = max(0, int(_safe_float(payload.get("retry_count", 0), 0.0))) + 1
                             if retries >= _MAX_QUEUE_RETRIES:
                                 logging.warning(
                                     f"Dropping queued {intent} notification after {retries} failed retries"

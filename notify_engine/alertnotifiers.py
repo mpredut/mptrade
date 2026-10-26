@@ -64,6 +64,22 @@ def _positive_int_env(name: str, default: int) -> int:
         return default
 
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
+def _safe_pos_int(val: Any, default: int = 1) -> int:
+    f = _safe_float(val, float(default))
+    i = int(f)
+    return i if i >= 1 else default
+
+
 def _delivery_state_path() -> Path:
     configured = os.environ.get("NOTIFICATION_STATE_FILE")
     return Path(configured).expanduser() if configured else BASE_DIR / "logs/notification_delivery_state.json"
@@ -233,7 +249,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
 
     if len(items) == 1:
         it = items[0]
-        cnt = int(it.get("count", 1) or 1)
+        cnt = _safe_pos_int(it.get("count", 1), 1)
         raw_title = str(it.get("title") or "Alert")
         out_title = f"{raw_title} (×{cnt})" if cnt > 1 else raw_title
         out_body = str(it.get("body") or "")
@@ -242,7 +258,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
     short_titles = []
     body_lines = []
     for idx, it in enumerate(items, 1):
-        cnt = int(it.get("count", 1) or 1)
+        cnt = _safe_pos_int(it.get("count", 1), 1)
         t = str(it.get("title") or "Alert").strip()
         repeat_tag = f" (×{cnt})" if cnt > 1 else ""
         short_titles.append(f"{t}{repeat_tag}")
@@ -372,7 +388,7 @@ def pass_common_gate(
     if now is not None and not isinstance(now, bool):
         try:
             nf = float(now)
-            if math.isfinite(nf) and nf > 0.0:
+            if math.isfinite(nf) and 0.0 < nf < 32503680000.0:
                 now_ts = nf
         except (TypeError, ValueError, OverflowError):
             pass
@@ -404,10 +420,7 @@ def pass_common_gate(
             state["channels"][channel] = raw_ch
         channel_state = raw_ch
         if channel == "ntfy" and channel_state.get("blocked"):
-            try:
-                blocked_until = float(channel_state.get("blocked_until", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                blocked_until = 0.0
+            blocked_until = _safe_float(channel_state.get("blocked_until", 0.0), 0.0)
             if blocked_until > 0 and now_ts >= blocked_until:
                 channel_state["blocked"] = False
             else:
@@ -418,10 +431,7 @@ def pass_common_gate(
         cutoff = now_ts - 2 * 24 * 60 * 60
         cleaned_last: dict[str, float] = {}
         for key, value in last.items():
-            try:
-                v_f = float(value)
-            except (TypeError, ValueError):
-                continue
+            v_f = _safe_float(value, -1.0)
             if cutoff <= v_f <= now_ts:
                 cleaned_last[key] = v_f
         channel_state["last"] = cleaned_last
@@ -436,7 +446,7 @@ def pass_common_gate(
         # 1. Eliminate if already sitting in pending_bulk with same similarity or fingerprint
         for item in pending_bulk:
             if item.get("sim_key") == sim_key or item.get("fingerprint") == fingerprint:
-                item["count"] = int(item.get("count", 1) or 1) + 1
+                item["count"] = _safe_pos_int(item.get("count", 1), 1) + 1
                 channel_state["last"][fingerprint] = now_ts
                 channel_state["last"][sim_key] = now_ts
                 _save_delivery_state(path, state)
@@ -444,20 +454,19 @@ def pass_common_gate(
 
         # 2. Eliminate if sent/seen within dedup or similarity window
         prev_fp = channel_state["last"].get(fingerprint)
-        if prev_fp is not None and 0 <= now_ts - float(prev_fp) < sim_window:
+        prev_fp_f = _safe_float(prev_fp, -1.0)
+        if prev_fp is not None and prev_fp_f >= 0.0 and 0 <= now_ts - prev_fp_f < sim_window:
             _save_delivery_state(path, state)
             return False, "duplicate", False, None
 
         prev_sim = channel_state["last"].get(sim_key)
-        if prev_sim is not None and 0 <= now_ts - float(prev_sim) < sim_window:
+        prev_sim_f = _safe_float(prev_sim, -1.0)
+        if prev_sim is not None and prev_sim_f >= 0.0 and 0 <= now_ts - prev_sim_f < sim_window:
             _save_delivery_state(path, state)
             return False, "similar_eliminated", False, None
 
         # 3. Daily routine budget check for ntfy
-        try:
-            sent = int(channel_state.get("sent", 0) or 0)
-        except (TypeError, ValueError):
-            sent = 0
+        sent = max(0, int(_safe_float(channel_state.get("sent", 0), 0.0)))
         if channel == "ntfy" and not urgent:
             budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
             reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
@@ -468,10 +477,7 @@ def pass_common_gate(
                 return False, "local_daily_budget", warn, None
 
         # 4. Check the 5-minute Common Gate
-        try:
-            last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            last_gate_ts = 0.0
+        last_gate_ts = _safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
         if last_gate_ts > now_ts:
             last_gate_ts = 0.0
         if gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
@@ -526,7 +532,7 @@ def pop_due_bulk_batch(
     if now is not None and not isinstance(now, bool):
         try:
             nf = float(now)
-            if math.isfinite(nf) and nf > 0.0:
+            if math.isfinite(nf) and 0.0 < nf < 32503680000.0:
                 now_ts = nf
         except (TypeError, ValueError, OverflowError):
             pass
@@ -547,10 +553,7 @@ def pop_due_bulk_batch(
         pending_bulk: list[dict] = [it for it in raw_bulk if isinstance(it, dict)]
         if not pending_bulk:
             return None
-        try:
-            last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            last_gate_ts = 0.0
+        last_gate_ts = _safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
         if last_gate_ts > now_ts:
             last_gate_ts = 0.0
         if not force and gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
@@ -558,10 +561,7 @@ def pop_due_bulk_batch(
         items = list(pending_bulk)
         channel_state["pending_bulk"] = []
         channel_state["last_gate_ts"] = now_ts
-        try:
-            prev_sent = int(channel_state.get("sent", 0) or 0)
-        except (TypeError, ValueError):
-            prev_sent = 0
+        prev_sent = max(0, int(_safe_float(channel_state.get("sent", 0), 0.0)))
         channel_state["sent"] = prev_sent + 1
         _save_delivery_state(path, state)
         return synthesize_bulk_notifications(items)
@@ -701,17 +701,17 @@ class AlertNotifier:
             if isinstance(alert, dict):
                 alert_type = alert.get("alert_type", "")
                 symbol = alert.get("symbol", "N/A")
-                pct_change = float(alert.get("percent_change", 0.0) or 0.0)
-                current_price = float(alert.get("current_price", 0.0) or 0.0)
-                ref_price = float(alert.get("reference_price", 0.0) or 0.0)
+                pct_change = _safe_float(alert.get("percent_change", 0.0), 0.0)
+                current_price = _safe_float(alert.get("current_price", 0.0), 0.0)
+                ref_price = _safe_float(alert.get("reference_price", 0.0), 0.0)
                 ref_time_val = alert.get("reference_time") or alert.get("timestamp")
                 url = alert.get("url")
             else:
                 alert_type = getattr(alert, "alert_type", "")
                 symbol = getattr(alert, "symbol", "N/A")
-                pct_change = float(getattr(alert, "percent_change", 0.0) or 0.0)
-                current_price = float(getattr(alert, "current_price", 0.0) or 0.0)
-                ref_price = float(getattr(alert, "reference_price", 0.0) or 0.0)
+                pct_change = _safe_float(getattr(alert, "percent_change", 0.0), 0.0)
+                current_price = _safe_float(getattr(alert, "current_price", 0.0), 0.0)
+                ref_price = _safe_float(getattr(alert, "reference_price", 0.0), 0.0)
                 ref_time_val = getattr(alert, "reference_time", None) or getattr(alert, "timestamp", None)
                 url = getattr(alert, "url", None)
 
@@ -763,9 +763,9 @@ class AlertNotifier:
                 )
                 sym = getattr(alert, "symbol", "N/A")
                 atype = getattr(alert, "alert_type", "")
-                pchg = float(getattr(alert, "percent_change", 0.0) or 0.0)
-                cprice = float(getattr(alert, "current_price", 0.0) or 0.0)
-                rprice = float(getattr(alert, "reference_price", 0.0) or 0.0)
+                pchg = _safe_float(getattr(alert, "percent_change", 0.0), 0.0)
+                cprice = _safe_float(getattr(alert, "current_price", 0.0), 0.0)
+                rprice = _safe_float(getattr(alert, "reference_price", 0.0), 0.0)
                 f.write(f"[{datetime.now().isoformat()}] {sym} - {atype} - {pchg:+.2f}%\n")
                 f.write(f"  Price: ${cprice:.4f}\n")
                 f.write(f"  Reference: ${rprice:.4f} (at {reference_time})\n")

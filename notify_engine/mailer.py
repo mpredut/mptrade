@@ -84,9 +84,12 @@ def _config() -> dict | None:
         logging.warning(f"Email not configured (missing: {', '.join(missing)})")
         return None
     try:
-        cfg["port"] = int(cfg["port"])
+        port_i = int(cfg["port"])
+        if not (1 <= port_i <= 65535):
+            raise ValueError("port out of range")
+        cfg["port"] = port_i
     except ValueError:
-        logging.warning(f"Email not configured (SMTP_PORT is not an integer: {cfg['port']!r})")
+        logging.warning(f"Email not configured (SMTP_PORT is not a valid TCP port: {cfg['port']!r})")
         return None
     if "gmail" in cfg["server"]:
         # Google shows app passwords in 4-letter groups; the spaces are not part of it.

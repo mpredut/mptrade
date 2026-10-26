@@ -8906,3 +8906,82 @@ def test_iteration65_trailing_core_kraken_trailing_and_autonomous_gateway_safety
     )
     assert math.isnan(gw._get_live_price(inst))
 
+
+def test_iteration66_notify_engine_and_market_monitor_safety(tmp_path, monkeypatch):
+    """Iteration 66: notify_engine (alertnotifiers, server, mailer) and market_monitor (pricechecker, new_coins_discovery) boundary safety."""
+    import json
+    from types import SimpleNamespace
+    import pytest
+    from notify_engine.alertnotifiers import (
+        AlertNotifier,
+        pass_common_gate,
+        pop_due_bulk_batch,
+        synthesize_bulk_notifications,
+    )
+    from notify_engine import mailer
+    from market_monitor.pricechecker import PriceChecker
+    from market_monitor.new_coins_discovery import _safe_days_back, _safe_num
+
+    # 1. synthesize_bulk_notifications handles float-string, negative, or invalid counts safely
+    title, body, prio, topic = synthesize_bulk_notifications([
+        {"title": "TestA", "body": "BodyA", "count": "2.0", "priority": "high", "topic": "t1"},
+        {"title": "TestB", "body": "BodyB", "count": "bad", "priority": "default", "topic": "t1"},
+    ])
+    assert "(×2)" in title
+    assert "TestB:" in body
+
+    # 2. pass_common_gate and pop_due_bulk_batch tolerate out-of-range `now` and corrupted state fields
+    state_file = tmp_path / "notif_state.json"
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
+    monkeypatch.setenv("NOTIFICATION_GATE_SECONDS", "0")
+    allowed, reason, warn, payload = pass_common_gate(
+        "ntfy", "Title1", "Body1", now=1e20
+    )
+    assert isinstance(allowed, bool)
+    assert pop_due_bulk_batch("ntfy", now=1e20) is None
+
+    # 3. AlertNotifier.format_batch_message & save_to_file handle non-numeric prices/percent_change
+    msg = AlertNotifier.format_batch_message([
+        {
+            "symbol": "BTC",
+            "alert_type": "up",
+            "percent_change": "N/A",
+            "current_price": "bad",
+            "reference_price": True,
+        }
+    ])
+    assert "BTC: U +0.00%" in msg
+    log_path = tmp_path / "alerts.log"
+    obj_alert = SimpleNamespace(
+        symbol="ETH",
+        alert_type="down",
+        percent_change="bad",
+        current_price="bad",
+        reference_price=None,
+        reference_time=None,
+        timestamp=None,
+        url=None,
+    )
+    assert AlertNotifier.save_to_file(obj_alert, filename=str(log_path)) is True
+
+    # 4. mailer._config rejects out-of-range TCP ports (<= 0 or > 65535)
+    monkeypatch.setenv("SMTP_USERNAME", "user@example.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("ALERT_TO_EMAIL", "dest@example.com")
+    monkeypatch.setenv("SMTP_PORT", "70000")
+    assert mailer._config() is None
+    monkeypatch.setenv("SMTP_PORT", "0")
+    assert mailer._config() is None
+    monkeypatch.setenv("SMTP_PORT", "587")
+    cfg = mailer._config()
+    assert cfg is not None and cfg["port"] == 587
+
+    # 5. PriceChecker._readable_time & start_monitoring and new_coins_discovery._safe_days_back
+    assert isinstance(PriceChecker._readable_time((1e25, 100.0, None)), str)
+    checker = PriceChecker(SimpleNamespace(original_symbols=[]))
+    with pytest.raises(ValueError):
+        checker.start_monitoring("not-a-number")
+    assert _safe_days_back(1e12) == 3650.0
+    assert _safe_num(10**400, 1.5) == 1.5
+
+

@@ -148,13 +148,14 @@ class PriceChecker:
             return []
         try:
             hours = float(hours)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return []
         if not math.isfinite(hours) or hours <= 0:
             return []
-        history_limit = max(1000, int(math.ceil(hours * 60)) + 2)
+        eff_hours = min(hours, 24.0 * 365.0)
+        history_limit = max(1000, min(100_000, int(math.ceil(eff_hours * 60)) + 2))
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
-        cutoff_time = (time.time() - hours * 3600) * 1000
+        cutoff_time = (time.time() - eff_hours * 3600) * 1000
 
         recent_history = []
         for entry in history or ():
@@ -167,7 +168,7 @@ class PriceChecker:
             try:
                 timestamp = float(raw_ts)
                 price = float(raw_px)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if not math.isfinite(timestamp) or not math.isfinite(price) or price <= 0:
                 continue
@@ -181,7 +182,12 @@ class PriceChecker:
     @staticmethod
     def _readable_time(entry) -> str:
         timestamp, _, readable = entry
-        return readable or datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        if readable:
+            return str(readable)
+        try:
+            return datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError, OSError, OverflowError):
+            return str(timestamp)
 
     def _calculate_24h_stats(self, symbol: str) -> Dict:
         """Calculate price extremes and time bounds in one O(n) pass."""
@@ -359,12 +365,13 @@ class PriceChecker:
         Args:
             interval_seconds: How often to check (for example 60 seconds).
         """
-        if (
-            interval_seconds is None
-            or isinstance(interval_seconds, bool)
-            or not math.isfinite(float(interval_seconds))
-            or float(interval_seconds) <= 0
-        ):
+        if interval_seconds is None or isinstance(interval_seconds, bool):
+            raise ValueError("interval_seconds must be greater than zero")
+        try:
+            iv_f = float(interval_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("interval_seconds must be greater than zero") from exc
+        if not math.isfinite(iv_f) or iv_f <= 0:
             raise ValueError("interval_seconds must be greater than zero")
         if self._running:
             print("[Checker] Already running!")
