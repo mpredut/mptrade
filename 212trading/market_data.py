@@ -6,6 +6,7 @@ market_data.py — Yahoo Finance market data: prices, FX rates, and real-trading
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import urllib.error
@@ -85,17 +86,24 @@ def fetch_yahoo_candles(
     series_len = min(len(opens), len(highs), len(lows), len(closes))
     records = []
     for index, timestamp in enumerate(timestamps):
-        if timestamp is None or index >= series_len:
+        if timestamp is None or isinstance(timestamp, bool) or index >= series_len:
             continue
         values = (opens[index], highs[index], lows[index], closes[index])
-        if None in values:
+        if None in values or any(isinstance(v, bool) for v in values):
+            continue
+        try:
+            ts_i = int(timestamp)
+            o_f, h_f, l_f, c_f = float(values[0]), float(values[1]), float(values[2]), float(values[3])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if ts_i <= 0 or not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)):
             continue
         records.append({
-            "timestamp": int(timestamp),
-            "open": float(values[0]),
-            "high": float(values[1]),
-            "low": float(values[2]),
-            "close": float(values[3]),
+            "timestamp": ts_i,
+            "open": o_f,
+            "high": h_f,
+            "low": l_f,
+            "close": c_f,
         })
     if drop_incomplete:
         regular = ((result.get("meta") or {}).get("currentTradingPeriod") or {}).get(
@@ -137,8 +145,27 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
         q = ((result.get("indicators", {}).get("quote") or [{}])[0])
         closes = q.get("close") or []
         vols = q.get("volume") or []
-        bars = [(t, c, (vols[i] if i < len(vols) else None))
-                for i, (t, c) in enumerate(zip(ts, closes)) if c is not None]
+        bars = []
+        for i, (t, c) in enumerate(zip(ts, closes)):
+            if t is None or c is None or isinstance(t, bool) or isinstance(c, bool):
+                continue
+            try:
+                t_f = float(t)
+                c_f = float(c)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not (math.isfinite(t_f) and t_f > 0 and math.isfinite(c_f) and c_f > 0):
+                continue
+            raw_v = vols[i] if i < len(vols) else None
+            v_clean = None
+            if raw_v is not None and not isinstance(raw_v, bool):
+                try:
+                    v_f = float(raw_v)
+                    if math.isfinite(v_f) and v_f >= 0:
+                        v_clean = v_f
+                except (TypeError, ValueError, OverflowError):
+                    v_clean = None
+            bars.append((t, c_f, v_clean))
         return meta, bars
     except (ValueError, KeyError, TypeError):
         return None, []
@@ -151,7 +178,14 @@ def get_price_usd(sym: str) -> float | None:
     if bars:
         return bars[-1][1]
     if meta:
-        return meta.get("regularMarketPrice") or None
+        raw_p = meta.get("regularMarketPrice")
+        if raw_p is not None and not isinstance(raw_p, bool):
+            try:
+                p_f = float(raw_p)
+                if math.isfinite(p_f) and p_f > 0:
+                    return p_f
+            except (TypeError, ValueError, OverflowError):
+                pass
     return None
 
 
@@ -159,25 +193,33 @@ def trend_slope_pct(sym: str, bars: int = 12) -> float | None:
     """Return short-term OLS trend slope over the last `bars` five-minute closes.
     Normalize as price percentage PER BAR; negative means downtrend. Return None with
     insufficient data. Used as a DCA gate like Binance/Kraken to avoid falling markets."""
+    if isinstance(bars, bool):
+        bars_n = 12
+    else:
+        try:
+            bars_n = max(4, int(bars))
+        except (TypeError, ValueError, OverflowError):
+            bars_n = 12
     _, bars_rows = _chart(sym)
-    closes = [c for (_, c, _) in bars_rows][-bars:]
-    if len(closes) < max(4, bars // 2):
+    closes = [c for (_, c, _) in bars_rows if not isinstance(c, bool) and math.isfinite(float(c)) and float(c) > 0][-bars_n:]
+    if len(closes) < max(4, bars_n // 2):
         return None
     n = len(closes)
     xs = list(range(n))
     mx = sum(xs) / n
     my = sum(closes) / n
     denom = sum((x - mx) ** 2 for x in xs)
-    if denom == 0 or my == 0:
+    if denom == 0 or my == 0 or not math.isfinite(my):
         return None
     slope = sum((xs[i] - mx) * (closes[i] - my) for i in range(n)) / denom
-    return slope / my * 100.0     # percentage of price per five-minute bar
+    res = slope / my * 100.0     # percentage of price per five-minute bar
+    return res if math.isfinite(res) else None
 
 
 def get_usd_ron() -> float:
     """Return current USD/RON, falling back to 4.65 when the feed is unavailable."""
     rate = get_price_usd("USDRON=X")
-    if rate and rate > 1:
+    if rate is not None and not isinstance(rate, bool) and math.isfinite(rate) and rate > 1:
         return rate
     log("  ! curs USD/RON indisponibil, folosesc fallback 4.65")
     return 4.65
@@ -186,7 +228,7 @@ def get_usd_ron() -> float:
 def get_eur_usd() -> float:
     """Return current EUR->USD (USD per EUR), falling back to 1.08."""
     rate = get_price_usd("EURUSD=X")
-    if rate and rate > 0.5:
+    if rate is not None and not isinstance(rate, bool) and math.isfinite(rate) and rate > 0.5:
         return rate
     log("  ! curs EUR/USD indisponibil, folosesc fallback 1.08")
     return 1.08
@@ -203,16 +245,34 @@ def check_market(sym: str) -> dict | None:
         return None
     meta = meta or {}
 
-    price    = meta.get("regularMarketPrice")
-    meta_vol = meta.get("regularMarketVolume") or 0
+    raw_price = meta.get("regularMarketPrice")
+    price = None
+    if raw_price is not None and not isinstance(raw_price, bool):
+        try:
+            p_f = float(raw_price)
+            if math.isfinite(p_f) and p_f > 0:
+                price = p_f
+        except (TypeError, ValueError, OverflowError):
+            price = None
+    raw_vol = meta.get("regularMarketVolume")
+    meta_vol = 0
+    if raw_vol is not None and not isinstance(raw_vol, bool):
+        try:
+            v_f = float(raw_vol)
+            if math.isfinite(v_f) and v_f >= 0:
+                meta_vol = v_f
+        except (TypeError, ValueError, OverflowError):
+            meta_vol = 0
     state    = (meta.get("marketState") or "").upper()
     last_ts  = meta.get("regularMarketTime")
 
     age_sec = None
-    if last_ts:
+    if last_ts is not None and not isinstance(last_ts, bool):
         try:
-            age_sec = time.time() - float(last_ts)
-        except (TypeError, ValueError):
+            ts_f = float(last_ts)
+            if math.isfinite(ts_f) and ts_f > 0:
+                age_sec = time.time() - ts_f
+        except (TypeError, ValueError, OverflowError):
             pass
 
     # --- intraday SERIES signals robust to stale metadata ---

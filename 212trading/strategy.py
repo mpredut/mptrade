@@ -63,6 +63,26 @@ def state_path_for(ticker: str) -> str:
     return os.path.join(_HERE, f".state_{safe}.json")
 
 
+def _clean_pos_float(val: object) -> float | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if (math.isfinite(f) and f > 0.0) else None
+
+
+def _clean_nonneg_float(val: object, default: float = 0.0) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if (math.isfinite(f) and f >= 0.0) else default
+
+
 def generate_tp_ladder(
     min_pct: float,
     max_pct: float,
@@ -78,13 +98,21 @@ def generate_tp_ladder(
     - 'back_heavy': larger fractions on higher rungs for maximum upside capture.
     - 'geometric': geometrically increasing percentage steps.
     """
-    if steps < 1:
+    if isinstance(min_pct, bool) or isinstance(max_pct, bool) or isinstance(steps, bool):
+        raise ValueError("generate_tp_ladder parameters cannot be bool")
+    try:
+        min_f = float(min_pct)
+        max_f = float(max_pct)
+        steps_i = int(steps)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid generate_tp_ladder parameters: {exc}") from exc
+    if not (math.isfinite(min_f) and math.isfinite(max_f)):
+        raise ValueError("generate_tp_ladder requires finite min_pct and max_pct")
+    if steps_i < 1:
         return []
-    if steps == 1:
-        return [(round(float(min_pct), 1), 1.0)]
-
-    min_f = float(min_pct)
-    max_f = float(max_pct)
+    if steps_i == 1:
+        return [(round(min_f, 1), 1.0)]
+    steps = steps_i
     curve_lower = str(curve or "linear").lower()
 
     if curve_lower == "geometric":
@@ -121,9 +149,11 @@ def adapt_ladder_rungs(
     If held quantity is too small to distribute across all rungs (e.g. 0.05 shares for 10 rungs),
     subsamples rungs evenly across the remaining min-to-max span so every order is valid.
     """
-    if not remaining or held <= 1e-9:
+    held_f = _clean_pos_float(held)
+    if not remaining or held_f is None or held_f <= 1e-9:
         return []
-    max_viable_rungs = max(1, int(held / max(1e-6, min_tranche_qty)))
+    min_q = _clean_pos_float(min_tranche_qty) or 0.01
+    max_viable_rungs = max(1, int(held_f / max(1e-6, min_q)))
     if len(remaining) <= max_viable_rungs:
         return list(remaining)
     if max_viable_rungs == 1:
@@ -447,11 +477,21 @@ class Strategy:
 
     # -- helperi ---------------------------------------------------------------
     def _avg_cost(self) -> float | None:
-        return self.s["cost_usd"] / self.s["qty"] if self.s["qty"] > 1e-9 else None
+        qty = _clean_pos_float(self.s.get("qty"))
+        cost = _clean_pos_float(self.s.get("cost_usd"))
+        if qty is None or qty <= 1e-9 or cost is None:
+            return None
+        avg = cost / qty
+        return avg if (math.isfinite(avg) and avg > 0.0) else None
 
     def _qty_for_amount(self, amount: float, price: float) -> float:
-        usd = amount * self.fx_to_usd
-        return round(usd / price, 2) if price > 0 else 0.0
+        amt_f = _clean_pos_float(amount)
+        px_f = _clean_pos_float(price)
+        fx_f = _clean_pos_float(self.fx_to_usd)
+        if amt_f is None or px_f is None or fx_f is None:
+            return 0.0
+        usd = amt_f * fx_f
+        return round(usd / px_f, 2) if (math.isfinite(usd) and px_f > 0) else 0.0
 
     def _has_open(self, side: str) -> bool:
         side_u = str(side).upper()
@@ -694,6 +734,13 @@ class Strategy:
 
     # -- plasare / anulare -----------------------------------------------------
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
+        lim_f = _clean_pos_float(limit)
+        amt_f = _clean_pos_float(amount)
+        if lim_f is None or amt_f is None or round(lim_f, 2) <= 0:
+            log("  ! [STRAT] invalid BUY amount/limit — sar")
+            return False
+        limit = lim_f
+        amount = amt_f
         qty = self._qty_for_amount(amount, limit)
         if qty <= 0:
             log("  ! [STRAT] qty 0 — sar")
@@ -728,7 +775,13 @@ class Strategy:
 
     def _place_sell(self, qty: float, limit: float, level: float | None = None,
                     kind: str = "TP", *, market: bool = False) -> bool:
-        qty = round(float(qty), 2)
+        qty_f = _clean_pos_float(qty)
+        lim_f = _clean_pos_float(limit)
+        if qty_f is None or lim_f is None or round(lim_f, 2) <= 0:
+            log("  ! [STRAT] invalid SELL qty/limit — sending no order")
+            return False
+        limit = lim_f
+        qty = round(qty_f, 2)
         if qty <= 0:
             log("  ! [STRAT] SELL qty 0 after rounding — keeping the dust, sending no order")
             return False
@@ -959,10 +1012,13 @@ class Strategy:
             self.s["orders"].remove(o)
 
     def reconcile(self, price: float) -> bool:
+        px = _clean_pos_float(price)
+        if px is None:
+            return False
         if self.dry_run:
-            self._reconcile_paper(price)
+            self._reconcile_paper(px)
             return True
-        return self._reconcile_real(price)
+        return self._reconcile_real(px)
 
     # -- Paper reconciliation --------------------------------------------------
     def _reconcile_paper(self, price: float) -> None:
@@ -987,8 +1043,21 @@ class Strategy:
         if pf is None:
             return None
         for p in pf:
+            if not isinstance(p, dict):
+                continue
             if str(p.get("ticker", "")).upper() == self.ticker.upper():
-                return float(p.get("quantity") or 0.0), float(p.get("averagePrice") or 0.0)
+                raw_q = p.get("quantity")
+                raw_avg = p.get("averagePrice")
+                if isinstance(raw_q, bool) or isinstance(raw_avg, bool):
+                    return None
+                try:
+                    q_f = float(0.0 if raw_q is None else raw_q)
+                    avg_f = float(0.0 if raw_avg is None else raw_avg)
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                if not (math.isfinite(q_f) and q_f >= 0.0 and math.isfinite(avg_f) and avg_f >= 0.0):
+                    return None
+                return q_f, avg_f
         return 0.0, 0.0   # No holding.
 
     def _active_order_ids(self, orders: list[dict] | None = None) -> set | None:
@@ -1305,7 +1374,7 @@ class Strategy:
             return False
 
         avg = self._avg_cost()
-        peak = self.s.get("pos_peak", 0.0) or 0.0
+        peak = _clean_pos_float(self.s.get("pos_peak")) or 0.0
         if not peak or peak <= 0:
             self.s["pos_peak"] = peak = max(avg or price, price)
         if price > peak:
@@ -1506,9 +1575,10 @@ class Strategy:
         targets recovery rather than a falling price.
         """
         rb = self.s.get("sl_rebuy")
-        if not rb:
+        if not isinstance(rb, dict) or not rb:
             return
-        rb["low"] = min(rb.get("low", price), price)          # Track the post-stop low.
+        prev_low = _clean_pos_float(rb.get("low"))
+        rb["low"] = min(prev_low, price) if prev_low is not None else price  # Track the post-stop low.
         target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
         if price < target and not are_close(price, target, self.p.reentry_tolerance_pct):
             return                                            # Wait until the bounce is confirmed.
@@ -1553,17 +1623,18 @@ class Strategy:
 
     def _evaluate_reentry_gate(self, price: float) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically with PositionExitManager or legacy fallback."""
-        lsp = self.s.get("last_sell_price")
+        lsp = _clean_pos_float(self.s.get("last_sell_price"))
         if not lsp:
             return True, "no_last_sell"
 
-        cur_peak = self.s.get("post_sell_peak") or lsp
+        cur_peak = _clean_pos_float(self.s.get("post_sell_peak")) or lsp
         self.s["post_sell_peak"] = max(cur_peak, price)
-        cur_trough = self.s.get("post_sell_trough") or lsp
+        cur_trough = _clean_pos_float(self.s.get("post_sell_trough")) or lsp
         self.s["post_sell_trough"] = min(cur_trough, price)
 
-        if self.p.reentry_ttl_hours > 0 and self.s.get("last_sell_ts"):
-            if (self._now() - self.s["last_sell_ts"]) >= self.p.reentry_ttl_hours * 3600.0:
+        last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
+        if self.p.reentry_ttl_hours > 0 and last_sell_ts:
+            if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
                 self.s.pop("sl_rebuy", None)
 
         # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
@@ -1631,7 +1702,12 @@ class Strategy:
         return reentry_dec.should_enter, reentry_dec.reason
 
     def step(self, price: float) -> None:
-        held = self.s["qty"]
+        px = _clean_pos_float(price)
+        if px is None:
+            return
+        price = px
+        held = _clean_nonneg_float(self.s.get("qty"), 0.0)
+        self.s["qty"] = held
         self._check_loss_alert(price)   # Alert on deeper loss while holding; never sells.
         if self.observe_only:
             if not self.dry_run and self.s.get("orders"):

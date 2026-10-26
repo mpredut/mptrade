@@ -7526,6 +7526,89 @@ def test_iteration49_hyperliquid_client_market_data_price_analysis_strategy_and_
     assert hl_rep.funding_at([(1000, 0.0001)], True) == 0.0
 
 
+def test_iteration50_t212_client_market_data_strategy_and_replay_nan_bool_safety():
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        import market_data as t212_md
+        import strategy as t212_strat
+        import replay as t212_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. T212Client: place_limit_order & place_market_order reject bool/NaN/Inf/0 before HTTP
+    cli = t212c.T212Client("k", "s", env="demo", min_gap_sec=True, portfolio_ttl_sec=float("nan"), order_min_gap_sec=-1.0)
+    assert cli._min_gap == 0.0
+    assert cli._pf_ttl == 6.0
+    assert cli._order_min_gap == 0.0
+    with pytest.raises(ValueError):
+        cli.place_limit_order("NVDA_US_EQ", True, 100.0)
+    with pytest.raises(ValueError):
+        cli.place_limit_order("NVDA_US_EQ", 1.0, float("nan"))
+    with pytest.raises(ValueError):
+        cli.place_limit_order("NVDA_US_EQ", 0.001, 100.0)  # rounds to 0.0
+    with pytest.raises(ValueError):
+        cli.place_market_order("NVDA_US_EQ", False)
+    with pytest.raises(ValueError):
+        cli.place_market_order("NVDA_US_EQ", float("inf"))
+
+    # 2. 212trading/strategy: generate_tp_ladder, adapt_ladder_rungs, _avg_cost, _portfolio_position, step
+    with pytest.raises(ValueError):
+        t212_strat.generate_tp_ladder(True, 10.0, 5)
+    with pytest.raises(ValueError):
+        t212_strat.generate_tp_ladder(2.0, 10.0, True)
+    assert t212_strat.adapt_ladder_rungs([(2.0, 0.5), (4.0, 0.5)], float("nan")) == []
+    assert t212_strat.adapt_ladder_rungs([(2.0, 0.5), (4.0, 0.5)], True) == []
+
+    params = t212_strat.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=0.5,
+        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=5.0,
+        takeprofit_pct=3.0, max_budget=500.0, max_dca_buys=5,
+        validity="GOOD_TILL_CANCEL", enable_takeprofit=True,
+        order_ttl_min=60.0, stop_loss_pct=10.0, yahoo_sym="NVDA",
+    )
+    dummy_cli = SimpleNamespace(
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": float("nan"), "averagePrice": 120.0}],
+        list_active_orders=lambda: [],
+    )
+    st = t212_strat.Strategy(dummy_cli, "NVDA_US_EQ", params, dry_run=True, fx_to_usd=1.0, clock=lambda: 1000.0)
+    assert st._portfolio_position() is None
+    st.s["qty"] = 2.0
+    st.s["cost_usd"] = float("nan")
+    assert st._avg_cost() is None
+    assert st.reconcile(float("nan")) is False
+    assert st.reconcile(True) is False
+    st.step(float("nan"))
+    st.step(True)
+
+    # 3. 212trading/replay: _fx_rates & _ols_slope_pct reject bool/NaN/Inf
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates(True, 3)
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates(float("nan"), 3)
+    with pytest.raises(ValueError):
+        t212_rep._fx_rates([1.0, float("inf"), 1.0], 3)
+    assert t212_rep._ols_slope_pct([True] * 10) is None
+    assert t212_rep._ols_slope_pct([float("nan")] * 10) is None
+
+
+
 
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import threading
 import time
 
@@ -46,12 +47,22 @@ class T212Client:
         self._last_order = 0.0
         self._backoff_until = 0.0
         self._fetch_fail: dict[str, float] = {}
-        self._min_gap = (required_float_env("T212_MIN_GAP_SEC")
-                         if min_gap_sec is None else min_gap_sec)
-        self._order_min_gap = (
-            required_float_env("T212_ORDER_MIN_GAP_SEC")
-            if order_min_gap_sec is None
-            else order_min_gap_sec
+        def _clean_nonneg(val: object, default: float) -> float:
+            if isinstance(val, bool) or val is None:
+                return default
+            try:
+                f = float(val)
+            except (TypeError, ValueError, OverflowError):
+                return default
+            return f if (math.isfinite(f) and f >= 0.0) else default
+
+        self._min_gap = _clean_nonneg(
+            required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec,
+            0.0,
+        )
+        self._order_min_gap = _clean_nonneg(
+            required_float_env("T212_ORDER_MIN_GAP_SEC") if order_min_gap_sec is None else order_min_gap_sec,
+            0.0,
         )
         # Brief shared account-level caches coalesce redundant per-asset thread
         # reads. A six-second TTL stays above the approximate five-second limits
@@ -59,15 +70,26 @@ class T212Client:
         self._pf_cache: tuple[float, list] | None = None
         self._ord_cache: tuple[float, list] | None = None
         self._cash_cache: tuple[float, dict] | None = None
-        self._pf_ttl = (required_float_env("T212_PORTFOLIO_TTL_SEC")
-                        if portfolio_ttl_sec is None else portfolio_ttl_sec)
+        self._pf_ttl = _clean_nonneg(
+            required_float_env("T212_PORTFOLIO_TTL_SEC") if portfolio_ttl_sec is None else portfolio_ttl_sec,
+            6.0,
+        )
         # On TTL expiry, one thread fetches while others wait and reuse its result.
         self._fetch_lock = threading.Lock()
 
     def notify_rate_limit(self, backoff_sec: float = 5.0) -> None:
         """Pause all subsequent requests across all threads after HTTP 429."""
+        if isinstance(backoff_sec, bool):
+            wait_sec = 5.0
+        else:
+            try:
+                wait_sec = float(backoff_sec)
+            except (TypeError, ValueError, OverflowError):
+                wait_sec = 5.0
+            if not math.isfinite(wait_sec) or wait_sec < 0.0:
+                wait_sec = 5.0
         with self._lock:
-            self._backoff_until = max(self._backoff_until, time.monotonic() + backoff_sec)
+            self._backoff_until = max(self._backoff_until, time.monotonic() + wait_sec)
 
     def _pace(self) -> None:
         """Enforce at least ``_min_gap`` seconds between calls across all threads,
@@ -190,10 +212,23 @@ class T212Client:
         validity: str = "DAY",
     ) -> tuple[int, dict]:
         """Place a limit order and return HTTP status with response payload."""
+        if isinstance(quantity, bool) or isinstance(limit_price, bool):
+            raise ValueError("place_limit_order quantity and limit_price cannot be bool")
+        try:
+            qty_f = float(quantity)
+            price_f = float(limit_price)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid limit order numeric parameters: {exc}") from exc
+        if not (math.isfinite(qty_f) and math.isfinite(price_f) and price_f > 0):
+            raise ValueError("place_limit_order requires finite quantity and positive limit_price")
+        qty_r = round(qty_f, 2)
+        price_r = round(price_f, 2)
+        if qty_r == 0.0 or price_r <= 0.0:
+            raise ValueError("place_limit_order rounded quantity must be non-zero and limit_price positive")
         return self._place_order("limit", {
             "ticker": ticker,
-            "quantity": round(quantity, 2),   # Positive buys and negative sells.
-            "limitPrice": round(limit_price, 2),
+            "quantity": qty_r,   # Positive buys and negative sells.
+            "limitPrice": price_r,
             "timeValidity": validity,
         })
 
@@ -204,9 +239,20 @@ class T212Client:
         extended_hours: bool = False,
     ) -> tuple[int, dict]:
         """Place a market order, using quantity sign for direction as with limits."""
+        if isinstance(quantity, bool):
+            raise ValueError("place_market_order quantity cannot be bool")
+        try:
+            qty_f = float(quantity)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid market order quantity: {exc}") from exc
+        if not math.isfinite(qty_f):
+            raise ValueError("place_market_order requires finite quantity")
+        qty_r = round(qty_f, 2)
+        if qty_r == 0.0:
+            raise ValueError("place_market_order rounded quantity must be non-zero")
         return self._place_order("market", {
             "ticker": ticker,
-            "quantity": round(quantity, 2),
+            "quantity": qty_r,
             "extendedHours": bool(extended_hours),
         })
 
@@ -251,10 +297,16 @@ class T212Client:
         for _, fill in matches:
             if not isinstance(fill, dict):
                 continue
+            raw_qty = fill.get("quantity")
+            raw_price = fill.get("price")
+            if isinstance(raw_qty, bool) or isinstance(raw_price, bool):
+                continue
             try:
-                qty = abs(float(fill.get("quantity") or 0.0))
-                price = abs(float(fill.get("price") or 0.0))
-            except (TypeError, ValueError):
+                qty = abs(float(raw_qty or 0.0))
+                price = abs(float(raw_price or 0.0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not (math.isfinite(qty) and math.isfinite(price)):
                 continue
             total_qty += qty
             total_cost += qty * price
@@ -263,10 +315,16 @@ class T212Client:
             for tax in taxes or []:
                 if not isinstance(tax, dict):
                     continue
-                try:
-                    total_fee += abs(float(tax.get("quantity") or 0.0))
-                except (TypeError, ValueError):
+                raw_tax_qty = tax.get("quantity")
+                if isinstance(raw_tax_qty, bool):
                     continue
+                try:
+                    tax_qty = abs(float(raw_tax_qty or 0.0))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(tax_qty):
+                    continue
+                total_fee += tax_qty
                 currency = str(tax.get("currency") or "").strip().upper()
                 if currency:
                     fee_currencies.add(currency)

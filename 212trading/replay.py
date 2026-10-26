@@ -46,31 +46,48 @@ from providers.replay_clock import SimClock as _SimClock
 
 
 def _ols_slope_pct(closes: list[float]) -> float | None:
-    values = closes[-12:]
+    clean_closes: list[float] = []
+    for c in closes or []:
+        if isinstance(c, bool):
+            continue
+        try:
+            cf = float(c)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(cf) and cf > 0:
+            clean_closes.append(cf)
+    values = clean_closes[-12:]
     if len(values) < 6:
         return None
     n = len(values)
     mean_x = (n - 1) / 2.0
     mean_y = sum(values) / n
     denominator = sum((index - mean_x) ** 2 for index in range(n))
-    if denominator == 0 or mean_y == 0:
+    if denominator == 0 or mean_y == 0 or not math.isfinite(mean_y):
         return None
     slope = sum(
         (index - mean_x) * (value - mean_y)
         for index, value in enumerate(values)
     ) / denominator
-    return slope / mean_y * 100.0
+    res = slope / mean_y * 100.0
+    return res if math.isfinite(res) else None
 
 
 def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
+    if isinstance(value, bool):
+        raise ValueError("fx_to_usd cannot be bool")
     if isinstance(value, (int, float)):
         rates = [float(value)] * count
     else:
-        rates = [float(rate) for rate in value]
+        rates = []
+        for rate in value:
+            if isinstance(rate, bool):
+                raise ValueError("fx_to_usd values cannot be bool")
+            rates.append(float(rate))
         if len(rates) != count:
             raise ValueError(f"the FX series has {len(rates)} values for {count} bars")
-    if any(rate <= 0 for rate in rates):
-        raise ValueError("all fx_to_usd values must be positive")
+    if any(not math.isfinite(rate) or rate <= 0 for rate in rates):
+        raise ValueError("all fx_to_usd values must be finite and positive")
     return rates
 
 
@@ -92,6 +109,20 @@ def run_replay(
     """
     if not ohlc:
         raise ValueError("ohlc cannot be empty")
+    if bar_minutes is not None:
+        if isinstance(bar_minutes, bool) or not math.isfinite(float(bar_minutes)) or float(bar_minutes) <= 0:
+            raise ValueError("bar_minutes must be a finite positive number")
+    if periods_per_year is not None:
+        if isinstance(periods_per_year, bool) or not math.isfinite(float(periods_per_year)) or float(periods_per_year) <= 0:
+            raise ValueError("periods_per_year must be a finite positive number")
+    for idx, row in enumerate(ohlc):
+        if not isinstance(row, (list, tuple)) or len(row) != 4:
+            raise ValueError(f"invalid OHLC bar at index {idx}")
+        if any(isinstance(v, bool) for v in row):
+            raise ValueError(f"OHLC bar at index {idx} contains bool")
+        o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        if not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError(
             "dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal"
