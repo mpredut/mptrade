@@ -269,25 +269,34 @@ def _summarize_orders(orders):
         return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
     if len(orders) == 1:
         o = orders[0]
-        q = extract_order_qty(o)
-        p = extract_order_price(o)
-        ts = int(_order_timestamp_ms(o))
-        val = p * q
+        raw_q = extract_order_qty(o)
+        raw_p = extract_order_price(o)
+        q = raw_q if (math.isfinite(raw_q) and raw_q > 0.0) else 0.0
+        p = raw_p if (math.isfinite(raw_p) and raw_p > 0.0) else 0.0
+        raw_ts = _order_timestamp_ms(o)
+        ts = int(raw_ts) if math.isfinite(raw_ts) else 0
+        val = (p * q) if (q > 0.0 and p > 0.0) else 0.0
         first_id = o.get("id") or o.get("orderId") or ts
         return q, val, (1, round(q, 8), round(val, 4), ts, first_id)
     total_qty = 0.0
     total_val = 0.0
     latest_ts = 0
     for o in orders:
-        q = extract_order_qty(o)
-        p = extract_order_price(o)
-        ts = int(_order_timestamp_ms(o))
-        total_qty += q
-        total_val += p * q
+        raw_q = extract_order_qty(o)
+        raw_p = extract_order_price(o)
+        q = raw_q if (math.isfinite(raw_q) and raw_q > 0.0) else 0.0
+        p = raw_p if (math.isfinite(raw_p) and raw_p > 0.0) else 0.0
+        raw_ts = _order_timestamp_ms(o)
+        ts = int(raw_ts) if math.isfinite(raw_ts) else 0
+        if q > 0.0 and p > 0.0:
+            total_qty += q
+            total_val += p * q
         if ts > latest_ts:
             latest_ts = ts
     first = orders[0]
-    first_id = first.get("id") or first.get("orderId") or int(_order_timestamp_ms(first))
+    first_ts_raw = _order_timestamp_ms(first)
+    first_ts = int(first_ts_raw) if math.isfinite(first_ts_raw) else 0
+    first_id = first.get("id") or first.get("orderId") or first_ts
     sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
     return total_qty, total_val, sig
 
@@ -318,6 +327,8 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         for o in buy_orders:
             q = extract_order_qty(o)
             p = extract_order_price(o)
+            if not (math.isfinite(q) and q > 0.0 and math.isfinite(p) and p > 0.0):
+                continue
             tot_q += q
             tot_v += q * p
         avg_px = (tot_v / tot_q) if tot_q > 0 else 0.0
@@ -327,12 +338,16 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         q = extract_order_qty(o)
         p = extract_order_price(o)
         ts = _order_timestamp_ms(o)
-        events.append((ts, 0, q, p))
+        if not (math.isfinite(q) and q > 0.0 and math.isfinite(p) and p > 0.0):
+            continue
+        events.append((ts if math.isfinite(ts) else 0.0, 0, q, p))
     for o in sell_orders:
         q = extract_order_qty(o)
         p = extract_order_price(o)
         ts = _order_timestamp_ms(o)
-        events.append((ts, 1, q, p))
+        if not (math.isfinite(q) and q > 0.0):
+            continue
+        events.append((ts if math.isfinite(ts) else 0.0, 1, q, p if math.isfinite(p) else 0.0))
     events.sort(key=lambda x: (x[0], x[1]))
     owned = 0.0
     cost_qty = 0.0
@@ -374,8 +389,18 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     if sell_orders is None:
         sell_orders = api.get_orders(symbol, "SELL", maxage_trade_s)
 
-    now_ts = float(now_ts) if now_ts is not None else time.time()
-    cache_key = (_api_cache_identity(api), str(symbol).upper(), float(maxage_trade_s))
+    now_val = time.time()
+    if now_ts is not None and not isinstance(now_ts, bool):
+        try:
+            nf = float(now_ts)
+            if math.isfinite(nf) and nf > 0.0:
+                now_val = nf
+        except (TypeError, ValueError):
+            pass
+    now_ts = now_val
+    sym_key = str(symbol or "").strip().upper().replace("/", "")
+    maxage_f = float(maxage_trade_s) if (maxage_trade_s is not None and not isinstance(maxage_trade_s, bool) and math.isfinite(float(maxage_trade_s))) else 0.0
+    cache_key = (_api_cache_identity(api), sym_key, maxage_f)
     total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
     total_sell_qty, total_sell_value, sell_sig = _summarize_orders(sell_orders)
     entry_sig = (buy_sig, sell_sig)
@@ -384,7 +409,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         cached = _position_stats_cache.get(cache_key)
         if cached is not None:
             cached_sig, cached_time, cached_val = cached
-            if cached_sig == entry_sig and (explicit_orders or (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC):
+            if cached_sig == entry_sig and (explicit_orders or 0.0 <= (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC):
                 return dict(cached_val)
 
     average_buy_price = (
@@ -902,16 +927,32 @@ def get_available_qty(symbol, api=None):
 #//todo: review 0.5
 def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     """Place only positive quantities meeting the venue minimum; return whether submitted."""
-    if qty is None or not math.isfinite(float(qty)) or qty <= 0:
+    if qty is None or isinstance(qty, bool):
         print(f"[{inst.symbol}] {side} skip: qty={qty}")
         return False
-    if price is None or not math.isfinite(float(price)) or price <= 0:
+    try:
+        qty_f = float(qty)
+    except (TypeError, ValueError):
+        print(f"[{inst.symbol}] {side} skip: qty={qty}")
+        return False
+    if not math.isfinite(qty_f) or qty_f <= 0:
+        print(f"[{inst.symbol}] {side} skip: qty={qty}")
+        return False
+    if price is None or isinstance(price, bool):
         print(f"[{inst.symbol}] {side} skip: price={price}")
         return False
-    if min_qty and qty < min_qty:
+    try:
+        price_f = float(price)
+    except (TypeError, ValueError):
+        print(f"[{inst.symbol}] {side} skip: price={price}")
+        return False
+    if not math.isfinite(price_f) or price_f <= 0:
+        print(f"[{inst.symbol}] {side} skip: price={price}")
+        return False
+    if min_qty and not isinstance(min_qty, bool) and math.isfinite(float(min_qty)) and qty_f < float(min_qty):
         print(f"[{inst.symbol}] {side} skip: qty {qty} < volum minim venue {min_qty}")
         return False
-    result = inst.place(side, price, qty, **kwargs)
+    result = inst.place(side, price_f, qty_f, **kwargs)
     return result is not None
 
 

@@ -6187,3 +6187,115 @@ def test_iteration31_parabolic_high_stake_post_stop_and_smart_sl_nan_safety(monk
     assert "hard_disaster_floor_breached" in reason
     assert math.isfinite(meta["disaster_floor_pct"])
 
+
+def test_iteration32_external_order_guard_position_exit_manager_and_monitortrades_nan_safety():
+    """Iteration 32 regression suite:
+    1. check_external_order_guards sanitizes NaN/bool `now`, `notional_eur`, and `price`, and normalizes
+       slash symbols in _MICRO_SHADOW_NOTIFY_COOLDOWN so NaN never poisons the cooldown map.
+    2. PositionSnapshot.is_valid_price and ReentrySnapshot.is_valid_price reject None and bool prices
+       (e.g. current_price=True must not be treated as $1.00 and trigger a false 99.99% disaster floor exit).
+    3. PositionExitManager.compute_disaster_buffer and compute_tp_anomaly_pullback fall back to vol_resolver
+       when vol_1h is NaN/bool/inf, and evaluate_stop_loss / evaluate_reentry sanitize NaN current_time_s,
+       post_sell_trough=NaN, and last_sell_time_s=NaN.
+    4. monitortrades._summarize_orders, _compute_spot_position, get_position_stats, and _place_guarded
+       filter out NaN/zero/bool order quantities and prices and protect cache heartbeat against backward clock skew.
+    """
+    from types import SimpleNamespace
+    import math
+    import external_order_guard as eog
+    from strategies.position_exit_manager import (
+        ExitAction,
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentryAction,
+        ReentrySnapshot,
+    )
+    import monitortrades as mt
+
+    # 1. check_external_order_guards with NaN now and invalid notional_eur
+    eog._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
+    ok, reason, scale = eog.check_external_order_guards(
+        "btc/usdc",
+        "BUY",
+        True,
+        qty=True,
+        notional_eur="bad",
+        now=float("nan"),
+        margins={"intelligence_guards_mode": "off"},
+    )
+    assert ok is True and scale == 1.0
+
+    # 2. PositionSnapshot & ReentrySnapshot reject bool/None prices
+    snap_bool = PositionSnapshot(symbol="BTCUSDC", current_price=True, avg_buy_price=85000.0)
+    assert snap_bool.is_valid_price is False
+    snap_none = PositionSnapshot(symbol="BTCUSDC", current_price=None, avg_buy_price=85000.0)
+    assert snap_none.is_valid_price is False
+    re_bool = ReentrySnapshot(symbol="BTCUSDC", current_price=True, last_sell_price=85000.0)
+    assert re_bool.is_valid_price is False
+
+    # 3. PositionExitManager disaster buffer fallback on NaN vol_1h & reentry with NaN trough
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            lost_threshold=0.05,
+            sl_disaster_buffer_ratio=0.30,
+            sl_disaster_vol_multiplier=1.0,
+            sl_disaster_buffer_min_pct=0.008,
+            reentry_sl_bounce_pct=0.02,
+            allow_external_cache=False,
+        ),
+        vol_resolver=lambda sym: (0.04, "custom_resolver"),
+    )
+    buf, meta = mgr.compute_disaster_buffer("BTCUSDC", 0.05, vol_1h=float("nan"))
+    assert math.isclose(buf, 0.04) and meta["vol_source"] == "custom_resolver"
+
+    # evaluate_stop_loss with current_price=True must HOLD ("invalid_prices"), not SELL
+    sl_dec = mgr.evaluate_stop_loss(snap_bool)
+    assert sl_dec.action == ExitAction.HOLD and sl_dec.should_exit is False
+
+    # evaluate_reentry with post_sell_trough=NaN and last_sell_time_s=NaN must not poison trough with NaN
+    re_snap = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=103.0,
+        last_sell_price=105.0,
+        last_exit_kind="STOP",
+        post_sell_trough=float("nan"),
+        post_sell_peak=float("nan"),
+        current_time_s=float("nan"),
+        last_sell_time_s=float("nan"),
+    )
+    # First tick at 100.0 sets trough=100.0 even when post_sell_trough=NaN
+    re_snap_dip = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=100.0,
+        last_sell_price=105.0,
+        last_exit_kind="STOP",
+        post_sell_trough=float("nan"),
+        post_sell_peak=float("nan"),
+        current_time_s=float("nan"),
+        last_sell_time_s=float("nan"),
+    )
+    d_wait = mgr.evaluate_reentry(re_snap_dip)
+    assert d_wait.action == ReentryAction.WAIT
+    assert math.isfinite(mgr.reentry_state["BTCUSDC"]["trough"])
+    # Second tick at 103.0 (+3% bounce >= 2% required) confirms re-entry without NaN sell_time resetting state
+    d_enter = mgr.evaluate_reentry(re_snap)
+    assert d_enter.action == ReentryAction.ENTER and d_enter.should_enter is True
+
+    # 4. monitortrades._compute_spot_position & _place_guarded
+    owned, active_avg, _ = mt._compute_spot_position(
+        buy_orders=[
+            {"qty": 2.0, "price": 100.0, "timestamp": 1000},
+            {"qty": 5.0, "price": 0.0, "timestamp": 2000},
+            {"qty": float("nan"), "price": 100.0, "timestamp": 3000},
+        ],
+        sell_orders=[],
+    )
+    assert owned == 2.0 and active_avg == 100.0
+
+    placed = []
+    fake_inst = SimpleNamespace(symbol="BTCUSDC", place=lambda *a, **kw: placed.append((a, kw)) or {"id": "1"})
+    assert mt._place_guarded(fake_inst, "BUY", 85000.0, True, 0.001) is False
+    assert mt._place_guarded(fake_inst, "BUY", True, 0.01, 0.001) is False
+    assert len(placed) == 0
+

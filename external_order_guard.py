@@ -11,6 +11,7 @@ Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during orde
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -80,9 +81,11 @@ def check_external_order_guards(
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
-    order_side = (side or "").upper()
+    order_side = str(side or "").strip().upper()
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
+
+    sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
 
     from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
@@ -101,14 +104,28 @@ def check_external_order_guards(
         if ext_mode == "off":
             return True, "external_guards_off", 1.0
 
-    computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
+    price_f = 0.0
+    if price is not None and not isinstance(price, bool):
+        try:
+            pf = float(price)
+            if math.isfinite(pf) and pf > 0.0:
+                price_f = pf
+        except (TypeError, ValueError):
+            price_f = 0.0
 
     from intelligence.internal.guards.guard_decision import BrakeAction
 
     effective_scale = 1.0
     active_reason = "ok"
 
-    now_ts = float(now) if now is not None else time.time()
+    now_ts = time.time()
+    if now is not None and not isinstance(now, bool):
+        try:
+            nf = float(now)
+            if math.isfinite(nf) and nf > 0.0:
+                now_ts = nf
+        except (TypeError, ValueError):
+            pass
     shadow_notify_enabled = str(m["shadow_notify"]).strip().lower() in ("1", "1.0", "true", "yes", "on")
 
     def _send_micro_shadow_notify(
@@ -117,13 +134,14 @@ def check_external_order_guards(
         reason: str,
         scale_pct: Optional[int] = None,
     ) -> None:
-        cd_key = (symbol, order_side, guard_key)
-        if 0.0 <= (now_ts - _MICRO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0:
+        cd_key = (sym_norm or symbol, order_side, guard_key)
+        last_cd = _MICRO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)
+        if math.isfinite(last_cd) and 0.0 <= (now_ts - last_cd) < 1800.0:
             return
         _MICRO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
         try:
             from notify_engine.alertnotifiers import notify
-            price_str = f" @ ${price:,.2f}" if price else ""
+            price_str = f" @ ${price_f:,.2f}" if price_f > 0.0 else ""
             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
             order_header = f"Order: {order_side} {symbol}{price_str}{scale_str}"
             body = f"{order_header}\n{reason}"

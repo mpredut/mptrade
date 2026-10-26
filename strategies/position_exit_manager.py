@@ -66,7 +66,13 @@ class PriceGeometrySnapshot:
     @property
     def is_valid_price(self) -> bool:
         """Verify whether current market price is valid and strictly positive."""
-        return math.isfinite(self.current_price) and self.current_price > 0
+        if self.current_price is None or isinstance(self.current_price, bool):
+            return False
+        try:
+            cp = float(self.current_price)
+            return math.isfinite(cp) and cp > 0
+        except (TypeError, ValueError):
+            return False
 
     def bounce_ratio(self, trough_price: float) -> float:
         """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
@@ -170,12 +176,17 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def is_valid_price(self) -> bool:
         """Verify whether price geometry is valid and strictly positive."""
-        return (
-            math.isfinite(self.avg_buy_price)
-            and self.avg_buy_price > 0
-            and math.isfinite(self.current_price)
-            and self.current_price > 0
-        )
+        if (
+            self.avg_buy_price is None or isinstance(self.avg_buy_price, bool)
+            or self.current_price is None or isinstance(self.current_price, bool)
+        ):
+            return False
+        try:
+            bp = float(self.avg_buy_price)
+            cp = float(self.current_price)
+            return math.isfinite(bp) and bp > 0 and math.isfinite(cp) and cp > 0
+        except (TypeError, ValueError):
+            return False
 
     def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
@@ -458,17 +469,29 @@ class PositionExitManager:
         """
         buf_a = lost_threshold * self.config.sl_disaster_buffer_ratio
 
-        eff_vol = vol_1h if vol_1h is not None else 0.0
+        eff_vol = 0.0
+        if vol_1h is not None and not isinstance(vol_1h, bool):
+            try:
+                vf = float(vol_1h)
+                if math.isfinite(vf) and vf > 0.0:
+                    eff_vol = vf
+            except (TypeError, ValueError):
+                eff_vol = 0.0
         eff_src = vol_source
         if eff_vol <= 0:
             if self.vol_resolver is not None:
-                eff_vol, eff_src = self.vol_resolver(symbol)
-                if eff_vol is None:
-                    eff_vol = 0.0
+                res_vol, eff_src = self.vol_resolver(symbol)
+                if res_vol is not None and not isinstance(res_vol, bool):
+                    try:
+                        rvf = float(res_vol)
+                        if math.isfinite(rvf) and rvf > 0.0:
+                            eff_vol = rvf
+                    except (TypeError, ValueError):
+                        eff_vol = 0.0
             elif getattr(self.config, "allow_external_cache", True):
                 cached = resolve_cached_volatility_1h(symbol)
-                if cached is not None and cached > 0:
-                    eff_vol = cached
+                if cached is not None and not isinstance(cached, bool) and math.isfinite(float(cached)) and float(cached) > 0:
+                    eff_vol = float(cached)
                     eff_src = "cache"
 
         buf_b = eff_vol * self.config.sl_disaster_vol_multiplier if eff_vol > 0 else 0.0
@@ -533,7 +556,14 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
+        now = time.time()
+        if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
+            try:
+                tf = float(snapshot.current_time_s)
+                if math.isfinite(tf) and tf >= 0.0:
+                    now = tf
+            except (TypeError, ValueError):
+                pass
         lost_threshold = custom_threshold if custom_threshold is not None else self.config.lost_threshold
 
         if not snapshot.is_valid_price:
@@ -849,16 +879,28 @@ class PositionExitManager:
         When peak_gain exceeds the anomaly threshold, allowed pullback tightens from
         tp_pullback_pct down toward tp_ratchet_min_trail without selling against the trend.
         """
-        eff_vol = vol_1h if vol_1h is not None else 0.0
+        eff_vol = 0.0
+        if vol_1h is not None and not isinstance(vol_1h, bool):
+            try:
+                vf = float(vol_1h)
+                if math.isfinite(vf) and vf > 0.0:
+                    eff_vol = vf
+            except (TypeError, ValueError):
+                eff_vol = 0.0
         if eff_vol <= 0:
             if self.vol_resolver is not None:
-                eff_vol, _ = self.vol_resolver(symbol)
-                if eff_vol is None:
-                    eff_vol = 0.0
+                res_vol, _ = self.vol_resolver(symbol)
+                if res_vol is not None and not isinstance(res_vol, bool):
+                    try:
+                        rvf = float(res_vol)
+                        if math.isfinite(rvf) and rvf > 0.0:
+                            eff_vol = rvf
+                    except (TypeError, ValueError):
+                        eff_vol = 0.0
             elif getattr(self.config, "allow_external_cache", True):
                 cached = resolve_cached_volatility_1h(symbol)
-                if cached is not None and cached > 0:
-                    eff_vol = cached
+                if cached is not None and not isinstance(cached, bool) and math.isfinite(float(cached)) and float(cached) > 0:
+                    eff_vol = float(cached)
 
         anomaly_a = gain_threshold * 1.5
         anomaly_b = (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0
@@ -896,7 +938,14 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
+        now = time.time()
+        if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
+            try:
+                tf = float(snapshot.current_time_s)
+                if math.isfinite(tf) and tf >= 0.0:
+                    now = tf
+            except (TypeError, ValueError):
+                pass
         gain_threshold = custom_threshold if custom_threshold is not None else self.config.gain_threshold
 
         if not snapshot.is_valid_price:
@@ -1172,19 +1221,48 @@ class PositionExitManager:
         current_price = snapshot.current_price
         last_sell = snapshot.last_sell_price
         last_kind = snapshot.last_exit_kind or "SELL"
-        now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
+        now = time.time()
+        if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
+            try:
+                tf = float(snapshot.current_time_s)
+                if math.isfinite(tf) and tf >= 0.0:
+                    now = tf
+            except (TypeError, ValueError):
+                pass
 
         if not snapshot.is_valid_price:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")
 
         # Case 0: No prior sale reference to constrain re-entry
-        if not last_sell or not math.isfinite(last_sell) or last_sell <= 0:
+        if last_sell is None or isinstance(last_sell, bool) or not math.isfinite(float(last_sell)) or float(last_sell) <= 0:
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
+        last_sell = float(last_sell)
+        current_price = float(current_price)
+
+        def _valid_px(val, fallback: float) -> float:
+            if val is None or isinstance(val, bool):
+                return fallback
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0) else fallback
+            except (TypeError, ValueError):
+                return fallback
+
+        def _valid_ts(val) -> Optional[float]:
+            if val is None or isinstance(val, bool):
+                return None
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0) else None
+            except (TypeError, ValueError):
+                return None
+
+        sell_time_s = _valid_ts(snapshot.last_sell_time_s)
 
         # Case 1: TTL barrier expiration
-        if self.config.reentry_ttl_hours > 0 and snapshot.last_sell_time_s:
-            elapsed_sec = now - snapshot.last_sell_time_s
+        if self.config.reentry_ttl_hours > 0 and sell_time_s is not None:
+            elapsed_sec = now - sell_time_s
             ttl_sec = self.config.reentry_ttl_hours * 3600.0
             if elapsed_sec >= ttl_sec:
                 self._pop_reentry_state(symbol)
@@ -1196,36 +1274,30 @@ class PositionExitManager:
                 )
 
         existing_state = self.reentry_state.get(symbol)
-        if existing_state and snapshot.last_sell_time_s:
-            st_sell_time = existing_state.get("sell_time")
-            st_started = existing_state.get("started_at")
+        if existing_state and sell_time_s is not None:
+            st_sell_time = _valid_ts(existing_state.get("sell_time"))
+            st_started = _valid_ts(existing_state.get("started_at"))
             if (
-                (st_sell_time is not None and float(st_sell_time) != float(snapshot.last_sell_time_s))
-                or (st_sell_time is None and st_started is not None and float(st_started) < float(snapshot.last_sell_time_s))
+                (st_sell_time is not None and st_sell_time != sell_time_s)
+                or (st_sell_time is None and st_started is not None and st_started < sell_time_s)
             ):
                 self.reentry_state.pop(symbol, None)
 
+        default_trough = _valid_px(snapshot.post_sell_trough, min(last_sell, current_price))
+        default_peak = _valid_px(snapshot.post_sell_peak, max(last_sell, current_price))
+
         state = self.reentry_state.setdefault(symbol, {
-            "trough": snapshot.post_sell_trough or min(last_sell, current_price),
-            "peak": snapshot.post_sell_peak or max(last_sell, current_price),
+            "trough": default_trough,
+            "peak": default_peak,
             "peak_bounce": current_price,
             "started_at": now,
-            "sell_time": snapshot.last_sell_time_s,
+            "sell_time": sell_time_s,
         })
-        if snapshot.last_sell_time_s and state.get("sell_time") is None:
-            state["sell_time"] = snapshot.last_sell_time_s
+        if sell_time_s is not None and _valid_ts(state.get("sell_time")) is None:
+            state["sell_time"] = sell_time_s
 
-        def _valid_px(val, fallback: float) -> float:
-            if val is None or isinstance(val, bool):
-                return fallback
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0) else fallback
-            except (TypeError, ValueError):
-                return fallback
-
-        cur_trough = _valid_px(state.get("trough"), snapshot.post_sell_trough or min(last_sell, current_price))
-        cur_peak = _valid_px(state.get("peak"), snapshot.post_sell_peak or max(last_sell, current_price))
+        cur_trough = _valid_px(state.get("trough"), default_trough)
+        cur_peak = _valid_px(state.get("peak"), default_peak)
         cur_peak_bounce = _valid_px(state.get("peak_bounce"), current_price)
         if current_price < cur_trough:
             state["trough"] = current_price
@@ -1241,11 +1313,11 @@ class PositionExitManager:
         if last_kind == "STOP" and self.config.reentry_sl_bounce_pct > 0:
             if (
                 self.config.reentry_post_stop_cooldown_sec > 0
-                and snapshot.last_sell_time_s
+                and sell_time_s is not None
                 and now > 0
-                and 0 <= (now - snapshot.last_sell_time_s) < self.config.reentry_post_stop_cooldown_sec
+                and 0 <= (now - sell_time_s) < self.config.reentry_post_stop_cooldown_sec
             ):
-                elapsed_s = now - snapshot.last_sell_time_s
+                elapsed_s = now - sell_time_s
                 return ReentryDecision(
                     ReentryAction.WAIT,
                     False,
