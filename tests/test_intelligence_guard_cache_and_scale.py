@@ -11353,6 +11353,51 @@ def test_iteration105_agy_topics_monitororder_and_strategy_executor_safety(tmp_p
         OrderStatus("open", 0.0, 0.0, 0.0, venue_status=True)
 
 
+def test_iteration106_quantity_execution_audit_rollback_and_bapi_placeorder_safety():
+    """Iteration 106: Verify providers.quantity, providers.execution_audit, order_rollback, and bapi_placeorder safety."""
+    from types import SimpleNamespace
+    from providers import quantity as pq
+    from providers import execution_audit as ea
+    import order_rollback as orb
+    from binance_api import bapi_placeorder as bpo
+
+    # 1. providers.quantity: remaining_average_cost, balance_cap_quantity, decide_quantity
+    assert pq.remaining_average_cost(True, 1.0) is None
+    assert pq.remaining_average_cost([{"id": True, "timestamp": 100.0, "side": "BUY", "qty": 1.0, "price": 100.0, "base_fee": 0.0, "quote_fee": 0.0}], 1.0) is None
+    avg_cost = pq.remaining_average_cost(
+        [{"id": "1", "timestamp": 100.0, "side": " b ", "qty": 1.0, "price": 100.0, "base_fee": 0.0, "quote_fee": 0.0}],
+        1.0,
+    )
+    assert avg_cost == pytest.approx(100.0)
+    assert pq.balance_cap_quantity(lambda _a: "bad_bal", "BTCUSDC", "BUY", 50000.0) == (None, "USDC")
+
+    dummy_provider = SimpleNamespace(
+        free_balance=lambda _a: 1000.0,
+        policy_cap_quantity=lambda _sym, side, _px, req, _bal, **kw: req if side == "BUY" else 0.0,
+        fee_cap_quantity=lambda _sym, _side, _px, bal: bal,
+    )
+    dec_zero_scale = pq.decide_quantity(
+        dummy_provider, "BTCUSDC", " b ", 100.0, 2.0, scale=0.0
+    )
+    assert dec_zero_scale.final_qty == 0.0
+    assert dec_zero_scale.scale_applied is True
+    assert dec_zero_scale.applied_scale == 0.0
+    assert dec_zero_scale.refuse_reason == "qty_zero_after_policy"
+
+    # 2. providers.execution_audit: intent_client_order_id rejects None / bool / empty
+    assert ea.intent_client_order_id("kraken", None) is None
+    assert ea.intent_client_order_id("kraken", True) is None
+    assert ea.intent_client_order_id("kraken", "   ") is None
+
+    # 3. order_rollback: restore_cancelled_orders rejects non-list and bool reason
+    assert orb.restore_cancelled_orders(True, lambda _p: True, reason=True) == 0
+
+    # 4. bapi_placeorder: order_candidate_price supports 'b'/'s' and rejects bool
+    assert bpo.order_candidate_price(" b ", 100.0, 95.0) == 95.0
+    assert bpo.order_candidate_price(" s ", 100.0, 105.0) == 105.0
+
+
+
 
 
 

@@ -76,9 +76,10 @@ def restore_cancelled_orders(
     Returns:
         Number of successfully restored orders.
     """
-    if not cancelled_orders:
+    if not cancelled_orders or not isinstance(cancelled_orders, (list, tuple)):
         return 0
-    tag = f" ({reason})" if reason else ""
+    clean_reason = reason.strip() if isinstance(reason, str) else ""
+    tag = f" ({clean_reason})" if clean_reason else ""
     log_fn(f"  ! [ATOMIC_ROLLBACK] restoring {len(cancelled_orders)} cancelled order(s){tag}")
     restored = 0
     for raw_ord in cancelled_orders:

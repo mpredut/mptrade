@@ -80,7 +80,11 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     Preserve the complete 128-bit UUID. Legacy/nonstandard intents use a
     deterministic hash so the same intent produces the same identifier after restart.
     """
-    raw = str(intent_id)
+    if intent_id is None or isinstance(intent_id, bool):
+        return None
+    raw = str(intent_id).strip()
+    if not raw:
+        return None
     match = _UUID_HEX_SUFFIX.search(raw)
     token = (match.group(1).lower() if match else
              hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest())

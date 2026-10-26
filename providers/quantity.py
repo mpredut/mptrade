@@ -23,15 +23,29 @@ def remaining_average_cost(fills, held_qty):
         held_qty = float(held_qty)
         if not math.isfinite(held_qty) or held_qty <= 0:
             return None
+        if fills is None or isinstance(fills, (str, bytes, bool)):
+            return None
         qty, cost, last_ts = 0.0, 0.0, 0.0
         seen = set()
         for row in fills:
+            if not isinstance(row, dict):
+                return None
             fields = ("timestamp", "qty", "price", "base_fee", "quote_fee")
             if any(isinstance(row[key], bool) for key in fields):
                 return None
             ts, amount, price, base_fee, quote_fee = (float(row[key]) for key in fields)
-            identity = str(row["id"])
-            side = row["side"]
+            raw_id = row["id"]
+            if raw_id is None or isinstance(raw_id, bool):
+                return None
+            identity = str(raw_id).strip()
+            raw_side = row["side"]
+            if raw_side is None or isinstance(raw_side, bool):
+                return None
+            side = str(raw_side).strip().upper()
+            if side == "B":
+                side = "BUY"
+            elif side == "S":
+                side = "SELL"
             if (not identity or identity in seen or side not in {"BUY", "SELL"}
                     or not all(math.isfinite(v) for v in (ts, amount, price, base_fee, quote_fee))
                     or ts <= 0 or ts < last_ts or amount <= 0 or price <= 0
@@ -124,7 +138,10 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
     raw = free_balance(asset)
     if raw is None or isinstance(raw, bool):
         return None, asset
-    balance = float(raw)
+    try:
+        balance = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None, asset
     if not math.isfinite(balance) or balance < 0:
         return None, asset
     return (balance if side == "SELL" else balance / price_f), asset
@@ -164,12 +181,25 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                     **kwargs) -> QuantityDecision:
     # Historical safe contract: None means "maximum permitted", not missing
     # validation. Balance, policy, and the fee cap determine final quantity.
+    if isinstance(side, bool):
+        raise ValueError("side must be BUY or SELL")
+    side_u = str(side or "").strip().upper()
+    if side_u == "B":
+        side_u = "BUY"
+    elif side_u == "S":
+        side_u = "SELL"
+    if side_u not in {"BUY", "SELL"}:
+        raise ValueError("side must be BUY or SELL")
+    side = side_u
     if requested_qty is None:
         requested = float("inf")
     else:
         if isinstance(requested_qty, bool):
             raise ValueError("requested quantity must be finite")
-        requested = float(requested_qty)
+        try:
+            requested = float(requested_qty)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("requested quantity must be finite") from exc
         if not math.isfinite(requested):
             raise ValueError("requested quantity must be finite")
         requested = max(0.0, requested)
@@ -245,19 +275,23 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
 
     if (
         eff_scale_f is not None
-        and 0.0 < eff_scale_f < 1.0
+        and eff_scale_f < 1.0
         and final > 0
     ):
-        scaled_amount = final * eff_scale_f
-        if callable(round_fn):
-            res = round_fn(symbol, scaled_amount)
-            if res is not None and not isinstance(res, bool):
-                try:
-                    res_f = float(res)
-                    if math.isfinite(res_f) and res_f >= 0.0:
-                        scaled_amount = res_f
-                except (TypeError, ValueError, OverflowError):
-                    pass
+        if eff_scale_f <= 0.0:
+            scaled_amount = 0.0
+            eff_scale_f = 0.0
+        else:
+            scaled_amount = final * eff_scale_f
+            if callable(round_fn):
+                res = round_fn(symbol, scaled_amount)
+                if res is not None and not isinstance(res, bool):
+                    try:
+                        res_f = float(res)
+                        if math.isfinite(res_f) and res_f >= 0.0:
+                            scaled_amount = res_f
+                    except (TypeError, ValueError, OverflowError):
+                        pass
         print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
               f"{final} -> {scaled_amount} (scale={eff_scale_f:.2f})")
         final = scaled_amount
