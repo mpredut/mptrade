@@ -1021,6 +1021,54 @@ def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
     assert psg.timeout_sec == 25.0 and psg.cache_ttl_sec == 0.0
 
 
+def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):
+    from intelligence.external.guards import smart_stop_loss_guard as sslg
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard, weibull_survival_and_hazard
+    from orchestratorOS.livecheck import os_resources_watchdog as orw
+
+    # 1. smart_stop_loss_guard handles bool/NaN/None in _format_price, _resolve_now, and on_recovered
+    assert sslg._format_price(True) == ""
+    assert sslg._resolve_now(0.0) > 1_000_000_000.0
+    guard = sslg.SmartStopLossGuard(mode="enforce")
+    monkeypatch.setitem(
+        sslg._GRACE_TRACKER,
+        "BTCUSDC",
+        {"start_ts": 1000.0, "initial_loss_pct": None, "provider": "sim", "buy_price": 85000.0},
+    )
+    assert guard.on_recovered("BTCUSDC", None, None, now=1010.0, provider="sim", buy_price=85000.0) is True
+
+    # 2. weibull_survival_and_hazard and WeibullExhaustionGuard handle non-finite/bool inputs safely
+    s, h, k, lam = weibull_survival_and_hazard(float("nan"), 3.0, 7.0)
+    assert s == 1.0 and h == 0.0 and k > 0 and lam > 0
+    s2, h2, _, _ = weibull_survival_and_hazard(True, 3.0, 7.0)
+    assert s2 == 1.0 and h2 == 0.0
+    wg = WeibullExhaustionGuard(default_p90_days=float("nan"), policy=None, exhausted_scale=True)
+    assert wg.default_p90_days == 7.0 and wg.policy == "downscale" and wg.exhausted_scale == 0.25
+
+    # 3. os_resources_watchdog handles corrupted state dicts, None high/normal counts, and bool/NaN timestamps
+    state_corrupt = {"restart_history": None}
+    assert orw._restart_allowed(state_corrupt, "bot.py", 1000.0) is True
+    assert orw._usage("not_dict", {"ticks": 100}, 10, 20, 4) is None
+    monkeypatch.setattr(
+        orw.wc,
+        "load_state",
+        lambda _f: {
+            "total_ticks": "bad",
+            "processes": "corrupted",
+            "tracked": {"100:1": {"high": None, "normal": None, "alerted": False, "last_alert": float("nan")}},
+        },
+    )
+    monkeypatch.setattr(orw.wc, "save_state", lambda _f, _s: None)
+    monkeypatch.setattr(orw.wc, "alert", lambda _t, _m: True)
+    assert orw.check_once(
+        now=1000.0,
+        total_ticks=500,
+        processes={"100:1": {"pid": 100, "ticks": 10, "rss_mb": 10.0, "command": "python3 bot.py"}},
+        cpu_count=4,
+    ) is False
+
+
+
 
 
 

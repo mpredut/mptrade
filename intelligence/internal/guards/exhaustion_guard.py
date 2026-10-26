@@ -38,11 +38,12 @@ def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float
 
 def weibull_survival_and_hazard(duration_days: float, median_days: float, p90_days: float) -> Tuple[float, float, float, float]:
     """Return (survival_prob S(t), hazard_rate h(t), shape k, scale lambda) at duration_days."""
-    if duration_days <= 0:
+    dur_d = _pos_finite(duration_days, 0.0) or 0.0
+    if dur_d <= 0.0:
         k, lam = calibrate_weibull_params(median_days, p90_days)
         return 1.0, 0.0, k, lam
     k, lam = calibrate_weibull_params(median_days, p90_days)
-    u = duration_days / max(lam, 1e-6)
+    u = dur_d / max(lam, 1e-6)
     exponent = min(100.0, u ** k)
     survival = math.exp(-exponent)
     hazard = (k / max(lam, 1e-6)) * (u ** (k - 1.0))
@@ -67,9 +68,9 @@ class WeibullExhaustionGuard:
         policy: str = "downscale",  # "downscale" | "veto" | "off"
         exhausted_scale: float = 0.25,
     ):
-        self.default_p90_days = float(default_p90_days)
-        self.policy = policy.lower()
-        self.exhausted_scale = float(exhausted_scale)
+        self.default_p90_days = _pos_finite(default_p90_days, 7.0) or 7.0
+        self.policy = str(policy or "downscale").lower()
+        self.exhausted_scale = _pos_finite(exhausted_scale, 0.25) or 0.25
 
     def check(
         self,

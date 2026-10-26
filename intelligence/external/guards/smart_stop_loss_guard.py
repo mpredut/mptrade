@@ -70,7 +70,7 @@ def _resolve_now(now: Any) -> float:
     if now is not None and not isinstance(now, bool):
         try:
             f = float(now)
-            if math.isfinite(f):
+            if math.isfinite(f) and f > 0.0:
                 return f
         except (TypeError, ValueError):
             pass
@@ -78,7 +78,7 @@ def _resolve_now(now: Any) -> float:
 
 
 def _format_price(p: Optional[float]) -> str:
-    if p is None:
+    if p is None or isinstance(p, bool):
         return ""
     try:
         pf = float(p)
@@ -390,26 +390,21 @@ class SmartStopLossGuard:
         if is_whale_supported and has_absorption:
             tracker = _load_grace_state(is_sim=is_sim)
             active_grace = tracker.get(sym_key)
+            if not isinstance(active_grace, dict):
+                active_grace = None
             if active_grace is not None:
-                try:
-                    existing_start = float(active_grace.get("start_ts", now_ts))
-                    if existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
-                        active_grace = None
-                except (TypeError, ValueError):
+                existing_start = _safe_float(active_grace.get("start_ts"), -1.0)
+                if existing_start <= 0.0 or existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
                     active_grace = None
             if active_grace is not None and buy_price is not None:
-                saved_buy = active_grace.get("buy_price")
-                try:
-                    if (
-                        saved_buy is not None
-                        and math.isfinite(float(buy_price))
-                        and math.isfinite(float(saved_buy))
-                        and abs(float(buy_price) - float(saved_buy))
-                        > max(1e-9, abs(float(saved_buy)) * 1e-6)
-                    ):
-                        active_grace = None
-                except (TypeError, ValueError):
-                    pass
+                saved_buy = _safe_float(active_grace.get("buy_price"), 0.0)
+                curr_buy = _safe_float(buy_price, 0.0)
+                if (
+                    saved_buy > 0.0
+                    and curr_buy > 0.0
+                    and abs(curr_buy - saved_buy) > max(1e-9, abs(saved_buy) * 1e-6)
+                ):
+                    active_grace = None
 
             if active_grace is None:
                 # Start Grace Period
@@ -465,7 +460,9 @@ class SmartStopLossGuard:
                     active_grace["current_price"] = cp_clean
                 if bp_clean > 0.0 and active_grace.get("buy_price") is None:
                     active_grace["buy_price"] = bp_clean
-                start_ts = float(active_grace.get("start_ts", now_ts))
+                start_ts = _safe_float(active_grace.get("start_ts"), now_ts)
+                if start_ts <= 0.0:
+                    start_ts = now_ts
                 elapsed = max(0.0, now_ts - start_ts)
                 meta["grace_elapsed_sec"] = round(elapsed, 1)
 
@@ -546,31 +543,31 @@ class SmartStopLossGuard:
         tracker = _load_grace_state(is_sim=is_sim_call)
         if sym_key in tracker:
             grace_info = tracker.pop(sym_key)
+            if not isinstance(grace_info, dict):
+                return False
             is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider"))
             if not is_sim:
                 _save_grace_state()
-            saved_buy = grace_info.get("buy_price")
-            if saved_buy is not None and buy_price is not None:
-                try:
-                    if (
-                        math.isfinite(float(buy_price))
-                        and math.isfinite(float(saved_buy))
-                        and abs(float(buy_price) - float(saved_buy))
-                        > max(1e-9, abs(float(saved_buy)) * 1e-6)
-                    ):
-                        return False
-                except (TypeError, ValueError):
-                    pass
+            saved_buy = _safe_float(grace_info.get("buy_price"), 0.0)
+            curr_buy = _safe_float(buy_price, 0.0)
+            if (
+                saved_buy > 0.0
+                and curr_buy > 0.0
+                and abs(curr_buy - saved_buy) > max(1e-9, abs(saved_buy) * 1e-6)
+            ):
+                return False
             now_ts = _resolve_now(now)
+            price_decrease = _safe_float(price_decrease, 0.0)
+            lost_threshold = _safe_float(lost_threshold, 0.0)
             start_ts = _safe_float(grace_info.get("start_ts"), now_ts)
-            if start_ts > now_ts + 5.0:
+            if start_ts <= 0.0 or start_ts > now_ts + 5.0:
                 return False
             elapsed = max(0.0, now_ts - start_ts)
             if elapsed > 3600.0:
                 # Silently discard ancient or unphysical tracker record
                 return False
 
-            init_loss = grace_info.get("initial_loss_pct", lost_threshold * 100.0)
+            init_loss = _safe_float(grace_info.get("initial_loss_pct"), lost_threshold * 100.0)
             prov = str(provider or grace_info.get("provider") or "").strip()
             prov_str = prov.upper() if prov else ""
             prov_tag = f" ({prov_str})" if prov_str else ""
@@ -648,7 +645,11 @@ def evaluate_smart_stop_loss(
     min_whale = float(m["smart_sl_min_whale_long_pct"])
     min_taker = float(m["smart_sl_min_taker_ratio"])
 
-    effective_disaster_buf = default_disaster_buf if disaster_buffer_pct is None else float(disaster_buffer_pct)
+    effective_disaster_buf = (
+        default_disaster_buf
+        if disaster_buffer_pct is None
+        else _safe_float(disaster_buffer_pct, default_disaster_buf)
+    )
 
     guard = SmartStopLossGuard(
         mode=mode,

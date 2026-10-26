@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Alert when any process sustains excessive CPU or resident memory usage."""
+import math
 import os
 import signal
 import time
@@ -57,10 +58,43 @@ def _managed_script(proc):
     return None
 
 
+def _safe_float(val, default=0.0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(val, default=0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _restart_allowed(state, script, now):
-    history = state.setdefault("restart_history", {}).setdefault(script, [])
+    rh = state.get("restart_history")
+    if not isinstance(rh, dict):
+        rh = {}
+        state["restart_history"] = rh
+    history = rh.get(script)
+    if not isinstance(history, list):
+        history = []
+        rh[script] = history
     cutoff = now - RESTART_WINDOW_H * 3600
-    history[:] = [stamp for stamp in history if isinstance(stamp, (int, float)) and cutoff <= stamp <= now]
+    history[:] = [
+        stamp for stamp in history
+        if isinstance(stamp, (int, float))
+        and not isinstance(stamp, bool)
+        and math.isfinite(stamp)
+        and cutoff <= stamp <= now
+    ]
     if history and now - history[-1] < RESTART_COOLDOWN_MIN * 60:
         return False
     return len(history) < RESTART_MAX
@@ -130,45 +164,66 @@ def _processes():
 
 
 def _usage(previous, current, previous_total, current_total, cpu_count):
-    total_delta = current_total - previous_total
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return None
+    prev_tot = _safe_float(previous_total, -1.0)
+    curr_tot = _safe_float(current_total, -1.0)
+    if prev_tot < 0.0 or curr_tot < 0.0:
+        return None
+    total_delta = curr_tot - prev_tot
     if total_delta <= 0:
         return None
-    tick_delta = current["ticks"] - previous["ticks"]
+    prev_ticks = _safe_float(previous.get("ticks"), -1.0)
+    curr_ticks = _safe_float(current.get("ticks"), -1.0)
+    if prev_ticks < 0.0 or curr_ticks < 0.0:
+        return None
+    tick_delta = curr_ticks - prev_ticks
     if tick_delta < 0:
         return None
     return tick_delta * cpu_count * 100.0 / total_delta
 
 
 def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
-    now = time.time() if now is None else now
+    now = _safe_float(now, 0.0)
+    if now <= 0.0:
+        now = time.time()
     total_ticks = _system_ticks() if total_ticks is None else total_ticks
     processes = _processes() if processes is None else processes
     cpu_count = (os.cpu_count() or 1) if cpu_count is None else cpu_count
     state = wc.load_state(STATE_FILE)
+    if not isinstance(state, dict):
+        state = {}
     previous_total = state.get("total_ticks")
-    previous = state.get("processes", {})
-    tracked = state.get("tracked", {})
+    previous = state.get("processes")
+    if not isinstance(previous, dict):
+        previous = {}
+    tracked = state.get("tracked")
+    if not isinstance(tracked, dict):
+        tracked = {}
     offenders = []
     recovered = []
 
     for key, proc in processes.items():
+        if not isinstance(proc, dict):
+            continue
         old = previous.get(key)
         cpu = (_usage(old, proc, previous_total, total_ticks, cpu_count)
                if old is not None and previous_total is not None else None)
         reasons = []
         if cpu is not None and cpu >= CPU_THRESHOLD:
             reasons.append(f"CPU {cpu:.1f}%")
-        if proc["rss_mb"] >= MEMORY_THRESHOLD_MB:
-            reasons.append(f"RSS {proc['rss_mb']:.0f} MB")
+        rss_mb = _safe_float(proc.get("rss_mb"), 0.0)
+        if rss_mb >= MEMORY_THRESHOLD_MB:
+            reasons.append(f"RSS {rss_mb:.0f} MB")
         item = tracked.get(key, {"high": 0, "normal": 0, "alerted": False, "last_alert": 0})
         if not isinstance(item, dict):
             item = {"high": 0, "normal": 0, "alerted": False, "last_alert": 0}
-        last_alert = float(item.get("last_alert", 0) or 0)
-        if last_alert > now:
+        last_alert = _safe_float(item.get("last_alert", 0), 0.0)
+        if last_alert > now or last_alert < 0.0:
             last_alert = 0.0
             item["last_alert"] = 0.0
         if reasons:
-            item["high"] = int(item.get("high", 0)) + 1
+            item["high"] = max(0, _safe_int(item.get("high", 0), 0)) + 1
             item["normal"] = 0
             item["last_reasons"] = reasons
             if item["high"] >= CONSECUTIVE and (not item.get("alerted") or
@@ -178,7 +233,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
                 item["last_alert"] = now
         else:
             item["high"] = 0
-            item["normal"] = int(item.get("normal", 0)) + 1
+            item["normal"] = max(0, _safe_int(item.get("normal", 0), 0)) + 1
             if item.get("alerted") and item["normal"] >= RECOVERY_CHECKS:
                 recovered.append(proc)
                 item["alerted"] = False
