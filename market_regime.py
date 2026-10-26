@@ -54,7 +54,13 @@ class MarketRegimeDecision:
     @property
     def fitted_move_pct(self) -> Optional[float]:
         """Return the fitted move across the classified sample window."""
-        if self.gradient is None or self.n_samples is None or self.n_samples < 2:
+        if (
+            self.gradient is None
+            or isinstance(self.gradient, bool)
+            or self.n_samples is None
+            or isinstance(self.n_samples, bool)
+            or self.n_samples < 2
+        ):
             return None
         move = float(self.gradient) * (self.n_samples - 1) * 100.0
         return move if math.isfinite(move) else None
@@ -123,7 +129,11 @@ class MarketRegimeContext:
             return False
 
         # 1. Timestamp validation: evaluated_at must be strictly positive, finite, and not in the future
-        if not math.isfinite(self.evaluated_at) or self.evaluated_at <= 0:
+        if (
+            isinstance(self.evaluated_at, bool)
+            or not math.isfinite(self.evaluated_at)
+            or self.evaluated_at <= 0
+        ):
             return False
         # Allow at most 1.0 second clock skew for future timestamps
         if self.evaluated_at > (current_time + 1.0):
@@ -134,16 +144,36 @@ class MarketRegimeContext:
         if age < -1.0:
             return False
 
-        if max_age_seconds is not None and max_age_seconds > 0:
-            if age > float(max_age_seconds):
+        if max_age_seconds is not None:
+            if isinstance(max_age_seconds, bool):
+                return False
+            try:
+                max_age_f = float(max_age_seconds)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(max_age_f):
+                return False
+            if max_age_f > 0 and age > max_age_f:
                 return False
 
         # 3. Temporal horizon and trend duration validation
-        if not math.isfinite(self.trend_duration_seconds) or self.trend_duration_seconds < 0:
+        if (
+            isinstance(self.trend_duration_seconds, bool)
+            or not math.isfinite(self.trend_duration_seconds)
+            or self.trend_duration_seconds < 0
+        ):
             return False
 
-        if max_horizon_seconds is not None and max_horizon_seconds > 0:
-            if self.trend_duration_seconds > float(max_horizon_seconds):
+        if max_horizon_seconds is not None:
+            if isinstance(max_horizon_seconds, bool):
+                return False
+            try:
+                max_hor_f = float(max_horizon_seconds)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(max_hor_f):
+                return False
+            if max_hor_f > 0 and self.trend_duration_seconds > max_hor_f:
                 return False
 
         # 4. Identity validation
@@ -243,9 +273,17 @@ class MarketRegimeEvidence:
 
     @property
     def age_seconds(self) -> Optional[float]:
-        if self.observed_at is None:
+        if (
+            self.observed_at is None
+            or isinstance(self.observed_at, bool)
+            or isinstance(self.evaluated_at, bool)
+        ):
             return None
-        return self.evaluated_at - self.observed_at
+        try:
+            age = float(self.evaluated_at) - float(self.observed_at)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return age if math.isfinite(age) else None
 
     @property
     def temporal_state(self) -> str:
@@ -255,8 +293,14 @@ class MarketRegimeEvidence:
             return "unknown"
         if age < -5.0:
             return "future"
-        if self.max_age_seconds is not None and age > self.max_age_seconds:
-            return "stale"
+        if self.max_age_seconds is not None:
+            if (
+                isinstance(self.max_age_seconds, bool)
+                or not math.isfinite(float(self.max_age_seconds))
+                or float(self.max_age_seconds) <= 0
+                or age > float(self.max_age_seconds)
+            ):
+                return "stale"
         if self.max_age_seconds is None:
             return "unbounded"
         return "fresh"
@@ -299,7 +343,7 @@ class MarketRegimeResolution:
 
     def __post_init__(self):
         index = self.selected_index
-        if index is not None and not 0 <= index < len(self.evidence):
+        if index is not None and (isinstance(index, bool) or not 0 <= index < len(self.evidence)):
             raise ValueError("selected_index must identify an evidence item")
         if index is not None:
             selected = self.evidence[index]
@@ -340,6 +384,8 @@ class MarketRegimeEvaluator:
     """Transform a common snapshot into a deterministic decision."""
 
     def __init__(self, strength_threshold: float = 2.0):
+        if isinstance(strength_threshold, bool):
+            raise ValueError("strength_threshold must be positive")
         threshold = float(strength_threshold)
         if not math.isfinite(threshold) or threshold <= 0:
             raise ValueError("strength_threshold must be positive")
@@ -380,6 +426,8 @@ class MarketRegimeEvaluator:
                     return self.unknown("invalid_sample_metadata")
                 samples = parsed_samples
             if window is not None:
+                if isinstance(window, bool):
+                    return self.unknown("invalid_window_metadata")
                 window = float(window)
                 if not math.isfinite(window) or window <= 0:
                     return self.unknown("invalid_window_metadata")
@@ -467,6 +515,12 @@ class MarketRegimeService:
         clock=time.monotonic,
     ):
         self.evaluator = MarketRegimeEvaluator(strength_threshold)
+        if (
+            isinstance(cache_ttl_sec, bool)
+            or isinstance(negative_cache_ttl_sec, bool)
+            or isinstance(cache_max, bool)
+        ):
+            raise ValueError("cache settings must be numeric, not boolean")
         self.cache_ttl_sec = float(cache_ttl_sec)
         self.negative_cache_ttl_sec = float(negative_cache_ttl_sec)
         self.cache_max = max(1, int(cache_max))
@@ -494,8 +548,11 @@ class MarketRegimeService:
         if not snapshot or not isinstance(snapshot, Mapping):
             return None
         for field in ("observed_at", "ts"):
+            raw = snapshot.get(field)
+            if isinstance(raw, bool):
+                continue
             try:
-                value = float(snapshot.get(field))
+                value = float(raw)
             except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(value) and value > 0:
@@ -732,7 +789,15 @@ class MarketRegimeService:
             return None
         if decision.regime == "sideways":
             return 0.0
-        strength = float(decision.strength or 0.0)
+        if decision.strength is None or isinstance(decision.strength, bool):
+            strength = 0.0
+        else:
+            try:
+                strength = float(decision.strength)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(strength) or strength < 0.0:
+                return None
         magnitude = min(strength, strength_cap) / strength_cap
         return magnitude if decision.regime == "bull" else -magnitude
 
@@ -751,10 +816,14 @@ class MarketRegimeService:
         expected = {"asset_short", "asset_long", "benchmark_short", "benchmark_long"}
         if set(raw_weights) != expected:
             raise ValueError(f"composite weights must contain exactly {sorted(expected)}")
+        if any(isinstance(value, bool) for value in raw_weights.values()):
+            raise ValueError("composite weights must be finite, non-negative, and sum to 1")
         normalized = {name: float(value) for name, value in raw_weights.items()}
         if (any(not math.isfinite(value) or value < 0 for value in normalized.values()) or
                 not math.isclose(sum(normalized.values()), 1.0, abs_tol=1e-9)):
             raise ValueError("composite weights must be finite, non-negative, and sum to 1")
+        if isinstance(strength_cap, bool) or isinstance(directional_threshold, bool):
+            raise ValueError("invalid composite strength cap or threshold")
         strength_cap = float(strength_cap)
         directional_threshold = float(directional_threshold)
         if (not math.isfinite(strength_cap) or strength_cap <= 0 or
@@ -940,6 +1009,8 @@ class MarketRegimeService:
 
     @staticmethod
     def _timestamp_seconds(value) -> float:
+        if isinstance(value, bool):
+            raise ValueError("invalid closed-candle timestamp")
         value = float(value)
         if value > 100_000_000_000:
             value /= 1000.0
@@ -1079,8 +1150,14 @@ class MarketRegimeService:
 
     def evaluate_closes(self, closes, *, interval_min=1,
                         window_seconds=900.0) -> MarketRegimeDecision:
-        needed = max(3, int(math.ceil(float(window_seconds) / (int(interval_min) * 60))))
+        if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
+            return self.evaluator.unknown("invalid_window_metadata")
         try:
+            itv = int(interval_min)
+            win = float(window_seconds)
+            if itv <= 0 or not math.isfinite(win) or win <= 0:
+                return self.evaluator.unknown("invalid_window_metadata")
+            needed = max(3, int(math.ceil(win / (itv * 60))))
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
             tail = seq[-needed:]
             if any(isinstance(value, bool) or value is None for value in tail):

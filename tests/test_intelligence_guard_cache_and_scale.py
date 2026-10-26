@@ -7327,13 +7327,74 @@ def test_iteration46_spot_engine_rtrade_pair_spot_replay_and_state_io_nan_bool_s
     assert srep.align_spot_interval_params(params, True) is params
     assert srep.align_spot_interval_params(params, float("nan")) is params
 
-    # 4. state_io: atomic_write_json and load_json_state reject NaN/Infinity
-    state_file = tmp_path / "sio_test.json"
+    # 4. state_io: read_tail_lines, truncate_file_bytes, and prune_rotated_archives bool/zero protection
+    tail_file = tmp_path / "tail_test.txt"
+    tail_file.write_text("line1\nline2\nline3\n", encoding="utf-8")
+    assert sio.read_tail_lines(str(tail_file), 2, chunk_size=0) == [b"line2", b"line3"]
+    assert sio.read_tail_lines(str(tail_file), 2, chunk_size=True) == [b"line2", b"line3"]
     with pytest.raises(ValueError):
-        sio.atomic_write_json(str(state_file), {"x": float("nan")})
-    state_file.write_text('{"x": NaN}', encoding="utf-8")
-    with pytest.raises(sio.StateReadError):
-        sio.load_json_state(str(state_file), default_factory=dict, fail_closed=True, label="test")
+        sio.truncate_file_bytes(str(tail_file), True)
+    with pytest.raises(ValueError):
+        sio.truncate_file_bytes(str(tail_file), -1)
+
+
+def test_iteration47_botcore_and_market_regime_nan_bool_safety():
+    import math
+    import pytest
+    import botcore
+    import market_regime as mr
+
+    # 1. botcore: diff_percent, are_close, diff_equals_percent reject bool and NaN
+    assert math.isnan(botcore.diff_percent(1.0, True))
+    assert math.isnan(botcore.diff_percent(float("nan"), 100.0))
+    assert botcore.are_close(1.0, True, 0.05) is False
+    assert botcore.are_close(100.0, 100.0, float("nan")) is False
+    assert botcore.are_close(100.0, 100.0, True) is False
+    assert botcore.are_close(100.0, 100.04, 0.05) is True
+    assert botcore.diff_equals_percent(100.0, 90.0, True, 1.0) is False
+    assert botcore.diff_equals_percent(100.0, 90.0, 10.0, float("nan")) is False
+
+    # 2. market_regime: MarketRegimeDecision, MarketRegimeContext, MarketRegimeEvidence, MarketRegimeEvaluator, MarketRegimeService
+    dec_bool = mr.MarketRegimeDecision(
+        regime="bull", gradient=True, epsilon=0.01, strength=float("nan"), fresh=True, reason="ok", n_samples=10
+    )
+    assert dec_bool.fitted_move_pct is None
+
+    ctx = mr.MarketRegimeContext(
+        decision=dec_bool, resolved_trend="bull", evaluated_at=1000.0, trend_duration_seconds=60.0
+    )
+    assert ctx.is_valid_for(now=1010.0, max_age_seconds=float("nan")) is False
+    assert ctx.is_valid_for(now=1010.0, max_age_seconds=True) is False
+    assert ctx.is_valid_for(now=1010.0, max_horizon_seconds=float("nan")) is False
+    assert ctx.is_valid_for(now=1010.0, max_horizon_seconds=True) is False
+    assert ctx.is_valid_for(now=1010.0, max_age_seconds=30.0, max_horizon_seconds=120.0) is True
+
+    ev = mr.MarketRegimeEvidence(
+        role="asset_short",
+        family="price_trend",
+        classifier="test",
+        provider="binance",
+        symbol="BTCUSDC",
+        decision=dec_bool,
+        evaluated_at=1010.0,
+        observed_at=1000.0,
+        max_age_seconds=float("nan"),
+    )
+    assert ev.temporal_state == "stale"
+    assert ev.usable is False
+
+    with pytest.raises(ValueError):
+        mr.MarketRegimeEvaluator(strength_threshold=True)
+    with pytest.raises(ValueError):
+        mr.MarketRegimeService(cache_ttl_sec=True)
+
+    svc = mr.MarketRegimeService()
+    assert svc._snapshot_observed_at({"ts": True}) is None
+    assert svc.evaluate_closes([100.0, 101.0, 102.0], interval_min=0).reason == "invalid_window_metadata"
+    assert svc.evaluate_closes([100.0, 101.0, 102.0], window_seconds=float("nan")).reason == "invalid_window_metadata"
+    comp = svc.compose(dec_bool, dec_bool)
+    assert comp.regime == "unknown"
+
 
 
 

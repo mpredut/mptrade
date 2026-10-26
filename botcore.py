@@ -291,9 +291,21 @@ def http_post_form(
 
 def diff_percent(value1: float, value2: float) -> float:
     """Return symmetric percentage difference relative to the values' absolute mean."""
-    if value1 == value2:
+    if isinstance(value1, bool) or isinstance(value2, bool):
+        return float("nan")
+    try:
+        v1 = float(value1)
+        v2 = float(value2)
+    except (TypeError, ValueError, OverflowError):
+        return float("nan")
+    if not (math.isfinite(v1) and math.isfinite(v2)):
+        return float("nan")
+    if v1 == v2:
         return 0.0
-    return abs(value1 - value2) / ((abs(value1) + abs(value2)) / 2) * 100
+    denom = (abs(v1) + abs(v2)) / 2.0
+    if denom == 0.0:
+        return 0.0
+    return abs(v1 - v2) / denom * 100.0
 
 
 def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> bool:
@@ -301,7 +313,16 @@ def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> b
 
     For price thresholds, are_close(price, threshold, 0.05) treats a price within
     0.05% as reached, avoiding missed entries by a few cents."""
-    return diff_percent(value1, value2) <= tolerance_percent
+    if isinstance(tolerance_percent, bool):
+        return False
+    try:
+        tol = float(tolerance_percent)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(tol) or tol < 0.0:
+        return False
+    diff = diff_percent(value1, value2)
+    return math.isfinite(diff) and diff <= tol
 
 
 def diff_equals_percent(value1: float, value2: float, target_percent: float,
@@ -310,4 +331,14 @@ def diff_equals_percent(value1: float, value2: float, target_percent: float,
     deterministic two-sided band. Unlike are_close, this asks whether values differ by
     about X percent, e.g. whether price fell about 10%. Replaces the randomized
     utils.are_difference_equal_with_aprox_proc implementation."""
-    return abs(diff_percent(value1, value2) - target_percent) <= tolerance_percent
+    if isinstance(target_percent, bool) or isinstance(tolerance_percent, bool):
+        return False
+    try:
+        target = float(target_percent)
+        tol = float(tolerance_percent)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not (math.isfinite(target) and math.isfinite(tol)) or target < 0.0 or tol < 0.0:
+        return False
+    diff = diff_percent(value1, value2)
+    return math.isfinite(diff) and abs(diff - target) <= tol
