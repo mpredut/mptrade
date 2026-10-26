@@ -15,6 +15,7 @@ fidelity, and its results must be treated as a simplified backtest.
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -121,10 +122,18 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
         Return ``None`` when the series has ended and do not advance beyond it.
         """
+        if isinstance(steps, bool) or steps is None:
+            return None
+        try:
+            steps_int = int(steps)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if steps_int <= 0:
+            return None
         series = self._series.get(symbol)
         if not series:
             return None
-        new_idx = min(self._cursor[symbol] + steps, len(series))
+        new_idx = min(self._cursor[symbol] + steps_int, len(series))
         if new_idx == self._cursor[symbol] and new_idx >= len(series):
             return None   # Already at the end; nothing to advance.
         self._cursor[symbol] = new_idx
@@ -160,7 +169,15 @@ class ReplayMarketDataProvider(MarketDataProvider):
         idx = self._cursor.get(symbol, 0)
         if not series or idx == 0:
             return None
-        cutoff = series[idx - 1][0] - lookback_h * 3600
+        if lookback_h is None or isinstance(lookback_h, bool):
+            return []
+        try:
+            lb_val = float(lookback_h)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(lb_val) or lb_val < 0:
+            return []
+        cutoff = series[idx - 1][0] - lb_val * 3600
         return [{"timestamp": int(ts * 1000), "price": p}
                 for ts, p in series[:idx] if ts >= cutoff]
 
@@ -178,18 +195,34 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
     def has_orders_since(self, symbol: str, since_s: float) -> bool:
         """Fast O(1) check whether any order for ``symbol`` exists within ``since_s``."""
+        if since_s is None or isinstance(since_s, bool):
+            return False
+        try:
+            since_val = float(since_s)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(since_val) or since_val < 0:
+            return False
         orders = self._orders.get(symbol)
         if not orders:
             return False
-        cutoff_ms = (self._last_ts.get(symbol, 0.0) - since_s) * 1000.0
+        cutoff_ms = (self._last_ts.get(symbol, 0.0) - since_val) * 1000.0
         return orders[-1]["timestamp"] >= cutoff_ms
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
+        if since_s is None or isinstance(since_s, bool):
+            return []
+        try:
+            since_val = float(since_s)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(since_val) or since_val < 0:
+            return []
         orders = self._orders.get(symbol)
         if not orders:
             return []
         now = self._last_ts.get(symbol, 0.0)
-        cutoff_ms = (now - since_s) * 1000.0
+        cutoff_ms = (now - since_val) * 1000.0
         if orders[-1]["timestamp"] < cutoff_ms:
             return []
         side_u = side.upper() if side else None

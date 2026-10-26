@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -43,8 +44,20 @@ _CACHE_MAX = _parse_cache_max()
 
 
 def _slug(value: object) -> str:
+    if isinstance(value, bool):
+        value = ""
     text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip())
     return text.strip("-") or "unknown"
+
+
+def _json_safe_value(val: Any) -> Any:
+    if isinstance(val, float):
+        return val if math.isfinite(val) else None
+    if isinstance(val, dict):
+        return {str(k): _json_safe_value(v) for k, v in val.items() if _json_safe_value(v) is not None}
+    if isinstance(val, (list, tuple)):
+        return [_json_safe_value(v) for v in val]
+    return val
 
 
 def new_intent_id(venue: str, symbol: str, kind: Optional[str] = None) -> str:
@@ -92,7 +105,13 @@ class ExecutionAudit:
         append is not fsynced and therefore is not a durability boundary.
         """
         try:
-            ts = float(self._clock())
+            raw_ts = self._clock()
+            if isinstance(raw_ts, bool) or raw_ts is None:
+                ts = time.time()
+            else:
+                ts = float(raw_ts)
+                if not math.isfinite(ts) or ts <= 0:
+                    ts = time.time()
             payload = {
                 "ts": ts,
                 "ts_utc": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
@@ -101,8 +120,11 @@ class ExecutionAudit:
                 "venue": str(venue),
                 "symbol": str(symbol),
             }
-            payload.update({key: value for key, value in fields.items() if value is not None})
-            line = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            for key, value in fields.items():
+                cleaned = _json_safe_value(value)
+                if cleaned is not None:
+                    payload[key] = cleaned
+            line = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
             os.makedirs(self.directory, exist_ok=True)
             day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
             path = os.path.join(self.directory, f"execution_audit_{day}.jsonl")
@@ -135,6 +157,8 @@ class AuditedStrategyExecutor:
         self._lock = threading.Lock()
 
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
+        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+            return
         with self._lock:
             key = (symbol, str(order_id))
             self._intent_by_order[key] = intent_id
@@ -146,9 +170,12 @@ class AuditedStrategyExecutor:
         if explicit:
             self._remember(symbol, order_id, explicit)
             return explicit
-        with self._lock:
-            known = self._intent_by_order.get((symbol, str(order_id)))
-        return known or f"recovered-{_slug(self.name).lower()}-{_slug(symbol)}-{_slug(order_id)}"
+        if order_id is not None and not isinstance(order_id, bool):
+            with self._lock:
+                known = self._intent_by_order.get((symbol, str(order_id)))
+            if known:
+                return known
+        return f"recovered-{_slug(self.name).lower()}-{_slug(symbol)}-{_slug(order_id)}"
 
     def submit_order_with_intent(self, intent_id: str, symbol: str, side: str, qty: float,
                                  price: Optional[float] = None, *, market: bool = False,
@@ -288,6 +315,8 @@ class AuditedStrategyExecutor:
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Delegate deterministic recovery without inventing audit acceptance."""
+        if client_order_id is None or isinstance(client_order_id, bool) or not str(client_order_id).strip():
+            raise ProviderError("client_order_id is required")
         lookup = getattr(self._executor, "order_by_client_id", None)
         if not callable(lookup):
             raise RuntimeError(f"{self.name}: order_by_client_id is unsupported")

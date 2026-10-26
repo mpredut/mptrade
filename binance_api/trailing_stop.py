@@ -244,7 +244,10 @@ class TrailingStop:
             if len(balances) != 1:
                 return None
             balance = balances[0]
-            free, locked = float(balance["free"]), float(balance["locked"])
+            raw_free, raw_locked = balance.get("free"), balance.get("locked")
+            if isinstance(raw_free, bool) or isinstance(raw_locked, bool):
+                return None
+            free, locked = float(raw_free), float(raw_locked)
             if not all(math.isfinite(v) and v >= 0 for v in (free, locked)):
                 return None
             return self.po.position_cost_basis(
@@ -255,9 +258,12 @@ class TrailingStop:
 
     def _free_qty(self, balances: list, asset: str) -> float:
         for bal in balances or []:
-            if bal.get("asset") == asset:
+            if isinstance(bal, dict) and bal.get("asset") == asset:
+                raw_free = bal.get("free", 0.0)
+                if isinstance(raw_free, bool) or raw_free is None:
+                    return 0.0
                 try:
-                    qty = float(bal.get("free", 0.0))
+                    qty = float(raw_free)
                     return qty if math.isfinite(qty) and qty >= 0 else 0.0
                 except (TypeError, ValueError, OverflowError):
                     return 0.0
@@ -271,7 +277,10 @@ class TrailingStop:
             import cacheManager as cm
             snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
             if snap:
-                val = float(snap.get('gradient_recent', snap.get('slope_small', 0.0)) or 0.0)
+                raw_val = snap.get('gradient_recent', snap.get('slope_small', 0.0))
+                if isinstance(raw_val, bool) or raw_val is None:
+                    return 0.0
+                val = float(raw_val)
                 return val if math.isfinite(val) else 0.0
         except Exception:
             pass
@@ -304,10 +313,16 @@ class TrailingStop:
 
     def total_qty(self, asset: str) -> float:
         for bal in self._balances or []:
-            if bal.get("asset") == asset:
+            if isinstance(bal, dict) and bal.get("asset") == asset:
+                raw_f = bal.get("free", 0.0)
+                raw_l = bal.get("locked", 0.0)
+                if isinstance(raw_f, bool) or isinstance(raw_l, bool):
+                    return 0.0
                 try:
-                    f = float(bal.get("free", 0.0))
-                    l = float(bal.get("locked", 0.0))
+                    f = float(0.0 if raw_f is None else raw_f)
+                    l = float(0.0 if raw_l is None else raw_l)
+                    if not (math.isfinite(f) and f >= 0 and math.isfinite(l) and l >= 0):
+                        return 0.0
                     tot = f + l
                     return tot if math.isfinite(tot) and tot >= 0 else 0.0
                 except (TypeError, ValueError, OverflowError):
@@ -325,12 +340,16 @@ class TrailingStop:
                     locked = 0.0
                     found = False
                     for bal in self._balances:
-                        if bal.get("asset") == asset:
+                        if isinstance(bal, dict) and bal.get("asset") == asset:
                             found = True
-                            try:
-                                locked = float(bal.get("locked", 0.0) or 0.0)
-                            except (TypeError, ValueError, OverflowError):
+                            raw_l = bal.get("locked", 0.0)
+                            if isinstance(raw_l, bool) or raw_l is None:
                                 locked = 0.0
+                            else:
+                                try:
+                                    locked = float(raw_l)
+                                except (TypeError, ValueError, OverflowError):
+                                    locked = 0.0
                             break
                     if found and (not math.isfinite(locked) or locked <= 0.0):
                         return False
@@ -346,6 +365,8 @@ class TrailingStop:
 
     def price(self, pair: str):
         value = self.api.get_current_price(pair)
+        if value is None or isinstance(value, bool):
+            return None
         try:
             value = float(value)
         except (TypeError, ValueError, OverflowError):
@@ -474,10 +495,22 @@ class TrailingStop:
         # falling knife cascades (liquidation cascades, taker dumps) by bypassing only
         # the historical math reference while keeping microstructure/AI guards active.
         self._sync_retry_count_from_state(pair, "REBUY", persist)
+        raw_low = rb.get("low") if isinstance(rb, dict) else None
+        try:
+            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
+            anchor_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
+        except (TypeError, ValueError, OverflowError):
+            anchor_val = float(price)
+        raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
+        try:
+            sp_f = float(raw_sp) if raw_sp is not None and not isinstance(raw_sp, bool) else 0.0
+            sell_price_val = sp_f if math.isfinite(sp_f) and sp_f >= 0 else 0.0
+        except (TypeError, ValueError, OverflowError):
+            sell_price_val = 0.0
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
-            anchor=float(rb.get("low") or price),
-            sell_price=float(rb.get("sell_price") or 0.0))
+            anchor=anchor_val,
+            sell_price=sell_price_val)
         result = self._submit_lifecycle_order(
             intent, persist, pair, "BUY", price, qty, bypass_guards={"math_reference"})
         if result.outcome == "refused":

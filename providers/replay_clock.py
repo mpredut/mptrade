@@ -8,14 +8,24 @@ but a correct replay replaces that value before strategy code reads the clock.
 """
 
 
+import math
 import time
+
+
+def _clean_ts(val: float) -> float:
+    if isinstance(val, bool) or val is None:
+        raise ValueError("SimClock timestamp must be a finite number, not bool/None")
+    f = float(val)
+    if not math.isfinite(f):
+        raise ValueError("SimClock timestamp must be finite")
+    return f
 
 
 class SimClock:
     """Callable simulated time source whose ``ts`` (or ``value``) is set by its driver."""
 
     def __init__(self, initial_ts: float | None = None):
-        self.ts: float = time.time() if initial_ts is None else float(initial_ts)
+        self.ts: float = time.time() if initial_ts is None else _clean_ts(initial_ts)
 
     @property
     def value(self) -> float:
@@ -23,7 +33,7 @@ class SimClock:
 
     @value.setter
     def value(self, new_val: float) -> None:
-        self.ts = float(new_val)
+        self.ts = _clean_ts(new_val)
 
     def __call__(self) -> float:
         return self.ts

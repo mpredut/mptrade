@@ -99,11 +99,15 @@ def fetch_ohlc_candles(
     interval_ms = interval_min * 60 * 1000
 
     now_ms = int(time.time() * 1000)
-    final_end = end_ms if end_ms is not None else now_ms
+    if isinstance(end_ms, bool) or isinstance(start_ms, bool) or isinstance(lookback_days, bool) or isinstance(limit_per_batch, bool):
+        raise ValueError("OHLC time window parameters must not be boolean")
+    final_end = int(end_ms) if end_ms is not None else now_ms
     if start_ms is not None:
-        final_start = start_ms
+        final_start = int(start_ms)
     elif lookback_days is not None:
-        final_start = final_end - lookback_days * 86400 * 1000
+        if int(lookback_days) <= 0:
+            raise ValueError(f"lookback_days must be positive: {lookback_days}")
+        final_start = final_end - int(lookback_days) * 86400 * 1000
     else:
         # Default to ~30 days of history
         final_start = final_end - 30 * 86400 * 1000
@@ -154,6 +158,8 @@ def fetch_ohlc_candles(
             # 11: Ignore
             if not isinstance(item, (list, tuple)) or len(item) < 7:
                 continue
+            if any(isinstance(item[idx], bool) for idx in (0, 1, 2, 3, 4, 6)):
+                continue
             try:
                 open_time_ms = int(item[0])
                 close_time_ms = int(item[6])
@@ -162,6 +168,8 @@ def fetch_ohlc_candles(
                 l_v = float(item[3])
                 c_v = float(item[4])
             except (TypeError, ValueError):
+                continue
+            if open_time_ms <= 0 or close_time_ms <= 0:
                 continue
             if not all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
                 continue

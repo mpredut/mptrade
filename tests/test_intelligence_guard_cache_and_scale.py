@@ -7019,3 +7019,86 @@ def test_iteration42_order_id_context_bapi_ws_normalize_and_bapi_trades_nan_bool
     assert agg[0]["side"] == "SELL"
 
 
+def test_iteration43_ws_health_market_data_execution_audit_replay_and_trailing_nan_bool_safety(tmp_path):
+    import json
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi_ws_health, market_data, trailing_stop
+    from providers.execution_audit import ExecutionAudit, AuditedStrategyExecutor
+    from providers.replay_provider import ReplayMarketDataProvider
+    from providers.replay_clock import SimClock
+    from providers.strategy_executor import ProviderError
+
+    # 1. bapi_ws_health.mark_ws_event_received ignores bool/NaN and falls back to wall clock
+    ts_bool = bapi_ws_health.mark_ws_event_received(True)
+    assert ts_bool > 1_700_000_000.0
+    ts_nan = bapi_ws_health.mark_ws_event_received(float("nan"))
+    assert ts_nan > 1_700_000_000.0
+
+    # 2. market_data.fetch_ohlc_candles rejects boolean window parameters
+    with pytest.raises(ValueError):
+        market_data.fetch_ohlc_candles("BTCUSDC", start_ms=True)
+    with pytest.raises(ValueError):
+        market_data.fetch_ohlc_candles("BTCUSDC", lookback_days=True)
+
+    # 3. ExecutionAudit.record strips NaN/Inf fields (strict JSON) and handles NaN/bool clock
+    audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: float("nan"))
+    ok = audit.record(
+        "submit_requested",
+        intent_id="id-1",
+        venue="binance",
+        symbol="BTCUSDC",
+        price=float("nan"),
+        reference_price=float("inf"),
+        qty=1.25,
+    )
+    assert ok is True
+    files = list(tmp_path.glob("execution_audit_*.jsonl"))
+    assert len(files) == 1
+    row = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert row["qty"] == 1.25
+    assert "price" not in row
+    assert "reference_price" not in row
+
+    aud_exec = AuditedStrategyExecutor(
+        SimpleNamespace(
+            name="binance",
+            order_by_client_id=lambda s, cid: {"orderId": 1},
+        ),
+        audit=audit,
+    )
+    with pytest.raises(ProviderError):
+        aud_exec.order_by_client_id("BTCUSDC", True)
+    aud_exec._remember("BTCUSDC", True, "intent-bool")
+    assert ("BTCUSDC", "True") not in aud_exec._intent_by_order
+
+    # 4. ReplayMarketDataProvider and SimClock reject bool/NaN inputs
+    with pytest.raises(ValueError):
+        SimClock(True)
+    with pytest.raises(ValueError):
+        SimClock(float("nan"))
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0), (1060.0, 51000.0)]})
+    assert rp.advance("BTCUSDC", True) is None
+    assert rp.advance("BTCUSDC", 1) == 50000.0
+    rp.place_order("BTCUSDC", "BUY", 50000.0, 0.1)
+    assert rp.get_orders("BTCUSDC", "BUY", float("nan")) == []
+    assert rp.get_orders("BTCUSDC", "BUY", True) == []
+    assert rp.has_orders_since("BTCUSDC", float("nan")) is False
+    assert rp.get_price_history("BTCUSDC", float("nan")) == []
+
+    # 5. TrailingStop rejects boolean price/balance/trend
+    dummy_api = SimpleNamespace(
+        get_current_price=lambda pair: True,
+        get_account_assets_balances=lambda: [{"asset": "BTC", "free": True, "locked": False}],
+    )
+    dummy_po = SimpleNamespace(position_cost_basis=lambda *a, **k: 50000.0)
+    dummy_sym = SimpleNamespace(symbols=["BTCUSDC"])
+    ts = trailing_stop.TrailingStop(dummy_api, dummy_po, dummy_sym, enabled=False)
+    ts._balances = [{"asset": "BTC", "free": True, "locked": True}]
+    assert ts.price("BTCUSDC") is None
+    assert ts.free_qty("BTC") == 0.0
+    assert ts.total_qty("BTC") == 0.0
+    assert ts.cost_basis("BTCUSDC") is None
+
+
+
