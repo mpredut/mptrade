@@ -6840,3 +6840,59 @@ def test_iteration39_binance_filters_strategy_executor_market_api_nan_bool_safet
     qd = decide_quantity(prov_q, "BTCUSDC", "BUY", 100.0, 2.5, scale=0.5)
     assert qd.final_qty == pytest.approx(1.25)
 
+
+def test_iteration40_kraken_hyperliquid_rollback_outcomes_nan_bool_safety(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import pytest
+    import order_outcomes_log as ool
+    import order_rollback as orb
+    from providers.strategy_executor import ProviderError
+    from providers.kraken_provider import KrakenProvider
+    from providers.hyperliquid_provider import HyperliquidProvider
+
+    # 1. order_outcomes_log sanitizes CR/LF and ignores NaN/bool strength
+    assert ool._sanitize_outcome_field("a|b\r\nc") == "a/b  c"
+    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ool.log_order_outcome(
+        "BTCUSDC", "BUY", 60000.0, 0.1, "accepted", None, "test",
+        regime_context=SimpleNamespace(regime="bull", strength=float("nan"), source="snap", fresh=True, fallback_used=False, reason="ok"),
+    )
+    logs = list(tmp_path.glob("order_outcomes_*.log"))
+    assert len(logs) == 1
+    content = logs[0].read_text(encoding="utf-8")
+    assert "nan" not in content.lower()
+
+    # 2. order_rollback.extract_order_restore_params ignores boolean kind and level
+    p_rest = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "kind": True, "level": False})
+    assert p_rest["kind"] == "TP"
+    assert p_rest["level"] is None
+
+    # 3. KrakenProvider min_order_qty, free_balance, preflight_order, cancel_order_by_id, pair_precision
+    kp = KrakenProvider(client=SimpleNamespace(
+        pair_info=lambda sym: {"ordermin": True, "pair_decimals": True, "lot_decimals": 2, "base": "HYPE"},
+        balance=lambda: {"HYPE": True},
+        cancel_order=lambda oid: {"count": True},
+    ))
+    assert kp.min_order_qty("HYPEUSD") == 0.0
+    assert kp.free_balance("HYPE") is None
+    with pytest.raises(ProviderError):
+        kp.preflight_order("HYPEUSD", "SELL", True, price=20.0)
+    with pytest.raises(ProviderError):
+        kp.cancel_order_by_id("HYPEUSD", "OID1")
+    with pytest.raises(ProviderError):
+        kp.pair_precision("HYPEUSD")
+
+    # 4. HyperliquidProvider preflight_order, order_status, cancel_order reject NaN/bool
+    hp = HyperliquidProvider()
+    monkeypatch.setattr(hp, "free_balance", lambda asset: 1000.0)
+    with pytest.raises(ProviderError):
+        hp.preflight_order("HYPEUSDC", "BUY", float("nan"), price=20.0)
+    with pytest.raises(ProviderError):
+        hp.preflight_order("HYPEUSDC", "BUY", 1.0, price=float("nan"))
+    with pytest.raises(ProviderError):
+        hp.preflight_order("HYPEUSDC", "BUY", True, price=20.0)
+    with pytest.raises(ProviderError):
+        hp.order_status("HYPEUSDC", True)
+    with pytest.raises(ProviderError):
+        hp.cancel_order("HYPEUSDC", True)
+

@@ -35,8 +35,14 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
     qty = _finite_pos_float(extract_remaining_qty(order, default=0.0))
 
     raw_amount = order.get("amount")
-    level = order.get("level")
-    kind = order.get("kind") or ("TP" if side == "SELL" else "ENTRY")
+    raw_level = order.get("level")
+    level = None if isinstance(raw_level, bool) else raw_level
+    raw_kind = order.get("kind")
+    kind = (
+        str(raw_kind).strip()
+        if (raw_kind is not None and not isinstance(raw_kind, bool) and str(raw_kind).strip())
+        else ("TP" if side == "SELL" else "ENTRY")
+    )
     computed_amount = qty * price if qty > 0.0 and price > 0.0 else 0.0
     amount = _finite_pos_float(raw_amount, default=computed_amount)
 

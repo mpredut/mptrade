@@ -561,22 +561,41 @@ class HyperliquidProvider(MarketDataProvider):
             return
         if qty is None:
             return
+        if isinstance(qty, bool):
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
+        try:
+            qty_f = float(qty)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity") from exc
+        if not math.isfinite(qty_f) or qty_f <= 0:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
         if price is None:
             mid = self.get_current_price(symbol)
-            if not mid:
+            if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
                 raise ProviderError(f"preflight_order({symbol}): price unavailable")
-            price = mid * (1.05 if market else 1.0)
-        required = float(qty) * float(price)
+            price = float(mid) * (1.05 if market else 1.0)
+        elif isinstance(price, bool):
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY price") from exc
+        if not math.isfinite(price_f) or price_f <= 0:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
+        required = qty_f * price_f
+        if not math.isfinite(required) or required <= 0:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
         available = self.free_balance("USDC")
-        if available is None:
+        if available is None or isinstance(available, bool) or not math.isfinite(float(available)) or float(available) < 0:
             raise ProviderError(
                 f"preflight_order({symbol}): the USDC balance cannot be confirmed"
             )
+        avail_f = float(available)
         tolerance = max(1e-9, required * 1e-12)
-        if float(available) + tolerance < required:
+        if avail_f + tolerance < required:
             raise ProviderError(
                 f"preflight_order({symbol}) {kind or 'BUY'}: insufficient USDC balance "
-                f"({float(available):.8f} < {required:.8f}) — the order was not sent"
+                f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
             )
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
@@ -619,6 +638,14 @@ class HyperliquidProvider(MarketDataProvider):
 
     def order_status(self, symbol: str, order_id: str):
         self.validate_symbol(symbol)
+        if isinstance(order_id, bool):
+            raise ProviderError(f"order_status({order_id}): invalid order id")
+        try:
+            oid = int(order_id)
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"order_status({order_id}): invalid order id") from exc
+        if oid <= 0:
+            raise ProviderError(f"order_status({order_id}): invalid order id")
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -628,7 +655,6 @@ class HyperliquidProvider(MarketDataProvider):
         if not addr:
             raise ProviderError("order_status: HL_ACCOUNT_ADDRESS missing")
         try:
-            oid = int(order_id)
             query = getattr(c.info, "query_order_by_oid", None)
             if not callable(query):
                 raise ProviderError(
@@ -731,12 +757,20 @@ class HyperliquidProvider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         self.validate_symbol(symbol)
+        if isinstance(order_id, bool):
+            raise ProviderError(f"cancel_order({order_id}): invalid order id")
+        try:
+            oid = int(order_id)
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"cancel_order({order_id}): invalid order id") from exc
+        if oid <= 0:
+            raise ProviderError(f"cancel_order({order_id}): invalid order id")
         pair = self._pair()
         if pair is None:
             raise ProviderError(
                 f"cancel_order({order_id}): pair unavailable")
         try:
-            canceled = self._signer().cancel(pair, int(order_id))
+            canceled = self._signer().cancel(pair, oid)
             if not canceled:
                 raise ProviderError(
                     f"cancel_order({order_id}): the venue did not confirm the cancellation"

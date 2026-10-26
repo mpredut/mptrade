@@ -195,7 +195,11 @@ class KrakenProvider(MarketDataProvider):
         mn = 0.0
         try:
             info = self._client().pair_info(symbol) or {}
-            mn = float(info.get("ordermin", 0) or 0.0)
+            raw_mn = info.get("ordermin", 0)
+            if raw_mn is not None and not isinstance(raw_mn, bool):
+                cand_mn = float(raw_mn or 0.0)
+                if math.isfinite(cand_mn) and cand_mn > 0:
+                    mn = cand_mn
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] ordermin {symbol}: {e}")
         if mn > 0:
@@ -235,7 +239,13 @@ class KrakenProvider(MarketDataProvider):
                 candidates.extend(["XBT", "XXBT", "XBT.F", "XXBT.F"])
             for key in candidates:
                 if key in bal:
-                    return float(bal[key] or 0.0)
+                    raw_val = bal[key]
+                    if isinstance(raw_val, bool):
+                        return None
+                    val = float(raw_val or 0.0)
+                    if not math.isfinite(val) or val < 0.0:
+                        return None
+                    return val
             return 0.0
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] balance {asset}: {e}")
@@ -492,6 +502,9 @@ class KrakenProvider(MarketDataProvider):
             return
         if qty is None:
             return
+        if isinstance(qty, bool):
+            raise ProviderError(
+                f"preflight_order {symbol}: an invalid SELL quantity")
         try:
             requested = float(qty)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -507,7 +520,7 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"preflight_order {symbol}: base asset is unavailable")
         available = self.free_balance(base_asset)
-        if available is None or not math.isfinite(float(available)):
+        if available is None or isinstance(available, bool) or not math.isfinite(float(available)):
             raise ProviderError(
                 f"preflight_order {symbol}: {base_asset} balance is unavailable")
         available = max(0.0, float(available))
@@ -587,7 +600,7 @@ class KrakenProvider(MarketDataProvider):
                 f"cancel_order {order_id}: missing count in Kraken response ({result})"
             )
         try:
-            if int(result["count"]) < 1:
+            if isinstance(result["count"], bool) or int(result["count"]) < 1:
                 raise ProviderError(
                     f"cancel_order {order_id}: Kraken did not confirm the cancellation"
                 )
@@ -613,6 +626,8 @@ class KrakenProvider(MarketDataProvider):
                 raise ProviderError(
                     f"pair_precision {symbol}: missing metadata {', '.join(missing)}"
                 )
+            if any(isinstance(info[key], bool) for key in ("pair_decimals", "lot_decimals", "ordermin")):
+                raise ValueError("boolean values not allowed in pair_precision")
             return PairPrecision(
                 price_decimals=int(info["pair_decimals"]),
                 volume_decimals=int(info["lot_decimals"]),

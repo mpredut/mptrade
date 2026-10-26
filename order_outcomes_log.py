@@ -10,6 +10,7 @@ perform.
 The format is consumed by ``tradeall_observe.py``:
     ts|symbol|side|price|qty|outcome|refuse_reason|caller|motivation
 """
+import math
 import os
 import time
 from datetime import datetime
@@ -20,7 +21,11 @@ ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
 
 def _sanitize_outcome_field(value):
     """Remove characters that would break the pipe-delimited record format."""
-    return str(value).replace("|", "/").replace("\n", " ") if value is not None else ""
+    return (
+        str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+        if value is not None
+        else ""
+    )
 
 
 def log_order_outcome(
@@ -51,8 +56,10 @@ def log_order_outcome(
             strength_str = ""
             if strength_val is not None and not isinstance(strength_val, bool):
                 try:
-                    strength_str = f"{float(strength_val):.4f}"
-                except (TypeError, ValueError):
+                    sf = float(strength_val)
+                    if math.isfinite(sf):
+                        strength_str = f"{sf:.4f}"
+                except (TypeError, ValueError, OverflowError):
                     strength_str = ""
             cols.extend([
                 getattr(regime_context, "regime", "") or "",
