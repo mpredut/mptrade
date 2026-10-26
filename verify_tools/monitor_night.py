@@ -30,7 +30,10 @@ from botcore import load_env_stack, required_int_env  # noqa: E402
 load_env_stack(str(_REPO / ".env"))
 
 HOST = os.environ.get("MONITOR_HOST")  # no default: an address must be configured
-PORT = required_int_env("MONITOR_PORT")
+try:
+    PORT = required_int_env("MONITOR_PORT")
+except Exception:
+    PORT = None
 USER = os.environ.get("MONITOR_USER")
 PASS = os.environ.get("MONITOR_PASS")  # No default: the secret DOES NOT live in code.
 ROOT = os.environ.get("MONITOR_ROOT")
@@ -111,7 +114,8 @@ def load_procs(c):
         reldir = _rel_dir(dir_field)
 
         if role == "fleet":
-            clean_stem = (label or os.path.basename(pat.split()[0])).replace(".py", "")
+            pat_tokens = pat.split()
+            clean_stem = (label or (os.path.basename(pat_tokens[0]) if pat_tokens else "unknown")).replace(".py", "")
             log = f"logs/{clean_stem}.log"
         else:
             rel = hb_log or _log_from_cmd(start_cmd)
@@ -133,7 +137,7 @@ def main():
     # address: a wrong default connects to the wrong machine and reports its
     # processes as if they were the trading server's.
     missing = [name for name, value in (
-        ("MONITOR_HOST", HOST), ("MONITOR_USER", USER),
+        ("MONITOR_HOST", HOST), ("MONITOR_PORT", PORT), ("MONITOR_USER", USER),
         ("MONITOR_PASS", PASS), ("MONITOR_ROOT", ROOT),
     )
                if not value]

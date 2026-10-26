@@ -24,8 +24,23 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
     """Convert [timestamp_ms, price] pairs to chronologically sorted NumPy arrays."""
     if not cache_pairs:
         return np.array([]), np.array([]), []
+    valid = []
+    for item in cache_pairs:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        if isinstance(item[0], bool) or isinstance(item[1], bool):
+            continue
+        try:
+            t_val = int(float(item[0]))
+            p_val = float(item[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(p_val) and t_val >= 0:
+            valid.append((t_val, p_val))
+    if not valid:
+        return np.array([]), np.array([]), []
     # Chronological ordering.
-    cache_pairs = sorted(cache_pairs, key=lambda x: x[0])
+    cache_pairs = sorted(valid, key=lambda x: x[0])
     ts = np.array([int(x[0]) for x in cache_pairs], dtype=np.int64)
     prices = np.array([float(x[1]) for x in cache_pairs], dtype=np.float64)
     dt = [datetime.utcfromtimestamp(int(t)/1000.0) for t in ts]
@@ -37,6 +52,8 @@ def ensure_dir(path: str):
 
 def min_max_scale(arr: np.ndarray):
     """Scale to [0, 1] without sklearn and return (scaled, minimum, maximum)."""
+    if len(arr) == 0:
+        return np.array([], dtype=np.float64), 0.0, 0.0
     vmin = float(np.min(arr))
     vmax = float(np.max(arr))
     if vmax == vmin:
@@ -84,11 +101,15 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     same formulas.
     """
     n = len(prices)
+    if n == 0 or isinstance(horizon, bool) or horizon <= 0:
+        return np.array([], dtype=np.float64)
+    if n == 1:
+        return np.full(int(horizon), float(prices[0]), dtype=np.float64)
     x = np.arange(n, dtype=np.float64)
     # fit y ~ a*x + b
     a, b = np.polyfit(x, prices, 1)
     # Predictions for the following steps.
-    x_future = np.arange(n, n + horizon, dtype=np.float64)
+    x_future = np.arange(n, n + int(horizon), dtype=np.float64)
     y_future = a * x_future + b
     return y_future
 

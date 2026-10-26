@@ -1141,6 +1141,30 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
         assert n_sells == 0
         assert last_buy == 260.0
 
+    # 4. parse_shadow, kraken_pnl_backfill, and visuals.drawprices edge-case guards
+    from verify_tools import parse_shadow, kraken_pnl_backfill
+    from visuals import drawprices
+    import numpy as np
+
+    assert parse_shadow._f(None) == 0.0
+    assert parse_shadow._f(True) == 0.0
+    assert parse_shadow._f(float("nan")) == 0.0
+    assert parse_shadow._i(None) == 0
+    assert parse_shadow._i(True) == 0
+    assert parse_shadow._last_valid_record(['{"pair": "HYPEUSD"}', "{bad json"]) == {"pair": "HYPEUSD"}
+
+    assert kraken_pnl_backfill._safe_float(None) == 0.0
+    assert kraken_pnl_backfill._safe_float(True) == 0.0
+    assert kraken_pnl_backfill._safe_float(float("nan")) == 0.0
+
+    ts_arr, px_arr, dt_list = drawprices.to_series([(1700000000000, float("nan")), (True, 100.0), (1700000001000, 50.0)])
+    assert len(px_arr) == 1 and px_arr[0] == 50.0
+    scaled_empty, vmin, vmax = drawprices.min_max_scale(np.array([], dtype=np.float64))
+    assert len(scaled_empty) == 0
+    lin_one = drawprices.forecast_linear(ts_arr, px_arr, horizon=3)
+    assert list(lin_one) == [50.0, 50.0, 50.0]
+
+
 
 def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     workspace, cache_dir, _ = temp_env

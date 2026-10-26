@@ -10,12 +10,22 @@ the fleet. It DOES NOT touch the live cache.
 Credentials: use the _SPARE pair, falling back to _BOT. A nanosecond time_ns nonce avoids
 collisions with live processes. Pagination is deliberately gentle to avoid the account rate limit.
 """
-import os, sys, json, time, datetime as dt
+import os, sys, json, math, time, datetime as dt
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_HERE)                      # Repository root (parent of verify_tools/).
 KD = os.path.join(ROOT, 'kraken')
 OUT = os.path.join(ROOT, 'kraken_trades_full.json')
+
+
+def _safe_float(val, default=0.0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+    except (TypeError, ValueError):
+        return default
+    return res if math.isfinite(res) else default
 
 
 def env_value(folder, name):
@@ -59,7 +69,7 @@ def fetch_all_trades(cli):
         res = cli._private('TradesHistory', {'ofs': ofs}, fresh=True)
         batch = (res or {}).get('trades', {}) or {}
         if total is None:
-            total = int((res or {}).get('count', 0))
+            total = int(_safe_float((res or {}).get('count'), 0.0))
         if not batch:
             break
         all_trades.update(batch)
@@ -83,14 +93,19 @@ def main():
     trades, total = fetch_all_trades(cli)
     by_sym = {}
     for txid, t in trades.items():
+        if not isinstance(t, dict):
+            continue
         by_sym.setdefault(t.get('pair', '?'), []).append(dict(
             txid=txid, side=extract_order_side(t) or 'SELL',
-            price=extract_order_price(t), qty=extract_order_qty(t),
-            cost=float(t.get('cost', 0)), fee=float(t.get('fee', 0)),
+            price=_safe_float(extract_order_price(t), 0.0),
+            qty=_safe_float(extract_order_qty(t), 0.0),
+            cost=_safe_float(t.get('cost'), 0.0),
+            fee=_safe_float(t.get('fee'), 0.0),
             time=extract_timestamp_ms(t, default=0) or 0))
     out = {'items': by_sym, 'source': 'TradesHistory full (read-only)',
            'total': total, 'generated': dt.datetime.now().isoformat()}
-    json.dump(out, open(OUT, 'w'), indent=1)
+    with open(OUT, 'w', encoding='utf-8') as f:
+        json.dump(out, f, indent=1)
 
     print(f'[kraken_pnl] {len(trades)}/{total} trades -> {OUT}')
     grand = 0.0

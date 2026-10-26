@@ -4,9 +4,41 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _f(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+    except (TypeError, ValueError):
+        return default
+    return res if math.isfinite(res) else default
+
+
+def _i(val, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        fval = float(val)
+    except (TypeError, ValueError):
+        return default
+    return int(fval) if math.isfinite(fval) else default
+
+
+def _last_valid_record(lines: list[str]) -> dict | None:
+    for raw in reversed(lines):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def main() -> None:
@@ -30,47 +62,56 @@ def main() -> None:
         print(f"Shadow log is empty: {args.file}")
         return
 
-    last = json.loads(lines[-1])
+    last = _last_valid_record(lines)
+    if last is None:
+        print(f"Shadow log has no valid JSON records: {args.file}")
+        return
 
     print("=== SHADOW 240m (4-Hour Bars) ===")
     print(f"Timestamp: {last.get('ts')}, Pair: {last.get('pair')}, Last Close: {last.get('last_close')}")
-    fwd = last.get("forward", {})
-    if fwd:
-        bars = fwd.get("bars", 0)
+    fwd = last.get("forward")
+    if isinstance(fwd, dict) and fwd:
+        bars = _i(fwd.get("bars"), 0)
         print(f"FORWARD: {bars} bars ({bars * 4 / 24:.1f} days), Buy&Hold: {fwd.get('buyhold_pct')}%\n")
         print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
         print("  " + "-" * 63)
-        for k, v in fwd.get("configs", {}).items():
-            print(f"  {k:<26} {v.get('net_pct', 0.0):>8.2f} {v.get('total_pct', 0.0):>9.2f} {v.get('maxdd_pct', 0.0):>9.2f} {v.get('cycles', 0):>7}")
+        for k, v in (fwd.get("configs") or {}).items():
+            if not isinstance(v, dict):
+                continue
+            print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")
 
     print("\n" + "=" * 65 + "\n")
-    win = last.get("window", {})
-    if win:
-        bars = win.get("bars", 0)
+    win = last.get("window")
+    if isinstance(win, dict) and win:
+        bars = _i(win.get("bars"), 0)
         print(f"FULL WINDOW (Kraken OHLC): {bars} bars ({bars * 4 / 24:.1f} days), Buy&Hold: {win.get('buyhold_pct')}%\n")
         print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
         print("  " + "-" * 63)
-        for k, v in win.get("configs", {}).items():
-            print(f"  {k:<26} {v.get('net_pct', 0.0):>8.2f} {v.get('total_pct', 0.0):>9.2f} {v.get('maxdd_pct', 0.0):>9.2f} {v.get('cycles', 0):>7}")
+        for k, v in (win.get("configs") or {}).items():
+            if not isinstance(v, dict):
+                continue
+            print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")
 
     path_60m = ROOT / "logs" / "shadow_live" / "HYPEUSD_60m.jsonl"
     if path_60m.exists():
         try:
             with open(path_60m, encoding="utf-8") as f:
                 lines60 = [line.strip() for line in f if line.strip()]
-            if lines60:
-                last60 = json.loads(lines60[-1])
+            last60 = _last_valid_record(lines60)
+            if last60 is not None:
                 print("\n" + "=" * 65 + "\n")
                 print("=== SHADOW 60m (1-Hour Bars) ===")
                 print(f"Timestamp: {last60.get('ts')}, Pair: {last60.get('pair')}, Last Close: {last60.get('last_close')}")
-                fwd60 = last60.get("forward", {})
-                if fwd60:
-                    bars60 = fwd60.get("bars", 0)
+                fwd60 = last60.get("forward")
+                if isinstance(fwd60, dict) and fwd60:
+                    bars60 = _i(fwd60.get("bars"), 0)
                     print(f"FORWARD: {bars60} bars ({bars60 / 24:.1f} days), Buy&Hold: {fwd60.get('buyhold_pct')}%\n")
                     print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
                     print("  " + "-" * 63)
-                    for k, v in fwd60.get("configs", {}).items():
-                        print(f"  {k:<26} {v.get('net_pct', 0.0):>8.2f} {v.get('total_pct', 0.0):>9.2f} {v.get('maxdd_pct', 0.0):>9.2f} {v.get('cycles', 0):>7}")
+                    for k, v in (fwd60.get("configs") or {}).items():
+                        if not isinstance(v, dict):
+                            continue
+                        print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")
         except Exception as e:
             print("Error loading 60m:", e)
 
