@@ -3352,3 +3352,56 @@ def test_batch6_hardening(tmp_path):
     assert len(drawprices.forecast_linear(None, "bad", horizon=5)) == 0  # type: ignore[arg-type]
 
 
+def test_batch7_hardening():
+    import sys
+    from offline.backtests.datasets import normalize_record
+    from offline.backtests.metrics import calculate_performance_metrics
+    from offline.backtests.walk_forward import summarize_test_windows
+    from offline.research.chop_weight_backtest import run_single_simulation
+    from offline.runners.walk_forward_compare import _load_hl_replay, _load_t212_replay
+
+    # 1. datasets.normalize_record accepts integer-valued float string timestamp and rejects fractional/non-finite
+    rec = normalize_record({"timestamp": "1700000000.0", "open": 100, "high": 105, "low": 99, "close": 102})
+    assert rec["timestamp"] == 1700000000
+    with pytest.raises(ValueError):
+        normalize_record({"timestamp": "1700000000.5", "open": 100, "high": 105, "low": 99, "close": 102})
+    with pytest.raises(ValueError):
+        normalize_record({"timestamp": "nan", "open": 100, "high": 105, "low": 99, "close": 102})
+
+    # 2. walk_forward.summarize_test_windows rejects bool/non-finite return_pct, max_drawdown_pct, buy_hold_return_pct
+    with pytest.raises(ValueError):
+        summarize_test_windows([
+            {"return_pct": True, "max_drawdown_pct": 1.0, "buy_hold_return_pct": 2.0, "cycles": 1, "fills": 2}
+        ])
+    with pytest.raises(ValueError):
+        summarize_test_windows([
+            {"return_pct": float("nan"), "max_drawdown_pct": 1.0, "buy_hold_return_pct": 2.0, "cycles": 1, "fills": 2}
+        ])
+    with pytest.raises(ValueError):
+        summarize_test_windows([
+            {"return_pct": 1.0, "max_drawdown_pct": 1.0, "buy_hold_return_pct": float("inf"), "cycles": 1, "fills": 2}
+        ])
+
+    # 3. metrics.calculate_performance_metrics rejects bool/non-finite in equity_curve and trade_pnls
+    with pytest.raises(ValueError):
+        calculate_performance_metrics([1000.0, True], initial_capital=1000.0)
+    with pytest.raises(ValueError):
+        calculate_performance_metrics([1000.0, float("nan")], initial_capital=1000.0)
+    with pytest.raises(ValueError):
+        calculate_performance_metrics([1000.0, 1050.0], initial_capital=1000.0, trade_pnls=[50.0, False])
+
+    # 4. chop_weight_backtest.run_single_simulation validates base_notional, tp_pct, stop_pct, T_days
+    with pytest.raises(ValueError):
+        run_single_simulation("BTCUSDC", [(1.0, 100.0)], None, "CHOP_0.03", base_notional=float("nan"))
+    with pytest.raises(ValueError):
+        run_single_simulation("BTCUSDC", [(1.0, 100.0)], None, "CHOP_0.03", tp_pct=-0.01)
+
+    # 5. walk_forward_compare._load_hl_replay and _load_t212_replay preserve sys.path
+    orig_path = list(sys.path)
+    _load_hl_replay()
+    assert list(sys.path) == orig_path
+    _load_t212_replay()
+    assert list(sys.path) == orig_path
+
+
+

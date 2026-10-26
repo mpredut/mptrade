@@ -189,11 +189,22 @@ def run_single_simulation(
         raise ValueError("step_seconds must be finite and > 0")
     if isinstance(initial_balance, bool) or not isinstance(initial_balance, (int, float)) or not math.isfinite(initial_balance) or initial_balance <= 0:
         raise ValueError("initial_balance must be finite and > 0")
+    if isinstance(base_notional, bool) or not isinstance(base_notional, (int, float)) or not math.isfinite(base_notional) or base_notional <= 0:
+        raise ValueError("base_notional must be finite and > 0")
     if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(fee_pct) or not (0.0 <= float(fee_pct) < 1.0):
         raise ValueError("fee_pct must be in [0, 1)")
+    if isinstance(tp_pct, bool) or not isinstance(tp_pct, (int, float)) or not math.isfinite(tp_pct) or tp_pct <= 0:
+        raise ValueError("tp_pct must be finite and > 0")
+    if isinstance(stop_pct, bool) or not isinstance(stop_pct, (int, float)) or not math.isfinite(stop_pct) or stop_pct <= 0:
+        raise ValueError("stop_pct must be finite and > 0")
+    if isinstance(T_days, bool) or not isinstance(T_days, (int, float)) or not math.isfinite(T_days) or T_days <= 0:
+        raise ValueError("T_days must be finite and > 0")
     step_seconds = max(1, int(round(float(step_seconds))))
     initial_balance = float(initial_balance)
+    base_notional = float(base_notional)
     fee_pct = float(fee_pct)
+    tp_pct = float(tp_pct)
+    stop_pct = float(stop_pct)
     usd = initial_balance
     asset_qty = 0.0
     entry_price = 0.0
@@ -321,8 +332,8 @@ def run_single_simulation(
                     usd -= cost
 
     # Close remaining open position at end
-    if asset_qty > 0 and len(sampled) > 0:
-        last_p = sampled[-1][1]
+    if asset_qty > 0 and (tape or sampled):
+        last_p = float(tape[-1]["p"]) if tape else float(sampled[-1][1])
         proceeds = asset_qty * last_p * (1.0 - fee_pct)
         pnl = proceeds - entry_cost
         usd += proceeds

@@ -195,21 +195,31 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
 def _load_hl_replay():
     import importlib.util
     hl_dir = ROOT / "hyperliquid"
-    spec = importlib.util.spec_from_file_location("hl_wf_replay", str(hl_dir / "replay.py"))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["hl_wf_replay"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    orig_sys_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(hl_dir))
+        spec = importlib.util.spec_from_file_location("hl_wf_replay", str(hl_dir / "replay.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["hl_wf_replay"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path[:] = orig_sys_path
 
 
 def _load_t212_replay():
     import importlib.util
     t212_dir = ROOT / "212trading"
-    spec = importlib.util.spec_from_file_location("t212_wf_replay", str(t212_dir / "replay.py"))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["t212_wf_replay"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    orig_sys_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(t212_dir))
+        spec = importlib.util.spec_from_file_location("t212_wf_replay", str(t212_dir / "replay.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["t212_wf_replay"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path[:] = orig_sys_path
 
 
 def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):

@@ -34,7 +34,14 @@ def calculate_performance_metrics(
     if isinstance(turnover_notional, bool) or not math.isfinite(turnover_notional) or turnover_notional < 0:
         raise ValueError("turnover_notional must be non-negative")
 
-    curve = [float(value) for value in equity_curve]
+    curve: list[float] = []
+    for value in equity_curve:
+        if isinstance(value, bool):
+            raise ValueError("equity_curve cannot contain booleans")
+        fval = float(value)
+        if not math.isfinite(fval):
+            raise ValueError("equity_curve must contain finite numbers")
+        curve.append(fval)
     if not curve:
         raise ValueError("equity_curve cannot be empty")
     if not math.isclose(curve[0], initial_capital, rel_tol=1e-9, abs_tol=1e-9):
@@ -105,7 +112,14 @@ def calculate_performance_metrics(
         if exposure_values else 0.0
     )
 
-    pnls = [float(value) for value in ([] if trade_pnls is None else trade_pnls)]
+    pnls: list[float] = []
+    for value in ([] if trade_pnls is None else trade_pnls):
+        if isinstance(value, bool):
+            raise ValueError("trade_pnls cannot contain booleans")
+        fval = float(value)
+        if not math.isfinite(fval):
+            raise ValueError("trade_pnls must contain finite numbers")
+        pnls.append(fval)
     gross_profit = sum(value for value in pnls if value > 0)
     gross_loss = -sum(value for value in pnls if value < 0)
     winning_trades = sum(value > 0 for value in pnls)

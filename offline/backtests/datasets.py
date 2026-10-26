@@ -23,8 +23,19 @@ def normalize_record(record: Mapping) -> dict:
     for field in REQUIRED_FIELDS:
         if isinstance(record[field], bool):
             raise ValueError(f"{field} cannot be a boolean")
+    raw_ts = record["timestamp"]
+    if isinstance(raw_ts, int):
+        timestamp = raw_ts
+    else:
+        try:
+            timestamp = int(str(raw_ts).strip())
+        except (TypeError, ValueError):
+            ts_f = float(raw_ts)
+            if not math.isfinite(ts_f) or not ts_f.is_integer():
+                raise ValueError(f"invalid timestamp: {raw_ts!r}")
+            timestamp = int(ts_f)
     return {
-        "timestamp": int(record["timestamp"]),
+        "timestamp": timestamp,
         "open": float(record["open"]),
         "high": float(record["high"]),
         "low": float(record["low"]),
