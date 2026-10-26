@@ -149,8 +149,15 @@ def _read_pipe_log(path, ncols):
 
 
 def _log_dates(days_back):
+    if (
+        isinstance(days_back, bool)
+        or not isinstance(days_back, (int, float))
+        or not math.isfinite(float(days_back))
+    ):
+        return []
+    n_days = max(0, int(days_back))
     today = datetime.now().date()
-    return [today - timedelta(days=i) for i in range(days_back)]
+    return [today - timedelta(days=i) for i in range(n_days)]
 
 
 # -- Step B: independent price sampling that does not touch tradeall. ----------
@@ -846,7 +853,10 @@ def build_backtest_state_text(directory, symbol):
         entry = None
     if not isinstance(entry, dict) or not entry:
         return None
-    sim_time = datetime.fromtimestamp(_safe_float(entry.get("ts"), 0.0)).strftime("%m-%d %H:%M:%S")
+    try:
+        sim_time = datetime.fromtimestamp(_safe_float(entry.get("ts"), 0.0)).strftime("%m-%d %H:%M:%S")
+    except (ValueError, OSError, OverflowError):
+        sim_time = "unknown"
     return format_state_text(entry, f"SIMULATED ANALYSIS ({sim_time})")
 
 
@@ -915,14 +925,19 @@ def render_symbol_chart_backtest(symbol, directory, out_path, window_hours=None)
     order_events = load_backtest_order_events(directory, symbol)
 
     all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
+    wh_val = _safe_float(window_hours, 0.0)
     if not all_ts:
         window_start, window_end = time.time() - DAY_SECONDS, time.time()
         label = "backtest (tot intervalul reluat)"
-    elif window_hours:
+    elif wh_val > 0.0:
         window_end = max(all_ts)
-        window_start = window_end - window_hours * 3600
+        window_start = window_end - wh_val * 3600
+        try:
+            ts_str = datetime.fromtimestamp(window_end).strftime('%Y-%m-%d %H:%M')
+        except (ValueError, OSError, OverflowError):
+            ts_str = "unknown"
         label = (f"a sliding window of {window_hours}h (simulated clock: "
-                 f"{datetime.fromtimestamp(window_end).strftime('%Y-%m-%d %H:%M')})")
+                 f"{ts_str})")
     else:
         window_start, window_end = min(all_ts), max(all_ts)
         label = "backtest (tot intervalul reluat)"

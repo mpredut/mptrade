@@ -16,8 +16,25 @@ import cacheManager as cm
 
 
 def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
-    raw = cm.price_cache_manager[symbol].cache
-    return [(int(ts), float(p)) for ts, p in raw]
+    mgr = getattr(cm, "price_cache_manager", None)
+    entry = mgr.get(symbol) if isinstance(mgr, dict) else None
+    raw = getattr(entry, "cache", None) if entry is not None else None
+    if not raw:
+        return []
+    out: List[Tuple[int, float]] = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        if isinstance(item[0], bool) or isinstance(item[1], bool):
+            continue
+        try:
+            t_val = int(float(item[0]))
+            p_val = float(item[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(p_val):
+            out.append((t_val, p_val))
+    return out
 
 
 def to_series(cache_pairs: List[Tuple[int, float]]):
@@ -67,9 +84,19 @@ def min_max_scale(arr: np.ndarray):
     return scaled, vmin, vmax
 
 def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
-    if vmax == vmin:
-        return np.full_like(arr_scaled, vmin)
-    return arr_scaled * (vmax - vmin) + vmin
+    arr_f = np.asarray(arr_scaled, dtype=np.float64)
+    if isinstance(vmin, bool) or isinstance(vmax, bool):
+        return np.zeros_like(arr_f, dtype=np.float64)
+    try:
+        vmin_f = float(vmin)
+        vmax_f = float(vmax)
+    except (TypeError, ValueError):
+        return np.zeros_like(arr_f, dtype=np.float64)
+    if not (math.isfinite(vmin_f) and math.isfinite(vmax_f)):
+        return np.zeros_like(arr_f, dtype=np.float64)
+    if vmax_f == vmin_f or not math.isfinite(vmax_f - vmin_f):
+        return np.full_like(arr_f, vmin_f, dtype=np.float64)
+    return arr_f * (vmax_f - vmin_f) + vmin_f
 
 
 # ==========================

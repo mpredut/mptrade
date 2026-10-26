@@ -638,8 +638,25 @@ class NotificationServer:
                 # Enforce Cooldown
                 rule_key = f"{bot_name}_{rule['name']}"
                 now = time.time()
-                last_time = self.cooldowns.get(rule_key, 0)
-                cooldown_sec = rule.get("cooldown_minutes", 0) * 60
+                raw_last = self.cooldowns.get(rule_key, 0)
+                last_time = (
+                    float(raw_last)
+                    if isinstance(raw_last, (int, float))
+                    and not isinstance(raw_last, bool)
+                    and math.isfinite(float(raw_last))
+                    else 0.0
+                )
+                if last_time > now:
+                    last_time = 0.0
+                raw_cd = rule.get("cooldown_minutes", 0)
+                cd_min = (
+                    float(raw_cd)
+                    if isinstance(raw_cd, (int, float))
+                    and not isinstance(raw_cd, bool)
+                    and math.isfinite(float(raw_cd))
+                    else 0.0
+                )
+                cooldown_sec = max(0.0, cd_min * 60.0)
                 
                 if now - last_time >= cooldown_sec:
                     topic_cat = rule.get("topic_category", "ERROR").upper()

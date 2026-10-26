@@ -9529,4 +9529,66 @@ def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
             sys.modules["backtest"] = orig_bt
 
 
+def test_iteration77_discovery_news_visuals_and_notify_server_safety(tmp_path, monkeypatch):
+    """Verify Iteration 77 import safety in discovery.news, visuals edge-case guards, and notify_engine cooldown validation."""
+    import json
+    import re
+    import numpy as np
+    from discovery import news as d_news
+    from visuals import drawprices, tradeall_observe
+    from notify_engine.server import NotificationServer
+
+    # 1. discovery.news imports cleanly without executing HTTP calls, and get_binance_coins strips only trailing USDT
+    class _DummyResp:
+        def json(self):
+            return [
+                {"symbol": "BTCUSDT", "price": "65000.0"},
+                {"symbol": "USDTB", "price": "1.0"},
+            ]
+
+    monkeypatch.setattr(d_news.requests, "get", lambda url, timeout=15, **kw: _DummyResp())
+    b_map = d_news.get_binance_coins()
+    assert b_map["BTC"] == 65000.0
+    assert b_map["USDTB"] == 1.0
+
+    # 2. visuals.tradeall_observe _log_dates and build_backtest_state_text
+    assert tradeall_observe._log_dates(False) == []
+    assert tradeall_observe._log_dates(-3) == []
+    assert tradeall_observe._log_dates(float("nan")) == []
+    assert len(tradeall_observe._log_dates(2)) == 2
+
+    state_file = tmp_path / "analysis_state.json"
+    state_file.write_text(json.dumps({"BTCUSDC": {"ts": 1e20, "price": 50000.0}}), encoding="utf-8")
+    state_txt = tradeall_observe.build_backtest_state_text(str(tmp_path), "BTCUSDC")
+    assert state_txt is not None and "SIMULATED ANALYSIS (unknown)" in state_txt
+
+    # 3. visuals.drawprices get_cache_for_symbol and min_max_inverse
+    assert drawprices.get_cache_for_symbol("__NON_EXISTENT_SYMBOL__") == []
+    inv_nan = drawprices.min_max_inverse(np.array([0.2, 0.8]), float("nan"), 10.0)
+    assert np.all(inv_nan == 0.0)
+    inv_bool = drawprices.min_max_inverse(np.array([0.2, 0.8]), True, 10.0)
+    assert np.all(inv_bool == 0.0)
+
+    # 4. notify_engine.server process_line handles None/bool/negative cooldown_minutes and future last_time
+    from collections import defaultdict
+    svc = NotificationServer.__new__(NotificationServer)
+    svc.traceback_buffers = defaultdict(list)
+    svc.rules = [
+        {
+            "name": "TestRule",
+            "regex_obj": re.compile(r"CRITICAL_TEST"),
+            "cooldown_minutes": None,
+            "topic_category": "ERROR",
+            "priority": "urgent",
+        }
+    ]
+    svc.cooldowns = {"bot_TestRule": 9e15}  # corrupted future timestamp
+    svc._resolve_topic = lambda cat: "test_topic"
+    sent = []
+    svc._gate_and_send_ntfy = lambda title, body, prio, topic, **kw: sent.append((title, body, topic))
+    svc.process_line("CRITICAL_TEST happened", "bot")
+    assert len(sent) == 1
+
+
+
 

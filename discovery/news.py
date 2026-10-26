@@ -33,7 +33,7 @@ def get_coinmarketcap_coins():
             'convert': 'USD'
         }
         time.sleep(5)
-        response = requests.get(url_cmc, headers=headers_cmc, params=params_cmc)
+        response = requests.get(url_cmc, headers=headers_cmc, params=params_cmc, timeout=15)
         data = response.json()
         if data is None or 'data' not in data:
             break
@@ -62,18 +62,29 @@ def get_coinmarketcap_coins():
         start += limit  # Advance to the next page.
 
     print(f"Am extras {len(coins)} monezi")
-    return pd.DataFrame(coins)
+    return pd.DataFrame(
+        coins,
+        columns=[
+            "name",
+            "symbol",
+            "launch_date",
+            "price",
+            "website_slug",
+            "change_24h",
+            "change_7d",
+        ],
+    )
 
-# Fetch all Binance ticker prices and strip every ``USDT`` substring from symbols.
+# Fetch all Binance ticker prices and strip trailing ``USDT`` suffix from symbols.
 def get_binance_coins():
     url_binance = "https://api.binance.com/api/v3/ticker/price"
-    response = requests.get(url_binance)
+    response = requests.get(url_binance, timeout=15)
     data = response.json()
     
     # Build the symbol-to-price mapping returned to the comparison routine.
     binance_data = {}
     for coin in data:
-        symbol = coin['symbol'].replace('USDT', '')  # Current code is not suffix-specific.
+        symbol = str(coin['symbol']).removesuffix('USDT')
         price = float(coin['price'])
         binance_data[symbol] = price
     return binance_data
@@ -135,56 +146,60 @@ def find_common_coins_and_sort(topn, df_cmc, binance_data):
 
 
 
-# The executable report begins here and also runs on import.
-df_cmc = get_coinmarketcap_coins()
-binance_coins = get_binance_coins()
-    
+def main():
+    df_cmc = get_coinmarketcap_coins()
+    binance_coins = get_binance_coins()
 
-# Rank the newest listings.
-nb = 100
-df_sorted_new = df_cmc.sort_values(by="launch_date", ascending=False).head(nb)
+    # Rank the newest listings.
+    nb = 100
+    df_sorted_new = df_cmc.sort_values(by="launch_date", ascending=False).head(nb)
 
-print("Cea mai noua moneda lansata pe CoinMarketCap:")
-print(df_sorted_new.iloc[0])  # Raises if the fetched data frame is empty.
+    print("Cea mai noua moneda lansata pe CoinMarketCap:")
+    if not df_sorted_new.empty:
+        print(df_sorted_new.iloc[0])
 
-# Rank gains and losses over the two requested periods.
-df_sorted_greatest_increase_7d = df_cmc.sort_values(by="change_7d", ascending=False).head(10)
-df_sorted_greatest_decrease_7d = df_cmc.sort_values(by="change_7d", ascending=True).head(10)
-df_sorted_greatest_increase_24h = df_cmc.sort_values(by="change_24h", ascending=False).head(10)
-df_sorted_greatest_decrease_24h = df_cmc.sort_values(by="change_24h", ascending=True).head(10)
+    # Rank gains and losses over the two requested periods.
+    df_sorted_greatest_increase_7d = df_cmc.sort_values(by="change_7d", ascending=False).head(10)
+    df_sorted_greatest_decrease_7d = df_cmc.sort_values(by="change_7d", ascending=True).head(10)
+    df_sorted_greatest_increase_24h = df_cmc.sort_values(by="change_24h", ascending=False).head(10)
+    df_sorted_greatest_decrease_24h = df_cmc.sort_values(by="change_24h", ascending=True).head(10)
 
-# Print all report sections.
-print(f"Primele {nb} monede noi:")
-pd.set_option('display.max_rows', 100)  # Display up to 100 rows.
-print(df_sorted_new)
+    # Print all report sections.
+    print(f"Primele {nb} monede noi:")
+    pd.set_option('display.max_rows', 100)  # Display up to 100 rows.
+    print(df_sorted_new)
 
-print("\nTop 10 cresteri pe 7 zile:")
-print(df_sorted_greatest_increase_7d)
+    print("\nTop 10 cresteri pe 7 zile:")
+    print(df_sorted_greatest_increase_7d)
 
-print("\nTop 10 scaderi pe 7 zile:")
-print(df_sorted_greatest_decrease_7d)
+    print("\nTop 10 scaderi pe 7 zile:")
+    print(df_sorted_greatest_decrease_7d)
 
-print("\nTop 10 cresteri pe 24 de ore:")
-print(df_sorted_greatest_increase_24h)
+    print("\nTop 10 cresteri pe 24 de ore:")
+    print(df_sorted_greatest_increase_24h)
 
-print("\nTop 10 scaderi pe 24 de ore:")
-print(df_sorted_greatest_decrease_24h)
+    print("\nTop 10 scaderi pe 24 de ore:")
+    print(df_sorted_greatest_decrease_24h)
 
-###########
-# Build and print the cross-source comparison.
-df_top_10_new, df_top_10_increase_7d, df_top_10_decrease_7d, df_top_10_increase_24h, df_top_10_decrease_24h = find_common_coins_and_sort(10, df_cmc, binance_coins)
+    ###########
+    # Build and print the cross-source comparison.
+    df_top_10_new, df_top_10_increase_7d, df_top_10_decrease_7d, df_top_10_increase_24h, df_top_10_decrease_24h = find_common_coins_and_sort(10, df_cmc, binance_coins)
 
-print("The first 10 coins available on both CoinMarketCap and Binance, sorted by newness:")
-print(df_top_10_new)
+    print("The first 10 coins available on both CoinMarketCap and Binance, sorted by newness:")
+    print(df_top_10_new)
 
-print("\nTop 10 cresteri pe 7 zile:")
-print(df_top_10_increase_7d)
+    print("\nTop 10 cresteri pe 7 zile:")
+    print(df_top_10_increase_7d)
 
-print("\nTop 10 scaderi pe 7 zile:")
-print(df_top_10_decrease_7d)
+    print("\nTop 10 scaderi pe 7 zile:")
+    print(df_top_10_decrease_7d)
 
-print("\nTop 10 cresteri pe 24 de ore:")
-print(df_top_10_increase_24h)
+    print("\nTop 10 cresteri pe 24 de ore:")
+    print(df_top_10_increase_24h)
 
-print("\nTop 10 scaderi pe 24 de ore:")
-print(df_top_10_decrease_24h)
+    print("\nTop 10 scaderi pe 24 de ore:")
+    print(df_top_10_decrease_24h)
+
+
+if __name__ == "__main__":
+    main()
