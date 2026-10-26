@@ -168,8 +168,12 @@ def _ledger_to_fills(ledger):
     Unify spot trades with instant-buy/convert receive/spend records: each has one BASE
     leg and one USD-like QUOTE leg sharing a refid. Ignore single-leg staking, deposits,
     and withdrawals. Price is |quote| / |base|; receiving base means isBuyer=True."""
+    if not isinstance(ledger, dict):
+        return []
     by_ref = {}
     for x in ledger.values():
+        if not isinstance(x, dict):
+            continue
         refid = x.get("refid")
         if refid:
             by_ref.setdefault(refid, []).append(x)
@@ -352,9 +356,15 @@ def ws_loop(client):
                 last_flush_ms[0] = now_ms
             return
         changed = False
-        for entry in data[0]:
+        for entry in (data[0] if isinstance(data[0], list) else ()):
+            if not isinstance(entry, dict):
+                continue
             for txid, tr in entry.items():
+                if not isinstance(tr, dict):
+                    continue
                 n = _normalize(txid, tr)
+                if n["price"] <= 0 or n["qty"] <= 0:
+                    continue
                 sym = _match_configured_pair(n.get("symbol"))
                 if sym is None:
                     continue

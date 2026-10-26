@@ -186,9 +186,14 @@ class KrakenClient:
             payload = json.loads(body or b"{}")
         except ValueError:
             raise KrakenError(f"raspuns invalid (HTTP {status})")
+        if not isinstance(payload, dict):
+            raise KrakenError(f"raspuns invalid (HTTP {status})")
         if payload.get("error"):
-            raise KrakenError(", ".join(payload["error"]))
-        return payload.get("result", {})
+            err_val = payload["error"]
+            err_msg = ", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val)
+            raise KrakenError(err_msg)
+        res = payload.get("result", {})
+        return res if isinstance(res, dict) else {}
 
     # ----- PUBLIC --------------------------------------------------------------
     def asset_pairs(self) -> dict:
@@ -213,9 +218,9 @@ class KrakenClient:
             raise ValueError("interval must be a positive integer")
         try:
             itv_f = float(interval)
-            if not math.isfinite(itv_f):
+            if not math.isfinite(itv_f) or not itv_f.is_integer():
                 raise ValueError("interval must be a positive integer")
-            itv_int = int(interval)
+            itv_int = int(itv_f)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("interval must be a positive integer") from exc
         if itv_int <= 0:
@@ -295,18 +300,30 @@ class KrakenClient:
         mechanical protection for every Kraken caller (trailing/bot/xstock), analogous
         to Binance place_order_mechanics. Without it, Kraken rejects excess precision
         with 'price can only be specified up to N decimals' and the order fails."""
-        if isinstance(volume, bool) or not math.isfinite(float(volume)) or float(volume) <= 0.0:
+        if isinstance(volume, bool) or volume is None:
+            raise ValueError(f"invalid Kraken order volume: {volume!r}")
+        try:
+            vol_f = float(volume)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid Kraken order volume: {volume!r}") from exc
+        if not math.isfinite(vol_f) or vol_f <= 0.0:
             raise ValueError(f"invalid Kraken order volume: {volume!r}")
         data = {
             "pair": pair,
             "type": side,
             "ordertype": ordertype,
-            "volume": f"{float(volume)}",
+            "volume": f"{vol_f}",
         }
         if ordertype == "limit" and price is not None:
-            if isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0.0:
+            if isinstance(price, bool):
                 raise ValueError(f"invalid Kraken limit price: {price!r}")
-            price = round(float(price), self.price_decimals(pair))
+            try:
+                px_f = float(price)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid Kraken limit price: {price!r}") from exc
+            if not math.isfinite(px_f) or px_f <= 0.0:
+                raise ValueError(f"invalid Kraken limit price: {price!r}")
+            price = round(px_f, self.price_decimals(pair))
             data["price"] = f"{price}"
         if cl_ord_id is not None:
             if not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id)):

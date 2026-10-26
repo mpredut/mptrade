@@ -8992,12 +8992,12 @@ def test_iteration67_binance_ws_client_context_and_api_safety():
     from binance_api.order_id_context import _base36
     from binance_api.bapi_trades import aggregate_trades
 
-    # 1. BinancePriceStream._process_message preserves valid price when event timestamp E is float string or invalid
+    # 1. BinancePriceStream._process_message rejects non-integer E timestamps and accepts valid int E
     ps = BinancePriceStream(symbols=["BTCUSDC"])
-    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64500.5", "E": "1700000000000.0"}}))
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64600.25", "E": "not-an-int"}}))
+    assert ps.get_price("BTCUSDC") is None
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64500.5", "E": 1700000000000}}))
     assert ps.get_price("BTCUSDC") == 64500.5
-    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "64600.25", "E": "not-a-ts"}}))
-    assert ps.get_price("BTCUSDC") == 64600.25
 
     # 2. BinanceAccountStream._watchdog_loop handles _last_event_ts == 0.0 (age == inf) without OverflowError
     unhealthy_called = []
@@ -9037,6 +9037,50 @@ def test_iteration67_binance_ws_client_context_and_api_safety():
     assert len(agg) == 1
     assert float(agg[0]["quoteQty"]) == 30000.0
     assert float(agg[0]["commission"]) == 0.0
+
+
+def test_iteration68_kraken_and_hyperliquid_client_safety():
+    """Iteration 68: KrakenClient._parse / add_order / ohlc_closes_with_timestamps, kraken.market_data.pair_precision, kraken_cachemanager._ledger_to_fills, and HLClient._round_px / cancel / candles safety."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    from kraken.kraken_client import KrakenClient, KrakenError
+    from kraken.market_data import pair_precision
+    from kraken.kraken_cachemanager import _ledger_to_fills
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    if hl_dir not in sys.path:
+        sys.path.insert(0, hl_dir)
+    from hl_client import _round_px, HLClient
+
+    # 1. KrakenClient._parse rejects non-dict JSON payloads cleanly and add_order rejects None/non-numeric volume/price with ValueError
+    with pytest.raises(KrakenError):
+        KrakenClient._parse(200, b"[1, 2, 3]")
+    kc = KrakenClient("k", "c2VjcmV0")
+    with pytest.raises(ValueError):
+        kc.add_order("XBTUSD", "buy", None, 50000.0)
+    with pytest.raises(ValueError):
+        kc.add_order("XBTUSD", "buy", 0.1, "not-a-price", ordertype="limit")
+    with pytest.raises(ValueError):
+        kc.ohlc_closes_with_timestamps("XBTUSD", 15.5)
+
+    # 2. kraken.market_data.pair_precision handles float strings and OverflowError
+    assert pair_precision({"pair_decimals": "2.0", "lot_decimals": "4.0", "ordermin": "0.01"}) == (2, 4, 0.01)
+    assert pair_precision({"pair_decimals": 10**400, "lot_decimals": 10**400, "ordermin": 10**400}) == (2, 8, 0.0)
+
+    # 3. _ledger_to_fills tolerates non-dict ledger or non-dict entries
+    assert _ledger_to_fills(None) == []
+    assert _ledger_to_fills({"L1": "not-a-dict"}) == []
+
+    # 4. _round_px & HLClient.cancel / candles reject inf/bool/invalid parameters
+    with pytest.raises(ValueError):
+        _round_px(25.0, float("inf"))
+    dummy_hl = SimpleNamespace(exchange=object(), info=SimpleNamespace(candles_snapshot=lambda *a: [{"ok": 1}]))
+    assert HLClient.cancel(dummy_hl, "HYPE", None) is False
+    assert HLClient.cancel(dummy_hl, "HYPE", True) is False
+    assert HLClient.candles(dummy_hl, "HYPE", lookback_hours=True) == []
+    assert HLClient.candles(dummy_hl, "HYPE", lookback_hours=-5) == []
+
 
 
 

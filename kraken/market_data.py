@@ -149,19 +149,19 @@ def pair_precision(info: dict) -> tuple[int, int, float]:
         return 2, 8, 0.0
     try:
         raw_p = info.get("pair_decimals")
-        price_dec = max(0, int(raw_p)) if raw_p is not None and not isinstance(raw_p, bool) else 2
-    except (TypeError, ValueError):
+        price_dec = max(0, int(float(raw_p))) if raw_p is not None and not isinstance(raw_p, bool) else 2
+    except (TypeError, ValueError, OverflowError):
         price_dec = 2
     try:
         raw_v = info.get("lot_decimals")
-        vol_dec = max(0, int(raw_v)) if raw_v is not None and not isinstance(raw_v, bool) else 8
-    except (TypeError, ValueError):
+        vol_dec = max(0, int(float(raw_v))) if raw_v is not None and not isinstance(raw_v, bool) else 8
+    except (TypeError, ValueError, OverflowError):
         vol_dec = 8
     try:
         raw_min = info.get("ordermin", 0)
         ordermin = float(raw_min or 0) if not isinstance(raw_min, bool) else 0.0
         if not math.isfinite(ordermin) or ordermin < 0:
             ordermin = 0.0
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         ordermin = 0.0
     return price_dec, vol_dec, ordermin

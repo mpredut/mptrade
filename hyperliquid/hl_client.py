@@ -43,10 +43,16 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     """Round an HL price to 5 significant figures and at most (6/8 - szDecimals) decimals."""
     if isinstance(px, bool) or isinstance(sz_decimals, bool):
         raise ValueError("px and sz_decimals must not be boolean")
-    px = float(px)
+    try:
+        px = float(px)
+        dec_f = float(sz_decimals)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("px and sz_decimals must be finite numbers") from exc
+    if not math.isfinite(dec_f):
+        raise ValueError("sz_decimals must be finite")
     if not math.isfinite(px) or px <= 0:
         return px
-    max_dec = (6 if is_perp else 8) - int(sz_decimals)
+    max_dec = (6 if is_perp else 8) - int(dec_f)
     px = float(f"{px:.5g}")           # five significant figures
     return round(px, max(max_dec, 0))
 
@@ -356,8 +362,16 @@ class HLClient:
 
     def candles(self, coin: str, interval: str = "1h", lookback_hours: int = 60) -> list[dict]:
         """Return OHLCV candles for trend indicators."""
+        if lookback_hours is None or isinstance(lookback_hours, bool):
+            return []
+        try:
+            lh_f = float(lookback_hours)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(lh_f) or lh_f <= 0:
+            return []
         end = int(time.time() * 1000)
-        start = end - lookback_hours * 3600 * 1000
+        start = max(0, int(end - lh_f * 3600 * 1000))
         try:
             return self.info.candles_snapshot(coin, interval, start, end)
         except Exception as e:  # noqa: BLE001
@@ -465,7 +479,7 @@ class HLClient:
         return True, None, str(st)
 
     def cancel(self, coin: str, oid: int) -> bool:
-        if not self.exchange:
+        if not self.exchange or oid is None or isinstance(oid, bool):
             return False
         try:
             res = self.exchange.cancel(coin, oid)
