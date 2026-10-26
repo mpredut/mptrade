@@ -21,7 +21,9 @@ PREFIX_LEGACY_FILENAMES = (
 
 def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
     """Return legacy pre-symmetry candidate paths for ``filepath``."""
-    dirname, basename = os.path.split(filepath)
+    if not filepath or isinstance(filepath, bool) or not isinstance(filepath, (str, os.PathLike)):
+        return ()
+    dirname, basename = os.path.split(os.fspath(filepath))
     candidates = EXACT_LEGACY_FILENAMES.get(basename)
     if candidates is None:
         for new_prefix, old_prefixes in PREFIX_LEGACY_FILENAMES:
@@ -72,9 +74,10 @@ def migrate_legacy_filename_if_needed(filepath: str) -> None:
 
 def get_cachedb_dir() -> str:
     """Return the canonical cachedb directory path honoring MPTRADE_CACHEDB_DIR and BINANCE_CACHE_DIR."""
-    custom = os.environ.get("MPTRADE_CACHEDB_DIR") or os.environ.get("BINANCE_CACHE_DIR")
-    if custom:
-        return custom
+    for env_key in ("MPTRADE_CACHEDB_DIR", "BINANCE_CACHE_DIR"):
+        raw = os.environ.get(env_key)
+        if raw and raw.strip():
+            return raw.strip()
     return os.path.join(_ROOT, "cachedb")
 
 
@@ -83,13 +86,17 @@ def cache_path(name: str) -> str:
 
     Preserves name when it is already absolute or None/empty.
     """
-    if not name:
+    if not name or isinstance(name, bool):
         return name
     if os.path.isabs(name):
         return name
     norm = name.replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
     if norm.startswith("cachedb/"):
         name = norm[len("cachedb/"):]
+    else:
+        name = norm
     d = get_cachedb_dir()
     try:
         os.makedirs(d, exist_ok=True)

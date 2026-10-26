@@ -252,7 +252,9 @@ class TrailingStop:
         Existing peaks, warm-up thresholds, and pending orders are never rewritten.
         """
         try:
-            asset = TRAILING_INSTRUMENTS[pair].base
+            pair_norm = str(pair or "").strip().upper()
+            spec = TRAILING_INSTRUMENTS.get(pair_norm) or TRAILING_INSTRUMENTS[pair]
+            asset = spec.base
             balances = [row for row in self._balances if isinstance(row, dict) and row.get("asset") == asset]
             if len(balances) != 1:
                 return None
@@ -264,7 +266,7 @@ class TrailingStop:
             if not all(math.isfinite(v) and v >= 0 for v in (free, locked)):
                 return None
             return self.po.position_cost_basis(
-                pair, free + locked, _COST_BASIS_LOOKBACK_S, provider_name="binance")
+                pair_norm or pair, free + locked, _COST_BASIS_LOOKBACK_S, provider_name="binance")
         except Exception as e:  # noqa: BLE001
             self.log(f"  [TRAIL] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
             return None
@@ -347,7 +349,8 @@ class TrailingStop:
         try:
             cancel_fn = getattr(self.api, "cancel_open_orders", None)
             if callable(cancel_fn):
-                spec = TRAILING_INSTRUMENTS.get(pair)
+                pair_norm = str(pair or "").strip().upper()
+                spec = TRAILING_INSTRUMENTS.get(pair_norm) or TRAILING_INSTRUMENTS.get(pair)
                 asset = spec.base if spec is not None else None
                 if asset and self._balances:
                     locked = 0.0

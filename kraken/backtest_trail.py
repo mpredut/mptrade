@@ -47,18 +47,24 @@ def simulate_trail(ohlc, P):
     strategies.spot_engine.Strategy directly with trailing take-profit enabled,
     eliminating parity bugs and duplicate simulation drift.
     """
+    trail_val = P.get("trail") if P.get("trail") is not None else 3.0
+    re_drop = P.get("reentry_drop")
+    if re_drop is None:
+        re_drop = P.get("reentry")
+    if re_drop is None:
+        re_drop = 0.0
     over = {
         "tp_trend_hold": True,
-        "tp_trail_pct": P.get("trail", 3.0),
+        "tp_trail_pct": trail_val,
         "tp_mdhtp_enabled": False,
-        "reentry_drop_pct": P.get("reentry_drop", P.get("reentry", 0.0)),
+        "reentry_drop_pct": re_drop,
     }
     params = _bt_params(P, over)
     return rp.run_replay(
         ohlc,
         params,
-        fee_pct=P.get("fee", 0.25),
-        bar_minutes=P.get("interval", 60),
+        fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
+        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
         intrabar_high=True,
     )
 
@@ -69,7 +75,18 @@ def base_params(budget=3000):
 
 
 def bh(ohlc):
-    return (ohlc[-1][3] - ohlc[0][3]) / ohlc[0][3] * 100 if ohlc and ohlc[0][3] > 0 else 0.0
+    if not ohlc or len(ohlc[0]) < 4 or len(ohlc[-1]) < 4:
+        return 0.0
+    if isinstance(ohlc[0][3], bool) or isinstance(ohlc[-1][3], bool):
+        return 0.0
+    try:
+        c0 = float(ohlc[0][3])
+        c1 = float(ohlc[-1][3])
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not (c0 > 0 and c1 == c1 and abs(c0) != float("inf") and abs(c1) != float("inf")):
+        return 0.0
+    return (c1 - c0) / c0 * 100.0
 
 
 def run_compare(pairs, intervals):

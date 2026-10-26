@@ -3017,3 +3017,29 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     spec_pa.loader.exec_module(t212_pa)
     assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
+    # 7. cachepaths, tradeall_price_archiver._symbols, kraken backtest_adaptive/backtest_trail, and binance_api.trailing_stop
+    import cachepaths
+    import pytest
+    import tradeall_price_archiver
+    from kraken import backtest_adaptive as k_ba, backtest_trail as k_bt_tr
+    from binance_api import trailing_stop as b_ts
+
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "   ")
+    monkeypatch.setenv("BINANCE_CACHE_DIR", str(tmp_path))
+    assert cachepaths.get_cachedb_dir() == str(tmp_path)
+    assert cachepaths.cache_path("./cachedb/foo.json") == os.path.join(str(tmp_path), "foo.json")
+    assert cachepaths.legacy_filenames_for(None) == ()  # type: ignore[arg-type]
+    assert cachepaths.legacy_filenames_for(True) == ()  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        tradeall_price_archiver._symbols(None)
+    with pytest.raises(ValueError):
+        tradeall_price_archiver._symbols(True)
+
+    bars_sample = [(100.0, 102.0, 99.0, 101.0), (101.0, 103.0, 100.0, 102.0)]
+    assert k_ba.simulate_variant(bars_sample, {"drop_fallback": None, "reentry_drop": None, "fee": None, "interval": None}, [1.5, 1.5])["initial_capital"] > 0
+    assert k_bt_tr.simulate_trail(bars_sample, {"trail": None, "reentry_drop": None, "fee": None, "interval": None})["initial_capital"] > 0
+    assert k_bt_tr.bh([(100.0, 101.0, 99.0, True)]) == 0.0  # type: ignore[list-item]
+    assert k_bt_tr.bh([(100.0,)]) == 0.0  # type: ignore[list-item]
+
+

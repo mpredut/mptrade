@@ -58,6 +58,8 @@ def _positive_finite(value, name, *, minimum=0.001):
 
 
 def _symbols(raw):
+    if raw is None or isinstance(raw, bool):
+        raise ValueError("the symbol list cannot be empty")
     values = []
     for item in str(raw).split(","):
         symbol = item.strip().upper()

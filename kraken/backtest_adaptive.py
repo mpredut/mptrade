@@ -96,15 +96,25 @@ def simulate_variant(ohlc, P, drop_arr):
     strategies.spot_engine.Strategy directly with dynamic per-bar DCA drop thresholds,
     eliminating parity bugs and duplicate simulation drift.
     """
+    drop_fb = P.get("drop_fallback")
+    if drop_fb is None:
+        drop_fb = P.get("drop")
+    if drop_fb is None:
+        drop_fb = 2.0
+    re_drop = P.get("reentry_drop")
+    if re_drop is None:
+        re_drop = P.get("reentry")
+    if re_drop is None:
+        re_drop = 0.0
     params = _bt_params(P, {
-        "dca_drop_pct": P.get("drop_fallback", P.get("drop", 2.0)),
-        "reentry_drop_pct": P.get("reentry_drop", P.get("reentry", 0.0)),
+        "dca_drop_pct": drop_fb,
+        "reentry_drop_pct": re_drop,
     })
     return rp.run_replay(
         ohlc,
         params,
-        fee_pct=P.get("fee", 0.25),
-        bar_minutes=P.get("interval", 60),
+        fee_pct=P.get("fee") if P.get("fee") is not None else 0.25,
+        bar_minutes=P.get("interval") if P.get("interval") is not None else 60,
         dca_drop_series=drop_arr,
     )
 
