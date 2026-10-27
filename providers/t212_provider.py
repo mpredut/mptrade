@@ -409,7 +409,13 @@ class T212Provider(MarketDataProvider):
         return order_id
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        if isinstance(order_id, bool) or not str(order_id or "").strip():
+        if (
+            order_id is None
+            or isinstance(order_id, bool)
+            or not isinstance(order_id, (str, int))
+            or not str(order_id).strip()
+            or str(order_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             raise ProviderError(f"order_status({order_id}): invalid order id")
         try:
             raw = self._client().get_order_status(order_id)
@@ -503,7 +509,13 @@ class T212Provider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        if isinstance(order_id, bool) or not str(order_id or "").strip():
+        if (
+            order_id is None
+            or isinstance(order_id, bool)
+            or not isinstance(order_id, (str, int))
+            or not str(order_id).strip()
+            or str(order_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             raise ProviderError(f"cancel_order({order_id}): invalid order id")
         if not self._orders_live():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")

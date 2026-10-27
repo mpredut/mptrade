@@ -12739,5 +12739,108 @@ def test_iteration121_intelligence_daemons_cli_and_market_monitor_safety(monkeyp
     assert alerts_config.resolve(ac, True, False) == {"up_percent": 4.0, "down_percent": 7.0}
 
 
+def test_iteration122_notify_engine_new_coins_and_trigger_event_safety(monkeypatch, tmp_path):
+    """Verify Iteration 122 mailer URL/comment handling, NotificationServer multiline header/URL safety, NewCoinsFactory string sources, and TriggerEvent/kalman_trigger safety."""
+    from notify_engine import mailer
+    from notify_engine.server import NotificationServer
+    from market_monitor import new_coins_discovery as ncd
+    from intelligence.internal.triggers.trigger_event import TriggerEvent
+    from intelligence.internal.triggers import kalman_trigger as kt
+
+    # 1. mailer.is_email_mirrored handles full URLs, inline comments, and rejects booleans
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "ntfy-err-custom # inline comment")
+    assert mailer.is_email_mirrored("https://ntfy.sh/ntfy-err-custom/") is True
+    assert mailer.is_email_mirrored(True) is False
+    monkeypatch.setenv("SMTP_USERNAME", "bot@example.com # comment")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("ALERT_TO_EMAIL", "ops@example.com # comment")
+    monkeypatch.setenv("SMTP_PORT", "587.0 # tls port")
+    cfg = mailer._config()
+    assert cfg is not None and cfg["port"] == 587 and cfg["username"] == "bot@example.com"
+
+    # 2. NotificationServer._send_ntfy strips CR/LF from headers and accepts full URL topic
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "notif_state.json"))
+    sent_calls = []
+    class _OkResp:
+        status_code = 200
+        def raise_for_status(self):
+            pass
+    monkeypatch.setattr("notify_engine.server.requests.post", lambda url, data=None, headers=None, timeout=5: (sent_calls.append((url, headers)), _OkResp())[1])
+    srv = NotificationServer()
+    assert srv._send_ntfy("Line1\r\nLine2", "Body", "urgent\n", "https://ntfy.sh/custom-topic", is_retry=True, skip_email=True) is True
+    assert sent_calls[0][0] == "https://ntfy.sh/custom-topic"
+    assert "\n" not in sent_calls[0][1]["Title"] and "\r" not in sent_calls[0][1]["Title"]
+    assert sent_calls[0][1]["Priority"] == "urgent"
+
+    # 3. NewCoinsFactory splits comma-separated string enabled_sources and CoinMarketCapSource rejects whitespace api_key
+    cmc_blank = ncd.CoinMarketCapSource(api_key="   ")
+    assert cmc_blank.is_available() is False
+    monkeypatch.setattr(ncd.CoinMarketCapSource, "refresh", lambda self: None)
+    monkeypatch.setattr(ncd.BinanceNewListingsSource, "refresh", lambda self: None)
+    fac = ncd.NewCoinsFactory(enabled_sources=" coinmarketcap , binance ", cmc_api_key="valid_key")
+    assert set(fac.get_available_sources()) == {"coinmarketcap", "binance"}
+
+    # 4. kalman_trigger._f_env strips inline comments and requires > 0; TriggerEvent.is_executable normalizes string side/action
+    monkeypatch.setenv("TEST_KALMAN_ENV", "0.0025 # comment")
+    assert kt._f_env("TEST_KALMAN_ENV", 0.0005) == 0.0025
+    monkeypatch.setenv("TEST_KALMAN_ENV", "-1.0")
+    assert kt._f_env("TEST_KALMAN_ENV", 0.0005) == 0.0005
+
+    ev = TriggerEvent(action="entry", side="buy", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert ev.is_executable() is True
+    ev_bad = TriggerEvent(action=True, side="buy", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert ev_bad.is_executable() is False
+
+
+
+def test_iteration122_provider_order_id_precision_and_status_safety():
+    """Iteration 122: Verify 64-bit order_id precision (> 2**53), NaN/Inf/float order_id rejection across providers, and _clean_single_order_id string token filtering."""
+    import pytest
+    from providers.base import extract_order_id
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+    from providers.market_api import api
+    from providers.strategy_executor import ProviderError
+
+    # 1. extract_order_id rejects "nan", "inf", "none", "null", non-integer floats, and normalizes integer floats
+    assert extract_order_id({"orderId": "nan"}) is None
+    assert extract_order_id({"orderId": "INF"}) is None
+    assert extract_order_id({"orderId": "null"}) is None
+    assert extract_order_id({"orderId": 123.5}) is None
+    assert extract_order_id({"orderId": 12345.0}) == "12345"
+
+    # 2. HyperliquidProvider._parse_oid preserves 64-bit integer precision (> 2**53)
+    big_oid = 9007199254740993  # 2**53 + 1
+    assert HyperliquidProvider._parse_oid(big_oid, "order_status") == big_oid
+    assert HyperliquidProvider._parse_oid(str(big_oid), "order_status") == big_oid
+    with pytest.raises(ProviderError):
+        HyperliquidProvider._parse_oid(123.5, "order_status")
+    with pytest.raises(ProviderError):
+        HyperliquidProvider._parse_oid("nan", "order_status")
+
+    # 3. MarketApi, KrakenProvider, and T212Provider reject NaN/Inf/non-integer order_id
+    for bad_id in (float("nan"), float("inf"), "nan", "INF", "null", 12.5, {"bad": 1}):
+        with pytest.raises(ProviderError):
+            api.order_status("BTCUSDC", bad_id, provider_name="binance")
+        with pytest.raises(ProviderError):
+            api.cancel_order("BTCUSDC", bad_id, provider_name="binance")
+    kp = KrakenProvider()
+    tp = T212Provider()
+    for bad_str in ("nan", "inf", "none", "null"):
+        with pytest.raises(ProviderError):
+            kp.order_status("HYPEUSD", bad_str)
+        with pytest.raises(ProviderError):
+            kp.cancel_order("HYPEUSD", bad_str)
+        with pytest.raises(ProviderError):
+            tp.order_status("AAPL_US_EQ", bad_str)
+        with pytest.raises(ProviderError):
+            tp.cancel_order("AAPL_US_EQ", bad_str)
+
+
+
 
 

@@ -607,7 +607,12 @@ class KrakenProvider(MarketDataProvider):
             )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        if isinstance(order_id, bool) or not isinstance(order_id, str) or not order_id.strip():
+        if (
+            isinstance(order_id, bool)
+            or not isinstance(order_id, str)
+            or not order_id.strip()
+            or order_id.strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             raise ProviderError(f"order_status {order_id}: invalid order id")
         try:
             res = self._client().query_orders(order_id) or {}
@@ -688,7 +693,12 @@ class KrakenProvider(MarketDataProvider):
         The explicit method name avoids future ambiguity; cancel_order below is the
         StrategyExecutor contract alias.
         """
-        if isinstance(order_id, bool) or not isinstance(order_id, str) or not order_id.strip():
+        if (
+            isinstance(order_id, bool)
+            or not isinstance(order_id, str)
+            or not order_id.strip()
+            or order_id.strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             raise ProviderError(f"cancel_order {order_id}: invalid order id")
         try:
             result = self._client().cancel_order(order_id) or {}

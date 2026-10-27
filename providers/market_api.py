@@ -175,6 +175,9 @@ class BinanceProvider(MarketDataProvider):
             raise ValueError("since_s must be finite and positive") from exc
         if not math.isfinite(since_s) or since_s <= 0:
             raise ValueError("since_s must be finite and positive")
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return None
+        symbol = symbol.strip().upper()
         spec = next(
             (item for item in select_instruments("binance").values() if item.symbol == symbol),
             None,
@@ -606,8 +609,17 @@ class BinanceProvider(MarketDataProvider):
             if raw_tid is None or isinstance(raw_tid, bool):
                 continue
             try:
-                tid_f = float(raw_tid)
-                if not math.isfinite(tid_f) or not tid_f.is_integer() or int(tid_f) != order_id:
+                if isinstance(raw_tid, int):
+                    tid_i = raw_tid
+                elif isinstance(raw_tid, str):
+                    s_tid = raw_tid.strip()
+                    tid_i = int(s_tid) if s_tid.lstrip("+-").isdigit() else int(float(s_tid))
+                else:
+                    tid_f = float(raw_tid)
+                    if not math.isfinite(tid_f) or not tid_f.is_integer():
+                        continue
+                    tid_i = int(tid_f)
+                if tid_i != order_id:
                     continue
             except (TypeError, ValueError, OverflowError):
                 continue
@@ -920,9 +932,30 @@ class MarketApi:
         if not callable(method):
             raise ProviderError(
                 f"{provider.name}: declared order_by_client_id is missing")
-        if client_order_id is None or isinstance(client_order_id, bool) or not str(client_order_id).strip():
+        if (
+            client_order_id is None
+            or isinstance(client_order_id, bool)
+            or not isinstance(client_order_id, (str, int))
+            or not str(client_order_id).strip()
+            or str(client_order_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             raise ProviderError(f"{provider.name}: invalid client_order_id")
-        return method(symbol, str(client_order_id))
+        return method(symbol, str(client_order_id).strip())
+
+    @staticmethod
+    def _clean_order_id_arg(order_id: Any, provider_name: str) -> str:
+        if order_id is None or isinstance(order_id, bool):
+            raise ProviderError(f"{provider_name}: invalid order_id")
+        if isinstance(order_id, float):
+            if not math.isfinite(order_id) or not order_id.is_integer() or order_id <= 0:
+                raise ProviderError(f"{provider_name}: invalid order_id")
+            return str(int(order_id))
+        if not isinstance(order_id, (str, int)):
+            raise ProviderError(f"{provider_name}: invalid order_id")
+        text = str(order_id).strip()
+        if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+            raise ProviderError(f"{provider_name}: invalid order_id")
+        return text
 
     def order_status(self, symbol: str, order_id: str, *,
                      provider_name=None) -> OrderStatus:
@@ -934,10 +967,9 @@ class MarketApi:
         method = getattr(provider, "order_status", None)
         if not callable(method):
             raise ProviderError(f"{provider.name}: declared order_status is missing")
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
-            raise ProviderError(f"{provider.name}: invalid order_id")
+        oid_str = self._clean_order_id_arg(order_id, provider.name)
         try:
-            status = method(symbol, str(order_id))
+            status = method(symbol, oid_str)
         except ProviderError:
             raise
         except Exception as exc:
@@ -958,9 +990,8 @@ class MarketApi:
         method = getattr(provider, "cancel_order", None)
         if not callable(method):
             raise ProviderError(f"{provider.name}: declared cancel_order is missing")
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
-            raise ProviderError(f"{provider.name}: invalid order_id")
-        method(symbol, str(order_id))
+        oid_str = self._clean_order_id_arg(order_id, provider.name)
+        method(symbol, oid_str)
 
     def tracked_order_lifecycle(self, *, provider_name: str, venue=None,
                                 missing_confirmations=2,

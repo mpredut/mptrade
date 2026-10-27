@@ -132,18 +132,22 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
 def _clean_single_order_id(val: Any) -> Optional[str]:
     if val is None or isinstance(val, (bool, dict, set, frozenset)):
         return None
-    if isinstance(val, float) and not math.isfinite(val):
-        return None
+    if isinstance(val, float):
+        if not math.isfinite(val) or not val.is_integer():
+            return None
+        val = int(val)
     if isinstance(val, (list, tuple)):
         for item in val:
             cleaned = _clean_single_order_id(item)
             if cleaned is not None:
                 return cleaned
         return None
-    if not isinstance(val, (str, int, float)):
+    if not isinstance(val, (str, int)):
         return None
     text = str(val).strip()
-    return text if text else None
+    if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+        return None
+    return text
 
 
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:

@@ -784,19 +784,38 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(
                 f"order_by_client_id({symbol},{client_order_id}): {e}") from e
 
+    @staticmethod
+    def _parse_oid(order_id: object, caller: str) -> int:
+        if isinstance(order_id, bool) or order_id is None:
+            raise ProviderError(f"{caller}({order_id}): invalid order id")
+        try:
+            if isinstance(order_id, int):
+                oid = order_id
+            elif isinstance(order_id, str):
+                s_oid = order_id.strip()
+                if s_oid.lstrip("+-").isdigit():
+                    oid = int(s_oid)
+                else:
+                    oid_f = float(s_oid)
+                    if not math.isfinite(oid_f) or not oid_f.is_integer():
+                        raise ProviderError(f"{caller}({order_id}): invalid order id")
+                    oid = int(oid_f)
+            else:
+                oid_f = float(order_id)
+                if not math.isfinite(oid_f) or not oid_f.is_integer():
+                    raise ProviderError(f"{caller}({order_id}): invalid order id")
+                oid = int(oid_f)
+        except ProviderError:
+            raise
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ProviderError(f"{caller}({order_id}): invalid order id") from exc
+        if oid <= 0:
+            raise ProviderError(f"{caller}({order_id}): invalid order id")
+        return oid
+
     def order_status(self, symbol: str, order_id: str):
         self.validate_symbol(symbol)
-        if isinstance(order_id, bool) or order_id is None:
-            raise ProviderError(f"order_status({order_id}): invalid order id")
-        try:
-            oid_f = float(order_id)
-            if not math.isfinite(oid_f) or not oid_f.is_integer():
-                raise ProviderError(f"order_status({order_id}): invalid order id")
-            oid = int(oid_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"order_status({order_id}): invalid order id") from exc
-        if oid <= 0:
-            raise ProviderError(f"order_status({order_id}): invalid order id")
+        oid = self._parse_oid(order_id, "order_status")
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -850,11 +869,8 @@ class HyperliquidProvider(MarketDataProvider):
                 if raw_f_oid is None or isinstance(raw_f_oid, bool):
                     continue
                 try:
-                    f_oid_f = float(raw_f_oid)
-                    if not math.isfinite(f_oid_f) or not f_oid_f.is_integer():
-                        continue
-                    f_oid = int(f_oid_f)
-                except (TypeError, ValueError, OverflowError):
+                    f_oid = self._parse_oid(raw_f_oid, "order_status")
+                except ProviderError:
                     continue
                 if f_oid != oid:
                     continue
@@ -945,17 +961,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         self.validate_symbol(symbol)
-        if isinstance(order_id, bool) or order_id is None:
-            raise ProviderError(f"cancel_order({order_id}): invalid order id")
-        try:
-            oid_f = float(order_id)
-            if not math.isfinite(oid_f) or not oid_f.is_integer():
-                raise ProviderError(f"cancel_order({order_id}): invalid order id")
-            oid = int(oid_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"cancel_order({order_id}): invalid order id") from exc
-        if oid <= 0:
-            raise ProviderError(f"cancel_order({order_id}): invalid order id")
+        oid = self._parse_oid(order_id, "cancel_order")
         pair = self._pair()
         if pair is None:
             raise ProviderError(
