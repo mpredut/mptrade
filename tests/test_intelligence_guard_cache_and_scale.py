@@ -12488,3 +12488,100 @@ def test_iteration119_spot_engine_and_backtest_helpers_safety(tmp_path, monkeypa
     with pytest.raises(ValueError):
         hl_bt.precompute_signal([100.0, 101.0], [1, 2], True, 2, 4, 0.01, 24, 8)
 
+
+def test_iteration120_binance_pagination_ws_trade_and_orchestrator_gateway_safety(monkeypatch, tmp_path):
+    """Iteration 120: Verify bapi_allorders.paginate_my_trades, bapi_ws_normalize.parse_trade_execution_report, watchdog_common.send_ntfy, prune_llm_threads.is_automated_thread, and AutonomousIntentGateway.resolve_instrument/process_intent."""
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi_allorders
+    from binance_api.bapi_ws_normalize import parse_trade_execution_report
+    from orchestratorOS.lib import watchdog_common
+    from orchestratorOS.admin import prune_llm_threads
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    # 1. bapi_allorders.paginate_my_trades symbol validation and limit cap at 1000
+    assert bapi_allorders.paginate_my_trades(object(), "", 1000) == []
+    assert bapi_allorders.paginate_my_trades(object(), True, 1000) == []
+    with pytest.raises(ValueError, match="symbol must be a non-empty string"):
+        bapi_allorders.paginate_my_trades(object(), "  ", 1000, strict=True)
+    captured_kw = {}
+    dummy_api = SimpleNamespace(get_my_trades=lambda **kw: captured_kw.update(kw) or [])
+    bapi_allorders.paginate_my_trades(dummy_api, " btcusdc ", 1000, limit=5000)
+    assert captured_kw["symbol"] == "BTCUSDC"
+    assert captured_kw["limit"] == 1000
+
+    # 2. parse_trade_execution_report does not leak invalid event["i"] into trade_item["orderId"]
+    res = parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "S": "BUY",
+            "t": 999,
+            "i": float("nan"),
+            "L": "50000.0",
+            "l": "0.1",
+            "T": 1700000000000,
+        }
+    )
+    assert res is not None
+    assert res[1]["orderId"] is None
+    res2 = parse_trade_execution_report(
+        {
+            "s": "BTCUSDC",
+            "x": "TRADE",
+            "S": "BUY",
+            "t": 999,
+            "i": -5,
+            "L": "50000.0",
+            "l": "0.1",
+            "T": 1700000000000,
+        }
+    )
+    assert res2 is not None and res2[1]["orderId"] is None
+
+    # 3. watchdog_common.send_ntfy strips inline comments and handles full URLs
+    sent_urls = []
+    monkeypatch.setattr(
+        watchdog_common.AlertNotifier,
+        "send_phone_webhook_batch",
+        lambda evs, webhook_url=None: sent_urls.append(webhook_url) or True,
+    )
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "https://ntfy.sh/custom_err # inline comment")
+    assert watchdog_common.send_ntfy("Title", "Body") is True
+    assert sent_urls[-1] == "https://ntfy.sh/custom_err"
+
+    # 4. prune_llm_threads.is_automated_thread handles non-string title/preview safely
+    assert prune_llm_threads.is_automated_thread(None, True) is False
+    assert prune_llm_threads.is_automated_thread("morning reconciliation", None) is True
+
+    # 5. AutonomousIntentGateway.resolve_instrument rejects empty/boolean symbol/venue and process_intent normalizes mode
+    gw = AutonomousIntentGateway(
+        workspace_dir=str(tmp_path),
+        mode="shadow",
+        max_notional_usd=100.0,
+        min_confidence=0.80,
+        notify_enabled=False,
+    )
+    fake_inst = SimpleNamespace(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", enabled=True)
+    inst_map = {"BINANCE_BTC": fake_inst}
+    assert gw.resolve_instrument("", venue="binance", instruments_map=inst_map) is None
+    assert gw.resolve_instrument(True, venue="binance", instruments_map=inst_map) is None
+    assert gw.resolve_instrument("BTCUSDC", venue=True, instruments_map=inst_map) is None
+    assert gw.resolve_instrument("BTCUSDC", venue="binance", instruments_map=inst_map) is fake_inst
+
+    monkeypatch.setattr(gw, "_get_live_price", lambda _i: 50000.0)
+    out = gw.process_intent(
+        {
+            "intent_id": True,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": None,
+            "confidence": 0.90,
+            "suggested_notional_usd": 50.0,
+        },
+        instruments_map=inst_map,
+        mode=" SHADOW ",
+    )
+    assert out["status"] == "OBSERVED_SHADOW"
+
+

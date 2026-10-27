@@ -175,6 +175,10 @@ def parse_trade_execution_report(
             raw_order_id = int(raw_order_id)
     elif isinstance(raw_order_id, str):
         raw_order_id = raw_order_id.strip() or None
+        if raw_order_id is not None and raw_order_id.startswith("-"):
+            raw_order_id = None
+    if isinstance(raw_order_id, int) and raw_order_id <= 0:
+        raw_order_id = None
     try:
         if raw_trade_id is not None and int(raw_trade_id) < 0:
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
@@ -217,7 +221,7 @@ def parse_trade_execution_report(
     trade_item: dict[str, Any] = {
         "symbol": symbol,
         "id": trade_id,
-        "orderId": raw_order_id if raw_order_id is not None else event.get("i"),
+        "orderId": raw_order_id,
         "price": raw_price,
         "qty": raw_qty,
         "time": int(ts_ms),

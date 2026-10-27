@@ -96,7 +96,9 @@ AUTONOMOUS_PROMPT_PATTERNS = [
 
 def is_automated_thread(title: str, preview: str) -> bool:
     """Check if thread content matches automated LLM reasoning tasks."""
-    combined = f"{title} {preview}".lower()
+    t_str = title if isinstance(title, str) else ""
+    p_str = preview if isinstance(preview, str) else ""
+    combined = f"{t_str} {p_str}".lower()
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
 
 
@@ -122,8 +124,14 @@ def prune_old_cli_threads(
         return (0, 0)
 
     project_bases = [base, resolve_ui_cli_base()]
-    protected = set(exclude_cids or []) | get_active_topic_cids()
-    active_env_cid = os.environ.get("CURRENT_CONVERSATION_ID")
+    if isinstance(exclude_cids, str):
+        excl_set = {exclude_cids.strip()} if exclude_cids.strip() else set()
+    elif isinstance(exclude_cids, (set, list, tuple, frozenset)):
+        excl_set = {str(c).strip() for c in exclude_cids if isinstance(c, str) and c.strip()}
+    else:
+        excl_set = set()
+    protected = excl_set | get_active_topic_cids()
+    active_env_cid = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
     if active_env_cid:
         protected.add(active_env_cid)
 

@@ -100,7 +100,9 @@ def _append_intent_history(intent: Dict[str, Any], entry: Dict[str, Any]) -> Non
 
 def _norm_sym(symbol: str) -> str:
     """Normalize a symbol for comparison by stripping separators and uppercasing."""
-    return (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return ""
+    return symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
 
 
 def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
@@ -373,13 +375,16 @@ class AutonomousIntentGateway:
 
     def reconcile_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Reconciles FAILED intents against execution_audit_*.jsonl if later filled via retry worker."""
-        failed_by_id: Dict[str, Dict[str, Any]] = {
-            str(item.get("intent_id") or item.get("id")): item
-            for item in intents
-            if isinstance(item, dict)
-            and item.get("status") == "FAILED"
-            and (item.get("intent_id") or item.get("id"))
-        }
+        failed_by_id: Dict[str, Dict[str, Any]] = {}
+        for item in intents:
+            if not isinstance(item, dict) or item.get("status") != "FAILED":
+                continue
+            raw_id = item.get("intent_id") if item.get("intent_id") is not None else item.get("id")
+            if raw_id is None or isinstance(raw_id, bool):
+                continue
+            clean_id = str(raw_id).strip()
+            if clean_id:
+                failed_by_id[clean_id] = item
         if not failed_by_id:
             return False
 
@@ -596,7 +601,11 @@ class AutonomousIntentGateway:
         ]
 
         sym_norm = _norm_sym(symbol)
-        venue_norm = venue.strip().lower() if venue else None
+        if not sym_norm:
+            return None
+        if isinstance(venue, bool):
+            return None
+        venue_norm = venue.strip().lower() if isinstance(venue, str) and venue.strip() else None
         req_base = (_split_symbol_assets(sym_norm) or (sym_norm, ""))[0]
 
         def _inst_base_norm(inst: Any) -> str:
@@ -796,12 +805,29 @@ class AutonomousIntentGateway:
         """Validates and processes a single intent according to ``mode`` (default: the gateway mode)."""
         if not isinstance(intent, dict):
             return {}
-        mode = mode or self.mode
-        raw_iid = intent.get("intent_id") or intent.get("id") or f"intent_{int(time.time())}"
-        intent_id = str(raw_iid)
-        decision = str(intent.get("decision", "HOLD")).strip().upper()
-        symbol = str(intent.get("symbol", "")).strip().upper()
-        venue = str(intent.get("venue", "binance")).strip().lower()
+        if isinstance(mode, str) and mode.strip():
+            mode = mode.strip().lower()
+        elif mode is None or mode == "":
+            mode = self.mode
+        else:
+            mode = str(mode)
+        raw_iid = intent.get("intent_id")
+        if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
+            raw_iid = intent.get("id")
+        if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
+            raw_iid = f"intent_{int(time.time())}"
+        intent_id = str(raw_iid).strip()
+        raw_dec = intent.get("decision", "HOLD")
+        decision = "" if isinstance(raw_dec, bool) or raw_dec is None else str(raw_dec).strip().upper()
+        raw_sym = intent.get("symbol", "")
+        symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
+        raw_venue = intent.get("venue", "binance")
+        if isinstance(raw_venue, bool):
+            venue = "__invalid__"
+        elif raw_venue is None or not str(raw_venue).strip():
+            venue = "binance"
+        else:
+            venue = str(raw_venue).strip().lower()
         now = time.time()
 
         if decision not in ("BUY", "SELL"):

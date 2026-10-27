@@ -224,7 +224,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     days_ago = _clean_non_neg_int(days_ago, default=0)
-    limit = _clean_non_neg_int(limit, default=1000) or 1000
+    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
     
     
     all_trades = []
@@ -325,7 +325,7 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     backdays = _clean_non_neg_int(backdays, default=3)
-    limit = _clean_non_neg_int(limit, default=1000) or 1000
+    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
     
     all_trades = []
     
@@ -365,7 +365,7 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     backdays = _clean_non_neg_int(backdays, default=3)
-    limit = _clean_non_neg_int(limit, default=1000) or 1000
+    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
 
     try:
         from . import bapi_allorders as apiorders
@@ -406,7 +406,7 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
-    limit = _clean_non_neg_int(limit, default=1000) or 1000
+    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
     years_to_keep = _clean_non_neg_int(years_to_keep, default=2) or 2
 
     print(f"save_trades_to_file")

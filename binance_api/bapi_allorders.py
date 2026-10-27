@@ -24,6 +24,11 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     The first page uses ``startTime`` and later pages use the previous final fill ID
     plus one until a short page arrives.
     """
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        if strict:
+            raise ValueError("symbol must be a non-empty string")
+        return []
+    symbol = symbol.strip().upper()
     if start_time_ms is None or isinstance(start_time_ms, bool):
         if strict:
             raise ValueError("start_time_ms must be a valid timestamp")
@@ -44,7 +49,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     else:
         try:
             lim_f = float(limit)
-            limit = max(1, int(lim_f)) if math.isfinite(lim_f) and lim_f > 0 else 1000
+            limit = min(1000, max(1, int(lim_f))) if math.isfinite(lim_f) and lim_f > 0 else 1000
         except (TypeError, ValueError, OverflowError):
             limit = 1000
     out = []

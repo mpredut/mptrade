@@ -38,10 +38,11 @@ class BotManager:
             raise KeyError("Missing required env key 'ORCHESTRATOR_VERBOSE_STDOUT' in config.env")
         if "ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC" not in os.environ:
             raise KeyError("Missing required env key 'ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC' in config.env")
-        self.verbose_stdout = os.environ["ORCHESTRATOR_VERBOSE_STDOUT"].strip() in ("1", "true", "True")
+        self.verbose_stdout = os.environ["ORCHESTRATOR_VERBOSE_STDOUT"].strip().lower() in ("1", "true", "yes", "on")
         self.zombie_cooldown_sec = float(os.environ["ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC"])
         if not math.isfinite(self.zombie_cooldown_sec) or self.zombie_cooldown_sec < 0:
             raise ValueError(f"Invalid ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC: {self.zombie_cooldown_sec!r}")
+        self._shutting_down = False
 
     @staticmethod
     def _resolve_venv() -> str:
@@ -84,7 +85,7 @@ class BotManager:
                         except (TypeError, ValueError):
                             hb_stale_sec = 0.0
 
-                        clean_stem = (label or pat).replace(".py", "")
+                        clean_stem = os.path.basename(label or pat).replace(".py", "")
                         log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
 
                         hb_files = []
@@ -302,6 +303,9 @@ class BotManager:
         self.restart_backoff[name] = 0
 
     async def shutdown(self):
+        if getattr(self, "_shutting_down", False):
+            return
+        self._shutting_down = True
         logging.info("Shutting down all bots gracefully...")
         self.running = False
         for name in list(self.processes.keys()):
@@ -346,14 +350,16 @@ class BotManager:
                 continue
 
             if procs_path in changed_paths:
-                old_names = {b["name"] for b in self.bots}
-                self.bots = self.parse_procs_conf()
-                new_names = {b["name"] for b in self.bots}
-                # Cleanly terminate bots removed from manifest
-                for removed in (old_names - new_names):
-                    logging.info(f"Bot {removed} was removed from manifest. Stopping...")
-                    await self.stop_bot(removed)
-                    self.processes.pop(removed, None)
+                new_bots = self.parse_procs_conf()
+                if new_bots:
+                    old_names = {b["name"] for b in self.bots}
+                    self.bots = new_bots
+                    new_names = {b["name"] for b in self.bots}
+                    # Cleanly terminate bots removed from manifest
+                    for removed in (old_names - new_names):
+                        logging.info(f"Bot {removed} was removed from manifest. Stopping...")
+                        await self.stop_bot(removed)
+                        self.processes.pop(removed, None)
 
             for name in list(self.processes.keys()):
                 await self.restart_bot(name)

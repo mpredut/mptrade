@@ -54,9 +54,14 @@ def save_state(state_file, state):
 
 def send_ntfy(title, message):
     # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
-    topic = (os.environ.get("NTFY_TOPIC_ERROR") or "").strip()
-    phone_url = (os.environ.get("PHONE_ALERT_URL") or "").strip()
-    url = (f"https://ntfy.sh/{topic}" if topic else None) or phone_url or None
+    topic = (os.environ.get("NTFY_TOPIC_ERROR") or "").split("#", 1)[0].strip()
+    phone_url = (os.environ.get("PHONE_ALERT_URL") or "").split("#", 1)[0].strip()
+    topic_url = (
+        (topic if topic.startswith(("http://", "https://")) else f"https://ntfy.sh/{topic.lstrip('/')}")
+        if topic
+        else None
+    )
+    url = topic_url or phone_url or None
     if not url:
         print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
         return False
