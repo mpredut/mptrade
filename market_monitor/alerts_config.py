@@ -61,31 +61,32 @@ def load_config(path: str) -> dict:
                 raise ValueError(f"Malformed alert configuration line: {raw.rstrip()!r}")
             key, _, val = line.partition("=")
             key, val = key.strip(), val.strip()
+            key_low = key.lower()
             try:
-                if key == "discover_new_coins":
+                if key_low == "discover_new_coins":
                     normalized = val.strip().lower()
                     if normalized not in {"yes", "no", "true", "false", "1", "0", "on", "off"}:
                         raise ValueError("expected an explicit boolean")
-                    cfg[key] = normalized in {"yes", "true", "1", "on"}
-                elif key in _LIST_KEYS:
-                    norm = _LIST_KEYS[key]
-                    cfg[key] = [norm(x.strip()) for x in val.split(",") if x.strip()]
-                elif key in _SETTING_KEYS:
-                    typ, where = _SETTING_KEYS[key]
+                    cfg["discover_new_coins"] = normalized in {"yes", "true", "1", "on"}
+                elif key_low in _LIST_KEYS:
+                    norm = _LIST_KEYS[key_low]
+                    cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]
+                elif key_low in _SETTING_KEYS:
+                    typ, where = _SETTING_KEYS[key_low]
                     fval = float(val)
                     if not math.isfinite(fval):
                         raise ValueError("setting must be finite")
                     if typ is int and not fval.is_integer():
                         raise ValueError("integer setting must not have fractional part")
                     v = typ(fval)
-                    min_allowed = 0 if key == "cooldown_minutes" else 1
+                    min_allowed = 0 if key_low == "cooldown_minutes" else 1
                     if v < min_allowed:
                         raise ValueError(f"setting must be >= {min_allowed}")
-                    (ac if where == "ac" else cfg)[key] = v
+                    (ac if where == "ac" else cfg)[key_low] = v
                 elif "/" in val:                          # An UP/DOWN threshold.
                     pair = _pair(val)
-                    if key in _BUCKET_ALIAS:
-                        ac[_BUCKET_ALIAS[key]] = pair
+                    if key_low in _BUCKET_ALIAS:
+                        ac[_BUCKET_ALIAS[key_low]] = pair
                     else:                                 # Every other name is a per-coin key.
                         ac["per_coin"][key.upper()] = pair
                 else:
@@ -116,20 +117,35 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
         per = {}
     sym_str = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
     sym_up = sym_str.upper()
+    sym_low = sym_str.lower()
     if isinstance(per.get(sym_str), dict):
         return per[sym_str]
     if isinstance(per.get(sym_up), dict):
         return per[sym_up]
+    if isinstance(per.get(sym_low), dict):
+        return per[sym_low]
     from providers.quantity import resolve_assets
     base = resolve_assets(sym_up)[0]
     if base and isinstance(per.get(base), dict):
         return per[base]
     if base and isinstance(per.get(base.upper()), dict):
         return per[base.upper()]
+    if base and isinstance(per.get(base.lower()), dict):
+        return per[base.lower()]
     if isinstance(is_dynamic, bool):
         dyn_flag = is_dynamic
     elif isinstance(is_dynamic, str):
-        dyn_flag = is_dynamic.strip().lower() in {"1", "true", "yes", "on"}
+        s_dyn = is_dynamic.strip().lower()
+        if s_dyn in {"1", "true", "yes", "on"}:
+            dyn_flag = True
+        elif s_dyn in {"0", "false", "no", "off", "none", ""}:
+            dyn_flag = False
+        else:
+            try:
+                f_dyn = float(s_dyn)
+                dyn_flag = bool(f_dyn) if math.isfinite(f_dyn) else False
+            except (TypeError, ValueError, OverflowError):
+                dyn_flag = False
     elif isinstance(is_dynamic, (int, float)):
         dyn_flag = bool(is_dynamic) if math.isfinite(float(is_dynamic)) else False
     else:

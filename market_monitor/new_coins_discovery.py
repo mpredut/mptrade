@@ -201,9 +201,17 @@ class CoinMarketCapSource(NewCoinsSource):
             if not isinstance(coin, dict):
                 continue
             added_at = coin.get('added_at')
-            if added_at is None or pd.isna(added_at):
+            if added_at is None or isinstance(added_at, bool) or pd.isna(added_at):
                 continue
-            if not hasattr(added_at, 'replace') or isinstance(added_at, str):
+            if isinstance(added_at, (int, float)):
+                if not math.isfinite(float(added_at)) or float(added_at) <= 0:
+                    continue
+                sec = float(added_at) / 1000.0 if float(added_at) > 1e11 else float(added_at)
+                try:
+                    added_at = datetime.fromtimestamp(sec, tz=timezone.utc)
+                except (ValueError, OSError, OverflowError):
+                    continue
+            elif not hasattr(added_at, 'replace') or isinstance(added_at, str):
                 try:
                     added_at = pd.to_datetime(added_at)
                 except Exception:
@@ -351,6 +359,24 @@ class BinanceNewListingsSource(NewCoinsSource):
             if not isinstance(item, dict):
                 continue
             added_at = item.get('added_at')
+            if added_at is None or isinstance(added_at, bool):
+                continue
+            if isinstance(added_at, (int, float)):
+                if not math.isfinite(float(added_at)) or float(added_at) <= 0:
+                    continue
+                sec = float(added_at) / 1000.0 if float(added_at) > 1e11 else float(added_at)
+                try:
+                    added_at = datetime.fromtimestamp(sec)
+                except (ValueError, OSError, OverflowError):
+                    continue
+            elif isinstance(added_at, str):
+                try:
+                    parsed_dt = pd.to_datetime(added_at)
+                    if parsed_dt is None or pd.isna(parsed_dt):
+                        continue
+                    added_at = parsed_dt.to_pydatetime() if hasattr(parsed_dt, 'to_pydatetime') else parsed_dt
+                except Exception:
+                    continue
             if not isinstance(added_at, datetime):
                 continue
             cmp_dt = added_at.replace(tzinfo=None) if getattr(added_at, 'tzinfo', None) is not None else added_at
@@ -437,6 +463,24 @@ class DexScreenerSource(NewCoinsSource):
             if not isinstance(token, dict):
                 continue
             added_at = token.get('added_at')
+            if added_at is None or isinstance(added_at, bool):
+                continue
+            if isinstance(added_at, (int, float)):
+                if not math.isfinite(float(added_at)) or float(added_at) <= 0:
+                    continue
+                sec = float(added_at) / 1000.0 if float(added_at) > 1e11 else float(added_at)
+                try:
+                    added_at = datetime.fromtimestamp(sec)
+                except (ValueError, OSError, OverflowError):
+                    continue
+            elif isinstance(added_at, str):
+                try:
+                    parsed_dt = pd.to_datetime(added_at)
+                    if parsed_dt is None or pd.isna(parsed_dt):
+                        continue
+                    added_at = parsed_dt.to_pydatetime() if hasattr(parsed_dt, 'to_pydatetime') else parsed_dt
+                except Exception:
+                    continue
             if not isinstance(added_at, datetime):
                 continue
             cmp_dt = added_at.replace(tzinfo=None) if getattr(added_at, 'tzinfo', None) is not None else added_at
@@ -537,12 +581,17 @@ class NewCoinsMonitor:
         self.all_symbols = set()
         print(f"[NewCoinsMonitor] Refreshed new coins from sources: {', '.join(self.all_new_coins.keys())}")
         for source_name, coins in self.all_new_coins.items():
+            if not isinstance(coins, (list, tuple)):
+                continue
             for coin in coins:
-                symbol = coin.get('symbol')
-                if symbol and self.is_valid_symbol(symbol, coin.get('name', ''), coin.get('slug', '')):
+                if not isinstance(coin, dict):
+                    continue
+                raw_symbol = coin.get('symbol')
+                symbol = str(raw_symbol).strip().upper() if isinstance(raw_symbol, str) else ""
+                if symbol and self.is_valid_symbol(symbol, str(coin.get('name') or ''), str(coin.get('slug') or '')):
                     self.all_symbols.add(symbol)
                 else:
-                    print(f"[NewCoinsMonitor] Ignored invalid symbol: {symbol} (from {source_name})")
+                    print(f"[NewCoinsMonitor] Ignored invalid symbol: {raw_symbol} (from {source_name})")
                     continue
 
     def register_alerts_callback(self, callback: Callable):
@@ -620,7 +669,14 @@ class NewCoinsMonitor:
                     if new_symbols:
                         print(f"[NewCoinsMonitor] 🆕 New symbols detected: {new_symbols}")
                         for source_name, coins in self.all_new_coins.items():
-                            new_from_source = [c for c in coins if isinstance(c, dict) and c.get('symbol') in new_symbols]
+                            if not isinstance(coins, (list, tuple)):
+                                continue
+                            new_from_source = [
+                                c for c in coins
+                                if isinstance(c, dict)
+                                and isinstance(c.get('symbol'), str)
+                                and c['symbol'].strip().upper() in new_symbols
+                            ]
                             if new_from_source:
                                 auto_add = (source_name.lower() == "coinmarketcap")
                                 self._trigger_alerts(new_from_source, source_name, auto_add=auto_add)

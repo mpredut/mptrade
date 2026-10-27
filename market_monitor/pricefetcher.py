@@ -7,7 +7,7 @@ import time
 import threading
 import requests
 import math
-from state_io import atomic_write_json, read_recovering_previous
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from datetime import datetime
 from typing import Dict, Optional, List, Set, Tuple
 from abc import ABC, abstractmethod
@@ -309,13 +309,22 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
     
     def _load_symbols_from_disk_cache(self, max_age_s: Optional[float] = None) -> bool:
         try:
-            if not os.path.exists(self._cache_file):
+            prev_file = f"{self._cache_file}.previous"
+            if not os.path.exists(self._cache_file) and not os.path.exists(prev_file):
                 return False
-            mtime = os.path.getmtime(self._cache_file)
+            stat_path = self._cache_file if os.path.exists(self._cache_file) else prev_file
+            mtime = os.path.getmtime(stat_path)
             if max_age_s is not None and (time.time() - mtime) > max_age_s:
                 return False
-            with open(self._cache_file, "r", encoding="utf-8") as f:
-                cached = json.load(f)
+
+            def _read_cache(path: str):
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if not isinstance(payload, dict) or not payload:
+                    raise ValueError("CMC cache must be a non-empty dict")
+                return payload
+
+            cached = read_recovering_previous(self._cache_file, _read_cache)
             if not isinstance(cached, dict) or not cached:
                 return False
             cleaned = {
@@ -365,7 +374,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             self._last_refresh = time.time()
             try:
                 os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
-                atomic_write_json(self._cache_file, self._all_listings)
+                save_json_state(self._cache_file, self._all_listings)
             except Exception:
                 pass
         except Exception as e:
@@ -847,9 +856,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             )
             if not was_active and not had_meta:
                 return False
-            if symbol in self.symbols:
+            while symbol in self.symbols:
                 self.symbols.remove(symbol)
-            if symbol in self.original_symbols:
+            while symbol in self.original_symbols:
                 self.original_symbols.remove(symbol)
             self.active_symbols.discard(symbol)
             # Clear auxiliary state too; otherwise ``cleanup_old_symbols`` repeatedly

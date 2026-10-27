@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from typing import Any, Optional
 
 # Import your modules
@@ -119,10 +119,14 @@ def _delivery_state_path() -> Path:
 
 
 def _load_delivery_state(path: Path, today: str) -> dict:
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        state = {}
+    def _read_state(candidate_path: str):
+        with open(candidate_path, "r", encoding="utf-8") as handle:
+            parsed = json.load(handle)
+        if not isinstance(parsed, dict):
+            raise ValueError("delivery state root must be a dict")
+        return parsed
+
+    state = read_recovering_previous(path, _read_state, default={})
     if not isinstance(state, dict) or state.get("date_utc") != today:
         state = {"schema_version": 1, "date_utc": today, "channels": {}}
     if not isinstance(state.get("channels"), dict):
@@ -132,7 +136,7 @@ def _load_delivery_state(path: Path, today: str) -> dict:
 
 def _save_delivery_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(
+    save_json_state(
         path, state, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     )
 
@@ -573,7 +577,8 @@ def pop_due_bulk_batch(
             pass
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
-    if not path.exists():
+    prev_path = path.with_name(path.name + ".previous")
+    if not path.exists() and not prev_path.exists():
         return None
     gate_sec = _common_gate_seconds()
     lock_path = path.with_suffix(path.suffix + ".lock")

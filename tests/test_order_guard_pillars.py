@@ -873,11 +873,104 @@ def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
     assert rep["pillar1_internal"]["trend_survival"]["samples"] == 42
 
 
+def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatch):
+    """Verify alerts_config case-insensitive keys, new_coins_discovery timestamp/string coercion, pricefetcher CMC .previous recovery, and alertnotifiers delivery state .previous recovery."""
+    import json
+    import time
+    from unittest.mock import MagicMock
+    from market_monitor.alerts_config import load_config, resolve
+    from market_monitor.new_coins_discovery import (
+        BinanceNewListingsSource,
+        CoinMarketCapSource,
+        DexScreenerSource,
+        NewCoinsFactory,
+        NewCoinsMonitor,
+    )
+    from market_monitor.pricefetcher import CoinMarketCapPricePlatform
+    from notify_engine.alertnotifiers import _load_delivery_state, _save_delivery_state
 
+    # 1. alerts_config.load_config normalizes mixed-case keys & resolve handles lowercase per_coin keys and float strings
+    conf_file = tmp_path / "alerts.conf"
+    conf_file.write_text(
+        "\n".join([
+            "WATCH = BTC, TAO",
+            "Sources = coinmarketcap",
+            "Discover_New_Coins = ON",
+            "DEFAULT = 4.5 / 8.0",
+            "NEW_COIN = 11.0 / 22.0",
+            "btc = 3.0 / 6.0",
+            "Cooldown_Minutes = 30",
+            "Lookback_Hours = 24",
+            "Max_Monitored = 15",
+            "Max_New_Coins = 5",
+            "New_Coins_Scan_Seconds = 1800",
+            "Price_Scan_Seconds = 60",
+        ]),
+        encoding="utf-8",
+    )
+    cfg = load_config(str(conf_file))
+    assert cfg["discover_new_coins"] is True
+    assert cfg["watch"] == ["BTC", "TAO"]
+    assert cfg["alert_config"]["default"] == {"up_percent": 4.5, "down_percent": 8.0}
+    assert cfg["alert_config"]["dynamic"] == {"up_percent": 11.0, "down_percent": 22.0}
+    assert resolve({"per_coin": {"btc": {"up_percent": 3.0, "down_percent": 6.0}}}, "BTCUSDC", "0.0") == {
+        "up_percent": 3.0,
+        "down_percent": 6.0,
+    }
+    assert resolve(cfg["alert_config"], "SOLUSDC", "1.0") == {"up_percent": 11.0, "down_percent": 22.0}
 
+    # 2. new_coins_discovery sources handle numeric timestamps, ISO strings, and booleans without crashing
+    now_ts = time.time()
+    cmc_src = CoinMarketCapSource.__new__(CoinMarketCapSource)
+    cmc_src._cache = [
+        {"symbol": "CMCA", "added_at": now_ts},
+        {"symbol": "CMCB", "added_at": True},
+    ]
+    assert [c["symbol"] for c in cmc_src.get_new_coins(days_back=7)] == ["CMCA"]
 
+    bin_src = BinanceNewListingsSource.__new__(BinanceNewListingsSource)
+    bin_src._new_listings = [
+        {"symbol": "BINA", "added_at": now_ts * 1000.0},
+        {"symbol": "BINB", "added_at": "2099-01-01T00:00:00Z"},
+        {"symbol": "BINC", "added_at": False},
+    ]
+    assert [c["symbol"] for c in bin_src.get_new_coins(days_back=7)] == ["BINA", "BINB"]
 
+    dex_src = DexScreenerSource.__new__(DexScreenerSource)
+    dex_src._cache = [
+        {"symbol": "DEXA", "added_at": now_ts},
+        {"symbol": "DEXB", "added_at": "2099-01-01"},
+    ]
+    assert [c["symbol"] for c in dex_src.get_new_coins(days_back=7)] == ["DEXA", "DEXB"]
 
+    factory = MagicMock(spec=NewCoinsFactory)
+    factory.get_all_new_coins.return_value = {
+        "coinmarketcap": [{"symbol": "  newx  ", "name": "NewX", "slug": "newx"}, "not_a_dict"],
+        "broken": None,
+    }
+    mon = NewCoinsMonitor(factory=factory)
+    assert "NEWX" in mon.all_symbols
 
+    # 3. CoinMarketCapPricePlatform recovers corrupted cmc_listings_cache.json from .previous
+    cmc_plat = CoinMarketCapPricePlatform(api_key=None)
+    cmc_cache = tmp_path / "cmc_listings_cache.json"
+    cmc_plat._cache_file = str(cmc_cache)
+    cmc_cache.write_text("{corrupt", encoding="utf-8")
+    (tmp_path / "cmc_listings_cache.json.previous").write_text(
+        json.dumps({"tao": {"id": 1, "name": "Bittensor", "slug": "bittensor"}}),
+        encoding="utf-8",
+    )
+    assert cmc_plat._load_symbols_from_disk_cache(max_age_s=86400) is True
+    assert "TAO" in cmc_plat._supported_symbols
 
+    # 4. alertnotifiers._load_delivery_state recovers from .previous when primary is corrupted
+    deliv_path = tmp_path / "notification_delivery_state.json"
+    _save_delivery_state(deliv_path, {"schema_version": 1, "date_utc": "2026-10-27", "channels": {"ntfy": {"sent": 7}}})
+    (tmp_path / "notification_delivery_state.json.previous").write_text(
+        deliv_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    deliv_path.write_text("{corrupt", encoding="utf-8")
+    recovered = _load_delivery_state(deliv_path, "2026-10-27")
+    assert recovered["channels"]["ntfy"]["sent"] == 7
 
