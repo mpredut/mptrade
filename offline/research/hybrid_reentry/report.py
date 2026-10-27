@@ -2,7 +2,26 @@
 """Generate comprehensive comparative report for Hybrid Re-Entry Ablation Suite."""
 
 import json
+import math
 import os
+
+
+def _safe_f(val, default: float | None = 0.0) -> float | None:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False) -> str:
+    f = _safe_f(val, None)
+    if f is None:
+        return "N/A"
+    spec = f"{f:+0.{decimals}f}%" if signed else f"{f:0.{decimals}f}%"
+    return f"**{spec}**" if bold else spec
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -62,9 +81,9 @@ def generate_markdown_report() -> str:
             s = summary[var]
             md.append(
                 f"| **{var}** | {s.get('name', var)} | {s.get('positive_assets', '0/0')} | "
-                f"**{(s.get('median_return_pct') or 0.0):+.2f}%** | {(s.get('worst_return_pct') or 0.0):+.2f}% | "
-                f"{(s.get('best_return_pct') or 0.0):+.2f}% | {(s.get('median_drawdown_pct') or 0.0):.2f}% | "
-                f"{(s.get('max_drawdown_pct') or 0.0):.2f}% | {(s.get('mean_exposure_pct') or 0.0):.2f}% | "
+                f"**{_safe_f(s.get('median_return_pct'), 0.0):+.2f}%** | {_safe_f(s.get('worst_return_pct'), 0.0):+.2f}% | "
+                f"{_safe_f(s.get('best_return_pct'), 0.0):+.2f}% | {_safe_f(s.get('median_drawdown_pct'), 0.0):.2f}% | "
+                f"{_safe_f(s.get('max_drawdown_pct'), 0.0):.2f}% | {_safe_f(s.get('mean_exposure_pct'), 0.0):.2f}% | "
                 f"{s.get('total_cycles') or 0} | {s.get('total_wins') or 0} |"
             )
 
@@ -85,12 +104,9 @@ def generate_markdown_report() -> str:
         for t in ["Test 0", "Test 1", "Test 2", "Test 3", "Test 4"]:
             if t in a_runs:
                 r = a_runs[t]
-                tot_ret = r.get("total_return_pct")
-                max_dd = r.get("max_drawdown_pct")
-                exp = r.get("exposure_pct")
-                ret_row.append(f"{tot_ret:+.2f}%" if tot_ret is not None else "N/A")
-                dd_row.append(f"{max_dd:.2f}%" if max_dd is not None else "N/A")
-                exp_row.append(f"{exp:.2f}%" if exp is not None else "N/A")
+                ret_row.append(_fmt_pct(r.get("total_return_pct"), decimals=2, signed=True))
+                dd_row.append(_fmt_pct(r.get("max_drawdown_pct"), decimals=2))
+                exp_row.append(_fmt_pct(r.get("exposure_pct"), decimals=2))
             else:
                 ret_row.append("N/A")
                 dd_row.append("N/A")
@@ -104,14 +120,10 @@ def generate_markdown_report() -> str:
         md.append("\n| Equity | Test ID | Variant Name | Return (%) | Max DD (%) | Time in Market (%) | Cycles | Win Rate (%) |")
         md.append("|---|---|---|---|---|---|---|---|")
         for eq in equities_data:
-            tot_ret = eq.get("total_return_pct")
-            max_dd = eq.get("max_drawdown_pct")
-            exp = eq.get("exposure_pct")
-            win_r = eq.get("win_rate")
-            r_str = f"**{tot_ret:+.2f}%**" if tot_ret is not None else "N/A"
-            dd_str = f"{max_dd:.2f}%" if max_dd is not None else "N/A"
-            exp_str = f"{exp:.2f}%" if exp is not None else "N/A"
-            win_str = f"{win_r:.1f}%" if win_r is not None else "N/A"
+            r_str = _fmt_pct(eq.get("total_return_pct"), decimals=2, signed=True, bold=True)
+            dd_str = _fmt_pct(eq.get("max_drawdown_pct"), decimals=2)
+            exp_str = _fmt_pct(eq.get("exposure_pct"), decimals=2)
+            win_str = _fmt_pct(eq.get("win_rate"), decimals=1)
             md.append(f"| **{eq.get('asset')}** | {eq.get('test_id')} | {eq.get('variant')} | {r_str} | {dd_str} | {exp_str} | {eq.get('cycles', 0)} | {win_str} |")
 
     md.append("\n---\n")

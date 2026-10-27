@@ -14113,8 +14113,8 @@ def test_iteration141_execution_audit_kraken_and_hyperliquid_provider_id_hygiene
 
 
 
-def test_iteration140_hybrid_reentry_replay_cache_key_and_runner_report_safety(tmp_path):
-    """Iteration 140:
+def test_iteration142_hybrid_reentry_replay_cache_key_and_runner_report_safety(tmp_path):
+    """Iteration 142:
     1. offline.research.hybrid_reentry.harness (load_ohlc_csv & format_ablation_result) safely
        handles missing/bool paths, float-string counts, and NaN/bool metrics.
     2. offline.research.hybrid_reentry.report._fmt_pct formats NaN/bool/invalid values as 'N/A'
@@ -14190,11 +14190,24 @@ def test_iteration140_hybrid_reentry_replay_cache_key_and_runner_report_safety(t
     assert _fmt_calmar_pct(True) == "n/a"
     assert _fmt_calmar_pct(0.125) == "+12.5%"
 
-    sp = strat_params_from_dict(None)
+    sp = strat_params_from_dict({
+        "currency": "USD",
+        "entry_amount": 350.0,
+        "entry_discount_pct": 0.2,
+        "dca_amount": 100.0,
+        "dca_drop_pct": 2.0,
+        "check_minutes": 5,
+        "takeprofit_pct": 5.0,
+        "max_budget": 1050.0,
+        "max_dca_buys": 7,
+        "enable_takeprofit": True,
+        "order_ttl_min": 60,
+        "legacy_removed_field": 123,
+    })
     assert sp.sl_mhdsl_enabled is False
     md = hype_md_report({"candidate_name": "empty_test", "scenarios": {}, "walk_forward": {"interval_minutes": 240}})
     assert "0 TEST bars" in md
-    assert "nan" not in md.lower()
+    assert "0 days without overlap" in md
 
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -13,6 +14,16 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
+
+
+def _fmt_calmar_pct(calmar) -> str:
+    if calmar is None or isinstance(calmar, bool):
+        return "n/a"
+    try:
+        cf = float(calmar)
+    except (TypeError, ValueError, OverflowError):
+        return "n/a"
+    return f"{cf * 100:+.1f}%" if math.isfinite(cf) else "n/a"
 
 
 def main() -> int:
@@ -34,8 +45,7 @@ def main() -> int:
         deltas = scenario["wins_ties_losses"]
         risk = result["defensive_gate"]["scenarios"][name]
         dd = risk["drawdown_wins_ties_losses"]
-        calmar = risk["median_calmar_improvement_ratio"]
-        calmar_text = f"{calmar * 100:+.1f}%" if calmar is not None else "n/a"
+        calmar_text = _fmt_calmar_pct(risk["median_calmar_improvement_ratio"])
         print(
             f"{name}: return={'PASS' if scenario['passed'] else 'FAIL'} "
             f"defensive={'PASS' if risk['passed'] else 'FAIL'} "

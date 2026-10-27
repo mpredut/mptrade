@@ -31,9 +31,31 @@ from strategies.spot_replay import run_replay
 from strategies import spot_engine as strat
 
 
+def _safe_f(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
     """Load OHLC rows as (open, high, low, close) tuples."""
-    rows = []
+    rows: list[tuple[float, float, float, float]] = []
+    if not csv_path or isinstance(csv_path, (bool, int, float)) or not os.path.isfile(str(csv_path)):
+        return rows
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         first = next(reader, None)
@@ -131,23 +153,17 @@ def format_ablation_result(
     capital: float,
 ) -> dict[str, Any]:
     """Format a replay result dict into the canonical ablation summary row."""
-    total_usd = float(res.get("total") or 0.0)
-    valid_cap = (
-        isinstance(capital, (int, float))
-        and not isinstance(capital, bool)
-        and math.isfinite(float(capital))
-        and float(capital) > 0
-    )
-    ret_pct = (total_usd / float(capital) * 100.0) if valid_cap else 0.0
-    max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
-    exposure_pct = float(res.get("exposure_pct") or 0.0)
-    cycles = int(res.get("cycles") or 0)
-    wins = int(res.get("wins") or 0)
-    win_rate = (
-        res["win_rate_pct"]
-        if res.get("win_rate_pct") is not None
-        else (wins / cycles * 100.0 if cycles else 0.0)
-    )
+    res_map = res if isinstance(res, dict) else {}
+    total_usd = _safe_f(res_map.get("total"), 0.0)
+    cap_f = _safe_f(capital, 0.0)
+    ret_pct = (total_usd / cap_f * 100.0) if cap_f > 0 else 0.0
+    max_dd_pct = _safe_f(res_map.get("max_drawdown_pct"), 0.0)
+    exposure_pct = _safe_f(res_map.get("exposure_pct"), 0.0)
+    cycles = max(0, _safe_int(res_map.get("cycles"), 0))
+    wins = max(0, _safe_int(res_map.get("wins"), 0))
+    raw_wr = res_map.get("win_rate_pct")
+    default_wr = (wins / cycles * 100.0) if cycles > 0 else 0.0
+    win_rate = _safe_f(raw_wr, default_wr) if raw_wr is not None else default_wr
     return {
         "asset": asset_name,
         "test_id": test_id,
@@ -158,9 +174,9 @@ def format_ablation_result(
         "exposure_pct": round(exposure_pct, 2),
         "cycles": cycles,
         "wins": wins,
-        "win_rate": round(float(win_rate), 1),
-        "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
-        "fills": int(res.get("fills") or 0),
+        "win_rate": round(win_rate, 1),
+        "profit_factor": round(_safe_f(res_map.get("profit_factor"), 0.0), 2),
+        "fills": max(0, _safe_int(res_map.get("fills"), 0)),
     }
 
 

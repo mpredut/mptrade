@@ -76,7 +76,8 @@ def _load_expected_dataset(manifest_path: Path, interval: int) -> dict:
 
 def strat_params_from_dict(values: dict) -> StratParams:
     """Build StratParams from a stored report, dropping fields that no longer exist."""
-    merged = {"sl_mhdsl_enabled": False, **values}
+    raw = dict(values) if isinstance(values, dict) else {}
+    merged = {"sl_mhdsl_enabled": False, **raw}
     return StratParams.from_dict(merged, warn_dropped=False)
 
 
@@ -281,12 +282,15 @@ def markdown_report(report: dict) -> str:
         paths = "/".join(report["promotion_gate"]["promotion_paths"])
         verdict = f"PROMOTE {paths}" if paths else "DO NOT PROMOTE"
         lines.extend(["## Promotion gate", "", f"Verdict: **{verdict}**", ""])
+    first_scen = next(iter((report.get("scenarios") or {}).values()), None)
+    total_bars = int(((first_scen or {}).get("aggregate") or {}).get("total_test_bars") or 0) if isinstance(first_scen, dict) else 0
+    wf_interval = float(((report.get("walk_forward") or {}).get("interval_minutes")) or 240.0)
     lines.extend([
         "## Interpretation", "",
         "- `Mean USD/fold` uses the same initial budget in every TEST window.",
         "- `Sum reset USD` adds up the folds; it is not compounded equity and does not carry the position across windows.",
-        f"- The {next(iter(report['scenarios'].values()))['aggregate']['total_test_bars']} TEST bars mean "
-        f"{next(iter(report['scenarios'].values()))['aggregate']['total_test_bars'] * report['walk_forward']['interval_minutes'] / 1440:.0f} days without overlap.",
+        f"- The {total_bars} TEST bars mean "
+        f"{total_bars * wf_interval / 1440:.0f} days without overlap.",
         "- Final calibration requires real Kraken distributions for spread, slippage and fee tier.",
         "",
     ])

@@ -86,13 +86,26 @@ SYMBOLS = _LiveSymbols()
 _TREND_TAPE_CACHE: dict[tuple, tuple[bool, ...]] = {}
 
 
-def _series_cache_key(symbol: str, series: list, trend_window_seconds: float) -> tuple:
+def _norm_trend_window_sec(trend_window_seconds: float | None) -> float:
+    import math
+    win_sec = DEFAULT_WINDOW_SECONDS
+    if trend_window_seconds is not None and not isinstance(trend_window_seconds, bool):
+        try:
+            cand_w = float(trend_window_seconds)
+            if math.isfinite(cand_w) and cand_w > 0:
+                win_sec = cand_w
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return win_sec
+
+
+def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
     return (
         str(symbol),
         len(series),
         series[0] if series else None,
         series[-1] if series else None,
-        float(trend_window_seconds),
+        _norm_trend_window_sec(trend_window_seconds),
     )
 
 
@@ -108,21 +121,14 @@ def prewarm_trend_series(
     """Precompute and cache the deterministic is_trend_up boolean sequence for series."""
     if not series:
         return ()
-    key = _series_cache_key(symbol, series, trend_window_seconds)
+    win_sec = _norm_trend_window_sec(trend_window_seconds)
+    key = _series_cache_key(symbol, series, win_sec)
     cached = _TREND_TAPE_CACHE.get(key)
     if cached is not None:
         return cached
     import pricewindow as pw
     import math
     buf = pw.IncrementalTrendBuffer()
-    win_sec = DEFAULT_WINDOW_SECONDS
-    if trend_window_seconds is not None and not isinstance(trend_window_seconds, bool):
-        try:
-            cand_w = float(trend_window_seconds)
-            if math.isfinite(cand_w) and cand_w > 0:
-                win_sec = cand_w
-        except (TypeError, ValueError, OverflowError):
-            pass
     win_size = 200
     sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
     cur_len = 0

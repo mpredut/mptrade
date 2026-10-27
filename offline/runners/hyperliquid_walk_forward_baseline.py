@@ -101,23 +101,35 @@ def main(argv: list[str] | None = None) -> int:
         if k.startswith("HL_") or (k.startswith("STRAT_") and k not in cfg):
             cfg[k] = v
 
-    coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper()
+    def _cfg_f(key: str, default: float) -> float:
+        raw = cfg.get(key)
+        if raw is None or isinstance(raw, bool):
+            return default
+        try:
+            f = float(str(raw).strip() if isinstance(raw, str) else raw)
+            return f if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper() or "HYPE"
     direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()
-    fee_pct = args.fee if args.fee is not None else float(cfg.get("HL_FEE_PCT", "0.035"))
+    if direction not in ("long", "short"):
+        direction = "long"
+    fee_pct = args.fee if args.fee is not None else _cfg_f("HL_FEE_PCT", 0.035)
     if not math.isfinite(fee_pct) or fee_pct < 0:
         parser.error("--fee cannot be negative")
 
     if args.engine == "spot":
         strat_params = SpotStratParams.from_env(env=cfg)
     else:
-        entry = float(cfg.get("STRAT_ENTRY", "350"))
-        dca = float(cfg.get("STRAT_DCA", "100"))
-        disc = float(cfg.get("STRAT_ENTRY_DISCOUNT_PCT", "0.2"))
-        drop = float(cfg.get("STRAT_DCA_DROP_PCT", "2.0"))
-        tp = float(cfg.get("STRAT_TAKEPROFIT_PCT", "5.0"))
-        budget = float(cfg.get("STRAT_MAX_BUDGET", "1050"))
-        maxdca = int(float(cfg.get("STRAT_MAX_DCA_BUYS", "7")))
-        sl = float(cfg.get("STRAT_STOP_LOSS_PCT", "0.0"))
+        entry = _cfg_f("STRAT_ENTRY", 350.0)
+        dca = _cfg_f("STRAT_DCA", 100.0)
+        disc = _cfg_f("STRAT_ENTRY_DISCOUNT_PCT", 0.2)
+        drop = _cfg_f("STRAT_DCA_DROP_PCT", 2.0)
+        tp = _cfg_f("STRAT_TAKEPROFIT_PCT", 5.0)
+        budget = _cfg_f("STRAT_MAX_BUDGET", 1050.0)
+        maxdca = max(0, int(_cfg_f("STRAT_MAX_DCA_BUYS", 7.0)))
+        sl = _cfg_f("STRAT_STOP_LOSS_PCT", 0.0)
 
         strat_params = StratParams(
             currency="USDC",
