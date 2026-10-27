@@ -13,12 +13,12 @@ from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerE
 
 def _f_env(name: str, default: float) -> float:
     try:
-        raw = os.environ.get(name, "").strip()
+        raw = os.environ.get(name, "").split("#", 1)[0].strip()
         if not raw:
             return default
         val = float(raw)
-        return val if math.isfinite(val) else default
-    except ValueError:
+        return val if (math.isfinite(val) and val > 0.0) else default
+    except (ValueError, TypeError, OverflowError):
         return default
 
 

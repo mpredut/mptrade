@@ -42,11 +42,21 @@ class TriggerEvent:
             return False
         try:
             px = float(self.price)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
+        side_norm = (
+            self.side.value
+            if isinstance(self.side, TriggerSide)
+            else ("" if isinstance(self.side, bool) or self.side is None else str(self.side).strip().upper())
+        )
+        action_norm = (
+            self.action.value
+            if isinstance(self.action, TriggerAction)
+            else ("" if isinstance(self.action, bool) or self.action is None else str(self.action).strip().upper())
+        )
         return (
-            self.side in (TriggerSide.BUY, TriggerSide.SELL)
+            side_norm in ("BUY", "SELL")
             and math.isfinite(px)
             and px > 0
-            and self.action in (TriggerAction.ENTRY, TriggerAction.EXIT)
+            and action_norm in ("ENTRY", "EXIT")
         )

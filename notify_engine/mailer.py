@@ -58,7 +58,10 @@ def load_env() -> None:
 def email_mirrored_topics() -> set[str]:
     if not os.environ.get("NTFY_TOPIC_ERROR"):
         load_env()
-    topics = {os.environ.get(f"NTFY_TOPIC_{cat}", "").strip() for cat in EMAIL_MIRRORED_CATEGORIES}
+    topics = {
+        os.environ.get(f"NTFY_TOPIC_{cat}", "").split("#", 1)[0].strip()
+        for cat in EMAIL_MIRRORED_CATEGORIES
+    }
     topics.discard("")
     if not topics:
         topics.update({"ntfy-error-1978", "ntfy-server-1978"})
@@ -66,29 +69,37 @@ def email_mirrored_topics() -> set[str]:
 
 
 def is_email_mirrored(topic: str | None) -> bool:
-    return bool(topic) and topic in email_mirrored_topics()
+    if not topic or not isinstance(topic, str):
+        return False
+    t_clean = topic.strip().rstrip("/")
+    if "/" in t_clean:
+        t_clean = t_clean.rsplit("/", 1)[-1]
+    return bool(t_clean) and t_clean in email_mirrored_topics()
 
 
 def _config() -> dict | None:
     if not os.environ.get("SMTP_USERNAME") or not os.environ.get("ALERT_TO_EMAIL"):
         load_env()
     cfg = {
-        "server": os.environ.get("SMTP_SERVER", "").strip() or "smtp.gmail.com",
-        "port": os.environ.get("SMTP_PORT", "").strip() or "587",
-        "username": os.environ.get("SMTP_USERNAME", "").strip(),
+        "server": os.environ.get("SMTP_SERVER", "").split("#", 1)[0].strip() or "smtp.gmail.com",
+        "port": os.environ.get("SMTP_PORT", "").split("#", 1)[0].strip() or "587",
+        "username": os.environ.get("SMTP_USERNAME", "").split("#", 1)[0].strip(),
         "password": os.environ.get("SMTP_PASSWORD", "").strip(),
-        "to": os.environ.get("ALERT_TO_EMAIL", "").strip(),
+        "to": os.environ.get("ALERT_TO_EMAIL", "").split("#", 1)[0].strip(),
     }
     missing = [k for k in ("username", "password", "to") if not cfg[k]]
     if missing:
         logging.warning(f"Email not configured (missing: {', '.join(missing)})")
         return None
     try:
-        port_i = int(cfg["port"])
+        port_f = float(cfg["port"])
+        if not port_f.is_integer():
+            raise ValueError("port must be integer")
+        port_i = int(port_f)
         if not (1 <= port_i <= 65535):
             raise ValueError("port out of range")
         cfg["port"] = port_i
-    except ValueError:
+    except (ValueError, OverflowError):
         logging.warning(f"Email not configured (SMTP_PORT is not a valid TCP port: {cfg['port']!r})")
         return None
     if "gmail" in cfg["server"]:

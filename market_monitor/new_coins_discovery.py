@@ -121,7 +121,7 @@ class CoinMarketCapSource(NewCoinsSource):
         return True
     
     def is_available(self) -> bool:
-        return self.api_key is not None and len(self.api_key) > 0
+        return isinstance(self.api_key, str) and len(self.api_key.strip()) > 0
     
     def get_supported_symbols(self) -> Set[str]:
         return self._supported_symbols.copy()
@@ -407,12 +407,21 @@ class NewCoinsFactory:
             "binance": BinanceNewListingsSource,
             "dexscreener": DexScreenerSource,
         }
-        if enabled_sources:
+        if enabled_sources is not None:
+            raw_sources = (
+                enabled_sources.split(",")
+                if isinstance(enabled_sources, str)
+                else (enabled_sources if isinstance(enabled_sources, (list, tuple, set, frozenset)) else [])
+            )
             selected_names = []
-            for name in enabled_sources:
-                norm_n = str(name or "").strip().lower()
+            for name in raw_sources:
+                if name is None or isinstance(name, bool):
+                    continue
+                norm_n = str(name).strip().lower()
                 if norm_n in builders and norm_n not in selected_names:
                     selected_names.append(norm_n)
+            if not selected_names and not raw_sources:
+                selected_names = list(builders.keys())
         else:
             selected_names = list(builders.keys())
         self._all_sources: Dict[str, NewCoinsSource] = {

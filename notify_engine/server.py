@@ -273,10 +273,16 @@ class NotificationServer:
         if not is_retry and not skip_email and is_email_mirrored(topic):
             self._send_email(title, message)
         
-        url = f"https://ntfy.sh/{topic}"
+        topic_str = "" if isinstance(topic, bool) else str(topic or "").strip()
+        if topic_str.startswith(("http://", "https://")):
+            url = topic_str
+        else:
+            url = f"https://ntfy.sh/{topic_str.lstrip('/')}"
+        clean_header_title = re.sub(r"[\r\n]+", " ", "" if isinstance(title, bool) else str(title or "Alert")).strip()
+        clean_priority = re.sub(r"[\r\n]+", " ", "" if isinstance(priority, bool) else str(priority or "default")).strip() or "default"
         headers = {
-            "Title": title.encode("utf-8").decode("latin-1", "ignore"),
-            "Priority": priority
+            "Title": clean_header_title.encode("utf-8").decode("latin-1", "ignore"),
+            "Priority": clean_priority
         }
         if self.ntfy_token:
             headers["Authorization"] = f"Bearer {self.ntfy_token}"
@@ -739,35 +745,40 @@ class NotificationServer:
                         success = False
                         if intent == "ntfy_webhook":
                             if "title" in payload:
-                                title = payload.get("title", "")
-                                msg = payload.get("message", "")
+                                raw_title = payload.get("title")
+                                title = "" if isinstance(raw_title, bool) or raw_title is None else str(raw_title)
+                                raw_msg = payload.get("message")
+                                msg = "" if isinstance(raw_msg, bool) or raw_msg is None else str(raw_msg)
                                 if not title.startswith("[DELAYED]"):
                                     title = "[DELAYED] " + title
                                 success = await asyncio.to_thread(
                                     self._send_ntfy,
                                     title,
                                     msg,
-                                    payload.get("priority", "default"),
-                                    payload.get("topic", "test-mptrade"),
+                                    str(payload.get("priority") or "default"),
+                                    str(payload.get("topic") or "test-mptrade"),
                                     True
                                 )
                             elif "alerts" in payload:
                                 success = await asyncio.to_thread(
                                     self.dispatch_alerts,
-                                    payload.get("alerts", []),
+                                    payload.get("alerts") or [],
                                     payload.get("webhook_url"),
                                     ""
                                 )
                             else:
                                 success = True
                         elif intent == "email":
-                            subj = payload.get("subject", "")
+                            raw_subj = payload.get("subject")
+                            subj = "" if isinstance(raw_subj, bool) or raw_subj is None else str(raw_subj)
+                            raw_emsg = payload.get("message")
+                            emsg = "" if isinstance(raw_emsg, bool) or raw_emsg is None else str(raw_emsg)
                             if not subj.startswith("[DELAYED]"):
                                 subj = "[DELAYED] " + subj
                             success = await asyncio.to_thread(
                                 self._send_email,
                                 subj,
-                                payload.get("message", ""),
+                                emsg,
                                 True
                             )
                         else:
