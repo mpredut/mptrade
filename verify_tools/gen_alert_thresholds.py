@@ -35,16 +35,21 @@ def _get(url):
 
 def resolve_id(symbol):
     """Map a symbol to (coingecko_id, symbol, name), preferring an exact symbol match."""
-    q = urllib.parse.quote(str(symbol or "").strip())
+    if symbol is None or isinstance(symbol, bool):
+        return None, None, None
+    sym_clean = str(symbol).strip().upper()
+    if not sym_clean:
+        return None, None, None
+    q = urllib.parse.quote(sym_clean)
     resp = _get(f"https://api.coingecko.com/api/v3/search?query={q}")
     coins = resp.get("coins", []) if isinstance(resp, dict) else []
     coins = [c for c in coins if isinstance(c, dict) and c.get("id") and c.get("symbol")]
     for c in coins:
-        if str(c["symbol"]).upper() == str(symbol).upper():
-            return str(c["id"]), str(c["symbol"]).upper(), str(c.get("name") or "")
+        if str(c["symbol"]).strip().upper() == sym_clean:
+            return str(c["id"]), str(c["symbol"]).strip().upper(), str(c.get("name") or "")
     if coins:
         c = coins[0]
-        return str(c["id"]), str(c["symbol"]).upper(), str(c.get("name") or "")
+        return str(c["id"]), str(c["symbol"]).strip().upper(), str(c.get("name") or "")
     return None, None, None
 
 
@@ -65,11 +70,14 @@ def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
     ):
         return None
     try:
-        win_i = int(window)
+        win_f = float(window)
         pct_f = float(pct)
     except (TypeError, ValueError):
         return None
-    if win_i <= 0 or not math.isfinite(pct_f) or not (0.0 < pct_f <= 100.0):
+    if not math.isfinite(win_f) or win_f <= 0 or not math.isfinite(pct_f) or not (0.0 < pct_f <= 100.0):
+        return None
+    win_i = int(win_f)
+    if win_i <= 0:
         return None
     clean_prices = []
     for p in prices:

@@ -13811,3 +13811,61 @@ def test_iteration136_t212_baseline_kraken_compare_and_portfolio_snapshot_safety
     fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": "false", "qty": 10.0, "dd_pct": -15.0, "unrealized": -150.0, "cost": 1000.0}])
     assert len(fired) == 1
 
+
+def test_iteration137_verify_tools_alert_thresholds_account_facade_and_trade_watch_safety(monkeypatch):
+    """Verify gen_alert_thresholds resolve_id/thresholds_from_prices, verify_account_facade position_from/order_key with quantity/type keys, and watch_trade_decisions.position missing timestamp resilience."""
+    from verify_tools import gen_alert_thresholds as gat
+    from verify_tools import verify_account_facade as vaf
+    from verify_tools import watch_trade_decisions as wtd
+
+    # 1. gen_alert_thresholds.resolve_id strips whitespace for exact match and rejects empty/bool symbols
+    assert gat.resolve_id(None) == (None, None, None)
+    assert gat.resolve_id(True) == (None, None, None)
+    assert gat.resolve_id("   ") == (None, None, None)
+    monkeypatch.setattr(
+        gat,
+        "_get",
+        lambda _url: {
+            "coins": [
+                {"id": "wrapped-bitcoin", "symbol": "wbtc", "name": "Wrapped Bitcoin"},
+                {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"},
+            ]
+        },
+    )
+    assert gat.resolve_id(" btc ") == ("bitcoin", "BTC", "Bitcoin")
+    assert gat.thresholds_from_prices([100.0 + i for i in range(30)], window=float("nan")) is None
+    assert gat.thresholds_from_prices([100.0 + i for i in range(30)], window="10.0") is not None
+
+    # 2. verify_account_facade.position_from and order_key handle both legacy (quantity, type, time) and normalized (qty, side, timestamp) dicts
+    avg, net = vaf.position_from(
+        [{"price": "100.0", "quantity": "2.0", "time": 1700000000000, "type": "BUY"}],
+        [{"price": "110.0", "qty": "0.5", "timestamp": 1700000005000, "side": "SELL"}],
+    )
+    assert avg == pytest.approx(100.0)
+    assert net == pytest.approx(1.5)
+    assert vaf.order_key({"price": "100.0", "quantity": "2.0", "time": 1700000000000, "type": "buy"}) == (
+        1700000000000.0,
+        100.0,
+        2.0,
+        "BUY",
+    )
+
+    # 3. watch_trade_decisions.position handles buy orders with missing/None timestamps without TypeError
+    monkeypatch.setattr(
+        wtd.apiorders,
+        "get_trade_orders",
+        lambda side, _sym, _maxage: (
+            [
+                {"price": 100.0, "qty": 1.0, "timestamp": None},
+                {"price": 120.0, "qty": 1.0, "timestamp": 1700000000000},
+            ]
+            if side == "BUY"
+            else []
+        ),
+    )
+    avg_w, net_w, n_sells_w, last_buy_w = wtd.position("BTCUSDC")
+    assert avg_w == pytest.approx(110.0)
+    assert net_w == pytest.approx(2.0)
+    assert n_sells_w == 0
+    assert last_buy_w == pytest.approx(120.0)
+

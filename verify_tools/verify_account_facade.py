@@ -23,6 +23,12 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from binance_api import bapi as api                  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
+from providers.base import (                         # noqa: E402
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from providers.market_api import api as mkt                     # noqa: E402  (facada singleton)
 import symbols as sym                                 # noqa: E402
 
@@ -54,9 +60,9 @@ def position_from(buy_orders, sell_orders):
     """The get_position_stats logic: avg_buy + net_qty derived from order lists."""
     buys = [o for o in (buy_orders or []) if isinstance(o, dict)]
     sells = [o for o in (sell_orders or []) if isinstance(o, dict)]
-    tq = sum(_f(o.get("qty"), 0.0) for o in buys)
-    tv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in buys)
-    sq = sum(_f(o.get("qty"), 0.0) for o in sells)
+    tq = sum(_f(extract_order_qty(o), 0.0) for o in buys)
+    tv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in buys)
+    sq = sum(_f(extract_order_qty(o), 0.0) for o in sells)
     avg = tv / tq if tq > 0 else 0.0
     return avg, tq - sq
 
@@ -64,9 +70,12 @@ def position_from(buy_orders, sell_orders):
 def order_key(o):
     if not isinstance(o, dict):
         return (0.0, 0.0, 0.0, "")
-    raw_ts = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
-    return (_f(raw_ts, 0.0), _f(o.get("price"), 0.0),
-            _f(o.get("qty"), 0.0), str(o.get("side") or "").upper())
+    return (
+        _f(extract_timestamp_ms(o, default=0), 0.0),
+        _f(extract_order_price(o), 0.0),
+        _f(extract_order_qty(o), 0.0),
+        str(extract_order_side(o) or "").upper(),
+    )
 
 
 def main():

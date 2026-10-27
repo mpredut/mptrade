@@ -64,7 +64,7 @@ def position(symbol, maxage=17 * 24 * 3600):
     tv = sum(extract_order_price(o) * extract_order_qty(o) for o in buys)
     sq = sum(extract_order_qty(o) for o in sells)
     last_buy = (
-        extract_order_price(max(buys, key=lambda o: extract_timestamp_ms(o)))
+        extract_order_price(max(buys, key=lambda o: extract_timestamp_ms(o, default=0) or 0))
         if buys else 0.0
     )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells), last_buy
