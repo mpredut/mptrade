@@ -15175,3 +15175,113 @@ def test_iteration154_t212_market_data_import_and_quantity_filters_base_hygiene(
     assert len(agg) == 3
     assert agg[0]["price"] == 150.0 and agg[0]["qty"] == 2.0
 
+
+def test_iteration155_strategies_state_store_spot_engine_replay_and_rtrade_pair_hygiene(tmp_path):
+    """Verify strategies/state_store.py, spot_engine.py, spot_replay.py, and rtrade_pair.py hardening."""
+    import pytest
+    from providers.strategy_executor import PairPrecision
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    from strategies.spot_engine import StratParams, Strategy
+    from strategies.spot_replay import run_replay
+    from strategies.state_store import JsonStateStore
+
+    # 1. JsonStateStore fail_closed boolean parsing
+    s_nan = JsonStateStore(str(tmp_path / "s.json"), dict, label="T", logger=lambda _: None, fail_closed=float("nan"))  # type: ignore[arg-type]
+    assert s_nan.fail_closed is True
+    s_str = JsonStateStore(str(tmp_path / "s.json"), dict, label="T", logger=lambda _: None, fail_closed="nan")  # type: ignore[arg-type]
+    assert s_str.fail_closed is False
+
+    # 2. Strategy._sanitize_spot_state & Strategy init boolean flags
+    sanitized = Strategy._sanitize_spot_state({
+        "orders": ["not_a_dict", {"txid": "0", "side": "buy", "market": "false"}],
+        "placement_backoffs": ["not_a_dict"],
+        "sl_bounce_state": None,
+    })
+    assert len(sanitized["orders"]) == 1
+    assert sanitized["orders"][0]["txid"] is None
+    assert sanitized["orders"][0]["market"] is False
+    assert sanitized["placement_backoffs"] == {}
+    assert sanitized["sl_bounce_state"] == {}
+
+    params = StratParams(
+        currency="USDC",
+        entry_amount=100.0,
+        entry_discount_pct=1.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=3.0,
+        max_budget=500.0,
+        max_dca_buys=2,
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+    )
+
+    class DummyClient:
+        def pair_precision(self, pair):
+            return PairPrecision(2, 4, 0.001, "BTC")
+
+        def free_balance(self, asset):
+            return 1000.0
+
+    strat = Strategy(
+        DummyClient(),  # type: ignore[arg-type]
+        "BTCUSDC",
+        params,
+        dry_run="false",  # type: ignore[arg-type]
+        observe_only="false",  # type: ignore[arg-type]
+        replay_mode="false",  # type: ignore[arg-type]
+        desktop="false",  # type: ignore[arg-type]
+        initial_state=sanitized,
+        state_dir=str(tmp_path),
+    )
+    assert strat.dry_run is False
+    assert strat.observe_only is False
+    assert strat.replay_mode is False
+    assert strat.desktop is False
+
+    # 3. spot_replay.run_replay with include_decision_trace="false" and intrabar_high="false"
+    res = run_replay(
+        [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)],
+        params,
+        bar_minutes=60.0,
+        include_decision_trace="false",  # type: ignore[arg-type]
+        intrabar_high="false",  # type: ignore[arg-type]
+    )
+    assert "decision_trace" not in res
+
+    # 4. rtrade_pair OrderTicket & PairCoordinator pair_id / snapshot key validation
+    t_b = OrderTicket(order_id="1001.0", side="b", price=10.0, qty=1.0, pair_id="2001.0")
+    assert t_b.order_id == "1001"
+    assert t_b.side == "BUY"
+    assert t_b.pair_id == "2001"
+    with pytest.raises(ValueError):
+        OrderTicket(order_id="1001", side="BUY", price=10.0, qty=1.0, pair_id="0")
+
+    policy = PairPolicy(adjustment_fraction=0.01)
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            DummyClient(),
+            policy,
+            {
+                "pair_id": "0",
+                "qty": 1.0,
+                "start_side": "BUY",
+                "phase": "quoting",
+                "tickets": [],
+            },
+        )
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            DummyClient(),
+            policy,
+            {
+                "pair_id": "valid-pair",
+                "qty": 1.0,
+                "start_side": "BUY",
+                "phase": "quoting",
+                "tickets": [],
+                "snapshots": {"0": {"status": "open", "filled_qty": 0.0, "cost": 0.0, "fee": 0.0}},
+            },
+        )
+

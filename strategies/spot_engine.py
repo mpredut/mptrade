@@ -543,12 +543,12 @@ class Strategy:
         self.pair = pair
         self.p = params
         self.ccy = params.currency
-        self.dry_run = dry_run
-        self.observe_only = bool(observe_only)
+        self.dry_run = _parse_bool_flag(dry_run, True)
+        self.observe_only = _parse_bool_flag(observe_only, False)
         # ``dry_run`` includes paper-live, not only backtests. Replay must be identified
         # separately so the trend signal uses injected bars.
-        self.replay_mode = replay_mode
-        self.desktop = desktop
+        self.replay_mode = _parse_bool_flag(replay_mode, False)
+        self.desktop = _parse_bool_flag(desktop, False)
         self._notifier = notifier
         self.notification_source = notification_source
         self.venue_label = venue_label
@@ -572,7 +572,7 @@ class Strategy:
         self._shadow_prices = deque(maxlen=90)
         self._surge_replay_closes = (
             deque(maxlen=self._surge_window_bars() + 1)
-            if replay_mode and params.surge_guard and params.surge_window_hours > 0
+            if self.replay_mode and params.surge_guard and params.surge_window_hours > 0
             and params.surge_move_pct > 0 else None
         )
         self._max_active_surge_vol = 0.0
@@ -646,21 +646,31 @@ class Strategy:
             if bkey in state:
                 state[bkey] = _parse_bool_flag(state.get(bkey), False)
         if isinstance(state.get("orders"), list):
+            clean_orders = []
             for o in state["orders"]:
                 if not isinstance(o, dict):
                     continue
-                if "txid" in o:
-                    clean_txid = _clean_order_id(o.get("txid"))
-                    if clean_txid is not None:
-                        o["txid"] = clean_txid
+                if "txid" in o and o.get("txid") is not None:
+                    o["txid"] = _clean_order_id(o.get("txid"))
                 if "intent_id" in o:
                     o["intent_id"] = _clean_order_id(o.get("intent_id"))
                 if "market" in o:
                     o["market"] = _parse_bool_flag(o.get("market"), False)
                 if "cancel_requested" in o:
                     o["cancel_requested"] = _parse_bool_flag(o.get("cancel_requested"), False)
+                clean_orders.append(o)
+            state["orders"] = clean_orders
         else:
             state["orders"] = []
+        for dkey in (
+            "placement_backoffs",
+            "sl_bounce_state",
+            "sl_episode_state",
+            "reentry_state",
+            "tp_ride_state",
+        ):
+            if not isinstance(state.get(dkey), dict):
+                state[dkey] = {}
         pi = state.get("pending_intent")
         if isinstance(pi, dict):
             if "order_id" in pi and pi.get("order_id") is not None:
@@ -709,7 +719,7 @@ class Strategy:
         market_val = pending.get("market")
         if market_val is None and isinstance(meta, dict):
             market_val = meta.get("market")
-        txid = _clean_order_id(pending.get("order_id")) or str(pending.get("order_id") or "").strip()
+        txid = _clean_order_id(pending.get("order_id")) or ""
         return {
             "txid": txid,
             "side": str(pending["side"]).lower(),
@@ -726,7 +736,7 @@ class Strategy:
         order_id = _clean_order_id(pending.get("order_id"))
         if not order_id:
             return
-        if not any((_clean_order_id(order.get("txid")) or str(order.get("txid"))) == order_id for order in self.s["orders"]):
+        if not any(_clean_order_id(order.get("txid")) == order_id for order in self.s["orders"]):
             self.s["orders"].append(self._order_from_pending(pending))
         self.s["pending_intent"] = None
         self._save()
@@ -893,6 +903,7 @@ class Strategy:
     # -- Placement -------------------------------------------------------------
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
                market: bool = False) -> bool:
+        market = _parse_bool_flag(market, False)
         # A market trailing/stop exit executes immediately instead of risking a missed
         # sharp drop with a limit order. Backtests fill it at the next bar's open.
         if (

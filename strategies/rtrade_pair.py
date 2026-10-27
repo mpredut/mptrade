@@ -15,6 +15,23 @@ from typing import Callable, Optional, Protocol
 
 
 _MAX_LIMIT_REVISION = 1_000_000
+_INVALID_PAIR_IDS = {"", "0", "0.0", "-0", "+0", "nan", "none", "null", "inf", "-inf", "+inf"}
+
+
+def _clean_pair_id(val: object) -> Optional[str]:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return None
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            return None
+        if val.is_integer():
+            val = int(val)
+    text = str(val).strip()
+    if text.lower() in _INVALID_PAIR_IDS:
+        return None
+    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
+        text = text[:-2]
+    return text if text and text.lower() not in _INVALID_PAIR_IDS else None
 
 
 def _clean_ticket_order_id(val: object) -> Optional[str]:
@@ -76,7 +93,12 @@ class OrderTicket:
         ):
             raise ValueError("ticket rtrade invalid")
         self.order_id = clean_oid
-        self.side = str(self.side).strip().upper()
+        side_u = str(self.side).strip().upper()
+        if side_u == "B":
+            side_u = "BUY"
+        elif side_u == "S":
+            side_u = "SELL"
+        self.side = side_u
         try:
             self.price = float(self.price)
             self.qty = float(self.qty)
@@ -90,6 +112,11 @@ class OrderTicket:
                 or self.price <= 0 or not math.isfinite(self.qty) or self.qty <= 0
                 or not 0 <= self.revision <= _MAX_LIMIT_REVISION):
             raise ValueError("ticket rtrade invalid")
+        if self.pair_id is not None:
+            clean_pid = _clean_pair_id(self.pair_id)
+            if clean_pid is None:
+                raise ValueError("ticket rtrade invalid")
+            self.pair_id = clean_pid
         self.active = _parse_bool_flag(self.active, default=False)
 
 
@@ -324,11 +351,15 @@ class PairCoordinator:
         buy_price, sell_price = quote_prices(
             mid, self.policy.adjustment_fraction, self.policy.price_decimals)
         if pair_id is not None:
-            if isinstance(pair_id, bool) or not str(pair_id).strip():
+            clean_pid = _clean_pair_id(pair_id)
+            if clean_pid is None:
                 raise ValueError("invalid rtrade pair_id")
-            self.pair_id = str(pair_id).strip()
+            self.pair_id = clean_pid
         else:
-            self.pair_id = self.pair_id_factory()
+            clean_pid = _clean_pair_id(self.pair_id_factory())
+            if clean_pid is None:
+                raise ValueError("invalid rtrade pair_id")
+            self.pair_id = clean_pid
         raw_started = self.clock()
         if isinstance(raw_started, bool) or not math.isfinite(float(raw_started)):
             raise ValueError("the rtrade clock must be finite")
@@ -454,15 +485,10 @@ class PairCoordinator:
             raise ValueError("incomplete rtrade checkpoint")
         obj = cls(venue, state["qty"], policy, start_side=state["start_side"],
                   clock=clock, sleeper=sleeper)
-        raw_pair_id = state.get("pair_id")
-        if (
-            raw_pair_id is None
-            or isinstance(raw_pair_id, (bool, dict, list, tuple, set))
-            or not str(raw_pair_id).strip()
-            or str(raw_pair_id).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
-        ):
+        clean_pair_id = _clean_pair_id(state.get("pair_id"))
+        if clean_pair_id is None:
             raise ValueError("invalid rtrade checkpoint pair_id")
-        obj.pair_id = str(raw_pair_id).strip()
+        obj.pair_id = clean_pair_id
         raw_phase = state.get("phase")
         if (
             raw_phase is None
@@ -508,10 +534,13 @@ class PairCoordinator:
         elif not isinstance(raw_snapshots, dict):
             raise ValueError("invalid rtrade checkpoint snapshots")
         try:
-            obj.snapshots = {
-                (_clean_ticket_order_id(order_id) or str(order_id).strip()): OrderSnapshot(**snapshot) if isinstance(snapshot, dict) else (_ for _ in ()).throw(TypeError("snapshot not dict"))
-                for order_id, snapshot in raw_snapshots.items()
-            }
+            cleaned_snaps = {}
+            for order_id, snapshot in raw_snapshots.items():
+                clean_oid = _clean_ticket_order_id(order_id)
+                if clean_oid is None or not isinstance(snapshot, dict):
+                    raise TypeError("invalid snapshot entry")
+                cleaned_snaps[clean_oid] = OrderSnapshot(**snapshot)
+            obj.snapshots = cleaned_snaps
         except TypeError as exc:
             raise ValueError("invalid rtrade checkpoint snapshots") from exc
         clean_stop_oid = _clean_ticket_order_id(state.get("stop_order_id"))
@@ -1034,8 +1063,10 @@ class PairCoordinator:
         if self.phase == "stopping":
             if abs(net) <= 1e-8:
                 self.phase = "hard_stop"
-                self.reason = ("fast_fill_hard_stop" if self.shock
-                               else "inventory_hard_stop")
+                self.reason = self.hard_stop_reason or (
+                    "fast_fill_hard_stop" if self.shock
+                    else "inventory_hard_stop"
+                )
                 return self.outcome()
             stop_snapshot = (
                 None if self.stop_ticket is None

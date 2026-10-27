@@ -118,6 +118,8 @@ def run_replay(
     fill notional/fees; it does not inject capital after losses or cycle resets.
     """
     _validate_replay(ohlc, params, bar_minutes)
+    include_decision_trace = _strat._parse_bool_flag(include_decision_trace, False)
+    intrabar_high = _strat._parse_bool_flag(intrabar_high, False)
     if initial_cash is not None:
         if isinstance(initial_cash, bool):
             raise ValueError("initial_cash must be finite and positive")
@@ -218,6 +220,7 @@ def _run_once(
 
         def traced_place(side, vol, price, kind, amount=0.0, market=False):
             nonlocal cash_refusals
+            market = _strat._parse_bool_flag(market, False)
             if cash is not None and side == "buy":
                 required = round(vol, strategy.vol_dec) * round(price, strategy.price_dec)
                 required *= 1 + fee_model.rate_pct(market=market) / 100

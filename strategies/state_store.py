@@ -8,6 +8,7 @@ duplicate entry.
 from __future__ import annotations
 
 from collections.abc import Callable
+import math
 from state_io import StateReadError, load_json_state, save_json_state
 
 
@@ -23,7 +24,11 @@ class JsonStateStore:
         self.label = label
         self.logger = logger
         if isinstance(fail_closed, str):
-            self.fail_closed = fail_closed.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+            self.fail_closed = fail_closed.strip().lower() not in (
+                "0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"
+            )
+        elif isinstance(fail_closed, float) and not math.isfinite(fail_closed):
+            self.fail_closed = True
         else:
             self.fail_closed = bool(fail_closed)
 
