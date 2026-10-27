@@ -13869,3 +13869,51 @@ def test_iteration137_verify_tools_alert_thresholds_account_facade_and_trade_wat
     assert n_sells_w == 0
     assert last_buy_w == pytest.approx(120.0)
 
+
+def test_iteration138_t212_client_provider_and_order_manager_id_hygiene(monkeypatch):
+    """Verify T212Client._clean_order_id/get_order_status/cancel_order, T212Provider.order_status/cancel_order/place_order, and 212trading.order_manager ID hygiene."""
+    import importlib
+    from types import SimpleNamespace
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+
+    t212_client_mod = importlib.import_module("212trading.t212_client")
+    T212Client = t212_client_mod.T212Client
+
+    # 1. T212Client._clean_order_id normalizes integer floats and rejects sentinel strings / containers
+    assert T212Client._clean_order_id(12345.0) == "12345"
+    assert T212Client._clean_order_id(" 999 ") == "999"
+    for bad in ("nan", "null", "none", "inf", 12.5, ["123"], {"id": 1}, True, None):
+        assert T212Client._clean_order_id(bad) is None
+
+    cli = T212Client("test-key", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    assert cli.get_order_status("nan") is None
+    assert cli.get_order_status(["123"]) is None
+    assert cli.cancel_order("null") is False
+    assert cli.cancel_order({"id": 1}) is False
+
+    # 2. T212Provider.order_status and cancel_order accept integer floats while rejecting sentinel strings / containers
+    seen_ids = []
+    fake_cli = SimpleNamespace(
+        get_order_status=lambda oid: (
+            seen_ids.append(("status", oid))
+            or {"id": oid, "ticker": "NVDA_US_EQ", "status": "FILLED", "filledQuantity": 1.0, "filledValue": 100.0}
+        ),
+        cancel_order=lambda oid: seen_ids.append(("cancel", oid)) or True,
+        place_limit_order=lambda ticker, qty, px, validity="DAY": (200, {"id": 777.0, "status": "NEW"}),
+    )
+    prov = T212Provider(client=fake_cli, live_enabled=True, order_validity="DAY")
+    st = prov.order_status("NVDA_US_EQ", 555.0)  # type: ignore[arg-type]
+    assert st.status == "closed"
+    prov.cancel_order("NVDA_US_EQ", 555.0)  # type: ignore[arg-type]
+    assert seen_ids == [("status", "555"), ("cancel", "555")]
+
+    for bad_oid in ("nan", "null", ["555"], {"id": 555}, True, None):
+        with pytest.raises(ProviderError):
+            prov.order_status("NVDA_US_EQ", bad_oid)  # type: ignore[arg-type]
+        with pytest.raises(ProviderError):
+            prov.cancel_order("NVDA_US_EQ", bad_oid)  # type: ignore[arg-type]
+
+    placed = prov.place_order("NVDA_US_EQ", "BUY", 100.0, 1.0)
+    assert placed["orderId"] == "777"
+

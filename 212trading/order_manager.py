@@ -274,8 +274,8 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       *, now: float, retry_delay: float,
                       desktop: bool) -> str:
     """Return complete, terminal_failed, waiting, or retryable."""
-    order_id = record.get("order_id")
-    if order_id is not None and not isinstance(order_id, bool) and str(order_id).strip():
+    order_id = T212Client._clean_order_id(record.get("order_id"))
+    if order_id is not None:
         info = poll_order_until_terminal(client, order_id, record["ticker"], desktop)
         if info is None:
             return "waiting"
@@ -350,9 +350,10 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
     matches = _matching_active_orders(client, record)
     if matches is None:
         return "waiting"
-    if len(matches) == 1 and matches[0].get("id") is not None and not isinstance(matches[0].get("id"), bool) and str(matches[0].get("id")).strip():
+    matched_oid = T212Client._clean_order_id(matches[0].get("id")) if len(matches) == 1 else None
+    if matched_oid is not None:
         record.update({
-            "order_id": str(matches[0]["id"]).strip(), "lifecycle": "accepted",
+            "order_id": matched_oid, "lifecycle": "accepted",
             "lookup_misses": 0, "last_observed_at": now,
         })
         _persist_marker(record, marker_path)
@@ -582,8 +583,8 @@ def place_order_with_retry(
         log(f"  ! [ORDER] raspuns submit ambiguu ({exc}) — intentia ramane pending")
         return False
 
-    if status in (200, 201) and isinstance(data, dict) and data.get("id") is not None and not isinstance(data.get("id"), bool) and str(data.get("id")).strip():
-        oid = str(data["id"]).strip()
+    oid = T212Client._clean_order_id(data.get("id")) if isinstance(data, dict) else None
+    if status in (200, 201) and oid is not None:
         venue_status = str(data.get("status") or "").upper()
         lifecycle = "filled" if venue_status == "FILLED" else "accepted"
         if venue_status in {"CANCELLED", "CANCELED", "EXPIRED"}:

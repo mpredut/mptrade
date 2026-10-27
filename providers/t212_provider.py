@@ -363,15 +363,10 @@ class T212Provider(MarketDataProvider):
                 return None
             # Instrument.place uses the common orderId key for cooldown. Preserve
             # T212's native id while exposing the mechanical alias on a copied payload.
-            if (
-                isinstance(data, dict)
-                and data.get("id") is not None
-                and not isinstance(data.get("id"), bool)
-                and str(data["id"]).strip()
-                and "orderId" not in data
-            ):
+            oid = extract_order_id(data)
+            if isinstance(data, dict) and oid is not None and "orderId" not in data:
                 data = dict(data)
-                data["orderId"] = str(data["id"]).strip()
+                data["orderId"] = oid
             return data
         except Exception as e:  # noqa: BLE001
             print(f"[T212] place_order {symbol}: {e}")
@@ -409,16 +404,15 @@ class T212Provider(MarketDataProvider):
         return order_id
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        if (
-            order_id is None
-            or isinstance(order_id, bool)
-            or not isinstance(order_id, (str, int))
-            or not str(order_id).strip()
-            or str(order_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
+        clean_oid = (
+            extract_order_id(order_id, default=None)
+            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
+            else None
+        )
+        if clean_oid is None:
             raise ProviderError(f"order_status({order_id}): invalid order id")
         try:
-            raw = self._client().get_order_status(order_id)
+            raw = self._client().get_order_status(clean_oid)
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"order_status({order_id}): {e}") from e
         if raw is False:
@@ -509,18 +503,17 @@ class T212Provider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        if (
-            order_id is None
-            or isinstance(order_id, bool)
-            or not isinstance(order_id, (str, int))
-            or not str(order_id).strip()
-            or str(order_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
+        clean_oid = (
+            extract_order_id(order_id, default=None)
+            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
+            else None
+        )
+        if clean_oid is None:
             raise ProviderError(f"cancel_order({order_id}): invalid order id")
         if not self._orders_live():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")
         try:
-            if self._client().cancel_order(order_id):
+            if self._client().cancel_order(clean_oid):
                 return
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"cancel_order({order_id}): {e}") from e
@@ -528,7 +521,7 @@ class T212Provider(MarketDataProvider):
         # DELETE may return 404 if the order closes between decision and cancellation.
         # Accept idempotence only after confirming a terminal status.
         try:
-            terminal = self.order_status(symbol, order_id).status
+            terminal = self.order_status(symbol, clean_oid).status
         except ProviderError as e:
             raise ProviderError(
                 f"cancel_order({order_id}): T212 did not confirm the cancellation"

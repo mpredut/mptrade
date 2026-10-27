@@ -95,16 +95,16 @@ def capture_submission(submit: Callable[[], object]) -> SubmissionOutcome:
     return SubmissionOutcome("accepted", order_id=order_id, native=native)
 
 
-def extract_order_id(native) -> Optional[str]:
+def extract_order_id(native, default: Optional[str] = None) -> Optional[str]:
     """Extract a venue order ID from normalized and common native response shapes."""
     from .base import extract_order_id as _extract_order_id
-    return _extract_order_id(native, default=None)
+    return _extract_order_id(native, default=default)
 
 
-def extract_orig_qty(native) -> Optional[float]:
+def extract_orig_qty(native, default: Optional[float] = None) -> Optional[float]:
     """Extract the venue-accepted original order quantity from common response shapes."""
     from .base import extract_orig_qty as _extract_orig_qty
-    return _extract_orig_qty(native, default=None)
+    return _extract_orig_qty(native, default=default)
 
 
 # Compatibility alias retained for existing imports.

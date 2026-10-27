@@ -292,6 +292,21 @@ class T212Client:
             "extendedHours": ext_flag,
         })
 
+    @staticmethod
+    def _clean_order_id(order_id: object) -> str | None:
+        if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set, frozenset)):
+            return None
+        if isinstance(order_id, float):
+            if not math.isfinite(order_id) or not order_id.is_integer():
+                return None
+            order_id = int(order_id)
+        if not isinstance(order_id, (str, int)):
+            return None
+        s = str(order_id).strip()
+        if not s or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+            return None
+        return s
+
     def get_historical_order(self, order_id) -> dict | None:
         """Find a terminal order in the first history page.
 
@@ -300,9 +315,9 @@ class T212Client:
         when history is unavailable or not yet updated so strict reconciliation retries
         without assuming a fill.
         """
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        target_oid = self._clean_order_id(order_id)
+        if target_oid is None:
             return None
-        target_oid = str(order_id).strip()
         status, body = http_get(
             f"{self.base}/equity/history/orders?limit=50",
             headers=self._headers(),
@@ -323,8 +338,8 @@ class T212Client:
             if not isinstance(item, dict):
                 continue
             order = item.get("order") if isinstance(item.get("order"), dict) else item
-            raw_oid = order.get("id")
-            if raw_oid is not None and not isinstance(raw_oid, bool) and str(raw_oid).strip() == target_oid:
+            cand_oid = self._clean_order_id(order.get("id"))
+            if cand_oid is not None and cand_oid == target_oid:
                 matches.append((order, item.get("fill")))
         if not matches:
             return False
@@ -382,9 +397,9 @@ class T212Client:
         return result
 
     def get_order_status(self, order_id) -> dict | None:
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        target_oid = self._clean_order_id(order_id)
+        if target_oid is None:
             return None
-        target_oid = str(order_id).strip()
         status, body = http_get(f"{self.base}/equity/orders/{target_oid}", headers=self._headers())
         if status == 404:
             return self.get_historical_order(target_oid)
@@ -405,9 +420,9 @@ class T212Client:
 
     def cancel_order(self, order_id) -> bool:
         """Cancel an order by id and return whether the request was accepted."""
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        target_oid = self._clean_order_id(order_id)
+        if target_oid is None:
             return False
-        target_oid = str(order_id).strip()
         try:
             from .ipo_common import http_request
         except ImportError:
