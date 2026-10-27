@@ -59,8 +59,16 @@ def fetch_candles(sym, rng, interval):
 def simulate(ohlc, P):
     """CLI compatibility wrapper over the same ``Strategy.step`` used live."""
     budget = float(P["budget"])
-    entry_pct = float(P.get("entry_pct") or ((float(P["entry"]) / budget * 100.0) if budget > 0 else 10.0))
-    dca_pct = float(P.get("dca_pct") or ((float(P["dca"]) / budget * 100.0) if budget > 0 else 10.0))
+    entry_pct = float(
+        P["entry_pct"]
+        if P.get("entry_pct") is not None
+        else ((float(P.get("entry", 0.0)) / budget * 100.0) if budget > 0 and P.get("entry") is not None else 10.0)
+    )
+    dca_pct = float(
+        P["dca_pct"]
+        if P.get("dca_pct") is not None
+        else ((float(P.get("dca", 0.0)) / budget * 100.0) if budget > 0 and P.get("dca") is not None else 10.0)
+    )
 
     env_overrides = {
         "STRATEGY_MODE": str(P.get("mode") or os.environ.get("STRATEGY_MODE") or "avg_tp"),

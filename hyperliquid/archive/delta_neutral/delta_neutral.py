@@ -168,7 +168,7 @@ class DeltaNeutral:
         spot_px = self.client.spot_mid(self.p.spot_pair)
         perp_px = self.client.mid(self.p.coin)
         funding = self.client.funding_rate(self.p.coin)
-        if spot_px is None or perp_px is None or funding is None:
+        if spot_px is None or perp_px is None or funding is None or spot_px <= 0 or perp_px <= 0:
             return None
         if self.dry_run:
             spot_qty = self.s["spot_qty"]; perp_szi = self.s["perp_szi"]
@@ -507,8 +507,12 @@ class DeltaNeutral:
         now = time.time()
         hist = self.s.setdefault("funding_hist", [])
         hist.append([now, fhr])
-        self.s["funding_hist"] = [x for x in hist if now - x[0] <= self.p.funding_window_h * 3600]
-        avg_f = sum(x[1] for x in self.s["funding_hist"]) / len(self.s["funding_hist"])
+        self.s["funding_hist"] = [x for x in hist if now - x[0] <= max(0.0, self.p.funding_window_h) * 3600]
+        avg_f = (
+            sum(x[1] for x in self.s["funding_hist"]) / len(self.s["funding_hist"])
+            if self.s["funding_hist"]
+            else fhr
+        )
 
         if self.s["status"] == "flat":
             if now < self.s.get("cooldown_until", 0):

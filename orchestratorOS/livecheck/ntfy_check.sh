@@ -16,26 +16,31 @@ AUTH_HDR=()
 check_url() {
     local url="$1" label="$2"
     [ -z "$url" ] && { echo "$label: (topic missing from .env/config.env)"; return; }
-    curl -s -m 15 "${AUTH_HDR[@]}" "$url/json?poll=1&since=$SINCE" | "$PYTHON_BIN" -c "
+    curl -s -m 15 "${AUTH_HDR[@]}" "$url/json?poll=1&since=$SINCE" | "$PYTHON_BIN" -c '
 import sys, json, datetime
+label = sys.argv[1] if len(sys.argv) > 1 else ""
 alarms, info = [], 0
 for line in sys.stdin:
     line = line.strip()
     if not line: continue
     try: m = json.loads(line)
     except Exception: continue
-    if m.get('event') != 'message': continue
-    title = (m.get('title') or ''); body = (m.get('message') or '')[:100]
-    ts = datetime.datetime.fromtimestamp(m.get('time', 0)).strftime('%d %H:%M')
-    low = (title + ' ' + body).lower()
-    if any(k in low for k in ('dead','hung','stopped','stale','error','fail','crash','absent')):
-        alarms.append(f'{ts} [{title}] {body}')
+    if not isinstance(m, dict) or m.get("event") != "message": continue
+    title = str(m.get("title") or ""); body = str(m.get("message") or "")[:100]
+    try:
+        raw_t = m.get("time")
+        ts = datetime.datetime.fromtimestamp(float(raw_t) if raw_t is not None and not isinstance(raw_t, bool) else 0.0).strftime("%d %H:%M")
+    except Exception:
+        ts = "--:--"
+    low = (title + " " + body).lower()
+    if any(k in low for k in ("dead","hung","stopped","stale","error","fail","crash","absent")):
+        alarms.append(f"{ts} [{title}] {body}")
     else:
         info += 1
-print(f'$label: informative={info} ALARMS={len(alarms)}')
+print(f"{label}: informative={info} ALARMS={len(alarms)}")
 for a in alarms[-8:]:
-    print('  !! ' + a)
-"
+    print("  !! " + a)
+' "$label"
 }
 
 check_url "$PHONE_URL" "crypto-alerts"

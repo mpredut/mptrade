@@ -12,6 +12,7 @@ import json
 import math
 import statistics
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -22,8 +23,11 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
     q_int = urllib.parse.quote(str(interval or "").strip(), safe="")
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{q_sym}?range={q_rng}&interval={q_int}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            data = json.loads(r.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return [], {}
     chart = data.get("chart") if isinstance(data, dict) else None
     chart = chart if isinstance(chart, dict) else {}
     res = (chart.get("result") or [None])[0]
@@ -93,12 +97,12 @@ def main() -> int:
     print(f"  spike max (lo->hi azi): {pct(hi,lo):+.1f}%")
     print(f"\n  --- bare 5min ({len(intra)} bare) ---")
     print(f"  miscare medie/bar : {statistics.mean(abs_rets):.2f}%   (mediana {statistics.median(abs_rets):.2f}%)")
-    print(f"  bar 5m p90        : {sorted(abs_rets)[int(len(abs_rets)*0.9)]:.2f}%   max {max(abs_rets):.2f}%")
+    print(f"  bar 5m p90        : {sorted(abs_rets)[min(len(abs_rets) - 1, int(len(abs_rets)*0.9))]:.2f}%   max {max(abs_rets):.2f}%")
     print(f"  range mediu/bar   : {statistics.mean(bar_rng):.2f}%  (ATR-5m aprox)")
     if dips:
         ds = sorted(dips)
         print(f"\n  --- retrageri (dip-uri) azi: {len(dips)} ---")
-        print(f"  dip median {statistics.median(dips):.2f}%  | p75 {ds[int(len(ds)*0.75)]:.2f}%  | max {max(dips):.2f}%")
+        print(f"  dip median {statistics.median(dips):.2f}%  | p75 {ds[min(len(ds) - 1, int(len(ds)*0.75))]:.2f}%  | max {max(dips):.2f}%")
     if daily:
         dr = [pct(b[2], b[3]) for b in daily[-10:]]
         dchg = [abs(pct(b[4], b[1])) for b in daily[-10:]]

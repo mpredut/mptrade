@@ -23,7 +23,12 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HL_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
+_ROOT_DIR = os.path.dirname(_HL_DIR)
+for _p in (_HERE, _HL_DIR, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 def rank(universe, ctxs, min_vol_usd, top=20):
@@ -76,7 +81,9 @@ def main() -> int:
     meta, ctxs = client.info.meta_and_asset_ctxs()
     rows = rank(meta["universe"], ctxs, args.min_vol, args.top)
     spot_ok = _spot_tokens(client)
-    ap_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
+    ap_config = os.path.join(_HERE, "config.env")
+    if not os.path.exists(ap_config):
+        ap_config = os.path.join(_HL_DIR, "config.env")
     from botcore import parse_dotenv
     configured_coin = os.environ.get("HL_COIN") or parse_dotenv(ap_config).get("HL_COIN")
     if not configured_coin:

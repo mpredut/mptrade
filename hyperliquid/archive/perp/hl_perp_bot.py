@@ -22,6 +22,13 @@ import os
 import sys
 import time
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HL_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
+_ROOT_DIR = os.path.dirname(_HL_DIR)
+for _p in (_HERE, _HL_DIR, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from common import (
     load_env_stack, log, now_str, required_env, required_int_env,
     required_bool_env, single_instance,

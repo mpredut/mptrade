@@ -16,8 +16,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-
 import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HL_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
+_ROOT_DIR = os.path.dirname(_HL_DIR)
+for _p in (_HERE, _HL_DIR, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from common import load_env_stack, log, single_instance, required_bool_env
 from hl_client import HLClient, HLError
@@ -32,7 +38,7 @@ def _cmd_status(client: HLClient, params: DNParams) -> int:
     perp_px  = client.mid(coin) or 0.0
     fhr      = client.funding_rate(coin) or 0.0
     pos      = client.position_full(coin) or {}
-    ms       = client.margin_summary()
+    ms       = client.margin_summary() or {}
     szi      = float(pos.get("szi") or 0)
     entry    = float(pos.get("entryPx") or 0)
     liq      = float(pos.get("liquidationPx") or 0)
@@ -50,7 +56,7 @@ def _cmd_status(client: HLClient, params: DNParams) -> int:
     log(f"  SPOT (long) : {spot_qty:.4f} {params.spot_token}  (~${spot_qty*spot_px:,.2f})  px={spot_px:.4f}")
     log(f"  PERP (short): {szi:.4f} {coin}  entry={entry:.4f}  uPnL={upnl:+.2f}  (~${perp_notional:,.2f})  px={perp_px:.4f}")
     log(f"  NET DELTA   : {delta:+.4f} {coin}  ({'HEDGE OK' if abs(delta)*perp_px < 5 else 'IMBALANCED — rebalance!'})")
-    if liq > 0 and szi < 0:
+    if liq > 0 and szi < 0 and perp_px > 0:
         dist = (liq - perp_px)/perp_px*100
         flag = "⚠ PERICOL" if dist < params.liq_alert_pct else "ok"
         log(f"  LIQUIDATION : the short at {liq:.4f}  (the price can still rise {dist:.1f}% before that)  [{flag}]")

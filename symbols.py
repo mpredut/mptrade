@@ -65,14 +65,23 @@ def validate_params(order_type, symbol, price = 1, qty = 1):
 def get_binance_symbols(keysearch):
     try:
         exchange_info = _get_client().get_exchange_info()
-        print(f"Number of symbols on Binance: {len(exchange_info['symbols'])}")
+        if not isinstance(exchange_info, dict) or not isinstance(exchange_info.get("symbols"), list):
+            print("Number of symbols on Binance: 0")
+            return
+        raw_symbols = exchange_info["symbols"]
+        print(f"Number of symbols on Binance: {len(raw_symbols)}")
 
-        symbols = [s['symbol'] for s in exchange_info['symbols']]  # Extract symbols only.
+        all_symbols = [
+            str(s["symbol"])
+            for s in raw_symbols
+            if isinstance(s, dict) and s.get("symbol")
+        ]  # Extract symbols only.
         if keysearch:
-            matching_symbols = [symbol for symbol in symbols if keysearch.upper() in symbol]
+            key_up = str(keysearch).upper()
+            matching_symbols = [symbol for symbol in all_symbols if key_up in symbol]
             print(f"Symbols containing '{keysearch}': {matching_symbols}")
         else:
-            print(f"All symbols: {symbols}")
+            print(f"All symbols: {all_symbols}")
     
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -81,9 +90,11 @@ def get_binance_symbols(keysearch):
 def get_quantity_precision(symbol):
     try:
         info = _get_client().get_symbol_info(symbol)
-        for filter in info['filters']:
-            if filter['filterType'] == 'LOT_SIZE':
-                step_size = float(filter['stepSize'])
+        if not isinstance(info, dict) or not isinstance(info.get("filters"), list):
+            return 8
+        for f in info["filters"]:
+            if isinstance(f, dict) and f.get("filterType") == "LOT_SIZE":
+                step_size = float(f.get("stepSize") or 0)
                 if step_size <= 0 or not math.isfinite(step_size):
                     break
                 precision = max(0, int(round(-math.log10(step_size), 0)))
