@@ -74,9 +74,24 @@ def ensure_dir(path: str):
 
 def min_max_scale(arr: np.ndarray):
     """Scale to [0, 1] without sklearn and return (scaled, minimum, maximum)."""
-    if len(arr) == 0:
+    if arr is None or isinstance(arr, (bool, str, bytes)) or len(arr) == 0:
         return np.array([], dtype=np.float64), 0.0, 0.0
-    arr_f = np.asarray(arr, dtype=np.float64)
+    try:
+        arr_f = np.asarray(arr, dtype=np.float64)
+    except (TypeError, ValueError):
+        clean = []
+        for x in arr:
+            if x is None or isinstance(x, bool):
+                continue
+            try:
+                xf = float(x)
+                if math.isfinite(xf):
+                    clean.append(xf)
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if not clean:
+            return np.array([], dtype=np.float64), 0.0, 0.0
+        arr_f = np.asarray(clean, dtype=np.float64)
     vmin = float(np.min(arr_f))
     vmax = float(np.max(arr_f))
     if not (math.isfinite(vmin) and math.isfinite(vmax)):
@@ -198,8 +213,18 @@ def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarr
 # 5) LSTM
 # ==========================
 
+def _safe_pos_int(val, default: int = 1) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+        return max(1, int(vf)) if (math.isfinite(vf) and vf >= 1.0) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def make_sequences(series: np.ndarray, window: int):
-    win = max(1, int(window)) if not isinstance(window, bool) else 1
+    win = _safe_pos_int(window, 1)
     if len(series) <= win:
         return np.empty((0, win, 1), dtype=np.float64), np.empty((0,), dtype=np.float64)
     X, y = [], []
@@ -232,10 +257,10 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     if not ok:
         return None, f"LSTM indisponibil: {tf_or_err}"
 
-    window = max(1, int(window)) if not isinstance(window, bool) else 20
-    epochs = max(1, int(epochs)) if not isinstance(epochs, bool) else 50
-    batch_size = max(1, int(batch_size)) if not isinstance(batch_size, bool) else 16
-    horizon = max(1, int(horizon)) if not isinstance(horizon, bool) else 20
+    window = _safe_pos_int(window, 20)
+    epochs = _safe_pos_int(epochs, 50)
+    batch_size = _safe_pos_int(batch_size, 16)
+    horizon = _safe_pos_int(horizon, 20)
 
     if len(prices) < window + 5:
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."

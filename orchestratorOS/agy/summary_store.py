@@ -51,11 +51,12 @@ def checkpoint_db(path: str) -> bool:
 
 def drop_wal_sidecars(path: str, *, force: bool = False) -> None:
     """Remove -wal and -shm sidecar files next to ``path`` (refuses non-empty -wal unless ``force=True``)."""
+    force_b = _as_bool_flag(force, False)
     for ext in ("-wal", "-shm"):
         sidecar = path + ext
         if os.path.exists(sidecar):
             try:
-                if not force and ext == "-wal" and os.path.getsize(sidecar) > 0:
+                if not force_b and ext == "-wal" and os.path.getsize(sidecar) > 0:
                     logger.warning("refusing to drop non-empty %s", sidecar)
                     continue
                 os.remove(sidecar)
@@ -160,23 +161,35 @@ def read_annotation_title(cli_base: str, cid: str) -> str:
 
 def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
+    clean_cids = _clean_cid_set([cid])
+    if not clean_cids:
+        return
+    clean_cid = next(iter(clean_cids))
+    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
     annot_dir = os.path.join(cli_base, "annotations")
     os.makedirs(annot_dir, exist_ok=True)
-    path = os.path.join(annot_dir, f"{cid}.pbtxt")
+    path = os.path.join(annot_dir, f"{clean_cid}.pbtxt")
     preserved = []
     if os.path.exists(path):
         with open(path, encoding="utf-8", errors="ignore") as f:
             preserved = [ln.rstrip("\n") for ln in f if ln.strip() and not ln.lstrip().startswith("title:")]
-    esc = title.replace("\\", "\\\\").replace('"', '\\"')
+    esc = title_str.replace("\\", "\\\\").replace('"', '\\"')
     content = ("\n".join([f'title:"{esc}"'] + preserved) + "\n").encode("utf-8")
     atomic_write_bytes(path, content)
 
 
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     """Insert/replace a summary row with the CLI source cleared and ``title`` applied (column + proto)."""
-    row = dict(row, title=title, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
+    if not isinstance(row, dict):
+        return
+    clean_cids = _clean_cid_set([row.get("conversation_id")])
+    if not clean_cids:
+        return
+    clean_cid = next(iter(clean_cids))
+    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+    row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
-        row["raw_summary"] = summary_ui_visible(row["raw_summary"], title)
+        row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)
     conn = sqlite3.connect(summaries_db(cli_base))
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
@@ -196,10 +209,10 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
             pb_path = os.path.join(cli_base, name)
             if os.path.exists(pb_path):
                 with open(pb_path, "rb") as f:
-                    buf, updated = replace_summary_entry(f.read(), row["conversation_id"], raw_sum)
+                    buf, updated = replace_summary_entry(f.read(), clean_cid, raw_sum)
                 if updated:
                     atomic_write_bytes(pb_path, buf)
-    write_annotation_title(cli_base, row["conversation_id"], title)
+    write_annotation_title(cli_base, clean_cid, title_str)
 
 
 def read_summary_row(cli_base: str, cid: str) -> Optional[dict]:
@@ -233,7 +246,7 @@ def _as_bool_flag(val: Any, default: bool = False) -> bool:
     if val is None:
         return default
     if isinstance(val, str):
-        return val.strip().lower() in {"1", "true", "yes", "on"}
+        return val.strip().lower() in {"1", "1.0", "true", "yes", "on"}
     if isinstance(val, (int, float)):
         return bool(val) if math.isfinite(float(val)) else default
     return default

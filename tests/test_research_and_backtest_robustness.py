@@ -4013,5 +4013,51 @@ def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_
     assert surv["symbol"] == "NONEXISTENT_SYM_XYZ"
 
 
+def test_batch20_visuals_summary_store_and_composite_hardening(tmp_path):
+    import numpy as np
+    from intelligence.composite import CompositeMarketIntelligence
+    from orchestratorOS.agy import summary_store as ss
+    from visuals import drawprices, tradeall_observe
+
+    # 1. tradeall_observe.format_state_text handles string/float trend labels
+    txt = tradeall_observe.format_state_text(
+        {"current_price": 65000, "final_trend": "UP", "trend_fast": "-1.0", "kalman_trend": "HOLD"},
+        "HEADER",
+    )
+    assert "trend:     UP" in txt
+    assert "fast:      DOWN" in txt
+    assert "kalman:    FLAT" in txt
+
+    # 2. drawprices.min_max_scale and make_sequences tolerate None/bad-string/float-string inputs
+    scaled_none, vmin_n, vmax_n = drawprices.min_max_scale(None)  # type: ignore[arg-type]
+    assert len(scaled_none) == 0 and vmin_n == 0.0 and vmax_n == 0.0
+    scaled, vmin, vmax = drawprices.min_max_scale([10.0, "bad_str", "20.0", 30.0])  # type: ignore[arg-type]
+    assert len(scaled) == 3 and vmin == 10.0 and vmax == 30.0
+    X, y = drawprices.make_sequences(np.array([1.0, 2.0, 3.0, 4.0, 5.0]), "2.0")  # type: ignore[arg-type]
+    assert X.shape == (3, 2, 1) and len(y) == 3
+
+    # 3. summary_store.drop_wal_sidecars rejects force="false" / NaN, and write_annotation_title sanitizes newlines/None
+    db_file = tmp_path / "test.db"
+    wal_file = tmp_path / "test.db-wal"
+    db_file.write_bytes(b"db")
+    wal_file.write_bytes(b"non-empty-wal")
+    ss.drop_wal_sidecars(str(db_file), force="false")  # type: ignore[arg-type]
+    assert wal_file.exists()
+    ss.drop_wal_sidecars(str(db_file), force=float("nan"))  # type: ignore[arg-type]
+    assert wal_file.exists()
+    ss.write_annotation_title(str(tmp_path), "  cid123  ", "Line1\nLine2")
+    assert ss.read_annotation_title(str(tmp_path), "cid123") == "Line1 Line2"
+    ss.write_annotation_title(str(tmp_path), "../bad", "Title")
+    assert not (tmp_path / "annotations" / "bad.pbtxt").exists()
+
+    # 4. CompositeMarketIntelligence.evaluate normalizes string/NaN price into finite float
+    cmi = CompositeMarketIntelligence()
+    ev1 = cmi.evaluate("BTCUSDC", "64500.5", ts=1000.0)  # type: ignore[arg-type]
+    assert ev1.price == 64500.5
+    ev2 = cmi.evaluate("BTCUSDC", float("nan"), ts=1001.0)
+    assert ev2.price == 0.0 and ev2.can_execute is False
+
+
+
 
 

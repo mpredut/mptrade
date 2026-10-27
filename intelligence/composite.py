@@ -243,7 +243,10 @@ class CompositeMarketIntelligence:
 
         # 5. External Funding Rate Crowding Guard (GI_FUNDING)
         if derivatives_telemetry is not None and not _is_bypassed("GI_FUNDING", "funding_guard", "fundingcrowdingguard"):
-            fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
+            try:
+                fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry, now=now)
+            except TypeError:
+                fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
             if not fund_dec.allowed:
                 return fund_dec
             if fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -378,6 +381,15 @@ class CompositeMarketIntelligence:
                     now_ts = tf
             except (TypeError, ValueError):
                 pass
+        price_clean = 0.0
+        if price is not None and not isinstance(price, bool):
+            try:
+                pf = float(price)
+                if math.isfinite(pf) and pf > 0.0:
+                    price_clean = pf
+            except (TypeError, ValueError, OverflowError):
+                price_clean = 0.0
+        price = price_clean
         triggered_events: List[TriggerEvent] = []
 
         # 1. Kalman trigger

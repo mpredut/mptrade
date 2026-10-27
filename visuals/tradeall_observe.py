@@ -186,10 +186,11 @@ def sample_current_prices(symbols):
         return
     if not isinstance(snapshot, dict):
         return
+    items_map = snapshot.get("items") if isinstance(snapshot.get("items"), dict) else snapshot
 
     pending = []
     for symbol in symbols:
-        entry = snapshot.get(symbol)
+        entry = items_map.get(symbol)
         if not isinstance(entry, dict) or "current_price" not in entry:
             continue
         raw_ts = entry.get("ts", time.time())
@@ -243,6 +244,10 @@ def load_price_samples(symbol, days_back):
     return ts_list, px_list
 
 
+def _cachedb_dir() -> str:
+    return os.environ.get("MPTRADE_CACHEDB_DIR", os.path.join(ROOT, "cachedb"))
+
+
 def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     """Read Cache24 ``[[ts_ms, price], ...]`` entries from cachedb.
 
@@ -250,7 +255,7 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     weekly caller reads only their ``max_bytes`` tail. The legacy JSON format
     used by the live 24-hour cache remains supported unchanged.
     """
-    path = os.path.join(ROOT, "cachedb", filename)
+    path = os.path.join(_cachedb_dir(), filename)
     if not os.path.exists(path):
         return []
     if filename.endswith(".jsonl"):
@@ -289,7 +294,7 @@ def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
     The approximately 40 MB file covers about eleven months. Its final
     ``max_bytes`` span weeks, avoiding a full scan on every cycle.
     """
-    path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+    path = os.path.join(_cachedb_dir(), f"cache_sparse_price_{symbol}.jsonl")
     if not os.path.exists(path):
         return []
     entries = []
@@ -752,6 +757,18 @@ def format_state_text(entry, header, pending=None, exposure=None):
     def _t_label(val):
         if val is None or isinstance(val, bool):
             return "?"
+        if isinstance(val, (int, float)):
+            if not math.isfinite(float(val)):
+                return "?"
+            return trend_map.get(int(val), "?")
+        if isinstance(val, str):
+            s = val.strip().upper()
+            if s in ("UP", "BULL", "+1", "1", "1.0"):
+                return "UP"
+            if s in ("DOWN", "BEAR", "-1", "-1.0"):
+                return "DOWN"
+            if s in ("FLAT", "HOLD", "NEUTRAL", "0", "0.0"):
+                return "FLAT"
         return trend_map.get(val, "?")
 
     text = (
@@ -795,7 +812,8 @@ def build_analysis_state_text(symbol, active_summary=None):
     try:
         with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
             raw_trend = json.load(f)
-            entry = raw_trend.get(symbol) if isinstance(raw_trend, dict) else None
+            trend_map = raw_trend.get("items") if isinstance(raw_trend, dict) and isinstance(raw_trend.get("items"), dict) else raw_trend
+            entry = trend_map.get(symbol) if isinstance(trend_map, dict) else None
     except (OSError, json.JSONDecodeError):
         entry = None
     if not isinstance(entry, dict) or not entry:
@@ -803,7 +821,8 @@ def build_analysis_state_text(symbol, active_summary=None):
     try:
         with open(get_kalman_state_path(), "r", encoding="utf-8") as f:
             raw_sh = json.load(f)
-            sh = raw_sh.get(symbol) if isinstance(raw_sh, dict) else None
+            sh_map = raw_sh.get("items") if isinstance(raw_sh, dict) and isinstance(raw_sh.get("items"), dict) else raw_sh
+            sh = sh_map.get(symbol) if isinstance(sh_map, dict) else None
         if isinstance(sh, dict) and sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
     except (OSError, json.JSONDecodeError):
@@ -990,6 +1009,10 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
 # -- Static, serverless HTML with day/week toggle and auto-refresh. ------------
 
 def write_html(symbols, live_minutes=60, active_summary=None):
+    live_min = _safe_float(live_minutes, 60.0)
+    if live_min <= 0.0:
+        live_min = 60.0
+    live_minutes = live_min
     blocks = []
     for s in symbols:
         blocks.append(f'''
