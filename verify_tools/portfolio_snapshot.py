@@ -51,8 +51,8 @@ def _load_state(pair: str) -> dict | None:
 def _kraken_price(pair: str):
     saved_path = list(sys.path)
     try:
-        if KRAKEN_DIR not in sys.path:
-            sys.path.insert(0, KRAKEN_DIR)
+        if sys.path[:1] != [KRAKEN_DIR]:
+            sys.path[:] = [KRAKEN_DIR] + [p for p in sys.path if p != KRAKEN_DIR]
         from kraken_client import KrakenClient
         return KrakenClient.public().last_price(pair)
     except Exception:  # noqa: BLE001 — the snapshot must not die on one missed price
@@ -76,8 +76,8 @@ def _is_paper(val) -> bool:
         return val
     if isinstance(val, str):
         return val.strip().lower() in ("1", "true", "yes", "on")
-    if isinstance(val, int):
-        return val != 0
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else False
     return False
 
 

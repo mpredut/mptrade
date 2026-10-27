@@ -4384,6 +4384,69 @@ def test_batch24_execution_evaluation_and_financial_benchmark_hardening():
         aggregate_financial_windows([], initial_capital=1000.0, regime_threshold_pct="bad")  # type: ignore[arg-type]
 
 
+def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
+    from types import SimpleNamespace
+    from offline.backtests.datasets import align_previous_values, drop_incomplete_last_bar, normalize_record
+    from strategies.spot_replay import align_spot_interval_params
+    from strategies.rtrade_pair import PairPolicy, anchored_exit_price, quote_prices
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+    import verify_tools.portfolio_snapshot as ps
+
+    # 1. datasets: normalize_record / drop_incomplete_last_bar / align_previous_values
+    with pytest.raises(ValueError, match="missing required field"):
+        normalize_record({"timestamp": 1000, "open": 1, "high": 2, "low": 1})
+    with pytest.raises(ValueError, match="cannot be None or boolean"):
+        normalize_record({"timestamp": 1000, "open": None, "high": 2, "low": 1, "close": 1.5})
+    with pytest.raises(ValueError, match="now_timestamp"):
+        drop_incomplete_last_bar([], interval_minutes=60, now_timestamp=True)  # type: ignore[arg-type]
+    aligned = align_previous_values(
+        [1000, 2000],
+        [{"timestamp": "1000.0", "close": "4.5"}, {"timestamp": 1000, "close": "5.0"}],
+    )
+    assert aligned == [5.0, 5.0]
+
+    # 2. spot_replay: align_spot_interval_params supports SimpleNamespace and sanitizes bool regime_min_samples
+    ns_params = SimpleNamespace(
+        trend_interval=60,
+        tp_trail_vol_interval=60,
+        dca_vol_interval=60,
+        regime_min_samples=True,
+    )
+    aligned_p = align_spot_interval_params(ns_params, 240)
+    assert aligned_p.trend_interval == 240
+    assert isinstance(aligned_p.regime_min_samples, int) and not isinstance(aligned_p.regime_min_samples, bool)
+
+    # 3. rtrade_pair: PairPolicy, quote_prices, anchored_exit_price accept numeric strings and shorthand sides
+    pol = PairPolicy(adjustment_fraction="0.01", price_decimals="4")  # type: ignore[arg-type]
+    assert pol.price_decimals == 4
+    bid, ask = quote_prices("100.0", "0.01", decimals="2")  # type: ignore[arg-type]
+    assert (bid, ask) == (99.0, 101.0)
+    exit_px = anchored_exit_price("S", "100.0", "100.5", "0.01", "0.0115", decimals=2)  # type: ignore[arg-type]
+    assert exit_px >= 101.16
+
+    # 4. PositionExitConfig normalizes string booleans/floats and PositionExitManager strips symbol keys
+    cfg = PositionExitConfig(
+        tp_trend_ride_enabled="false",  # type: ignore[arg-type]
+        allow_external_cache="0",  # type: ignore[arg-type]
+        gain_threshold="0.08",  # type: ignore[arg-type]
+    )
+    assert cfg.tp_trend_ride_enabled is False
+    assert cfg.allow_external_cache is False
+    assert cfg.gain_threshold == pytest.approx(0.08)
+
+    pem = PositionExitManager(config=cfg)
+    snap = PositionSnapshot(symbol=" BTCUSDT ", current_price="100.0", avg_buy_price="90.0", trend_up=True)  # type: ignore[arg-type]
+    assert snap.symbol == "BTCUSDT"
+    snap.current_price = "108.0"  # type: ignore[assignment]
+    dec = pem.evaluate_take_profit(snap)
+    assert dec.should_exit is True
+
+    # 5. verify_tools/portfolio_snapshot._is_paper handles NaN float safely
+    assert ps._is_paper(float("nan")) is False
+    assert ps._is_paper(1.0) is True
+
+
+
 
 
 

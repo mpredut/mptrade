@@ -75,7 +75,8 @@ def main() -> None:
         print(f"FORWARD: {bars} bars ({bars * 4 / 24:.1f} days), Buy&Hold: {fwd.get('buyhold_pct')}%\n")
         print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
         print("  " + "-" * 63)
-        for k, v in (fwd.get("configs") or {}).items():
+        fwd_cfgs = fwd.get("configs") if isinstance(fwd.get("configs"), dict) else {}
+        for k, v in fwd_cfgs.items():
             if not isinstance(v, dict):
                 continue
             print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")
@@ -87,7 +88,8 @@ def main() -> None:
         print(f"FULL WINDOW (Kraken OHLC): {bars} bars ({bars * 4 / 24:.1f} days), Buy&Hold: {win.get('buyhold_pct')}%\n")
         print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
         print("  " + "-" * 63)
-        for k, v in (win.get("configs") or {}).items():
+        win_cfgs = win.get("configs") if isinstance(win.get("configs"), dict) else {}
+        for k, v in win_cfgs.items():
             if not isinstance(v, dict):
                 continue
             print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")
@@ -108,7 +110,8 @@ def main() -> None:
                     print(f"FORWARD: {bars60} bars ({bars60 / 24:.1f} days), Buy&Hold: {fwd60.get('buyhold_pct')}%\n")
                     print(f"  {'Configuration':<26} {'Net %':>8} {'Total %':>9} {'MaxDD %':>9} {'Cycles':>7}")
                     print("  " + "-" * 63)
-                    for k, v in (fwd60.get("configs") or {}).items():
+                    fwd60_cfgs = fwd60.get("configs") if isinstance(fwd60.get("configs"), dict) else {}
+                    for k, v in fwd60_cfgs.items():
                         if not isinstance(v, dict):
                             continue
                         print(f"  {k:<26} {_f(v.get('net_pct')):>8.2f} {_f(v.get('total_pct')):>9.2f} {_f(v.get('maxdd_pct')):>9.2f} {_i(v.get('cycles')):>7}")

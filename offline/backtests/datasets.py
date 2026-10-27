@@ -20,9 +20,13 @@ REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
 
 def normalize_record(record: Mapping) -> dict:
     """Normalise a row into the common OHLC contract."""
+    if not isinstance(record, Mapping):
+        raise ValueError("record must be a mapping")
     for field in REQUIRED_FIELDS:
-        if isinstance(record[field], bool):
-            raise ValueError(f"{field} cannot be a boolean")
+        if field not in record:
+            raise ValueError(f"missing required field: {field}")
+        if record[field] is None or isinstance(record[field], bool):
+            raise ValueError(f"{field} cannot be None or boolean")
     raw_ts = record["timestamp"]
     if isinstance(raw_ts, int):
         timestamp = raw_ts
@@ -30,16 +34,26 @@ def normalize_record(record: Mapping) -> dict:
         try:
             timestamp = int(str(raw_ts).strip())
         except (TypeError, ValueError):
-            ts_f = float(raw_ts)
+            try:
+                ts_f = float(raw_ts)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid timestamp: {raw_ts!r}") from exc
             if not math.isfinite(ts_f) or not ts_f.is_integer():
                 raise ValueError(f"invalid timestamp: {raw_ts!r}")
             timestamp = int(ts_f)
+    try:
+        open_f = float(record["open"])
+        high_f = float(record["high"])
+        low_f = float(record["low"])
+        close_f = float(record["close"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid OHLC numeric value in record: {record!r}") from exc
     return {
         "timestamp": timestamp,
-        "open": float(record["open"]),
-        "high": float(record["high"]),
-        "low": float(record["low"]),
-        "close": float(record["close"]),
+        "open": open_f,
+        "high": high_f,
+        "low": low_f,
+        "close": close_f,
     }
 
 
@@ -131,6 +145,10 @@ def drop_incomplete_last_bar(
     """
     if isinstance(interval_minutes, bool) or interval_minutes <= 0:
         raise ValueError("interval_minutes must be positive")
+    if isinstance(now_timestamp, bool) or now_timestamp is None:
+        raise ValueError("now_timestamp must be an integer")
+    if isinstance(regular_session_start, bool) or isinstance(regular_session_end, bool):
+        raise ValueError("regular session bounds cannot be boolean")
     rows = [normalize_record(record) for record in records]
     if not rows:
         return rows
@@ -171,13 +189,18 @@ def align_previous_values(
     transform: Callable[[float], float] | None = None,
 ) -> list[float]:
     """Align as-of without lookahead: the last value with timestamp <= target."""
-    source = sorted(
-        (
-            int(record["timestamp"]),
-            float(record[value_field]),
-        )
-        for record in source_records
-    )
+    by_ts: dict[int, float] = {}
+    for record in source_records:
+        raw_ts = record["timestamp"]
+        raw_val = record[value_field]
+        if isinstance(raw_ts, bool) or isinstance(raw_val, bool) or raw_ts is None or raw_val is None:
+            raise ValueError("source_records cannot contain None or boolean timestamp/value")
+        ts_i = int(float(raw_ts))
+        val_f = float(raw_val)
+        if not math.isfinite(val_f):
+            raise ValueError(f"non-finite source value at timestamp {ts_i}")
+        by_ts[ts_i] = val_f
+    source = sorted(by_ts.items(), key=lambda item: item[0])
     if not source:
         raise ValueError("the source series for alignment cannot be empty")
     convert = transform or (lambda value: value)
@@ -185,6 +208,8 @@ def align_previous_values(
     source_index = 0
     current: float | None = None
     for timestamp in target_timestamps:
+        if isinstance(timestamp, bool) or timestamp is None:
+            raise ValueError("target_timestamps cannot contain None or boolean")
         target = int(timestamp)
         while source_index < len(source) and source[source_index][0] <= target:
             current = convert(source[source_index][1])

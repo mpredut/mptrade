@@ -495,18 +495,27 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
         getattr(params, "trend_interval", itv) == itv
         and getattr(params, "tp_trail_vol_interval", itv) == itv
         and getattr(params, "dca_vol_interval", itv) == itv
-        and cur_min_samples == clamped_min_samples
+        and getattr(params, "regime_min_samples", 20) == clamped_min_samples
+        and not isinstance(getattr(params, "regime_min_samples", 20), bool)
     ):
         return params
+    import copy
     import dataclasses
 
-    return dataclasses.replace(
-        params,
-        trend_interval=itv,
-        tp_trail_vol_interval=itv,
-        dca_vol_interval=itv,
-        regime_min_samples=clamped_min_samples,
-    )
+    if dataclasses.is_dataclass(params):
+        return dataclasses.replace(
+            params,
+            trend_interval=itv,
+            tp_trail_vol_interval=itv,
+            dca_vol_interval=itv,
+            regime_min_samples=clamped_min_samples,
+        )
+    cloned = copy.copy(params)
+    cloned.trend_interval = itv
+    cloned.tp_trail_vol_interval = itv
+    cloned.dca_vol_interval = itv
+    cloned.regime_min_samples = clamped_min_samples
+    return cloned
 
 
 def prewarm_trend_series(

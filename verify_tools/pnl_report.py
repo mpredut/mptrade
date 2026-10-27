@@ -95,7 +95,7 @@ def per_bot(symbol):
         if cqq <= 0:
             continue
         a = g[_bot(o.get("clientOrderId", ""))]
-        side = str(o.get("side") or "").upper()
+        side = extract_order_side(o)
         if side == "BUY":
             a["bq"] += eq; a["bv"] += cqq
         elif side == "SELL":

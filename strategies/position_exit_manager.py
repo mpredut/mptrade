@@ -192,6 +192,8 @@ class PositionSnapshot(PriceGeometrySnapshot):
     window_move_pct: Optional[float] = None
 
     def __post_init__(self) -> None:
+        if self.symbol is not None and not isinstance(self.symbol, bool):
+            self.symbol = str(self.symbol).strip()
         for attr in ("current_price", "avg_buy_price"):
             val = getattr(self, attr, None)
             if isinstance(val, str):
@@ -339,6 +341,8 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     vol_source: str = "default"
 
     def __post_init__(self) -> None:
+        if self.symbol is not None and not isinstance(self.symbol, bool):
+            self.symbol = str(self.symbol).strip()
         for attr in ("current_price", "last_sell_price", "post_sell_peak", "post_sell_trough"):
             val = getattr(self, attr, None)
             if isinstance(val, str):
@@ -452,6 +456,79 @@ class PositionExitConfig:
     reentry_post_stop_cooldown_sec: float = 0.0  # Minimum stabilization cooldown (seconds) after STOP before re-entry
     allow_external_cache: bool = True          # False in replay/backtests to enforce strict simulation determinism
 
+    def __post_init__(self) -> None:
+        _bool_defaults = {
+            "sl_bounce_ratchet_enabled": True,
+            "sl_structural_break_enabled": True,
+            "smart_sl_enabled": True,
+            "tp_trend_ride_enabled": True,
+            "tp_ratchet_enabled": True,
+            "hard_tp_enabled": False,
+            "fast_profit_guard_enabled": False,
+            "surge_guard_enabled": False,
+            "slow_grind_guard_enabled": False,
+            "reentry_enabled": True,
+            "reentry_ratchet_enabled": True,
+            "reentry_bear_gate_enabled": True,
+            "reentry_hybrid_enabled": False,
+            "reentry_peak_relative": False,
+            "allow_external_cache": True,
+        }
+        for b_attr, b_def in _bool_defaults.items():
+            setattr(self, b_attr, _parse_bool_flag(getattr(self, b_attr, b_def), b_def))
+        _float_defaults = {
+            "lost_threshold": 0.05,
+            "sl_disaster_buffer_ratio": 0.30,
+            "sl_disaster_vol_multiplier": 0.85,
+            "sl_disaster_buffer_min_pct": 0.008,
+            "sl_disaster_buffer_max_pct": 0.15,
+            "sl_trend_defer_max_sec": 220.0,
+            "sl_bounce_min_recovery_pct": 0.004,
+            "sl_bounce_pullback_pct": 0.003,
+            "sl_bounce_ratchet_k": 0.50,
+            "sl_bounce_min_pullback_pct": 0.0015,
+            "gain_threshold": 0.07,
+            "tp_profit_floor_ratio": 0.50,
+            "tp_profit_floor_min_pct": 0.008,
+            "tp_pullback_pct": 0.006,
+            "tp_stagnation_max_sec": 1080.0,
+            "tp_ratchet_base_trail": 0.006,
+            "tp_ratchet_min_trail": 0.0025,
+            "tp_ratchet_k": 0.10,
+            "hard_tp_pct": 0.20,
+            "hard_tp_frac": 0.50,
+            "hard_tp_cooldown_sec": 3600.0,
+            "are_close_tolerance_pct": 1.0,
+            "fast_profit_mult": 2.0,
+            "fast_profit_window_sec": 60.0,
+            "fast_profit_drop_pct": 0.40,
+            "surge_gain_pct": 18.0,
+            "surge_exit_pullback_pct": 3.5,
+            "surge_move_pct": 25.0,
+            "slow_grind_min_days": 7.0,
+            "slow_grind_min_gain_pct": 15.0,
+            "slow_grind_flash_window_sec": 900.0,
+            "slow_grind_flash_drop_pct": 1.5,
+            "slow_grind_structural_drop_pct": 2.5,
+            "reentry_sl_bounce_pct": 0.015,
+            "reentry_drop_pct": 0.020,
+            "reentry_pullback_pct": 0.015,
+            "reentry_bear_bounce_pct": 0.010,
+            "reentry_ttl_hours": 0.0,
+            "reentry_tolerance_pct": 0.05,
+            "reentry_post_stop_cooldown_sec": 0.0,
+        }
+        for f_attr, f_def in _float_defaults.items():
+            raw = getattr(self, f_attr, f_def)
+            if raw is None or isinstance(raw, bool):
+                setattr(self, f_attr, f_def)
+            else:
+                try:
+                    vf = float(raw)
+                    setattr(self, f_attr, vf if math.isfinite(vf) else f_def)
+                except (TypeError, ValueError, OverflowError):
+                    setattr(self, f_attr, f_def)
+
 def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
     try:
         from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
@@ -551,13 +628,14 @@ class PositionExitManager:
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
         """Clear tracking state for a single symbol or all symbols."""
-        if symbol:
-            self.sl_bounce_state.pop(symbol, None)
-            self.sl_episode_state.pop(symbol, None)
-            self.tp_ride_state.pop(symbol, None)
-            self.reentry_state.pop(symbol, None)
-            self._last_popped_reentry_state.pop(symbol, None)
-            self.hard_tp_last.pop(symbol, None)
+        if symbol is not None and not isinstance(symbol, bool) and str(symbol).strip():
+            sym_clean = str(symbol).strip()
+            self.sl_bounce_state.pop(sym_clean, None)
+            self.sl_episode_state.pop(sym_clean, None)
+            self.tp_ride_state.pop(sym_clean, None)
+            self.reentry_state.pop(sym_clean, None)
+            self._last_popped_reentry_state.pop(sym_clean, None)
+            self.hard_tp_last.pop(sym_clean, None)
         else:
             self.sl_bounce_state.clear()
             self.sl_episode_state.clear()
@@ -568,17 +646,19 @@ class PositionExitManager:
 
     def get_state(self, symbol: str) -> Dict[str, Any]:
         """Return the current active states for a symbol."""
+        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
         return {
-            "sl_bounce_state": self.sl_bounce_state.get(symbol),
-            "sl_episode_state": self.sl_episode_state.get(symbol),
-            "tp_ride_state": self.tp_ride_state.get(symbol),
-            "reentry_state": self.reentry_state.get(symbol),
-            "hard_tp_last": self.hard_tp_last.get(symbol),
+            "sl_bounce_state": self.sl_bounce_state.get(sym_clean),
+            "sl_episode_state": self.sl_episode_state.get(sym_clean),
+            "tp_ride_state": self.tp_ride_state.get(sym_clean),
+            "reentry_state": self.reentry_state.get(sym_clean),
+            "hard_tp_last": self.hard_tp_last.get(sym_clean),
         }
 
     def reset_sl_episode(self, symbol: str) -> None:
         """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
-        self.sl_episode_state.pop(symbol, None)
+        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        self.sl_episode_state.pop(sym_clean, None)
 
     def _lock_episode_disaster_floor(
         self,
@@ -753,6 +833,8 @@ class PositionExitManager:
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
+        current_price = float(snapshot.current_price)
+        buy_price = float(snapshot.avg_buy_price)
 
         price_decrease = snapshot.loss_ratio
 
@@ -1146,6 +1228,8 @@ class PositionExitManager:
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
+        current_price = float(snapshot.current_price)
+        buy_price = float(snapshot.avg_buy_price)
 
         price_increase = snapshot.gain_ratio
 
@@ -1670,6 +1754,8 @@ class PositionExitManager:
         """Unified entrypoint evaluating position exits in strict mirror sequence."""
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
+        current_price = float(snapshot.current_price)
+        buy_price = float(snapshot.avg_buy_price)
 
         # Check Hard TP (Spike Exit) first
         if self.config.hard_tp_enabled and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct):
