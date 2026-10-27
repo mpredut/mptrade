@@ -14,15 +14,28 @@ import time
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+    sys.path.append(_HERE)
 
-try:
-    from hyperliquid.common import log
-    from hyperliquid.hl_client import HLClient
-except ImportError:
-    from common import log
-    from hl_client import HLClient
+
+def _load_hl_local(name: str):
+    mod = sys.modules.get(name)
+    mod_file = getattr(mod, "__file__", None) if mod is not None else None
+    if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == _HERE):
+        return mod
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, f"{name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+log = _load_hl_local("common").log
+HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
 INTERVALS = {

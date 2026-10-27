@@ -4641,3 +4641,53 @@ def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
     assert tobs.build_trend_regions(None, 100.0, 200.0) == []
     assert tobs.build_trend_regions([{"ts": 120.0, "state": "UP"}, {"bad": 1}], 100.0, 200.0) == [(120.0, 200.0, "UP")]
 
+
+def test_batch29_cross_venue_module_collision_and_syspath_isolation():
+    import importlib.util
+    import os
+    import sys
+    from shadow_runtime import prepare_shadow_runtime
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(root_dir, "hyperliquid")
+    t212_dir = os.path.join(root_dir, "212trading")
+    gate_common_path = os.path.join(root_dir, "offline", "research", "tradeall_trigger_gate", "common.py")
+
+    # 1. prepare_shadow_runtime keeps root ahead of module_dirs in sys.path
+    saved_path = list(sys.path)
+    try:
+        prepare_shadow_runtime(root_dir, hl_dir, t212_dir)
+        assert sys.path.index(root_dir) < sys.path.index(hl_dir)
+        assert sys.path.index(root_dir) < sys.path.index(t212_dir)
+    finally:
+        sys.path[:] = saved_path
+
+    # 2. Even if offline/research/tradeall_trigger_gate/common.py is cached as sys.modules["common"],
+    # hyperliquid modules resolve hyperliquid/common.py and do not raise ImportError.
+    prev_common = sys.modules.get("common")
+    try:
+        gate_spec = importlib.util.spec_from_file_location(
+            "offline_trigger_gate_common_probe", gate_common_path
+        )
+        gate_mod = importlib.util.module_from_spec(gate_spec)
+        # Stub minimal module with __file__ pointing to offline/research/tradeall_trigger_gate/common.py
+        gate_mod.__file__ = gate_common_path
+        sys.modules["common"] = gate_mod
+
+        for rel_file in ("hl_client.py", "market_data.py", "price_analysis.py", "signals.py", "hl_bot.py", "backtest.py"):
+            sys.modules["common"] = gate_mod
+            spec = importlib.util.spec_from_file_location(
+                f"_test_hl_isolated_{rel_file[:-3]}", os.path.join(hl_dir, rel_file)
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            resolved_common = sys.modules.get("common")
+            assert resolved_common is not None
+            assert os.path.dirname(os.path.abspath(resolved_common.__file__)) == hl_dir
+    finally:
+        if prev_common is not None:
+            sys.modules["common"] = prev_common
+        else:
+            sys.modules.pop("common", None)
+
+

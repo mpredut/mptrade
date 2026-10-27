@@ -32,7 +32,10 @@ from shadow_runtime import (  # noqa: E402
 )
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
 
-import shadow_live as shadow  # noqa: E402
+try:
+    from kraken import shadow_live as shadow  # noqa: E402
+except ImportError:
+    import shadow_live as shadow  # noqa: E402
 
 
 LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
@@ -85,7 +88,15 @@ def _variants(interval: int):
 def _fetch_with_ts(_pair: str, interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm candles")
     import math
-    from hl_client import HLClient
+    _hlc_mod = sys.modules.get("hl_client")
+    _hlc_file = getattr(_hlc_mod, "__file__", None) if _hlc_mod is not None else None
+    if _hlc_mod is None or (isinstance(_hlc_file, str) and os.path.dirname(os.path.abspath(_hlc_file)) != HERE):
+        import importlib.util as _ilu
+        _hlc_spec = _ilu.spec_from_file_location("hl_client", os.path.join(HERE, "hl_client.py"))
+        _hlc_mod = _ilu.module_from_spec(_hlc_spec)
+        sys.modules["hl_client"] = _hlc_mod
+        _hlc_spec.loader.exec_module(_hlc_mod)
+    HLClient = _hlc_mod.HLClient
 
     token = os.environ.get("HL_SPOT_TOKEN") or "HYPE"
     client = HLClient.public()  # the unsigned client cannot submit orders

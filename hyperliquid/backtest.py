@@ -27,11 +27,28 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-for p in (_HERE, _ROOT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 
-from common import log
+
+def _load_hl_local(name: str):
+    mod = sys.modules.get(name)
+    mod_file = getattr(mod, "__file__", None) if mod is not None else None
+    if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == _HERE):
+        return mod
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, f"{name}.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_common_mod = _load_hl_local("common")
+log = _common_mod.log
+_load_dotenv = _common_mod.load_dotenv
 from offline.backtests.metrics import format_performance_summary
 try:
     import market_data as _md_local
@@ -80,16 +97,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
         return ["__any__"] * len(closes)         # gate disabled
     detect_fn = None
     if src == "analysis":
-        try:
-            from price_analysis import detect_long_term_trend as detect_fn
-        except ImportError:
-            import importlib.util
-            _pa_spec = importlib.util.spec_from_file_location(
-                "hyperliquid_price_analysis", os.path.join(_HERE, "price_analysis.py")
-            )
-            _pa_mod = importlib.util.module_from_spec(_pa_spec)
-            _pa_spec.loader.exec_module(_pa_mod)
-            detect_fn = _pa_mod.detect_long_term_trend
+        detect_fn = _load_hl_local("price_analysis").detect_long_term_trend
     for i in range(len(closes)):
         if src == "analysis":
             res = detect_fn(ts[:i+1], closes[:i+1], win_h, step_h)
@@ -133,7 +141,6 @@ def main() -> int:
     args = ap.parse_args()
 
     import os as _os
-    from common import load_dotenv as _load_dotenv
     _hl_dir = _os.path.dirname(_os.path.abspath(__file__))
     try:
         _load_dotenv(_os.path.join(_hl_dir, ".env"))

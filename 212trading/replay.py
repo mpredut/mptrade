@@ -15,9 +15,10 @@ from unittest.mock import MagicMock
 
 _T212_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_T212_DIR)
-for p in (_T212_DIR, ROOT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+if _T212_DIR not in sys.path:
+    sys.path.append(_T212_DIR)
 
 import importlib.util
 _md_spec = importlib.util.spec_from_file_location("t212_market_data", os.path.join(_T212_DIR, "market_data.py"))

@@ -19,9 +19,10 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T212_DIR = os.path.dirname(os.path.abspath(__file__))
-for p in (T212_DIR, ROOT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+if T212_DIR not in sys.path:
+    sys.path.append(T212_DIR)
 
 from offline.backtests.metrics import format_performance_summary
 

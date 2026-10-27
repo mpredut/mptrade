@@ -27,9 +27,23 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-from common import log, required_env, required_float_env, required_int_env
+    sys.path.append(_HERE)
+_common_mod = sys.modules.get("common")
+_common_file = getattr(_common_mod, "__file__", None) if _common_mod is not None else None
+if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.path.abspath(_common_file)) != _HERE):
+    import importlib.util as _ilu
+    _c_spec = _ilu.spec_from_file_location("common", os.path.join(_HERE, "common.py"))
+    _common_mod = _ilu.module_from_spec(_c_spec)
+    sys.modules["common"] = _common_mod
+    _c_spec.loader.exec_module(_common_mod)
+log = _common_mod.log
+required_env = _common_mod.required_env
+required_float_env = _common_mod.required_float_env
+required_int_env = _common_mod.required_int_env
 
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
 

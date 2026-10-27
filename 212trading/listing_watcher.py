@@ -20,8 +20,11 @@ except ImportError:
     import os as _os
     import sys as _sys
     _HERE = _os.path.dirname(_os.path.abspath(__file__))
+    _ROOT = _os.path.dirname(_HERE)
+    if _ROOT not in _sys.path:
+        _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
-        _sys.path.insert(0, _HERE)
+        _sys.path.append(_HERE)
     from ipo_common import ET, log
     try:
         from market_data import check_market

@@ -9,7 +9,9 @@ import os
 import sys
 
 # alertnotifiers.py is in the repository root, the parent of 212trading/.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from alertnotifiers import bind_notify  # noqa: E402
 
 # An explicit ``symbol=`` remains authoritative for multi-asset T212 threads.

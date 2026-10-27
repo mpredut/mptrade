@@ -15,9 +15,10 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-for _p in (_HERE, _ROOT):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 from ipo_common import (  # noqa: E402
     http_get, load_t212_environment, required_env, required_float_env,
 )

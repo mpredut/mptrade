@@ -9,10 +9,13 @@ from botcore import load_dotenv, load_env_stack
 
 def prepare_shadow_runtime(root: str, *module_dirs: str) -> None:
     """Make repository modules importable and disable live Binance WebSockets."""
-    for path in (root, *module_dirs):
+    abs_root = os.path.abspath(root)
+    if abs_root not in sys.path:
+        sys.path.insert(0, abs_root)
+    for path in module_dirs:
         absolute = os.path.abspath(path)
         if absolute not in sys.path:
-            sys.path.insert(0, absolute)
+            sys.path.append(absolute)
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 

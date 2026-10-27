@@ -12,7 +12,9 @@ import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repository root
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)  # repository root
 from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common import ...`)
     BUCHAREST, HTTP_TIMEOUT, log, load_dotenv, parse_dotenv, float_env,
     http_get, http_post_json, http_request, single_instance, are_close, diff_percent,
