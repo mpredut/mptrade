@@ -27,18 +27,37 @@ def calculate_performance_metrics(
     Sharpe/Sortino/Calmar are ``None`` without the real bar frequency; that choice
     prevents falsely comparing 1h series with 4h/1d ones.
     """
-    if isinstance(initial_capital, bool) or not math.isfinite(initial_capital) or initial_capital <= 0:
+    def _req_float(val, msg: str) -> float:
+        if val is None or isinstance(val, bool):
+            raise ValueError(msg)
+        try:
+            f = float(val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(msg) from exc
+        if not math.isfinite(f):
+            raise ValueError(msg)
+        return f
+
+    initial_capital = _req_float(initial_capital, "initial_capital must be positive")
+    if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
-    if isinstance(cvar_confidence, bool) or not math.isfinite(cvar_confidence) or not 0 < cvar_confidence < 1:
+    cvar_confidence = _req_float(cvar_confidence, "cvar_confidence must be between 0 and 1")
+    if not 0 < cvar_confidence < 1:
         raise ValueError("cvar_confidence must be between 0 and 1")
-    if isinstance(turnover_notional, bool) or not math.isfinite(turnover_notional) or turnover_notional < 0:
+    turnover_notional = _req_float(turnover_notional, "turnover_notional must be non-negative")
+    if turnover_notional < 0:
         raise ValueError("turnover_notional must be non-negative")
 
     curve: list[float] = []
+    if equity_curve is None or isinstance(equity_curve, (str, bytes, bool)):
+        raise ValueError("equity_curve cannot be empty")
     for value in equity_curve:
-        if isinstance(value, bool):
+        if isinstance(value, bool) or value is None:
             raise ValueError("equity_curve cannot contain booleans")
-        fval = float(value)
+        try:
+            fval = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("equity_curve must contain finite numbers") from exc
         if not math.isfinite(fval):
             raise ValueError("equity_curve must contain finite numbers")
         curve.append(fval)
@@ -72,17 +91,20 @@ def calculate_performance_metrics(
         periodic_returns.append(current / previous - 1.0)
 
     annualized_return = sharpe = sortino = calmar = None
-    if periods_per_year is not None and (
-        isinstance(periods_per_year, bool)
-        or not math.isfinite(periods_per_year)
-        or periods_per_year <= 0
-    ):
-        raise ValueError("periods_per_year must be positive")
+    if periods_per_year is not None:
+        periods_per_year = _req_float(periods_per_year, "periods_per_year must be positive")
+        if periods_per_year <= 0:
+            raise ValueError("periods_per_year must be positive")
     if periods_per_year and periodic_returns and returns_valid:
         periods = len(periodic_returns)
         growth = curve[-1] / initial_capital
         if growth > 0:
-            annualized_return = growth ** (periods_per_year / periods) - 1.0
+            try:
+                ann_cand = growth ** (periods_per_year / periods) - 1.0
+                if math.isfinite(ann_cand):
+                    annualized_return = ann_cand
+            except OverflowError:
+                annualized_return = None
 
         mean_return = statistics.fmean(periodic_returns)
         if len(periodic_returns) > 1:
@@ -163,7 +185,7 @@ def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
          f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
          f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%"),
         (f"{indent}EXECUTIE: expunere {metric('exposure_pct')}%  "
-         f"turnover {metric('turnover_pct')}%  fills {m.get('fills', 'n/a')}  "
+         f"turnover {metric('turnover_pct')}%  fills {m.get('fills', 'n/a') if isinstance(m, dict) else 'n/a'}  "
          f"profit-factor {metric('profit_factor')}  "
          f"expectancy ${metric('expectancy')}"),
     ]
@@ -172,6 +194,8 @@ def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
 
 def validate_replay_metrics(result: dict) -> None:
     """Assert that a replay result conforms to the canonical metrics schema."""
+    if not isinstance(result, dict):
+        raise AssertionError(f"Replay result must be a dictionary, got {type(result).__name__}")
     required_keys = (
         "return_pct",
         "max_drawdown_pct",

@@ -249,6 +249,8 @@ def aggregate_financial_windows(
         "cycles", "fills", "metrics",
     }
     for window in windows:
+        if not isinstance(window, dict):
+            raise ValueError(f"incomplete financial window: {sorted(required)}")
         missing = required.difference(window)
         if missing:
             raise ValueError(f"incomplete financial window: {sorted(missing)}")

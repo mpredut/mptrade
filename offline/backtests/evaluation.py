@@ -51,10 +51,14 @@ def assess_decision_evidence(
     raw_last_ts = records[-1].get("timestamp") if isinstance(records[-1], dict) else None
     if isinstance(raw_first_ts, bool) or isinstance(raw_last_ts, bool) or raw_first_ts is None or raw_last_ts is None:
         raise ValueError("invalid record timestamps")
-    history_days = max(
-        0.0,
-        (int(float(raw_last_ts)) - int(float(raw_first_ts))) / 86_400.0,
-    )
+    try:
+        first_ts_f = float(raw_first_ts)
+        last_ts_f = float(raw_last_ts)
+        if not (math.isfinite(first_ts_f) and math.isfinite(last_ts_f)):
+            raise ValueError("invalid record timestamps")
+        history_days = max(0.0, (int(last_ts_f) - int(first_ts_f)) / 86_400.0)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("invalid record timestamps") from exc
     raw_fc = aggregate.get("fold_count") if isinstance(aggregate, dict) else 0
     try:
         fold_count = int(float(raw_fc)) if raw_fc is not None and not isinstance(raw_fc, bool) and math.isfinite(float(raw_fc)) else 0
@@ -65,7 +69,7 @@ def assess_decision_evidence(
         cycles = int(float(raw_cyc)) if raw_cyc is not None and not isinstance(raw_cyc, bool) and math.isfinite(float(raw_cyc)) else 0
     except (TypeError, ValueError):
         cycles = 0
-    raw_worst = aggregate.get("worst_return_pct")
+    raw_worst = aggregate.get("worst_return_pct") if isinstance(aggregate, dict) else None
     try:
         worst_return = (
             float(raw_worst)
@@ -148,6 +152,8 @@ def evaluate_segment(
             warmup_timestamps=tuple(int(row["timestamp"]) for row in warmup_records),
         ),
     )
+    if not isinstance(metrics, dict):
+        raise ValueError("the replay adapter must return a metrics dictionary")
     required = {"return_pct", "max_drawdown_pct", "cycles", "fills"}
     missing = required.difference(metrics)
     if missing:

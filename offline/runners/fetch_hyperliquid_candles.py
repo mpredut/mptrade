@@ -21,7 +21,8 @@ if str(ROOT) not in sys.path:
 import importlib.util
 _orig_sys_path = list(sys.path)
 try:
-    sys.path.insert(0, str(HL_DIR))
+    if str(HL_DIR) not in sys.path:
+        sys.path.append(str(HL_DIR))
     _spec = importlib.util.spec_from_file_location("local_hl_market_data", str(HL_DIR / "market_data.py"))
     _hl_md = importlib.util.module_from_spec(_spec)
     sys.modules[_spec.name] = _hl_md
@@ -94,6 +95,8 @@ def fetch_closed_candles(
 
 
 def _parse_intervals(value: str) -> list[int]:
+    if not isinstance(value, str):
+        raise argparse.ArgumentTypeError("intervals must be in minutes")
     try:
         intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
     except ValueError as exc:

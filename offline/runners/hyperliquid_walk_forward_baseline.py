@@ -26,7 +26,8 @@ import importlib.util
 
 _orig_sys_path = list(sys.path)
 try:
-    sys.path.insert(0, str(HL_DIR))
+    if str(HL_DIR) not in sys.path:
+        sys.path.append(str(HL_DIR))
     _md_spec = importlib.util.spec_from_file_location(
         "hl_wf_md", str(HL_DIR / "market_data.py")
     )

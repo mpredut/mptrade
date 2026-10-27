@@ -31,7 +31,8 @@ import importlib.util
 from botcore import parse_dotenv  # noqa: E402
 _orig_sys_path = list(sys.path)
 try:
-    sys.path.insert(0, str(T212_DIR))
+    if str(T212_DIR) not in sys.path:
+        sys.path.append(str(T212_DIR))
     _replay_spec = importlib.util.spec_from_file_location(
         "t212_wf_replay", str(T212_DIR / "replay.py")
     )

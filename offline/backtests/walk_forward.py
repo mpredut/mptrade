@@ -59,7 +59,10 @@ def walk_forward_splits(
 def _finite_number(val, name: str) -> float:
     if isinstance(val, bool) or val is None:
         raise ValueError(f"{name} must be a finite number, got {val!r}")
-    fval = float(val)
+    try:
+        fval = float(val)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number, got {val!r}") from exc
     if not math.isfinite(fval):
         raise ValueError(f"{name} must be a finite number, got {val!r}")
     return fval
@@ -72,12 +75,14 @@ def summarize_test_windows(windows: list[dict]) -> dict:
     ``buy_hold_return_pct``, ``cycles`` and ``fills``. The windows are weighted
     equally; we do not mix equity curves with different frequencies.
     """
-    if not windows:
+    if not windows or isinstance(windows, (str, bytes, bool)):
         raise ValueError("at least one TEST window is required")
     required = {
         "return_pct", "max_drawdown_pct", "buy_hold_return_pct", "cycles", "fills",
     }
     for window in windows:
+        if not isinstance(window, dict):
+            raise ValueError(f"missing fields in the TEST window: {sorted(required)}")
         missing = required.difference(window)
         if missing:
             raise ValueError(f"missing fields in the TEST window: {sorted(missing)}")

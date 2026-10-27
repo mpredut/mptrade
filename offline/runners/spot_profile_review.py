@@ -48,9 +48,15 @@ def revision_params(spec: str) -> StratParams:
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:
-    if isinstance(cash, bool) or not math.isfinite(float(cash)) or float(cash) <= 0:
+    if cash is None or isinstance(cash, bool):
         raise ValueError("cash must be a finite positive number")
-    cash = float(cash)
+    try:
+        cash_f = float(cash)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cash must be a finite positive number") from exc
+    if not math.isfinite(cash_f) or cash_f <= 0:
+        raise ValueError("cash must be a finite positive number")
+    cash = cash_f
     records = validate_dataset(load_dataset(DEFAULT_DATASET), interval_minutes=240)
     digest = dataset_sha256(records)
     manifest = json.loads(DEFAULT_MANIFEST.read_text())

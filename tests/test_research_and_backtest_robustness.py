@@ -4934,3 +4934,64 @@ def test_batch31_priceprediction_backtest_ranges_promotion_and_runners_hardening
     assert base_fee == pytest.approx(0.26)
     assert base_p.entry_amount > 0
 
+
+def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
+    import argparse
+    import pytest
+    from offline.backtests.metrics import (
+        calculate_performance_metrics,
+        format_performance_summary,
+        validate_replay_metrics,
+    )
+    from offline.backtests.walk_forward import summarize_test_windows
+    from offline.backtests.evaluation import assess_decision_evidence, evaluate_segment
+    from offline.backtests.financial_benchmark import aggregate_financial_windows
+    from offline.backtests.execution_calibration import calibrate_execution_events, distribution
+    from offline.runners.fetch_hyperliquid_candles import _parse_intervals
+    from offline.runners.spot_profile_review import review
+
+    # 1. metrics: calculate_performance_metrics, format_performance_summary, validate_replay_metrics
+    with pytest.raises(ValueError, match="initial_capital"):
+        calculate_performance_metrics([100.0, 101.0], initial_capital=None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="periods_per_year"):
+        calculate_performance_metrics([100.0, 101.0], initial_capital=100.0, periods_per_year="bad")  # type: ignore[arg-type]
+    # Huge exponent does not overflow or produce inf annualized_return_pct
+    res_huge = calculate_performance_metrics([100.0, 200.0], initial_capital=100.0, periods_per_year=1e6)
+    assert res_huge["annualized_return_pct"] is None
+    assert len(format_performance_summary(None)) == 2  # type: ignore[arg-type]
+    with pytest.raises(AssertionError, match="dictionary"):
+        validate_replay_metrics(None)  # type: ignore[arg-type]
+
+    # 2. walk_forward.summarize_test_windows and financial_benchmark.aggregate_financial_windows
+    with pytest.raises(ValueError, match="missing fields"):
+        summarize_test_windows([None])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="finite number"):
+        summarize_test_windows([{
+            "return_pct": {"bad": 1},
+            "max_drawdown_pct": 1.0,
+            "buy_hold_return_pct": 1.0,
+            "cycles": 1,
+            "fills": 1,
+        }])
+    with pytest.raises(ValueError, match="incomplete financial window"):
+        aggregate_financial_windows([None], initial_capital=1000.0)  # type: ignore[list-item]
+
+    # 3. evaluation.assess_decision_evidence and evaluate_segment
+    ev = assess_decision_evidence([{"timestamp": 1000}, {"timestamp": 90000}], None)  # type: ignore[arg-type]
+    assert ev["verdict"] == "characterization_only"
+    with pytest.raises(ValueError, match="invalid record timestamps"):
+        assess_decision_evidence([{"timestamp": "bad"}, {"timestamp": 90000}], {})
+    with pytest.raises(ValueError, match="metrics dictionary"):
+        evaluate_segment(
+            [{"timestamp": 1000, "open": 10, "high": 11, "low": 9, "close": 10}],
+            lambda *_a: None,  # type: ignore[return-value]
+        )
+
+    # 4. execution_calibration.distribution & calibrate_execution_events, plus runner input guards
+    assert distribution(None)["count"] == 0  # type: ignore[arg-type]
+    assert calibrate_execution_events(None)["orders"] == []  # type: ignore[arg-type]
+    with pytest.raises(argparse.ArgumentTypeError):
+        _parse_intervals(None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="cash must be a finite positive number"):
+        review("HEAD:config.env", "HEAD:config.env", None)  # type: ignore[arg-type]
+

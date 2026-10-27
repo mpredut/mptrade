@@ -81,7 +81,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 def distribution(values: list[float]) -> dict:
     clean_values: list[float] = []
-    for value in values:
+    for value in (values or ()):
         if value is None or isinstance(value, bool):
             continue
         try:
@@ -104,7 +104,8 @@ def distribution(values: list[float]) -> dict:
 def calibrate_execution_events(events: list[dict]) -> dict:
     """Correlate the events by ``intent_id`` without assuming missing fills."""
     intents: dict[str, list[dict]] = {}
-    for event in sorted(events, key=lambda item: _f(item.get("ts") if isinstance(item, dict) else 0.0, 0.0)):
+    safe_events = events if isinstance(events, (list, tuple)) else []
+    for event in sorted(safe_events, key=lambda item: _f(item.get("ts") if isinstance(item, dict) else 0.0, 0.0)):
         if not isinstance(event, dict):
             continue
         intent_id = str(event.get("intent_id") or "").strip()
