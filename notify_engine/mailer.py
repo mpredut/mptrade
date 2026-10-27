@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import smtplib
 import sys
 from email.mime.text import MIMEText
@@ -41,7 +42,7 @@ def last_error_is_auth_failure() -> bool:
 
 def _disabled() -> bool:
     return any(
-        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on", "1.0"}
         for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
     )
 
@@ -132,7 +133,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     if cfg is None:
         return False
     subj_str = "" if isinstance(subject, bool) else str(subject or "")
-    subject = subj_str.strip() or "Alert"
+    subject = re.sub(r"[\r\n]+", " ", subj_str).strip() or "Alert"
     body = "" if isinstance(body, bool) else str(body or "")
     if isinstance(dedup, bool):
         dedup_flag = dedup
@@ -157,9 +158,10 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
             return reason in ("duplicate", "similar_eliminated", "buffered_for_bulk")
         if out_payload:
             subject, body, _, _ = out_payload
+            subject = re.sub(r"[\r\n]+", " ", "" if isinstance(subject, bool) else str(subject or "")).strip() or "Alert"
     msg = MIMEText(body, "plain", "utf-8")
-    msg["From"] = cfg["username"]
-    msg["To"] = cfg["to"]
+    msg["From"] = re.sub(r"[\r\n]+", " ", str(cfg["username"])).strip()
+    msg["To"] = re.sub(r"[\r\n]+", " ", str(cfg["to"])).strip()
     msg["Subject"] = subject
     try:
         _smtp_send(msg, cfg)

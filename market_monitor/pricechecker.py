@@ -55,15 +55,16 @@ class PriceAlert:
             except (TypeError, ValueError, OverflowError):
                 return default
 
-        self.symbol = str(symbol or "").strip() or "N/A"
-        self.alert_type = str(alert_type or "down").strip().lower()  # "up" or "down"
+        self.symbol = "N/A" if isinstance(symbol, bool) or symbol is None else (str(symbol).strip() or "N/A")
+        raw_atype = "down" if isinstance(alert_type, bool) or alert_type is None else (str(alert_type).strip().lower() or "down")
+        self.alert_type = "up" if raw_atype in ("up", "rise", "▲") else ("down" if raw_atype in ("down", "drop", "▼") else raw_atype)
         self.current_price = _sf(current_price, 0.0)
         self.reference_price = _sf(reference_price, 0.0)
         self.percent_change = _sf(percent_change, 0.0)
         self.threshold = _sf(threshold, 0.0)
         self.timestamp = time.time()
-        self.url = url or ""
-        self.reference_time = reference_time
+        self.url = "" if isinstance(url, bool) or url is None else str(url)
+        self.reference_time = None if isinstance(reference_time, bool) else reference_time
 
     def __str__(self) -> str:
         direction = "🚀 RISE" if self.alert_type == "up" else "📉 DROP"
@@ -289,15 +290,21 @@ class PriceChecker:
         if not isinstance(symbol_added_time, dict) or isinstance(symbol, bool) or symbol is None:
             return False
         sym_clean = str(symbol).strip()
+        sym_up = sym_clean.upper()
         raw_ts = (
             symbol_added_time.get(symbol)
             if symbol in symbol_added_time
             else (
                 symbol_added_time.get(sym_clean)
                 if sym_clean in symbol_added_time
-                else symbol_added_time.get(sym_clean.upper())
+                else symbol_added_time.get(sym_up)
             )
         )
+        if raw_ts is None:
+            for k, v in symbol_added_time.items():
+                if not isinstance(k, bool) and k is not None and str(k).strip().upper() == sym_up:
+                    raw_ts = v
+                    break
         if raw_ts is None or isinstance(raw_ts, bool):
             return False
         try:
@@ -312,8 +319,8 @@ class PriceChecker:
             fallback = PRICE_ALERT_CONFIG["default"]
         per_coin = self.config.get("per_coin")
         chosen = None
-        if isinstance(per_coin, dict):
-            sym_str = str(symbol or "").strip()
+        if isinstance(per_coin, dict) and not isinstance(symbol, bool) and symbol is not None:
+            sym_str = str(symbol).strip()
             sym_up = sym_str.upper()
             if isinstance(per_coin.get(sym_str), dict):
                 chosen = per_coin[sym_str]
@@ -321,10 +328,18 @@ class PriceChecker:
                 chosen = per_coin[sym_up]
             else:
                 base = get_base_symbol(sym_up) or get_base_symbol(sym_str)
+                base_up = str(base).strip().upper() if base else ""
                 if base and isinstance(per_coin.get(base), dict):
                     chosen = per_coin[base]
-                elif base and isinstance(per_coin.get(base.upper()), dict):
-                    chosen = per_coin[base.upper()]
+                elif base_up and isinstance(per_coin.get(base_up), dict):
+                    chosen = per_coin[base_up]
+                else:
+                    for k, v in per_coin.items():
+                        if isinstance(v, dict) and not isinstance(k, bool) and k is not None:
+                            k_up = str(k).strip().upper()
+                            if k_up in (sym_up, base_up) and k_up:
+                                chosen = v
+                                break
         raw = chosen if isinstance(chosen, dict) else fallback
 
         def _pos_float(val, default_val: float) -> float:

@@ -1035,3 +1035,63 @@ def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_pat
     assert ticks[0][1] == 65000.0
 
 
+def test_batch42_mailer_server_pricechecker_and_execution_calibration_hardening(tmp_path, monkeypatch):
+    from unittest.mock import patch, MagicMock
+    from notify_engine import mailer
+    from notify_engine.server import NotificationServer
+    from market_monitor.pricechecker import PriceAlert, PriceChecker
+    from offline.backtests.execution_calibration import calibrate_execution_events
+
+    # 1. mailer.send_email strips CR/LF from subject before building MIMEText headers
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    sent_msgs = []
+    with (
+        patch.object(mailer, "_config", return_value={"server": "smtp.example.com", "port": 587, "username": "u@e.com", "password": "pw", "to": "a@e.com"}),
+        patch.object(mailer, "_smtp_send", side_effect=lambda msg, cfg: sent_msgs.append(msg)),
+    ):
+        assert mailer.send_email("Alert\r\nBcc: injected@e.com", "Body text", dedup=False) is True
+        assert len(sent_msgs) == 1
+        assert "\r" not in sent_msgs[0]["Subject"] and "\n" not in sent_msgs[0]["Subject"]
+        assert "Alert Bcc: injected@e.com" == sent_msgs[0]["Subject"]
+        # Ensure msg.as_string() does not raise HeaderWriteError
+        assert "Subject: Alert Bcc: injected@e.com" in sent_msgs[0].as_string()
+
+    # 2. NotificationServer._enqueue_payload preserves __orchestrator_intent__ even if data has that key
+    qfile = tmp_path / "queue.jsonl"
+    monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(qfile))
+    srv = NotificationServer()
+    srv._enqueue_payload("ntfy_webhook", {"__orchestrator_intent__": None, "title": "Test"})
+    import json
+    enqueued = json.loads(qfile.read_text(encoding="utf-8").strip())
+    assert enqueued["__orchestrator_intent__"] == "ntfy_webhook"
+
+    # 3. PriceAlert and PriceChecker handle bools and case-insensitive per_coin/symbol_added_time
+    pa = PriceAlert(symbol=True, alert_type="RISE", current_price=10.0, reference_price=9.0, percent_change=11.1, threshold=5.0, url=False)
+    assert pa.symbol == "N/A"
+    assert pa.alert_type == "up"
+    assert pa.url == ""
+
+    fake_cache = MagicMock()
+    fake_cache.symbol_added_time = {"newcoin": 1700000000.0}
+    checker = PriceChecker(fake_cache, config={"per_coin": {"tao": {"up_percent": 6.5, "down_percent": 9.5}}})
+    assert checker._is_dynamic_symbol("NEWCOIN") is True
+    assert checker._get_thresholds_for_symbol("TAOUSDC") == {"up_percent": 6.5, "down_percent": 9.5}
+
+    # 4. calibrate_execution_events normalizes whitespace/alias sides, ms timestamps, and ignores bool intent_id
+    res = calibrate_execution_events([
+        {"intent_id": True, "event": "submit_requested", "ts": 1000.0},
+        {"intent_id": "id-1", "event": "submit_requested", "ts": 1700000000000, "side": " BUY ", "qty": 2.0, "price": 100.0, "market": True, "reference_price": 100.0},
+        {"intent_id": "id-1", "event": "submit_accepted", "ts": 1700000001000},
+        {"intent_id": "id-1", "event": "order_terminal", "ts": 1700000003500, "filled_qty": 2.0, "cost": 202.0, "fee": 0.2},
+    ])
+    assert len(res["orders"]) == 1
+    ord0 = res["orders"][0]
+    import pytest
+    assert ord0["first_fill_latency_s"] == pytest.approx(2.5)
+    assert ord0["limit_fill_deviation_bps"] == pytest.approx(100.0)
+    assert ord0["market_execution_shortfall_bps"] == pytest.approx(100.0)
+
+
+

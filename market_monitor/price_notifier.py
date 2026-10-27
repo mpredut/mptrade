@@ -36,8 +36,12 @@ ALERT_NEW_COIN = required_bool_env("ALERT_NEW_COIN")
 
 # Price alerts route to their dedicated ntfy topic, passed explicitly to the batch
 # notifier (no PHONE_ALERT_URL indirection).
-_price_topic = os.environ.get("NTFY_TOPIC_PRICE")
-PRICE_WEBHOOK_URL = f"https://ntfy.sh/{_price_topic}" if _price_topic else None
+_price_topic = (os.environ.get("NTFY_TOPIC_PRICE") or "").split("#", 1)[0].strip()
+PRICE_WEBHOOK_URL = (
+    _price_topic
+    if _price_topic.startswith(("http://", "https://"))
+    else f"https://ntfy.sh/{_price_topic.lstrip('/')}"
+) if _price_topic else None
 
 CMC_API_KEY = os.environ.get('CMC_API_KEY')
 TIME_INTERVAL_CLEANUP = 6 * 60 * 60  # 6 hours in seconds
@@ -187,17 +191,26 @@ def periodic_cleanup(cachePriceAll, new_coins_checker):
         print("[Periodic] Running cleanup for stale prices...")
 
         if hasattr(cachePriceAll, 'cleanup_old_prices'):
-            cachePriceAll.cleanup_old_prices()
+            try:
+                cachePriceAll.cleanup_old_prices()
+            except Exception as e:
+                print(f"[Periodic] cleanup_old_prices error: {e}")
         else:
             print("[Periodic] cachePriceAll.cleanup_old_prices() does not exist")
 
         if hasattr(cachePriceAll, 'cleanup_old_symbols'):
-            cachePriceAll.cleanup_old_symbols(max_age_days=7)
+            try:
+                cachePriceAll.cleanup_old_symbols(max_age_days=7)
+            except Exception as e:
+                print(f"[Periodic] cleanup_old_symbols error: {e}")
         else:
             print("[Periodic] cachePriceAll.cleanup_old_symbols() does not exist")
 
         if new_coins_checker and hasattr(new_coins_checker, 'cleanup_old_new_coins'):
-            new_coins_checker.cleanup_old_new_coins()
+            try:
+                new_coins_checker.cleanup_old_new_coins()
+            except Exception as e:
+                print(f"[Periodic] cleanup_old_new_coins error: {e}")
         else:
             print("[Periodic] new_coins_checker.cleanup_old_new_coins() does not exist")
 

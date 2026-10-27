@@ -17,6 +17,11 @@ def _f(val: object, default: float = 0.0) -> float:
     return res if math.isfinite(res) else default
 
 
+def _ts_sec(val: object, default: float = 0.0) -> float:
+    res = _f(val, default)
+    return res / 1000.0 if res > 1e11 else res
+
+
 def _as_bool(val: object, default: bool = False) -> bool:
     if isinstance(val, bool):
         return val
@@ -105,10 +110,11 @@ def calibrate_execution_events(events: list[dict]) -> dict:
     """Correlate the events by ``intent_id`` without assuming missing fills."""
     intents: dict[str, list[dict]] = {}
     safe_events = events if isinstance(events, (list, tuple)) else []
-    for event in sorted(safe_events, key=lambda item: _f(item.get("ts") if isinstance(item, dict) else 0.0, 0.0)):
+    for event in sorted(safe_events, key=lambda item: _ts_sec(item.get("ts") if isinstance(item, dict) else 0.0, 0.0)):
         if not isinstance(event, dict):
             continue
-        intent_id = str(event.get("intent_id") or "").strip()
+        raw_intent_id = event.get("intent_id")
+        intent_id = "" if isinstance(raw_intent_id, bool) or raw_intent_id is None else str(raw_intent_id).strip()
         if intent_id:
             intents.setdefault(intent_id, []).append(event)
 
@@ -137,7 +143,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             status_rows.append((status, filled, cost, fee))
         latest = max(
             status_rows,
-            key=lambda row: (row[1], _f(row[0].get("ts"), 0.0)),
+            key=lambda row: (row[1], _ts_sec(row[0].get("ts"), 0.0)),
             default=None,
         )
         first_fill = next((row for row in status_rows if row[1] > 0), None)
@@ -149,13 +155,14 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             for row in status_rows if qty > 0 and row[1] > 0
         ]
         avg_fill = cost / filled if filled > 0 and cost > 0 else None
+        raw_side = requested.get("side")
+        side = "" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().lower()
+        direction = 1.0 if side in ("buy", "long") else (-1.0 if side in ("sell", "short") else 0.0)
         requested_price = requested.get("price")
         deviation_bps = None
-        if requested_price is not None and avg_fill is not None:
+        if requested_price is not None and avg_fill is not None and direction != 0.0:
             reference = _f(requested_price, 0.0)
             if reference > 0:
-                side = str(requested.get("side") or "").lower()
-                direction = 1.0 if side == "buy" else -1.0
                 deviation_bps = direction * (avg_fill / reference - 1.0) * 10_000
         is_market = _as_bool(requested.get("market"), False)
         market_shortfall_bps = None
@@ -164,11 +171,10 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             is_market
             and reference_price is not None
             and avg_fill is not None
+            and direction != 0.0
         ):
             reference = _f(reference_price, 0.0)
             if reference > 0:
-                side = str(requested.get("side") or "").lower()
-                direction = 1.0 if side == "buy" else -1.0
                 market_shortfall_bps = (
                     direction * (avg_fill / reference - 1.0) * 10_000
                 )
@@ -176,8 +182,8 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         if accepted is not None and first_fill is not None:
             latency = max(
                 0.0,
-                _f(first_fill[0].get("ts"), 0.0)
-                - _f(accepted.get("ts"), 0.0),
+                _ts_sec(first_fill[0].get("ts"), 0.0)
+                - _ts_sec(accepted.get("ts"), 0.0),
             )
         client_order_id = None
         if accepted is not None:

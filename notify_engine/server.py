@@ -165,8 +165,8 @@ class NotificationServer:
         
     def _enqueue_payload(self, intent_type: str, data: dict):
         try:
-            payload = {"__orchestrator_intent__": intent_type}
-            payload.update(data)
+            payload = dict(data) if isinstance(data, dict) else {}
+            payload["__orchestrator_intent__"] = intent_type
             with open(self.queue_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(payload) + "\n")
         except Exception as e:
@@ -242,7 +242,7 @@ class NotificationServer:
         message = "" if isinstance(message, bool) or message is None else str(message)
         priority = "default" if isinstance(priority, bool) or priority is None else (str(priority).strip() or "default")
         if any(
-            os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+            os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on", "1.0"}
             for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
         ):
             logging.debug(f"External notifications disabled: would send to {topic_str}: {title}")
@@ -777,14 +777,24 @@ class NotificationServer:
                                 title = "" if isinstance(raw_title, bool) or raw_title is None else str(raw_title)
                                 raw_msg = payload.get("message")
                                 msg = "" if isinstance(raw_msg, bool) or raw_msg is None else str(raw_msg)
+                                raw_p = payload.get("priority")
+                                prio = "default" if isinstance(raw_p, bool) or raw_p is None else (str(raw_p).strip() or "default")
+                                raw_top = payload.get("topic")
+                                if isinstance(raw_top, bool) or raw_top is None or not str(raw_top).strip():
+                                    try:
+                                        top = self._resolve_topic("ERROR")
+                                    except Exception:
+                                        top = "ntfy-error-1978"
+                                else:
+                                    top = str(raw_top).strip()
                                 if not title.startswith("[DELAYED]"):
                                     title = "[DELAYED] " + title
                                 success = await asyncio.to_thread(
                                     self._send_ntfy,
                                     title,
                                     msg,
-                                    str(payload.get("priority") or "default"),
-                                    str(payload.get("topic") or "test-mptrade"),
+                                    prio,
+                                    top,
                                     True
                                 )
                             elif "alerts" in payload:
@@ -854,9 +864,9 @@ class NotificationServer:
                                 ]
                         except Exception:
                             pass
-                    with open(self.queue_file, "w", encoding="utf-8") as f:
-                        for r in remaining + newly_appended:
-                            f.write(r + "\n")
+                    from state_io import atomic_write_text
+                    content = "".join(r + "\n" for r in remaining + newly_appended)
+                    atomic_write_text(self.queue_file, content)
                     if success_count > 0:
                         logging.info(f"Flushed {success_count} delayed notifications from queue.")
 
