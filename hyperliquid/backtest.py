@@ -70,11 +70,16 @@ def fetch_funding(coin, start_ms):
 
 def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
     """Return a causal signal per bar using data available through that bar only."""
+    if isinstance(source, bool):
+        raise ValueError(f"Invalid signal source: {source!r}")
+    src = str(source or "off").strip().lower()
+    if src not in ("off", "builtin", "analysis"):
+        raise ValueError(f"Invalid signal source: {source!r}")
     out = ["neutral"] * len(closes)
-    if source == "off":
+    if src == "off":
         return ["__any__"] * len(closes)         # gate disabled
     detect_fn = None
-    if source == "analysis":
+    if src == "analysis":
         try:
             from price_analysis import detect_long_term_trend as detect_fn
         except ImportError:
@@ -86,7 +91,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
             _pa_spec.loader.exec_module(_pa_mod)
             detect_fn = _pa_mod.detect_long_term_trend
     for i in range(len(closes)):
-        if source == "analysis":
+        if src == "analysis":
             res = detect_fn(ts[:i+1], closes[:i+1], win_h, step_h)
             out[i] = res["direction"] if res else "neutral"
         else:  # builtin
@@ -104,7 +109,8 @@ def simulate(ohlc, ts, fund, sig, P, direction):
 
 def run(coin, ohlc, ts, fund, sig, P, direction, budget):
     m = simulate(ohlc, ts, fund, sig, P, direction)
-    total_pct = m["total"]/budget*100 if budget > 0 else 0.0  # TRUE result: realized + funding + open position
+    b_ok = not isinstance(budget, bool) and isinstance(budget, (int, float)) and budget == budget and abs(float(budget)) != float("inf") and float(budget) > 0
+    total_pct = m["total"] / float(budget) * 100 if b_ok else 0.0  # TRUE result: realized + funding + open position
     wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
     return total_pct, m, wr
 

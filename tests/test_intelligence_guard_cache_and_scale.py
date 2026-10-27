@@ -12429,3 +12429,62 @@ def test_iteration118_hl_strategy_replay_and_t212_reconcile_safety(monkeypatch):
     assert t_eng._reconcile_real(96.0) is True
     assert t_eng.s["last_buy_price"] == 95.0
 
+
+def test_iteration119_spot_engine_and_backtest_helpers_safety(tmp_path, monkeypatch):
+    """Iteration 119: Verify spot_engine.state_path_for/_apply_fill/run write-fail guard and Kraken/HL backtest helpers."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    import strategies.spot_engine as se
+    from providers.strategy_executor import PairPrecision
+    import kraken.backtest as k_bt
+
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay", "backtest")
+    saved_mods = {k: sys.modules.get(k) for k in hl_mods}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import backtest as hl_bt
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. spot_engine.state_path_for handles bool, punctuation-only, and Path state_dir
+    assert se.state_path_for(True).endswith(".state_unknown.json")
+    assert se.state_path_for("---", tmp_path) == os.path.join(str(tmp_path), ".state_unknown.json")
+
+    # 2. spot_engine._apply_fill handles order with amount=None by falling back to vol * price
+    dummy_exec = SimpleNamespace(pair_precision=lambda _p: PairPrecision(2, 4, 0.01, "HYPE"))
+    params = se.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=1.0, dca_amount=50.0,
+        dca_drop_pct=2.0, check_minutes=1.0, takeprofit_pct=2.0, max_budget=500.0,
+        max_dca_buys=5, enable_takeprofit=True, order_ttl_min=60.0,
+    )
+    strat = se.Strategy(dummy_exec, "HYPEUSD", params, dry_run=True, replay_mode=True, initial_state=se._new_state())
+    strat._apply_fill({"txid": "T1", "side": "buy", "amount": None, "kind": "ENTRY"}, 2.0, 25.0, fee=0.0)
+    assert strat.s["spent"] == 50.0
+
+    # 3. kraken.backtest._bt_params skips None fallback keys and rejects boolean values/intervals
+    bt_p = k_bt._bt_params({"drop_fallback": None, "drop": 3.5, "reentry_fallback": None, "reentry_drop": 1.25})
+    assert bt_p.dca_drop_pct == 3.5
+    assert bt_p.reentry_drop_pct == 1.25
+    with pytest.raises(ValueError):
+        k_bt._bt_params({"entry": True})
+    with pytest.raises(ValueError):
+        k_bt._bt_params({"interval": True})
+
+    # 4. hyperliquid.backtest.precompute_signal validates signal source and normalizes case/whitespace
+    assert hl_bt.precompute_signal([100.0, 101.0], [1, 2], " OFF ", 2, 4, 0.01, 24, 8) == ["__any__", "__any__"]
+    with pytest.raises(ValueError):
+        hl_bt.precompute_signal([100.0, 101.0], [1, 2], "invalid_source", 2, 4, 0.01, 24, 8)
+    with pytest.raises(ValueError):
+        hl_bt.precompute_signal([100.0, 101.0], [1, 2], True, 2, 4, 0.01, 24, 8)
+

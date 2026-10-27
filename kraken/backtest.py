@@ -41,24 +41,40 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     behavior, so the faithful engine tests the production strategy rather than
     defaults.
     """
+    if not isinstance(base, dict):
+        raise ValueError("_bt_params requires a dict for base")
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
     from botcore import parse_dotenv
     env = dict(parse_dotenv(cfg_path))
     env.update(os.environ)
     p = StratParams.from_env(env=env)
+
+    def _pick(keys: tuple[str, ...], default):
+        for k in keys:
+            if k in base and base[k] is not None:
+                if isinstance(base[k], bool):
+                    raise ValueError(f"boolean not allowed for {k}")
+                return base[k]
+        return default
+
     fields = dict(
-        entry_amount=base.get("entry", p.entry_amount),
-        dca_amount=base.get("dca", p.dca_amount),
-        entry_discount_pct=base.get("disc", p.entry_discount_pct),
-        dca_drop_pct=base.get("drop_fallback", base.get("drop", p.dca_drop_pct)),
-        takeprofit_pct=base.get("tp", p.takeprofit_pct),
-        max_dca_buys=base.get("maxdca", p.max_dca_buys),
-        max_budget=base.get("budget", p.max_budget),
-        stop_loss_pct=base.get("sl", p.stop_loss_pct),
-        tp_trail_pct=base.get("trail", p.tp_trail_pct),
-        reentry_drop_pct=base.get("reentry_fallback", base.get("reentry_drop", base.get("reentry", p.reentry_drop_pct))),
+        entry_amount=_pick(("entry",), p.entry_amount),
+        dca_amount=_pick(("dca",), p.dca_amount),
+        entry_discount_pct=_pick(("disc",), p.entry_discount_pct),
+        dca_drop_pct=_pick(("drop_fallback", "drop"), p.dca_drop_pct),
+        takeprofit_pct=_pick(("tp",), p.takeprofit_pct),
+        max_dca_buys=int(_pick(("maxdca",), p.max_dca_buys)),
+        max_budget=_pick(("budget",), p.max_budget),
+        stop_loss_pct=_pick(("sl",), p.stop_loss_pct),
+        tp_trail_pct=_pick(("trail",), p.tp_trail_pct),
+        reentry_drop_pct=_pick(("reentry_fallback", "reentry_drop", "reentry"), p.reentry_drop_pct),
     )
-    interval = base.get("interval") if base.get("interval") is not None else 60
+    raw_interval = base.get("interval") if base.get("interval") is not None else 60
+    if isinstance(raw_interval, bool):
+        raise ValueError("interval cannot be boolean")
+    interval = float(raw_interval)
+    if interval <= 0 or interval != interval or interval == float("inf"):
+        raise ValueError(f"invalid interval: {raw_interval!r}")
     if float(interval) != float(p.trend_interval):
         fields.update(
             trend_overlay=False,

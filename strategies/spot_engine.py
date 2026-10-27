@@ -78,8 +78,16 @@ def _clean_nonneg_float(val: object) -> float | None:
 
 def state_path_for(pair: str, state_dir: str | None = None) -> str:
     """Return the state path, retaining the Kraken fallback for live compatibility."""
-    safe = "".join(c for c in pair if c.isalnum() or c in "._-")
-    directory = state_dir or _LEGACY_STATE_DIR
+    if isinstance(pair, bool) or not isinstance(pair, str):
+        safe = "unknown"
+    else:
+        safe = "".join(c for c in pair if c.isalnum() or c in "._-").strip("._-") or "unknown"
+    if isinstance(state_dir, os.PathLike):
+        directory = os.fspath(state_dir) or _LEGACY_STATE_DIR
+    elif isinstance(state_dir, str) and state_dir.strip():
+        directory = state_dir.strip()
+    else:
+        directory = _LEGACY_STATE_DIR
     return os.path.join(directory, f".state_{safe}.json")
 
 
@@ -1218,7 +1226,9 @@ class Strategy:
                 self.s["entry_price"] = price
             if self.s.get("entry_ts") is None:
                 self.s["entry_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
-            self.s["spent"] += o.get("amount", vol * price)
+            raw_amt = o.get("amount")
+            amt_val = _clean_nonneg_float(raw_amt)
+            self.s["spent"] += amt_val if (amt_val is not None and raw_amt is not None) else (vol * price)
             if o.get("kind") == "DCA":
                 self.s["dca_buys"] += 1
             if o.get("kind") == "TREND_ENTRY":
@@ -2750,6 +2760,11 @@ class Strategy:
         if self.fee_note:
             log(f"      ! {self.fee_note}; TP={self.p.takeprofit_pct}%")
         self._maybe_adopt()
+        sleep_sec = (
+            max(1.0, float(self.p.check_minutes) * 60.0)
+            if (_clean_pos_float(self.p.check_minutes) is not None)
+            else 60.0
+        )
         try:
             while True:
                 price = self.client.get_current_price(self.pair)
@@ -2761,26 +2776,29 @@ class Strategy:
                     or price <= 0
                 ):
                     log("  [STRAT] price unavailable — retrying")
-                    time.sleep(self.p.check_minutes * 60)
+                    time.sleep(sleep_sec)
                     continue
                 try:
                     # After a disk error, make no new decisions until current memory state
                     # can be persisted again.
                     if self._state_write_failed:
                         self._save()
+                        if self._state_write_failed:
+                            time.sleep(sleep_sec)
+                            continue
                     self.reconcile(price)
                     self.step(price)
                     self._save()
                 except Exception as e:  # noqa: BLE001 — RESILIENCE: network/API down -> retry
                     log(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
-                    time.sleep(self.p.check_minutes * 60)
+                    time.sleep(sleep_sec)
                     continue
                 avg = self._avg()
                 pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
                 log(f"  [STRAT] price={price}  {pos}  "
                     f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, "
                     f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
-                time.sleep(self.p.check_minutes * 60)
+                time.sleep(sleep_sec)
         except KeyboardInterrupt:
             log("  [STRAT] stopped manually.")
             self._save()
