@@ -262,7 +262,7 @@ def prepare_topic_session(
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
     try:
         compact_steps_f = float(compact_steps)
-        if not math.isfinite(compact_steps_f):
+        if not math.isfinite(compact_steps_f) or not compact_steps_f.is_integer():
             raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
         compact_steps_i = int(compact_steps_f)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -398,6 +398,12 @@ def record_topic_turn(
     spec = topic_spec(topic_key)
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
+    if isinstance(compacted, str):
+        compacted = compacted.strip().lower() in {"1", "true", "yes", "on"}
+    elif isinstance(compacted, (int, float)) and not isinstance(compacted, bool):
+        compacted = bool(compacted) if math.isfinite(float(compacted)) else False
+    elif not isinstance(compacted, bool):
+        compacted = False
     if max_history_entries is None or isinstance(max_history_entries, bool):
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
     else:

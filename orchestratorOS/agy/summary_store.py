@@ -92,8 +92,14 @@ def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
 
 def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -> Set[str]:
     """Expand project names/ids into every matching name and id found in the stores' config/projects."""
-    resolved = {n for n in names_or_ids if n}
-    for base in cli_bases:
+    resolved = {
+        n.strip()
+        for n in (names_or_ids or ())
+        if isinstance(n, str) and n.strip()
+    }
+    for base in (cli_bases or ()):
+        if not isinstance(base, str) or not base.strip():
+            continue
         pdir = os.path.join(os.path.dirname(os.path.abspath(base)), "config", "projects")
         if not os.path.isdir(pdir):
             continue
@@ -107,8 +113,10 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
                 continue
             if not isinstance(data, dict):
                 continue
-            pid, pname = data.get("id"), data.get("name")
-            if resolved & {pid, pname}:
+            raw_id, raw_name = data.get("id"), data.get("name")
+            pid = raw_id.strip() if isinstance(raw_id, str) else ""
+            pname = raw_name.strip() if isinstance(raw_name, str) else ""
+            if resolved & {x for x in (pid, pname) if x}:
                 resolved.update(x for x in (pid, pname) if x)
     return resolved
 
@@ -207,16 +215,41 @@ def read_summary_row(cli_base: str, cid: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def _clean_cid_set(cids: Iterable[Any]) -> Set[str]:
+    return {
+        c.strip()
+        for c in (cids or ())
+        if isinstance(c, str)
+        and c.strip()
+        and c.strip() not in {".", ".."}
+        and "/" not in c
+        and "\\" not in c
+    }
+
+
+def _as_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    return default
+
+
 def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
-    if not cids:
+    clean_cids = _clean_cid_set(cids)
+    if not clean_cids:
         return
     db = summaries_db(cli_base)
     if os.path.exists(db):
         conn = sqlite3.connect(db)
         try:
             conn.execute(
-                f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in cids)})",
-                list(cids),
+                f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in clean_cids)})",
+                list(clean_cids),
             )
             conn.commit()
         finally:
@@ -225,17 +258,19 @@ def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
         path = os.path.join(cli_base, name)
         if os.path.exists(path):
             with open(path, "rb") as f:
-                buf, removed = drop_entries(f.read(), cids)
+                buf, removed = drop_entries(f.read(), clean_cids)
             if removed:
                 atomic_write_bytes(path, buf)
 
 
 def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tuple[int, int]:
     """Delete conversations (content, sidecars, annotations, presence, brain, summaries). Returns (count, bytes)."""
-    if not cids:
+    dry_run = _as_bool_flag(dry_run, False)
+    clean_cids = _clean_cid_set(cids)
+    if not clean_cids:
         return (0, 0)
     freed = 0
-    for cid in cids:
+    for cid in clean_cids:
         db = conversation_db(cli_base, cid)
         files = [db, db + "-shm", db + "-wal",
                  os.path.join(cli_base, "annotations", f"{cid}.pbtxt"),
@@ -252,12 +287,13 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
             if not dry_run:
                 shutil.rmtree(brain)
     if not dry_run:
-        _drop_summaries(cli_base, set(cids))
-    return (len(cids), freed)
+        _drop_summaries(cli_base, clean_cids)
+    return (len(clean_cids), freed)
 
 
 def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
     """Remove summary rows (and proto entries / annotations) whose conversation file no longer exists."""
+    dry_run = _as_bool_flag(dry_run, False)
     db = summaries_db(cli_base)
     if not os.path.exists(db):
         return 0
@@ -266,11 +302,18 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
     finally:
         conn.close()
-    active = os.environ.get("CURRENT_CONVERSATION_ID")
-    orphans = {cid for cid, _ in rows if cid != active and not os.path.exists(conversation_db(cli_base, cid))}
+    active = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
+    orphans = {
+        cid.strip()
+        for cid, _ in rows
+        if isinstance(cid, str)
+        and cid.strip()
+        and cid.strip() != active
+        and not os.path.exists(conversation_db(cli_base, cid.strip()))
+    }
     for cid, title in rows:
-        if cid in orphans:
-            logger.info("Found orphan summary: %s (%s)", cid, title)
+        if isinstance(cid, str) and cid.strip() in orphans:
+            logger.info("Found orphan summary: %s (%s)", cid.strip(), title)
     if orphans and not dry_run:
         _drop_summaries(cli_base, orphans)
         for cid in orphans:

@@ -3566,6 +3566,42 @@ def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
     assert "+40.00" in out
 
 
+def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
+    import json
+    import pytest
+    from orchestratorOS.agy import summary_store, topics, ui_mirror
+
+    # 1. delete_threads refuses empty/dot/traversal cids and never wipes root brain/ dir
+    cli_base = tmp_path / "antigravity-cli"
+    brain_keep = cli_base / "brain" / "keep_cid"
+    brain_keep.mkdir(parents=True)
+    (brain_keep / "artifact.md").write_text("safe", encoding="utf-8")
+    cnt, freed = summary_store.delete_threads({"", "  ", ".", "..", "../outside", "a/b"}, str(cli_base), dry_run=False)
+    assert (cnt, freed) == (0, 0)
+    assert (brain_keep / "artifact.md").exists()
+
+    # dry_run="true" does not delete valid cid
+    cnt2, freed2 = summary_store.delete_threads({"keep_cid"}, str(cli_base), dry_run="true")  # type: ignore[arg-type]
+    assert cnt2 == 1 and freed2 > 0
+    assert (brain_keep / "artifact.md").exists()
+
+    # 2. resolve_project_ids ignores unhashable id/name values in project JSON files
+    proj_dir = tmp_path / "config" / "projects"
+    proj_dir.mkdir(parents=True)
+    (proj_dir / "bad.json").write_text(json.dumps({"id": ["unhashable"], "name": {"k": 1}}), encoding="utf-8")
+    (proj_dir / "good.json").write_text(json.dumps({"id": "proj-123", "name": "mptrade"}), encoding="utf-8")
+    assert summary_store.resolve_project_ids([" mptrade "], [str(cli_base)]) == {"mptrade", "proj-123"}
+
+    # 3. prepare_topic_session rejects fractional compact_steps
+    with pytest.raises(ValueError):
+        topics.prepare_topic_session("macro_geopolitical", cli_base=str(cli_base), compact_steps=1.5)  # type: ignore[arg-type]
+
+    # 4. ui_mirror rejects path traversal cids
+    assert ui_mirror.sync_topic_thread_from_ui("../bad", bot_cli_base=str(cli_base), ui_cli_base=str(tmp_path / "ui")) is False
+    assert ui_mirror.mirror_topic_thread_to_ui("../bad", "Title", bot_cli_base=str(cli_base), ui_cli_base=str(tmp_path / "ui")) is False
+
+
+
 
 
 

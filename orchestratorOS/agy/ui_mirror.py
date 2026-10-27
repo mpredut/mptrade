@@ -64,7 +64,15 @@ def sync_topic_thread_from_ui(
     """Pull newer user turns from the Web UI store back into the isolated bot store before a CLI turn."""
     dst_base = resolve_bot_cli_base(bot_cli_base)
     src_base = resolve_ui_cli_base(ui_cli_base)
-    if not cid or not isinstance(cid, str) or not cid.strip() or os.path.abspath(src_base) == os.path.abspath(dst_base):
+    if (
+        not cid
+        or not isinstance(cid, str)
+        or not cid.strip()
+        or cid.strip() in {".", ".."}
+        or "/" in cid
+        or "\\" in cid
+        or os.path.abspath(src_base) == os.path.abspath(dst_base)
+    ):
         return False
     cid = cid.strip()
     ui_db = conversation_db(src_base, cid)
@@ -154,7 +162,14 @@ def mirror_topic_thread_to_ui(
     ui_cli_base: Optional[str] = None,
 ) -> bool:
     """Copy one topic thread into the UI store as a UI-visible conversation named ``title``."""
-    if not cid or not isinstance(cid, str) or not cid.strip():
+    if (
+        not cid
+        or not isinstance(cid, str)
+        or not cid.strip()
+        or cid.strip() in {".", ".."}
+        or "/" in cid
+        or "\\" in cid
+    ):
         return False
     cid = cid.strip()
     src_base = resolve_bot_cli_base(bot_cli_base)
