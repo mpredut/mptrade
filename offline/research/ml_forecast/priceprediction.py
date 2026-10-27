@@ -41,10 +41,19 @@ class PricePrediction:
         lr: float = 0.01,
         epochs: int = 30,
     ) -> None:
-        ws_f = float(window_size) if not isinstance(window_size, bool) and window_size is not None else 10.0
-        hs_f = float(hidden_size) if not isinstance(hidden_size, bool) and hidden_size is not None else 32.0
-        lr_f = float(lr) if not isinstance(lr, bool) and lr is not None else 0.01
-        ep_f = float(epochs) if not isinstance(epochs, bool) and epochs is not None else 30.0
+        def _num(v, default: float) -> float:
+            if v is None or isinstance(v, bool):
+                return default
+            try:
+                f = float(v)
+                return f if np.isfinite(f) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        ws_f = _num(window_size, 10.0)
+        hs_f = _num(hidden_size, 32.0)
+        lr_f = _num(lr, 0.01)
+        ep_f = _num(epochs, 30.0)
         self.window_size = max(2, int(ws_f)) if np.isfinite(ws_f) else 10
         safe_hidden = max(1, int(hs_f)) if np.isfinite(hs_f) else 32
         safe_lr = lr_f if np.isfinite(lr_f) and lr_f > 0 else 0.01

@@ -27,12 +27,31 @@ def _load_jsonl_dicts(path: str) -> list[dict]:
     return rows
 
 
+def _safe_f(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def q(xs, p):
+    if p is None or isinstance(p, bool):
+        return float("nan")
+    try:
+        pf = float(p)
+    except (TypeError, ValueError, OverflowError):
+        return float("nan")
+    if not math.isfinite(pf):
+        return float("nan")
+    pf = min(1.0, max(0.0, pf))
     clean = sorted(
         float(x) for x in (xs or [])
         if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(float(x))
     )
-    return clean[min(len(clean) - 1, max(0, int(p * (len(clean) - 1))))] if clean else float("nan")
+    return clean[min(len(clean) - 1, max(0, int(pf * (len(clean) - 1))))] if clean else float("nan")
 
 
 def win_stats(r, key):
@@ -77,13 +96,17 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
 
     summary = []
     for c in cfgs:
-        if not all(a in by[c] for a in assets):
+        if not all(a in by[c] and isinstance(by[c][a].get("full"), dict) for a in assets):
             continue
         live = by.get("live", {})
-        full = [by[c][a]["full"]["ret"] for a in assets]
-        dd = [by[c][a]["full"]["dd"] for a in assets]
-        expo = [by[c][a]["full"]["expo"] for a in assets]
-        beat_full = sum(by[c][a]["full"]["ret"] > live.get(a, {}).get("full", {}).get("ret", float("-inf")) + 1e-9 for a in assets)
+        full = [_safe_f(by[c][a]["full"].get("ret"), 0.0) for a in assets]
+        dd = [_safe_f(by[c][a]["full"].get("dd"), 0.0) for a in assets]
+        expo = [_safe_f(by[c][a]["full"].get("expo"), 0.0) for a in assets]
+        beat_full = sum(
+            _safe_f(by[c][a]["full"].get("ret"), 0.0)
+            > _safe_f((live.get(a, {}).get("full") or {}).get("ret"), float("-inf")) + 1e-9
+            for a in assets
+        )
         w90 = [win_stats(by[c][a], "w90") for a in assets]
         w30 = [win_stats(by[c][a], "w30") for a in assets]
         beat_w90 = sum(
@@ -92,7 +115,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             else False
             for a in assets
         )
-        years = [y["ret"] for a in assets for y in by[c][a].get("year", {}).values() if "ret" in y]
+        years = [
+            _safe_f(y.get("ret"), float("nan"))
+            for a in assets
+            for y in (by[c][a].get("year") or {}).values()
+            if isinstance(y, dict) and math.isfinite(_safe_f(y.get("ret"), float("nan")))
+        ]
         w90_means = [x["mean"] for x in w90 if math.isfinite(x["mean"])]
         w90_pos = [x["pos"] for x in w90 if math.isfinite(x["pos"])]
         w90_p10 = [x["p10"] for x in w90 if math.isfinite(x["p10"])]

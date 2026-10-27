@@ -90,6 +90,28 @@ _SPLIT_CACHE: dict = {}
 _TASK_CACHE: dict = {}
 
 
+def _safe_f(val, default: float = 0.0) -> float:
+    import math
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    import math
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def load(asset, itv):
     key = (asset, itv)
     if key in _LOAD_CACHE:
@@ -111,7 +133,12 @@ def load(asset, itv):
                 c = float(r["close"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if ts_val > 0 and all(math.isfinite(x) and x > 0 for x in (o, h, l, c)):
+            if (
+                ts_val > 0
+                and all(math.isfinite(x) and x > 0 for x in (o, h, l, c))
+                and h >= max(o, l, c)
+                and l <= min(o, h, c)
+            ):
                 rows.append((ts_val, o, h, l, c))
     res = rows if len(rows) > WARM + 20 else None
     _LOAD_CACHE[key] = res
@@ -146,15 +173,15 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
         m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
                           warmup_ohlc=ohlc[:WARM],
                           timestamps=ts[WARM:])
-        budget = float(params.max_budget)
-        tot = float(m.get("total") or 0.0)
-        p0 = float(ohlc[WARM][3])
-        p1 = float(ohlc[-1][3])
+        budget = _safe_f(params.max_budget, 0.0)
+        tot = _safe_f(m.get("total"), 0.0)
+        p0 = _safe_f(ohlc[WARM][3], 0.0)
+        p1 = _safe_f(ohlc[-1][3], 0.0)
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
-                "dd": round(m.get("max_drawdown_pct") or 0, 3),
-                "cyc": int(m.get("cycles") or 0),
-                "expo": round(m.get("exposure_pct") or 0, 1),
-                "fills": int(m.get("fills") or 0),
+                "dd": round(_safe_f(m.get("max_drawdown_pct"), 0.0), 3),
+                "cyc": max(0, _safe_int(m.get("cycles"), 0)),
+                "expo": round(_safe_f(m.get("exposure_pct"), 0.0), 1),
+                "fills": max(0, _safe_int(m.get("fills"), 0)),
                 "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0}
     finally:
         FLAGS["peak"] = False

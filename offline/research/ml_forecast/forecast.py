@@ -33,6 +33,21 @@ WARMUP = 240            # history hours required for features; Hurst uses 240h
 FEATURES = ["r1", "r4", "r8", "r24", "r72", "vol24", "vol72", "mk_z", "hurst", "rsi", "snr24"]
 
 
+def _safe_f(val, default: float | None = 0.0) -> float | None:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if np.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    f = _safe_f(val, None)
+    return int(f) if f is not None else default
+
+
 def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     r1 = logp[i] - logp[i - 1]
     r4 = logp[i] - logp[i - 4]
@@ -87,9 +102,9 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
             "mae_move_pct": 0.0,
             "mae_baseline_pct": 0.0,
         }
-    refit_every = max(1, int(refit_every)) if not isinstance(refit_every, bool) and np.isfinite(refit_every) else 168
-    frac = float(train_frac) if not isinstance(train_frac, bool) and np.isfinite(train_frac) else 0.7
-    frac = min(max(frac, 0.05), 0.95)
+    refit_every = max(1, _safe_int(refit_every, 168))
+    frac = _safe_f(train_frac, 0.7)
+    frac = min(max(float(frac if frac is not None else 0.7), 0.05), 0.95)
     start = min(max(1, int(n * frac)), n)
     acc = {"lindy": [], "logit": [], "boost": []}
     mag_err, mag_base = [], []
@@ -128,9 +143,9 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
-    boost_acc = rep.get("boost") if isinstance(rep, dict) else None
-    logit_acc = rep.get("logit") if isinstance(rep, dict) else None
-    lindy_acc = rep.get("lindy") if isinstance(rep, dict) else None
+    boost_acc = _safe_f(rep.get("boost"), None) if isinstance(rep, dict) else None
+    logit_acc = _safe_f(rep.get("logit"), None) if isinstance(rep, dict) else None
+    lindy_acc = _safe_f(rep.get("lindy"), None) if isinstance(rep, dict) else None
     use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
     px_arr = np.asarray(px, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):

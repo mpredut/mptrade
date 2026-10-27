@@ -9,6 +9,16 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
+def _safe_f(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _load_jsonl_dicts(path: str) -> list[dict]:
     rows = []
     if not os.path.exists(path):
@@ -53,13 +63,13 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 continue
             if any(not isinstance(d[a].get(fee), dict) for a in assets):
                 continue
-            ret = [float(d[a][fee].get("ret") or 0.0) for a in assets]
-            dd = [float(d[a][fee].get("dd") or 0.0) for a in assets]
+            ret = [_safe_f(d[a][fee].get("ret"), float("nan")) for a in assets]
+            dd = [_safe_f(d[a][fee].get("dd"), float("nan")) for a in assets]
             if not all(math.isfinite(x) for x in ret + dd):
                 continue
             live_cfg = by.get("live", {})
-            live = [live_cfg.get(a, {}).get(fee, {}).get("ret", float("-inf")) for a in assets]
-            refused = [d[a][fee].get("refused", 0) for a in assets]
+            live = [_safe_f((live_cfg.get(a, {}).get(fee) or {}).get("ret"), float("-inf")) for a in assets]
+            refused = [_safe_f(d[a][fee].get("refused"), 0.0) for a in assets]
             score = st.median(r / max(x, 1.0) for r, x in zip(ret, dd)) if ret else 0.0
             items.append((score if math.isfinite(score) else float("-inf"), cfg, ret, dd, live, refused))
         for score, cfg, ret, dd, live, refused in sorted(items, reverse=True):

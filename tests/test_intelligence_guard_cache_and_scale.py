@@ -14372,6 +14372,59 @@ def test_iteration144_spot_engine_rtrade_pair_and_spot_rules_hygiene():
     assert "777" in coord.snapshots
 
 
+def test_iteration145_continuous_grid_and_ml_forecast_safety(tmp_path):
+    """Iteration 145:
+    1. offline.research.kraken_continuous_grid.grid.load and report.q safely handle
+       missing/bool paths, inverted OHLC bars, and NaN/bool/out-of-range quantiles.
+    2. offline.research.kraken_continuous_grid.report3._safe_f safely handles None/bool/NaN.
+    3. offline.research.ml_forecast (forecast._safe_f/_safe_int, PricePrediction.__init__,
+       and vol_chronos._safe_int) safely handle string/bool/NaN parameters without ValueError/TypeError.
+    """
+    import math
+    from offline.research.kraken_continuous_grid.grid import load as k_grid_load
+    from offline.research.kraken_continuous_grid.report import q as k_report_q
+    from offline.research.kraken_continuous_grid.report3 import _safe_f as k_rep3_safe_f
+    from offline.research.ml_forecast.forecast import _safe_f as fc_safe_f, _safe_int as fc_safe_int
+    from offline.research.ml_forecast.priceprediction import PricePrediction
+    from offline.research.ml_forecast.vol_chronos import _safe_int as vc_safe_int
+
+    # 1. kraken_continuous_grid.grid.load & report.q
+    assert k_grid_load("") == []
+    assert k_grid_load(True) == []
+    csv_p = tmp_path / "test_240m.csv"
+    csv_p.write_text(
+        "timestamp,open,high,low,close\n"
+        "1700000000,100.0,90.0,95.0,98.0\n"  # inverted high < open
+        "1700014400,100.0,105.0,98.0,102.0\n",
+        encoding="utf-8",
+    )
+    loaded = k_grid_load(str(csv_p))
+    assert len(loaded) == 1
+    assert loaded[0][0] == 1700014400
+
+    assert math.isnan(k_report_q([1.0, 2.0, 3.0], float("nan")))
+    assert math.isnan(k_report_q([1.0, 2.0, 3.0], True))
+    assert k_report_q([1.0, 2.0, 3.0], -5.0) == 1.0
+    assert k_report_q([1.0, 2.0, 3.0], 5.0) == 3.0
+
+    # 2. kraken_continuous_grid.report3._safe_f
+    assert k_rep3_safe_f(None, -1.0) == -1.0
+    assert k_rep3_safe_f(True, -1.0) == -1.0
+    assert k_rep3_safe_f(float("nan"), -1.0) == -1.0
+
+    # 3. ml_forecast helpers & PricePrediction.__init__
+    assert fc_safe_f("bad", 0.7) == 0.7
+    assert fc_safe_f(True, 0.7) == 0.7
+    assert fc_safe_int("168.0", 24) == 168
+    assert vc_safe_int("bad", 24) == 24
+    assert vc_safe_int(True, 24) == 24
+
+    pp = PricePrediction(window_size="bad", hidden_size="bad", lr="bad", epochs="bad")
+    assert pp.window_size == 10
+    assert pp.epochs == 30
+
+
+
 
 
 

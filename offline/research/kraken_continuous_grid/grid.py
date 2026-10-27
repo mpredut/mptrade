@@ -115,12 +115,38 @@ _ASSET_CACHE: dict = {}
 _TASK_CACHE: dict = {}
 
 
+def _safe_f(val, default: float = 0.0) -> float:
+    import math
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    import math
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def load(path):
     import math
+    if not path or isinstance(path, (bool, int, float)):
+        return []
     cached = _LOAD_CACHE.get(path)
     if cached is not None:
         return cached
     rows = []
+    if not os.path.isfile(str(path)):
+        return rows
     with open(path, encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
             try:
@@ -131,7 +157,12 @@ def load(path):
                 c = float(r["close"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if ts_val > 0 and all(math.isfinite(x) and x > 0 for x in (o, h, l, c)):
+            if (
+                ts_val > 0
+                and all(math.isfinite(x) and x > 0 for x in (o, h, l, c))
+                and h >= max(o, l, c)
+                and l <= min(o, h, c)
+            ):
                 rows.append((ts_val, o, h, l, c))
     _LOAD_CACHE[path] = rows
     return rows
@@ -169,22 +200,22 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
         m = rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
                           warmup_ohlc=w_ohlc, initial_cash=initial_cash)
-        tot = float(m.get("total") or 0.0)
+        tot = _safe_f(m.get("total"), 0.0)
         if initial_cash is not None:
-            ic = float(initial_cash)
-            funding = m.get("funding") or {}
+            ic = _safe_f(initial_cash, 0.0)
+            funding = m.get("funding") if isinstance(m.get("funding"), dict) else {}
             return {"ret": round(tot / ic * 100, 2) if ic > 0 else 0.0,
-                    "dd": round(m.get("max_drawdown_pct") or 0, 2),
-                    "cyc": int(m.get("cycles") or 0),
-                    "refused": int(funding.get("refused_buys") or 0),
-                    "min_cash": float(funding.get("minimum_cash") if funding.get("minimum_cash") is not None else ic)}
-        budget = float(params.effective_max_budget())
-        p0 = float(ohlc[0][3])
-        p1 = float(ohlc[-1][3])
+                    "dd": round(_safe_f(m.get("max_drawdown_pct"), 0.0), 2),
+                    "cyc": max(0, _safe_int(m.get("cycles"), 0)),
+                    "refused": max(0, _safe_int(funding.get("refused_buys"), 0)),
+                    "min_cash": _safe_f(funding.get("minimum_cash"), ic) if funding.get("minimum_cash") is not None else ic}
+        budget = _safe_f(params.effective_max_budget(), 0.0)
+        p0 = _safe_f(ohlc[0][3], 0.0)
+        p1 = _safe_f(ohlc[-1][3], 0.0)
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
-                "dd": round(m.get("max_drawdown_pct") or 0, 3),
-                "cyc": int(m.get("cycles") or 0),
-                "expo": round(m.get("exposure_pct") or 0, 1),
+                "dd": round(_safe_f(m.get("max_drawdown_pct"), 0.0), 3),
+                "cyc": max(0, _safe_int(m.get("cycles"), 0)),
+                "expo": round(_safe_f(m.get("exposure_pct"), 0.0), 1),
                 "bh": round((p1 / p0 - 1) * 100, 3) if p0 > 0 else 0.0}
     finally:
         FLAGS["peak"] = False

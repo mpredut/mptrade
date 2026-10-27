@@ -53,13 +53,23 @@ def _load_pipeline():
     return ChronosPipeline.from_pretrained(MODEL_NAME, device_map="cpu", torch_dtype=torch.float32)
 
 
+def _safe_int(val, default: int) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if np.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     """For each test hour i sampled by stride, give the model rv[:i+1] capped at
     MAX_CONTEXT and request a +horizon-hour prediction. Compare against persistence
     rv[i] and actual rv[i+horizon]."""
-    horizon = max(1, int(horizon))
-    stride = max(1, int(stride))
-    warmup = max(0, int(warmup))
+    horizon = max(1, _safe_int(horizon, 24))
+    stride = max(1, _safe_int(stride, 6))
+    warmup = max(0, _safe_int(warmup, 0))
     n = len(rv)
     idxs = [
         i for i in range(warmup, n - horizon, stride)
