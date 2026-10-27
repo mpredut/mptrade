@@ -1020,12 +1020,14 @@ def get_accepted_order_ttl_map() -> dict:
             try:
                 ttl_val = float(ttl)
                 if math.isfinite(ttl_val) and ttl_val > 0:
-                    oid = r.get("order_id")
-                    if oid is not None and not isinstance(oid, bool) and str(oid).strip():
-                        res[str(oid)] = ttl_val
-                    cid = dict(r.get("place_kwargs") or {}).get("client_order_id")
-                    if cid is not None and not isinstance(cid, bool) and str(cid).strip():
-                        res[str(cid)] = ttl_val
+                    oid = extract_order_id(r.get("order_id"), default=None)
+                    if oid:
+                        res[oid] = ttl_val
+                    place_kw = r.get("place_kwargs")
+                    cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
+                    cid = extract_order_id(cid_raw, default=None)
+                    if cid:
+                        res[cid] = ttl_val
             except (TypeError, ValueError):
                 continue
     return res
@@ -1035,14 +1037,27 @@ def infer_record_owner(rec: dict) -> str:
     """Infer the logical bot owner of a durable outbox record."""
     if not isinstance(rec, dict):
         return "unspecified"
-    placement = dict(rec.get("place_kwargs") or {})
-    parent_owner = str(
-        rec.get("parent_owner") or placement.get("parent_owner") or ""
-    ).strip().lower()
+    raw_place_kw = rec.get("place_kwargs")
+    placement = dict(raw_place_kw) if isinstance(raw_place_kw, dict) else {}
+    raw_parent = rec.get("parent_owner")
+    if raw_parent is None or isinstance(raw_parent, bool) or not str(raw_parent).strip():
+        raw_parent = placement.get("parent_owner")
+    parent_owner = (
+        str(raw_parent).strip().lower()
+        if raw_parent is not None and not isinstance(raw_parent, bool)
+        else ""
+    )
     if parent_owner and parent_owner not in {"unknown", "unspecified", "order_retry"}:
         return parent_owner
     owner = "unspecified"
-    cid = str(placement.get("client_order_id") or rec.get("prefix") or "")
+    raw_cid = placement.get("client_order_id")
+    if raw_cid is None or isinstance(raw_cid, bool) or not str(raw_cid).strip():
+        raw_cid = rec.get("prefix")
+    cid = (
+        str(raw_cid).strip()
+        if raw_cid is not None and not isinstance(raw_cid, bool)
+        else ""
+    )
     if cid:
         try:
             from binance_api import order_id_context as rc
@@ -1051,7 +1066,8 @@ def infer_record_owner(rec: dict) -> str:
             owner = "unspecified"
     if owner not in {"unknown", "unspecified", "order_retry"} and not str(owner).startswith("alt:"):
         return owner
-    kind = str(rec.get("kind") or "").strip()
+    raw_kind = rec.get("kind")
+    kind = str(raw_kind).strip() if raw_kind is not None and not isinstance(raw_kind, bool) else ""
     if "monitor_order_replace" in kind:
         return "monitororder"
     if kind in {"STOP", "TP"}:
@@ -1086,12 +1102,14 @@ def get_accepted_order_owner_map() -> dict:
         inferred = infer_record_owner(r)
         if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
             continue
-        oid = r.get("order_id")
-        if oid is not None and not isinstance(oid, bool) and str(oid).strip():
-            res[str(oid)] = inferred
-        cid = dict(r.get("place_kwargs") or {}).get("client_order_id")
-        if cid is not None and not isinstance(cid, bool) and str(cid).strip():
-            res[str(cid)] = inferred
+        oid = extract_order_id(r.get("order_id"), default=None)
+        if oid:
+            res[oid] = inferred
+        place_kw = r.get("place_kwargs")
+        cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
+        cid = extract_order_id(cid_raw, default=None)
+        if cid:
+            res[cid] = inferred
     return res
 
 
@@ -1113,11 +1131,10 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
             continue
         if str(r.get("symbol") or "").strip().upper() != target_sym:
             continue
-        oid = r.get("order_id")
-        if oid is None or isinstance(oid, bool) or not str(oid).strip():
+        oid_str = extract_order_id(r.get("order_id"), default=None)
+        if not oid_str:
             continue
         if infer_record_owner(r) == target_owner:
-            oid_str = str(oid)
             if oid_str not in out:
                 out.append(oid_str)
     return out
@@ -1603,7 +1620,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     if isinstance(symbol, bool) or isinstance(order_id, bool):
         return False
     target_sym = str(symbol or "").strip().upper()
-    target_oid = str(order_id or "").strip()
+    target_oid = extract_order_id(order_id, default=None)
     if not target_sym or not target_oid:
         return False
     removed = False
@@ -1612,10 +1629,11 @@ def resolve_accepted_order(symbol, order_id) -> bool:
         existing = _read_nolock()
         remaining = []
         for rec in existing:
+            rec_oid = extract_order_id(rec.get("order_id"), default=None)
             if (
                 str(rec.get("lifecycle") or "").lower() == "accepted"
                 and str(rec.get("symbol") or "").strip().upper() == target_sym
-                and str(rec.get("order_id") or "").strip() == target_oid
+                and rec_oid == target_oid
             ):
                 removed = True
             else:
@@ -1979,21 +1997,24 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: "
                 "order_by_client_id is unsupported")
-        if client_order_id is None or isinstance(client_order_id, bool) or not str(client_order_id).strip():
+        clean_cid = extract_order_id(client_order_id, default=None)
+        if not clean_cid:
             raise ProviderError("invalid client_order_id")
-        return method(symbol, str(client_order_id))
+        return method(symbol, clean_cid)
 
     def order_status(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("status_by_order_id", "order_status")
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        clean_oid = extract_order_id(order_id, default=None)
+        if not clean_oid:
             raise ProviderError("invalid order_id")
-        return self.executor.order_status(symbol, str(order_id))
+        return self.executor.order_status(symbol, clean_oid)
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("cancel_by_order_id", "cancel_order")
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        clean_oid = extract_order_id(order_id, default=None)
+        if not clean_oid:
             raise ProviderError("invalid order_id")
-        return self.executor.cancel_order(symbol, str(order_id))
+        return self.executor.cancel_order(symbol, clean_oid)
 
 
 def _lifecycle_finite(raw, *, positive=False):
@@ -2298,11 +2319,7 @@ class TrackedOrderLifecycle:
         symbol = pending["symbol"]
         client_order_id = pending["client_order_id"]
         raw_order_id = pending.get("order_id")
-        order_id = (
-            str(raw_order_id).strip()
-            if raw_order_id is not None and not isinstance(raw_order_id, bool) and str(raw_order_id).strip()
-            else None
-        )
+        order_id = extract_order_id(raw_order_id, default=None)
         if not order_id:
             try:
                 native = self.market_api.order_by_client_id(

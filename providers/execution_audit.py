@@ -171,11 +171,27 @@ class AuditedStrategyExecutor:
         self._last_status = OrderedDict()
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _norm_symbol_key(symbol: object) -> str:
+        if symbol is None or isinstance(symbol, bool):
+            return ""
+        return str(symbol).strip().upper()
+
+    @staticmethod
+    def _norm_order_id_key(order_id: object) -> str:
+        from .base import _clean_single_order_id
+        cleaned = _clean_single_order_id(order_id)
+        if cleaned is not None:
+            return cleaned
+        if order_id is None or isinstance(order_id, bool):
+            return ""
+        return str(order_id).strip()
+
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        oid_key = self._norm_order_id_key(order_id)
+        if not oid_key:
             return
-        sym_key = "" if symbol is None or isinstance(symbol, bool) else str(symbol).strip()
-        oid_key = str(order_id).strip()
+        sym_key = self._norm_symbol_key(symbol)
         with self._lock:
             key = (sym_key, oid_key)
             self._intent_by_order[key] = intent_id
@@ -187,14 +203,14 @@ class AuditedStrategyExecutor:
         if explicit:
             self._remember(symbol, order_id, explicit)
             return explicit
-        if order_id is not None and not isinstance(order_id, bool):
-            sym_key = "" if symbol is None or isinstance(symbol, bool) else str(symbol).strip()
-            oid_key = str(order_id).strip()
+        oid_key = self._norm_order_id_key(order_id)
+        if oid_key:
+            sym_key = self._norm_symbol_key(symbol)
             with self._lock:
                 known = self._intent_by_order.get((sym_key, oid_key))
             if known:
                 return known
-        return f"recovered-{_slug(self.name).lower()}-{_slug(symbol)}-{_slug(order_id)}"
+        return f"recovered-{_slug(self.name).lower()}-{_slug(symbol)}-{_slug(oid_key or order_id)}"
 
     def submit_order_with_intent(self, intent_id: str, symbol: str, side: str, qty: float,
                                  price: Optional[float] = None, *, market: bool = False,
@@ -287,7 +303,8 @@ class AuditedStrategyExecutor:
             status.status, status.filled_qty, status.cost, status.fee,
             status.venue_status,
         )
-        key = (symbol, str(order_id))
+        oid_key = self._norm_order_id_key(order_id)
+        key = (self._norm_symbol_key(symbol), oid_key)
         with self._lock:
             changed = self._last_status.get(key) != fingerprint
             self._last_status[key] = fingerprint
@@ -297,7 +314,7 @@ class AuditedStrategyExecutor:
         if changed:
             self.audit.record(
                 "order_status", intent_id=intent_id, venue=self.name, symbol=symbol,
-                order_id=str(order_id), status=status.status,
+                order_id=oid_key or str(order_id), status=status.status,
                 venue_status=status.venue_status,
                 filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
             )
@@ -334,12 +351,14 @@ class AuditedStrategyExecutor:
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Delegate deterministic recovery without inventing audit acceptance."""
-        if client_order_id is None or isinstance(client_order_id, bool) or not str(client_order_id).strip():
+        from .base import _clean_single_order_id
+        clean_cid = _clean_single_order_id(client_order_id)
+        if not clean_cid:
             raise ProviderError("client_order_id is required")
         lookup = getattr(self._executor, "order_by_client_id", None)
         if not callable(lookup):
             raise RuntimeError(f"{self.name}: order_by_client_id is unsupported")
-        return lookup(symbol, str(client_order_id))
+        return lookup(symbol, clean_cid)
 
     def reconciliation_capabilities(self):
         """Preserve the wrapped adapter's venue facts through decoration."""

@@ -12908,6 +12908,77 @@ def test_iteration123_bybit_liq_news_fear_greed_advisor_and_gemini_cid_safety(tm
     assert not brain_dir.exists()
 
 
+def test_iteration123_submission_outcome_audit_and_retry_id_hygiene(tmp_path):
+    """Verify SubmissionOutcome order_id sanitization, AuditedStrategyExecutor symbol/order_id key normalization, StrategyExecutorLifecycleApi id validation, and order_retry owner/context helpers."""
+    import pytest
+    import order_retry as oq
+    import order_retry_worker as orw
+    from providers.strategy_executor import (
+        OrderReconciliationCapabilities,
+        OrderStatus,
+        ProviderError,
+        SubmissionOutcome,
+    )
+    from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
+
+    # 1. SubmissionOutcome normalizes integer float order_id and rejects NaN/"nan"/"null"/non-integer floats
+    outcome = SubmissionOutcome("accepted", order_id=98765.0)
+    assert outcome.order_id == "98765"
+    for bad_oid in (float("nan"), float("inf"), 12.5, "nan", "null", "none", {"id": 1}):
+        with pytest.raises(ValueError):
+            SubmissionOutcome("accepted", order_id=bad_oid)
+
+    # 2. AuditedStrategyExecutor normalizes symbol case/whitespace and order_id across submit -> order_status
+    class _DummyExec:
+        name = "kraken"
+
+        def reconciliation_capabilities(self):
+            return OrderReconciliationCapabilities(
+                lookup_by_client_order_id=True,
+                status_by_order_id=True,
+                cancel_by_order_id=True,
+                not_found_reliable_for_seconds=3600.0,
+            )
+
+        def submit_order(self, symbol, side, qty, price=None, **kw):
+            return "  OID-777  "
+
+        def order_status(self, symbol, order_id):
+            return OrderStatus("open", filled_qty=0.0, cost=0.0, fee=0.0)
+
+        def cancel_order(self, symbol, order_id):
+            return None
+
+        def order_by_client_id(self, symbol, client_order_id):
+            return {"order_id": "OID-777", "status": "open"}
+
+    audit = ExecutionAudit(directory=str(tmp_path / "audit"))
+    wrapped = AuditedStrategyExecutor(_DummyExec(), audit=audit, venue="kraken")
+    oid = wrapped.submit_order_with_intent("intent-abc", " xbtusd ", "buy", 0.01, 50000.0)
+    assert oid == "OID-777"
+    assert wrapped._intent("XBTUSD", "OID-777") == "intent-abc"
+    for bad_cid in (float("nan"), "nan", "null", 12.5):
+        with pytest.raises(ProviderError):
+            wrapped.order_by_client_id("XBTUSD", bad_cid)
+
+    # 3. StrategyExecutorLifecycleApi rejects NaN/"nan"/"null" and normalizes integer float IDs
+    life_api = oq.StrategyExecutorLifecycleApi(wrapped)
+    for bad_id in (float("nan"), "nan", "null", 12.5):
+        with pytest.raises(ProviderError):
+            life_api.order_status("XBTUSD", bad_id)
+        with pytest.raises(ProviderError):
+            life_api.cancel_order("XBTUSD", bad_id)
+        with pytest.raises(ProviderError):
+            life_api.order_by_client_id("XBTUSD", bad_id)
+    assert life_api.order_by_client_id("XBTUSD", " cid-123 ") == {"order_id": "OID-777", "status": "open"}
+
+    # 4. infer_record_owner ignores boolean parent_owner/kind and _format_record_context handles non-dict place_kwargs
+    assert oq.infer_record_owner({"parent_owner": True, "kind": "STOP", "place_kwargs": 123}) == "monitortrades"
+    ctx_str = orw._format_record_context({"side": "BUY", "symbol": "BTCUSDC", "qty": 0.1, "place_kwargs": 123, "id": "rec-1"})
+    assert "ID: rec-1" in ctx_str
+
+
+
 
 
 

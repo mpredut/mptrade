@@ -56,7 +56,13 @@ class SubmissionOutcome:
             raise ValueError(f"invalid submission outcome: {self.state!r}")
         if isinstance(self.order_id, bool):
             raise ValueError(f"invalid order_id in SubmissionOutcome: {self.order_id!r}")
-        order_id = None if self.order_id is None else str(self.order_id).strip()
+        if self.order_id is None or (isinstance(self.order_id, str) and not self.order_id.strip()):
+            order_id = None
+        else:
+            from .base import _clean_single_order_id
+            order_id = _clean_single_order_id(self.order_id)
+            if order_id is None:
+                raise ValueError(f"invalid order_id in SubmissionOutcome: {self.order_id!r}")
         if self.state == "accepted" and not order_id:
             raise ValueError("accepted submission requires order_id")
         if self.state != "accepted" and order_id:

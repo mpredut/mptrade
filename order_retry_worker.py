@@ -924,8 +924,10 @@ def _format_record_context(rec, *, include_lease=False):
         if lease_str != "N/A":
             time_parts.append(f"Lease expired: {lease_str}")
     time_line = " | ".join(time_parts) + f" ({attempts} attempts, reason={last_reason})"
+    raw_place_kw = rec.get("place_kwargs")
+    place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
     client_order_id = (
-        dict(rec.get("place_kwargs") or {}).get("client_order_id")
+        place_kw.get("client_order_id")
         or rec.get("order_id")
         or rec.get("id")
         or "N/A"
@@ -1173,7 +1175,16 @@ class IncidentDigest:
                         px_val = float(raw_px)
                         if math.isfinite(px_val) and px_val > 0:
                             group["last_price"] = px_val
-                            group["notional"] = float(group.get("notional") or 0.0) + quantity * px_val
+                            raw_prev_notional = group.get("notional")
+                            prev_notional = (
+                                float(raw_prev_notional)
+                                if (raw_prev_notional is not None
+                                    and not isinstance(raw_prev_notional, bool)
+                                    and math.isfinite(float(raw_prev_notional))
+                                    and float(raw_prev_notional) >= 0)
+                                else 0.0
+                            )
+                            group["notional"] = prev_notional + quantity * px_val
                     except (TypeError, ValueError, OverflowError):
                         pass
                 raw_created = event.get("created_ts")
@@ -1184,7 +1195,10 @@ class IncidentDigest:
                             prev_c = group.get("created_ts")
                             group["created_ts"] = (
                                 min(float(prev_c), c_val)
-                                if (prev_c is not None and float(prev_c) > 0)
+                                if (prev_c is not None
+                                    and not isinstance(prev_c, bool)
+                                    and math.isfinite(float(prev_c))
+                                    and float(prev_c) > 0)
                                 else c_val
                             )
                     except (TypeError, ValueError, OverflowError):
@@ -1194,9 +1208,16 @@ class IncidentDigest:
                     try:
                         la_val = float(raw_last_attempt)
                         if math.isfinite(la_val) and la_val > 0:
-                            group["last_attempt_ts"] = max(
-                                float(group.get("last_attempt_ts") or 0.0), la_val
+                            prev_la = group.get("last_attempt_ts")
+                            prev_la_val = (
+                                float(prev_la)
+                                if (prev_la is not None
+                                    and not isinstance(prev_la, bool)
+                                    and math.isfinite(float(prev_la))
+                                    and float(prev_la) > 0)
+                                else 0.0
                             )
+                            group["last_attempt_ts"] = max(prev_la_val, la_val)
                     except (TypeError, ValueError, OverflowError):
                         pass
                 raw_ttl = event.get("ttl_sec")
