@@ -1629,9 +1629,12 @@ def check_intelligence_guards(
                     return False, p_dec.reason, 0.0
 
     # Resolve trend duration early so both LLM guard and Weibull guard have access
-    dur_sec = explicit_dur_sec or (
-        _clean_pos_float(getattr(regime_context, "trend_duration_seconds", 0.0), 0.0) if valid_context else 0.0
-    )
+    raw_ctx_dur = (
+        regime_context.get("trend_duration_seconds", 0.0)
+        if isinstance(regime_context, dict)
+        else getattr(regime_context, "trend_duration_seconds", 0.0)
+    ) if valid_context else 0.0
+    dur_sec = explicit_dur_sec or _clean_pos_float(raw_ctx_dur, 0.0)
     if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)
 
@@ -1670,7 +1673,12 @@ def check_intelligence_guards(
         e_p90 = float(m["weibull_p90_days"])
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
         explicit_dur = explicit_dur_sec > 0.0
-        if explicit_dur and getattr(regime_context, "resolved_trend", None) is None:
+        ctx_rt = (
+            (regime_context.get("resolved_trend") or regime_context.get("regime"))
+            if isinstance(regime_context, dict)
+            else (getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None))
+        )
+        if explicit_dur and ctx_rt is None:
             trend_dir = None
         else:
             trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context if valid_context else None)

@@ -173,11 +173,15 @@ class DerivativesTelemetryCollector:
                 break
         if cached:
             if isinstance(cached, tuple) and len(cached) >= 2:
-                if 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
-                    return cached[1]
+                c_ts = cached[0]
+                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
+                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
+                        return cached[1]
             elif isinstance(cached, DerivativesTelemetry):
-                if 0.0 <= (now - cached.ts) < self.cache_ttl_sec:
-                    return cached
+                c_ts = getattr(cached, "ts", None)
+                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
+                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
+                        return cached
 
         disk_snap = self._load_from_disk(symbol, now)
         if disk_snap is not None:
@@ -252,8 +256,13 @@ class DerivativesTelemetryCollector:
 
     def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:
         """Inject telemetry directly (useful for tests and synthetic feeds)."""
+        import math
+        if isinstance(telemetry, dict):
+            telemetry = DerivativesTelemetry.from_dict(telemetry)
         if telemetry is None or not isinstance(getattr(telemetry, "symbol", None), str) or not telemetry.symbol.strip():
             return
-        self._cache[telemetry.symbol.strip().upper()] = (telemetry.ts, telemetry)
+        raw_ts = getattr(telemetry, "ts", None)
+        ts_val = float(raw_ts) if (isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and math.isfinite(float(raw_ts)) and float(raw_ts) > 0.0) else time.time()
+        self._cache[telemetry.symbol.strip().upper()] = (ts_val, telemetry)
         if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(telemetry)

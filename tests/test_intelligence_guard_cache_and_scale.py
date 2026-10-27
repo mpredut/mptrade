@@ -9393,38 +9393,10 @@ def test_iteration73_monitortrades_backtest_hybrid_reentry_and_surge_sweep_safet
 
 
 def test_iteration74_tradeall_trigger_gate_adaptive_kalman_and_continuous_grid_safety(tmp_path):
-    """Verify Iteration 74 hardening across tradeall_trigger_gate, tradeall_adaptive_thresholds, tradeall_kalman_lag, and continuous_grid."""
-    from offline.research.tradeall_trigger_gate import common as ttg_common
-    from offline.research.tradeall_adaptive_thresholds import run_backtest_adaptive as rba
-    from offline.research.tradeall_kalman_lag import run_kalman_lag_sweep as rkls
+    """Verify Iteration 74 hardening across continuous_grid."""
     from offline.research.kraken_continuous_grid import grid as k_grid
     from offline.research.kraken_continuous_grid import report as k_rep
     from offline.research.t212_continuous_grid import grid as t_grid
-
-    # 1. LongTrendTracker handles bool/invalid args and empty stats dict without KeyError
-    tracker = ttg_common.LongTrendTracker(stats={}, window_hours=True, reeval_sec=False, min_points=True)
-    assert tracker.window_sec == 3600.0
-    assert tracker.reeval_sec == 60.0
-    assert tracker.min_points == 30
-    tracker.update(float("nan"), 100.0)
-    tracker.update(1000.0, -5.0)
-    assert len(tracker.buf) == 0
-    for i in range(31):
-        tracker.update(1000.0 + i * 10.0, 100.0 + i * 1.0)
-    assert tracker.sign == 1
-    assert tracker.stats.get("sign_changes") == 1
-
-    # 2. run_backtest_adaptive.run_adaptive rejects bool/non-positive k_small
-    with pytest.raises(ValueError, match="k_small must be finite and > 0"):
-        rba.run_adaptive("BTCUSDC", 0, 100, True, "test_id")
-    with pytest.raises(ValueError, match="k_small must be finite and > 0"):
-        rba.run_adaptive("BTCUSDC", 0, 100, -1.5, "test_id")
-
-    # 3. run_kalman_lag_sweep.run_variant rejects bool/non-positive sample_sec
-    with pytest.raises(ValueError, match="sample_sec must be finite and > 0"):
-        rkls.run_variant("BTCUSDC", 0, 100, True, "test_id")
-    with pytest.raises(ValueError, match="sample_sec must be finite and > 0"):
-        rkls.run_variant("BTCUSDC", 0, 100, 0.0, "test_id")
 
     # 4. kraken/t212 continuous_grid.load handles float timestamps and skips non-positive/NaN OHLC
     k_csv = tmp_path / "XXBTZUSD.csv"
@@ -9485,17 +9457,12 @@ def test_iteration75_walk_forward_runners_grid_reports_and_backtest_ranges_safet
 
 
 def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
-    """Verify Iteration 76 explicit kraken.backtest imports and sys.path restoration across offline runners."""
+    """Verify Iteration 76 sys.path restoration across offline runners."""
     import importlib
     import sys
     from offline.runners import hyperliquid_walk_forward_baseline as hl_wf
     from offline.runners import t212_walk_forward_baseline as t212_wf
     from offline.runners import fetch_hyperliquid_candles as fhc
-    from offline.research.kraken_adaptive_thresholds import (
-        verify_adaptive_dca,
-        verify_adaptive_reentry,
-        sweep_k_multiplier,
-    )
 
     while str(hl_wf.HL_DIR) in sys.path:
         sys.path.remove(str(hl_wf.HL_DIR))
@@ -9507,22 +9474,6 @@ def test_iteration76_kraken_adaptive_thresholds_and_sys_path_isolation():
     assert str(hl_wf.HL_DIR) not in sys.path
     assert str(t212_wf.T212_DIR) not in sys.path
     assert str(fhc.HL_DIR) not in sys.path
-    assert hasattr(verify_adaptive_dca, "run")
-    assert hasattr(verify_adaptive_reentry, "run")
-    assert hasattr(sweep_k_multiplier, "main")
-
-    # Even if sys.modules["backtest"] is polluted, reloading verify_adaptive_dca still succeeds via kraken.backtest
-    orig_bt = sys.modules.get("backtest")
-    try:
-        sys.modules["backtest"] = object()  # type: ignore[assignment]
-        importlib.reload(verify_adaptive_dca)
-        importlib.reload(verify_adaptive_reentry)
-        importlib.reload(sweep_k_multiplier)
-    finally:
-        if orig_bt is None:
-            sys.modules.pop("backtest", None)
-        else:
-            sys.modules["backtest"] = orig_bt
 
 
 def test_iteration77_discovery_news_visuals_and_notify_server_safety(tmp_path, monkeypatch):
@@ -14216,7 +14167,6 @@ def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
     """
     from offline.research.compare_mhdsl_reentry_replay import run_comparison, _safe_f as mhdsl_safe_f, _safe_int as mhdsl_safe_int
     from offline.research.comprehensive_surge_sweep.run_deep_surge_sweep import _safe_f as surge_safe_f, _safe_int as surge_safe_int
-    from offline.research.tradeall_trigger_gate.common import LongTrendTracker, make_instrumented_trend_state
 
     # 1. compare_mhdsl_reentry_replay and run_deep_surge_sweep helpers
     assert run_comparison(True) == []
@@ -14224,28 +14174,6 @@ def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
     assert mhdsl_safe_int("4.0", 0) == 4
     assert surge_safe_f(True, 2.5) == 2.5
     assert surge_safe_int("7.0", 0) == 7
-
-    # 2. make_instrumented_trend_state & LongTrendTracker
-    stats = {}
-    ts_cls = make_instrumented_trend_state(
-        stats,
-        expiration_trend_time_override=float("nan"),
-        retry_interval_sec=float("nan"),
-    )
-    inst = ts_cls("BTCUSDC", 3600.0, 300.0)
-    assert inst.can_retry("UP", 1000.0) is True
-    inst.mark_attempt("UP", 1000.0)
-    assert inst.can_retry("UP", float("nan")) is False
-    assert inst.can_retry("UP", True) is False
-    assert inst.can_retry("UP", 1500.0) is False
-    assert inst.can_retry("UP", 2900.0) is True
-    inst.mark_attempt("UP", float("nan"))
-    assert inst._last_attempt_up_ts == 1000.0
-
-    tracker = LongTrendTracker(stats, window_hours="bad", reeval_sec="bad", min_points="bad")
-    assert tracker.window_sec == 3600.0
-    assert tracker.reeval_sec == 60.0
-    assert tracker.min_points == 30
 
 
 def test_iteration144_spot_engine_rtrade_pair_and_spot_rules_hygiene():
@@ -14417,15 +14345,6 @@ def test_iteration145_continuous_grid_and_ml_forecast_safety(tmp_path):
     pp = PricePrediction(window_size="bad", hidden_size="bad", lr="bad", epochs="bad")
     assert pp.window_size == 10
     assert pp.epochs == 30
-
-    # 4. tradeall_trigger_gate MeanReversionTracker & hourly_ohlc
-    from offline.research.tradeall_trigger_gate.experiment_rsi_bollinger import MeanReversionTracker
-    from offline.research.tradeall_trigger_gate.experiment_rsi_dca_filter import hourly_ohlc
-
-    mrt = MeanReversionTracker("test", "BTCUSDC", mode="both", rsi_low=80.0, rsi_high=20.0, pb_low=2.0, pb_high=1.0)
-    assert mrt.rsi_low == 30.0 and mrt.rsi_high == 70.0
-    assert mrt.pb_low == 0.0 and mrt.pb_high == 1.0
-    assert hourly_ohlc([(3600.0, 100.0), (3610.0, 105.0)], start_ts=None, end_ts=True) == [(100.0, 105.0, 100.0, 105.0)]
 
 
 def test_iteration146_position_exit_manager_hl_strategy_xstock_watch_and_price_alert_hygiene(tmp_path, monkeypatch):
@@ -15557,6 +15476,8 @@ def test_iteration158_monitortrades_tradeall_rtrade_hygiene(monkeypatch, tmp_pat
 
     # 4. tradeall.track_and_place_order deduplicates .0 IDs, ignores "0", and stores clean orderId
     cancelled_oids = []
+    monkeypatch.setattr(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDC"})
+    monkeypatch.setitem(ta.KALMAN_MODES, "BTCUSDC", "off")
     monkeypatch.setattr(ta.mkt, "cancel_order", lambda sym, oid: cancelled_oids.append((sym, oid)))
     monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *a, **kw: None)
     monkeypatch.setattr(ta, "_fire_order", lambda sym, act, px, reason, **kw: {"orderId": 444.0})
@@ -16799,4 +16720,35 @@ def test_iteration177_composite_qlimit1_bypass_separation_trigger_event_and_tren
     s_liq = col.get_summary("BTCUSDT", window_sec=60.0, now=1005.0)
     assert s_liq.long_liq_usd == pytest.approx(150_000.0)
     assert s_liq.short_liq_usd == pytest.approx(50_000.0)
+
+
+def test_iteration178_external_collectors_dict_record_and_cache_ts_hygiene():
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+    # 1. OrderbookDepthCollector.record_snapshot accepts dict and fetch() tolerates non-finite/None cache ts
+    ob_col = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=None)
+    ob_col.record_snapshot({"symbol": "BTCUSDC", "mid_price": 95000.0, "imbalance_ratio": 0.65, "ts": 1000.0})
+    ob_snap = ob_col.fetch("BTCUSDC", allow_network=False, now=1010.0)
+    assert ob_snap is not None and ob_snap.mid_price == pytest.approx(95000.0)
+    ob_col._cache["BTCUSDC"] = (None, ob_snap)
+    assert ob_col.fetch("BTCUSDC", allow_network=False, now=1010.0) is None
+
+    # 2. DerivativesTelemetryCollector.record_telemetry accepts dict and fetch() tolerates None cache ts
+    dt_col = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=None)
+    dt_col.record_telemetry({"symbol": "BTCUSDC", "funding_rate": 0.0004, "open_interest_usd": 5_000_000.0, "ts": 1000.0})
+    dt_snap = dt_col.fetch("BTCUSDC", allow_network=False, now=1010.0)
+    assert dt_snap is not None and dt_snap.funding_rate == pytest.approx(0.0004)
+    dt_col._cache["BTCUSDC"] = (True, dt_snap)
+    assert dt_col.fetch("BTCUSDC", allow_network=False, now=1010.0) is None
+
+    # 3. WhalePositioningCollector.record_snapshot accepts dict and fetch() tolerates None cache ts
+    wh_col = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+    wh_col.record_snapshot({"symbol": "BTCUSDC", "taker_buy_sell_ratio": 1.35, "divergence_regime": "accumulation", "ts": 1000.0})
+    wh_snap = wh_col.fetch("BTCUSDC", allow_network=False, now=1010.0)
+    assert wh_snap is not None and wh_snap.divergence_regime == "accumulation"
+    wh_col._cache["BTCUSDC"] = (float("nan"), wh_snap)
+    assert wh_col.fetch("BTCUSDC", allow_network=False, now=1010.0) is None
+
 

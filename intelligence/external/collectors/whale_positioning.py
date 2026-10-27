@@ -420,11 +420,15 @@ class WhalePositioningCollector:
                 break
         if cached:
             if isinstance(cached, tuple) and len(cached) >= 2:
-                if 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
-                    return cached[1]
+                c_ts = cached[0]
+                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
+                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
+                        return cached[1]
             elif isinstance(cached, WhalePositioningSnapshot):
-                if 0.0 <= (now - cached.ts) < self.cache_ttl_sec:
-                    return cached
+                c_ts = getattr(cached, "ts", None)
+                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
+                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
+                        return cached
 
         # Check disk cache before network
         disk_snap = self._load_from_disk(symbol, now)
@@ -501,7 +505,10 @@ class WhalePositioningCollector:
                 prev_snap = cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached
             else:
                 prev_snap = self._load_from_disk(symbol, now, ignore_ttl=True)
-            prev_reg = prev_snap.divergence_regime if prev_snap else None
+            prev_reg = (
+                (prev_snap.get("divergence_regime") if isinstance(prev_snap, dict) else getattr(prev_snap, "divergence_regime", None))
+                if prev_snap else None
+            )
             funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
 
             regime = self.classify_regime(
@@ -550,8 +557,13 @@ class WhalePositioningCollector:
 
     def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for testing and deterministic replays)."""
+        import math
+        if isinstance(snapshot, dict):
+            snapshot = WhalePositioningSnapshot.from_dict(snapshot)
         if snapshot is None or not isinstance(getattr(snapshot, "symbol", None), str) or not snapshot.symbol.strip():
             return
-        self._cache[snapshot.symbol.strip().upper()] = (snapshot.ts, snapshot)
+        raw_ts = getattr(snapshot, "ts", None)
+        ts_val = float(raw_ts) if (isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and math.isfinite(float(raw_ts)) and float(raw_ts) > 0.0) else time.time()
+        self._cache[snapshot.symbol.strip().upper()] = (ts_val, snapshot)
         if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(snapshot)
