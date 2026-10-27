@@ -5107,3 +5107,64 @@ def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_pat
     assert "11-1" in be
 
 
+def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardening(tmp_path, monkeypatch):
+    """Verify cacheintegrity, instrument_registry, rtrade_pair_store, HyperliquidProvider, and ReplayMarketDataProvider edge cases."""
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    import cacheintegrity
+    import instrument_registry
+    from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.replay_provider import ReplayMarketDataProvider
+
+    # 1. cacheintegrity.counts_for_records & nonzero_counts
+    assert cacheintegrity.counts_for_records(None) == {}  # type: ignore[arg-type]
+    assert cacheintegrity.counts_for_records("BTCUSDC") == {}  # type: ignore[arg-type]
+    assert cacheintegrity.counts_for_records([("BTCUSDC", {}), ("bad",), ("", {}), ("BTCUSDC", {})]) == {"BTCUSDC": 2}  # type: ignore[list-item]
+    assert cacheintegrity.nonzero_counts(None) == {}  # type: ignore[arg-type]
+    assert cacheintegrity.nonzero_counts({"BTCUSDC": True, "ETHUSDC": -5, "SOLUSDC": 3, "": 2}) == {"SOLUSDC": 3}  # type: ignore[dict-item]
+
+    # 2. instrument_registry: InstrumentSpec.number diagnostics and load_registry path validation
+    spec = instrument_registry.InstrumentSpec(
+        name="test_coin",
+        provider="binance",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="24x7",
+        params={"trailing.pct": "not_a_number"},
+    )
+    with pytest.raises(ValueError, match=r"instruments\.conf \[test_coin\]: invalid number trailing\.pct"):
+        spec.number("trailing.pct")
+    with pytest.raises(ValueError, match="Invalid registry path"):
+        instrument_registry.load_registry(True)  # type: ignore[arg-type]
+    assert len(instrument_registry.load_registry("   ")) > 0
+
+    # 3. rtrade_pair_store: whitespace/case normalization in rtrade_client_order_id, begin, intent, accepted, active
+    assert rtrade_client_order_id(" pair1 ", " buy ", " limit ") == rtrade_client_order_id("pair1", "BUY", "limit")
+    store = RTradePairStore(path=str(tmp_path / "rtrade_pairs.json"))
+    store.begin(" btcusdc ", " p1 ", " buy ", 0.5)
+    store.intent("p1", " buy ", 50000.0, 0.5, "coid1", kind=" limit ")
+    store.accepted("p1", " buy ", "oid1", kind=" limit ")
+    active = store.active(" btcusdc ")
+    assert len(active) == 1 and active[0]["pair_id"] == "p1"
+    assert active[0]["intents"]["limit:BUY"]["order_id"] == "oid1"
+    assert store.active(None) == []
+    assert store.active(True) == []
+
+    # 4. HyperliquidProvider._load_env survives sys.modules['common'] collision
+    hl_prov = HyperliquidProvider()
+    monkeypatch.setitem(sys.modules, "common", SimpleNamespace())
+    hl_prov._load_env()
+    assert hl_prov._env_loaded is True
+
+    # 5. ReplayMarketDataProvider handles non-dict price_series and invalid pair_precision symbol
+    rp = ReplayMarketDataProvider(None)  # type: ignore[arg-type]
+    assert rp.pair_precision("") is None
+    assert rp.pair_precision(True) is None  # type: ignore[arg-type]
+
+
+

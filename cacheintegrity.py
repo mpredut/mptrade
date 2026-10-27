@@ -170,14 +170,36 @@ def dedupe_trade_items_by_id(items: Iterable[dict[str, Any]]) -> list[dict[str, 
 def counts_for_records(records: Iterable[tuple[str, Any]]) -> dict[str, int]:
     """Count JSONL ``(symbol, item)`` records per symbol."""
     counts: defaultdict[str, int] = defaultdict(int)
-    for symbol, _item in records:
-        counts[symbol] += 1
+    if records is None or isinstance(records, (str, bytes, dict, bool)):
+        return {}
+    try:
+        iterator = iter(records)
+    except TypeError:
+        return {}
+    for entry in iterator:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        symbol, _item = entry
+        if isinstance(symbol, str) and symbol:
+            counts[symbol] += 1
     return dict(counts)
 
 
 def nonzero_counts(counts: dict[str, int]) -> dict[str, int]:
     """Filter ``counts`` to symbols with at least one record."""
-    return {symbol: count for symbol, count in counts.items() if count}
+    if not isinstance(counts, dict):
+        return {}
+    out: dict[str, int] = {}
+    for symbol, count in counts.items():
+        if not isinstance(symbol, str) or not symbol or isinstance(count, bool):
+            continue
+        try:
+            c_int = int(count)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if c_int > 0:
+            out[symbol] = c_int
+    return out
 
 
 def build_account_meta_snapshot(

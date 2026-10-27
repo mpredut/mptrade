@@ -81,8 +81,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
     def __init__(self, price_series: Dict[str, List[Tuple[float, float]]],
                  fee_pct: float = 0.1):
-        self._series = price_series
-        self._cursor: Dict[str, int] = {s: 0 for s in price_series}
+        self._series = dict(price_series) if isinstance(price_series, dict) else {}
+        self._cursor: Dict[str, int] = {s: 0 for s in self._series if isinstance(s, str)}
         self._last_ts: Dict[str, float] = {}
         if fee_pct is None or isinstance(fee_pct, bool):
             self._fee_pct = 0.1
@@ -92,13 +92,15 @@ class ReplayMarketDataProvider(MarketDataProvider):
                 self._fee_pct = fp_f if (math.isfinite(fp_f) and fp_f >= 0.0) else 0.1
             except (TypeError, ValueError, OverflowError):
                 self._fee_pct = 0.1
-        self._orders: Dict[str, List[dict]] = {s: [] for s in price_series}
+        self._orders: Dict[str, List[dict]] = {s: [] for s in self._series if isinstance(s, str)}
         self._orders_version: int = 0
         self._orders_cache: Dict[Tuple[str, Optional[str]], Tuple[int, float, float, List[dict]]] = {}
         self._positions: Dict[str, Tuple[float, float]] = {}   # symbol -> (quantity, total cost)
         self._asset_to_symbol: Dict[str, str] = {}
         self._precisions: Dict[str, PairPrecision] = {}
-        for s in price_series:
+        for s in self._series:
+            if not isinstance(s, str) or not s.strip():
+                continue
             base = _base_asset(s).upper()
             self._asset_to_symbol[base] = s
             self._precisions[s] = PairPrecision(
@@ -116,6 +118,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return symbol in self._series
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
+        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return None
         prec = self._precisions.get(symbol)
         if prec is None:
             base = _base_asset(symbol).upper()

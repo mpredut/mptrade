@@ -12,7 +12,10 @@ from state_io import atomic_write_json
 
 
 def rtrade_client_order_id(pair_id, side, kind="limit"):
-    raw = f"{pair_id}:{str(side).upper()}:{kind}".encode("utf-8")
+    raw_pair = str(pair_id if pair_id is not None else "").strip()
+    raw_side = str(side if side is not None else "").strip().upper()
+    raw_kind = str(kind if kind is not None else "limit").strip()
+    raw = f"{raw_pair}:{raw_side}:{raw_kind}".encode("utf-8")
     return "RT_" + hashlib.blake2s(raw, digest_size=16).hexdigest()
 
 
@@ -282,10 +285,13 @@ class RTradePairStore:
 
     def begin(self, symbol, pair_id, start_side, qty):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
+        sym_clean = str(symbol).strip() if isinstance(symbol, str) else symbol
+        pid_clean = str(pair_id).strip() if isinstance(pair_id, str) else pair_id
+        side_clean = str(start_side).strip().upper() if isinstance(start_side, str) else start_side
         now = time.time()
         def op(pairs):
-            pairs[pair_id] = {
-                "symbol": symbol, "pair_id": pair_id, "start_side": start_side,
+            pairs[pid_clean] = {
+                "symbol": sym_clean, "pair_id": pid_clean, "start_side": side_clean,
                 "qty": qty_f, "phase": "reserved", "terminal": False,
                 "intents": {}, "state": None, "created_ts": now, "updated_ts": now,
             }
@@ -297,6 +303,8 @@ class RTradePairStore:
         coid = self._clean_store_id(client_order_id)
         if not coid:
             raise ValueError(f"invalid rtrade intent client ID for {pair_id!r}")
+        side_u = str(side or "").strip().upper()
+        kind_s = str(kind or "limit").strip()
         def op(pairs):
             now = time.time()
             rec = pairs.get(pair_id)
@@ -304,16 +312,17 @@ class RTradePairStore:
                 if not symbol:
                     raise KeyError(f"unknown pair: {pair_id}")
                 rec = pairs[pair_id] = {
-                    "symbol": symbol, "pair_id": pair_id,
-                    "start_side": (start_side or side).upper(),
+                    "symbol": str(symbol).strip() if isinstance(symbol, str) else symbol,
+                    "pair_id": pair_id,
+                    "start_side": str(start_side or side_u).strip().upper(),
                     "qty": qty_f, "phase": "reserved", "terminal": False,
                     "intents": {}, "state": None,
                     "created_ts": now, "updated_ts": now,
                 }
-            key = f"{kind}:{side.upper()}"
+            key = f"{kind_s}:{side_u}"
             value = {
-                "side": side.upper(), "price": price, "qty": qty_f,
-                "client_order_id": coid, "kind": kind,
+                "side": side_u, "price": price, "qty": qty_f,
+                "client_order_id": coid, "kind": kind_s,
                 "order_id": None,
             }
             if rec["intents"].get(key) == value:
@@ -332,8 +341,8 @@ class RTradePairStore:
         in the JSON so an older checkout can still recover records written by the
         new coordinator.
         """
-        side = str(side).upper()
-        kind = str(kind)
+        side = str(side or "").strip().upper()
+        kind = str(kind or "").strip()
         key = f"{kind}:{side}"
 
         def op(pairs):
@@ -388,8 +397,10 @@ class RTradePairStore:
         clean_oid = self._clean_store_id(order_id)
         if not clean_oid:
             raise ValueError(f"invalid rtrade accepted order_id: {order_id!r}")
+        side_u = str(side or "").strip().upper()
+        kind_s = str(kind or "limit").strip()
         def op(pairs):
-            key = f"{kind}:{side.upper()}"
+            key = f"{kind_s}:{side_u}"
             pairs[pair_id]["intents"][key]["order_id"] = clean_oid
             pairs[pair_id]["updated_ts"] = time.time()
         self.mutate(op)
@@ -426,7 +437,13 @@ class RTradePairStore:
         self.mutate(op)
 
     def active(self, symbol):
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return []
+        sym_norm = symbol.strip().upper()
         with FileLock(self.lock_path):
             pairs = self._read().get("pairs", {})
-        return [rec for rec in pairs.values()
-                if rec.get("symbol") == symbol and not rec.get("terminal")]
+        return [
+            rec for rec in pairs.values()
+            if str(rec.get("symbol") or "").strip().upper() == sym_norm
+            and not rec.get("terminal")
+        ]

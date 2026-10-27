@@ -176,7 +176,18 @@ class HyperliquidProvider(MarketDataProvider):
         try:
             if _HL_DIR not in sys.path:
                 sys.path.insert(0, _HL_DIR)
-            from common import load_env_stack  # hyperliquid/common.py
+            try:
+                from common import load_env_stack  # hyperliquid/common.py
+            except ImportError:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    "_hl_common_fallback", os.path.join(_HL_DIR, "common.py")
+                )
+                if spec is None or spec.loader is None:
+                    raise
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                load_env_stack = mod.load_env_stack
             load_env_stack(os.path.join(_HL_DIR, ".env"))
         except Exception as e:  # noqa: BLE001 — Without env files, use public data only.
             print(f"[HL] _load_env failed: {e}")

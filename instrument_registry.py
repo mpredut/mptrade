@@ -66,7 +66,11 @@ class InstrumentSpec:
         return _required(self.params, key_norm, self.name)
 
     def number(self, key):
-        value = float(self.setting(key))
+        raw = self.setting(key)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"instruments.conf [{self.name}]: invalid number {key}={raw!r}") from exc
         if not math.isfinite(value):
             raise ValueError(f"instruments.conf [{self.name}]: {key} must be finite")
         return value
@@ -85,6 +89,10 @@ class InstrumentSpec:
 
 def load_registry(path=None):
     """Validate the complete registry before returning any instrument."""
+    if isinstance(path, bool):
+        raise ValueError(f"Invalid registry path: {path!r}")
+    if isinstance(path, str):
+        path = path.strip() or None
     path = Path(path) if path is not None else DEFAULT_PATH
     cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
     # read_file propagates missing files, permissions, and malformed configuration.
