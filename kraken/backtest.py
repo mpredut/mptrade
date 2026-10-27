@@ -54,7 +54,10 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
             if k in base and base[k] is not None:
                 if isinstance(base[k], bool):
                     raise ValueError(f"boolean not allowed for {k}")
-                return base[k]
+                val = float(base[k])
+                if val != val or abs(val) == float("inf"):
+                    raise ValueError(f"non-finite value not allowed for {k}")
+                return val
         return default
 
     fields = dict(

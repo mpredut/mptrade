@@ -151,7 +151,8 @@ def _load_report(path: Path) -> dict:
 
 def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, tuple[list[dict], dict, int]]:
     datasets = {}
-    warmup_bars = int(report.get("walk_forward", {}).get("signal_warmup_bars", 0))
+    wf_cfg = report.get("walk_forward") if isinstance(report.get("walk_forward"), dict) else {}
+    warmup_bars = max(0, int(_safe_f(wf_cfg.get("signal_warmup_bars"), 0.0)))
 
     def _resolve_frozen_file(raw_path: str | Path) -> Path:
         p = Path(raw_path).expanduser()
@@ -177,8 +178,8 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
                 raise ValueError(
                     f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
                 )
-            window_sizes = section.get("window_sizes") or section.get("windows")
-            warmup = int(window_sizes.get("signal_warmup_bars", warmup_bars))
+            window_sizes = section.get("window_sizes") or section.get("windows") or {}
+            warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
             datasets[interval] = (records, window_sizes, warmup)
     elif "dataset" in report and ("windows" in report or "window_sizes" in report):
         interval_raw = (
@@ -216,8 +217,8 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             raise ValueError(
                 f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
             )
-        window_sizes = report.get("windows") or report.get("window_sizes")
-        warmup = int(window_sizes.get("signal_warmup_bars", warmup_bars))
+        window_sizes = report.get("windows") or report.get("window_sizes") or {}
+        warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
         datasets[interval] = (records, window_sizes, warmup)
     return datasets
 
@@ -274,7 +275,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
     if norm_venue in ("kraken", "binance"):
         base_params = StratParams.from_dict(raw_params, defaults=spot_defaults)
         raw_fee = source_report.get("fee_pct_per_leg")
-        base_fee = float(raw_fee if raw_fee is not None else (0.26 if norm_venue == "kraken" else 0.10))
+        base_fee = max(0.0, _safe_f(raw_fee, 0.26 if norm_venue == "kraken" else 0.10))
         return base_params, base_fee, _segment_result
 
     if norm_venue == "hyperliquid":
@@ -284,7 +285,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         raw_fee = source_report.get("fee_pct_per_leg")
         if raw_fee is None:
             raw_fee = raw_params.get("fee_pct")
-        base_fee = float(raw_fee if raw_fee is not None else 0.035)
+        base_fee = max(0.0, _safe_f(raw_fee, 0.035))
 
         if engine == "spot":
             defaults = {
@@ -336,12 +337,27 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         t212_replay = _load_t212_replay()
         t212_params_cls = t212_replay._strat.StratParams
         valid_fields = {f.name for f in dataclasses.fields(t212_params_cls)}
-        filtered = {k: v for k, v in raw_params.items() if k in valid_fields}
+        t212_defaults = {
+            "currency": "USD",
+            "entry_amount": 50.0,
+            "entry_discount_pct": 0.2,
+            "dca_amount": 30.0,
+            "dca_drop_pct": 2.0,
+            "check_minutes": 5.0,
+            "takeprofit_pct": 5.0,
+            "max_budget": 500.0,
+            "max_dca_buys": 10,
+            "validity": "DAY",
+            "enable_takeprofit": True,
+            "order_ttl_min": 10.0,
+            "stop_loss_pct": 10.0,
+        }
+        filtered = {**t212_defaults, **{k: v for k, v in raw_params.items() if k in valid_fields}}
         base_params = t212_params_cls(**filtered)
         raw_fee = source_report.get("fee_pct_per_leg")
         if raw_fee is None:
             raw_fee = raw_params.get("fx_fee_pct")
-        base_fee = float(raw_fee if raw_fee is not None else 0.0)
+        base_fee = max(0.0, _safe_f(raw_fee, 0.0))
         fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
         raw_fx_unit = _safe_f(fx_model.get("usd_per_unit"), 1.0)
         fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
@@ -355,9 +371,9 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
                     fx_path = alt
             if fx_path.exists():
                 fx_records = load_frozen_dataset(fx_path)
-        exec_meta = source_report.get("execution_model") or {}
-        ppy = exec_meta.get("calendar_periods_per_year")
-        periods_yr = float(ppy) if ppy is not None else None
+        exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
+        ppy = _safe_f(exec_meta.get("calendar_periods_per_year"), 0.0)
+        periods_yr = ppy if ppy > 0.0 else None
 
         def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
             if hasattr(params, "fx_fee_pct") and fee_pct is not None and params.fx_fee_pct != fee_pct:

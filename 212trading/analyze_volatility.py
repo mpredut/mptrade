@@ -41,30 +41,55 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
     n_ohlc = min(len(o), len(h), len(l), len(c))
     out = []
     for i, t in enumerate(ts):
-        if i < n_ohlc and None not in (o[i], h[i], l[i], c[i]):
-            if any(isinstance(val, bool) for val in (o[i], h[i], l[i], c[i])):
+        if i < n_ohlc and None not in (t, o[i], h[i], l[i], c[i]):
+            if any(isinstance(val, bool) for val in (t, o[i], h[i], l[i], c[i])):
                 continue
             try:
+                tf = float(t)
                 of, hf, lf, cf = float(o[i]), float(h[i]), float(l[i]), float(c[i])
                 vf = float(v[i]) if i < len(v) and v[i] is not None and not isinstance(v[i], bool) else 0.0
             except (TypeError, ValueError, OverflowError):
                 continue
-            if all(math.isfinite(val) and val > 0 for val in (of, hf, lf, cf)) and hf >= lf:
-                out.append((t, of, hf, lf, cf, vf if math.isfinite(vf) and vf > 0 else 0))
+            if (
+                all(math.isfinite(val) and val > 0 for val in (tf, of, hf, lf, cf))
+                and hf >= max(of, cf, lf)
+                and lf <= min(of, cf, hf)
+            ):
+                out.append((int(tf) if isinstance(t, int) else tf, of, hf, lf, cf, vf if math.isfinite(vf) and vf > 0 else 0))
     meta = res.get("meta")
     return out, meta if isinstance(meta, dict) else {}
 
 
 def pct(a, b):
-    return (a - b) / b * 100 if b else 0.0
+    if a is None or b is None or isinstance(a, bool) or isinstance(b, bool):
+        return 0.0
+    try:
+        af, bf = float(a), float(b)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not (math.isfinite(af) and math.isfinite(bf) and bf > 0):
+        return 0.0
+    return (af - bf) / bf * 100.0
 
 
 def pullbacks(closes):
     """Return pullback depths below the running peak for DCA spacing."""
     if not closes:
         return []
-    peak = closes[0]; dips = []; cur = 0.0
+    clean = []
     for c in closes:
+        if c is None or isinstance(c, bool):
+            continue
+        try:
+            cf = float(c)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(cf) and cf > 0:
+            clean.append(cf)
+    if not clean:
+        return []
+    peak = clean[0]; dips = []; cur = 0.0
+    for c in clean:
         if c >= peak:
             if cur > 0:
                 dips.append(cur)

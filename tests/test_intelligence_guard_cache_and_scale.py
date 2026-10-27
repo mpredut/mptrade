@@ -14784,6 +14784,58 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
     assert len(store.active("BTCUSDC")) == 1
 
 
+def test_iteration150_walk_forward_compare_analyze_volatility_and_kraken_bt_params_safety():
+    """Iteration 150:
+    1. offline.runners.walk_forward_compare._build_venue_evaluator safely sanitizes
+       bool/NaN/negative fee_pct_per_leg and calendar_periods_per_year.
+    2. 212trading.analyze_volatility.pct and pullbacks safely handle bool/None/NaN/non-positive values.
+    3. kraken.backtest._bt_params coerces float-strings for maxdca/entry and rejects NaN/Inf.
+    """
+    import importlib.util
+    import os
+    import pytest
+    from kraken import backtest as k_bt
+    from offline.runners.walk_forward_compare import _build_venue_evaluator
+
+    # 1. walk_forward_compare._build_venue_evaluator fee & ppy sanitization
+    _p, fee_k, _fn = _build_venue_evaluator("kraken", {"fee_pct_per_leg": True})
+    assert fee_k == 0.26
+    _p_t, fee_t, _fn_t = _build_venue_evaluator(
+        "t212",
+        {
+            "strategy_params": {
+                "currency": "USD", "yahoo_sym": "NVDA", "entry_pct": 10.0, "dca_pct": 10.0,
+                "entry_discount_pct": 0.2, "dca_drop_pct": 2.0, "check_minutes": 5.0,
+                "takeprofit_pct": 5.0, "max_budget": 1000.0, "max_dca_buys": 5,
+                "order_ttl_min": 10.0, "stop_loss_pct": 10.0, "fx_fee_pct": 0.15,
+            },
+            "fee_pct_per_leg": float("nan"),
+            "execution_model": {"calendar_periods_per_year": "bad"},
+        },
+    )
+    assert fee_t == 0.0
+
+    # 2. 212trading/analyze_volatility.py pct & pullbacks
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    av_spec = importlib.util.spec_from_file_location("t212_av_t150", os.path.join(root, "212trading", "analyze_volatility.py"))
+    av_mod = importlib.util.module_from_spec(av_spec)
+    assert av_spec and av_spec.loader
+    av_spec.loader.exec_module(av_mod)
+
+    assert av_mod.pct(True, 100.0) == 0.0
+    assert av_mod.pct(100.0, float("nan")) == 0.0
+    assert av_mod.pct(100.0, -5.0) == 0.0
+    assert av_mod.pullbacks([True, float("nan"), -10.0, 100.0, 80.0, 105.0]) == [25.0]
+
+    # 3. kraken.backtest._bt_params float-string maxdca and NaN rejection
+    bt_p = k_bt._bt_params({"entry": "150.0", "maxdca": "8.0"})
+    assert bt_p.entry_amount == 150.0
+    assert bt_p.max_dca_buys == 8
+    with pytest.raises(ValueError):
+        k_bt._bt_params({"entry": float("nan")})
+
+
+
 
 
 
