@@ -78,18 +78,20 @@ class ExecutionModel:
     ) -> bool:
         """Evaluate the limit against bid/ask estimated from the observed OHLC."""
         half_spread = self.spread_bps / 20_000.0
-        if side.lower() == "buy":
+        side_l = side.strip().lower() if isinstance(side, str) else ""
+        if side_l == "buy":
             return float(low) * (1.0 + half_spread) <= float(limit)
-        if side.lower() == "sell":
+        if side_l == "sell":
             return float(high) * (1.0 - half_spread) >= float(limit)
         raise ValueError(f"side invalid: {side}")
 
     def market_price(self, side: str, open_price: float) -> float:
         """Adverse market price: half a spread plus slippage."""
         adverse = (self.spread_bps / 2.0 + self.market_slippage_bps) / 10_000.0
-        if side.lower() == "buy":
+        side_l = side.strip().lower() if isinstance(side, str) else ""
+        if side_l == "buy":
             return float(open_price) * (1.0 + adverse)
-        if side.lower() == "sell":
+        if side_l == "sell":
             return float(open_price) * (1.0 - adverse)
         raise ValueError(f"side invalid: {side}")
 
@@ -107,6 +109,9 @@ def split_order_fill(
     The ratio applies to the initial quantity, not repeatedly to the remainder,
     so ``0.25`` closes the order in at most four eligible events.
     """
+    if isinstance(ratio, bool) or not math.isfinite(float(ratio)) or float(ratio) <= 0:
+        raise ValueError("ratio must be positive and finite")
+    ratio = float(ratio)
     remaining = float(order[quantity_key])
     if remaining <= 0:
         raise ValueError("the order has no quantity left to execute")

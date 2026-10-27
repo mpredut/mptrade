@@ -273,7 +273,12 @@ def _optional_min(values: list[float | None]) -> float | None:
 
 def parse_intervals(value: str) -> list[int]:
     """Parse comma-separated positive integer interval minutes."""
-    intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
+    if not isinstance(value, str):
+        raise argparse.ArgumentTypeError("intervals must be positive minutes")
+    try:
+        intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("intervals must be positive minutes") from exc
     if not intervals or any(interval <= 0 for interval in intervals):
         raise argparse.ArgumentTypeError("intervals must be positive minutes")
     return intervals
@@ -283,9 +288,15 @@ def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
     """Parse repeatable INTERVAL=PATH CLI specifications into a resolved Path mapping."""
     result: dict[int, Path] = {}
     for spec in specs:
+        if not isinstance(spec, str):
+            raise ValueError(f"invalid dataset spec {spec!r}; format is INTERVAL=PATH")
         try:
             interval, path = spec.split("=", 1)
-            result[int(interval)] = Path(path).expanduser().resolve()
+            interval_i = int(interval.strip())
+            p_str = path.strip()
+            if interval_i <= 0 or not p_str:
+                raise ValueError("interval must be positive and path non-empty")
+            result[interval_i] = Path(p_str).expanduser().resolve()
         except (ValueError, OSError) as exc:
             raise ValueError(f"invalid dataset spec {spec!r}; format is INTERVAL=PATH") from exc
     return result

@@ -149,8 +149,14 @@ def calculate_performance_metrics(
 def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
     """Format standardized RISC and EXECUTIE summary lines across backtest harnesses."""
     def metric(name: str, digits: int = 2) -> str:
-        value = m.get(name)
-        return "n/a" if value is None else f"{value:.{digits}f}"
+        value = m.get(name) if isinstance(m, dict) else None
+        if value is None or isinstance(value, bool):
+            return "n/a"
+        try:
+            vf = float(value)
+            return f"{vf:.{digits}f}" if math.isfinite(vf) else "n/a"
+        except (TypeError, ValueError, OverflowError):
+            return "n/a"
 
     lines = [
         (f"{indent}RISC: maxDD {metric('max_drawdown_pct')}%  "

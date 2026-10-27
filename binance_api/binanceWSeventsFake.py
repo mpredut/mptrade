@@ -12,6 +12,7 @@ balances_cache = {}
 orders_cache = {}
 trades_cache = []
 _MAX_TRADES_CACHE = 1000
+_MAX_ORDERS_CACHE = 5000
 
 
 def _safe_float(val, default=0.0):
@@ -36,7 +37,7 @@ def handle_execution_report(data):
     event_type = data.get("x", "")
     side = data.get("S", "")
 
-    if order_id is not None:
+    if order_id is not None and not isinstance(order_id, bool):
         orders_cache[order_id] = {
             "symbol": symbol,
             "side": side,
@@ -47,6 +48,9 @@ def handle_execution_report(data):
             "executedQty": _safe_float(data.get("z"), 0.0),
             "updateTime": data.get("E"),
         }
+        if len(orders_cache) > _MAX_ORDERS_CACHE:
+            for k in list(orders_cache.keys())[:-_MAX_ORDERS_CACHE]:
+                orders_cache.pop(k, None)
 
     if event_type == "TRADE":
         trade = {
@@ -66,6 +70,9 @@ def handle_execution_report(data):
         print(f"[ORDER UPDATE] {symbol} → {status}")
 
 def handle_balance_update(asset, delta, timestamp):
+    if not isinstance(asset, str) or not asset.strip():
+        return
+    asset = asset.strip()
     delta_f = _safe_float(delta, 0.0)
     prev_f = _safe_float(balances_cache.get(asset, 0.0), 0.0)
     balances_cache[asset] = prev_f + delta_f
@@ -78,7 +85,10 @@ def handle_account_position(balances):
     for bal in balances:
         if not isinstance(bal, dict):
             continue
-        asset = bal["a"] if "a" in bal else bal.get("asset", "")
+        raw_asset = bal["a"] if "a" in bal else bal.get("asset", "")
+        if not isinstance(raw_asset, str) or not raw_asset.strip():
+            continue
+        asset = raw_asset.strip()
         free = _safe_float(bal.get("f", bal.get("free", 0)), 0.0)
         locked = _safe_float(bal.get("l", bal.get("locked", 0)), 0.0)
         balances_cache[asset] = free + locked

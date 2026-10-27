@@ -13220,7 +13220,13 @@ def test_iteration127_prune_threads_replay_provider_rtrade_pair_and_state_store_
         PairCoordinator.from_state(
             dummy_venue,
             pol,
-            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "bogus_phase", "tickets": []},
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "   ", "tickets": []},
+        )
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint phase"):
+        PairCoordinator.from_state(
+            dummy_venue,
+            pol,
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": True, "tickets": []},
         )
     pc = PairCoordinator.from_state(
         dummy_venue,
@@ -13259,6 +13265,56 @@ def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
     assert og.compute_weight_capped_qty(0.5, 100.0, float("inf"), 10.0, 0.0) == 5.0
     assert og.compute_weight_capped_qty(0.5, 100.0, float("-inf"), 10.0, 0.0) == 0.0
     assert og.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
+
+
+def test_iteration129_wsevents_fake_and_backtest_execution_evaluation_safety():
+    """Verify Iteration 129 binanceWSeventsFake cache bounds/asset hygiene, ExecutionModel side/ratio validation, format_performance_summary non-finite metrics, and evaluation CLI parsers."""
+    import argparse
+    from binance_api import binanceWSeventsFake as wsf
+    from offline.backtests.evaluation import parse_dataset_specs, parse_intervals
+    from offline.backtests.execution import ExecutionModel, split_order_fill
+    from offline.backtests.metrics import format_performance_summary
+
+    # 1. binanceWSeventsFake ignores boolean order_id and blank/boolean assets
+    wsf.orders_cache.clear()
+    wsf.balances_cache.clear()
+    wsf.handle_execution_report({"s": "BTCUSDC", "i": True, "X": "NEW"})
+    assert True not in wsf.orders_cache
+    wsf.handle_balance_update("   ", 10.0, 1000)
+    wsf.handle_balance_update(True, 10.0, 1000)
+    assert wsf.balances_cache == {}
+    wsf.handle_account_position([{"a": "  ", "f": 5}, {"a": True, "f": 5}, {"a": " BTC ", "f": "1.5", "l": "0.5"}])
+    assert wsf.balances_cache == {"BTC": 2.0}
+
+    # 2. ExecutionModel.limit_touched / market_price and split_order_fill
+    em = ExecutionModel()
+    assert em.limit_touched(" BUY ", high=105.0, low=95.0, limit=100.0) is True
+    with pytest.raises(ValueError, match="side invalid"):
+        em.limit_touched(None, high=105.0, low=95.0, limit=100.0)
+    with pytest.raises(ValueError, match="side invalid"):
+        em.market_price(True, 100.0)
+    with pytest.raises(ValueError, match="ratio must be positive and finite"):
+        split_order_fill({"vol": 10.0}, quantity_key="vol", ratio=0.0)
+    with pytest.raises(ValueError, match="ratio must be positive and finite"):
+        split_order_fill({"vol": 10.0}, quantity_key="vol", ratio=True)
+
+    # 3. format_performance_summary renders NaN/bool/non-numeric metrics as n/a
+    lines = format_performance_summary(
+        {"max_drawdown_pct": float("nan"), "sharpe": True, "sortino": "bad", "exposure_pct": 42.5}
+    )
+    assert "maxDD n/a%" in lines[0]
+    assert "Sharpe n/a" in lines[0]
+    assert "Sortino n/a" in lines[0]
+    assert "expunere 42.50%" in lines[1]
+
+    # 4. parse_intervals and parse_dataset_specs reject non-numeric / non-positive / empty path specs
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_intervals("60,abc")
+    with pytest.raises(ValueError, match="invalid dataset spec"):
+        parse_dataset_specs(["0=/tmp/data.json"])
+    with pytest.raises(ValueError, match="invalid dataset spec"):
+        parse_dataset_specs(["60=   "])
+
 
 
 

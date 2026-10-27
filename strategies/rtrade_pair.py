@@ -426,12 +426,7 @@ class PairCoordinator:
             raise ValueError("invalid rtrade checkpoint pair_id")
         obj.pair_id = str(raw_pair_id).strip()
         raw_phase = state.get("phase")
-        valid_phases = {
-            "idle", "quoting", "exposed", "closing", "stopping",
-            "startup_recovery", "hard_stop_recovery",
-            "complete", "expired", "failed", "hard_stop",
-        }
-        if raw_phase is None or isinstance(raw_phase, bool) or str(raw_phase).strip() not in valid_phases:
+        if raw_phase is None or isinstance(raw_phase, bool) or not str(raw_phase).strip():
             raise ValueError("invalid rtrade checkpoint phase")
         obj.phase = str(raw_phase).strip()
         obj.reason = state.get("reason")
