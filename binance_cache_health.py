@@ -185,12 +185,21 @@ def _publish_locked() -> None:
     )
 
 
+def _normalize_cache_name(cache_name: object) -> str:
+    if isinstance(cache_name, type):
+        return cache_name.__name__
+    if isinstance(cache_name, str):
+        return cache_name.strip()
+    return ""
+
+
 def record_successful_sync(cache_name: str, data_version: str, *,
                            now_ms: Optional[int] = None) -> bool:
     """Publish one complete, persisted Order or Trade reconciliation success."""
-    if not isinstance(cache_name, str) or not isinstance(data_version, str):
+    norm_name = _normalize_cache_name(cache_name)
+    if not norm_name or not isinstance(data_version, str):
         return False
-    fields = _SYNC_FIELDS.get(cache_name.strip())
+    fields = _SYNC_FIELDS.get(norm_name)
     version = data_version.strip()
     if fields is None or not version:
         return False
@@ -212,9 +221,10 @@ def record_successful_sync(cache_name: str, data_version: str, *,
 def record_persisted_version(cache_name: str, data_version: str, *,
                              now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
-    if not isinstance(cache_name, str) or not isinstance(data_version, str):
+    norm_name = _normalize_cache_name(cache_name)
+    if not norm_name or not isinstance(data_version, str):
         return False
-    fields = _SYNC_FIELDS.get(cache_name.strip())
+    fields = _SYNC_FIELDS.get(norm_name)
     version = data_version.strip()
     if fields is None or not version:
         return False
@@ -231,12 +241,16 @@ def record_persisted_version(cache_name: str, data_version: str, *,
 
 
 def _positive_int(value, field: str) -> int:
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"invalid {field}")
     return value
 
 
 def _nonnegative_int(value, field: str) -> int:
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"invalid {field}")
     return value

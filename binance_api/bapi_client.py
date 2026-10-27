@@ -160,7 +160,15 @@ def stop_periodic_resync(timeout=2.0):
         _resync_stop_event.set()
 
     if thread is not None and thread is not threading.current_thread():
-        thread.join(timeout=timeout)
+        join_timeout = 2.0
+        if timeout is not None and not isinstance(timeout, bool):
+            try:
+                cand_t = float(timeout)
+                if cand_t == cand_t and abs(cand_t) != float("inf") and cand_t >= 0.0:
+                    join_timeout = cand_t
+            except (TypeError, ValueError, OverflowError):
+                pass
+        thread.join(timeout=join_timeout)
 
     with _resync_lock:
         if _resync_thread is thread and (thread is None or not thread.is_alive()):

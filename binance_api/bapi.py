@@ -74,6 +74,7 @@ def update_price(symbol):
     """Refresh one REST quote without making an older value look fresh."""
     if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         return None
+    symbol = symbol.strip().upper()
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         raw_px = ticker["price"]
@@ -95,6 +96,7 @@ def get_current_price(symbol):
     """Return a bounded-age REST quote, failing closed after refresh failure."""
     if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         return None
+    symbol = symbol.strip().upper()
     now = time.time()
     cached_at = cprice_time.get(symbol)
     cached = cprice.get(symbol)
@@ -177,13 +179,17 @@ def get_account_assets_balances(raise_errors=False):
             ):
                 raise ValueError(f"invalid non-finite or negative balance: {balance!r}")
             total_qty = free_qty + locked_qty
+            raw_asset = balance.get("asset")
+            asset_name = raw_asset.strip() if isinstance(raw_asset, str) else ""
+            if not asset_name:
+                continue
             if total_qty <= 0:
-                if balance.get('asset') in sym.symbols:
-                    print(f"get_account_assets_balances: Skip {balance.get('asset')} because total_qty is 0")
+                if asset_name in sym.symbols:
+                    print(f"get_account_assets_balances: Skip {asset_name} because total_qty is 0")
                     continue
             result.append(
                 {
-                    "asset": balance.get("asset"),
+                    "asset": asset_name,
                     "free": free_qty,
                     "locked": locked_qty,
                     "total": total_qty,
@@ -262,11 +268,20 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
                 except (TypeError, ValueError, OverflowError):
                     pass
-            raw_oid = (
-                order['orderId']
-                if (order.get('orderId') is not None and not isinstance(order.get('orderId'), bool))
-                else extract_order_id(order)
-            )
+            raw_oid = order.get('orderId')
+            if isinstance(raw_oid, float):
+                if not math.isfinite(raw_oid) or not raw_oid.is_integer():
+                    raw_oid = None
+                else:
+                    raw_oid = int(raw_oid)
+            elif isinstance(raw_oid, str):
+                raw_oid = raw_oid.strip() or None
+                if raw_oid is not None and raw_oid.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+                    raw_oid = None
+            elif not isinstance(raw_oid, int) or isinstance(raw_oid, bool):
+                raw_oid = None
+            if raw_oid is None:
+                raw_oid = extract_order_id(order)
             if raw_oid is None or isinstance(raw_oid, bool):
                 continue
             filtered_orders[raw_oid] = {
@@ -293,9 +308,20 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
           
 def cancel_order(symbol, order_id):
     try:
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        cleaned_oid = (
+            extract_order_id(order_id, default=None)
+            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
+            else None
+        )
+        if cleaned_oid is None:
             return False
-        client.cancel_order(symbol=symbol, orderId=order_id)
+        if isinstance(order_id, int) and not isinstance(order_id, bool):
+            oid_arg = order_id
+        elif isinstance(order_id, float) and math.isfinite(order_id) and order_id.is_integer():
+            oid_arg = int(order_id)
+        else:
+            oid_arg = cleaned_oid
+        client.cancel_order(symbol=symbol, orderId=oid_arg)
         print(f"The order with ID {order_id} was cancelled.")
         return True
     except Exception as e:
@@ -405,10 +431,15 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
 def check_order_filled(order_id, symbol):
     """Legacy adapter; new code uses market_api.order_status()."""
     try:
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        cleaned_oid = (
+            extract_order_id(order_id, default=None)
+            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
+            else None
+        )
+        if cleaned_oid is None:
             return False
         from providers.market_api import api as market_api
-        return market_api.order_status(symbol, str(order_id).strip()).fully_filled
+        return market_api.order_status(symbol, cleaned_oid).fully_filled
     except Exception as e:
         print(f"Error checking order status: {e}")
         return False

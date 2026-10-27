@@ -13587,3 +13587,51 @@ def test_iteration132_backtest_benchmark_calibration_and_comparison_safety():
     assert "| `cand1` | n/a |" in md
 
 
+def test_iteration133_bapi_open_orders_cancel_and_cache_health_hygiene(monkeypatch):
+    """Verify bapi.get_open_orders/cancel_order/check_order_filled/get_current_price hygiene, bapi_client.stop_periodic_resync timeout safety, and binance_cache_health class-name & float-int handling."""
+    from types import SimpleNamespace
+    import binance_cache_health as bch
+    from binance_api import bapi, bapi_client
+
+    # 1. bapi.get_current_price normalizes symbol casing/whitespace to hit cprice cache
+    bapi.cprice["BTCUSDC"] = 64000.0
+    bapi.cprice_time["BTCUSDC"] = bapi.time.time()
+    assert bapi.get_current_price(" btcusdc ") == pytest.approx(64000.0)
+
+    # 2. bapi.get_open_orders rejects sentinel/container orderId and normalizes integer float orderId
+    monkeypatch.setattr(bapi.sym, "validate_params", lambda *_a: None)
+    monkeypatch.setattr(
+        bapi,
+        "client",
+        SimpleNamespace(
+            get_open_orders=lambda symbol: [
+                {"orderId": "nan", "side": "BUY", "price": "100", "origQty": "1"},
+                {"orderId": {"bad": 1}, "side": "BUY", "price": "100", "origQty": "1"},
+                {"orderId": 444.0, "side": "BUY", "price": "100", "origQty": "1"},
+            ],
+            cancel_order=lambda **kw: (_ for _ in ()).throw(AssertionError(f"Should not cancel {kw}")),
+        ),
+    )
+    open_ords = bapi.get_open_orders("BUY", "BTCUSDC")
+    assert list(open_ords.keys()) == [444]
+
+    # 3. bapi.cancel_order and check_order_filled reject sentinel strings ("nan", "null") and containers
+    assert bapi.cancel_order("BTCUSDC", "nan") is False
+    assert bapi.cancel_order("BTCUSDC", "null") is False
+    assert bapi.cancel_order("BTCUSDC", {"a": 1}) is False
+    assert bapi.check_order_filled("nan", "BTCUSDC") is False
+    assert bapi.check_order_filled([123], "BTCUSDC") is False
+
+    # 4. bapi_client.stop_periodic_resync tolerates boolean/NaN/negative timeout
+    assert bapi_client.stop_periodic_resync(timeout=True) is True
+    assert bapi_client.stop_periodic_resync(timeout=float("nan")) is True
+    assert bapi_client.stop_periodic_resync(timeout=-5.0) is True
+
+    # 5. binance_cache_health._positive_int / _nonnegative_int accept integer floats and _normalize_cache_name handles class objects
+    assert bch._positive_int(100.0, "writer_pid") == 100
+    assert bch._nonnegative_int(0.0, "generation") == 0
+    class CacheOrderManager:
+        pass
+    assert bch._normalize_cache_name(CacheOrderManager) == "CacheOrderManager"
+
+
