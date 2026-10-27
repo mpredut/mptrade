@@ -76,9 +76,9 @@ class WhaleDivergenceGuard:
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
         side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm == "B":
+        if side_norm in ("B", "BUY", "BID", "LONG"):
             side_norm = "BUY"
-        elif side_norm == "S":
+        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
             side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(

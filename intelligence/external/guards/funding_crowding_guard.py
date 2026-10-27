@@ -57,9 +57,9 @@ class FundingCrowdingGuard:
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
         side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm == "B":
+        if side_norm in ("B", "BUY", "BID", "LONG"):
             side_norm = "BUY"
-        elif side_norm == "S":
+        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
             side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(

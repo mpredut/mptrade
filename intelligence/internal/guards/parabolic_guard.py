@@ -52,9 +52,9 @@ class ParabolicSurgeGuard:
     ) -> GuardDecision:
         """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
         side_u = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_u == "B":
+        if side_u in ("B", "BUY", "BID", "LONG"):
             side_u = "BUY"
-        elif side_u == "S":
+        elif side_u in ("S", "SELL", "ASK", "A", "SHORT"):
             side_u = "SELL"
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")

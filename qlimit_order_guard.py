@@ -198,12 +198,22 @@ def check_qlimit2_order_guards(
     explicit_duration_override = dur_sec > 0.0
     if dur_sec <= 0.0:
         if regime_context is not None:
-            dur_sec = _valid_dur(getattr(regime_context, "trend_duration_seconds", 0.0))
+            raw_ctx_dur = (
+                regime_context.get("trend_duration_seconds", 0.0)
+                if isinstance(regime_context, dict)
+                else getattr(regime_context, "trend_duration_seconds", 0.0)
+            )
+            dur_sec = _valid_dur(raw_ctx_dur)
         if dur_sec <= 0.0:
             dur_sec = _valid_dur(_resolve_trend_duration(symbol))
 
     if dur_sec > 0.0:
-        if explicit_duration_override and getattr(regime_context, "resolved_trend", None) is None:
+        ctx_rt = (
+            (regime_context.get("resolved_trend") or regime_context.get("regime"))
+            if isinstance(regime_context, dict)
+            else (getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None))
+        )
+        if explicit_duration_override and ctx_rt is None:
             trend_dir = None
         else:
             trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context)

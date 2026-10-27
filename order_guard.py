@@ -1301,8 +1301,10 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
                     break
                 if isinstance(entry, dict) and isinstance(entry.get("direction"), str):
                     d = entry.get("direction").strip().lower()
-                    if d in ("up", "down", "bull", "bear"):
-                        return d
+                    if d in ("up", "bull", "uptrend", "bullish"):
+                        return "bull" if d in ("uptrend", "bullish") else d
+                    if d in ("down", "bear", "downtrend", "bearish"):
+                        return "bear" if d in ("downtrend", "bearish") else d
     except Exception:
         pass
     return None
@@ -1311,9 +1313,16 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
 def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
     """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
     if regime_context is not None:
-        rt = getattr(regime_context, "resolved_trend", None)
-        if isinstance(rt, str) and rt.strip().lower() in ("up", "down", "bull", "bear"):
-            return rt.strip().lower()
+        if isinstance(regime_context, dict):
+            rt = regime_context.get("resolved_trend") or regime_context.get("regime")
+        else:
+            rt = getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None)
+        if isinstance(rt, str):
+            rtl = rt.strip().lower()
+            if rtl in ("up", "bull", "uptrend", "bullish"):
+                return "bull" if rtl in ("uptrend", "bullish") else rtl
+            if rtl in ("down", "bear", "downtrend", "bearish"):
+                return "bear" if rtl in ("downtrend", "bearish") else rtl
     if not symbol:
         return None
     try:
@@ -1321,8 +1330,10 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
         trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
         if trend_meta and trend_meta.get("direction"):
             d = str(trend_meta["direction"]).strip().lower()
-            if d in ("up", "down", "bull", "bear"):
-                return d
+            if d in ("up", "bull", "uptrend", "bullish"):
+                return "bull" if d in ("uptrend", "bullish") else d
+            if d in ("down", "bear", "downtrend", "bearish"):
+                return "bear" if d in ("downtrend", "bearish") else d
     except Exception:
         pass
     return _read_cached_trend_direction(symbol)

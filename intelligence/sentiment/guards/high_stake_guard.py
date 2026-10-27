@@ -103,9 +103,9 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         raw_s = o.get("side") if o.get("side") is not None else o.get("type")
         if isinstance(raw_s, str):
             su = raw_s.strip().upper()
-            if su in ("B", "BUY"):
+            if su in ("B", "BUY", "BID", "LONG"):
                 return "BUY"
-            if su in ("S", "SELL"):
+            if su in ("S", "SELL", "ASK", "A", "SHORT"):
                 return "SELL"
         is_buyer = o.get("isBuyer")
         if isinstance(is_buyer, bool):
@@ -290,10 +290,18 @@ def collect_pretrade_telemetry(
     # 4. Technical Trend & Regime (Pillars 0 & 1)
     if regime_context is not None:
         try:
-            trend = getattr(regime_context, "resolved_trend", None)
-            dec = getattr(regime_context, "decision", None)
-            gf = _safe_opt_float(getattr(dec, "gradient", None) if dec else None)
-            ef = _safe_opt_float(getattr(dec, "epsilon", None) if dec else None)
+            if isinstance(regime_context, dict):
+                trend = regime_context.get("resolved_trend") or regime_context.get("regime")
+                dec = regime_context.get("decision")
+            else:
+                trend = getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None)
+                dec = getattr(regime_context, "decision", None)
+            if isinstance(dec, dict):
+                gf = _safe_opt_float(dec.get("gradient"))
+                ef = _safe_opt_float(dec.get("epsilon"))
+            else:
+                gf = _safe_opt_float(getattr(dec, "gradient", None) if dec else None)
+                ef = _safe_opt_float(getattr(dec, "epsilon", None) if dec else None)
             trend_str = f"{trend}" if trend else "unspecified"
             if gf is not None and ef is not None:
                 trend_str += f" (gradient={gf:+.4f}, epsilon={ef:.4f})"
@@ -600,9 +608,9 @@ class HighStakeGuard:
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
         side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm == "B":
+        if side_norm in ("B", "BUY", "BID", "LONG"):
             side_norm = "BUY"
-        elif side_norm == "S":
+        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
             side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")

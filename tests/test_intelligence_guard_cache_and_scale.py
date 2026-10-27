@@ -16542,11 +16542,53 @@ def test_iteration173_position_exit_manager_spot_engine_and_monitortrades_hygien
     assert sp.tp_mdhtp_enabled is True
 
 
+def test_iteration174_intelligence_guards_side_aliases_and_dict_regime_context():
+    import order_guard as og
+    import qlimit_order_guard as qog
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
 
+    # 1. _resolve_trend_direction supports dict regime_context and uptrend/bearish aliases
+    assert og._resolve_trend_direction("BTCUSDC", {"resolved_trend": "uptrend"}) == "bull"
+    assert og._resolve_trend_direction("BTCUSDC", {"regime": "bearish"}) == "bear"
 
+    # 2. WeibullExhaustionGuard supports BID/ASK/LONG/SHORT side aliases and uptrend/bearish trend_direction
+    wg = WeibullExhaustionGuard(default_p90_days=1.0, policy="downscale")
+    dec_bid = wg.check("BTCUSDC", "BID", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="uptrend")
+    assert dec_bid.allowed is True and dec_bid.suggested_scale < 1.0
+    dec_ask = wg.check("BTCUSDC", "ASK", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="bearish")
+    assert dec_ask.allowed is True and dec_ask.suggested_scale < 1.0
+    dec_fav = wg.check("BTCUSDC", "BID", trend_duration_seconds=3 * 86400.0, p90_days=1.0, trend_direction="bearish")
+    assert dec_fav.allowed is True and dec_fav.suggested_scale == pytest.approx(1.0) and "trend_direction_favorable" in dec_fav.reason
 
+    # 3. ParabolicSurgeGuard, WhaleDivergenceGuard, OrderbookWallGuard, FundingCrowdingGuard, HighStakeGuard accept BID/ASK/LONG/SHORT
+    pg = ParabolicSurgeGuard(surge_threshold_pct=5.0)
+    assert pg.check("BTCUSDC", "BID", current_price=100.0, price_history=[(1000.0, 90.0), (1100.0, 100.0)], now=1100.0).allowed is False
+    assert pg.check("BTCUSDC", "ASK", current_price=90.0, price_history=[(1000.0, 100.0), (1100.0, 90.0)], now=1100.0).allowed is False
 
+    assert WhaleDivergenceGuard().check("BTCUSDC", "LONG", snapshot=None).reason == "no_whale_snapshot_data"
+    assert OrderbookWallGuard().check("BTCUSDC", "SHORT", snapshot=None).reason == "no_orderbook_snapshot"
+    assert FundingCrowdingGuard().check("BTCUSDC", "A", telemetry=None).reason == "no_telemetry_data"
+    assert HighStakeGuard().check("BTCUSDC", "BID", price=10.0, qty=1.0).reason != "unsupported_side_exempt"
 
+    # 4. check_qlimit2_order_guards respects dict regime_context trend_duration_seconds & resolved_trend
+    q2_ok, q2_reason, q2_scale = qog.check_qlimit2_order_guards(
+        "BTCUSDC",
+        "BID",
+        100.0,
+        regime_context={"trend_duration_seconds": 30 * 86400.0, "resolved_trend": "uptrend"},
+    )
+    assert q2_ok is True and q2_scale < 1.0 and "trend_exhausted" in q2_reason
 
-
+    # 5. collect_pretrade_telemetry extracts Technical Trend Regime from dict regime_context
+    telem = collect_pretrade_telemetry(
+        "BTCUSDC",
+        regime_context={"resolved_trend": "bull", "decision": {"gradient": 0.0123, "epsilon": 0.005}},
+        dur_sec=7200.0,
+    )
+    assert "bull (gradient=+0.0123, epsilon=0.0050)" in telem.get("Technical Trend Regime", "")
 
