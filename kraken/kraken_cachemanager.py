@@ -105,16 +105,35 @@ def _match_configured_pair(symbol: str | None) -> str | None:
     return _kraken_pair_key(raw) or raw
 
 
+def _clean_cache_id(val: object) -> str | None:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    if isinstance(val, int):
+        return str(val) if val > 0 else None
+    if isinstance(val, float):
+        if not math.isfinite(val) or val <= 0 or val != int(val):
+            return None
+        return str(int(val))
+    if not isinstance(val, str):
+        return None
+    text = val.strip()
+    if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+        return None
+    try:
+        f = float(text)
+        if not math.isfinite(f) or f <= 0:
+            return None
+        if text.endswith(".0") and f == int(f):
+            return str(int(f))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return text
+
+
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
-    if (
-        not isinstance(tr, dict)
-        or txid is None
-        or isinstance(txid, (bool, float, dict, list, tuple, set, frozenset))
-        or not isinstance(txid, (str, int))
-        or not str(txid).strip()
-        or str(txid).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-    ):
+    clean_txid = _clean_cache_id(txid)
+    if not isinstance(tr, dict) or clean_txid is None:
         return {}
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
     side = extract_order_side(tr) or None
@@ -129,7 +148,7 @@ def _normalize(txid, tr):
     sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
     normalized = {
         "symbol": sym_val,
-        "id": str(txid).strip(),
+        "id": clean_txid,
         "orderId": order_id,
         "price": price,
         "qty": qty,
@@ -165,15 +184,10 @@ def _load_initial_cache(path):
                 continue
             valid_rows: list[dict] = []
             for row in v:
-                raw_id = row.get("id") if isinstance(row, dict) else None
-                if (
-                    not isinstance(row, dict)
-                    or raw_id is None
-                    or isinstance(raw_id, (bool, float, dict, list, tuple, set, frozenset))
-                    or not isinstance(raw_id, (str, int))
-                    or not str(raw_id).strip()
-                    or str(raw_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-                ):
+                if not isinstance(row, dict):
+                    continue
+                clean_id = _clean_cache_id(row.get("id"))
+                if clean_id is None:
                     continue
                 raw_t = row.get("time")
                 if raw_t is None or isinstance(raw_t, bool):
@@ -185,8 +199,14 @@ def _load_initial_cache(path):
                 if not math.isfinite(t_f) or t_f <= 0:
                     continue
                 row_copy = dict(row)
-                row_copy["id"] = str(row["id"]).strip()
+                row_copy["id"] = clean_id
                 row_copy["time"] = int(t_f)
+                if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
+                    s_ib = row_copy["isBuyer"].strip().lower()
+                    if s_ib in {"1", "true", "yes", "on"}:
+                        row_copy["isBuyer"] = True
+                    elif s_ib in {"0", "0.0", "false", "no", "off", "", "none", "null", "nan"}:
+                        row_copy["isBuyer"] = False
                 valid_rows.append(row_copy)
             valid_rows.sort(key=lambda t: t["time"])
             clean_items[str(k)] = valid_rows
@@ -215,15 +235,9 @@ def _ledger_to_fills(ledger):
     for x in ledger.values():
         if not isinstance(x, dict):
             continue
-        refid = x.get("refid")
-        if (
-            refid is not None
-            and not isinstance(refid, (bool, float, dict, list, tuple, set, frozenset))
-            and isinstance(refid, (str, int))
-            and str(refid).strip()
-            and str(refid).strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
-            by_ref.setdefault(str(refid).strip(), []).append(x)
+        clean_refid = _clean_cache_id(x.get("refid"))
+        if clean_refid is not None:
+            by_ref.setdefault(clean_refid, []).append(x)
     fills = []
     for refid, legs in by_ref.items():
         if len(legs) < 2:

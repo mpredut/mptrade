@@ -63,10 +63,10 @@ def _builtin_trend(client, coin: str) -> dict:
 
 
 def _file_signal(path: str) -> dict:
-    if not os.path.exists(path):
+    if not path or isinstance(path, bool) or not str(path).strip() or not os.path.isfile(str(path)):
         return {**NEUTRAL, "source": "file(missing)"}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(str(path), "r", encoding="utf-8") as f:
             d = json.load(f)
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")
@@ -86,7 +86,7 @@ def _file_signal(path: str) -> dict:
         if math.isfinite(ts_f) and ts_f >= 100_000_000_000.0:
             ts_f /= 1000.0
         age = time.time() - ts_f
-        if not math.isfinite(ts_f) or ts_f <= 0 or age > max_age or age < -60.0:
+        if not math.isfinite(max_age) or max_age <= 0 or not math.isfinite(ts_f) or ts_f <= 0 or age > max_age or age < -60.0:
             return {**NEUTRAL, "source": "file(expirat)"}
     raw_tr = d.get("trend", "neutral")
     tr = raw_tr.strip().lower() if isinstance(raw_tr, str) else "neutral"

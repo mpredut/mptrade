@@ -162,15 +162,20 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as fh:
-                val = int(fh.read().strip())
-            if val > 0:
-                return val
-        except (OSError, ValueError):
+                vf = float(fh.read().strip())
+            if math.isfinite(vf) and vf > 0 and vf == int(vf):
+                return int(vf)
+        except (OSError, ValueError, OverflowError):
             pass
+    try:
+        def_f = 0.0 if (default_ts is None or isinstance(default_ts, bool)) else float(default_ts)
+        anchor_val = int(def_f) if (math.isfinite(def_f) and def_f > 0) else 0
+    except (TypeError, ValueError, OverflowError):
+        anchor_val = 0
     os.makedirs(LOG_DIR, exist_ok=True)
     with atomic_text_writer(path) as fh:
-        fh.write(f"{int(default_ts)}\n")
-    return int(default_ts)
+        fh.write(f"{anchor_val}\n")
+    return anchor_val
 
 
 def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, float, float]]:
@@ -272,19 +277,37 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
+    def _sf(v, default: float = 0.0) -> float:
+        if v is None or isinstance(v, bool):
+            return default
+        try:
+            f = float(v)
+            return f if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+    def _si(v, default: int = 0) -> int:
+        if v is None or isinstance(v, bool):
+            return default
+        try:
+            f = float(v)
+            return int(f) if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
     rows = {}
     for name, params in _variants(interval).items():
-        budget = float(params.effective_max_budget())
+        budget = _sf(params.effective_max_budget(), 0.0)
         m = _run_one(
             ohlc4, params, interval, fee_pct,
             include_decision_trace=include_decision_trace,
         )
+        net_val = _sf(m.get("net"), 0.0)
+        tot_val = _sf(m.get("total"), 0.0)
         rows[name] = {
-            "net_pct": round(m["net"] / budget * 100.0, 4) if budget > 0 else 0.0,
-            "total_pct": round(m["total"] / budget * 100.0, 4) if budget > 0 else 0.0,  # includes open unrealized PnL
-            "maxdd_pct": round(m.get("max_drawdown_pct") or 0.0, 4),
-            "cycles": m.get("cycles", 0),
-            "open_qty": m.get("open_qty", 0.0),
+            "net_pct": round(net_val / budget * 100.0, 4) if budget > 0 else 0.0,
+            "total_pct": round(tot_val / budget * 100.0, 4) if budget > 0 else 0.0,  # includes open unrealized PnL
+            "maxdd_pct": round(_sf(m.get("max_drawdown_pct"), 0.0), 4),
+            "cycles": max(0, _si(m.get("cycles"), 0)),
+            "open_qty": max(0.0, _sf(m.get("open_qty"), 0.0)),
         }
         if include_decision_trace:
             rows[name]["decision_trace"] = m.get("decision_trace", [])
