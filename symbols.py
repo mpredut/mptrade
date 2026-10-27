@@ -88,13 +88,18 @@ def get_binance_symbols(keysearch):
         
    
 def get_quantity_precision(symbol):
+    if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        return 8
     try:
-        info = _get_client().get_symbol_info(symbol)
+        info = _get_client().get_symbol_info(symbol.strip().upper())
         if not isinstance(info, dict) or not isinstance(info.get("filters"), list):
             return 8
         for f in info["filters"]:
             if isinstance(f, dict) and f.get("filterType") == "LOT_SIZE":
-                step_size = float(f.get("stepSize") or 0)
+                raw_step = f.get("stepSize")
+                if raw_step is None or isinstance(raw_step, bool):
+                    continue
+                step_size = float(raw_step or 0)
                 if step_size <= 0 or not math.isfinite(step_size):
                     break
                 precision = max(0, int(round(-math.log10(step_size), 0)))

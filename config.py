@@ -12,30 +12,33 @@ CONFIG_TXT_PATH = os.path.join(ROOT_DIR, "config.txt")
 
 
 def _parse_bool(value, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
         if not math.isfinite(float(value)):
-            return bool(default)
+            return fb
         return bool(value)
     if isinstance(value, str):
         cleaned = value.strip()
         if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
             cleaned = cleaned[1:-1].strip()
         lowered = cleaned.lower()
-        if lowered in ("true", "1", "yes", "on"):
+        if lowered in ("true", "1", "yes", "on", "y", "t"):
             return True
-        if lowered in ("false", "0", "no", "off", ""):
+        if lowered in ("false", "0", "no", "off", "n", "f", ""):
             return False
-        return bool(default)
-    return bool(default)
+        return fb
+    return fb
 
 
 def _read_properties_file(path: str) -> dict:
     result = {}
-    if not os.path.exists(path):
+    if not path or isinstance(path, (bool, int)):
         return result
     try:
+        if not os.path.exists(path):
+            return result
         with open(path, "r", encoding="utf-8") as file:
             for line in file:
                 line = line.strip()
@@ -44,9 +47,20 @@ def _read_properties_file(path: str) -> dict:
                         line = line[6:].strip()
                     key, value = line.split("=", 1)
                     key = key.strip()
-                    value = value.strip().split("#", 1)[0].strip()
-                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                        value = value[1:-1].strip()
+                    value = value.strip()
+                    if value.startswith(("'", '"')):
+                        q = value[0]
+                        close_idx = value.find(q, 1)
+                        if close_idx != -1:
+                            tail = value[close_idx + 1:].strip()
+                            if not tail or tail.startswith("#"):
+                                value = value[1:close_idx].strip()
+                            else:
+                                value = value.split("#", 1)[0].strip().strip("'").strip('"')
+                        else:
+                            value = value.split("#", 1)[0].strip().strip("'").strip('"')
+                    else:
+                        value = value.split("#", 1)[0].strip()
                     if value.lower() in ("true", "1", "yes", "on"):
                         value = True
                     elif value.lower() in ("false", "0", "no", "off"):

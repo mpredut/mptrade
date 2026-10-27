@@ -137,11 +137,20 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     """Select explicitly opted-in instruments without constructing API clients."""
     if isinstance(provider, bool):
         raise ValueError(f"Invalid provider: {provider!r}")
-    prov_norm = str(provider).strip().casefold() if provider is not None else None
+    if provider is None:
+        prov_norm = None
+    else:
+        p_raw = getattr(provider, "name", None)
+        p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else str(provider))
+        prov_norm = str(p_str).strip().casefold()
+        if not prov_norm:
+            raise ValueError(f"Invalid provider: {provider!r}")
     role_norm = str(role or "").strip().casefold() if (role is not None and not isinstance(role, bool)) else None
     if role is not None and (isinstance(role, bool) or role_norm not in ROLES):
         raise ValueError(f"Unknown instrument role: {role!r}")
-    if isinstance(only_enabled, str):
+    if only_enabled is None:
+        only_enabled_b = True
+    elif isinstance(only_enabled, str):
         only_enabled_b = _boolean(only_enabled, "only_enabled", "select_instruments")
     elif isinstance(only_enabled, float) and not math.isfinite(only_enabled):
         only_enabled_b = True

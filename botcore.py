@@ -106,8 +106,27 @@ def _is_unmodified_root_key(key: str) -> bool:
     )
 
 
+def _parse_bool_flag(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        return val != 0
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 def load_dotenv(path: str = ".env", override: bool = False) -> None:
     """Load KEY=VALUE entries from .env without overriding the existing environment (unless override=True)."""
+    override = _parse_bool_flag(override, False)
     pairs, loaded = _dotenv_pairs(path)
     if not loaded:
         return
@@ -138,6 +157,7 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
       3. Venue versioned configuration (config_name)
       4. Global root config.env defaults
     """
+    override = _parse_bool_flag(override, False)
     env_path = os.path.abspath(env_file)
     cfg_path = os.path.join(os.path.dirname(env_path), config_name)
 
@@ -266,7 +286,7 @@ def http_request(
     if payload is not None and form is not None:
         raise ValueError("payload and form are mutually exclusive")
 
-    request_headers = dict(headers or {})
+    request_headers = dict(headers) if isinstance(headers, dict) else {}
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")

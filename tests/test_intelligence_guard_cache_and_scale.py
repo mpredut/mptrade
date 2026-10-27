@@ -15830,6 +15830,58 @@ def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tm
     assert ctx.is_valid_for(now=1005.0, require_identity="false") is True
 
 
+def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp_path, monkeypatch):
+    import botcore
+    import config as cfg
+    import symbols as sym
+    import instrument_registry as ir
+
+    # 1. botcore: load_dotenv(override="false") does not overwrite existing os.environ
+    env_file = tmp_path / "test.env"
+    env_file.write_text("ITER162_TEST_KEY=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("ITER162_TEST_KEY", "from_process")
+    botcore.load_dotenv(str(env_file), override="false")
+    assert botcore.os.environ["ITER162_TEST_KEY"] == "from_process"
+    botcore.load_dotenv(str(env_file), override="true")
+    assert botcore.os.environ["ITER162_TEST_KEY"] == "from_file"
+
+    # 2. config: _parse_bool with default="false" and _read_properties_file with quoted # and invalid path
+    assert cfg._parse_bool("unknown_token", default="false") is False
+    assert cfg._read_properties_file(True) == {}
+    prop_file = tmp_path / "props.env"
+    prop_file.write_text('QUOTED_HASH="abc#def" # inline comment\nTRADE_ENABLED="false"\n', encoding="utf-8")
+    props = cfg._read_properties_file(str(prop_file))
+    assert props["QUOTED_HASH"] == "abc#def"
+    assert props["TRADE_ENABLED"] is False
+
+    # 3. symbols: get_quantity_precision rejects bool symbol and bool stepSize
+    assert sym.get_quantity_precision(True) == 8
+    assert sym.get_quantity_precision("") == 8
+
+    class _DummySymClient:
+        @staticmethod
+        def get_symbol_info(symbol):
+            return {
+                "filters": [
+                    {"filterType": "LOT_SIZE", "stepSize": True},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+                ]
+            }
+
+    monkeypatch.setattr(sym, "_get_client", lambda: _DummySymClient())
+    assert sym.get_quantity_precision("BTCUSDC") == 3
+
+    # 4. instrument_registry: select_instruments accepts provider object with .name and rejects empty string provider
+    class _DummyProv:
+        name = "Binance"
+
+    selected = ir.select_instruments(_DummyProv())
+    assert len(selected) > 0
+    with pytest.raises(ValueError):
+        ir.select_instruments("   ")
+
+
+
 
 
 
