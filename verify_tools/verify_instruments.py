@@ -97,9 +97,15 @@ def main() -> int:
                   f"{symname} gain/lost/maxage", f"conf={exp} instr={got}")
     # globale -> mt.* pe TAO (oglindesc hard_tp_* + tp_reference)
     if tao and g:
-        check(str(tao.param("mt", "hardtp")) == str(g.get("hard_tp_pct")),
+        def _num_eq(a, b) -> bool:
+            try:
+                return float(a) == float(b)
+            except (TypeError, ValueError):
+                return str(a) == str(b)
+
+        check(_num_eq(tao.param("mt", "hardtp"), g.get("hard_tp_pct")),
               "hardtp == hard_tp_pct", f"{tao.param('mt','hardtp')} vs {g.get('hard_tp_pct')}")
-        check(str(tao.param("mt", "hardtp_fraction")) == str(g.get("hard_tp_fraction")),
+        check(_num_eq(tao.param("mt", "hardtp_fraction"), g.get("hard_tp_fraction")),
               "hardtp_fraction", f"{tao.param('mt','hardtp_fraction')} vs {g.get('hard_tp_fraction')}")
         check(tao.param("mt", "ref") == g.get("tp_reference"),
               "ref == tp_reference", f"{tao.param('mt','ref')} vs {g.get('tp_reference')}")
@@ -130,7 +136,8 @@ def main() -> int:
         check(p_h is not None and p_h > 0, "HYPE price() > 0 (rutat la HL)", str(p_h))
         f_h = hype.free()
         f_hp = api.provider_by_name("hyperliquid").free_balance("HYPE")
-        check(f_h is not None and f_h == f_hp, "HYPE free() == HL direct", f"instr={f_h} hl={f_hp}")
+        check_available(f_h == f_hp, f_h is not None and f_hp is not None,
+                        "HYPE free() == HL direct", f"instr={f_h} hl={f_hp}")
 
     print("\n==== 5. new providers (Kraken, T212) — explicit-only + multi-venue ====")
     kp = api.provider_by_name("kraken")

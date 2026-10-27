@@ -121,13 +121,25 @@ def log_order_outcome(
             rsn_raw = _regime_attr(regime_context, "reason", "")
             fresh_raw = _regime_attr(regime_context, "fresh", None)
             fb_raw = _regime_attr(regime_context, "fallback_used", None)
+
+            def _clean_regime_str(val) -> str:
+                if isinstance(val, str):
+                    return _sanitize_outcome_field(val)
+                if val is not None and not isinstance(
+                    val, (bool, int, float, bytes, dict, list, tuple, set, frozenset)
+                ):
+                    inner = getattr(val, "value", getattr(val, "name", None))
+                    if isinstance(inner, str):
+                        return _sanitize_outcome_field(inner)
+                return ""
+
             cols.extend([
-                _sanitize_outcome_field(reg_raw) if isinstance(reg_raw, str) else "",
+                _clean_regime_str(reg_raw),
                 strength_str,
-                _sanitize_outcome_field(src_raw) if isinstance(src_raw, str) else "",
+                _clean_regime_str(src_raw),
                 _clean_bool_field(fresh_raw),
                 _clean_bool_field(fb_raw),
-                _sanitize_outcome_field(rsn_raw) if isinstance(rsn_raw, str) else "",
+                _clean_regime_str(rsn_raw),
             ])
         line = "|".join(
             str(c).replace("|", "/").replace("\r", " ").replace("\n", " ")

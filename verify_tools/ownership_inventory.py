@@ -55,14 +55,22 @@ class Owner:
 def _truthy(value, default: bool = False) -> bool:
     if value is None:
         return default
-    return str(value).strip().lower() in _TRUE
+    if isinstance(value, bool):
+        return value
+    raw = str(value).split("#", 1)[0].split(";", 1)[0].strip().lower()
+    if not raw:
+        return default
+    return raw in _TRUE or raw == "1.0"
 
 
 def _env(*paths: Path) -> dict[str, str]:
     """Later paths have higher priority; values are never reported."""
     result: dict[str, str] = {}
     for path in paths:
-        result.update(parse_dotenv(str(path)))
+        try:
+            result.update(parse_dotenv(str(path)))
+        except OSError:
+            pass
     return result
 
 
@@ -101,9 +109,16 @@ def _pattern(patterns: list[str], target: str) -> str | None:
 
 
 def _commands() -> list[str]:
-    result = subprocess.run(
-        ["ps", "-eo", "args="], check=True, capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "args="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 

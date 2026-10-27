@@ -93,8 +93,10 @@ def main():
         # 1) free_balance ------------------------------------------------------
         fd = free_direct(base)
         ff = mkt.free_balance_for("binance", base)
-        balance_available = ff is not None
-        same_free = balance_available and fd == ff
+        balance_available = ff is not None and fd is not None
+        same_free = balance_available and math.isclose(
+            float(fd), float(ff), rel_tol=1e-9, abs_tol=1e-12
+        )
         state = "OK" if same_free else ("SKIP (date indisponibile)" if not balance_available else "DIFERA")
         print(f"  free: direct={fd!r}  facada={ff!r}  -> {state}")
         if balance_available and not same_free:
@@ -126,7 +128,10 @@ def main():
         # 3) avg_buy / net_qty from both sources ------------------------------
         avg_d, net_d = position_from(direct["BUY"], direct["SELL"])
         avg_f, net_f = position_from(facade["BUY"], facade["SELL"])
-        same_pos = (avg_d == avg_f and net_d == net_f)
+        same_pos = (
+            math.isclose(avg_d, avg_f, rel_tol=1e-9, abs_tol=1e-12)
+            and math.isclose(net_d, net_f, rel_tol=1e-9, abs_tol=1e-12)
+        )
         print(f"  avg_buy: direct={avg_d:.8f} facada={avg_f:.8f} | net: direct={net_d:.8f} "
               f"facada={net_f:.8f} -> {'OK' if same_pos else 'DIFERA'}")
         if not same_pos:

@@ -1157,5 +1157,60 @@ def test_batch43_offline_runners_hardening(tmp_path):
     assert "The 90 TEST bars mean 15 days" in md
 
 
+def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeypatch):
+    import enum
+    import subprocess
+    import order_outcomes_log as ool
+    import verify_tools.ownership_inventory as oi
+
+    # 1. ownership_inventory._truthy strips inline comments & accepts "1.0"
+    assert oi._truthy("true # inline comment", default=False) is True
+    assert oi._truthy("1.0", default=False) is True
+    assert oi._truthy(" # comment only ", default=True) is True
+    assert oi._truthy(False, default=True) is False
+
+    # 2. ownership_inventory._commands handles subprocess errors cleanly
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd="ps", timeout=10)),
+    )
+    assert oi._commands() == []
+
+    # 3. order_outcomes_log unwraps Enum values in regime_context while still rejecting primitives
+    class _RegimeEnum(enum.Enum):
+        BULL = "BULL_TREND"
+
+    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ool.log_order_outcome(
+        symbol="TAOUSDC",
+        side="BUY",
+        price=350.0,
+        qty=1.0,
+        outcome="accepted",
+        refuse_reason="",
+        motivation="test",
+        caller="unit_test",
+        regime_context={
+            "regime": _RegimeEnum.BULL,
+            "strength": 0.75,
+            "source": "cache",
+            "fresh": True,
+            "fallback_used": False,
+            "reason": 12345,  # non-string primitive should stay ""
+        },
+    )
+    log_files = list(tmp_path.glob("order_outcomes_*.log"))
+    assert len(log_files) == 1
+    row = log_files[0].read_text(encoding="utf-8").strip().split("|")
+    assert row[9] == "BULL_TREND"
+    assert row[10] == "0.7500"
+    assert row[11] == "cache"
+    assert row[12] == "True"
+    assert row[13] == "False"
+    assert row[14] == ""
+
+
+
 
 
