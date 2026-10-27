@@ -128,6 +128,7 @@ def run_replay(
             raise ValueError("bar_minutes must be a finite positive number") from exc
         if isinstance(bar_minutes, bool) or not math.isfinite(bm_f) or bm_f <= 0:
             raise ValueError("bar_minutes must be a finite positive number")
+        bar_minutes = bm_f
     if periods_per_year is not None:
         try:
             ppy_f = float(periods_per_year)
@@ -135,6 +136,7 @@ def run_replay(
             raise ValueError("periods_per_year must be a finite positive number") from exc
         if isinstance(periods_per_year, bool) or not math.isfinite(ppy_f) or ppy_f <= 0:
             raise ValueError("periods_per_year must be a finite positive number")
+        periods_per_year = ppy_f
     for idx, row in enumerate(ohlc):
         if not isinstance(row, (list, tuple)) or len(row) != 4:
             raise ValueError(f"invalid OHLC bar at index {idx}")

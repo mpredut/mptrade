@@ -59,31 +59,35 @@ def fetch_candles(sym, rng, interval):
 
 def simulate(ohlc, P):
     """CLI compatibility wrapper over the same ``Strategy.step`` used live."""
-    budget = float(P["budget"])
+    if not isinstance(P, dict):
+        raise ValueError("simulate requires a parameter dict P")
+    budget = float(P.get("budget", P.get("max_budget", 500.0)))
+    raw_entry = P.get("entry", P.get("entry_amount"))
+    raw_dca = P.get("dca", P.get("dca_amount"))
     entry_pct = float(
         P["entry_pct"]
         if P.get("entry_pct") is not None
-        else ((float(P.get("entry", 0.0)) / budget * 100.0) if budget > 0 and P.get("entry") is not None else 10.0)
+        else ((float(raw_entry) / budget * 100.0) if budget > 0 and raw_entry is not None else 10.0)
     )
     dca_pct = float(
         P["dca_pct"]
         if P.get("dca_pct") is not None
-        else ((float(P.get("dca", 0.0)) / budget * 100.0) if budget > 0 and P.get("dca") is not None else 10.0)
+        else ((float(raw_dca) / budget * 100.0) if budget > 0 and raw_dca is not None else 10.0)
     )
 
     env_overrides = {
         "STRATEGY_MODE": str(P.get("mode") or os.environ.get("STRATEGY_MODE") or "avg_tp"),
         "STRAT_CURRENCY": str(P.get("currency") or os.environ.get("STRAT_CURRENCY") or "USD"),
-        "YAHOO_SYMBOL": str(P.get("sym") or os.environ.get("YAHOO_SYMBOL") or "REPLAY"),
+        "YAHOO_SYMBOL": str(P.get("sym") or P.get("yahoo_sym") or os.environ.get("YAHOO_SYMBOL") or "REPLAY"),
         "STRAT_ENTRY_PCT": str(entry_pct),
         "STRAT_DCA_PCT": str(dca_pct),
-        "STRAT_ENTRY_DISCOUNT_PCT": str(P["disc"]),
-        "STRAT_DCA_DROP_PCT": str(P["drop"]),
-        "STRAT_TAKEPROFIT_PCT": str(P["tp"]),
-        "STRAT_MAX_DCA_BUYS": str(P["maxdca"]),
+        "STRAT_ENTRY_DISCOUNT_PCT": str(P.get("disc", P.get("entry_discount_pct", 0.3))),
+        "STRAT_DCA_DROP_PCT": str(P.get("drop", P.get("dca_drop_pct", 2.0))),
+        "STRAT_TAKEPROFIT_PCT": str(P.get("tp", P.get("takeprofit_pct", 1.5))),
+        "STRAT_MAX_DCA_BUYS": str(P.get("maxdca", P.get("max_dca_buys", 10))),
         "STRAT_MAX_BUDGET": str(budget),
-        "STRAT_FX_FEE_PCT": str(P["fee"]),
-        "STRAT_STOP_LOSS_PCT": str(P["sl"]),
+        "STRAT_FX_FEE_PCT": str(P.get("fee", P.get("fx_fee_pct", os.environ.get("STRAT_FX_FEE_PCT", "0.15")))),
+        "STRAT_STOP_LOSS_PCT": str(P.get("sl", P.get("stop_loss_pct", os.environ.get("STRAT_STOP_LOSS_PCT", "0.0")))),
         "STRAT_CHECK_MINUTES": str(P.get("check_min") or os.environ.get("STRAT_CHECK_MINUTES") or "1"),
         "STRAT_ORDER_TTL_MIN": str(P.get("ttl_min") or os.environ.get("STRAT_ORDER_TTL_MIN") or "10"),
         "STRAT_REENTRY_DROP_PCT": str(P.get("reentry_drop", os.environ.get("STRAT_REENTRY_DROP_PCT", "0"))),

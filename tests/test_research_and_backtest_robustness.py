@@ -5334,6 +5334,107 @@ def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(
     assert pnl_report is not None
 
 
+def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch):
+    """Verify 212trading strategy/replay/backtest, hyperliquid strategy, kraken_client.add_order, and bapi_ws_normalize."""
+    import importlib.util
+    import os
+    from types import SimpleNamespace
+    from binance_api import bapi_ws_normalize as ws_norm
+    from kraken.kraken_client import KrakenClient
 
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    def _load_mod(mod_name: str, rel_path: str):
+        import sys
+        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(root, rel_path))
+        mod = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, mod_name, mod)
+        spec.loader.exec_module(mod)
+        return mod
+
+    # 1. 212trading/strategy.py: _has_open / _find_open / _active_matches_pending handle empty/bool side
+    t212_strat_mod = _load_mod("t212_strat_b36", "212trading/strategy.py")
+    t212_strat = object.__new__(t212_strat_mod.Strategy)
+    t212_strat.ticker = "NVDA_US_EQ"
+    t212_strat.s = {"pending_submit": None, "orders": [{"side": "BUY", "id": "1"}]}
+    assert t212_strat._has_open("") is False
+    assert t212_strat._has_open(True) is False  # type: ignore[arg-type]
+    assert t212_strat._has_open("buy") is True
+    assert t212_strat._find_open("") is None
+    assert t212_strat._find_open(True) is None  # type: ignore[arg-type]
+    assert t212_strat._active_matches_pending({"ticker": "NVDA_US_EQ"}, {"side": ""}) is False
+    assert t212_strat._active_matches_pending("not_a_dict", {"side": "BUY"}) is False  # type: ignore[arg-type]
+
+    # 2. 212trading/replay.py: bar_minutes="5" is coerced to float 5.0 without failing dca_trend_gate_pct check or timestamp synth
+    t212_replay_mod = _load_mod("t212_replay_b36", "212trading/replay.py")
+    p_t212 = t212_strat_mod.StratParams(
+        currency="USD",
+        entry_amount=50.0,
+        entry_discount_pct=0.3,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=5.0,
+        takeprofit_pct=1.5,
+        max_budget=500.0,
+        max_dca_buys=5,
+        validity="GOOD_TILL_CANCEL",
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+        stop_loss_pct=0.0,
+        dca_trend_gate_pct=0.1,
+    )
+    bars = [(100.0, 101.0, 99.0, 100.0)] * 25
+    res_t212 = t212_replay_mod.run_replay(bars, p_t212, bar_minutes="5", periods_per_year="20160")  # type: ignore[arg-type]
+    assert isinstance(res_t212, dict) and "net" in res_t212
+
+    # 3. 212trading/backtest.py: simulate accepts partial / canonical parameter dicts
+    t212_bt_mod = _load_mod("t212_bt_b36", "212trading/backtest.py")
+    bt_res = t212_bt_mod.simulate(bars, {"max_budget": 500.0, "entry_discount_pct": 0.3})
+    assert isinstance(bt_res, dict) and "net" in bt_res
+
+    # 4. hyperliquid/strategy.py: _reconcile_real handles string szi/entry and None without TypeError
+    hl_strat_mod = _load_mod("hl_strat_b36", "hyperliquid/strategy.py")
+    hl_p = hl_strat_mod.StratParams.from_dict({"direction": "long"})
+    fake_hl_client = SimpleNamespace(
+        sz_decimals=lambda c: 4,
+        position_strict=lambda c: ("1.5", "20.0"),
+        open_orders_strict=lambda c: [],
+    )
+    hl_s = hl_strat_mod.Strategy(fake_hl_client, "HYPE", hl_p, dry_run=False, leverage="3", replay_mode=True)  # type: ignore[arg-type]
+    assert hl_s.leverage == 3
+    assert hl_s._reconcile_real(20.0) is True
+    assert hl_s.s["qty"] == 1.5
+    fake_hl_client.position_strict = lambda c: (None, None)
+    assert hl_s._reconcile_real(20.0) is False
+
+    # 5. kraken_client.add_order formats tiny volume/price without scientific notation
+    kc = KrakenClient("k", "c2VjcmV0")
+    captured = {}
+    monkeypatch.setattr(kc, "price_decimals", lambda pair: 8)
+    monkeypatch.setattr(kc, "_private", lambda method, data, fresh=False: captured.update(data) or {"txid": ["T1"]})
+    kc.add_order("PEPEUSD", "buy", 1e-5, price=2e-6, ordertype="limit")
+    assert captured["volume"] == "0.00001"
+    assert captured["price"] == "0.000002"
+
+    # 6. bapi_ws_normalize strips .0 suffix from integer-string order/trade IDs
+    ord_ev = {
+        "e": "executionReport",
+        "s": "BTCUSDC",
+        "x": "TRADE",
+        "X": "FILLED",
+        "S": "BUY",
+        "i": "12345.0",
+        "t": "67890.0",
+        "l": "0.1",
+        "L": "60000.0",
+        "T": 1700000000000,
+    }
+    parsed_ord = ws_norm.parse_order_execution_report(ord_ev)
+    assert parsed_ord is not None
+    assert parsed_ord[1]["orderId"] == "12345"
+    assert parsed_ord[1]["_fillId"] == "67890"
+    parsed_tr = ws_norm.parse_trade_execution_report(ord_ev)
+    assert parsed_tr is not None
+    assert parsed_tr[1]["orderId"] == "12345"
+    assert parsed_tr[1]["id"] == "67890"
 

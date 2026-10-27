@@ -675,19 +675,31 @@ class Strategy:
         return round(usd / px_f, 2) if (math.isfinite(usd) and px_f > 0) else 0.0
 
     def _has_open(self, side: str) -> bool:
+        if isinstance(side, bool):
+            return False
         side_u = str(side or "").strip().upper()
-        pending = self.s.get("pending_submit") or {}
+        if not side_u:
+            return False
+        raw_pending = self.s.get("pending_submit")
+        pending = raw_pending if isinstance(raw_pending, dict) else {}
+        orders = self.s.get("orders")
+        orders_list = orders if isinstance(orders, list) else []
         return (
             str(pending.get("side") or "").strip().upper() == side_u
             or any(
                 isinstance(o, dict) and str(o.get("side") or "").strip().upper() == side_u
-                for o in self.s["orders"]
+                for o in orders_list
             )
         )
 
     def _find_open(self, side: str) -> dict | None:
+        if isinstance(side, bool):
+            return None
         side_u = str(side or "").strip().upper()
-        for o in self.s["orders"]:
+        if not side_u:
+            return None
+        orders = self.s.get("orders")
+        for o in (orders if isinstance(orders, list) else []):
             if isinstance(o, dict) and str(o.get("side") or "").strip().upper() == side_u:
                 return o
         return None
@@ -804,8 +816,12 @@ class Strategy:
         return ticker, side, qty, limit
 
     def _active_matches_pending(self, order: dict, pending: dict) -> bool:
+        if not isinstance(order, dict) or not isinstance(pending, dict):
+            return False
         ticker, side, qty, limit = self._active_order_identity(order)
-        if ticker != self.ticker.upper() or side != str(pending.get("side") or "").upper():
+        raw_ps = pending.get("side")
+        pending_side = str(raw_ps or "").strip().upper() if not isinstance(raw_ps, bool) else ""
+        if not pending_side or ticker != self.ticker.upper() or side != pending_side:
             return False
         raw_expected_qty = pending.get("qty")
         try:
@@ -1479,7 +1495,8 @@ class Strategy:
                 self.s["dca_buys"] += 1
             self.s["qty"] = real_qty
             self.s["cost_usd"] = real_qty * eff_real_avg
-            self.s["spent_cash"] = round(real_qty * eff_real_avg / self.fx_to_usd, 2)
+            fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
+            self.s["spent_cash"] = round(real_qty * eff_real_avg / fx_rate, 2)
             kind_label = (
                 "ADOPTAT" if is_adoption
                 else str((source_order or {}).get("kind") or ("DCA" if prev_qty > 1e-9 else "ENTRY"))
@@ -1505,7 +1522,8 @@ class Strategy:
             self.s["fees_usd"] += fee
             self.s["qty"] = real_qty
             self.s["cost_usd"] = real_qty * real_avg
-            self.s["spent_cash"] = round(real_qty * real_avg / self.fx_to_usd, 2)
+            fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
+            self.s["spent_cash"] = round(real_qty * real_avg / fx_rate, 2)
             self.s["last_sell_price"] = sell_price
             approx = "" if exact_price is not None else "~"
             log(f"  [STRAT] SELL EXECUTED {sold:.4f} @ {approx}{sell_price:.2f} USD  "
@@ -1521,7 +1539,8 @@ class Strategy:
             self.s["qty"] = real_qty
             self.s["cost_usd"] = real_qty * real_avg
             if real_qty > 1e-9:
-                self.s["spent_cash"] = round(real_qty * real_avg / self.fx_to_usd, 2)
+                fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
+                self.s["spent_cash"] = round(real_qty * real_avg / fx_rate, 2)
 
         # --- Remove inactive orders and enforce the TTL for stale BUY orders. ---
         for o in list(self.s["orders"]):

@@ -315,7 +315,14 @@ class Strategy:
         self.ccy = params.currency
         self.dry_run = dry_run
         self.desktop = desktop
-        self.leverage = leverage
+        if isinstance(leverage, bool) or leverage is None:
+            self.leverage = 1
+        else:
+            try:
+                lev_f = float(leverage)
+                self.leverage = max(1, int(lev_f)) if (math.isfinite(lev_f) and lev_f.is_integer()) else 1
+            except (TypeError, ValueError, OverflowError):
+                self.leverage = 1
         self.replay_mode = replay_mode
         dir_norm = str(getattr(params, "direction", "long") or "long").strip().lower()
         if dir_norm not in ("long", "short"):
@@ -476,12 +483,16 @@ class Strategy:
         except Exception as e:
             log(f"  [STRAT] pozitie indisponibila ({e})")
             return False
-        if (
-            isinstance(szi, bool)
-            or isinstance(entry, bool)
-            or not (math.isfinite(float(szi)) and math.isfinite(float(entry)))
-            or float(entry) < 0.0
-        ):
+        if isinstance(szi, bool) or isinstance(entry, bool) or szi is None or entry is None:
+            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
+            return False
+        try:
+            szi = float(szi)
+            entry = float(entry)
+        except (TypeError, ValueError, OverflowError):
+            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
+            return False
+        if not (math.isfinite(szi) and math.isfinite(entry)) or entry < 0.0:
             log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
             return False
 

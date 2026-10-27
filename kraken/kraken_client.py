@@ -334,11 +334,14 @@ class KrakenClient:
         ot_norm = str(ordertype or "").strip().lower() if not isinstance(ordertype, bool) else ""
         if ot_norm not in {"limit", "market"}:
             raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")
+        vol_str = f"{vol_f}"
+        if "e" in vol_str.lower():
+            vol_str = f"{vol_f:.12f}".rstrip("0").rstrip(".") or "0"
         data = {
             "pair": pair_s,
             "type": side_val,
             "ordertype": ot_norm,
-            "volume": f"{vol_f}",
+            "volume": vol_str,
         }
         if ot_norm == "limit":
             if price is None or isinstance(price, bool):
@@ -352,7 +355,10 @@ class KrakenClient:
             price = round(px_f, self.price_decimals(pair_s))
             if price <= 0.0:
                 raise ValueError(f"invalid Kraken rounded limit price: {price!r}")
-            data["price"] = f"{price}"
+            px_str = f"{price}"
+            if "e" in px_str.lower():
+                px_str = f"{price:.18f}".rstrip("0").rstrip(".") or "0"
+            data["price"] = px_str
         if cl_ord_id is not None:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
