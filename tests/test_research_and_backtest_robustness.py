@@ -4309,4 +4309,81 @@ def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monke
     srv.process_line(True, False)  # type: ignore[arg-type]
 
 
+def test_batch24_execution_evaluation_and_financial_benchmark_hardening():
+    import argparse
+    from offline.backtests.execution import ExecutionModel, FeeModel, split_order_fill
+    from offline.backtests.evaluation import (
+        assess_decision_evidence,
+        build_execution_model_from_args,
+    )
+    from offline.backtests.financial_benchmark import aggregate_financial_windows
+
+    # 1. FeeModel / ExecutionModel reject None/non-numeric and parse string market flag safely
+    with pytest.raises(ValueError, match="limit_fee_pct"):
+        FeeModel(limit_fee_pct=None, market_fee_pct=0.1)  # type: ignore[arg-type]
+    fee = FeeModel(limit_fee_pct="0.1", market_fee_pct="0.2")  # type: ignore[arg-type]
+    assert fee.rate_pct(market="false") == pytest.approx(0.1)
+    assert fee.rate_pct(market="true") == pytest.approx(0.2)
+
+    exec_model = ExecutionModel(spread_bps="2.0", market_slippage_bps="5.0", partial_fill_ratio="0.5")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="high, low, and limit"):
+        exec_model.limit_touched("buy", high=105.0, low=False, limit=100.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="high, low, and limit"):
+        exec_model.limit_touched("sell", high=True, low=95.0, limit=100.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="open_price"):
+        exec_model.market_price("buy", True)  # type: ignore[arg-type]
+
+    # 2. split_order_fill rejects NaN/bool/None quantities and handles None/NaN amount safely
+    with pytest.raises(ValueError, match="the order has no quantity left to execute"):
+        split_order_fill({"quantity": float("nan")}, quantity_key="quantity", ratio=0.5)
+    with pytest.raises(ValueError, match="the order has no quantity left to execute"):
+        split_order_fill({"quantity": True}, quantity_key="quantity", ratio=0.5)
+    order_dict = {"quantity": 10.0, "amount": None, "side": None, "_replay_original_quantity": float("nan"), "_replay_had_fill": True}
+    filled, chunk, complete = split_order_fill(
+        order_dict,
+        quantity_key="quantity",
+        ratio=0.5,
+        amount_key="amount",
+    )
+    assert filled["quantity"] == pytest.approx(5.0)
+    assert chunk == pytest.approx(5.0)
+    assert complete is False
+    assert order_dict["quantity"] == pytest.approx(5.0)
+
+    # 3. assess_decision_evidence tolerates bool/NaN timestamps and fold_count/total_cycles
+    with pytest.raises(ValueError, match="invalid record timestamps"):
+        assess_decision_evidence([{"timestamp": True}, {"timestamp": 2000.0}], {})
+    ev = assess_decision_evidence(
+        [{"timestamp": 1000.0}, {"timestamp": 1000.0 + 40 * 86400.0}],
+        {"fold_count": True, "total_cycles": float("nan"), "worst_return_pct": float("nan")},
+    )
+    assert ev["history_days"] == pytest.approx(40.0)
+    assert "folds 0 < 20" in ev["data_issues"]
+    assert "completed_cycles 0 < 3" in ev["data_issues"]
+
+    # 4. build_execution_model_from_args rejects boolean window args
+    parser = argparse.ArgumentParser()
+    bad_args = argparse.Namespace(
+        spread_bps=0.0,
+        market_slippage_bps=0.0,
+        partial_fill_ratio=1.0,
+        intrabar_policy="buy_first",
+        train=True,
+        validation=10,
+        test=10,
+        step=5,
+        warmup=0,
+    )
+    with pytest.raises(SystemExit):
+        build_execution_model_from_args(parser, bad_args)
+
+    # 5. aggregate_financial_windows validates initial_capital and regime_threshold_pct
+    with pytest.raises(ValueError, match="initial_capital"):
+        aggregate_financial_windows([], initial_capital=None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="regime_threshold_pct"):
+        aggregate_financial_windows([], initial_capital=1000.0, regime_threshold_pct="bad")  # type: ignore[arg-type]
+
+
+
+
 

@@ -47,12 +47,24 @@ def assess_decision_evidence(
     """
     if not records:
         raise ValueError("evaluating the evidence requires at least one bar")
+    raw_first_ts = records[0].get("timestamp") if isinstance(records[0], dict) else None
+    raw_last_ts = records[-1].get("timestamp") if isinstance(records[-1], dict) else None
+    if isinstance(raw_first_ts, bool) or isinstance(raw_last_ts, bool) or raw_first_ts is None or raw_last_ts is None:
+        raise ValueError("invalid record timestamps")
     history_days = max(
         0.0,
-        (int(records[-1]["timestamp"]) - int(records[0]["timestamp"])) / 86_400.0,
+        (int(float(raw_last_ts)) - int(float(raw_first_ts))) / 86_400.0,
     )
-    fold_count = int(aggregate.get("fold_count") or 0)
-    cycles = int(aggregate.get("total_cycles") or 0)
+    raw_fc = aggregate.get("fold_count") if isinstance(aggregate, dict) else 0
+    try:
+        fold_count = int(float(raw_fc)) if raw_fc is not None and not isinstance(raw_fc, bool) and math.isfinite(float(raw_fc)) else 0
+    except (TypeError, ValueError):
+        fold_count = 0
+    raw_cyc = aggregate.get("total_cycles") if isinstance(aggregate, dict) else 0
+    try:
+        cycles = int(float(raw_cyc)) if raw_cyc is not None and not isinstance(raw_cyc, bool) and math.isfinite(float(raw_cyc)) else 0
+    except (TypeError, ValueError):
+        cycles = 0
     raw_worst = aggregate.get("worst_return_pct")
     try:
         worst_return = (
@@ -335,6 +347,8 @@ def build_execution_model_from_args(
 ) -> ExecutionModel:
     """Validate walk-forward window CLI flags and construct ExecutionModel."""
     explicit_windows = (args.train, args.validation, args.test)
+    if any(isinstance(value, bool) for value in (*explicit_windows, args.step)):
+        parser.error("the walk-forward sizes must be positive")
     if any(value is not None for value in explicit_windows) and not all(
         value is not None for value in explicit_windows
     ):
@@ -342,7 +356,7 @@ def build_execution_model_from_args(
     if any(value is not None and value <= 0 for value in (*explicit_windows, args.step)):
         parser.error("the walk-forward sizes must be positive")
     warmup = getattr(args, "warmup", None)
-    if warmup is not None and warmup < 0:
+    if isinstance(warmup, bool) or (warmup is not None and warmup < 0):
         parser.error("--warmup cannot be negative")
     try:
         return ExecutionModel(
