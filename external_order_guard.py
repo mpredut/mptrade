@@ -84,9 +84,9 @@ def check_external_order_guards(
     if not isinstance(side, str):
         return True, "not_supported_side", 1.0
     order_side = side.strip().upper()
-    if order_side == "B":
+    if order_side in ("B", "BID", "LONG"):
         order_side = "BUY"
-    elif order_side == "S":
+    elif order_side in ("S", "A", "ASK", "SHORT"):
         order_side = "SELL"
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
@@ -183,10 +183,10 @@ def check_external_order_guards(
                 w_snap = w_col.fetch(symbol, allow_network=False, now=now_ts)
             except TypeError:
                 w_snap = w_col.fetch(symbol, allow_network=False)
-            sev_oi = float(m["severe_cascade_oi_pct"])
-            min_tk = float(m["min_taker_ratio"])
-            downscale_tk = float(m["taker_downscale_threshold"])
-            downscaled_scale = float(m["taker_downscaled_scale"])
+            sev_oi = m["severe_cascade_oi_pct"]
+            min_tk = m["min_taker_ratio"]
+            downscale_tk = m["taker_downscale_threshold"]
+            downscaled_scale = m["taker_downscaled_scale"]
             w_guard = WhaleDivergenceGuard(
                 severe_cascade_oi_pct=sev_oi,
                 min_taker_ratio=min_tk,
@@ -222,9 +222,9 @@ def check_external_order_guards(
                 ob_snap = ob_col.fetch(symbol, allow_network=False, now=now_ts)
             except TypeError:
                 ob_snap = ob_col.fetch(symbol, allow_network=False)
-            min_imb = float(m["min_buy_imbalance"])
-            max_imb = float(m["max_sell_imbalance"])
-            wall_limit = float(m["whale_wall_usd_limit"])
+            min_imb = m["min_buy_imbalance"]
+            max_imb = m["max_sell_imbalance"]
+            wall_limit = m["whale_wall_usd_limit"]
             ob_guard = OrderbookWallGuard(
                 min_buy_imbalance=min_imb,
                 max_sell_imbalance=max_imb,
@@ -260,10 +260,10 @@ def check_external_order_guards(
                 f_snap = f_col.fetch(symbol, allow_network=False, now=now_ts)
             except TypeError:
                 f_snap = f_col.fetch(symbol, allow_network=False)
-            f_max = float(m["funding_max_long_rate"])
-            f_min = float(m["funding_min_short_rate"])
-            f_policy = str(m["funding_crowding_policy"]).strip().lower()
-            f_scale = float(m["funding_crowded_scale"])
+            f_max = m["funding_max_long_rate"]
+            f_min = m["funding_min_short_rate"]
+            f_policy = str(m["funding_crowding_policy"] or "").strip().lower()
+            f_scale = m["funding_crowded_scale"]
             f_guard = FundingCrowdingGuard(
                 max_long_funding_rate=f_max,
                 min_short_funding_rate=f_min,

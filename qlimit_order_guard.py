@@ -43,9 +43,9 @@ def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optiona
 def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Read cached (p90_days, median_days, gaussian_horizon_days=T*(1+exceed_percent)) in 0 ms without network I/O."""
     try:
-        from intelligence.internal.state.survival import T_CACHE_FILE, _lookup_t_cache_entry
+        from intelligence.internal.state.survival import _effective_t_cache_file, _lookup_t_cache_entry
         from state_io import read_recovering_previous
-        data = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
+        data = read_recovering_previous(_effective_t_cache_file(), json.loads, default=None)
         if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):
@@ -128,9 +128,9 @@ def check_qlimit2_order_guards(
     if not isinstance(side, str):
         return True, "not_supported_side", 1.0
     order_side = side.strip().upper()
-    if order_side == "B":
+    if order_side in ("B", "BID", "LONG"):
         order_side = "BUY"
-    elif order_side == "S":
+    elif order_side in ("S", "A", "ASK", "SHORT"):
         order_side = "SELL"
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
@@ -150,11 +150,11 @@ def check_qlimit2_order_guards(
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
     from intelligence.internal.guards.guard_decision import BrakeAction
 
-    surge_pct = float(m["parabolic_surge_pct"])
-    pullback_pct = float(m["parabolic_pullback_pct"])
-    exhaust_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
-    exhaust_scale = float(m["weibull_exhausted_scale"])
-    exhaust_p90 = float(m["weibull_p90_days"])
+    surge_pct = m["parabolic_surge_pct"]
+    pullback_pct = m["parabolic_pullback_pct"]
+    exhaust_policy = str(m["weibull_exhaustion_policy"] or "").strip().lower()
+    exhaust_scale = m["weibull_exhausted_scale"]
+    exhaust_p90 = m["weibull_p90_days"]
 
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
     e_guard = WeibullExhaustionGuard(default_p90_days=exhaust_p90, policy=exhaust_policy, exhausted_scale=exhaust_scale)

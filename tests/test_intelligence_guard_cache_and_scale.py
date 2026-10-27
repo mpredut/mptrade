@@ -16429,6 +16429,44 @@ def test_iteration171_instrument_and_guard_hierarchy_hygiene(monkeypatch):
     assert qd_calls[-1]["known_balance"] == pytest.approx(500.0)
 
 
+def test_iteration172_order_guard_qlimit_external_and_llm_side_and_bool_hygiene():
+    import order_guard as og
+    import qlimit_order_guard as qog
+    import external_order_guard as eog
+    import llm_order_guard as llog
+
+    # 1. order_guard._normalize_side_token & opposite_side
+    assert og._normalize_side_token(" bid ") == "BUY"
+    assert og._normalize_side_token("long") == "BUY"
+    assert og._normalize_side_token(" ask ") == "SELL"
+    assert og._normalize_side_token("A") == "SELL"
+    assert og._normalize_side_token("short") == "SELL"
+    assert og.opposite_side("BID") == "SELL"
+    assert og.opposite_side("ASK") == "BUY"
+
+    # 2. select_extreme_reference(strict=...) boolean string parsing
+    assert og.select_extreme_reference([100.0, 110.0], "BID", strict="false") == pytest.approx(110.0)
+    assert og.select_extreme_reference([100.0, 110.0], "BID", strict="true") == pytest.approx(100.0)
+    assert og.select_extreme_reference([100.0, 110.0], "ASK", strict="false") == pytest.approx(100.0)
+    assert og.select_extreme_reference([100.0, 110.0], "ASK", strict="true") == pytest.approx(110.0)
+
+    # 3. compute_weight_capped_qty clamps weight > 1.0 to 1.0 (never exceeds available_qty)
+    qty_cap = og.compute_weight_capped_qty(2.5, 100.0, 20.0, 10.0, 500.0)
+    assert qty_cap == pytest.approx(10.0)
+
+    # 4. qlimit_order_guard, external_order_guard, llm_order_guard side aliases
+    allowed_q, reason_q, scale_q = qog.check_qlimit2_order_guards("BTCUSDC", "BID", 100.0, margins={"intelligence_guards_mode": "off"})
+    assert allowed_q is True and reason_q == "intelligence_guards_off"
+    allowed_e, reason_e, scale_e = eog.check_external_order_guards("BTCUSDC", "ASK", 100.0, margins={"intelligence_guards_mode": "off"})
+    assert allowed_e is True and reason_e == "intelligence_guards_off"
+    assert llog._normalize_side("BID") == "BUY"
+    assert llog._normalize_side("LONG") == "BUY"
+    assert llog._normalize_side("ASK") == "SELL"
+    assert llog._normalize_side("A") == "SELL"
+    assert llog._normalize_side("SHORT") == "SELL"
+
+
+
 
 
 

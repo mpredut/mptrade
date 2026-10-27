@@ -50,9 +50,9 @@ def _normalize_side(val: Any) -> str:
     if not isinstance(val, str):
         return ""
     s = val.strip().upper()
-    if s == "B":
+    if s in ("B", "BID", "LONG"):
         return "BUY"
-    if s == "S":
+    if s in ("S", "A", "ASK", "SHORT"):
         return "SELL"
     return s
 
@@ -181,16 +181,21 @@ def evaluate_high_stake_order_guard(
             except Exception:
                 pass
 
-        if notify_on_eval or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+        do_notify = (
+            notify_on_eval
+            if isinstance(notify_on_eval, bool)
+            else str(notify_on_eval).strip().lower() not in ("0", "0.0", "false", "no", "off", "n", "f", "")
+        )
+        if do_notify or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
                 f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} "
                 f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
             )
 
-        if notify_on_eval:
+        if do_notify:
             now_ts = _resolve_now_ts(now)
-            cd_key = (str(symbol or "").strip().upper().replace("/", ""), side)
+            cd_key = (str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", ""), side)
             if not (0.0 <= (now_ts - _LLM_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                 _LLM_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                 while len(_LLM_SHADOW_NOTIFY_COOLDOWN) > 1000:
@@ -318,7 +323,7 @@ def check_geopolitical_order_guards(
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_scale})")
                 if geo_mode == "shadow" and shadow_notify:
-                    cd_key = (str(symbol or "").strip().upper().replace("/", ""), order_side)
+                    cd_key = (str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", ""), order_side)
                     now_ts = _resolve_now_ts(now)
                     if not (0.0 <= (now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                         _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts

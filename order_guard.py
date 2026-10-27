@@ -352,11 +352,28 @@ def _normalize_side_token(order_type: Any) -> str:
     if order_type is None or isinstance(order_type, bool) or not isinstance(order_type, str):
         return ""
     s = order_type.strip().upper()
-    if s == "B":
+    if s in ("B", "BID", "LONG"):
         return "BUY"
-    if s == "S":
+    if s in ("S", "A", "ASK", "SHORT"):
         return "SELL"
     return s
+
+
+def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else fb
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("1", "true", "yes", "on", "y", "t"):
+            return True
+        if s in ("0", "0.0", "false", "no", "off", "n", "f"):
+            return False
+    return fb
 
 
 def opposite_side(order_type: str) -> str:
@@ -399,7 +416,7 @@ def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
         return None
     if not clean_prices:
         return None
-    if strict:
+    if _parse_bool_flag(strict, True):
         return min(clean_prices) if side == "BUY" else max(clean_prices)
     return max(clean_prices) if side == "BUY" else min(clean_prices)
 
@@ -992,7 +1009,7 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
 def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded_24h_value):
     """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
-    w = _clean_pos_float(weight, 0.0)
+    w = min(1.0, _clean_pos_float(weight, 0.0))
     px = _clean_pos_float(price, 0.0)
     if required_qty is None or isinstance(required_qty, bool):
         return 0.0
@@ -1343,10 +1360,10 @@ def _read_cached_price_history(
 
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
     su_base = _normalize_base_asset(su)
-    safe_su = su.replace("/", "").replace("-", "")
+    safe_su = su.replace("/", "").replace("-", "").replace("_", "")
     cand_symbols: List[str] = []
     for c in (safe_su, su, f"{su_base}USDC", f"{su_base}USDT", f"{su_base}USD", su_base):
-        if c and "/" not in c and c not in cand_symbols:
+        if c and "/" not in c and "_" not in c and c not in cand_symbols:
             cand_symbols.append(c)
     p24_paths: List[str] = []
     for cand in cand_symbols:
@@ -1500,7 +1517,10 @@ def check_intelligence_guards(
     legacy_cache_key = (side, frozenset(bypassed))
     decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
     if isinstance(decisions_map, dict) and (cache_key in decisions_map or legacy_cache_key in decisions_map):
-        cached_entry = decisions_map.get(cache_key) or decisions_map[legacy_cache_key]
+        raw_entry = decisions_map.get(cache_key)
+        if not isinstance(raw_entry, dict):
+            raw_entry = decisions_map.get(legacy_cache_key)
+        cached_entry = raw_entry if isinstance(raw_entry, dict) else {}
         cached_res = cached_entry.get("decision")
         cached_price = cached_entry.get("price")
         cached_notional = cached_entry.get("notional")
@@ -2036,7 +2056,7 @@ def profit_guard(
 
     has_valid_qty = _clean_pos_float(qty, 0.0) > 0.0
     has_valid_notional = _clean_pos_float(notional_eur, 0.0) > 0.0
-    if not evaluate_intelligence or (not has_valid_qty and not has_valid_notional):
+    if not _parse_bool_flag(evaluate_intelligence, True) or (not has_valid_qty and not has_valid_notional):
         return True
 
     # Stage 2: Intelligence, Macro & Sentiment Guards
