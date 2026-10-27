@@ -1187,19 +1187,8 @@ def get_derivatives_collector():
 
 
 def _normalize_base_asset(sym: str) -> str:
-    s = (sym or "").strip().upper()
-    if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
-        return "USDCUSDT"
-    if "/" in s:
-        s = s.split("/", 1)[0].strip()
-    elif "-" in s:
-        s = s.split("-", 1)[0].strip()
-    elif "_" in s:
-        s = s.split("_", 1)[0].strip()
-    for q in ("USDC", "USDT", "FDUSD", "USD", "EUR", "RON", "GBP"):
-        if s.endswith(q) and len(s) > len(q):
-            return s[:-len(q)]
-    return s
+    from cachepaths import normalize_cache_base_asset
+    return normalize_cache_base_asset(sym)
 
 
 def _resolve_cachedb_dir() -> str:

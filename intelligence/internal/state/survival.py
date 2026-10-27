@@ -350,15 +350,8 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
 
 
 def _extract_base_symbol(symbol: str) -> str:
-    if not isinstance(symbol, str):
-        return ""
-    s = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
-    if s == "USDCUSDT":
-        return s
-    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD", "RON", "GBP"):
-        if s.endswith(quote) and len(s) > len(quote):
-            return s[: -len(quote)]
-    return s
+    from cachepaths import normalize_cache_base_asset
+    return normalize_cache_base_asset(symbol)
 
 
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:

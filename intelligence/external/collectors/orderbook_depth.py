@@ -21,52 +21,18 @@ logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 
 def _extract_base_asset(symbol: str) -> str:
-    if not isinstance(symbol, str):
-        return ""
-    s = symbol.upper().strip()
-    if s == "USDCUSDT":
-        return s
-    if "/" in s:
-        return s.split("/", 1)[0].strip()
-    if "-" in s:
-        return s.split("-", 1)[0].strip()
-    if "_" in s:
-        return s.split("_", 1)[0].strip()
-    for q in ("USDC", "USDT", "FDUSD", "USD", "EUR", "RON", "GBP"):
-        if s.endswith(q) and len(s) > len(q):
-            return s[: -len(q)]
-    return s
+    from cachepaths import normalize_cache_base_asset
+    return normalize_cache_base_asset(symbol)
 
 
 def _resolve_binance_lookup_symbol(symbol: str) -> str:
-    if not isinstance(symbol, str):
-        return ""
-    s = symbol.upper().strip()
-    if s == "USDCUSDT":
-        return s
-    base = _extract_base_asset(s)
-    if base and base != s:
-        return f"{base}USDT"
-    return s.replace("USDC", "USDT") if "USDC" in s else s
+    from cachepaths import resolve_binance_lookup_symbol
+    return resolve_binance_lookup_symbol(symbol)
 
 
 def _symbol_variants(symbol: str) -> List[str]:
-    if not isinstance(symbol, str):
-        return []
-    s = symbol.upper().strip()
-    safe_s = s.replace("/", "").replace("-", "").replace("_", "")
-    variants: List[str] = []
-    for cand in (safe_s, s):
-        if cand and cand not in variants:
-            variants.append(cand)
-    if safe_s != "USDCUSDT":
-        base = _extract_base_asset(s)
-        if base:
-            for suffix in ("USDC", "USDT", "USD", "EUR"):
-                cand = f"{base}{suffix}"
-                if cand not in variants:
-                    variants.append(cand)
-    return variants
+    from cachepaths import cache_symbol_variants
+    return cache_symbol_variants(symbol)
 
 
 @dataclass(frozen=True)

@@ -111,3 +111,94 @@ def cache_path(name: str) -> str:
     except Exception:
         pass
     return os.path.join(d, name)
+
+
+CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (
+    "USDC",
+    "USDT",
+    "FDUSD",
+    "USD",
+    "EUR",
+    "RON",
+    "GBP",
+)
+
+
+def normalize_cache_base_asset(symbol: object) -> str:
+    """Extract the canonical uppercase base asset from a spot/perp/venue symbol.
+
+    Handles ``/``, ``-``, and ``_`` separators (e.g. ``TAO/USD``, ``SOL-USD``,
+    ``HYPE_USDC``) as well as concatenated quote suffixes while preserving the
+    stablecoin pair ``USDCUSDT`` intact. Returns ``""`` for non-string or blank
+    inputs.
+    """
+    if not isinstance(symbol, str):
+        return ""
+    s = symbol.strip().upper()
+    if not s:
+        return ""
+    cleaned = s.replace("/", "").replace("-", "").replace("_", "")
+    if cleaned == "USDCUSDT":
+        return "USDCUSDT"
+    if "/" in s:
+        s = s.split("/", 1)[0].strip()
+    elif "-" in s:
+        s = s.split("-", 1)[0].strip()
+    elif "_" in s:
+        s = s.split("_", 1)[0].strip()
+    for quote in CACHE_QUOTE_SUFFIXES:
+        if s.endswith(quote) and len(s) > len(quote):
+            return s[: -len(quote)]
+    return s
+
+
+def resolve_binance_lookup_symbol(symbol: object) -> str:
+    """Resolve a cross-venue symbol to its canonical Binance ``<BASE>USDT`` lookup symbol."""
+    if not isinstance(symbol, str):
+        return ""
+    s = symbol.strip().upper()
+    if not s:
+        return ""
+    if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
+        return "USDCUSDT"
+    base = normalize_cache_base_asset(s)
+    if base and base != s:
+        return f"{base}USDT"
+    return s.replace("USDC", "USDT") if "USDC" in s else s
+
+
+def cache_symbol_variants(
+    symbol: object,
+    *,
+    include_original: bool = False,
+    include_base: bool = False,
+    quotes: tuple[str, ...] = ("USDC", "USDT", "USD", "EUR"),
+) -> list:
+    """Return ordered cross-venue symbol candidates for cache lookup."""
+    if not isinstance(symbol, str):
+        return [symbol] if include_original else []
+    raw = symbol.strip().upper()
+    if not raw:
+        return [symbol] if include_original else []
+    cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
+    variants: list = []
+    if include_original:
+        variants.append(symbol)
+        for cand in (raw, cleaned):
+            if cand and cand not in variants:
+                variants.append(cand)
+    else:
+        for cand in (cleaned, raw):
+            if cand and cand not in variants:
+                variants.append(cand)
+    if cleaned != "USDCUSDT":
+        base = normalize_cache_base_asset(raw)
+        if base:
+            for suffix in quotes:
+                cand = f"{base}{suffix}"
+                if cand and cand not in variants:
+                    variants.append(cand)
+            if include_base and base not in variants:
+                variants.append(base)
+    return variants
+
