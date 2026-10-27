@@ -90,9 +90,19 @@ class PriceTrendAnalyzer:
         return trend_line, slope, r_value
 
     def polynomial_regression_trend(self, degree=2):
+        if len(self.prices) < 2:
+            return [], []
+        deg_int = 2
+        if degree is not None and not isinstance(degree, bool):
+            try:
+                df = float(degree)
+                if math.isfinite(df) and df.is_integer() and int(df) >= 1:
+                    deg_int = int(df)
+            except (TypeError, ValueError, OverflowError):
+                deg_int = 2
         x = np.arange(len(self.prices)).reshape(-1, 1)
         y = np.array(self.prices)
-        poly_features = PolynomialFeatures(degree=degree)
+        poly_features = PolynomialFeatures(degree=deg_int)
         x_poly = poly_features.fit_transform(x)
 
         model = LinearRegression().fit(x_poly, y)
@@ -151,9 +161,9 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
     All ad-hoc dynamic-cache and replay windows delegate here.
 
     Return ``(final_trend, growth_coefficient, slope_full, gradient_recent)``."""
-    if len(prices) < 2:
+    analyzer = PriceTrendAnalyzer(prices)
+    if len(analyzer.prices) < 2:
         return 0, 0.0, 0.0, 0.0
-    analyzer = PriceTrendAnalyzer(list(prices))
     _, slope_full, _ = analyzer.linear_regression_trend()
     if slope_full is None:
         slope_full = 0.0
@@ -254,9 +264,18 @@ class IncrementalTrendBuffer:
             self.append(px, ts)
 
     def trim_front(self, count: int) -> None:
-        if count <= 0:
+        if count is None or isinstance(count, bool):
             return
-        idx = min(int(count), len(self.prices))
+        try:
+            cf = float(count)
+            if not math.isfinite(cf) or cf <= 0:
+                return
+            count_int = int(cf)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if count_int <= 0:
+            return
+        idx = min(count_int, len(self.prices))
         if idx <= 0:
             return
         self.base_p0 = self.p0[idx - 1]
@@ -333,9 +352,24 @@ class IncrementalTrendBuffer:
                    eps_k: float = 1.0, window_seconds: float | None = None):
         """Evaluate (final_trend, growth_coefficient, slope_full, gradient_recent, epsilon)
         on inclusive index range [a, b] in O(1) using cumulative prefix sums."""
+        if isinstance(a, bool) or isinstance(b, bool):
+            return 0, 0.0, 0.0, 0.0, 0.0
+        try:
+            a = int(a)
+            b = int(b)
+        except (TypeError, ValueError, OverflowError):
+            return 0, 0.0, 0.0, 0.0, 0.0
         n = b - a + 1
         if a < 0 or b >= len(self.prices) or n < 2:
             return 0, 0.0, 0.0, 0.0, 0.0
+        k_val = 1.0
+        if eps_k is not None and not isinstance(eps_k, bool):
+            try:
+                kf = float(eps_k)
+                if math.isfinite(kf) and kf > 0.0:
+                    k_val = kf
+            except (TypeError, ValueError, OverflowError):
+                k_val = 1.0
         p = self.prices
         s0 = self.p0[b] - (self.p0[a - 1] if a > 0 else self.base_p0)
         s1_raw = self.p1[b] - (self.p1[a - 1] if a > 0 else self.base_p1)
@@ -371,14 +405,21 @@ class IncrementalTrendBuffer:
             sum_g2 = g0 * g0 + (self.pg2[b - 1] - self.pg2[a]) + gn * gn
             mean_g = sum_g_all / n
             var_g = max(0.0, sum_g2 / n - mean_g * mean_g)
-            epsilon = float(eps_k * math.sqrt(var_g))
+            epsilon = float(k_val * math.sqrt(var_g))
 
         return final_trend, growth_coefficient, slope_full, gradient_recent, epsilon
 
     def log_return_std(self, a: int, b: int) -> float | None:
         """Return O(1) population std of log returns on slice [a, b] if all prices > 0."""
+        if isinstance(a, bool) or isinstance(b, bool):
+            return None
+        try:
+            a = int(a)
+            b = int(b)
+        except (TypeError, ValueError, OverflowError):
+            return None
         n = b - a + 1
-        if n < 20:
+        if a < 0 or b >= len(self.prices) or n < 20:
             return None
         np_before = self.nonpos[a - 1] if a > 0 else (self.nonpos[0] - (1 if self.prices[0] <= 0.0 else 0))
         if (self.nonpos[b] - np_before) > 0:
@@ -550,13 +591,21 @@ class PriceWindow:
     @classmethod
     def from_cache24(cls, symbol: str, window_seconds: float, cache24) -> "PriceWindow":
         """Build a window from recent Cache24 data and subscribe to future updates."""
-        entries = cache24.get_recent_entries(symbol, last_seconds=window_seconds)
+        win_sec = WINDOW_SECONDS_SMALL
+        if window_seconds is not None and not isinstance(window_seconds, bool):
+            try:
+                wf = float(window_seconds)
+                if math.isfinite(wf) and wf > 0:
+                    win_sec = wf
+            except (TypeError, ValueError, OverflowError):
+                win_sec = WINDOW_SECONDS_SMALL
+        entries = cache24.get_recent_entries(symbol, last_seconds=win_sec)
 
         sample_rate = cls._sample_rate_from_entries(entries)
-        window_size = max(10, int(window_seconds / sample_rate))
+        window_size = max(10, int(win_sec / sample_rate))
 
-        prices = [e[1] for e in entries]
-        pw = cls(symbol, window_size, sample_rate_sec=sample_rate, window_seconds=window_seconds)
+        prices = [e[1] for e in entries if isinstance(e, (list, tuple)) and len(e) >= 2]
+        pw = cls(symbol, window_size, sample_rate_sec=sample_rate, window_seconds=win_sec)
         for p in prices:
             pw.process_price(p)
 
@@ -1018,6 +1067,24 @@ class WindowAnalyzer:
             return 'HOLD', 0.0, 0.0, 0.0
         if not (math.isfinite(current_price) and current_price > 0):
             return 'HOLD', 0.0, 0.0, 0.0
+        thresh_val = 1.0
+        if threshold_percent is not None and not isinstance(threshold_percent, bool):
+            try:
+                tf = float(threshold_percent)
+                if math.isfinite(tf):
+                    thresh_val = tf
+            except (TypeError, ValueError, OverflowError):
+                thresh_val = 1.0
+        threshold_percent = thresh_val
+        dec_val = 3.7
+        if decrease_percent is not None and not isinstance(decrease_percent, bool):
+            try:
+                df = float(decrease_percent)
+                if math.isfinite(df):
+                    dec_val = df
+            except (TypeError, ValueError, OverflowError):
+                dec_val = 3.7
+        decrease_percent = dec_val
         w = self.window
         slope = self.calculate_slope_max_min()
         min_price, min_index = w.get_min_and_index()

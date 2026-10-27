@@ -415,6 +415,7 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
+    symbol = str(symbol).strip().upper().replace("/", "")
     limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
     years_to_keep = _clean_non_neg_int(years_to_keep, default=2) or 2
 
@@ -436,7 +437,10 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
             all_trades_list = []
 
     # Select existing fills for the current symbol.
-    existing_trades = [trade for trade in all_trades_list if isinstance(trade, dict) and trade.get('symbol') == symbol]
+    existing_trades = [
+        trade for trade in all_trades_list
+        if isinstance(trade, dict) and str(trade.get('symbol') or '').strip().upper().replace('/', '') == symbol
+    ]
     print(f"Already saved in file {len(existing_trades)} trades for {symbol}")
 
     # Calculate the retention cutoff.
@@ -499,7 +503,10 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
         updated_trades.sort(key=lambda x: extract_timestamp_ms(x, default=0) or 0)
 
         # Replace this symbol's entries in the main list.
-        all_trades_list = [trade for trade in all_trades_list if isinstance(trade, dict) and trade.get('symbol') != symbol]
+        all_trades_list = [
+            trade for trade in all_trades_list
+            if isinstance(trade, dict) and str(trade.get('symbol') or '').strip().upper().replace('/', '') != symbol
+        ]
         all_trades_list.extend(updated_trades)
 
         # Persist the updated list.

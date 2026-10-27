@@ -26,12 +26,23 @@ _ws_is_healthy = False
 _ws_needs_rest_resync: set[str] = set()
 
 
-def _as_bool(value: object) -> bool:
+def _as_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    fallback = bool(default) if isinstance(default, bool) else False
+    if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
+        return fallback
     if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return math.isfinite(float(value)) and float(value) != 0.0
-    return bool(value)
+        s = value.strip().lower()
+        if s in ("1", "true", "yes", "on", "y", "t"):
+            return True
+        if s in ("0", "false", "no", "off", "n", "f", "", "none", "null", "nan"):
+            return False
+        return fallback
+    if isinstance(value, (int, float)):
+        f = float(value)
+        return (f != 0.0) if math.isfinite(f) else fallback
+    return fallback
 
 
 def mark_ws_available(value: bool) -> bool:

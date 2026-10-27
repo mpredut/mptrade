@@ -16049,3 +16049,56 @@ def test_iteration165_credentials_cache_manager_and_cachetrend_hygiene(tmp_path,
     assert stm.should_wait("s", "BTCUSDC", now=now_ts, use_noise_gate="false") is False
 
 
+def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
+    from types import SimpleNamespace
+    import pricewindow as pw
+    from binance_api import bapi_ws_health as ws_health
+    from binance_api import bapi_ws_bridge as ws_bridge
+
+    # 1. PriceTrendAnalyzer.polynomial_regression_trend and instant_trend_from_prices edge cases
+    empty_pta = pw.PriceTrendAnalyzer([])
+    assert empty_pta.polynomial_regression_trend() == ([], [])
+    pta = pw.PriceTrendAnalyzer([100.0, 101.0, 103.0])
+    trend_poly, coef = pta.polynomial_regression_trend(degree="2.0")
+    assert len(trend_poly) == 3 and len(coef) == 3
+    assert pw.instant_trend_from_prices([100.0, None], 0.8) == (0, 0.0, 0.0, 0.0)
+    assert pw.instant_trend_from_prices((x for x in [100.0, 102.0, 104.0]), 0.8)[0] == 1
+
+    # 2. IncrementalTrendBuffer: trim_front(True), eval_slice eps_k validation, and log_return_std bounds check
+    buf = pw.IncrementalTrendBuffer()
+    for idx in range(25):
+        buf.append(100.0 + idx, 1700000000000 + idx * 1000)
+    buf.trim_front(True)
+    assert len(buf.prices) == 25
+    ft, gc, sf, gr, eps = buf.eval_slice(0, 24, eps_k=-5.0)
+    assert ft == 1 and eps >= 0.0
+    assert buf.log_return_std(-5, 20) is None
+    assert buf.log_return_std(0, 100) is None
+    assert buf.log_return_std(0, 24) is not None
+
+    # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.evaluate_buy_sell_opportunity with string thresholds
+    fake_c24 = SimpleNamespace(
+        get_recent_entries=lambda sym, last_seconds: [[1700000000000 + i * 1000, 100.0 + i * 0.5] for i in range(15)],
+        subscribe_price=lambda sub: None,
+    )
+    win = pw.PriceWindow.from_cache24("BTCUSDC", "60.0", fake_c24)
+    assert win.window_seconds == pytest.approx(60.0)
+    wa = pw.WindowAnalyzer(win)
+    action, prop_px, pct, slope = wa.evaluate_buy_sell_opportunity(107.0, threshold_percent="1.0", decrease_percent="3.7")
+    assert action in ("BUY", "SELL", "HOLD") and prop_px > 0
+
+    # 4. bapi_ws_health._as_bool(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)
+    assert ws_health._as_bool("unknown", default=True) is True
+    assert ws_health._as_bool("false", default=True) is False
+    persisted = []
+    ws_bridge.handle_binance_ws_event(
+        {"e": "executionReport", "s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": 123},
+        log_enabled=True,
+        upsert_order_fn=lambda ev: True,
+        append_trade_fn=lambda ev: True,
+        persist_fn=lambda et: persisted.append(et),
+    )
+    assert persisted == ["executionReport"]
+
+
+
