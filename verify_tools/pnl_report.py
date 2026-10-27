@@ -125,13 +125,15 @@ def main():
             print(f"{'Binance '+sym:<22} EROARE: {e}")
 
     # Kraken HYPE (kraken_bot)
+    from state_io import read_recovering_previous
     try:
-        with open(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), encoding="utf-8") as _kf:
-            k = json.load(_kf)
+        k = read_recovering_previous(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), json.loads, default=None)
+        if not isinstance(k, dict):
+            raise FileNotFoundError("kraken/.state_HYPEUSD.json missing or invalid")
         hy = 54.77  # Latest price from trail_k.
-        k_qty = _safe_float(k.get("qty") if isinstance(k, dict) else 0, 0.0)
-        k_cost = _safe_float(k.get("cost") if isinstance(k, dict) else 0, 0.0)
-        kr = _safe_float(k.get("realized_net") if isinstance(k, dict) else 0, 0.0)
+        k_qty = _safe_float(k.get("qty"), 0.0)
+        k_cost = _safe_float(k.get("cost"), 0.0)
+        kr = _safe_float(k.get("realized_net"), 0.0)
         ku = (k_qty * hy - k_cost) if k_qty > 1e-9 else 0.0
         tot_r += kr; tot_u += ku
         print(f"{'Kraken HYPE (bot)':<22}{kr:>+11.2f}{ku:>+12.2f}{k_qty:>10.4f}  (avg cost {k_cost/k_qty if k_qty else 0:.2f}, cur ~{hy})")
@@ -140,11 +142,12 @@ def main():
 
     # Hyperliquid dn_bot (delta-neutral: profit = funding - fees, price-independent)
     try:
-        with open(os.path.join(ROOT, "hyperliquid/.state_dn_HYPE.json"), encoding="utf-8") as _hf:
-            h = json.load(_hf)
-        h_fund = _safe_float(h.get("funding_accrued") if isinstance(h, dict) else 0, 0.0)
-        h_fees = _safe_float(h.get("fees_paid") if isinstance(h, dict) else 0, 0.0)
-        h_spot = _safe_float(h.get("spot_qty") if isinstance(h, dict) else 0, 0.0)
+        h = read_recovering_previous(os.path.join(ROOT, "hyperliquid/.state_dn_HYPE.json"), json.loads, default=None)
+        if not isinstance(h, dict):
+            raise FileNotFoundError("hyperliquid/.state_dn_HYPE.json missing or invalid")
+        h_fund = _safe_float(h.get("funding_accrued"), 0.0)
+        h_fees = _safe_float(h.get("fees_paid"), 0.0)
+        h_spot = _safe_float(h.get("spot_qty"), 0.0)
         hl = h_fund - h_fees
         tot_r += hl
         print(f"{'HL dn_bot (funding)':<22}{hl:>+11.2f}{0.0:>+12.2f}{h_spot:>10.4f}  (delta-neutral: funding {h_fund:.2f} - fee {h_fees:.2f})")

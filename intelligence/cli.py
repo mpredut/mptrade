@@ -181,9 +181,24 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 2. Pillar 2: External Microstructure & Derivatives
     try:
+        from intelligence.external.collectors.orderbook_depth import _symbol_variants
+        sym_candidates = [symbol] if (symbol and "/" not in symbol) else []
+        for cand in _symbol_variants(symbol):
+            if cand and "/" not in cand and cand not in sym_candidates:
+                sym_candidates.append(cand)
+        if not sym_candidates:
+            sym_candidates = [symbol]
+
+        def _load_first_symbol_snapshot(prefix: str) -> Optional[Dict[str, Any]]:
+            for cand in sym_candidates:
+                cand_path = os.path.join(cache_dir, f"{prefix}_{cand}.json")
+                data = read_recovering_previous(cand_path, json.loads, default=None)
+                if isinstance(data, dict):
+                    return data
+            return None
+
         # Orderbook depth
-        ob_path = os.path.join(cache_dir, f"orderbook_depth_{symbol}.json")
-        ob_data = read_recovering_previous(ob_path, json.loads, default=None)
+        ob_data = _load_first_symbol_snapshot("orderbook_depth")
         if isinstance(ob_data, dict):
             ob_ts = _safe_float(ob_data.get("ts"), 0.0)
             ob_age = (now - ob_ts) if ob_ts > 0.0 else float("inf")
@@ -194,8 +209,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
             result["pillar2_external"]["orderbook"] = None
 
         # Derivatives telemetry
-        deriv_path = os.path.join(cache_dir, f"derivatives_telemetry_{symbol}.json")
-        deriv_data = read_recovering_previous(deriv_path, json.loads, default=None)
+        deriv_data = _load_first_symbol_snapshot("derivatives_telemetry")
         if isinstance(deriv_data, dict):
             deriv_ts = _safe_float(deriv_data.get("ts"), 0.0)
             deriv_age = (now - deriv_ts) if deriv_ts > 0.0 else float("inf")
@@ -206,8 +220,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
             result["pillar2_external"]["derivatives"] = None
 
         # Whale positioning
-        whale_path = os.path.join(cache_dir, f"whale_snapshot_{symbol}.json")
-        whale_data = read_recovering_previous(whale_path, json.loads, default=None)
+        whale_data = _load_first_symbol_snapshot("whale_snapshot")
         if isinstance(whale_data, dict):
             whale_ts = _safe_float(whale_data.get("ts"), 0.0)
             whale_age = (now - whale_ts) if whale_ts > 0.0 else float("inf")

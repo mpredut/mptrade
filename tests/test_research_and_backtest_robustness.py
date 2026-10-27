@@ -5234,5 +5234,106 @@ def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_
     assert utils._sign_ed25519(fake_key, "hello") == utils._sign_ed25519(fake_key, b"hello")
 
 
+def test_batch35_spot_replay_intelligence_volatility_and_verify_tools_hardening(tmp_path, monkeypatch):
+    """Verify spot_replay non-finite metric rounding, intelligence_backtest._safe_float, volatility._extract_vol_ratio_from_file fallback, high_stake_guard telemetry fault isolation, intelligence.cli symbol variants, and verify_tools recovery."""
+    import json
+    from types import SimpleNamespace
+    import intelligence.cli as icli
+    from intelligence.internal.state import volatility as vol_mod
+    from intelligence.sentiment.guards import high_stake_guard as hsg
+    from offline.research import intelligence_backtest as ibt
+    from verify_tools import pnl_report, portfolio_snapshot
+
+    # 1. intelligence_backtest._safe_float handles malformed strings, bools, and NaN
+    assert ibt._safe_float("bad", 3.5) == 3.5
+    assert ibt._safe_float(float("nan"), 1e-4) == 1e-4
+    assert ibt._safe_float(True, 2.0) == 2.0
+    assert ibt._safe_float("12.5", 0.0) == 12.5
+
+    # 2. volatility._extract_vol_ratio_from_file continues searching symbol variants if earlier variant lacks valid vol_1h_pct
+    vol_file = tmp_path / "vol.json"
+    vol_file.write_text(
+        json.dumps({
+            "BTC/USDC": {"vol_1h_pct": 0.0},
+            "items": {"BTCUSDC": {"vol_1h_pct": 2.5}},
+        }),
+        encoding="utf-8",
+    )
+    assert vol_mod._extract_vol_ratio_from_file(str(vol_file), "BTC/USDC") == 0.025
+
+    # 3. high_stake_guard.collect_pretrade_telemetry isolates bad field values and formats bid+ask=100%
+    import external_order_guard as eog
+
+    monkeypatch.setattr(
+        eog,
+        "get_orderbook_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                imbalance_ratio=0.55,
+                largest_ask_wall_usd="bad_wall",
+                largest_ask_wall_price=95000.0,
+                largest_bid_wall_usd=250000.0,
+                largest_bid_wall_price=90000.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        eog,
+        "get_derivatives_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                funding_rate=0.0001,
+                open_interest_usd="bad_oi",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        eog,
+        "get_whale_collector",
+        lambda: SimpleNamespace(
+            fetch=lambda sym, allow_network=False: SimpleNamespace(
+                top_traders_long_pct="bad_pct",
+                top_traders_long_ratio=1.5,
+                taker_buy_sell_ratio=1.15,
+                divergence_regime="bullish",
+            )
+        ),
+    )
+    reg_ctx = SimpleNamespace(
+        resolved_trend="uptrend",
+        decision=SimpleNamespace(gradient="bad_grad", epsilon=0.002),
+    )
+    telem = hsg.collect_pretrade_telemetry("BTCUSDC", regime_context=reg_ctx, dur_sec=7200.0, cachedb_dir=str(tmp_path))
+    assert "55% bids vs 45% asks" in telem["Orderbook Depth Imbalance"]
+    assert "$250,000 @ $90,000.00" in telem["Orderbook Bid Wall Ahead"]
+    assert "+0.0100% (8h)" in telem["Perpetual Funding Rate"]
+    assert "Derivatives Open Interest" not in telem
+    assert "Buyer/Seller ratio: 1.15" in telem["Whale Taker Flow"]
+    assert telem["Technical Trend Regime"] == "uptrend"
+    assert telem["Trend Duration"] == "2.0 hours"
+
+    # 4. intelligence.cli.inspect_symbol_intelligence resolves symbol variants (e.g. BTC/USDC -> BTCUSDC)
+    import order_guard as og
+
+    monkeypatch.setattr(og, "check_intelligence_guards", lambda **kw: (True, "ok", 1.0))
+    (tmp_path / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps({"symbol": "BTCUSDC", "imbalance_ratio": 0.6}),
+        encoding="utf-8",
+    )
+    report = icli.inspect_symbol_intelligence("BTC/USDC", cache_dir=str(tmp_path))
+    assert report["symbol"] == "BTC/USDC"
+    assert report["pillar2_external"]["orderbook"]["symbol"] == "BTCUSDC"
+
+    # 5. verify_tools.portfolio_snapshot._load_state recovers from .previous when primary is corrupt
+    monkeypatch.setattr(portfolio_snapshot, "KRAKEN_DIR", str(tmp_path))
+    st_file = tmp_path / ".state_X.json"
+    st_prev = tmp_path / ".state_X.json.previous"
+    st_file.write_text("{corrupt", encoding="utf-8")
+    st_prev.write_text(json.dumps({"cost": 123.45}), encoding="utf-8")
+    assert portfolio_snapshot._load_state("X") == {"cost": 123.45}
+    assert pnl_report is not None
+
+
+
 
 

@@ -23,7 +23,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import parse_dotenv, required_float_env  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-from state_io import atomic_write_json  # noqa: E402
+from state_io import atomic_write_json, read_recovering_previous, save_json_state  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 
@@ -38,11 +38,8 @@ KRAKEN_PAIRS = [("HYPEUSD", "HYPE", False), ("TAOUSD", "TAO", False), ("ADAUSD",
 
 def _load_state(pair: str) -> dict | None:
     path = os.path.join(KRAKEN_DIR, f".state_{pair}.json")
-    if not os.path.exists(path):
-        return None
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = read_recovering_previous(path, json.loads, default=None)
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
@@ -176,8 +173,7 @@ def _ntfy(title: str, body: str) -> None:
 
 def _alert_state() -> dict:
     try:
-        with open(ALERT_STATE, encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = read_recovering_previous(ALERT_STATE, json.loads, default=None)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -185,7 +181,7 @@ def _alert_state() -> dict:
 
 def _save_alert_state(st: dict) -> None:
     try:
-        atomic_write_json(ALERT_STATE, st)
+        save_json_state(ALERT_STATE, st)
     except (OSError, ValueError, TypeError):
         pass
 

@@ -401,7 +401,11 @@ def _run_once(
         trade_pnls=trade_pnls,
         turnover_notional=turnover_notional,
     )
-    rounded = lambda value: round(value, 10)
+    rounded = lambda value: (
+        round(value, 10)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+        else value
+    )
     result = {
         "realized": rounded(strategy.s["realized_gross"]),
         "net": rounded(strategy.s["realized_net"]),
@@ -418,7 +422,7 @@ def _run_once(
         "account_currency": params.currency,
     }
     result.update({
-        key: (round(value, 10) if isinstance(value, float) else value)
+        key: (round(value, 10) if isinstance(value, float) and math.isfinite(value) else value)
         for key, value in performance.items()
     })
     if include_decision_trace:

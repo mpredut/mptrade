@@ -299,18 +299,21 @@ def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
             items_map = data.get("items")
             if isinstance(items_map, dict):
                 search_maps.append(items_map)
-            entry = None
+            variants = _vol_symbol_variants(symbol)
             for mapping in search_maps:
-                for cand in _vol_symbol_variants(symbol):
-                    if cand in mapping and isinstance(mapping[cand], dict):
-                        entry = mapping[cand]
-                        break
-                if entry is not None:
-                    break
-            if entry and isinstance(entry, dict):
-                v = entry.get("vol_1h_pct")
-                if v is not None and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0:
-                    return vol_pct_to_ratio(float(v))
+                for cand in variants:
+                    entry = mapping.get(cand)
+                    if not isinstance(entry, dict):
+                        continue
+                    v = entry.get("vol_1h_pct")
+                    if v is None or isinstance(v, bool):
+                        continue
+                    try:
+                        vf = float(v)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(vf) and vf > 0:
+                        return vol_pct_to_ratio(vf)
     except Exception:
         pass
     return None
