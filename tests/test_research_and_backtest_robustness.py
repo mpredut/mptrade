@@ -5167,4 +5167,72 @@ def test_batch33_cacheintegrity_instrument_registry_rtrade_and_providers_hardeni
     assert rp.pair_precision(True) is None  # type: ignore[arg-type]
 
 
+def test_batch34_spot_engine_market_regime_llm_guard_and_state_io_hardening(tmp_path):
+    """Verify StratParams/Strategy, MarketRegimeService.compose, order_retry_worker._safe_int, state_io.load_json_state, and utils._sign_ed25519."""
+    from types import SimpleNamespace
+    import pytest
+    import market_regime
+    import order_retry_worker as orw
+    import state_io
+    import utils
+    from strategies.spot_engine import StratParams, Strategy
+
+    # 1. StratParams.from_dict coerces integer strings and rejects bools/non-dicts
+    base_cfg = {
+        "currency": "USD",
+        "entry_amount": 50.0,
+        "entry_discount_pct": 1.0,
+        "dca_amount": 50.0,
+        "dca_drop_pct": 5.0,
+        "check_minutes": 15.0,
+        "takeprofit_pct": 3.0,
+        "max_budget": 500.0,
+        "max_dca_buys": 5,
+        "enable_takeprofit": True,
+        "order_ttl_min": 60.0,
+    }
+    params = StratParams.from_dict(
+        {**base_cfg, "trend_interval": "240", "regime_min_samples": "20"},
+        defaults="not_a_dict",  # type: ignore[arg-type]
+    )
+    assert params.trend_interval == 240
+    assert params.regime_min_samples == 20
+    with pytest.raises(ValueError, match="STRAT_REGIME_MIN_SAMPLES"):
+        StratParams.from_dict({**base_cfg, "regime_min_samples": True})
+
+    # 2. Strategy._has_open and _find_open handle uppercase/whitespace and malformed order entries
+    strat = object.__new__(Strategy)
+    strat.s = {"orders": ["not_a_dict", {"side": " BUY ", "id": "o1"}]}
+    assert strat._has_open("buy") is True
+    assert strat._has_open("SELL") is False
+    assert strat._find_open("BUY") == {"side": " BUY ", "id": "o1"}
+    assert strat._find_open(True) is None  # type: ignore[arg-type]
+
+    # 3. MarketRegimeService.compose handles None decisions and rejects invalid benchmark tuples
+    svc = market_regime.MarketRegimeService()
+    comp = svc.compose(None, None, benchmarks=[("BTCUSDC", None, None)])
+    assert comp.regime == "unknown"
+    assert comp.actionable is False
+    with pytest.raises(ValueError, match="benchmarks must be an iterable"):
+        svc.compose(None, None, benchmarks="BTCUSDC")  # type: ignore[arg-type]
+
+    # 4. order_retry_worker._safe_int handles bool, float strings, NaN, and None
+    assert orw._safe_int(True, 0) == 0
+    assert orw._safe_int("5.0", 0) == 5
+    assert orw._safe_int(float("nan"), 3) == 3
+
+    # 5. state_io.load_json_state honors fail_closed for invalid/empty paths
+    assert state_io.load_json_state(None, default_factory=dict, fail_closed=False, label="test") == {}  # type: ignore[arg-type]
+    assert state_io.load_json_state("   ", default_factory=dict, fail_closed=False, label="test") == {}
+    with pytest.raises(state_io.StateReadError):
+        state_io.load_json_state(True, default_factory=dict, fail_closed=True, label="test")  # type: ignore[arg-type]
+
+    # 6. utils._sign_ed25519 rejects None/bool and accepts str or bytes
+    with pytest.raises(ValueError, match="signing_key and payload are required"):
+        utils._sign_ed25519(None, "msg")
+    fake_key = SimpleNamespace(sign=lambda b: SimpleNamespace(signature=b"sig:" + b))
+    assert utils._sign_ed25519(fake_key, "hello") == utils._sign_ed25519(fake_key, b"hello")
+
+
+
 

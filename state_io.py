@@ -118,7 +118,16 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
     may explicitly opt into a clean default.
     """
     fail_closed = _parse_bool_flag(fail_closed, True)
-    target_path = os.fspath(path)
+    try:
+        if path is None or isinstance(path, bool):
+            raise TypeError("path must be a valid filesystem path")
+        target_path = os.fspath(path)
+        if isinstance(target_path, str) and not target_path.strip():
+            raise ValueError("path must not be empty")
+    except (TypeError, ValueError) as exc:
+        if fail_closed:
+            raise StateReadError(f"invalid {label} state in {path}: {exc}") from exc
+        return default_factory()
     backup_path = previous_generation_path(target_path)
     if not os.path.exists(target_path) and not os.path.exists(backup_path):
         return default_factory()

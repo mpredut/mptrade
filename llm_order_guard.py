@@ -142,8 +142,8 @@ def evaluate_high_stake_order_guard(
                 getattr(regime_context, "trend_duration_seconds", None)
                 or getattr(regime_context, "resolved_duration_sec", None)
             )
-        timeout_sec = float(margins["llm_timeout_sec"])
-        fallback = str(margins["llm_fallback"]).strip().lower()
+        timeout_sec = _pos_float(margins.get("llm_timeout_sec"), 5.0)
+        fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
         llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
         try:
             g_dec = llm_guard.check(
@@ -292,13 +292,16 @@ def check_geopolitical_order_guards(
         return True, "geopolitical_guard_off", 1.0
 
     raw_shadow_notify = m.get("shadow_notify", False)
-    if isinstance(raw_shadow_notify, str):
+    if isinstance(raw_shadow_notify, bool):
+        shadow_notify = raw_shadow_notify
+    elif isinstance(raw_shadow_notify, str):
         shadow_notify = raw_shadow_notify.strip().lower() in ("1", "1.0", "true", "yes", "on")
     elif raw_shadow_notify is None:
         shadow_notify = False
     else:
         try:
-            shadow_notify = bool(float(raw_shadow_notify))
+            sn_f = float(raw_shadow_notify)
+            shadow_notify = bool(sn_f) if math.isfinite(sn_f) else False
         except (TypeError, ValueError):
             shadow_notify = False
 
@@ -408,7 +411,7 @@ def check_llm_order_guards(
     valid_context = False
     if regime_context is not None and hasattr(regime_context, "__dict__"):
         if hasattr(regime_context, "is_valid_for"):
-            max_age = float(m.get("regime_context_max_age_sec", 300.0))
+            max_age = _pos_float(m.get("regime_context_max_age_sec"), 300.0)
             has_id = bool(getattr(regime_context, "symbol", None) and getattr(regime_context, "provider", None))
             valid_context = regime_context.is_valid_for(
                 symbol=symbol,

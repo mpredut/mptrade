@@ -256,6 +256,12 @@ class StratParams:
                 raise ValueError(f"{name} must be finite")
             return parsed
 
+        def integer(name: str, value) -> int:
+            val_f = finite(name, value)
+            if not val_f.is_integer():
+                raise ValueError(f"{name} must be an integer")
+            return int(val_f)
+
         self.trend_topup = finite("STRAT_TREND_TOPUP", self.trend_topup)
         self.entry_discount_pct = finite("STRAT_ENTRY_DISCOUNT_PCT", self.entry_discount_pct)
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
@@ -304,6 +310,10 @@ class StratParams:
             raise ValueError("STRAT_SL_BOUNCE_RATCHET_K must be >= 0")
         if self.sl_bounce_min_pullback_pct < 0:
             raise ValueError("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT must be >= 0")
+        self.trend_interval = integer("STRAT_TREND_INTERVAL", self.trend_interval)
+        if self.trend_interval <= 0:
+            raise ValueError("STRAT_TREND_INTERVAL must be > 0")
+        self.regime_min_samples = integer("STRAT_REGIME_MIN_SAMPLES", self.regime_min_samples)
         regime_capacity = MarketRegimeService.horizon_sample_capacity(
             "long", self.trend_interval,
         )
@@ -349,9 +359,11 @@ class StratParams:
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
         from dataclasses import fields as _dc_fields
-        merged = {**(defaults or {}), **(values or {})}
+        base_defaults = dict(defaults) if isinstance(defaults, dict) else {}
+        base_values = dict(values) if isinstance(values, dict) else {}
+        merged = {**base_defaults, **base_values}
         valid = {f.name for f in _dc_fields(cls)}
-        if warn_dropped:
+        if _parse_bool_flag(warn_dropped, False):
             dropped = sorted(set(merged) - valid)
             if dropped:
                 print(f"[params] ignoring parameters removed from StratParams: {dropped}")
@@ -822,10 +834,28 @@ class Strategy:
         return round(max(ticks, 0) * step, self.vol_dec)
 
     def _has_open(self, side: str) -> bool:
-        return any(o["side"] == side for o in self.s["orders"])
+        target = str(side or "").strip().lower() if not isinstance(side, bool) else ""
+        if not target:
+            return False
+        orders = self.s.get("orders")
+        if not isinstance(orders, list):
+            return False
+        return any(
+            isinstance(o, dict) and str(o.get("side") or "").strip().lower() == target
+            for o in orders
+        )
 
     def _find_open(self, side: str) -> dict | None:
-        return next((o for o in self.s["orders"] if o["side"] == side), None)
+        target = str(side or "").strip().lower() if not isinstance(side, bool) else ""
+        if not target:
+            return None
+        orders = self.s.get("orders")
+        if not isinstance(orders, list):
+            return None
+        return next(
+            (o for o in orders if isinstance(o, dict) and str(o.get("side") or "").strip().lower() == target),
+            None,
+        )
 
     def _remove(self, o: dict) -> None:
         if o in self.s["orders"]:

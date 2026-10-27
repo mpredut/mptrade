@@ -932,7 +932,11 @@ class MarketRegimeService:
                 not 0 <= directional_threshold <= 1):
             raise ValueError("invalid composite strength cap or threshold")
 
+        if isinstance(benchmarks, (str, bytes, bool)):
+            raise ValueError("benchmarks must be an iterable of (name, short, long) tuples")
         benchmark_pairs = tuple(benchmarks or ())
+        if any(not isinstance(bp, (tuple, list)) or len(bp) != 3 for bp in benchmark_pairs):
+            raise ValueError("benchmarks must be an iterable of (name, short, long) tuples")
         components = []
         weighted_score = asset_weighted_score = confidence = 0.0
         asset_scores = []
@@ -940,6 +944,8 @@ class MarketRegimeService:
 
         def add(label, decision, weight, bucket, *, asset=False):
             nonlocal weighted_score, asset_weighted_score, confidence
+            if decision is None:
+                decision = self.evaluator.unknown("evidence_unavailable")
             score = self._signed_score(decision, strength_cap)
             components.append((label, decision.regime, decision.source, score))
             if score is not None:

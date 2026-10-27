@@ -165,6 +165,16 @@ def _normalize_bypass_set(raw_bg) -> set[str]:
     return set()
 
 
+def _safe_int(val, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+        return int(vf) if math.isfinite(vf) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _accepted_order(order):
     return oq.order_id_from_response(order) is not None
 
@@ -733,7 +743,7 @@ def process_once(mkt, now=None):
         try:
             _audit_event(
                 r, "submit_requested", qty=r.get("qty"), price=price,
-                attempt=int(r.get("attempts") or 0) + 1,
+                attempt=_safe_int(r.get("attempts"), 0) + 1,
                 retry_stage=retry_stage,
                 age_progress=round(age_progress, 3))
             if retry_stage != "standard":
@@ -960,7 +970,7 @@ def _alert_queue_corruption(exc):
 def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
     """Alert once when an expired producer claim cannot be reconciled safely."""
     fingerprint = (
-        str(rec.get("id")), int(rec.get("revision", 0)),
+        str(rec.get("id")), _safe_int(rec.get("revision"), 0),
         str(rec.get("provider_name") or "routed"),
         str(reason),
     )
@@ -1005,7 +1015,7 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
 def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
     """Alert once when a possibly submitted intent cannot be reconciled."""
     fingerprint = (
-        str(rec.get("id")), int(rec.get("revision", 0)),
+        str(rec.get("id")), _safe_int(rec.get("revision"), 0),
         str(rec.get("provider_name") or "routed"),
         str(rec.get("last_failure_reason") or "unknown"),
         str(reason),
@@ -1057,7 +1067,7 @@ def _alert_terminal(rec, status):
     """Alert on a canceled intent whose remainder is deliberately not replayed."""
     terminal_key = (
         str(rec.get("id") or ""),
-        int(rec.get("revision") or 0),
+        _safe_int(rec.get("revision"), 0),
         str(rec.get("order_id") or ""),
         str(status.venue_status or status.status or ""),
     )

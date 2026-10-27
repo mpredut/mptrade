@@ -358,8 +358,11 @@ def _load_ed25519_signing_key():
         return None
     
 def _sign_ed25519(signing_key, payload: str) -> str:
-    signed = signing_key.sign(payload.encode())
-    return base64.b64encode(signed.signature).decode()
+    if signing_key is None or payload is None or isinstance(payload, bool):
+        raise ValueError("signing_key and payload are required")
+    raw_bytes = payload if isinstance(payload, bytes) else str(payload).encode("utf-8")
+    signed = signing_key.sign(raw_bytes)
+    return base64.b64encode(signed.signature).decode("ascii")
 
 
 """
