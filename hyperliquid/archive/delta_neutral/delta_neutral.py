@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import sys
 import time
@@ -42,7 +43,8 @@ _OLD_STATE = os.path.join(_HERE, ".state_dn.json")   # Legacy single-coin state 
 
 def state_path_for(coin: str) -> str:
     """Return a per-coin state path so multiple DN instances can run in parallel."""
-    safe = "".join(c if c.isalnum() else "_" for c in coin)
+    raw = "" if isinstance(coin, bool) or coin is None else str(coin)
+    safe = "".join(c if c.isalnum() else "_" for c in raw).strip("_") or "UNKNOWN"
     return os.path.join(_HERE, f".state_dn_{safe}.json")
 
 
@@ -137,7 +139,52 @@ class DeltaNeutral:
             label="Hyperliquid delta-neutral",
         )
         state = _new_state()
-        state.update(loaded)
+        if isinstance(loaded, dict):
+            state.update(loaded)
+        if state.get("status") not in ("flat", "open"):
+            state["status"] = "flat"
+        for k in ("target_sz", "fees_paid", "funding_accrued", "cooldown_until", "spot_qty", "perp_szi"):
+            raw_v = state.get(k)
+            try:
+                v_f = 0.0 if isinstance(raw_v, bool) or raw_v is None else float(raw_v)
+                state[k] = v_f if math.isfinite(v_f) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                state[k] = 0.0
+        for k in ("orphan_count", "gone_count", "drift_count", "order_fails"):
+            raw_i = state.get(k)
+            try:
+                i_f = 0.0 if isinstance(raw_i, bool) or raw_i is None else float(raw_i)
+                state[k] = max(0, int(i_f)) if math.isfinite(i_f) else 0
+            except (TypeError, ValueError, OverflowError):
+                state[k] = 0
+        raw_la = state.get("liq_alerted")
+        state["liq_alerted"] = (
+            raw_la.strip().lower() in ("1", "true", "yes", "on")
+            if isinstance(raw_la, str)
+            else bool(raw_la)
+        )
+        raw_ots = state.get("opened_ts")
+        if raw_ots is not None:
+            try:
+                ots_f = -1.0 if isinstance(raw_ots, bool) else float(raw_ots)
+                state["opened_ts"] = ots_f if math.isfinite(ots_f) and ots_f > 0 else None
+            except (TypeError, ValueError, OverflowError):
+                state["opened_ts"] = None
+        clean_hist = []
+        raw_hist = state.get("funding_hist")
+        if isinstance(raw_hist, (list, tuple)):
+            for item in raw_hist:
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    continue
+                if isinstance(item[0], bool) or isinstance(item[1], bool):
+                    continue
+                try:
+                    t_v, r_v = float(item[0]), float(item[1])
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(t_v) and t_v > 0 and math.isfinite(r_v):
+                    clean_hist.append([t_v, r_v])
+        state["funding_hist"] = clean_hist
         return state
 
     def _save(self):
@@ -168,7 +215,10 @@ class DeltaNeutral:
         spot_px = self.client.spot_mid(self.p.spot_pair)
         perp_px = self.client.mid(self.p.coin)
         funding = self.client.funding_rate(self.p.coin)
-        if spot_px is None or perp_px is None or funding is None or spot_px <= 0 or perp_px <= 0:
+        if any(
+            v is None or isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v))
+            for v in (spot_px, perp_px, funding)
+        ) or spot_px <= 0 or perp_px <= 0:
             return None
         if self.dry_run:
             spot_qty = self.s["spot_qty"]; perp_szi = self.s["perp_szi"]
@@ -378,13 +428,14 @@ class DeltaNeutral:
     def _check_liq(self, L: dict) -> bool:
         """Return True after reducing the position so this tick skips rebalancing."""
         pos = self.client.position_full(self.p.coin)
-        if not pos:
+        if not isinstance(pos, dict) or not pos:
             return False
+        raw_liq = pos.get("liquidationPx")
         try:
-            liq = float(pos.get("liquidationPx") or 0)
-        except (TypeError, ValueError):
+            liq = 0.0 if isinstance(raw_liq, bool) else float(raw_liq or 0)
+        except (TypeError, ValueError, OverflowError):
             liq = 0.0
-        if liq <= 0:
+        if not math.isfinite(liq) or liq <= 0:
             return False
         perp_px = L["perp_px"]
         dist_pct = (liq - perp_px) / perp_px * 100   # Short liquidation is above price.

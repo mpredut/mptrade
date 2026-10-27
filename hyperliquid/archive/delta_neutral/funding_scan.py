@@ -20,6 +20,7 @@ blindly selecting the maximum.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 
@@ -33,34 +34,60 @@ for _p in (_HERE, _HL_DIR, _ROOT_DIR):
 
 def rank(universe, ctxs, min_vol_usd, top=20):
     """Pure/testable: filter by volume and rank annualized funding descending."""
+    try:
+        min_vol_f = 0.0 if isinstance(min_vol_usd, bool) else float(min_vol_usd or 0.0)
+        if not math.isfinite(min_vol_f) or min_vol_f < 0.0:
+            min_vol_f = 0.0
+    except (TypeError, ValueError, OverflowError):
+        min_vol_f = 0.0
+    try:
+        top_f = 20.0 if isinstance(top, bool) or top is None else float(top)
+        top_i = max(0, int(top_f)) if math.isfinite(top_f) else 20
+    except (TypeError, ValueError, OverflowError):
+        top_i = 20
+    ctx_list = list(ctxs) if isinstance(ctxs, (list, tuple)) else []
     rows = []
-    for i, a in enumerate(universe):
-        c = ctxs[i] if i < len(ctxs) else {}
+    for i, a in enumerate(universe or []):
+        if not isinstance(a, dict):
+            continue
+        c = ctx_list[i] if i < len(ctx_list) and isinstance(ctx_list[i], dict) else {}
+        if any(isinstance(c.get(k), bool) for k in ("funding", "dayNtlVlm", "markPx", "openInterest")):
+            continue
         try:
             f = float(c.get("funding") or 0)
             vol = float(c.get("dayNtlVlm") or 0)
             mark = float(c.get("markPx") or 0)
             oi = float(c.get("openInterest") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
-        if vol < min_vol_usd or f <= 0:           # require positive funding earned by shorts
+        if not all(math.isfinite(v) for v in (f, vol, mark, oi)) or mark < 0.0 or oi < 0.0:
+            continue
+        if vol < min_vol_f or f <= 0:           # require positive funding earned by shorts
             continue
         rows.append({"coin": a.get("name"), "apr": f * 24 * 365 * 100,
                      "funding_hr_pct": f * 100, "vol": vol, "oi_usd": oi * mark, "mark": mark})
     rows.sort(key=lambda r: -r["apr"])
-    return rows[:top]
+    return rows[:top_i]
 
 
 def _spot_tokens(client) -> set:
     """Return tokens with a TOKEN/USDC spot pair for the long DN leg."""
     try:
         m = client.info.spot_meta()
-        tokens = {t.get("name"): t.get("index") for t in m.get("tokens", [])}
+        if not isinstance(m, dict):
+            return set()
+        tokens = {
+            t.get("name"): t.get("index")
+            for t in (m.get("tokens") or [])
+            if isinstance(t, dict) and t.get("name") is not None
+        }
         usdc = tokens.get("USDC")
         ok = set()
-        for u in m.get("universe", []):
+        for u in (m.get("universe") or []):
+            if not isinstance(u, dict):
+                continue
             pair = u.get("tokens") or []
-            if len(pair) == 2 and usdc in pair:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2 and usdc in pair:
                 other = pair[0] if pair[1] == usdc else pair[1]
                 for name, idx in tokens.items():
                     if idx == other:

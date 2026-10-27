@@ -112,7 +112,8 @@ def _fetch_with_ts(_pair: str, interval: int):
             and l_v <= min(o_v, c_v)
         ):
             parsed.append((ts, o_v, h_v, l_v, c_v))
-    rows = sorted(parsed)
+    by_ts = {r[0]: r for r in parsed}
+    rows = [by_ts[k] for k in sorted(by_ts)]
     # The final candle may still be forming; remove it as the Kraken runner does.
     return rows[:-1]
 

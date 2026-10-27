@@ -14,8 +14,16 @@ import json
 import math
 import os
 import re
+import sys
 import time
 import uuid
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_HERE)
+for _p in (_HERE, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from state_io import atomic_write_json
 
 try:
@@ -159,7 +167,7 @@ def _write_marker(ticker: str, result: dict) -> None:
     res_dict = result if isinstance(result, dict) else {}
     _persist_marker({
         "version": 2, "at": now_str(), "ticker": ticker,
-        "lifecycle": "accepted", "order_id": res_dict.get("id"),
+        "lifecycle": "accepted", "order_id": T212Client._clean_order_id(res_dict.get("id")),
         "venue_status": res_dict.get("status"), "order": res_dict,
     }, _marker_path(ticker))
     log(f"  [ORDER] marker written: {_marker_path(ticker)}")
@@ -488,7 +496,7 @@ def place_order_with_retry(
             ver_i = 1
         if ver_i < 2:
             legacy = record.get("order") if isinstance(record.get("order"), dict) else {}
-            legacy_id = legacy.get("id")
+            legacy_id = T212Client._clean_order_id(legacy.get("id"))
             if legacy_id:
                 info = poll_order_until_terminal(client, legacy_id, ticker, desktop)
                 record["last_status"] = info.get("status") if isinstance(info, dict) else None
@@ -529,7 +537,7 @@ def place_order_with_retry(
         if outcome == "waiting":
             # Do not report success merely because an unproven intent was durably
             # queued. A known venue order may safely remain open/status-unknown.
-            return bool(record.get("order_id"))
+            return T212Client._clean_order_id(record.get("order_id")) is not None
     else:
         before_qty = _portfolio_qty(client, ticker)
         if before_qty is None:

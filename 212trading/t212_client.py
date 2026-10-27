@@ -300,10 +300,12 @@ class T212Client:
             if not math.isfinite(order_id) or not order_id.is_integer():
                 return None
             order_id = int(order_id)
+        if isinstance(order_id, int) and order_id <= 0:
+            return None
         if not isinstance(order_id, (str, int)):
             return None
         s = str(order_id).strip()
-        if not s or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+        if not s or s.lower() in {"0", "0.0", "-0", "-0.0", "nan", "inf", "-inf", "+inf", "none", "null"}:
             return None
         return s
 

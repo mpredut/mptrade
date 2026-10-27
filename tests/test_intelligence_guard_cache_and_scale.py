@@ -14955,6 +14955,116 @@ def test_iteration152_hl_kraken_t212_providers_boolean_and_id_hygiene():
     assert T212Provider(live_enabled="true").execution_enabled() is True  # type: ignore[arg-type]
 
 
+def test_iteration153_t212_order_manager_hl_shadow_and_delta_neutral_safety(tmp_path, monkeypatch):
+    """Verify 212trading/order_manager, hyperliquid/shadow_longterm, funding_scan, and delta_neutral hardening."""
+    import importlib.util
+    import json
+    import os
+    from types import SimpleNamespace
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+    def _load_mod(name, rel):
+        import sys
+        p = os.path.join(root, rel)
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules[name] = m
+        spec.loader.exec_module(m)
+        return m
+
+    om = _load_mod("t212_order_manager_it153", "212trading/order_manager.py")
+    hl_sl = _load_mod("hl_shadow_longterm_it153", "hyperliquid/shadow_longterm.py")
+    f_scan = _load_mod("hl_funding_scan_it153", "hyperliquid/archive/delta_neutral/funding_scan.py")
+    dn_mod = _load_mod("hl_delta_neutral_it153", "hyperliquid/archive/delta_neutral/delta_neutral.py")
+
+    # 1. 212trading/order_manager: waiting with sentinel order_id="0" returns False, not True
+    monkeypatch.setattr(om, "_marker_path", lambda ticker, test=False: str(tmp_path / f"marker_{ticker}.json"))
+    monkeypatch.setattr(om, "get_price_usd", lambda sym: 100.0)
+    marker_file = tmp_path / "marker_NVDA_US_EQ.json"
+    marker_file.write_text(json.dumps({
+        "version": 2,
+        "ticker": "NVDA_US_EQ",
+        "qty": 1.0,
+        "limit_price": 100.0,
+        "lifecycle": "submit_pending",
+        "order_id": "0",
+        "lookup_misses": 0,
+        "next_retry_at": 9999999999.0,
+    }), encoding="utf-8")
+    dummy_client = SimpleNamespace(
+        list_active_orders=lambda: [],
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": 0.0}],
+        get_order_status=lambda oid: (_ for _ in ()).throw(AssertionError(f"should not poll sentinel oid {oid}")),
+    )
+    res_wait = om.place_order_with_retry(
+        dummy_client, "NVDA_US_EQ", 1.0, 100.0, "DAY", dry_run=False, write_marker=True
+    )
+    assert res_wait is False
+
+    # 2. hyperliquid/shadow_longterm._fetch_with_ts deduplicates identical timestamps
+    class DummyPubClient:
+        def candles(self, token, interval, lookback_hours=0):
+            return [
+                {"t": 1700000000000, "o": "10", "h": "12", "l": "9", "c": "11"},
+                {"t": 1700000000000, "o": "10", "h": "13", "l": "9", "c": "12"},
+                {"t": 1700014400000, "o": "12", "h": "14", "l": "11", "c": "13"},
+            ]
+
+    import hl_client as hlc_mod
+    monkeypatch.setattr(hlc_mod.HLClient, "public", staticmethod(lambda: DummyPubClient()))
+    rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
+    assert len(rows) == 1
+    assert rows[0] == (1700000000, 10.0, 13.0, 9.0, 12.0)
+
+    # 3. hyperliquid/archive/delta_neutral/funding_scan.py rank & _spot_tokens safety
+    ranked = f_scan.rank(
+        [None, {"name": "BAD_BOOL"}, {"name": "NAN_F"}, {"name": "HYPE"}],
+        [
+            None,
+            {"funding": True, "dayNtlVlm": 50_000_000, "markPx": 20, "openInterest": 1000},
+            {"funding": "nan", "dayNtlVlm": 50_000_000, "markPx": 20, "openInterest": 1000},
+            {"funding": "0.0005", "dayNtlVlm": "25000000", "markPx": "25.0", "openInterest": "10000"},
+        ],
+        min_vol_usd=float("nan"),
+        top=True,
+    )
+    assert len(ranked) == 1 and ranked[0]["coin"] == "HYPE"
+    bad_spot_client = SimpleNamespace(info=SimpleNamespace(spot_meta=lambda: {"tokens": [None], "universe": [None]}))
+    assert f_scan._spot_tokens(bad_spot_client) == set()
+
+    # 4. hyperliquid/archive/delta_neutral/delta_neutral.py state_path_for & _load sanitization
+    assert dn_mod.state_path_for("").endswith(".state_dn_UNKNOWN.json")
+    assert dn_mod.state_path_for(True).endswith(".state_dn_UNKNOWN.json")  # type: ignore[arg-type]
+    params = dn_mod.DNParams(
+        coin="HYPE", spot_pair="@107", spot_token="HYPE", notional=100.0,
+        entry_funding_hr=0.0001, exit_funding_hr=0.0, funding_window_h=4.0,
+        min_hold_h=1.0, rebalance_pct=5.0, check_minutes=5.0, sz_decimals=2,
+        liq_alert_pct=15.0, auto_protect=True, reduce_pct=25.0, perp_leverage=2,
+        allow_scale_up=False, fee_pct=0.05,
+    )
+    corrupt_state = tmp_path / ".state_dn_HYPE.json"
+    corrupt_state.write_text(json.dumps({
+        "status": "invalid_status",
+        "target_sz": "nan",
+        "fees_paid": True,
+        "liq_alerted": "false",
+        "orphan_count": -5,
+        "opened_ts": "nan",
+        "funding_hist": ["bad", [True, 0.01], [1700000000.0, "nan"], [1700000000.0, 0.0002]],
+    }), encoding="utf-8")
+    monkeypatch.setattr(dn_mod, "state_path_for", lambda c: str(corrupt_state))
+    dn = dn_mod.DeltaNeutral(client=SimpleNamespace(), params=params, dry_run=True)
+    assert dn.s["status"] == "flat"
+    assert dn.s["target_sz"] == 0.0
+    assert dn.s["fees_paid"] == 0.0
+    assert dn.s["liq_alerted"] is False
+    assert dn.s["orphan_count"] == 0
+    assert dn.s["opened_ts"] is None
+    assert dn.s["funding_hist"] == [[1700000000.0, 0.0002]]
+
+
+
 
 
 
