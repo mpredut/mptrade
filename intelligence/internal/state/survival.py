@@ -28,7 +28,22 @@ if _ROOT not in sys.path:
 from binance_api.market_data import fetch_ohlc_candles
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 
-T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
+_DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
+T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
+
+
+def _effective_t_cache_file() -> str:
+    if isinstance(T_CACHE_FILE, str) and T_CACHE_FILE.strip() and T_CACHE_FILE != _DEFAULT_T_CACHE_FILE:
+        return T_CACHE_FILE
+    facade = sys.modules.get("forecast.trend_survival")
+    facade_file = getattr(facade, "T_CACHE_FILE", None) if facade is not None else None
+    if isinstance(facade_file, str) and facade_file.strip() and facade_file != _DEFAULT_T_CACHE_FILE:
+        return facade_file
+    try:
+        import cachepaths
+        return cachepaths.cache_path("cache_T_trend.json")
+    except Exception:
+        return T_CACHE_FILE
 
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
@@ -397,7 +412,8 @@ def estimate_T(
             "T_emp": None,
             "ts": 0,
         }
-    loaded_cache = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
+    t_cache_path = _effective_t_cache_file()
+    loaded_cache = read_recovering_previous(t_cache_path, json.loads, default=None)
     cache = loaded_cache if isinstance(loaded_cache, dict) else {}
 
     ent = _lookup_t_cache_entry(cache, symbol)
@@ -417,9 +433,10 @@ def estimate_T(
                 pass
 
     sym_u = symbol.upper().strip()
+    clean_sym_u = sym_u.replace("/", "").replace("-", "").replace("_", "")
     base = _extract_base_symbol(sym_u)
-    candidates = [sym_u] if sym_u else [symbol]
-    if base and sym_u != "USDCUSDT":
+    candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
+    if base and clean_sym_u != "USDCUSDT":
         for suffix in ("USDC", "USDT"):
             cand = f"{base}{suffix}"
             if cand not in candidates:
@@ -465,10 +482,10 @@ def estimate_T(
     res["p_cont"] = p_cont
     res["source_symbol"] = used
     res["ts"] = time.time()
-    cache_key = sym_u.replace("/", "").replace("-", "").replace("_", "") if sym_u else str(symbol or "")
+    cache_key = clean_sym_u if clean_sym_u else str(symbol or "")
     cache[cache_key] = res
     try:
-        save_json_state(T_CACHE_FILE, cache, indent=2)
+        save_json_state(t_cache_path, cache, indent=2)
     except OSError:
         pass
     return res
@@ -497,7 +514,7 @@ def get_trend_survival_metrics(
 
     cached_entry: Optional[dict] = None
     try:
-        data = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
+        data = read_recovering_previous(_effective_t_cache_file(), json.loads, default=None)
         if isinstance(data, dict):
             cached_entry = _lookup_t_cache_entry(data, symbol)
     except Exception:
