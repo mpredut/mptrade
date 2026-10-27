@@ -80,17 +80,28 @@ def mark_ws_unhealthy() -> None:
             cm._ws_is_healthy = False
 
 
+def _normalize_manager_name(cls_name: object) -> str:
+    if isinstance(cls_name, type):
+        return cls_name.__name__
+    if isinstance(cls_name, str):
+        return cls_name.strip()
+    return ""
+
+
 def clear_ws_rest_resync_for_manager(cls_name: str) -> None:
     """Clear the pending post-disconnect REST resync obligation for ``cls_name``."""
+    norm_name = _normalize_manager_name(cls_name)
+    if not norm_name:
+        return
     with _ws_health_lock:
-        if cls_name in ORDER_CACHE_CLASSES:
+        if norm_name in ORDER_CACHE_CLASSES:
             _ws_needs_rest_resync.difference_update(ORDER_CACHE_CLASSES)
-        elif cls_name in TRADE_CACHE_CLASSES:
+        elif norm_name in TRADE_CACHE_CLASSES:
             _ws_needs_rest_resync.difference_update(TRADE_CACHE_CLASSES)
-        elif cls_name in ASSET_VALUE_CACHE_CLASSES:
+        elif norm_name in ASSET_VALUE_CACHE_CLASSES:
             _ws_needs_rest_resync.difference_update(ASSET_VALUE_CACHE_CLASSES)
         else:
-            _ws_needs_rest_resync.discard(cls_name)
+            _ws_needs_rest_resync.discard(norm_name)
 
 
 def should_poll_for_manager(
@@ -101,13 +112,14 @@ def should_poll_for_manager(
     ws_is_healthy: bool | None = None,
 ) -> bool:
     """Return True when ``cls_name`` must run a REST reconciliation poll."""
+    norm_name = _normalize_manager_name(cls_name)
     effective_ws_only = _as_bool(WS_ONLY_MODE) if ws_only_mode is None else _as_bool(ws_only_mode)
     if not effective_ws_only:
         return True
-    if cls_name not in WS_MANAGED_CACHE_CLASSES:
+    if norm_name not in WS_MANAGED_CACHE_CLASSES:
         return True
     with _ws_health_lock:
-        if cls_name in _ws_needs_rest_resync:
+        if norm_name in _ws_needs_rest_resync:
             return True
         effective_available = _as_bool(_ws_available) if ws_available is None else _as_bool(ws_available)
         effective_healthy = _as_bool(_ws_is_healthy) if ws_is_healthy is None else _as_bool(ws_is_healthy)

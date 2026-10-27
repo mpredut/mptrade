@@ -177,7 +177,9 @@ class TrailingStop:
         self.core.save(state)
 
     def trail_pct_for(self, symbol: str) -> float:
-        sym_norm = str(symbol or "").strip().upper()
+        if isinstance(symbol, bool) or symbol is None:
+            raise KeyError(symbol)
+        sym_norm = str(symbol).strip().upper()
         if sym_norm in TRAIL_PCT:
             return TRAIL_PCT[sym_norm]
         return TRAIL_PCT[symbol]
@@ -216,6 +218,9 @@ class TrailingStop:
         Cache only the average, never its price-dependent verdict. Refresh after
         UTC midnight; missing/stale/malformed history or price blocks auto re-buy.
         """
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         now = time.time()
         day = int(now // 86400)
         cached = self._long_trend_cache.get(symbol)

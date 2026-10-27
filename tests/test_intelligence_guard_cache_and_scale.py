@@ -13403,6 +13403,90 @@ def test_iteration130_bapi_placeorder_allorders_and_trades_id_hygiene(monkeypatc
     assert captured["newClientOrderId"] == "AUTO_CID_1"
 
 
+def test_iteration131_trailing_core_is_flat_ws_normalize_and_ws_health_hygiene(tmp_path):
+    """Verify TrailingCore string 'false' is_flat & non-dict state root handling, bapi_ws_normalize sentinel/container ID rejection, and bapi_ws_health manager name normalization."""
+    import json
+    from binance_api import bapi_ws_health, bapi_ws_normalize
+    from trailing_core import TrailingCore
+
+    # 1. TrailingCore: string "false" in st["is_flat"] does not block peak tracking or reset warmup
+    state_file = str(tmp_path / "trail_state.json")
+    with open(state_file, "w", encoding="utf-8") as fh:
+        json.dump([1, 2, 3], fh)
+
+    class _DummyAdapter:
+        def assets(self):
+            return [("BTCUSDC", "BTC", "BTCUSDC", 15.0)]
+
+        def begin_tick(self):
+            return True
+
+        def free_qty(self, _asset):
+            return 1.0
+
+        def price(self, _pair):
+            return 120.0
+
+        def trend(self, _pair):
+            return 0.0
+
+        def log_hold(self, *a):
+            pass
+
+    core_paper = TrailingCore(
+        _DummyAdapter(),
+        log=lambda _m: None,
+        enabled=False,
+        state_file=state_file,
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=False,
+        min_profit_pct=5.0,
+    )
+    assert core_paper.load() == {}
+
+    st_state = {"BTCUSDC": {"peak": 100.0, "is_flat": "false"}}
+    core_paper._process("BTCUSDC", "BTC", "BTCUSDC", 15.0, st_state)
+    assert st_state["BTCUSDC"]["peak"] == 120.0
+    assert "warmup_at" not in st_state["BTCUSDC"]
+
+    # 2. bapi_ws_normalize rejects sentinel strings ("0", "nan", "null") and containers for order/trade IDs
+    assert (
+        bapi_ws_normalize.parse_order_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": "nan", "t": 10, "l": "1", "L": "100"}
+        )
+        is None
+    )
+    assert (
+        bapi_ws_normalize.parse_order_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": "0", "t": 10, "l": "1", "L": "100"}
+        )
+        is None
+    )
+    assert (
+        bapi_ws_normalize.parse_trade_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": "null", "t": "nan", "l": "1", "L": "100"}
+        )
+        is None
+    )
+    assert (
+        bapi_ws_normalize.parse_trade_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "S": "BUY", "i": [1], "t": {"a": 1}, "l": "1", "L": "100"}
+        )
+        is None
+    )
+
+    # 3. bapi_ws_health normalizes whitespace-padded manager names and class objects
+    bapi_ws_health.mark_ws_available(True)
+    bapi_ws_health.mark_ws_event_received()
+    bapi_ws_health.mark_ws_unhealthy()
+    assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is True
+    bapi_ws_health.mark_ws_event_received()
+    bapi_ws_health.clear_ws_rest_resync_for_manager(" CacheOrderManager ")
+    assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is False
+
+
 
 
 

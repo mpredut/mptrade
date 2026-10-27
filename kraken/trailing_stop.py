@@ -143,7 +143,9 @@ class KrakenTrailing:
         self.core.save(st)
 
     def trail_pct_for(self, asset: str) -> float:
-        asset_norm = str(asset or "").strip().upper()
+        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+            return DEFAULT_TRAIL_PCT
+        asset_norm = asset.strip().upper()
         return TRAIL_PCT.get(asset, TRAIL_PCT.get(asset_norm, DEFAULT_TRAIL_PCT))
 
     def _balance_ex_map(self) -> dict | None:
@@ -159,11 +161,14 @@ class KrakenTrailing:
         return bx_map
 
     def _balance_ex_entry(self, asset: str) -> dict | None:
+        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+            return None
         bx_map = self._balance_ex_map()
         if not isinstance(bx_map, dict):
             return None
-        candidates = [asset, f"X{asset}", f"Z{asset}", f"{asset}.F"]
-        if str(asset or "").upper() == "BTC":
+        asset_clean = asset.strip().upper()
+        candidates = [asset, asset_clean, f"X{asset_clean}", f"Z{asset_clean}", f"{asset_clean}.F"]
+        if asset_clean == "BTC":
             candidates.extend(["XBT", "XXBT", "XBT.F", "XXBT.F"])
         for key in candidates:
             entry = bx_map.get(key)

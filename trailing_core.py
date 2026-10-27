@@ -88,10 +88,15 @@ class TrailingCore:
 
     # -- state (peak per key) -------------------------------------------------
     def load(self) -> dict:
-        return load_json_state(
+        loaded = load_json_state(
             self.state_file, default_factory=dict, fail_closed=self.enabled,
             label="live trailing" if self.enabled else "paper trailing",
         )
+        if not isinstance(loaded, dict):
+            if self.enabled:
+                raise ValueError(f"{self.state_file}: trailing state root must be a JSON object")
+            return {}
+        return loaded
 
     def save(self, state: dict) -> bool:
         def _sanitize(obj):
@@ -377,7 +382,7 @@ class TrailingCore:
         has_pos = (total_pos * price >= self.min_notional)
 
         if has_pos and not st.get("pending_order"):
-            if is_new or st.get("is_flat", False):
+            if is_new or _parse_bool_flag(st.get("is_flat"), default=False):
                 st["is_flat"] = False
                 ref = price
                 basis_getter = getattr(self.a, "cost_basis", None)
@@ -418,7 +423,7 @@ class TrailingCore:
         if "warmup_at" in st and price >= st["warmup_at"]:
             st.pop("warmup_at", None)                         # threshold reached; trailing is now active
 
-        if not st.get("is_flat", False) and "warmup_at" not in st and price > st["peak"]:
+        if not _parse_bool_flag(st.get("is_flat"), default=False) and "warmup_at" not in st and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
             st.pop("target_exit_qty", None)
             st.pop("exit_sold_qty", None)
@@ -481,6 +486,8 @@ class TrailingCore:
             if sold_qty > 0:
                 sold_cost = _safe_nonneg_float(st.get("exit_sold_cost", 0.0))
                 overall_avg = sold_cost / sold_qty if sold_cost > 0 else price
+                if not math.isfinite(overall_avg) or overall_avg <= 0:
+                    overall_avg = price
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):
                     st["rebuy"] = {

@@ -75,6 +75,13 @@ def parse_order_execution_report(
             raw_i = int(raw_i)
         elif isinstance(raw_i, str):
             raw_i = raw_i.strip() or None
+            if raw_i is not None and (
+                raw_i in {"0", "+0", "-0"}
+                or raw_i.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+            ):
+                raw_i = None
+        elif not isinstance(raw_i, int):
+            raw_i = None
         if raw_i is None or (isinstance(raw_i, int) and raw_i <= 0) or (isinstance(raw_i, str) and raw_i.startswith("-")):
             raise ValueError("missing or invalid Binance order ID")
         fill_id = int(raw_t)
@@ -165,9 +172,15 @@ def parse_trade_execution_report(
         raw_trade_id = int(raw_trade_id)
     elif isinstance(raw_trade_id, str):
         raw_trade_id = raw_trade_id.strip() or None
-        if raw_trade_id is not None and raw_trade_id.startswith("-"):
+        if raw_trade_id is not None and (
+            raw_trade_id.startswith("-")
+            or raw_trade_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
             return None
+    elif raw_trade_id is not None and not isinstance(raw_trade_id, int):
+        builtins.print("[cacheManager][WS] rejected Trade report with non-scalar trade ID")
+        return None
     if isinstance(raw_order_id, float):
         if not math.isfinite(raw_order_id) or not raw_order_id.is_integer():
             raw_order_id = None
@@ -175,8 +188,14 @@ def parse_trade_execution_report(
             raw_order_id = int(raw_order_id)
     elif isinstance(raw_order_id, str):
         raw_order_id = raw_order_id.strip() or None
-        if raw_order_id is not None and raw_order_id.startswith("-"):
+        if raw_order_id is not None and (
+            raw_order_id.startswith("-")
+            or raw_order_id in {"0", "+0", "-0"}
+            or raw_order_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             raw_order_id = None
+    elif not isinstance(raw_order_id, int):
+        raw_order_id = None
     if isinstance(raw_order_id, int) and raw_order_id <= 0:
         raw_order_id = None
     try:
