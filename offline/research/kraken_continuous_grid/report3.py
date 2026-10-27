@@ -85,10 +85,14 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("| asset | " + " | ".join(cfgs) + " |")
     L.append("|" + "---|" * (len(cfgs) + 1))
     for a in assets:
-        L.append(f"| {a} | " + " | ".join(
-            f"{by[c][a]['0.26']['ret']:+.1f} ({by[c][a]['0.26']['dd']:.0f})"
-            if (a in by.get(c, {}) and "0.26" in by[c][a]) else "- / -"
-            for c in cfgs) + " |")
+        cells = []
+        for c in cfgs:
+            d026 = by.get(c, {}).get(a, {}).get("0.26")
+            if isinstance(d026, dict) and "ret" in d026 and "dd" in d026:
+                cells.append(f"{_safe_f(d026.get('ret'), 0.0):+.1f} ({_safe_f(d026.get('dd'), 0.0):.0f})")
+            else:
+                cells.append("- / -")
+        L.append(f"| {a} | " + " | ".join(cells) + " |")
 
     if errors:
         L.append("\n## Errors\n")

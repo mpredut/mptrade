@@ -104,7 +104,10 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         expo = [_safe_f(by[c][a]["full"].get("expo"), 0.0) for a in assets]
         beat_full = sum(
             _safe_f(by[c][a]["full"].get("ret"), 0.0)
-            > _safe_f((live.get(a, {}).get("full") or {}).get("ret"), float("-inf")) + 1e-9
+            > _safe_f(
+                (live.get(a, {}).get("full") if isinstance(live.get(a, {}).get("full"), dict) else {}).get("ret"),
+                float("-inf"),
+            ) + 1e-9
             for a in assets
         )
         w90 = [win_stats(by[c][a], "w90") for a in assets]
@@ -179,21 +182,40 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("| asset | buy&hold % | " + " | ".join(key_cfgs) + " |")
     L.append("|" + "---|" * (len(key_cfgs) + 2))
     for a in assets:
-        bh = by.get("live", {}).get(a, {}).get("full", {}).get("bh", 0.0)
-        L.append(f"| {a} | {bh:+.0f} | " + " | ".join(
-            f"{by[c][a]['full']['ret']:+.1f} ({by[c][a]['full']['dd']:.0f})" if (a in by.get(c, {}) and "full" in by[c][a]) else "-"
-            for c in key_cfgs) + " |")
+        live_full = by.get("live", {}).get(a, {}).get("full")
+        bh = _safe_f(live_full.get("bh") if isinstance(live_full, dict) else 0.0, 0.0)
+        cells = []
+        for c in key_cfgs:
+            full_d = by.get(c, {}).get(a, {}).get("full")
+            if isinstance(full_d, dict) and "ret" in full_d and "dd" in full_d:
+                cells.append(f"{_safe_f(full_d.get('ret'), 0.0):+.1f} ({_safe_f(full_d.get('dd'), 0.0):.0f})")
+            else:
+                cells.append("-")
+        L.append(f"| {a} | {bh:+.0f} | " + " | ".join(cells) + " |")
 
     L.append("\n## Per-year continuous return %, live vs ov650_t8\n")
     L.append("| asset | year | B&H % | live | ov650_t8 | old_live |")
     L.append("|---|---|---|---|---|---|")
     for a in assets:
-        live_years = by.get("live", {}).get(a, {}).get("year", {})
+        live_years = by.get("live", {}).get(a, {}).get("year")
+        if not isinstance(live_years, dict):
+            continue
         for y, r in sorted(live_years.items()):
-            o = by.get("ov650_t8", {}).get(a, {}).get("year", {}).get(y)
-            p = by.get("old_live_pre0923", {}).get(a, {}).get("year", {}).get(y)
-            L.append(f"| {a} | {y} | {r.get('bh', 0):+.0f} | {r.get('ret', 0):+.1f} | "
-                     f"{o['ret']:+.1f} | {p['ret']:+.1f} |" if (o and p and "ret" in o and "ret" in p) else f"| {a} | {y} | {r.get('bh', 0):+.0f} | {r.get('ret', 0):+.1f} | - | - |")
+            if not isinstance(r, dict):
+                continue
+            o_yr = by.get("ov650_t8", {}).get(a, {}).get("year")
+            p_yr = by.get("old_live_pre0923", {}).get(a, {}).get("year")
+            o = o_yr.get(y) if isinstance(o_yr, dict) else None
+            p = p_yr.get(y) if isinstance(p_yr, dict) else None
+            r_bh = _safe_f(r.get("bh"), 0.0)
+            r_ret = _safe_f(r.get("ret"), 0.0)
+            if isinstance(o, dict) and isinstance(p, dict) and "ret" in o and "ret" in p:
+                L.append(
+                    f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | "
+                    f"{_safe_f(o.get('ret'), 0.0):+.1f} | {_safe_f(p.get('ret'), 0.0):+.1f} |"
+                )
+            else:
+                L.append(f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | - | - |")
 
     if errors:
         L.append("\n## Errors\n")

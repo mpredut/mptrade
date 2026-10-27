@@ -46,7 +46,8 @@ import time
 from datetime import datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -161,7 +162,12 @@ def _current_value(section, key):
     import configparser
     cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
     cp.read(INSTRUMENTS_CONF, encoding="utf-8")
-    return float(cp[section][key])
+    if section not in cp or key not in cp[section]:
+        raise KeyError(f"{section}.{key} not found in {INSTRUMENTS_CONF}")
+    val = float(cp[section][key])
+    if not math.isfinite(val):
+        raise ValueError(f"Non-finite value for {section}.{key}: {cp[section][key]!r}")
+    return val
 
 
 def _edge(pnl):
@@ -532,6 +538,12 @@ def main():
     keys = {k: v for k, v in PILOT_KEYS.items()
             if not only_terms or any(t in k for t in only_terms)}
     if not keys:
+        log.enable_print()
+        if lock_file is not None:
+            try:
+                lock_file.close()
+            except Exception:
+                pass
         print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
         return
 
@@ -737,6 +749,12 @@ def main():
                              source="scheduled_pilot.py", symbol="backtest")
             except Exception as e:  # noqa: BLE001
                 print(f"[scheduled_pilot] proposals notification error: {e}")
+    log.enable_print()
+    if lock_file is not None:
+        try:
+            lock_file.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

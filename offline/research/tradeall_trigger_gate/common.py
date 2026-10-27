@@ -56,6 +56,7 @@ def make_instrumented_trend_state(
     retry_interval_sec: float = 1800.0,
 ):
     """Create a fresh TrendState subclass rooted at ORIG_TREND_STATE (never chained across runs)."""
+    stats = stats if isinstance(stats, dict) else {}
     retry_sec = _safe_pos_f(retry_interval_sec, 1800.0)
     exp_override = (
         _safe_pos_f(expiration_trend_time_override, 0.0)
@@ -64,6 +65,14 @@ def make_instrumented_trend_state(
     )
     if exp_override == 0.0:
         exp_override = None
+    conf_override: Optional[int] = None
+    if confirm_threshold_override is not None and not isinstance(confirm_threshold_override, bool):
+        try:
+            cf = float(confirm_threshold_override)
+            if math.isfinite(cf) and cf >= 0:
+                conf_override = int(cf)
+        except (TypeError, ValueError, OverflowError):
+            conf_override = None
 
     class InstrumentedTrendState(ORIG_TREND_STATE):
         def __init__(self, *a, **kw):
@@ -103,13 +112,13 @@ def make_instrumented_trend_state(
             return r
 
         def is_trend_consistent_validated(self):
-            if confirm_threshold_override is None:
+            if conf_override is None:
                 r = super().is_trend_consistent_validated()
             elif not self.is_trend_a_minim_validated():
                 r = False
             else:
                 r = (
-                    self.confirm_count > confirm_threshold_override
+                    self.confirm_count > conf_override
                     and self.is_trend_uniform_confirmed()
                 )
             if r and "reached_24" in stats:
@@ -328,17 +337,24 @@ def make_tracker_logic(
     retry_interval_sec: float = 1800.0,
 ):
     """Build a tradeall.logic replacement driven by a stateful regime tracker (LongTrendTracker / MeanReversionTracker)."""
+    retry_sec = _safe_pos_f(retry_interval_sec, 1800.0)
 
     def logic_variant(win, enable, symbol, gradient, slope, trend_state, current_price, price_window=None, **kw):
         tr = tracker_getter(symbol)
-        ts = trend_state._now()
+        ts_raw = trend_state._now()
+        try:
+            ts = 0.0 if (ts_raw is None or isinstance(ts_raw, bool)) else float(ts_raw)
+            if not math.isfinite(ts):
+                ts = 0.0
+        except (TypeError, ValueError, OverflowError):
+            ts = 0.0
         sign = tr.update(ts, current_price)
-        stats = tr.stats
+        stats = tr.stats if isinstance(getattr(tr, "stats", None), dict) else {}
 
         if sign > 0 and not tr.fired_up:
             can_retry = (
                 tr.last_attempt_up_ts is None
-                or (ts - tr.last_attempt_up_ts) >= retry_interval_sec
+                or (ts - tr.last_attempt_up_ts) >= retry_sec
             )
             if not can_retry:
                 if "fire_skipped_cooldown_up" in stats:
@@ -360,7 +376,7 @@ def make_tracker_logic(
         if sign < 0 and not tr.fired_down:
             can_retry = (
                 tr.last_attempt_down_ts is None
-                or (ts - tr.last_attempt_down_ts) >= retry_interval_sec
+                or (ts - tr.last_attempt_down_ts) >= retry_sec
             )
             if not can_retry:
                 if "fire_skipped_cooldown_down" in stats:

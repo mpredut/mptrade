@@ -15,8 +15,11 @@ import contextlib, io, json, os, statistics as st, sys, time, traceback
 from multiprocessing import Pool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+    sys.path.append(HERE)
 
 try:
     from offline.research.kraken_continuous_grid import grid

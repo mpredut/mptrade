@@ -4691,3 +4691,91 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
             sys.modules.pop("common", None)
 
 
+def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_hardening(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from offline.research.tradeall_trigger_gate.common import (
+        make_instrumented_trend_state,
+        make_tracker_logic,
+    )
+    from offline.research.kraken_continuous_grid import report as k_rep1
+    from offline.research.kraken_continuous_grid import report3 as k_rep3
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+
+    # 1. make_instrumented_trend_state handles None stats and boolean confirm_threshold_override safely
+    ts_cls = make_instrumented_trend_state(
+        None,  # type: ignore[arg-type]
+        confirm_threshold_override=True,  # type: ignore[arg-type]
+        retry_interval_sec=float("nan"),
+    )
+    inst_ts = ts_cls(60.0, 160.0, 30.0)
+    inst_ts.start_trend("UP")
+    assert inst_ts.can_retry("UP", 1000.0) is True
+    inst_ts.mark_attempt("UP", 1000.0)
+    assert inst_ts.can_retry("UP", 1100.0) is False
+    assert inst_ts.can_retry("UP", 2900.0) is True
+
+    # 2. make_tracker_logic handles invalid retry_interval_sec, non-dict tr.stats, and non-finite _now()
+    fake_tr = SimpleNamespace(
+        stats=None,
+        fired_up=False,
+        fired_down=False,
+        last_attempt_up_ts=100.0,
+        last_attempt_down_ts=None,
+        update=lambda _ts, _px: 1,
+    )
+    logic_fn = make_tracker_logic("TEST", lambda _sym: fake_tr, retry_interval_sec=-5.0)
+    logic_fn(
+        None, False, "BTCUSDC", 0.0, 0.0,
+        SimpleNamespace(_now=lambda: "bad_ts"),
+        60000.0,
+    )
+    assert fake_tr.last_attempt_up_ts == 100.0
+
+    # 3. kraken_continuous_grid report.py and report3.py handle malformed/null nested full/year/0.26 payloads
+    exp_dir = tmp_path / "kgrid"
+    exp_dir.mkdir()
+    (exp_dir / "results.jsonl").write_text(
+        json.dumps({
+            "cfg": "live",
+            "asset": "BTC",
+            "full": {"ret": None, "dd": "5.0", "expo": None, "bh": None},
+            "year": {"2024": {"ret": None, "bh": None}, "2025": "bad_year_entry"},
+            "w90": [[1.5, 2.0, 3.0]],
+            "w30": [[0.5, 1.0, 1.0]],
+        }) + "\n" + json.dumps({
+            "cfg": "ov650_t8",
+            "asset": "BTC",
+            "full": "not_a_dict",
+            "year": None,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    lines1 = k_rep1.generate_report(str(exp_dir))
+    assert any("| BTC |" in ln for ln in lines1)
+
+    (exp_dir / "results3.jsonl").write_text(
+        json.dumps({
+            "cfg": "live",
+            "asset": "BTC",
+            "0.26": {"ret": None, "dd": None, "refused": None},
+            "0.4": {"ret": 5.0, "dd": 2.0, "refused": 0},
+        }) + "\n" + json.dumps({
+            "cfg": "sl0",
+            "asset": "BTC",
+            "0.26": "not_a_dict",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    lines3 = k_rep3.generate_report(str(exp_dir))
+    assert any("| BTC |" in ln for ln in lines3)
+
+    # 4. scheduled_pilot._current_value raises clear KeyError on missing section/key
+    conf_file = tmp_path / "instruments.conf"
+    conf_file.write_text("[BINANCE_BTC]\nmt.gain = 7.0\n", encoding="utf-8")
+    monkeypatch.setattr(sp, "INSTRUMENTS_CONF", str(conf_file))
+    assert sp._current_value("BINANCE_BTC", "mt.gain") == pytest.approx(7.0)
+    with pytest.raises(KeyError, match="not found"):
+        sp._current_value("BINANCE_BTC", "mt.missing_key")
+
+
+

@@ -30,7 +30,8 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
@@ -196,7 +197,21 @@ def run_symbol(
     inst = Instrument(name=symbol, symbol=symbol, provider="replay",
                       base=base, quote="USDC", params=dict(params), api=api)
 
-    maxage_s = max(60, int(float(params.get("mt.maxage_days") or 7) * 24 * 3600))
+    import math
+
+    def _safe_nonneg_f(val, default: float) -> float:
+        if val is None or isinstance(val, bool):
+            return default
+        try:
+            f = float(val)
+            return f if (math.isfinite(f) and f >= 0.0) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    maxage_days = _safe_nonneg_f(params.get("mt.maxage_days"), 7.0)
+    if maxage_days <= 0.0:
+        maxage_days = 7.0
+    maxage_s = max(60, int(maxage_days * 24 * 3600))
 
     # 29 Jul: is_trend_up() REPLICATED from the replayed history (ReplayTrendSource),
     # neutralizat — vezi replay_trend_source.py pt de ce (cursa fast/slow investigata
@@ -302,7 +317,7 @@ def run_symbol(
         n_seeds = 1
         n_ticks = 0
 
-        trail_pct = float(params.get("trailing.pct") or 0.0)
+        trail_pct = _safe_nonneg_f(params.get("trailing.pct"), 0.0)
         trail_ratio = trail_pct / 100.0
         trail_peak = first_price
         min_trail_trigger_ratio = float("inf")
