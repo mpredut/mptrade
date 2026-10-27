@@ -14424,6 +14424,117 @@ def test_iteration145_continuous_grid_and_ml_forecast_safety(tmp_path):
     assert pp.epochs == 30
 
 
+def test_iteration146_position_exit_manager_hl_strategy_xstock_watch_and_price_alert_hygiene(tmp_path, monkeypatch):
+    """Verify PositionSnapshot/ReentrySnapshot boolean & tolerance hygiene, hyperliquid/strategy.py oid & dca_counted hygiene, kraken_xstock_watch._load_state/_bot_alive, and price_alert._parse_armed_flag."""
+    import importlib.util
+    import json
+    import os
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot, ReentrySnapshot
+    from kraken import kraken_xstock_watch as xw
+
+    # 1. PositionSnapshot & ReentrySnapshot normalize string/NaN boolean flags and guard tol_pct/threshold
+    ps = PositionSnapshot(symbol="BTCUSDC", current_price="95.0", avg_buy_price="100.0", trend_up="false")  # type: ignore[arg-type]
+    assert ps.trend_up is False
+    assert ps.in_sl_territory(0.05, tol_pct=float("nan")) is True
+    assert ps.in_sl_territory(float("nan"), tol_pct=1.0) is False
+    assert ps.in_tp_territory(True, tol_pct=1.0) is False  # type: ignore[arg-type]
+
+    rs = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price="98.0",
+        last_sell_price="100.0",
+        trend_up="0",  # type: ignore[arg-type]
+        trend_down=float("nan"),  # type: ignore[arg-type]
+    )
+    assert rs.trend_up is False
+    assert rs.trend_down is False
+    assert rs.has_dropped(100.0, 0.02, tol_pct=True) is True  # type: ignore[arg-type]
+
+    mgr = PositionExitManager(PositionExitConfig(smart_sl_enabled=True, allow_external_cache=False))
+    mgr.sl_episode_state["BTCUSDC"] = {"started_at": 1000.0, "buy_price": 100.0, "disaster_floor": 0.08, "smart_sl_done": "false"}
+    called_smart = []
+    mgr.smart_sl_evaluator = lambda **kw: (called_smart.append(True) or False, "deferred_test", {})
+    dec = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1010.0, trend_up="false")  # type: ignore[arg-type]
+    )
+    assert called_smart == [True]
+    assert dec.should_exit is False
+
+    # 2. hyperliquid/strategy.py _sanitize_state and _clean_oid
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_spec = importlib.util.spec_from_file_location("hl_strat_t146", os.path.join(root, "hyperliquid", "strategy.py"))
+    hl_mod = importlib.util.module_from_spec(hl_spec)
+    assert hl_spec and hl_spec.loader
+    sys.modules["hl_strat_t146"] = hl_mod
+    try:
+        hl_spec.loader.exec_module(hl_mod)
+    finally:
+        sys.modules.pop("hl_strat_t146", None)
+
+    for bad_oid in ("nan", "null", "none", "0", 0, -3, ["1"], {"id": 1}, True, None, ""):
+        assert hl_mod._clean_oid(bad_oid) is None
+    assert hl_mod._clean_oid(555.0) == "555"
+    assert hl_mod._clean_oid("555.0") == "555"
+
+    sanitized_hl = hl_mod._sanitize_state(
+        {
+            "orders": [
+                {"oid": "nan", "role": "open", "px": 20.0, "sz": 1.0},
+                {"oid": 0, "role": "open", "px": 20.0, "sz": 1.0},
+                {"oid": 555.0, "role": "open", "px": 20.0, "sz": 1.0, "dca_counted": "false"},
+            ]
+        }
+    )
+    assert len(sanitized_hl["orders"]) == 1
+    assert sanitized_hl["orders"][0]["oid"] == 555
+    assert sanitized_hl["orders"][0]["dca_counted"] is False
+
+    # 3. kraken_xstock_watch._load_state & _bot_alive
+    st_file = tmp_path / "xstock_state.json"
+    st_file.write_text(
+        json.dumps(
+            {
+                "known_assets": {"SPCX": "10.5", "BAD": "nan", "ZERO": 0},
+                "allocated": "invalid_not_dict",
+                "pair": "nan",
+                "alerted_pair": "false",
+                "alerted_tp": "0",
+                "alerted_tp2": "no",
+                "alerted_sl": "nan",
+                "alerted_need_price": "false",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XSTOCK_STATE_FILE", str(st_file))
+    loaded_xw = xw._load_state()
+    assert loaded_xw["known_assets"] == {"SPCX": 10.5}
+    assert loaded_xw["allocated"] is None
+    assert loaded_xw["pair"] is None
+    assert loaded_xw["alerted_pair"] is False
+    assert loaded_xw["alerted_tp"] is False
+    assert loaded_xw["alerted_tp2"] is False
+    assert loaded_xw["alerted_sl"] is False
+    assert loaded_xw["alerted_need_price"] is False
+    assert xw._parse_bool_flag(float("nan")) is False
+    assert xw._bot_alive("1234.5") is False
+    assert xw._bot_alive(float("nan")) is False
+    assert xw._bot_alive(["1234"]) is False
+
+    # 4. 212trading/price_alert.py _parse_armed_flag
+    pa_spec = importlib.util.spec_from_file_location("t212_pa_t146", os.path.join(root, "212trading", "price_alert.py"))
+    pa_mod = importlib.util.module_from_spec(pa_spec)
+    assert pa_spec and pa_spec.loader
+    pa_spec.loader.exec_module(pa_mod)
+    assert pa_mod._parse_armed_flag("0.0") is False
+    assert pa_mod._parse_armed_flag("false") is False
+    assert pa_mod._parse_armed_flag("null") is False
+    assert pa_mod._parse_armed_flag(float("nan"), default=True) is True
+    assert pa_mod._parse_armed_flag("true") is True
+
+
+
 
 
 

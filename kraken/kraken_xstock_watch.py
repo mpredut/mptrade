@@ -63,6 +63,20 @@ def _default_state() -> dict:
     }
 
 
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 def _load_state() -> dict:
     path = _state_file()
     raw = load_json_state(
@@ -73,8 +87,35 @@ def _load_state() -> dict:
     merged = _default_state()
     if isinstance(raw, dict):
         merged.update(raw)
-    if not isinstance(merged.get("known_assets"), dict):
+    if isinstance(merged.get("known_assets"), dict):
+        clean_known: dict[str, float] = {}
+        for k, v in merged["known_assets"].items():
+            if not k or isinstance(k, bool) or isinstance(v, bool) or v is None:
+                continue
+            try:
+                vf = float(v)
+                if math.isfinite(vf) and vf > 0:
+                    clean_known[str(k)] = vf
+            except (TypeError, ValueError, OverflowError):
+                continue
+        merged["known_assets"] = clean_known
+    else:
         merged["known_assets"] = {}
+    for bkey in ("alerted_pair", "alerted_tp", "alerted_tp2", "alerted_sl", "alerted_need_price"):
+        merged[bkey] = _parse_bool_flag(merged.get(bkey), False)
+    raw_pair = merged.get("pair")
+    if (
+        raw_pair is None
+        or isinstance(raw_pair, (bool, dict, list, tuple, set))
+        or not str(raw_pair).strip()
+        or str(raw_pair).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
+    ):
+        merged["pair"] = None
+    else:
+        merged["pair"] = str(raw_pair).strip()
+    alloc = merged.get("allocated")
+    if not isinstance(alloc, dict):
+        merged["allocated"] = None
     return merged
 
 
@@ -269,10 +310,13 @@ BOT_LOG = os.path.join(_HERE, "xstock_bot.log")
 
 
 def _bot_alive(pid) -> bool:
-    if not pid or isinstance(pid, bool):
+    if not pid or isinstance(pid, (bool, dict, list, tuple, set)):
         return False
     try:
-        pid = int(pid)
+        pf = float(pid)
+        if not math.isfinite(pf) or pf != int(pf):
+            return False
+        pid = int(pf)
     except (TypeError, ValueError, OverflowError):
         return False
     if pid <= 1:

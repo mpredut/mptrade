@@ -63,6 +63,20 @@ class ExitDecision:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 class PriceGeometrySnapshot:
     """Base mixin providing unified, fuzzy-tolerant price geometry primitives."""
 
@@ -73,6 +87,16 @@ class PriceGeometrySnapshot:
         try:
             f = float(val)
             return f if (math.isfinite(f) and f > 0.0) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _finite_nonneg_float(val: Any) -> Optional[float]:
+        if val is None or isinstance(val, bool):
+            return None
+        try:
+            f = float(val)
+            return f if (math.isfinite(f) and f >= 0.0) else None
         except (TypeError, ValueError, OverflowError):
             return None
 
@@ -116,7 +140,8 @@ class PriceGeometrySnapshot:
             return False
         if self.bounce_ratio(tp) >= th:
             return True
-        return tol_pct > 0 and are_close(cp, tp * (1.0 + th), tol_pct)
+        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        return tol > 0 and are_close(cp, tp * (1.0 + th), tol)
 
     def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has pulled back from peak honoring fuzzy tolerance."""
@@ -127,7 +152,8 @@ class PriceGeometrySnapshot:
             return False
         if self.pullback_ratio(pp) >= th:
             return True
-        return tol_pct > 0 and are_close(cp, pp * (1.0 - th), tol_pct)
+        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        return tol > 0 and are_close(cp, pp * (1.0 - th), tol)
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
@@ -144,7 +170,8 @@ class PriceGeometrySnapshot:
         target = rp * (1.0 - th)
         if cp <= target:
             return True
-        return tol_pct > 0 and are_close(cp, target, tol_pct)
+        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        return tol > 0 and are_close(cp, target, tol)
 
 
 @dataclass
@@ -174,6 +201,7 @@ class PositionSnapshot(PriceGeometrySnapshot):
                         setattr(self, attr, f)
                 except (TypeError, ValueError):
                     pass
+        self.trend_up = _parse_bool_flag(self.trend_up, False)
 
     @property
     def price_change_ratio(self) -> float:
@@ -231,19 +259,27 @@ class PositionSnapshot(PriceGeometrySnapshot):
 
     def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
+        th = self._finite_pos_float(threshold)
+        if th is None:
+            return False
         loss = self.loss_ratio
-        if loss >= threshold:
+        if loss >= th:
             return True
-        if (loss > 0.0 or tol_pct >= 200.0) and tol_pct > 0 and are_close(loss, threshold, tol_pct):
+        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        if (loss > 0.0 or tol >= 200.0) and tol > 0 and are_close(loss, th, tol):
             return True
         return False
 
     def in_tp_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if position is in take-profit territory honoring fuzzy tolerance."""
+        th = self._finite_pos_float(threshold)
+        if th is None:
+            return False
         gain = self.gain_ratio
-        if gain >= threshold:
+        if gain >= th:
             return True
-        if (gain > 0.0 or tol_pct >= 200.0) and tol_pct > 0 and are_close(gain, threshold, tol_pct):
+        tol = self._finite_nonneg_float(tol_pct) or 0.0
+        if (gain > 0.0 or tol >= 200.0) and tol > 0 and are_close(gain, th, tol):
             return True
         return False
 
@@ -292,6 +328,8 @@ class ReentrySnapshot(PriceGeometrySnapshot):
                         setattr(self, attr, f)
                 except (TypeError, ValueError):
                     pass
+        self.trend_up = _parse_bool_flag(self.trend_up, False)
+        self.trend_down = _parse_bool_flag(self.trend_down, False)
 
     @property
     def sale_drop_ratio(self) -> float:
@@ -903,7 +941,11 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 3: Smart Stop-Loss Controller / Trend Check
         # ---------------------------------------------------------------------
-        if self.config.smart_sl_enabled and not sl_episode_expired and not episode_state.get("smart_sl_done"):
+        if (
+            self.config.smart_sl_enabled
+            and not sl_episode_expired
+            and not _parse_bool_flag(episode_state.get("smart_sl_done"), False)
+        ):
             eval_fn = self.smart_sl_evaluator
             if eval_fn is None and getattr(self.config, "allow_external_cache", True):
                 try:

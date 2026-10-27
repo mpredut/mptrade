@@ -199,6 +199,43 @@ def _new_state() -> dict:
     }
 
 
+def _clean_oid(val: object) -> str | None:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return None
+    if isinstance(val, int):
+        return str(val) if val > 0 else None
+    if isinstance(val, float):
+        if not math.isfinite(val) or val <= 0:
+            return None
+        return str(int(val)) if val == int(val) else str(val)
+    text = str(val).strip()
+    if not text or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}:
+        return None
+    try:
+        f = float(text)
+        if not math.isfinite(f) or f <= 0:
+            return None
+        if text.endswith(".0") and f == int(f):
+            return str(int(f))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return text
+
+
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 def _sanitize_state(raw: dict) -> dict:
     merged = _new_state()
     if isinstance(raw, dict):
@@ -243,7 +280,8 @@ def _sanitize_state(raw: dict) -> dict:
             if not isinstance(o, dict) or o.get("role") not in ("open", "close"):
                 continue
             raw_oid = o.get("oid")
-            if raw_oid is None or isinstance(raw_oid, bool) or not str(raw_oid).strip():
+            clean_oid = _clean_oid(raw_oid)
+            if clean_oid is None:
                 continue
             raw_px = o.get("px")
             raw_sz = o.get("sz")
@@ -257,8 +295,11 @@ def _sanitize_state(raw: dict) -> dict:
             if not (math.isfinite(px_f) and px_f > 0.0 and math.isfinite(sz_f) and sz_f > 0.0):
                 continue
             o_copy = dict(o)
+            o_copy["oid"] = int(clean_oid) if (isinstance(raw_oid, (int, float)) and clean_oid.isdigit()) else clean_oid
             o_copy["px"] = px_f
             o_copy["sz"] = sz_f
+            if "dca_counted" in o_copy:
+                o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
             clean_orders.append(o_copy)
     merged["orders"] = clean_orders
     return merged
@@ -375,9 +416,11 @@ class Strategy:
                                      "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
             return
         ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
-        if ok and oid is not None and not isinstance(oid, bool):
-            log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={oid} {sz} @ {px:.4f} ({msg})")
-            self.s["orders"].append({"oid": oid, "role": role, "side": side, "sz": sz, "px": px,
+        clean_oid = _clean_oid(oid)
+        if ok and clean_oid is not None:
+            stored_oid = int(clean_oid) if (isinstance(oid, (int, float)) and clean_oid.isdigit()) else clean_oid
+            log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={stored_oid} {sz} @ {px:.4f} ({msg})")
+            self.s["orders"].append({"oid": stored_oid, "role": role, "side": side, "sz": sz, "px": px,
                                      "amount": amount, "kind": kind, "ts": time.time()})
         else:
             log(f"  ! [STRAT] {role} {kind} failed: {msg}")
@@ -451,17 +494,17 @@ class Strategy:
         orders_ok = True
         try:
             active = {
-                str(o.get("oid"))
+                clean_id
                 for o in (orders_fn(self.coin) or [])
-                if isinstance(o, dict) and o.get("oid") is not None
+                if isinstance(o, dict) and (clean_id := _clean_oid(o.get("oid"))) is not None
             }
         except Exception as e:
             orders_ok = False
             log(f"  [STRAT] open_orders unavailable ({e}); preserving tracked order state")
             active = {
-                str(o.get("oid"))
+                clean_id
                 for o in self.s["orders"]
-                if isinstance(o, dict) and o.get("oid") is not None
+                if isinstance(o, dict) and (clean_id := _clean_oid(o.get("oid"))) is not None
             }
 
         prev = self.s["qty"]
@@ -470,7 +513,7 @@ class Strategy:
         if qty_now > prev + 1e-9:        # position opened or increased
             fq = qty_now - prev
             filled_open = next(
-                (o for o in self.s["orders"] if o.get("role") == "open" and str(o.get("oid")) not in active),
+                (o for o in self.s["orders"] if o.get("role") == "open" and _clean_oid(o.get("oid")) not in active),
                 None,
             )
             if filled_open is None:
@@ -496,7 +539,7 @@ class Strategy:
             if open_kind == "ENTRY":
                 count_dca = False
             elif filled_open is not None:
-                count_dca = not bool(filled_open.get("dca_counted"))
+                count_dca = not _parse_bool_flag(filled_open.get("dca_counted"), False)
                 filled_open["dca_counted"] = True
             else:
                 count_dca = None
@@ -508,7 +551,7 @@ class Strategy:
             )
         elif qty_now < prev - 1e-9:      # position reduced by take profit
             filled_close = next(
-                (o for o in self.s["orders"] if o.get("role") == "close" and str(o.get("oid")) not in active),
+                (o for o in self.s["orders"] if o.get("role") == "close" and _clean_oid(o.get("oid")) not in active),
                 None,
             )
             close_px = (
@@ -524,7 +567,7 @@ class Strategy:
 
         for o in list(self.s["orders"]):
             if str(o.get("oid", "")).startswith("PAPER"): continue
-            if str(o.get("oid")) not in active:
+            if _clean_oid(o.get("oid")) not in active:
                 self._remove(o)
             elif orders_ok and self._open_is_stale(o, price):
                 log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")

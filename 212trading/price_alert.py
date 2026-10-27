@@ -41,6 +41,20 @@ from alertnotifiers import AlertNotifier  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 
 
+def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
+    if isinstance(raw_armed, bool):
+        return raw_armed
+    if isinstance(raw_armed, (int, float)):
+        return bool(raw_armed) if math.isfinite(raw_armed) else default
+    if isinstance(raw_armed, str):
+        s = raw_armed.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 def push(topic: str, title: str, body: str) -> bool:
     clean_topic = str(topic or "").strip()
     if not clean_topic:
@@ -99,13 +113,7 @@ def main() -> int:
                 st = loaded
         except (OSError, ValueError):
             st = {}
-    raw_armed = st.get("armed", True)
-    if raw_armed is None:
-        armed = True
-    elif isinstance(raw_armed, str):
-        armed = raw_armed.strip().lower() not in ("0", "false", "no", "off")
-    else:
-        armed = bool(raw_armed)
+    armed = _parse_armed_flag(st.get("armed", True), default=True)
 
     hit_below = args.below is not None and price <= args.below
     hit_above = args.above is not None and price >= args.above
