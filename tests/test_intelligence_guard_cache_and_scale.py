@@ -16162,8 +16162,8 @@ def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygien
     with pytest.raises(bf.BinanceFilterError):
         bf.decimal_places(0)
 
-    # 2. providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag
-    assert qty_mod.resolve_assets("BTCUSDT") == ("BTC", "USDT")
+    # 2. providers.quantity.resolve_assets with FDUSD/GBP (preserving non-USDT contract) and _parse_bool_flag
+    assert qty_mod.resolve_assets("BTCUSDT") == ("BTCUSDT", None)
     assert qty_mod.resolve_assets("ETHFDUSD") == ("ETH", "FDUSD")
     assert qty_mod.resolve_assets("SOLGBP") == ("SOL", "GBP")
     assert qty_mod._parse_bool_flag(2, default=False) is True
@@ -16235,6 +16235,72 @@ def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygien
     assert len(lines) == 2
     assert "bull|0.7500|cache|True|False|strong_trend" in lines[0]
     assert len(lines[1].split("|")) == 9
+
+
+def test_iteration169_providers_base_hyperliquid_kraken_and_t212_hygiene(monkeypatch):
+    from providers import base as pbase
+    from providers import hyperliquid_provider as hlp
+    from providers import kraken_provider as krp
+    from providers import t212_provider as t212p
+    from providers.strategy_executor import PairPrecision, ProviderError
+
+    # 1. providers.base boolean and side extraction
+    assert pbase._parse_bool_flag("", default=True) is True
+    assert pbase._parse_bool_flag("y", default=False) is True
+    assert pbase._parse_bool_flag("n", default=True) is False
+    assert pbase.extract_order_side({"type": "A"}) == "SELL"
+    assert pbase.extract_order_side({"isBuyer": "y"}) == "BUY"
+    assert pbase.extract_order_side({"isBuyer": "n"}) == "SELL"
+
+    # 2. HyperliquidProvider underscore alias and LONG/ASK side normalization
+    hl = hlp.HyperliquidProvider(token="HYPE", live_enabled=False)
+    assert hl.supports_symbol("HYPE_USDC") is True
+    monkeypatch.setattr(hl, "free_balance", lambda asset: 10.0)
+    with pytest.raises(ProviderError, match="insufficient USDC"):
+        hl.preflight_order("HYPE_USDC", "LONG", 2.0, price=25.0)
+
+    # 3. KrakenProvider open_orders side aliases, preflight_order ASK alias, and positional force
+    class _FakeKrakenClient:
+        def open_orders(self):
+            return {
+                "OID1": {
+                    "descr": {"pair": "HYPEUSD", "type": " b ", "price": "20.0"},
+                    "vol": "1.5",
+                    "vol_exec": "0.5",
+                }
+            }
+
+        def add_order(self, symbol, side, qty, price, **kw):
+            return {"txid": ["OID2"], "ordertype": kw.get("ordertype"), "validate": kw.get("validate")}
+
+    kr = krp.KrakenProvider(client=_FakeKrakenClient())
+    monkeypatch.setattr(kr, "execution_enabled", lambda: False)
+    monkeypatch.setattr(kr, "round_quantity", lambda sym, q: float(q))
+    monkeypatch.setattr(
+        kr,
+        "pair_precision",
+        lambda sym: PairPrecision(price_decimals=2, volume_decimals=2, order_min=0.1, base_asset="HYPE"),
+    )
+    monkeypatch.setattr(kr, "free_balance", lambda asset: 0.5)
+    oo = kr.open_orders("HYPEUSD")
+    assert len(oo) == 1 and oo[0]["side"] == "BUY"
+    with pytest.raises(ProviderError, match="insufficient funds SELL"):
+        kr.preflight_order("HYPEUSD", "ASK", 2.0)
+    res_kr = kr.place_order("HYPEUSD", "BID", 20.0, 1.0, True)
+    assert res_kr["ordertype"] == "market" and res_kr["validate"] is True
+
+    # 4. T212Provider _signed_qty aliases and positional force in place_order
+    assert t212p.T212Provider._signed_qty("BID", 1.234) == pytest.approx(1.23)
+    assert t212p.T212Provider._signed_qty("ASK", 1.234) == pytest.approx(-1.23)
+
+    class _FakeT212Client:
+        def place_market_order(self, symbol, signed_qty, extended_hours=False):
+            return 200, {"id": 98765, "quantity": signed_qty}
+
+    t212 = t212p.T212Provider(client=_FakeT212Client(), live_enabled="y")
+    res_t212 = t212.place_order("AAPL_US_EQ", "LONG", 180.0, 1.5, True)
+    assert res_t212["orderId"] == "98765" and res_t212["quantity"] == pytest.approx(1.5)
+
 
 
 

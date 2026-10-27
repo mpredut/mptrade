@@ -6,7 +6,7 @@ import math
 from typing import Callable, Optional
 
 
-QUOTE_SUFFIXES = ("USDT", "USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
+QUOTE_SUFFIXES = ("USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
 _INVALID_FILL_IDS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
 
 
