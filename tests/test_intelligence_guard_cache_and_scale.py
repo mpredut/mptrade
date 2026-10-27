@@ -16798,4 +16798,64 @@ def test_iteration179_daemon_gemini_market_regime_and_order_retry_hygiene(tmp_pa
     assert order_retry.price_gate_ok({"side": "ASK", "requested_price": 100.0}, 101.0, tol=0.0) is True
 
 
+def test_iteration180_post_stop_high_stake_and_sentiment_macro_collectors_hygiene(tmp_path):
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        _POST_STOP_DECISION_CACHE,
+        get_post_stop_reentry_guard,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import (
+        HighStakeGuard,
+        _HIGH_STAKE_DECISION_CACHE,
+    )
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+    # 1. get_post_stop_reentry_guard tolerates partial margins dict without 'post_stop_reentry_mode'
+    ps_guard = get_post_stop_reentry_guard(
+        margins={"llm_guard_mode": "shadow"},
+        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "APPROVED", "reason": "ok"}'),
+    )
+    assert ps_guard.mode == "shadow"
+
+    # 2. PostStopReentryGuard & HighStakeGuard tolerate None/bool cache timestamps
+    ps_enforced = PostStopReentryGuard(
+        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "trap"}'),
+        cache_ttl_sec=60.0,
+        notify_enabled=False,
+    )
+    _POST_STOP_DECISION_CACHE[("BTCUSDC", 90000.0, 1000)] = (None, None)
+    ps_dec = ps_enforced.check("BTCUSDC", 91000.0, 90000.0, 88000.0, 0.034, last_sell_time_s=1000.0, telemetry={}, now=1010.0)
+    assert ps_dec.allowed is False
+
+    hs_guard = HighStakeGuard(
+        gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "risk"}'),
+        cache_ttl_sec=60.0,
+    )
+    _HIGH_STAKE_DECISION_CACHE[("BTCUSDC", "BUY", 10)] = (True, None)
+    hs_dec = hs_guard.check("BTCUSDC", "BUY", 1000.0, 1.0, notional_eur=1050.0, telemetry={}, now=1010.0)
+    assert hs_dec.allowed is False
+
+    # 3. FearGreedCollector, MarketBreadthCollector, NewsFeedCollector accept now_ts and tolerate None _last_fetch_ts
+    fg = FearGreedCollector(cache_ttl_sec=60.0)
+    fg._cached_snapshot = FearGreedSnapshot(50, "Neutral", 1000.0, (50,), 0, False, False)
+    fg._last_fetch_ts = 1000.0
+    assert fg.fetch(force_refresh=False, now_ts=1020.0) == fg._cached_snapshot
+
+    mb = MarketBreadthCollector(cache_ttl_sec=60.0)
+    mb._cached_snapshot = "cached_mb"
+    mb._last_fetch_ts = 1000.0
+    assert mb.fetch(force_refresh=False, now_ts=1020.0) == "cached_mb"
+
+    nf = NewsFeedCollector(cache_ttl_sec=60.0, history_file=str(tmp_path / "news.json"))
+    agg_snap = nf._aggregate({"headlines": [{"title": "Major war escalation reported", "is_high_severity": True}]}, now=1000.0)
+    nf._cached_snapshot = agg_snap
+    nf._last_fetch_ts = 1000.0
+    assert nf.fetch(force_refresh=False, now_ts=1020.0) == agg_snap
+    assert agg_snap.high_severity_count == 1
+
+
+
 

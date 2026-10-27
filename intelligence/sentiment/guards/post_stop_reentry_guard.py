@@ -158,8 +158,15 @@ class PostStopReentryGuard:
         )
         if self.cache_ttl_sec > 0:
             cached = _POST_STOP_DECISION_CACHE.get(cache_key)
-            if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:
-                return cached[1]
+            if isinstance(cached, (tuple, list)) and len(cached) >= 2:
+                raw_cts = cached[0]
+                if raw_cts is not None and not isinstance(raw_cts, bool):
+                    try:
+                        c_ts = float(raw_cts)
+                        if math.isfinite(c_ts) and 0.0 <= (now_ts - c_ts) < self.cache_ttl_sec:
+                            return cached[1]
+                    except (TypeError, ValueError, OverflowError):
+                        pass
 
         safe_trough = _sf(trough, 0.0)
         safe_curr_px = _sf(current_price, 0.0)
@@ -336,8 +343,13 @@ class PostStopReentryGuard:
             cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
             if cooldown > 0:
                 last_notified = _POST_STOP_NOTIFY_CACHE.get(notify_key)
-                if last_notified is not None and 0.0 <= (ts - last_notified) < cooldown:
-                    return
+                if last_notified is not None and not isinstance(last_notified, bool):
+                    try:
+                        ln_f = float(last_notified)
+                        if math.isfinite(ln_f) and 0.0 <= (ts - ln_f) < cooldown:
+                            return
+                    except (TypeError, ValueError, OverflowError):
+                        pass
                 _POST_STOP_NOTIFY_CACHE[notify_key] = ts
 
             from orchestratorOS.agy.topics import topic_spec
@@ -375,7 +387,7 @@ def get_post_stop_reentry_guard(
         m = margins
     if not isinstance(m, dict):
         m = {}
-    raw_mode = m["post_stop_reentry_mode"]
+    raw_mode = m.get("post_stop_reentry_mode", "enforce")
     mode = PostStopReentryGuard._normalize_mode(raw_mode, default="enforce")
     intel_master = PostStopReentryGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
     llm_master = PostStopReentryGuard._normalize_mode(m.get("llm_guard_mode", "enforce"), default="enforce")

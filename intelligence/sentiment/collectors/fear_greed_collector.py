@@ -115,7 +115,7 @@ class FearGreedCollector:
             is_extreme_greed=val >= 75,
         )
 
-    def fetch(self, force_refresh: bool = False) -> Optional[FearGreedSnapshot]:
+    def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:
         """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
         if isinstance(force_refresh, str):
             force_refresh = force_refresh.strip().lower() in ("1", "1.0", "true", "yes", "on")
@@ -124,7 +124,22 @@ class FearGreedCollector:
         else:
             force_refresh = bool(force_refresh)
         now = time.time()
-        if not force_refresh and self._cached_snapshot and 0.0 <= (now - self._last_fetch_ts) < self.cache_ttl_sec:
+        if now_ts is not None and not isinstance(now_ts, bool):
+            try:
+                nf = float(now_ts)
+                if math.isfinite(nf) and nf > 0.0:
+                    now = nf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        last_ts = 0.0
+        if self._last_fetch_ts is not None and not isinstance(self._last_fetch_ts, bool):
+            try:
+                lf = float(self._last_fetch_ts)
+                if math.isfinite(lf) and lf >= 0.0:
+                    last_ts = lf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if not force_refresh and self._cached_snapshot and last_ts > 0.0 and 0.0 <= (now - last_ts) < self.cache_ttl_sec:
             return self._cached_snapshot
 
         try:

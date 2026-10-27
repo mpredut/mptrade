@@ -669,8 +669,15 @@ class HighStakeGuard:
         cache_key = (sym_norm, side_norm, int(notional // 100.0))
         if self.cache_ttl_sec > 0:
             cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
-            if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:
-                return cached[1]
+            if isinstance(cached, (tuple, list)) and len(cached) >= 2:
+                raw_cts = cached[0]
+                if raw_cts is not None and not isinstance(raw_cts, bool):
+                    try:
+                        c_ts = float(raw_cts)
+                        if math.isfinite(c_ts) and 0.0 <= (now_ts - c_ts) < self.cache_ttl_sec:
+                            return cached[1]
+                    except (TypeError, ValueError, OverflowError):
+                        pass
 
         # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM
         effective_telemetry = telemetry if isinstance(telemetry, dict) else collect_pretrade_telemetry(
