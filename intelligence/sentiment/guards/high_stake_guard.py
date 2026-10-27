@@ -624,14 +624,18 @@ class HighStakeGuard:
 
         # 2. Compute effective notional value in EUR/USD
         notional = 0.0
+        fallback_to_px_qty = notional_eur is None
         if notional_eur is not None and not isinstance(notional_eur, bool):
             try:
                 nf = float(notional_eur)
-                if math.isfinite(nf) and nf > 0.0:
-                    notional = nf
+                if math.isfinite(nf):
+                    if nf > 0.0:
+                        notional = nf
+                    else:
+                        fallback_to_px_qty = True
             except (TypeError, ValueError):
                 notional = 0.0
-        if notional <= 0.0:
+        if fallback_to_px_qty and notional <= 0.0:
             if (
                 price is not None and not isinstance(price, bool)
                 and qty is not None and not isinstance(qty, bool)
