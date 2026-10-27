@@ -192,10 +192,12 @@ def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarr
     ensure_dir(outdir)
     n = len(prices)
     future_dt = []
-    if n >= 2:
-        avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n-1))
-        future_dt = [dt[-1] + (i+1)* (dt[-1]-dt[-2] if n>1 else timedelta(seconds=avg_step))
-                     for i in range(len(lin_forecast))]
+    if lin_forecast is not None and len(lin_forecast) > 0 and n >= 2:
+        step = dt[-1] - dt[-2]
+        if step.total_seconds() <= 0:
+            avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n - 1))
+            step = timedelta(seconds=avg_step if avg_step > 0 else 60.0)
+        future_dt = [dt[-1] + (i + 1) * step for i in range(len(lin_forecast))]
     plt.figure(figsize=(10, 5))
     plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
     if future_dt:
@@ -267,6 +269,20 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     batch_size = _safe_pos_int(batch_size, 16)
     horizon = _safe_pos_int(horizon, 20)
 
+    if prices is None or isinstance(prices, (bool, str, bytes)):
+        return None, f"The series is too short for LSTM (at least ~{window+5} points)."
+    clean_prices = []
+    for p in prices:
+        if p is None or isinstance(p, bool):
+            continue
+        try:
+            pf = float(p)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(pf):
+            clean_prices.append(pf)
+    prices = np.asarray(clean_prices, dtype=np.float64)
+
     if len(prices) < window + 5:
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."
 
@@ -306,9 +322,8 @@ def plot_with_lstm(symbol: str, dt, prices: np.ndarray, lstm_forecast: Optional[
     if lstm_forecast is not None and len(lstm_forecast) > 0 and n >= 2:
         step = (dt[-1] - dt[-2])
         if step.total_seconds() <= 0:
-            from datetime import timedelta
-            avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n-1))
-            step = timedelta(seconds=avg_step)
+            avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n - 1))
+            step = timedelta(seconds=avg_step if avg_step > 0 else 60.0)
 
         future_dt = [dt[-1] + step*(i+1) for i in range(len(lstm_forecast))]
 

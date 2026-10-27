@@ -32,6 +32,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # TrendState(now_fn=...) so that fast-forward is correct (A5). The
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
 from providers.replay_clock import SimClock as _SimClock  # noqa: F401
+from state_io import atomic_write_json, read_recovering_previous
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
 )
@@ -291,13 +292,14 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         path = filename
     else:
         path = os.path.join(ROOT, "cachedb", f"cache_24_price_{symbol}.json")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     if str(path).endswith(".jsonl"):
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
         yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
         return
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
+        raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
+    data = read_recovering_previous(path, json.loads, default=None)
     entries = data.get("items", {}).get(symbol, []) if isinstance(data, dict) else []
     for entry in entries:
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
@@ -522,8 +524,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                             "epsilon": window_small.get_noise_epsilon(), "ts": ts,
                             **shadow_fields,
                         }}
-                        with open(os.path.join(out_dir, "analysis_state.json"), "w", encoding="utf-8") as sf:
-                            json.dump(last_state, sf)
+                        atomic_write_json(os.path.join(out_dir, "analysis_state.json"), last_state)
                     except Exception:
                         pass
                 if n % 5000 == 0:
@@ -553,8 +554,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     "epsilon": window_small.get_noise_epsilon(), "ts": ts,
                     **shadow_fields,
                 }}
-                with open(os.path.join(out_dir, "analysis_state.json"), "w", encoding="utf-8") as sf:
-                    json.dump(last_state, sf)
+                atomic_write_json(os.path.join(out_dir, "analysis_state.json"), last_state)
             except Exception:
                 pass
     
@@ -566,8 +566,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                                          - 2 * bh_qty * first_price * FEE_PCT / 100, 2)
         pnl["mode"] = "kalman_primary" if kalman_primary else "model_actual"
         try:
-            with open(os.path.join(out_dir, "pnl.json"), "w", encoding="utf-8") as pf:
-                json.dump(pnl, pf, indent=1)
+            atomic_write_json(os.path.join(out_dir, "pnl.json"), pnl, indent=1)
         except OSError:
             pass
         sys.stderr.write(f"[tradeall_backtest] P&L: {pnl}\n")

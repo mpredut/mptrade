@@ -96,7 +96,7 @@ def fetch_all_trades(cli):
         if (total and total > 0 and len(all_trades) >= total) or len(batch) < 50:
             break
         time.sleep(2.0)                            # Gentle on the rate limit (a cost of 20 per call).
-    return all_trades, total or 0
+    return all_trades, total or len(all_trades)
 
 
 def main():
@@ -108,7 +108,7 @@ def main():
         extract_order_side,
         extract_timestamp_ms,
     )
-    from state_io import atomic_write_json
+    from state_io import save_json_state
     cli = _client()
     trades, total = fetch_all_trades(cli)
     by_sym = {}
@@ -132,7 +132,7 @@ def main():
             time=extract_timestamp_ms(t, default=0) or 0))
     out = {'items': by_sym, 'source': 'TradesHistory full (read-only)',
            'total': total, 'generated': dt.datetime.now().isoformat()}
-    atomic_write_json(OUT, out, indent=1)
+    save_json_state(OUT, out, indent=1)
 
     print(f'[kraken_pnl] {len(trades)}/{total} trades -> {OUT}')
     grand = 0.0

@@ -68,7 +68,7 @@ def main():
                      help="show what it would apply, without writing config or committing")
     args = ap.parse_args()
 
-    if os.environ.get("APPLY_DISABLED", "").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get("APPLY_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
         print("[apply] APPLY_DISABLED=true -- exiting without doing anything")
         return
 

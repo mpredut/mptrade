@@ -149,6 +149,11 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
+    if any(
+        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
+    ):
+        return
     topic = (os.environ.get("NTFY_TOPIC") or "").strip()
     if not topic:
         # Read from kraken/config.env when it is not in the environment.
@@ -160,10 +165,14 @@ def _ntfy(title: str, body: str) -> None:
                 topic = ""
     if not topic:
         return
+    import re
     import urllib.request
-    safe_title = title.encode("utf-8").decode("latin-1", "ignore")
+    clean_title = re.sub(r"[\r\n]+", " ", "" if isinstance(title, bool) else str(title or "Alert")).strip()
+    safe_title = clean_title.encode("utf-8").decode("latin-1", "ignore")
+    url = topic if topic.startswith(("http://", "https://")) else f"https://ntfy.sh/{topic.lstrip('/')}"
+    body_str = "" if isinstance(body, bool) else str(body or "")
     req = urllib.request.Request(
-        f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
+        url, data=body_str.encode("utf-8"),
         headers={"Title": safe_title, "Priority": "high", "Tags": "warning"})
     try:
         urllib.request.urlopen(req, timeout=10)

@@ -974,3 +974,64 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
     recovered = _load_delivery_state(deliv_path, "2026-10-27")
     assert recovered["channels"]["ntfy"]["sent"] == 7
 
+
+def test_batch41_verify_tools_drawprices_and_tradeall_backtest_hardening(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import patch, MagicMock
+    from verify_tools import portfolio_snapshot, kraken_pnl_backfill
+    from visuals import drawprices
+    from offline.backtests import tradeall as bt_tradeall
+
+    # 1. portfolio_snapshot._ntfy respects DISABLE_EXTERNAL_NOTIFICATIONS and strips CR/LF in title
+    monkeypatch.setenv("NTFY_TOPIC", "https://ntfy.sh/custom_topic")
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "1")
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        portfolio_snapshot._ntfy("Title\r\nInjected: 1", "Body")
+        mock_urlopen.assert_not_called()
+
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    captured_req = {}
+
+    def _fake_urlopen(req, timeout=10):
+        captured_req["url"] = req.full_url
+        captured_req["title"] = req.headers.get("Title")
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        portfolio_snapshot._ntfy("Title\r\nLine2", "Body")
+        assert captured_req["url"] == "https://ntfy.sh/custom_topic"
+        assert "\r" not in captured_req["title"] and "\n" not in captured_req["title"]
+
+    # 2. kraken_pnl_backfill.fetch_all_trades falls back to len(all_trades) when count is omitted
+    fake_kc = MagicMock()
+    fake_kc._private.side_effect = [
+        {"trades": {"T1": {"time": 100.0}, "T2": {"time": 101.0}}},
+        {"trades": {}},
+    ]
+    trades, total = kraken_pnl_backfill.fetch_all_trades(fake_kc)
+    assert len(trades) == 2
+    assert total == 2
+
+    # 3. drawprices.forecast_lstm sanitizes None/bool/NaN entries without crashing
+    with patch.object(drawprices, "try_import_tf", return_value=(True, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+        preds, err = drawprices.forecast_lstm([100.0, None, True, float("nan")], horizon=3, window=5)
+        assert preds is None
+        assert "too short" in err
+
+    # 4. offline/backtests/tradeall.py load_ticks_cache24 recovers from .previous when primary is corrupt
+    cache_dir = tmp_path / "cache24"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    primary_cache = cache_dir / "cache_24_price_BTCUSDC.json"
+    prev_cache = cache_dir / "cache_24_price_BTCUSDC.json.previous"
+    primary_cache.write_text("{corrupt", encoding="utf-8")
+    prev_cache.write_text(
+        json.dumps({"items": {"BTCUSDC": [[1700000000000, 65000.0], [1700000060000, 65100.0]]}}),
+        encoding="utf-8",
+    )
+    ticks = list(bt_tradeall.load_ticks_cache24("BTCUSDC", 0.0, 2000000000.0, filename=str(primary_cache)))
+    assert len(ticks) == 2
+    assert ticks[0][1] == 65000.0
+
+
