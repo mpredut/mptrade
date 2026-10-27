@@ -16,19 +16,60 @@ def rtrade_client_order_id(pair_id, side, kind="limit"):
     return "RT_" + hashlib.blake2s(raw, digest_size=16).hexdigest()
 
 
+_INVALID_STORE_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
+
+
 class RTradePairStore:
     def __init__(self, path=None, terminal_retention=200):
         root = os.path.dirname(os.path.abspath(__file__))
         self.path = path or os.path.join(root, "cachedb", "rtrade_pairs.json")
         self.lock_path = self.path + ".lock"
-        if isinstance(terminal_retention, bool) or terminal_retention is None:
+        if isinstance(terminal_retention, (bool, dict, list, tuple, set)) or terminal_retention is None:
             ret_i = 200
         else:
             try:
-                ret_i = max(0, int(terminal_retention))
+                ret_f = float(terminal_retention)
+                ret_i = max(0, int(ret_f)) if math.isfinite(ret_f) else 200
             except (TypeError, ValueError, OverflowError):
                 ret_i = 200
         self.terminal_retention = ret_i
+
+    @staticmethod
+    def _clean_store_id(value) -> str:
+        if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+            return ""
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                return ""
+            if value.is_integer():
+                value = int(value)
+        s = str(value).strip()
+        if s.lower() in _INVALID_STORE_STRINGS:
+            return ""
+        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+            s = s[:-2]
+        return s if s and s.lower() not in _INVALID_STORE_STRINGS else ""
+
+    @staticmethod
+    def _parse_bool_flag(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            return default
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                return default
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+            return default
+        s = str(value).strip().lower()
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        if s in {"0", "false", "no", "off"}:
+            return False
+        return default
 
     @staticmethod
     def _finite_positive(value, field):
@@ -51,7 +92,7 @@ class RTradePairStore:
         if side not in {"BUY", "SELL"} or not kind or key != f"{kind}:{side}":
             raise ValueError(f"invalid rtrade intent identity {key!r}")
         raw_coid = intent.get("client_order_id")
-        if isinstance(raw_coid, bool) or not str(raw_coid or "").strip():
+        if not cls._clean_store_id(raw_coid):
             raise ValueError(f"invalid rtrade intent client ID {key!r}")
         if intent.get("pair_id") not in (None, pair_id):
             raise ValueError(f"rtrade intent {key!r} belongs to another pair")
@@ -63,10 +104,10 @@ class RTradePairStore:
         if requested_price is not None:
             cls._finite_positive(requested_price, f"intent {key!r} price")
         order_id = intent.get("order_id")
-        if order_id is not None and (isinstance(order_id, bool) or not str(order_id).strip()):
+        if order_id is not None and not cls._clean_store_id(order_id):
             raise ValueError(f"invalid rtrade intent order ID {key!r}")
         intent_id = intent.get("intent_id")
-        if intent_id is not None and (isinstance(intent_id, bool) or not str(intent_id).strip()):
+        if intent_id is not None and not cls._clean_store_id(intent_id):
             raise ValueError(f"invalid rtrade tracked intent ID {key!r}")
 
     @classmethod
@@ -81,7 +122,7 @@ class RTradePairStore:
         if not isinstance(pairs, dict):
             raise ValueError("invalid rtrade pair store: pairs must be an object")
         for pair_id, record in pairs.items():
-            if not isinstance(pair_id, str) or not pair_id.strip():
+            if not isinstance(pair_id, str) or not cls._clean_store_id(pair_id):
                 raise ValueError("invalid rtrade pair key")
             if not isinstance(record, dict):
                 raise ValueError(f"invalid rtrade pair record {pair_id!r}")
@@ -94,12 +135,12 @@ class RTradePairStore:
             if record.get("pair_id") != pair_id:
                 raise ValueError(f"rtrade pair identity mismatch {pair_id!r}")
             symbol = record.get("symbol")
-            if not isinstance(symbol, str) or not symbol.strip():
+            if not isinstance(symbol, str) or not symbol.strip() or symbol.strip().lower() in _INVALID_STORE_STRINGS:
                 raise ValueError(f"invalid rtrade symbol for {pair_id!r}")
             if str(record.get("start_side") or "").upper() not in {"BUY", "SELL"}:
                 raise ValueError(f"invalid rtrade start side for {pair_id!r}")
             cls._finite_positive(record.get("qty"), f"pair {pair_id!r} quantity")
-            if not isinstance(record.get("phase"), str) or not record["phase"]:
+            if not isinstance(record.get("phase"), str) or not record["phase"].strip() or record["phase"].strip().lower() in _INVALID_STORE_STRINGS:
                 raise ValueError(f"invalid rtrade phase for {pair_id!r}")
             if not isinstance(record.get("terminal"), bool):
                 raise ValueError(f"invalid rtrade terminal flag for {pair_id!r}")
@@ -110,7 +151,8 @@ class RTradePairStore:
                 if not state:
                     raise ValueError(f"empty rtrade checkpoint for {pair_id!r}")
                 if (not isinstance(state.get("phase"), str)
-                        or not state["phase"]):
+                        or not state["phase"].strip()
+                        or state["phase"].strip().lower() in _INVALID_STORE_STRINGS):
                     raise ValueError(
                         f"invalid rtrade checkpoint phase for {pair_id!r}")
                 if state["phase"] != record["phase"]:
@@ -142,7 +184,7 @@ class RTradePairStore:
                         raise ValueError(
                             f"invalid rtrade checkpoint ticket for {pair_id!r}")
                     raw_ticket_oid = ticket.get("order_id")
-                    order_id = "" if isinstance(raw_ticket_oid, bool) else str(raw_ticket_oid or "").strip()
+                    order_id = cls._clean_store_id(raw_ticket_oid)
                     side = str(ticket.get("side") or "").upper()
                     if (not order_id or order_id in ticket_ids
                             or side not in {"BUY", "SELL"}):
@@ -171,7 +213,7 @@ class RTradePairStore:
                 for order_id, snapshot in dict(
                         state.get("snapshots") or {}).items():
                     if (not isinstance(order_id, str)
-                            or not order_id.strip()
+                            or not cls._clean_store_id(order_id)
                             or not isinstance(snapshot, dict)
                             or snapshot.get("status") not in {
                                 "open", "closed", "canceled", "expired"}):
@@ -239,17 +281,22 @@ class RTradePairStore:
                 del pairs[pair_id]
 
     def begin(self, symbol, pair_id, start_side, qty):
+        qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         now = time.time()
         def op(pairs):
             pairs[pair_id] = {
                 "symbol": symbol, "pair_id": pair_id, "start_side": start_side,
-                "qty": float(qty), "phase": "reserved", "terminal": False,
+                "qty": qty_f, "phase": "reserved", "terminal": False,
                 "intents": {}, "state": None, "created_ts": now, "updated_ts": now,
             }
         self.mutate(op)
 
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit",
                symbol=None, start_side=None):
+        qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
+        coid = self._clean_store_id(client_order_id)
+        if not coid:
+            raise ValueError(f"invalid rtrade intent client ID for {pair_id!r}")
         def op(pairs):
             now = time.time()
             rec = pairs.get(pair_id)
@@ -259,14 +306,14 @@ class RTradePairStore:
                 rec = pairs[pair_id] = {
                     "symbol": symbol, "pair_id": pair_id,
                     "start_side": (start_side or side).upper(),
-                    "qty": float(qty), "phase": "reserved", "terminal": False,
+                    "qty": qty_f, "phase": "reserved", "terminal": False,
                     "intents": {}, "state": None,
                     "created_ts": now, "updated_ts": now,
                 }
             key = f"{kind}:{side.upper()}"
             value = {
-                "side": side.upper(), "price": price, "qty": float(qty),
-                "client_order_id": client_order_id, "kind": kind,
+                "side": side.upper(), "price": price, "qty": qty_f,
+                "client_order_id": coid, "kind": kind,
                 "order_id": None,
             }
             if rec["intents"].get(key) == value:
@@ -338,22 +385,24 @@ class RTradePairStore:
         self.mutate(op)
 
     def accepted(self, pair_id, side, order_id, kind="limit"):
-        if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        clean_oid = self._clean_store_id(order_id)
+        if not clean_oid:
             raise ValueError(f"invalid rtrade accepted order_id: {order_id!r}")
         def op(pairs):
             key = f"{kind}:{side.upper()}"
-            pairs[pair_id]["intents"][key]["order_id"] = str(order_id).strip()
+            pairs[pair_id]["intents"][key]["order_id"] = clean_oid
             pairs[pair_id]["updated_ts"] = time.time()
         self.mutate(op)
 
     def checkpoint(self, pair_id, state, terminal=False):
         if not isinstance(state, dict):
             raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
+        term_flag = self._parse_bool_flag(terminal, False)
         def op(pairs):
             rec = pairs[pair_id]
             rec["state"] = state
             rec["phase"] = state.get("phase")
-            rec["terminal"] = bool(terminal)
+            rec["terminal"] = term_flag
             rec["updated_ts"] = time.time()
         self.mutate(op)
 
@@ -371,7 +420,7 @@ class RTradePairStore:
                 rec = pairs[pair_id]
                 rec["state"] = state
                 rec["phase"] = state.get("phase")
-                rec["terminal"] = bool(terminal)
+                rec["terminal"] = self._parse_bool_flag(terminal, False)
                 rec["updated_ts"] = now
             return True
         self.mutate(op)

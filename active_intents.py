@@ -34,6 +34,7 @@ DEFAULT_SOURCES = (
 )
 
 _TERMINAL = {"closed", "filled", "canceled", "cancelled", "expired", "rejected"}
+_INVALID_SCALAR_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
 
 
 def _is_backup(path: str) -> bool:
@@ -41,48 +42,96 @@ def _is_backup(path: str) -> bool:
     return any(token in name for token in (".pre_", ".bak", ".backup", ".tmp"))
 
 
+def _parse_bool_flag(val, default: bool | None = None) -> bool | None:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        import math
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _clean_id(val) -> str | None:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return None
+    if isinstance(val, float):
+        import math
+        if not math.isfinite(val):
+            return None
+        if val.is_integer():
+            val = int(val)
+    s = str(val).strip()
+    if not s or s.lower() in (_INVALID_SCALAR_STRINGS | {"0", "0.0", "-0", "+0"}):
+        return None
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    return s if s and s.lower() not in (_INVALID_SCALAR_STRINGS | {"0", "0.0", "-0", "+0"}) else None
+
+
 def _first(row: dict, *names):
     for name in names:
         value = row.get(name)
-        if value is not None and not isinstance(value, bool) and value != "":
-            return value
+        if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+            continue
+        if isinstance(value, float):
+            import math
+            if not math.isfinite(value):
+                continue
+        if isinstance(value, str):
+            s = value.strip()
+            if not s or s.lower() in _INVALID_SCALAR_STRINGS:
+                continue
+        return value
     return None
 
 
 def _intent_row(row: dict, *, owner: str, source: str, location: str,
                 inherited: dict) -> dict | None:
-    if row.get("active") is False:
+    if _parse_bool_flag(row.get("active"), True) is False:
         return None
     place_kwargs = row.get("place_kwargs")
     nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
-    client_order_id = _first(row, "client_order_id") or _first(nested_kwargs, "client_order_id")
-    intent_id = _first(row, "intent_id", "client_order_id", "order_id", "id", "txid") or client_order_id
+    client_order_id = _clean_id(_first(row, "client_order_id")) or _clean_id(_first(nested_kwargs, "client_order_id"))
+    order_id = _clean_id(_first(row, "order_id", "id", "txid"))
+    intent_id = _clean_id(_first(row, "intent_id", "client_order_id", "order_id", "id", "txid")) or client_order_id or order_id
     side = _first(row, "side", "start_side")
     quantity = _first(row, "requested_qty", "qty", "quantity", "vol")
     qty_f = _finite_float(quantity, default=None)
     if (
         not intent_id
-        or isinstance(intent_id, bool)
         or not side
         or isinstance(side, bool)
         or qty_f is None
         or qty_f <= 0
     ):
         return None
-    side_str = str(side).upper()
+    side_str = str(side).strip().upper()
     if side_str not in {"BUY", "SELL"}:
         return None
     status = str(_first(
         row, "submission_outcome", "lifecycle", "last_status", "status",
-    ) or ("accepted" if _first(row, "order_id", "id", "txid") else "pending")).lower()
+    ) or ("accepted" if order_id else "pending")).strip().lower()
     terminal_payload = row.get("terminal_status")
     if isinstance(terminal_payload, dict):
-        status = str(terminal_payload.get("status") or status).lower()
+        status = str(_first(terminal_payload, "status") or status).strip().lower()
     if status in _TERMINAL:
         return None
     symbol = (_first(row, "symbol", "ticker", "pair")
               or _first(inherited, "symbol", "ticker", "pair"))
-    venue = (_first(row, "provider_name", "venue") or inherited.get("venue")
+    venue = (_first(row, "provider_name", "venue") or _first(inherited, "venue")
              or owner.split("_", 1)[0])
     return {
         "intent_id": str(intent_id),
@@ -92,7 +141,7 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
         "side": side_str,
         "kind": _first(row, "kind", "motivation"),
         "status": status,
-        "order_id": _first(row, "order_id", "id", "txid"),
+        "order_id": order_id,
         "client_order_id": client_order_id,
         "requested_qty": quantity,
         "executed_qty": _first(row, "filled_qty", "executed_qty", "delivered_qty", "exec_vol", "applied_fill_qty"),
@@ -106,12 +155,13 @@ def _walk(value, *, owner: str, source: str, location: str = "$",
           inherited: dict | None = None) -> Iterable[dict]:
     inherited = dict(inherited or {})
     if isinstance(value, dict):
-        if value.get("terminal") is True:
+        if _parse_bool_flag(value.get("terminal"), False) is True:
             return
         next_context = dict(inherited)
         for key in ("symbol", "ticker", "pair", "venue", "provider_name"):
-            if value.get(key) not in (None, ""):
-                next_context["venue" if key == "provider_name" else key] = value[key]
+            val_k = _first(value, key)
+            if val_k is not None:
+                next_context["venue" if key == "provider_name" else key] = val_k
         row = _intent_row(
             value, owner=owner, source=source, location=location,
             inherited=next_context,
@@ -214,9 +264,13 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
     exp_by_sym: dict[str, dict[str, float | None]] = {}
     total_cost = 0.0
     for exp in exposures:
+        if not isinstance(exp, dict):
+            continue
         sym = exp.get("symbol") or "UNKNOWN"
-        qty = exp.get("qty", 0.0)
-        cost = exp.get("cost")
+        qty = _finite_float(exp.get("qty"), default=0.0) or 0.0
+        cost = _finite_float(exp.get("cost"), default=None)
+        if cost is not None and cost < 0:
+            cost = None
         if cost is not None:
             total_cost += cost
         entry = exp_by_sym.setdefault(sym, {"qty": 0.0, "cost": 0.0})

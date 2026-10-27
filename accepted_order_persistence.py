@@ -27,25 +27,46 @@ if (not math.isfinite(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
         "and <= 5")
 
 
+_INVALID_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
+
+
+def _clean_id(val) -> str | None:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return None
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            return None
+        if val.is_integer():
+            val = int(val)
+    s = str(val).strip()
+    if s.lower() in _INVALID_ID_STRINGS:
+        return None
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    return s if s and s.lower() not in _INVALID_ID_STRINGS else None
+
+
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     """Recognize a first attempt that committed before reporting an I/O error."""
     try:
         if not isinstance(claim, dict):
             return False
-        expected_order_id = order_retry_module.order_id_from_response(order)
+        claim_id = _clean_id(claim.get("id"))
+        expected_order_id = _clean_id(order_retry_module.order_id_from_response(order))
         pk = claim.get("place_kwargs")
-        expected_client_id = pk.get("client_order_id") if isinstance(pk, dict) else None
+        expected_client_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+        if claim_id is None or expected_order_id is None or expected_client_id is None:
+            return False
         for record in order_retry_module.load_all():
-            if not isinstance(record, dict) or record.get("id") != claim.get("id"):
+            if not isinstance(record, dict) or _clean_id(record.get("id")) != claim_id:
                 continue
             rpk = record.get("place_kwargs")
-            current_client_id = rpk.get("client_order_id") if isinstance(rpk, dict) else None
+            current_client_id = _clean_id(rpk.get("client_order_id")) if isinstance(rpk, dict) else None
+            current_order_id = _clean_id(record.get("order_id"))
             return (
-                str(record.get("lifecycle") or "").lower() == "accepted"
-                and str(record.get("order_id") or "").strip() == str(expected_order_id).strip()
-                and expected_order_id is not None
-                and expected_client_id is not None
-                and str(current_client_id or "").strip() == str(expected_client_id).strip()
+                str(record.get("lifecycle") or "").strip().lower() == "accepted"
+                and current_order_id == expected_order_id
+                and current_client_id == expected_client_id
             )
     except Exception:  # noqa: BLE001 - the bounded exact retry remains authoritative.
         return False
@@ -82,12 +103,12 @@ def complete_accepted_claim(
 
     from datetime import datetime
     try:
-        order_id = order_retry_module.order_id_from_response(order)
+        order_id = _clean_id(order_retry_module.order_id_from_response(order))
     except Exception:
         order_id = None
     claim_dict = claim if isinstance(claim, dict) else {}
     pk = claim_dict.get("place_kwargs")
-    client_order_id = pk.get("client_order_id") if isinstance(pk, dict) else None
+    client_order_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
     qty = claim_dict.get("qty")
     px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
     val_str = "N/A"

@@ -14680,6 +14680,111 @@ def test_iteration148_report2_scheduled_pilot_and_run_suite_safety(tmp_path):
     assert rs_safe_int(True, 0) == 0
 
 
+def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_store_hygiene(tmp_path):
+    """Verify active_intents, accepted_order_persistence, and rtrade_pair_store hygiene."""
+    import json
+    import pytest
+    import active_intents as ai
+    import accepted_order_persistence as aop
+    from rtrade_pair_store import RTradePairStore
+
+    # 1. active_intents: _clean_id, _parse_bool_flag, _first, _intent_row, _walk
+    for bad in ("0", "0.0", "nan", "null", "none", "inf", True, ["1"], {"a": 1}, None, ""):
+        assert ai._clean_id(bad) is None
+    assert ai._clean_id(777.0) == "777"
+    assert ai._clean_id("777.0") == "777"
+    assert ai._parse_bool_flag("false", True) is False
+    assert ai._parse_bool_flag("true", False) is True
+    assert ai._parse_bool_flag(float("nan"), True) is True
+
+    rtrade_path = tmp_path / "cachedb/rtrade_pairs.json"
+    rtrade_path.parent.mkdir(parents=True, exist_ok=True)
+    rtrade_path.write_text(
+        json.dumps(
+            {
+                "pairs": {
+                    "term-str": {
+                        "symbol": "BTCUSDC",
+                        "terminal": "true",
+                        "tickets": [{"order_id": "100", "side": "BUY", "price": 60000.0, "qty": 0.1, "active": True}],
+                    },
+                    "active-pair": {
+                        "symbol": "ETHUSDC",
+                        "terminal": "false",
+                        "tickets": [
+                            {"order_id": "101", "side": "BUY", "price": 3000.0, "qty": 0.1, "active": "false"},
+                            {"order_id": "0", "side": "BUY", "price": 3000.0, "qty": 0.1, "active": True},
+                            {"order_id": 102.0, "side": "SELL", "price": 3100.0, "qty": 0.1, "active": "true"},
+                        ],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    idx = ai.build_active_intent_index(str(tmp_path))
+    assert [it["intent_id"] for it in idx["intents"]] == ["102"]
+    assert idx["intents"][0]["order_id"] == "102"
+
+    # 2. accepted_order_persistence._accepted_is_durable normalizes IDs & rejects sentinels
+    class DummyRetryMod:
+        def __init__(self, oid, records):
+            self._oid = oid
+            self._records = records
+
+        def order_id_from_response(self, _order):
+            return self._oid
+
+        def load_all(self):
+            return self._records
+
+    claim = {"id": "1001.0", "place_kwargs": {"client_order_id": "CID-1"}}
+    mod_ok = DummyRetryMod(
+        777.0,
+        [{"id": "1001", "lifecycle": "accepted", "order_id": "777", "place_kwargs": {"client_order_id": "CID-1"}}],
+    )
+    assert aop._accepted_is_durable(mod_ok, claim, {"orderId": 777}) is True
+
+    mod_bad_sentinel = DummyRetryMod(
+        "0",
+        [{"id": "1001", "lifecycle": "accepted", "order_id": "0", "place_kwargs": {"client_order_id": "CID-1"}}],
+    )
+    assert aop._accepted_is_durable(mod_bad_sentinel, claim, {"orderId": "0"}) is False
+
+    # 3. RTradePairStore: terminal_retention float-string, _clean_store_id, begin(qty=True) rejection, checkpoint terminal="false"
+    store_file = tmp_path / "rtrade_store.json"
+    store = RTradePairStore(path=str(store_file), terminal_retention="50.0")
+    assert store.terminal_retention == 50
+
+    with pytest.raises(ValueError):
+        store.begin("BTCUSDC", "pair-bool", "BUY", True)
+    with pytest.raises(ValueError):
+        store.intent("pair-bad", "BUY", 60000.0, 0.1, "nan", symbol="BTCUSDC")
+
+    store.begin("BTCUSDC", "pair-1", "BUY", 0.1)
+    store.intent("pair-1", "BUY", 60000.0, 0.1, "CID-RT-1")
+    with pytest.raises(ValueError):
+        store.accepted("pair-1", "BUY", "0")
+    store.accepted("pair-1", "BUY", 999.0)
+    active_rows = store.active("BTCUSDC")
+    assert len(active_rows) == 1
+    assert active_rows[0]["intents"]["limit:BUY"]["order_id"] == "999"
+
+    store.checkpoint(
+        "pair-1",
+        {
+            "pair_id": "pair-1",
+            "qty": 0.1,
+            "start_side": "BUY",
+            "phase": "quoting",
+            "tickets": [{"order_id": "999", "side": "BUY", "price": 60000.0, "qty": 0.1, "active": True}],
+        },
+        terminal="false",
+    )
+    assert len(store.active("BTCUSDC")) == 1
+
+
+
 
 
 
