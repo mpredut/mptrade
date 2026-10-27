@@ -5526,3 +5526,199 @@ def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(t
     assert nfc._effective_history_file() == str(tmp_path / "news_feed_collect.json")
 
 
+def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tmp_path, monkeypatch):
+    """Verify order_retry None/float-string handling, order_retry_worker._alert_giveups, order_guard decisions_map lookup, assetguardian p3b confidence formatting, monitortrades tp_ref normalization, and tradeall TrendState.is_trend_a_minim_validated."""
+    from types import SimpleNamespace
+    import order_retry as oq
+    import order_retry_worker as orw
+    import order_guard
+    import assetguardian
+    import monitortrades as mt
+    import tradeall
+
+    # 1. order_retry.is_expired and is_due handle None ttl_started_ts / attempts / last_attempt_ts
+    rec = {
+        "id": "r1",
+        "created_ts": 1000.0,
+        "ttl_started_ts": None,
+        "attempts": None,
+        "last_attempt_ts": None,
+        "claim_until": 0.0,
+        "ttl_sec": 3600.0,
+    }
+    assert oq.is_expired(rec, now=1010.0) is False
+    assert oq.is_due(rec, now=1000.0 + oq.RETRY_INTERVAL_SEC + 1.0) is True
+    assert oq._rev_int("2.0", -1) == 2
+    assert oq._rev_int(None, -1) == -1
+    assert oq._rev_int(True, -1) == -1
+
+    # 2. order_retry_worker._alert_giveups handles attempts=None or float-string without TypeError
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl"))
+    monkeypatch.setattr(orw, "_audit_event", lambda *a, **kw: None)
+    monkeypatch.setattr(orw.alert, "notify", lambda *a, **kw: None)
+    orw._alert_giveups(
+        [
+            {
+                "id": "g1",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "attempts": None,
+                "requested_price": 60000.0,
+                "created_ts": 1000.0,
+            },
+            {
+                "id": "g2",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "attempts": "5.0",
+                "requested_price": 60000.0,
+                "created_ts": 1000.0,
+            },
+        ],
+        now=2000.0,
+    )
+
+    # 3. order_guard.check_intelligence_guards does not raise KeyError when decisions_map[cache_key] is empty dict
+    ctx = SimpleNamespace(
+        symbol="BTCUSDC",
+        resolved_trend="SIDEWAYS",
+        _intelligence_decisions_by_key={("BUY", frozenset()): {}},
+    )
+    import llm_order_guard
+    monkeypatch.setattr(order_guard, "_evaluate_intelligence_guards_raw", lambda *a, **kw: (True, "ok", 1.0))
+    monkeypatch.setattr(llm_order_guard, "evaluate_high_stake_order_guard", lambda *a, **kw: (True, "ok", 1.0))
+    ok, reason, scale = order_guard.check_intelligence_guards(
+        SimpleNamespace(), "BTCUSDC", "BUY", 60000.0, qty=0.01, regime_context=ctx
+    )
+    assert ok is True and scale == 1.0
+
+    # 4. assetguardian.evaluate_symbol handles p3b_assessment with confidence=None and string minutes_back
+    monkeypatch.setattr(assetguardian.api, "get_current_price", lambda s: 100.0)
+    monkeypatch.setattr(
+        assetguardian,
+        "_get_symbol_window_extrema",
+        lambda s, cp, minutes_back=None: ({"price": 99.0, "timestamp": 1000}, {"price": 101.0, "timestamp": 1000}),
+    )
+    monkeypatch.setattr(assetguardian.mkt, "provider_by_name", lambda name: SimpleNamespace(free_balance=lambda a: 0.0))
+    monkeypatch.setattr(assetguardian, "_get_portfolio_growth_percent", lambda minutes_back=None: 0.5)
+    monkeypatch.setattr(
+        assetguardian,
+        "_read_p3b_sentiment",
+        lambda: {"recommended_action": "HOLD", "market_bias": "NEUTRAL", "confidence": None},
+    )
+    monkeypatch.setattr(assetguardian, "_sell_campaign_tier", lambda *a, **kw: (None, {}, 1.0))
+    monkeypatch.setattr(assetguardian, "_symbol_campaign", lambda s, k: {})
+    assert assetguardian.evaluate_symbol("BTCUSDC", minutes_back="60") is False  # type: ignore[arg-type]
+
+    # 5. monitortrades._resolve_mt_inst_cfg normalizes uppercase/whitespace tp_ref and invalid min_qty
+    fake_inst = SimpleNamespace(
+        param=lambda ns, k, default=None, cast=None: " AVERAGE " if k == "ref" else default,
+        min_qty=lambda: "invalid",
+        provider_label="binance",
+    )
+    cfg = mt._resolve_mt_inst_cfg(fake_inst)
+    assert cfg[6] == "average"
+    assert cfg[10] == 0.0
+
+    # 6. tradeall.TrendState.is_trend_a_minim_validated returns False when trend has not started
+    ts = tradeall.TrendState(100, 50, 50)
+    assert ts.is_trend_a_minim_validated() is False
+    assert ts.is_trend_consistent_validated() is False
+    assert ts.is_trend_uniform_confirmed() is False
+
+
+def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(tmp_path, monkeypatch):
+    """Verify survival._effective_t_cache_file & symbol normalization, qlimit2/external guard bool/NaN resilience, and monitortrades state cleanup."""
+    import json
+    import time
+    import numpy as np
+    from intelligence.internal.state import survival
+    import qlimit_order_guard as qog
+    import external_order_guard as eog
+    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    import monitortrades as mt
+    from state_io import previous_generation_path
+
+    # 1. survival._effective_t_cache_file respects MPTRADE_CACHEDB_DIR and estimate_T strips slashes before fetch_klines
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+    assert survival._effective_t_cache_file() == str(tmp_path / "cache_T_trend.json")
+    queried_syms = []
+
+    def _fake_fetch_klines(sym, days, interval="1h"):
+        queried_syms.append(sym)
+        t_arr = np.arange(0, 200 * 3600, 3600, dtype=float) + 1_700_000_000.0
+        p_arr = 100.0 + np.linspace(0.0, 20.0, len(t_arr))
+        return t_arr, p_arr
+
+    monkeypatch.setattr(survival, "fetch_klines", _fake_fetch_klines)
+    est = survival.estimate_T("BTC/USDC", days=10)
+    assert queried_syms[0] == "BTCUSDC"
+    assert est["source_symbol"] == "BTCUSDC"
+    assert (tmp_path / "cache_T_trend.json").exists()
+
+    p90_d, med_d, gauss_h = qog.resolve_cached_gaussian_horizon("BTC/USDC")
+    assert gauss_h is not None and gauss_h > 0.0
+
+    # 2. qlimit_order_guard and external_order_guard delegate bool/invalid margin values to guard defaults without crashing or skipping
+    import order_guard
+    base_m = dict(order_guard._load_margins())
+    bad_qlimit_m = {
+        **base_m,
+        "intelligence_guards_mode": "enforce",
+        "internal_guard_mode": "enforce",
+        "parabolic_surge_pct": True,
+        "parabolic_pullback_pct": "invalid",
+        "weibull_exhausted_scale": False,
+        "weibull_p90_days": "nan",
+    }
+    history = [(100.0, 50000.0), (200.0, 52000.0), (300.0, 65000.0)]
+    ok_q, reason_q, scale_q = qog.check_qlimit2_order_guards(
+        "BTCUSDC", "BUY", 65000.0, price_history=history, margins=bad_qlimit_m, now=305.0
+    )
+    assert ok_q is False and "parabolic_surge" in reason_q and scale_q == 0.0
+
+    cascade_snap = WhalePositioningSnapshot(
+        symbol="BTCUSDC",
+        top_traders_long_ratio=0.8,
+        top_traders_long_pct=0.45,
+        open_interest_usd=100_000_000.0,
+        open_interest_1h_change_pct=-8.5,
+        taker_buy_sell_ratio=0.60,
+        taker_buy_vol_usd=30_000_000.0,
+        taker_sell_vol_usd=50_000_000.0,
+        divergence_regime="long_liquidation",
+        ts=time.time(),
+    )
+    monkeypatch.setattr(eog.get_whale_collector(), "fetch", lambda *a, **kw: cascade_snap)
+    bad_ext_m = {
+        **base_m,
+        "intelligence_guards_mode": "enforce",
+        "external_guard_mode": "enforce",
+        "whale_guard_mode": "enforce",
+        "orderbook_wall_guard_mode": "off",
+        "funding_guard_mode": "off",
+        "severe_cascade_oi_pct": "invalid_not_float",
+        "min_taker_ratio": True,
+        "taker_downscale_threshold": False,
+        "taker_downscaled_scale": "nan",
+    }
+    ok_e, reason_e, scale_e = eog.check_external_order_guards(
+        "BTCUSDC", "BUY", 60000.0, margins=bad_ext_m
+    )
+    assert ok_e is False and "liquidation_cascade" in reason_e and scale_e == 0.0
+
+    # 3. monitortrades._effective_mt_state_file and clear_position_stats_cache remove both state file and .previous backup
+    st_file = tmp_path / "mt_state.json"
+    prev_st = tmp_path / "mt_state.json.previous"
+    st_file.write_text(json.dumps({"version": 1, "ts": time.time(), "last_exit_kind": {"BTCUSDC": "stop"}}), encoding="utf-8")
+    prev_st.write_text(json.dumps({"version": 1, "ts": time.time(), "last_exit_kind": {"BTCUSDC": "stop"}}), encoding="utf-8")
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
+    assert mt._effective_mt_state_file() == str(st_file)
+    mt.clear_position_stats_cache()
+    assert not st_file.exists() and not prev_st.exists()
+
+
+
+

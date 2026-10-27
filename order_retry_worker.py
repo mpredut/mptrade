@@ -1259,8 +1259,14 @@ def _alert_giveups(records, now):
     try:
         events = []
         for rec in records:
+            raw_att = rec.get("attempts")
+            try:
+                att_f = float(raw_att) if (raw_att is not None and not isinstance(raw_att, bool)) else 0.0
+                attempts_val = int(att_f) if (math.isfinite(att_f) and att_f >= 0) else 0
+            except (TypeError, ValueError, OverflowError):
+                attempts_val = 0
             reason = ("attempt_limit" if oq.RETRY_MAX_ATTEMPTS > 0
-                      and rec.get("attempts", 0) >= oq.RETRY_MAX_ATTEMPTS
+                      and attempts_val >= oq.RETRY_MAX_ATTEMPTS
                       else "active_ttl")
             _audit_event(
                 rec, "retry_giveup", expiry_reason=reason, expired_ts=now,
@@ -1278,9 +1284,9 @@ def _alert_giveups(records, now):
                     "reason": str(rec.get("last_failure_reason") or "unspecified"),
                     "expiry": reason,
                 },
-                "quantity": rec["qty"],
-                "sample_id": rec.get("intent_id") or rec["id"],
-                "attempts": int(rec.get("attempts") or 0),
+                "quantity": rec.get("qty", 0.0),
+                "sample_id": rec.get("intent_id") or rec.get("id") or "unknown",
+                "attempts": attempts_val,
                 "price": (
                     rec.get("requested_price")
                     if rec.get("requested_price") is not None

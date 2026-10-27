@@ -1471,7 +1471,11 @@ class TradingBot:
                     self._round_placed_order = True
                 
                 time.sleep(WAIT_FOR_ORDER)
-                order_id = buy_order['orderId'] if 'orderId' in buy_order else extract_order_id(buy_order)
+                order_id = (
+                    buy_order["orderId"]
+                    if isinstance(buy_order, dict) and "orderId" in buy_order
+                    else extract_order_id(buy_order)
+                )
                 extracted_buy_px = extract_order_price(buy_order, default=0.0)
                 self.filled_buy_price = round(float(extracted_buy_px if extracted_buy_px > 0 else target_buy_price), 4)
                 
@@ -1700,7 +1704,11 @@ class TradingBot:
                     self._round_placed_order = True
 
                 time.sleep(WAIT_FOR_ORDER)
-                order_id = sell_order['orderId'] if 'orderId' in sell_order else extract_order_id(sell_order)
+                order_id = (
+                    sell_order["orderId"]
+                    if isinstance(sell_order, dict) and "orderId" in sell_order
+                    else extract_order_id(sell_order)
+                )
                 extracted_sell_px = extract_order_price(sell_order, default=0.0)
                 self.filled_sell_price = round(float(extracted_sell_px if extracted_sell_px > 0 else target_sell_price), 4)
 
@@ -1893,11 +1901,13 @@ class TradingBot:
             known_client_ids = {
                 intent.get("client_order_id")
                 for rec in pair_store.active(self.symbol)
-                for intent in rec.get("intents", {}).values()
+                for intent in (rec.get("intents") or {}).values()
+                if isinstance(intent, dict) and intent.get("client_order_id")
             }
             orphan_orders = [
                 order for order in venue.executor.open_orders(self.symbol)
-                if str(order.get("clientOrderId") or "").startswith("RT_")
+                if isinstance(order, dict)
+                and str(order.get("clientOrderId") or "").startswith("RT_")
                 and order.get("clientOrderId") not in known_client_ids
             ]
             for order in orphan_orders:
@@ -2017,11 +2027,13 @@ class TradingBot:
                             known_client_ids = {
                                 intent.get("client_order_id")
                                 for rec in pair_store.active(self.symbol)
-                                for intent in rec.get("intents", {}).values()
+                                for intent in (rec.get("intents") or {}).values()
+                                if isinstance(intent, dict) and intent.get("client_order_id")
                             }
                             orphan_orders = [
                                 order for order in venue.executor.open_orders(self.symbol)
-                                if str(order.get("clientOrderId") or "").startswith("RT_")
+                                if isinstance(order, dict)
+                                and str(order.get("clientOrderId") or "").startswith("RT_")
                                 and order.get("clientOrderId") not in known_client_ids
                             ]
                             for order in orphan_orders:
@@ -2260,7 +2272,7 @@ if __name__ == "__main__":
     # avoids "unavailable" so it does not trip the blind regex either.
     initial_price = 0.0
     for attempt in range(1, 13):
-        initial_price = float(api.get_current_price(symbol) or 0.0)
+        initial_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
         if initial_price > 0:
             break
         print(f"[{symbol}] startup: price feed not ready yet (attempt {attempt}/12); waiting 5s...")

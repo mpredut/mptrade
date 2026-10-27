@@ -1668,14 +1668,18 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         rolling_growth_percent if effective_growth is None else effective_growth)
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
+    p3b_conf = _finite_float(p3b_assessment.get("confidence")) if isinstance(p3b_assessment, dict) else None
+    if p3b_conf is None:
+        p3b_conf = 0.0
     p3b_str = (
         f"{p3b_assessment.get('recommended_action')}/{p3b_assessment.get('market_bias')}"
-        f"(conf={p3b_assessment.get('confidence', 0.0):.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"
+        f"(conf={p3b_conf:.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"
         if isinstance(p3b_assessment, dict) else "none(1.0x)"
     )
+    minutes_back_val = _finite_float(minutes_back, positive=True) or float(ROLLING_WINDOW_MINUTES)
     print(
         f"[{symbol}] price={current_price:.8f}, window_min/max="
-        f"{minimum_price:.8f}/{maximum_price:.8f}, minutes_back={minutes_back:.1f}, "
+        f"{minimum_price:.8f}/{maximum_price:.8f}, minutes_back={minutes_back_val:.1f}, "
         f"rolling_growth_from_min={rolling_growth_percent:.4f}%, "
         f"sell_growth={evaluation['growth']:.4f}%, "
         f"portfolio_growth={pg_str}, "

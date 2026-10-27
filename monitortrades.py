@@ -26,7 +26,7 @@ from providers.base import (
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
 import cachepaths
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import atomic_write_json, previous_generation_path, read_recovering_previous, save_json_state
 
 import utils as u
 from strategies.position_exit_manager import (
@@ -324,11 +324,14 @@ def clear_position_stats_cache():
         clear_post_stop_reentry_cache()
     except Exception:
         pass
-    if _MT_PERSISTENCE_ENABLED and "_MT_STATE_FILE" in globals() and os.path.exists(_MT_STATE_FILE):
-        try:
-            os.remove(_MT_STATE_FILE)
-        except OSError:
-            pass
+    if _MT_PERSISTENCE_ENABLED and "_MT_STATE_FILE" in globals():
+        st_path = _effective_mt_state_file() if "_effective_mt_state_file" in globals() else _MT_STATE_FILE
+        for p in (st_path, previous_generation_path(st_path)):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 def _summarize_orders(orders):
@@ -544,9 +547,16 @@ _LAST_EXIT_KIND: Dict[str, str] = {}
 _REENTRY_DONE_SELL_TIME: Dict[str, float] = {}
 _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
-_MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
+_DEFAULT_MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
+_MT_STATE_FILE = _DEFAULT_MT_STATE_FILE
 _MT_PERSISTENCE_ENABLED = os.environ.get("MT_DISABLE_STATE_PERSISTENCE", "0").lower() not in ("1", "true", "yes")
 _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
+
+
+def _effective_mt_state_file() -> str:
+    if isinstance(_MT_STATE_FILE, str) and _MT_STATE_FILE.strip() and _MT_STATE_FILE != _DEFAULT_MT_STATE_FILE:
+        return _MT_STATE_FILE
+    return cachepaths.cache_path("mt_state.json")
 
 
 def _save_mt_state(ts: float | None = None):
@@ -555,6 +565,7 @@ def _save_mt_state(ts: float | None = None):
     if not _MT_PERSISTENCE_ENABLED:
         return
     try:
+        st_file = _effective_mt_state_file()
         payload = {
             "sl_bounce_state": _SL_BOUNCE_STATE,
             "sl_episode_state": _SL_EPISODE_STATE,
@@ -566,8 +577,8 @@ def _save_mt_state(ts: float | None = None):
             "hard_tp_last": _hard_tp_last,
         }
         serialized = json.dumps(payload, sort_keys=True)
-        cache_key = (_MT_STATE_FILE, serialized)
-        if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(_MT_STATE_FILE):
+        cache_key = (st_file, serialized)
+        if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(st_file):
             return
         ts_val = _safe_f(ts, None)
         data = {
@@ -575,7 +586,7 @@ def _save_mt_state(ts: float | None = None):
             "ts": ts_val if (ts_val is not None and ts_val > 0) else time.time(),
             **payload,
         }
-        save_json_state(_MT_STATE_FILE, data, indent=2)
+        save_json_state(st_file, data, indent=2)
         _LAST_SAVED_MT_STATE_KEY = cache_key
     except Exception:
         pass
@@ -586,7 +597,7 @@ def _load_mt_state(now_curr: float | None = None):
     if not _MT_PERSISTENCE_ENABLED:
         return
     try:
-        data = read_recovering_previous(_MT_STATE_FILE, json.loads, default=None)
+        data = read_recovering_previous(_effective_mt_state_file(), json.loads, default=None)
         if not isinstance(data, dict):
             return
         now_val = _safe_f(now_curr, None)
@@ -1967,11 +1978,11 @@ def _resolve_mt_inst_cfg(inst):
     hard_tp_pct = inst.param("mt", "hardtp", HARD_TP_PCT * 100, float) / 100.0
     hard_tp_frac = inst.param("mt", "hardtp_fraction", HARD_TP_FRACTION, float)
     hard_tp_cd = inst.param("mt", "hardtp_cooldown_h", HARD_TP_COOLDOWN_S / 3600.0, float) * 3600
-    tp_ref = inst.param("mt", "ref", TP_REFERENCE)
+    tp_ref = str(inst.param("mt", "ref", TP_REFERENCE) or TP_REFERENCE).strip().lower()
     buy_budget = inst.param("mt", "buy_budget", None, float)
     buy_qty_cfg = inst.param("mt", "buy_qty", None, float)
     max_budget = inst.param("mt", "max_budget", None, float)
-    min_qty = inst.min_qty() or 0.0
+    min_qty = _safe_f(inst.min_qty(), 0.0) or 0.0
     prov_label = _inst_provider(inst)
     vals = (
         def_gain, def_lost, def_maxage_s,

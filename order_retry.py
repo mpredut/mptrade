@@ -870,6 +870,16 @@ def enqueue_claimed(
         ttl_sec=ttl_sec)
 
 
+def _rev_int(val, default=-1):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+        return int(vf) if (math.isfinite(vf) and vf.is_integer()) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     """Durably update the requested quantity of an exact claimed intent before submit.
 
@@ -900,8 +910,8 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
             exact_claim = (
                 record.get("id") == claim_snapshot.get("id")
                 and record.get("claim_token") == claim_snapshot.get("claim_token")
-                and int(record.get("revision", 0)) == int(claim_snapshot.get("claim_revision", -1))
-                and int(record.get("claim_revision", -1)) == int(claim_snapshot.get("claim_revision", -2))
+                and _rev_int(record.get("revision"), 0) == _rev_int(claim_snapshot.get("claim_revision"), -1)
+                and _rev_int(record.get("claim_revision"), -1) == _rev_int(claim_snapshot.get("claim_revision"), -2)
                 and record_client_id == snapshot_client_id
             )
             if not exact_claim:
@@ -968,10 +978,10 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
                 record.get("id") == claim_snapshot.get("id")
                 and record.get("claim_token")
                 == claim_snapshot.get("claim_token")
-                and int(record.get("revision", 0))
-                == int(claim_snapshot.get("claim_revision", -1))
-                and int(record.get("claim_revision", -1))
-                == int(claim_snapshot.get("claim_revision", -2))
+                and _rev_int(record.get("revision"), 0)
+                == _rev_int(claim_snapshot.get("claim_revision"), -1)
+                and _rev_int(record.get("claim_revision"), -1)
+                == _rev_int(claim_snapshot.get("claim_revision"), -2)
                 and record_client_id == snapshot_client_id
             )
             if not exact_claim:
@@ -1436,8 +1446,8 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
             current_client_id = dict(
                 rec.get("place_kwargs") or {}).get("client_order_id")
             same_revision = (
-                int(rec.get("revision", 0))
-                == int(claimed.get("claim_revision", 0))
+                _rev_int(rec.get("revision"), 0)
+                == _rev_int(claimed.get("claim_revision"), -1)
                 and claimed_client_id is not None
                 and current_client_id == claimed_client_id
             )
@@ -1867,8 +1877,18 @@ def is_expired(rec, now=None):
         now = float(time.time() if now is None else now)
         claim_until = float(rec.get("claim_until", 0) or 0)
         created = float(rec.get("created_ts", 0))
-        ttl_started = float(rec.get("ttl_started_ts", created))
-        attempts = int(rec.get("attempts", 0))
+        raw_ttl_started = rec.get("ttl_started_ts")
+        ttl_started = created if raw_ttl_started is None else float(raw_ttl_started)
+        raw_attempts = rec.get("attempts")
+        if isinstance(raw_attempts, bool):
+            return True
+        if raw_attempts is None:
+            attempts = 0
+        else:
+            att_f = float(raw_attempts)
+            if not math.isfinite(att_f) or not att_f.is_integer() or att_f < 0:
+                return True
+            attempts = int(att_f)
     except (TypeError, ValueError, OverflowError):
         return True
     if (not all(math.isfinite(v) for v in (now, claim_until, created, ttl_started))
@@ -1905,10 +1925,10 @@ def is_due(rec, now=None):
         if lifecycle in {"accepted", "awaiting_cancel"}:
             base = max(float(rec.get("last_status_ts", 0) or 0),
                        float(rec.get("accepted_ts", 0) or 0),
-                       float(rec.get("created_ts", 0)))
+                       float(rec.get("created_ts", 0) or 0))
         else:
-            base = max(float(rec.get("last_attempt_ts", 0)),
-                       float(rec.get("created_ts", 0)))
+            base = max(float(rec.get("last_attempt_ts", 0) or 0),
+                       float(rec.get("created_ts", 0) or 0))
     except (TypeError, ValueError, OverflowError):
         return False
     if not all(math.isfinite(v) for v in (now, claim_until, base)):

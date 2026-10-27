@@ -476,6 +476,8 @@ class TrendState:
 
 
     def is_trend_a_minim_validated(self) :
+        if self.start_time is None or self.last_confirmation_time is None:
+            return False
         return (self.last_confirmation_time - self.start_time > TREND_MIN_VALIDATED_SECONDS
                 and self.confirm_count > TREND_MIN_VALIDATED_CONFIRMS)
 
