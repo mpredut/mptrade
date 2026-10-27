@@ -30,24 +30,21 @@ _EXECUTION_AUDIT = ExecutionAudit()
 
 
 def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
     if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return default
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
+            return fb
+        return bool(val)
     s = str(val).strip().lower()
     if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+    if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 def _accepted_order_payload(payload):
@@ -305,9 +302,9 @@ class Instrument:
             kwargs["kind"] = order_kind
 
         s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B"}:
+        if s_norm in {"BUY", "B", "BID", "LONG"}:
             side_u = "BUY"
-        elif s_norm in {"SELL", "S"}:
+        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
             side_u = "SELL"
         else:
             reason = "invalid_side"
@@ -597,25 +594,19 @@ class Instrument:
             if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance) and target_asset:
                 try:
                     raw_kb = self._provider.free_balance(target_asset)
-                    if raw_kb is not None:
-                        if isinstance(raw_kb, bool):
-                            known_balance = None
-                        elif isinstance(raw_kb, (int, float)):
+                    if raw_kb is not None and not isinstance(raw_kb, bool):
+                        try:
                             kb_f = float(raw_kb)
-                            if not math.isfinite(kb_f):
-                                known_balance = None
-                            elif kb_f <= 0:
-                                print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
-                                reason = "balance_unavailable"
-                                return None
-                            else:
-                                known_balance = kb_f
-                        elif raw_kb <= 0:
+                        except (TypeError, ValueError, OverflowError):
+                            kb_f = float("nan")
+                        if not math.isfinite(kb_f):
+                            known_balance = None
+                        elif kb_f <= 0:
                             print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
                             reason = "balance_unavailable"
                             return None
                         else:
-                            known_balance = raw_kb
+                            known_balance = kb_f
                 except Exception:
                     known_balance = None
 
@@ -714,7 +705,7 @@ class Instrument:
             decision = self._provider.quantity_decision(
                 self.symbol, side_u, quantity_price, qty,
                 base=base_asset, quote=quote_asset,
-                cancelorders=bool(kwargs.get("cancelorders", False)),
+                cancelorders=_parse_bool_flag(kwargs.get("cancelorders", False), False),
                 hours=hours_f,
                 apply_policy=not bypass_quantity_policy,
                 market=is_market,
@@ -785,6 +776,10 @@ class Instrument:
             medium_trend_action = kwargs.get("medium_trend_action")
             if medium_trend_action is None and hasattr(self, "params") and isinstance(self.params, dict):
                 medium_trend_action = self.params.get("medium_trend_action")
+            if isinstance(medium_trend_action, str):
+                medium_trend_action = medium_trend_action.strip().lower()
+            else:
+                medium_trend_action = None
             gt2_context = regime_context
             if (
                 check_medium_trend
@@ -807,7 +802,11 @@ class Instrument:
                 if gt2_context is not None and regime_context is None:
                     regime_context = gt2_context
             if check_medium_trend and gt2_context is not None:
-                resolved_regime = getattr(gt2_context, "regime", None) or getattr(gt2_context, "resolved_trend", None)
+                if isinstance(gt2_context, dict):
+                    raw_reg = gt2_context.get("regime") or gt2_context.get("resolved_trend")
+                else:
+                    raw_reg = getattr(gt2_context, "regime", None) or getattr(gt2_context, "resolved_trend", None)
+                resolved_regime = raw_reg.strip().lower() if isinstance(raw_reg, str) else None
                 adverse_medium_trend = (
                     (side_u == "BUY" and resolved_regime == "bear")
                     or (side_u == "SELL" and resolved_regime == "bull")

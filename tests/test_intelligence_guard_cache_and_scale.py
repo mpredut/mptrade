@@ -16353,6 +16353,83 @@ def test_iteration170_market_api_and_strategy_executor_hygiene(monkeypatch):
         sexec.OrderStatus("open", None, 0.0, 0.0)
 
 
+def test_iteration171_instrument_and_guard_hierarchy_hygiene(monkeypatch):
+    from decimal import Decimal
+    import guard_hierarchy as gh
+    import instrument as inst_mod
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+    from providers.quantity import QuantityDecision
+
+    # 1. guard_hierarchy BaseGuard instances, semicolon strings, and falsy tokens
+    g_prof = gh.GUARD_REGISTRY["G_PROF"]
+    assert g_prof.is_bypassed(g_prof) is True
+    assert g_prof.is_bypassed([g_prof]) is True
+    assert g_prof.is_bypassed("none") is False
+    norm = gh.normalize_bypassed_guards("G_PROF; G_QLIMIT1; none")
+    assert "math_profit" in norm and "quantity_policy" in norm and "none" not in norm
+    norm_inst = gh.normalize_bypassed_guards([gh.GUARD_REGISTRY["GO1"]])
+    assert "daily_limit" in norm_inst
+
+    # 2. Instrument._parse_bool_flag, side aliases (BID/ASK), Decimal free_balance, cancelorders="false", and GT_M dict/case
+    qd_calls = []
+
+    class _TestProvider(MarketDataProvider):
+        @property
+        def name(self):
+            return "TestProv"
+
+        def get_current_price(self, symbol):
+            return 100.0
+
+        def supports_symbol(self, symbol):
+            return True
+
+        def free_balance(self, asset):
+            return Decimal("500.0")
+
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            qd_calls.append(kw)
+            return QuantityDecision(1.0, 5.0, 1.0, 5.0, 1.0)
+
+        def place_order(self, symbol, side, price, qty, force=False, **kw):
+            return {"orderId": "777", "side": side, "qty": qty}
+
+    test_api = MarketApi([_TestProvider()])
+    inst = inst_mod.Instrument(
+        name="BTCUSDC",
+        symbol="BTCUSDC",
+        provider="TestProv",
+        base="BTC",
+        quote="USDC",
+        params={"mt.flag": ""},
+        api=test_api,
+    )
+    assert inst.param("mt", "flag", default=True, cast=bool) is True
+
+    monkeypatch.setattr(inst_mod.order_guard, "daily_limit_guard", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(inst_mod.order_guard, "check_math_profit_reference", lambda *a, **kw: True)
+    monkeypatch.setattr(inst_mod.order_guard, "profit_guard", lambda *a, **kw: True)
+    monkeypatch.setattr(inst_mod._outcomes_log, "log_order_outcome", lambda *a, **kw: None)
+
+    outcome = {}
+    res = inst.place(
+        "BID",
+        100.0,
+        1.0,
+        caller_owns_retry=True,
+        wait_for_trend=False,
+        cancelorders="false",
+        medium_trend_action=" DEFER ",
+        regime_context={"regime": " BEAR "},
+        _outcome_context=outcome,
+    )
+    assert res is None and outcome.get("reason") == "medium_trend_deferred"
+    assert qd_calls[-1]["cancelorders"] is False
+    assert qd_calls[-1]["known_balance"] == pytest.approx(500.0)
+
+
+
 
 
 

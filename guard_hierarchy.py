@@ -33,17 +33,26 @@ class BaseGuard(ABC):
             return set()
         if bypassed_guards is True:
             return {"all"}
+        if isinstance(bypassed_guards, BaseGuard):
+            return {bypassed_guards.code.lower()}
+        _falsy = {"none", "off", "false", "no", "0", "n", "f", "null", "nan"}
         if isinstance(bypassed_guards, str):
-            return {p.strip().lower() for p in bypassed_guards.split(",") if p.strip()}
+            return {
+                p.strip().lower()
+                for p in bypassed_guards.replace(";", ",").split(",")
+                if p.strip() and p.strip().lower() not in _falsy
+            }
         if isinstance(bypassed_guards, (set, frozenset, list, tuple)):
             out: set[str] = set()
             for x in bypassed_guards:
                 if x is True:
                     out.add("all")
+                elif isinstance(x, BaseGuard):
+                    out.add(x.code.lower())
                 elif x and not isinstance(x, bool):
-                    for p in str(x).split(","):
+                    for p in str(x).replace(";", ",").split(","):
                         ps = p.strip().lower()
-                        if ps:
+                        if ps and ps not in _falsy:
                             out.add(ps)
             return out
         return set()
@@ -324,22 +333,27 @@ def normalize_bypassed_guards(
     bypassed: set[str] = set()
 
     raw_tokens: list[str] = []
+    _falsy = ("none", "off", "false", "no", "0", "n", "f", "null", "nan")
     if bypass_guards is not None:
         if bypass_guards is True or bypass_guards == "all" or bypass_guards == "*":
             raw_tokens.append("all")
+        elif isinstance(bypass_guards, BaseGuard):
+            raw_tokens.append(bypass_guards.code.lower())
         elif isinstance(bypass_guards, str):
-            for part in bypass_guards.split(","):
+            for part in bypass_guards.replace(";", ",").split(","):
                 p = part.strip().lower()
-                if p and p not in ("none", "off", "false", "no", "0"):
+                if p and p not in _falsy:
                     raw_tokens.append(p)
         elif isinstance(bypass_guards, (set, frozenset, list, tuple)):
             for item in bypass_guards:
                 if item is True:
                     raw_tokens.append("all")
+                elif isinstance(item, BaseGuard):
+                    raw_tokens.append(item.code.lower())
                 elif item and not isinstance(item, bool):
-                    for part in str(item).split(","):
+                    for part in str(item).replace(";", ",").split(","):
                         p = part.strip().lower()
-                        if p and p not in ("none", "off", "false", "no", "0"):
+                        if p and p not in _falsy:
                             raw_tokens.append(p)
 
     for token in raw_tokens:
