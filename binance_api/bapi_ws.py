@@ -244,10 +244,12 @@ class BinancePriceStream(BinanceWSBase):
         self._cmd_queue: Optional[asyncio.Queue] = None
         self._req_id = 0
         self._subscribers = []
+        if isinstance(symbols, str):
+            symbols = [symbols]
         if symbols:
             for s in symbols:
                 if isinstance(s, str) and s.strip():
-                    self._subscribed.add(s.strip().upper())
+                    self._subscribed.add(s.strip().upper().replace("/", ""))
 
     def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
         # Preserve the original non-daemon market-manager thread behavior.
@@ -417,7 +419,7 @@ class BinancePriceStream(BinanceWSBase):
     def add_symbol(self, symbol: str) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
             return False
-        symbol = symbol.strip().upper()
+        symbol = symbol.strip().upper().replace("/", "")
         with self._lock:
             if symbol in self._subscribed:
                 logger.debug("[%s] Already subscribed", symbol)
@@ -432,7 +434,7 @@ class BinancePriceStream(BinanceWSBase):
     def remove_symbol(self, symbol: str) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
             return False
-        symbol = symbol.strip().upper()
+        symbol = symbol.strip().upper().replace("/", "")
         with self._lock:
             if symbol not in self._subscribed:
                 logger.debug("[%s] Not subscribed", symbol)
@@ -446,7 +448,7 @@ class BinancePriceStream(BinanceWSBase):
         if not isinstance(symbol, str) or not symbol.strip():
             return None
         with self._lock:
-            return self._prices.get(symbol.strip().upper())
+            return self._prices.get(symbol.strip().upper().replace("/", ""))
 
     def get_all_prices(self) -> Dict[str, float]:
         with self._lock:

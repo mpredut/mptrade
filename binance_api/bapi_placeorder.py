@@ -636,13 +636,14 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                     cp_val = cand_cp
             except (TypeError, ValueError, OverflowError):
                 cp_val = None
+        price_f = float(price)
         if cp_val is not None:
             if order_type == "BUY":
-                price = round(min(price, cp_val), 8)
+                price = round(min(price_f, cp_val), 8)
             else:  # SELL
-                price = round(max(price, cp_val), 8)
+                price = round(max(price_f, cp_val), 8)
         else:
-            price = round(float(price), 8)
+            price = round(price_f, 8)
 
         qty = round(float(qty), 8)
         opposite_order_type = "SELL" if order_type == "BUY" else "BUY"
@@ -1017,6 +1018,8 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     """
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol, price, qty)
+    price = float(price)
+    qty = float(qty)
     enforce_business_minimum = _parse_bool_flag(enforce_business_minimum, True)
     is_market = (
         _parse_bool_flag(force, False)

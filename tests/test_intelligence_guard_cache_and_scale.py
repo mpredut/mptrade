@@ -16101,4 +16101,46 @@ def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
     assert persisted == ["executionReport"]
 
 
+def test_iteration167_symbols_bapi_placeorder_and_bapi_ws_hygiene(monkeypatch):
+    import symbols as sym_mod
+    from binance_api import bapi_placeorder as bpo
+    from binance_api import bapi_ws as bws
+
+    # 1. symbols.validate_ordertype, validate_symbols, and validate_params with case/slash/string inputs
+    valid_sym = sym_mod.symbols[0]
+    sym_mod.validate_ordertype("b")
+    sym_mod.validate_ordertype(" sell ")
+    sym_mod.validate_symbols(f" {valid_sym.lower()} ")
+    sym_mod.validate_params("b", f" {valid_sym.lower()} ", price="100.5", qty="0.25")
+    with pytest.raises(ValueError):
+        sym_mod.validate_params("BUY", valid_sym, price=True, qty=1.0)
+    with pytest.raises(ValueError):
+        sym_mod.validate_params("BUY", valid_sym, price="nan", qty=1.0)
+
+    # 2. bapi_placeorder.if_place_safe_order with string price/qty and live cp_val
+    monkeypatch.setattr(bpo.api, "get_current_price", lambda s: 65000.0)
+    monkeypatch.setattr(bpo.order_guard, "daily_limit_guard", lambda *a, **kw: (True, None))
+    monkeypatch.setattr(bpo.order_guard, "profit_guard", lambda *a, **kw: True)
+    ok, reason = bpo.if_place_safe_order(
+        "BUY",
+        valid_sym,
+        "64000.0",
+        "0.01",
+        3600,
+        bypass_guards={"all"},
+    )
+    assert ok is True and reason is None
+
+    # 3. BinancePriceStream with scalar string symbols and slash-formatted symbol methods
+    ps = bws.BinancePriceStream("btc/usdc")
+    assert ps.running_symbols == {"BTCUSDC"}
+    assert ps.add_symbol("tao/usdc") is True
+    assert "TAOUSDC" in ps.running_symbols
+    ps._prices["TAOUSDC"] = 450.0
+    assert ps.get_price(" tao/usdc ") == pytest.approx(450.0)
+    assert ps.remove_symbol("tao/usdc") is True
+    assert "TAOUSDC" not in ps.running_symbols
+
+
+
 

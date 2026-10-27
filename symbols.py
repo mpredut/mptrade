@@ -27,37 +27,63 @@ def __getattr__(name):
 def _get_client():
     from binance_api.bapi_client import client
     return client
+def _normalize_ordertype(order_type):
+    if isinstance(order_type, str):
+        s = order_type.strip().upper()
+        return {"B": "BUY", "S": "SELL"}.get(s, s)
+    return order_type
+
+
+def _normalize_symbol(symbol):
+    if isinstance(symbol, str):
+        s = symbol.strip().upper()
+        if s in symbols:
+            return s
+        s_clean = s.replace("/", "")
+        if s_clean in symbols:
+            return s_clean
+    return symbol
+
+
 def validate_ordertype(order_type):
-    if order_type not in [None, 'BUY', 'SELL']:
+    norm_type = _normalize_ordertype(order_type)
+    if norm_type not in [None, 'BUY', 'SELL']:
         raise ValueError(f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL' or None.")
-   
-   
+
+
 def validate_symbols(symbol):
-    if symbol not in symbols:
+    norm_sym = _normalize_symbol(symbol)
+    if norm_sym not in symbols:
         raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {symbols}.")
 
 
 def validate_params(order_type, symbol, price = 1, qty = 1):
-    if order_type not in ['BUY', 'SELL']:
+    norm_type = _normalize_ordertype(order_type)
+    if norm_type not in ['BUY', 'SELL']:
         raise ValueError(f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL'.")
-    
-    if (
-        isinstance(price, bool)
-        or not isinstance(price, (int, float))
-        or not math.isfinite(price)
-        or price <= 0
-    ):
+
+    price_ok = False
+    if price is not None and not isinstance(price, bool):
+        try:
+            pf = float(price)
+            price_ok = math.isfinite(pf) and pf > 0
+        except (TypeError, ValueError, OverflowError):
+            price_ok = False
+    if not price_ok:
         raise ValueError(f"Invalid price '{price}'. Price must be a positive number.")
-    
-    if (
-        isinstance(qty, bool)
-        or not isinstance(qty, (int, float))
-        or not math.isfinite(qty)
-        or qty <= 0
-    ):
+
+    qty_ok = False
+    if qty is not None and not isinstance(qty, bool):
+        try:
+            qf = float(qty)
+            qty_ok = math.isfinite(qf) and qf > 0
+        except (TypeError, ValueError, OverflowError):
+            qty_ok = False
+    if not qty_ok:
         raise ValueError(f"Invalid quantity '{qty}'. Quantity must be a positive number.")
-    
-    if symbol not in symbols:
+
+    norm_sym = _normalize_symbol(symbol)
+    if norm_sym not in symbols:
         raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {symbols}.")
         
       
