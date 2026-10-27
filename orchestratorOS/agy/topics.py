@@ -247,7 +247,7 @@ def _safe_int(val: Any, default: int = 0) -> int:
         fval = float(val)
         if not math.isfinite(fval):
             return default
-        return int(fval)
+        return int(round(fval))
     except (TypeError, ValueError, OverflowError):
         return default
 
@@ -405,7 +405,7 @@ def record_topic_turn(
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
     if isinstance(compacted, str):
-        compacted = compacted.strip().lower() in {"1", "true", "yes", "on"}
+        compacted = compacted.strip().lower() in {"1", "true", "yes", "on", "1.0"}
     elif isinstance(compacted, (int, float)) and not isinstance(compacted, bool):
         compacted = bool(compacted) if math.isfinite(float(compacted)) else False
     elif not isinstance(compacted, bool):

@@ -198,7 +198,7 @@ def _discover_hyperliquid_spot(workspace_dir: str) -> List[Tuple[str, str, str]]
     if not os.path.exists(cfg_path):
         return []
     kv = _load_env_file_defaults(cfg_path)
-    if kv.get("HL_LIVE_ORDERS", "").lower() not in ("1", "true", "yes", "on"):
+    if kv.get("HL_LIVE_ORDERS", "").strip().lower() not in ("1", "true", "yes", "on", "1.0"):
         return []
     token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
     if not token:
@@ -330,15 +330,15 @@ class AutonomousIntentGateway:
         if notify_enabled is not None:
             if isinstance(notify_enabled, str):
                 ne_s = notify_enabled.strip().lower()
-                if ne_s in ("1", "true", "yes", "on"):
+                if ne_s in ("1", "true", "yes", "on", "1.0"):
                     self.notify_enabled = True
-                elif ne_s in ("0", "false", "no", "off", ""):
+                elif ne_s in ("0", "false", "no", "off", "0.0", ""):
                     self.notify_enabled = False
                 else:
                     ne_num = _parse_finite_float(ne_s, float("nan"))
                     if not math.isfinite(ne_num):
                         raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-                    self.notify_enabled = bool(int(ne_num))
+                    self.notify_enabled = bool(ne_num != 0.0)
             elif isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
                 raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
             else:
@@ -347,15 +347,15 @@ class AutonomousIntentGateway:
             if "autonomous_trading_notify" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_notify' in order_guard.conf")
             raw_notify = str(conf["autonomous_trading_notify"]).strip().lower()
-            if raw_notify in ("1", "true", "yes", "on"):
+            if raw_notify in ("1", "true", "yes", "on", "1.0"):
                 self.notify_enabled = True
-            elif raw_notify in ("0", "false", "no", "off"):
+            elif raw_notify in ("0", "false", "no", "off", "0.0"):
                 self.notify_enabled = False
             else:
                 notify_num = _parse_finite_float(raw_notify, float("nan"))
                 if not math.isfinite(notify_num):
                     raise ValueError(f"Invalid autonomous_trading_notify {conf['autonomous_trading_notify']!r}")
-                self.notify_enabled = bool(int(notify_num))
+                self.notify_enabled = bool(notify_num != 0.0)
 
     def _load_conf(self) -> Dict[str, str]:
         """Loads configuration from order_guard.conf / config.env, overlaying workspace-specific overrides."""
@@ -408,7 +408,10 @@ class AutonomousIntentGateway:
                             continue
                         if not isinstance(rec, dict):
                             continue
-                        iid = str(rec.get("intent_id") or "")
+                        raw_iid = rec.get("intent_id") if rec.get("intent_id") is not None else rec.get("id")
+                        if raw_iid is None or isinstance(raw_iid, bool):
+                            continue
+                        iid = str(raw_iid).strip()
                         if iid not in failed_by_id:
                             continue
                         ev = str(rec.get("event") or "")
@@ -1105,7 +1108,13 @@ class AutonomousIntentGateway:
         ))
         intents.append(intent)
         self.save_all_intents(intents)
-        norm_max_mode = str(max_mode or "shadow").strip().lower()
+        norm_max_mode = (
+            "off"
+            if isinstance(max_mode, bool)
+            else str(max_mode or "shadow").strip().lower()
+        )
+        if norm_max_mode not in MODE_RANK:
+            norm_max_mode = "off"
         mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
         processed = self.process_intent(intent, instruments_map=instruments_map, mode=mode)
         intents[-1] = processed

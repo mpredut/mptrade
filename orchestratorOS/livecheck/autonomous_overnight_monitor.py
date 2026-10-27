@@ -77,13 +77,17 @@ class AutonomousOvernightMonitor:
         self.status_file = os.path.join(self.cachedb_dir, "overnight_monitor_status.json")
 
         self.dev_host = str(dev_host or "192.168.0.138").strip() or "192.168.0.138"
-        if isinstance(dev_port, bool):
+        if isinstance(dev_port, bool) or dev_port is None:
             self.dev_port = 32238
         else:
             try:
-                p_int = int(dev_port)
-                self.dev_port = p_int if 1 <= p_int <= 65535 else 32238
-            except (TypeError, ValueError):
+                p_flt = float(dev_port)
+                if math.isfinite(p_flt) and p_flt.is_integer():
+                    p_int = int(p_flt)
+                    self.dev_port = p_int if 1 <= p_int <= 65535 else 32238
+                else:
+                    self.dev_port = 32238
+            except (TypeError, ValueError, OverflowError):
                 self.dev_port = 32238
         self.dev_user = str(dev_user or "predut").strip() or "predut"
 
@@ -368,7 +372,7 @@ class AutonomousOvernightMonitor:
         )
 
         if isinstance(persist, str):
-            do_persist = persist.strip().lower() in ("1", "true", "yes", "on")
+            do_persist = persist.strip().lower() in ("1", "true", "yes", "on", "1.0")
         elif isinstance(persist, float) and not math.isfinite(persist):
             do_persist = False
         else:

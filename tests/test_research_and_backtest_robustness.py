@@ -527,78 +527,12 @@ def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monke
     assert isinstance(year_slices, list)
 
 
-def test_tradeall_trigger_gate_common_isolation_and_price_window_kwarg(tmp_path, monkeypatch):
-    """tradeall_trigger_gate.common isolates TrendState subclasses across variants and accepts price_window kwarg."""
-    import tradeall as ta
-    from offline.backtests import tradeall as bt_ta
-    from offline.research.tradeall_trigger_gate import common as tg_common
-
-    stats1 = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
-    stats2 = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
-
-    cls1 = tg_common.make_instrumented_trend_state(stats1)
-    ta.TrendState = cls1
-    try:
-        cls2 = tg_common.make_instrumented_trend_state(stats2)
-        assert issubclass(cls2, tg_common.ORIG_TREND_STATE)
-        assert not issubclass(cls2, cls1)
-        ts2 = cls2(3600, 160, 220)
-        ts2.start_trend("UP")
-        assert stats1["starts"] == 0
-        assert stats2["starts"] == 1
-    finally:
-        ta.TrendState = tg_common.ORIG_TREND_STATE
-
-    # Verify logic_variant accepts price_window keyword argument passed by ta.logic_small
-    ts = tg_common.make_instrumented_trend_state(stats1)(3600, 160, 220)
-    logic_fn = tg_common.make_tradeall_logic("VTEST", cooldown_mode="fire_once")
-    logic_fn("SMALL", False, "ARBUSDC", 1, -1, ts, 1.0, price_window=None)
-    assert stats1["starts"] == 1
-
-    from offline.research.tradeall_trigger_gate import experiment_quality_signal as eqs
-    eqs._trackers.clear()
-    q_logic = eqs.make_quality_logic("VTEST_Q", 24, 1800)
-    q_logic("BIG", False, "BTCUSDC", 1, -1, ts, 50000.0)
-    assert "BTCUSDC" in eqs._trackers
-
-    # Verify execute_tradeall_variant restores all patched tradeall attributes even after run
-    c24_file = tmp_path / "cachedb" / "cache_365_price_ARBUSDC.jsonl"
-    c24_file.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
-        json.dumps({"s": "ARBUSDC", "i": [1750000000000 + i * 60000, 1.0 + i * 0.001]})
-        for i in range(15)
-    ]
-    c24_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    monkeypatch.setattr(tg_common, "ROOT", str(tmp_path))
-    monkeypatch.setattr(bt_ta, "ROOT", str(tmp_path))
-
-    pnl, _elapsed = tg_common.execute_tradeall_variant(
-        "unit_tg_run",
-        "ARBUSDC",
-        1750000000.0,
-        None,
-        source="cache24",
-        logic_fn=logic_fn,
-        trend_state_cls=cls1,
-        big_threshold=123.45,
-        disable_small=True,
-    )
-    assert isinstance(pnl, dict)
-    assert ta.TrendState is tg_common.ORIG_TREND_STATE
-    assert ta.logic is tg_common.ORIG_LOGIC
-    assert ta.PRICE_CHANGE_THRESHOLD_BIG_EUR == tg_common.ORIG_BIG_THRESHOLD
-
-
 def test_research_scripts_do_not_monkeypatch_at_import_time():
-    """Importing research grid/experiment scripts must not leave Strategy.step or dca_price_hit mutated."""
+    """Importing research grid scripts must not leave Strategy.step mutated."""
     import strategies.spot_engine as spot_engine
-    import strategies.spot_rules as spot_rules
     import offline.research.kraken_continuous_grid.grid as kgrid
-    import offline.research.tradeall_trigger_gate.experiment_rsi_dca_filter as rsi_dca
 
     assert spot_engine.Strategy.step is kgrid._orig_step
-    assert spot_engine.Strategy.step is rsi_dca._orig_step
-    assert spot_rules.dca_price_hit is rsi_dca._orig_hit
 
 
 def test_intelligence_and_chop_backtest_fee_accounting_reconciliation(tmp_path):
@@ -678,61 +612,6 @@ def test_simulations_price_window_get_max_and_normalize_indices():
     assert pw.get_max()[0] == 30.0
 
 
-def test_experiment_trend_gate_and_kalman_lag_sweep_restore_globals(tmp_path, monkeypatch):
-    """experiment_trend_gate and run_kalman_lag_sweep restore tradeall/shadow_signals globals after execution."""
-    import shadow_signals
-    import tradeall as ta
-    from offline.backtests import tradeall as bt_ta
-    from offline.research.tradeall_kalman_lag import run_kalman_lag_sweep as kal_sweep
-    from offline.research.tradeall_trigger_gate import common as tg_common
-    from offline.research.tradeall_trigger_gate import experiment_trend_gate as etg
-
-    cls = etg.make_instrumented(
-        "UNIT_ETG",
-        confirm_threshold_override=2,
-        expiration_trend_time_override=9999,
-    )
-    stats = etg.STATS["UNIT_ETG"]
-    ts = cls(3600, 160, 220)
-    assert ts.expiration_trend_time == 9999
-    ts.start_trend("UP")
-    for _ in range(5):
-        ts.confirm_trend()
-    assert stats["confirms"] == 5
-    assert stats["max_confirm_count"] == 6
-
-    c24_file = tmp_path / "cachedb" / "cache_365_price_ARBUSDC.jsonl"
-    hist_file = tmp_path / "cachedb" / "cache_sparse_price_ARBUSDC.jsonl"
-    c24_file.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
-        json.dumps({"s": "ARBUSDC", "i": [1750000000000 + i * 60000, 1.0 + i * 0.001]})
-        for i in range(10)
-    ]
-    payload = "\n".join(rows) + "\n"
-    c24_file.write_text(payload, encoding="utf-8")
-    hist_file.write_text(payload, encoding="utf-8")
-    monkeypatch.setattr(tg_common, "ROOT", str(tmp_path))
-    monkeypatch.setattr(bt_ta, "ROOT", str(tmp_path))
-    monkeypatch.setattr(kal_sweep, "ROOT", str(tmp_path))
-
-    orig_old = ta.TREND_TO_BE_OLD_SECONDS
-    tg_common.execute_tradeall_variant(
-        "unit_old_override",
-        "ARBUSDC",
-        1750000000.0,
-        None,
-        source="cache24",
-        trend_state_cls=cls,
-        trend_to_be_old_override=1800,
-    )
-    assert ta.TREND_TO_BE_OLD_SECONDS == orig_old
-
-    orig_kalman_sec = shadow_signals.KALMAN_SAMPLE_SEC
-    res = kal_sweep.run_variant("ARBUSDC", 1750000000.0, None, 120.0, "unit_kal_run")
-    assert shadow_signals.KALMAN_SAMPLE_SEC == orig_kalman_sec
-    assert res["sample_sec"] == 120.0
-
-
 def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
     """align_spot_interval_params aligns regime/volatility intervals so multi-interval walk-forward evaluation succeeds."""
     from offline.runners.walk_forward_compare import _segment_result
@@ -780,12 +659,11 @@ def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
 
 
 def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
-    """Verify run_equities BASE_CONFIG, BacktestBroker unbacked SELL guard, InstrumentedTrendState super call, and scheduled_pilot diag cache isolation."""
+    """Verify run_equities BASE_CONFIG, BacktestBroker unbacked SELL guard, and scheduled_pilot diag cache isolation."""
     from offline.backtests.tradeall import BacktestBroker
     from offline.research.hybrid_reentry import run_equities
     from offline.research.monitortrades_backtest import run_replay_backtest as rb
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
-    from offline.research.tradeall_trigger_gate import common as tg_common
 
     # 1. run_equities.BASE_CONFIG must satisfy 212trading StratParams.from_env
     strat_mod, _rp = run_equities._import_t212()
@@ -803,15 +681,6 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     assert broker.place_order_smart("SELL", "BTCUSDC", 50000.0) is None
     assert broker.n_waited == 0
     assert broker.pending == []
-
-    # 3. InstrumentedTrendState.mark_confirmed must increment parent TrendState confirmation counter
-    stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
-    ts_cls = tg_common.make_instrumented_trend_state(stats)
-    ts_inst = ts_cls(3600, 160, 220)
-    ts_inst.start_trend("UP")
-    ts_inst.mark_confirmed("UP")
-    assert ts_inst.already_confirmed("UP") is True
-    assert ts_inst._confirmed_count_up == 1
 
     # 4. scheduled_pilot._RUN_ONE_DIAG_CACHE isolates diagnostics per (symbol, params, series)
     series = [(1_700_000_000.0 + i * 60.0, 100.0 + i * 0.1) for i in range(105)]
@@ -932,10 +801,9 @@ def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
 
 
 def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
-    """Verify ui_mirror._safe_step_count fallback and comprehensive_strategy_sweep / kraken_adaptive_thresholds guards."""
+    """Verify ui_mirror._safe_step_count fallback and comprehensive_strategy_sweep guards."""
     from orchestratorOS.agy import ui_mirror
     from offline.research import comprehensive_strategy_sweep as css
-    from offline.research.kraken_adaptive_thresholds import verify_adaptive_dca, verify_adaptive_reentry
 
     # 1. ui_mirror._fallback_safe_step_count handles bool, NaN, negative, and valid floats
     assert ui_mirror._fallback_safe_step_count(None) == 0
@@ -954,12 +822,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert summary["cycles"] == 0
     assert summary["wins"] == 0
     assert summary["fills"] == 0
-
-    # 3. verify_adaptive_dca and verify_adaptive_reentry handle empty candles cleanly
-    monkeypatch.setattr(verify_adaptive_dca, "fetch_candles", lambda pair, interval: [])
-    monkeypatch.setattr(verify_adaptive_reentry, "fetch_candles", lambda pair, interval: [])
-    assert verify_adaptive_dca.run() == ({}, {})
-    assert verify_adaptive_reentry.run() == ({}, {})
 
     # 4. kraken_continuous_grid report/report2/report3 and t212 report handle malformed JSONL and empty errors
     from offline.research.kraken_continuous_grid import report as kr_rep1, report2 as kr_rep2, report3 as kr_rep3
@@ -981,51 +843,6 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert any("unknown" in line for line in kr_rep3.generate_report(str(tmp_path)))
     t212_out = t212_report.generate_report(str(tmp_path))
     assert "unknown" in t212_out
-
-    # 5. tradeall_trigger_gate LongTrendTracker, RsiGate, MeanReversionTracker, and STATS reset per run
-    from offline.research.tradeall_trigger_gate import (
-        common as tg_common,
-        experiment_cooldown_only_and_tighten as exp7,
-        experiment_quality_signal as exp5,
-        experiment_quality_signal_v2 as exp6,
-        experiment_rsi_bollinger as exp8,
-        experiment_rsi_dca_filter as exp9,
-    )
-    lt_stats = {}
-    lt = tg_common.LongTrendTracker(lt_stats, window_hours=0, reeval_sec=0, min_points=1)
-    assert lt.window_sec in (60.0, 3600.0)
-    assert lt.reeval_sec in (1.0, 60.0)
-    assert lt.min_points in (2, 30)
-    assert lt.update(float("nan"), 100.0) == 0
-    assert lt.update(1000.0, float("nan")) == 0
-    assert lt.update(1000.0, -5.0) == 0
-    assert len(lt.buf) == 0
-
-    _, st7_a = exp7.make_instrumented("tag7")
-    st7_a["starts"] = 5
-    _, st7_b = exp7.make_instrumented("tag7")
-    assert st7_b["starts"] == 0
-
-    exp5.make_quality_logic("tag5", 24, 1800)
-    exp5.STATS["tag5"]["sign_changes"] = 4
-    exp5.make_quality_logic("tag5", 24, 1800)
-    assert exp5.STATS["tag5"]["sign_changes"] == 0
-
-    st6_a = exp6._make_stats("tag6")
-    st6_a["sign_changes"] = 3
-    st6_b = exp6._make_stats("tag6")
-    assert st6_b["sign_changes"] == 0
-
-    exp8._make_stats("tag8")
-    mrt = exp8.MeanReversionTracker("tag8", "BTCUSDC", mode="both", rsi_period=0, bb_period=0)
-    assert mrt.rsi_period == 1
-    assert mrt.bb_period == 1
-    assert mrt.update_sign(float("nan")) == 0
-
-    rg = exp9.RsiGate(0, 30.0)
-    assert rg.period == 1
-    rg.update(float("nan"))
-    assert rg.prev is None
 
     # 6. clean_order_cache, migrate_price_cache, and verify_account_facade edge cases
     from offline.legacy_tools import clean_order_cache as coc, migrate_price_cache as mpc
@@ -1338,14 +1155,10 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
 
 
 def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
-    """Verify ml_forecast/forecast.py, vol_chronos.py, MeanReversionTracker/RsiGate bool guards, and grid2/grid3 import isolation."""
+    """Verify ml_forecast/forecast.py and vol_chronos.py guards."""
     import numpy as np
     from offline.research.ml_forecast import forecast as ml_fc
     from offline.research.ml_forecast import vol_chronos as ml_vc
-    from offline.research.tradeall_trigger_gate import (
-        experiment_rsi_bollinger as exp8,
-        experiment_rsi_dca_filter as exp9,
-    )
 
     # 1. forecast.build_dataset handles short/non-positive arrays and returns 2D empty X
     X_empty, yd_empty, ym_empty = ml_fc.build_dataset([100.0, 0.0, -5.0])
@@ -1358,24 +1171,6 @@ def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
     assert len(rv) == 4
     wf_empty = ml_vc.walk_forward_vol(np.full(50, np.nan), horizon=5, warmup=10, stride=5)
     assert wf_empty["n_test"] == 0
-
-    # 3. MeanReversionTracker can be instantiated directly without prior _make_stats(tag) and rejects bool prices
-    exp8.STATS.pop("direct_tag", None)
-    mrt = exp8.MeanReversionTracker("direct_tag", "BTCUSDC", mode="rsi", rsi_period=2)
-    assert "direct_tag" in exp8.STATS
-    assert mrt.update_sign(True) == 0
-    assert mrt.prev_price is None
-
-    # 4. RsiGate rejects bool prices and hourly_ohlc filters invalid ticks
-    rg = exp9.RsiGate(period=2, low=30.0)
-    rg.update(True)
-    assert rg.prev is None
-    bars = exp9.hourly_ohlc(
-        [(True, 100.0), (3600.0, False), (3600.0, -10.0), (3600.0, 105.0), (3610.0, 110.0)],
-        start_ts=0.0,
-        end_ts=None,
-    )
-    assert bars == [(105.0, 110.0, 105.0, 110.0)]
 
 
 def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
@@ -3045,11 +2840,11 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     spec_pa.loader.exec_module(t212_pa)
     assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
-    # 7. cachepaths, tradeall_price_archiver._symbols, kraken backtest_adaptive/backtest_trail, and binance_api.trailing_stop
+    # 7. cachepaths, tradeall_price_archiver._symbols, kraken backtest_trail, and binance_api.trailing_stop
     import cachepaths
     import pytest
     import tradeall_price_archiver
-    from kraken import backtest_adaptive as k_ba, backtest_trail as k_bt_tr
+    from kraken import backtest_trail as k_bt_tr
     from binance_api import trailing_stop as b_ts
 
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "   ")
@@ -3065,7 +2860,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
         tradeall_price_archiver._symbols(True)
 
     bars_sample = [(100.0, 102.0, 99.0, 101.0), (101.0, 103.0, 100.0, 102.0)]
-    assert k_ba.simulate_variant(bars_sample, {"drop_fallback": None, "reentry_drop": None, "fee": None, "interval": None}, [1.5, 1.5])["initial_capital"] > 0
     assert k_bt_tr.simulate_trail(bars_sample, {"trail": None, "reentry_drop": None, "fee": None, "interval": None})["initial_capital"] > 0
     assert k_bt_tr.bh([(100.0, 101.0, 99.0, True)]) == 0.0  # type: ignore[list-item]
     assert k_bt_tr.bh([(100.0,)]) == 0.0  # type: ignore[list-item]
@@ -3445,29 +3239,7 @@ def test_batch8_hardening():
 
 def test_batch9_hardening(tmp_path):
     import pandas as pd
-    from offline.research.tradeall_trigger_gate.experiment_rsi_bollinger import MeanReversionTracker
-    from offline.research.tradeall_trigger_gate.experiment_rsi_dca_filter import RsiGate
     from offline.legacy_tools import convertor, gen_cryptography, test as legacy_test, test2 as legacy_test2
-
-    # 1. MeanReversionTracker sanitizes bool/NaN/zero bb_k and avoids ZeroDivisionError
-    mrt = MeanReversionTracker(
-        "test", "BTCUSDC", mode="both",
-        rsi_period=float("nan"), rsi_low=True, rsi_high=False,
-        bb_period=float("inf"), bb_k=0.0, pb_low=float("nan"), pb_high=float("nan"),
-    )
-    assert mrt.rsi_period == 14
-    assert mrt.bb_period == 20
-    assert mrt.bb_k == 2.0
-    for px in [100.0 + i * 0.5 for i in range(25)]:
-        mrt.update_sign(px)
-    assert mrt.sign in (-1, 0, 1)
-
-    # 2. RsiGate sanitizes bool/NaN period and low
-    rg = RsiGate(period=float("nan"), low=True)
-    assert rg.period == 14
-    assert rg.low == 35.0
-    rg.update(True)
-    assert rg.prev is None
 
     # 3. legacy_tools convertor, gen_cryptography, test, test2 are import-safe and handle NaN
     p_priv = tmp_path / "priv.pem"
@@ -4532,17 +4304,11 @@ def test_batch27_research_syspath_and_ml_forecast_hardening():
     import numpy as np
     import sys
     import offline.research.hybrid_reentry.harness as hr_harness
-    import kraken.backtest_adaptive as kba
     from offline.research.ml_forecast.forecast import build_dataset
     from offline.research.ml_forecast.vol_chronos import realized_vol_series
 
     # 1. Importing research/kraken modules does not place kraken/ at sys.path[0]
     assert not sys.path[0].endswith("/kraken")
-
-    # 2. kraken.backtest_adaptive.trailing_vol_series handles invalid closes/sample_rate_sec
-    assert len(kba.trailing_vol_series(None)) == 0  # type: ignore[arg-type]
-    series = kba.trailing_vol_series([100.0 + i * 0.5 for i in range(30)], sample_rate_sec=False)  # type: ignore[arg-type]
-    assert len(series) == 30 and np.isfinite(series[-1])
 
     # 3. ml_forecast.vol_chronos.realized_vol_series and forecast.build_dataset ignore inf/negative prices
     rv = realized_vol_series(np.array([100.0] * 25 + [float("inf"), 102.0]), win=5)
@@ -4647,12 +4413,13 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
     import importlib.util
     import os
     import sys
+    import types
     from shadow_runtime import prepare_shadow_runtime
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     hl_dir = os.path.join(root_dir, "hyperliquid")
     t212_dir = os.path.join(root_dir, "212trading")
-    gate_common_path = os.path.join(root_dir, "offline", "research", "tradeall_trigger_gate", "common.py")
+    fake_common_path = os.path.join(root_dir, "offline", "research", "common.py")
 
     # 1. prepare_shadow_runtime keeps root ahead of module_dirs in sys.path
     saved_path = list(sys.path)
@@ -4663,16 +4430,12 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
     finally:
         sys.path[:] = saved_path
 
-    # 2. Even if offline/research/tradeall_trigger_gate/common.py is cached as sys.modules["common"],
+    # 2. Even if an unrelated common.py is cached as sys.modules["common"],
     # hyperliquid modules resolve hyperliquid/common.py and do not raise ImportError.
     prev_common = sys.modules.get("common")
     try:
-        gate_spec = importlib.util.spec_from_file_location(
-            "offline_trigger_gate_common_probe", gate_common_path
-        )
-        gate_mod = importlib.util.module_from_spec(gate_spec)
-        # Stub minimal module with __file__ pointing to offline/research/tradeall_trigger_gate/common.py
-        gate_mod.__file__ = gate_common_path
+        gate_mod = types.ModuleType("common")
+        gate_mod.__file__ = fake_common_path
         sys.modules["common"] = gate_mod
 
         for rel_file in ("hl_client.py", "market_data.py", "price_analysis.py", "signals.py", "hl_bot.py", "backtest.py"):
@@ -4693,44 +4456,9 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
 
 
 def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_hardening(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from offline.research.tradeall_trigger_gate.common import (
-        make_instrumented_trend_state,
-        make_tracker_logic,
-    )
     from offline.research.kraken_continuous_grid import report as k_rep1
     from offline.research.kraken_continuous_grid import report3 as k_rep3
     from offline.research.monitortrades_backtest import scheduled_pilot as sp
-
-    # 1. make_instrumented_trend_state handles None stats and boolean confirm_threshold_override safely
-    ts_cls = make_instrumented_trend_state(
-        None,  # type: ignore[arg-type]
-        confirm_threshold_override=True,  # type: ignore[arg-type]
-        retry_interval_sec=float("nan"),
-    )
-    inst_ts = ts_cls(60.0, 160.0, 30.0)
-    inst_ts.start_trend("UP")
-    assert inst_ts.can_retry("UP", 1000.0) is True
-    inst_ts.mark_attempt("UP", 1000.0)
-    assert inst_ts.can_retry("UP", 1100.0) is False
-    assert inst_ts.can_retry("UP", 2900.0) is True
-
-    # 2. make_tracker_logic handles invalid retry_interval_sec, non-dict tr.stats, and non-finite _now()
-    fake_tr = SimpleNamespace(
-        stats=None,
-        fired_up=False,
-        fired_down=False,
-        last_attempt_up_ts=100.0,
-        last_attempt_down_ts=None,
-        update=lambda _ts, _px: 1,
-    )
-    logic_fn = make_tracker_logic("TEST", lambda _sym: fake_tr, retry_interval_sec=-5.0)
-    logic_fn(
-        None, False, "BTCUSDC", 0.0, 0.0,
-        SimpleNamespace(_now=lambda: "bad_ts"),
-        60000.0,
-    )
-    assert fake_tr.last_attempt_up_ts == 100.0
 
     # 3. kraken_continuous_grid report.py and report3.py handle malformed/null nested full/year/0.26 payloads
     exp_dir = tmp_path / "kgrid"
@@ -6419,6 +6147,83 @@ def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatc
     assert PostStopReentryGuard._as_bool_flag("unknown_token", default=False) is False
     ps_guard = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "off"}, gemini_client=_DummyGemini())  # type: ignore[arg-type]
     assert ps_guard.mode == "off"
+
+
+def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
+    import json
+    from notify_engine import alertnotifiers, mailer
+    from orchestratorOS.admin import agy_store_fix
+    from orchestratorOS.agy import topics
+    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+        AutonomousAIReconciler,
+        SupervisorAuditReport,
+        _normalize_trading_decisions,
+    )
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    # 1. notify_engine and agy_store_fix _as_bool_flag / _disabled float-string handling
+    assert alertnotifiers._as_bool_flag("1.0", False) is True
+    assert alertnotifiers._as_bool_flag("0.0", True) is False
+    assert agy_store_fix._as_bool_flag("1.0", False) is True
+    assert agy_store_fix._as_bool_flag("0.0", True) is False
+    monkeypatch.setenv("BACKTEST_MODE", "1.0")
+    assert alertnotifiers._external_notifications_disabled() is True
+    assert mailer._disabled() is True
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+
+    # 2. orchestratorOS.agy.topics._safe_int rounding
+    assert topics._safe_int("2.9", 0) == 3
+    assert topics._safe_int(True, 7) == 7
+
+    # 3. AutonomousOvernightMonitor dev_port float-string parsing
+    mon = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port="32238.0")  # type: ignore[arg-type]
+    assert mon.dev_port == 32238
+    mon_bad = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port="32238.5")  # type: ignore[arg-type]
+    assert mon_bad.dev_port == 32238
+
+    # 4. AutonomousAIReconciler apply_reconciliation & _apply_code_patch_safely directory & falsy string guards
+    assert _normalize_trading_decisions(None) == []  # type: ignore[arg-type]
+    reconciler = AutonomousAIReconciler(
+        mode="enforce",
+        workspace_dir=str(tmp_path),
+        notify_enabled="0.5",  # type: ignore[arg-type]
+    )
+    assert reconciler.notify_enabled is True
+    assert reconciler.apply_reconciliation(None) == (False, None)  # type: ignore[arg-type]
+    # Directory target_file="." must be rejected by isfile check without running git checkout
+    assert reconciler._apply_code_patch_safely(
+        target_file=str(tmp_path),
+        search_block="a",
+        replace_block="b",
+        rationale="dir_test",
+    ) is False
+    # Falsy string has_fix="false" must not trigger code remediation or error classification
+    exec_f, tests_f = reconciler.apply_reconciliation({
+        "code_remediation": {"has_fix": "false", "target_file": "dummy.py", "search_block": "x"}
+    })
+    assert exec_f is False and tests_f is None
+    rep_false_fix = SupervisorAuditReport(
+        ts=1700000000.0,
+        mode="shadow",
+        summary="ok",
+        code_remediation={"has_fix": "false"},
+    )
+    assert AutonomousAIReconciler._is_bot_or_code_error_report(rep_false_fix) is False
+
+    # 5. AutonomousIntentGateway reconcile_intents with "id" fallback and whitespace
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled="0.5")  # type: ignore[arg-type]
+    assert gw.notify_enabled is True
+    audit_dir = tmp_path / "logger" / "execution_audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "execution_audit_2026.jsonl").write_text(
+        json.dumps({"id": "  int_123  ", "event": "submit_accepted", "order_id": "999", "qty": "1.5", "cost": "150.0"}) + "\n",
+        encoding="utf-8",
+    )
+    intents_list = [{"id": "int_123", "status": "FAILED", "symbol": "BTCUSDC", "decision": "BUY"}]
+    assert gw.reconcile_intents(intents_list) is True
+    assert intents_list[0]["status"] == "EXECUTED"
+
 
 
 

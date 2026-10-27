@@ -147,8 +147,27 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
     return picked
 
 
+def _as_bool_flag(val: Any, default: bool = False) -> bool:
+    """Coerce ``val`` into a boolean flag with safe string/numeric handling."""
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("1", "true", "yes", "on", "y", "t", "1.0"):
+            return True
+        if norm in ("0", "false", "no", "off", "n", "f", "0.0", "none", ""):
+            return False
+    return default
+
+
 def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract and deduplicate single or multi-coin trading decisions from Gemini's JSON plan."""
+    if not isinstance(plan, dict):
+        return []
     decisions: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, str, str]] = set()
 
@@ -278,15 +297,15 @@ class AutonomousAIReconciler:
         if notify_enabled is not None:
             if isinstance(notify_enabled, str):
                 ne_s = notify_enabled.strip().lower()
-                if ne_s in ("1", "true", "yes", "on"):
+                if ne_s in ("1", "true", "yes", "on", "1.0"):
                     self.notify_enabled = True
-                elif ne_s in ("0", "false", "no", "off", ""):
+                elif ne_s in ("0", "false", "no", "off", "0.0", ""):
                     self.notify_enabled = False
                 else:
                     ne_num = _parse_finite_float(ne_s, float("nan"))
                     if not math.isfinite(ne_num):
                         raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-                    self.notify_enabled = bool(int(ne_num))
+                    self.notify_enabled = bool(ne_num != 0.0)
             elif isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
                 raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
             else:
@@ -295,15 +314,15 @@ class AutonomousAIReconciler:
             if "supervisor_notify" not in conf:
                 raise KeyError("Missing required 'supervisor_notify' in order_guard.conf")
             raw_notify = str(conf["supervisor_notify"]).strip().lower()
-            if raw_notify in ("1", "true", "yes", "on"):
+            if raw_notify in ("1", "true", "yes", "on", "1.0"):
                 self.notify_enabled = True
-            elif raw_notify in ("0", "false", "no", "off"):
+            elif raw_notify in ("0", "false", "no", "off", "0.0"):
                 self.notify_enabled = False
             else:
                 notify_num = _parse_finite_float(raw_notify, float("nan"))
                 if not math.isfinite(notify_num):
                     raise ValueError(f"Invalid supervisor_notify {conf['supervisor_notify']!r}")
-                self.notify_enabled = bool(int(notify_num))
+                self.notify_enabled = bool(notify_num != 0.0)
 
         self.ntfy_url = conf.get("phone_alert_url", "")
         if "ntfy_topic_guard" not in conf:
@@ -1939,10 +1958,13 @@ class AutonomousAIReconciler:
         self, plan: Dict[str, Any], *, allow_code_remediation: bool = True
     ) -> Tuple[bool, Optional[bool]]:
         """Applies or simulates venue/fleet repair actions and code remediation based on operational mode."""
+        if not isinstance(plan, dict):
+            return False, None
+        allow_remediation = _as_bool_flag(allow_code_remediation, True)
         is_enforce = (self.mode == "enforce")
         raw_actions = plan.get("venue_actions")
         venue_actions = raw_actions if isinstance(raw_actions, list) else []
-        raw_fix = plan.get("code_remediation") if allow_code_remediation else None
+        raw_fix = plan.get("code_remediation") if allow_remediation else None
         code_fix = raw_fix if isinstance(raw_fix, dict) else {}
 
         venue_executed = False
@@ -1952,7 +1974,7 @@ class AutonomousAIReconciler:
             action_type = str(act.get("action") or "NONE").strip().upper()
             if action_type == "NONE":
                 continue
-            if not is_enforce or not allow_code_remediation:
+            if not is_enforce or not allow_remediation:
                 logger.info("[SHADOW WOULD EXECUTE] Venue/fleet action %s for %s (%s): %s",
                             action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
             else:
@@ -1960,21 +1982,37 @@ class AutonomousAIReconciler:
                     venue_executed = True
 
         tests_passed: Optional[bool] = None
-        if code_fix.get("has_fix") and code_fix.get("target_file") and code_fix.get("search_block"):
-            target_file = os.path.join(self.workspace_dir, code_fix["target_file"])
-            rationale = code_fix.get("rationale", "Autonomous self-heal patch")
+        has_fix = _as_bool_flag(code_fix.get("has_fix"), False)
+        raw_target_file = code_fix.get("target_file")
+        raw_search_block = code_fix.get("search_block")
+        if (
+            has_fix
+            and isinstance(raw_target_file, str)
+            and raw_target_file.strip()
+            and isinstance(raw_search_block, str)
+            and raw_search_block
+        ):
+            target_file = os.path.join(self.workspace_dir, raw_target_file.strip())
+            raw_rationale = code_fix.get("rationale")
+            rationale = (
+                str(raw_rationale).strip()
+                if raw_rationale is not None and not isinstance(raw_rationale, bool) and str(raw_rationale).strip()
+                else "Autonomous self-heal patch"
+            )
+            raw_replace = code_fix.get("replace_block", "")
+            replace_block = raw_replace if isinstance(raw_replace, str) else ""
             if not is_enforce:
                 logger.info("[SHADOW WOULD APPLY] Code patch on %s: %s", target_file, rationale)
             else:
                 logger.info("[ENFORCE ATTEMPTING PATCH] Applying self-healing patch on %s: %s", target_file, rationale)
                 tests_passed = self._apply_code_patch_safely(
                     target_file=target_file,
-                    search_block=code_fix["search_block"],
-                    replace_block=code_fix.get("replace_block", ""),
+                    search_block=raw_search_block,
+                    replace_block=replace_block,
                     rationale=rationale,
                 )
 
-        executed = is_enforce and bool(venue_executed or (code_fix.get("has_fix") and tests_passed))
+        executed = is_enforce and bool(venue_executed or (has_fix and tests_passed))
         return executed, tests_passed
 
     def _apply_code_patch_safely(
@@ -1995,7 +2033,7 @@ class AutonomousAIReconciler:
             logger.warning("Refusing autonomous patch outside workspace_dir: %s", target_file)
             return False
 
-        if not os.path.exists(real_target):
+        if not os.path.isfile(real_target):
             logger.error("Target patch file does not exist: %s", target_file)
             return False
 
@@ -2077,7 +2115,7 @@ class AutonomousAIReconciler:
             sev = str(issue.get("severity") or "").strip().upper()
             if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev in ("CRITICAL", "HIGH", "MEDIUM"):
                 return True
-        if isinstance(report.code_remediation, dict) and report.code_remediation.get("has_fix"):
+        if isinstance(report.code_remediation, dict) and _as_bool_flag(report.code_remediation.get("has_fix"), False):
             return True
         if report.tests_passed is False:
             return True
@@ -2130,7 +2168,10 @@ class AutonomousAIReconciler:
             1 for a in (report.venue_actions or [])
             if isinstance(a, dict) and str(a.get("action") or "NONE").strip().upper() != "NONE"
         )
-        has_fix = bool(isinstance(report.code_remediation, dict) and report.code_remediation.get("has_fix", False))
+        has_fix = bool(
+            isinstance(report.code_remediation, dict)
+            and _as_bool_flag(report.code_remediation.get("has_fix", False), False)
+        )
         if has_fix:
             actions_cnt += 1
         mode_label = report.mode.upper()
@@ -2284,8 +2325,8 @@ class AutonomousAIReconciler:
         scope = getattr(spec, "asset_scope", "all")
         if (
             scope == "equities"
-            and not force_rth_open
-            and os.environ.get("FORCE_SHARE_RTH_OPEN") != "1"
+            and not _as_bool_flag(force_rth_open, False)
+            and not _as_bool_flag(os.environ.get("FORCE_SHARE_RTH_OPEN"), False)
             and not _is_us_rth_open(now)
         ):
             msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."

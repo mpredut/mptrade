@@ -103,9 +103,9 @@ def _as_bool_flag(val: Any, default: bool = False) -> bool:
         return default
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on"}:
+        if s in {"1", "true", "yes", "on", "1.0"}:
             return True
-        if s in {"0", "false", "no", "off", "none", ""}:
+        if s in {"0", "false", "no", "off", "none", "0.0", ""}:
             return False
         return default
     if isinstance(val, (int, float)):
@@ -941,7 +941,7 @@ class AlertNotifier:
 def _external_notifications_disabled() -> bool:
     """Return True when external notifications (ntfy, email, orchestrator intents) are suppressed."""
     return any(
-        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        _as_bool_flag(os.environ.get(k, ""), False)
         for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
     )
 
@@ -960,7 +960,7 @@ def notify(title: str, body: str, source: str, symbol: str,
            for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
         return
     alert = {"type": "bot_event", "name": title, "body": body, "source": source, "symbol": symbol}
-    if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
+    if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
         intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
         if re.search(r"\[auto_[a-z0-9_]+", str(title or "")):
             from notify_engine.server import _topic_for_category

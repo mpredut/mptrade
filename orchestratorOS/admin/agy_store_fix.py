@@ -178,9 +178,9 @@ def _as_bool_flag(val: object, default: bool = False) -> bool:
         return bool(val) if math.isfinite(val) else default
     if isinstance(val, str):
         norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y", "t"):
+        if norm in ("1", "true", "yes", "on", "y", "t", "1.0"):
             return True
-        if norm in ("0", "false", "no", "off", "n", "f", ""):
+        if norm in ("0", "false", "no", "off", "n", "f", "0.0", ""):
             return False
     return default
 

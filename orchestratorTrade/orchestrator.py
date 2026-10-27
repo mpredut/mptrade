@@ -38,7 +38,9 @@ class BotManager:
             raise KeyError("Missing required env key 'ORCHESTRATOR_VERBOSE_STDOUT' in config.env")
         if "ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC" not in os.environ:
             raise KeyError("Missing required env key 'ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC' in config.env")
-        self.verbose_stdout = os.environ["ORCHESTRATOR_VERBOSE_STDOUT"].strip().lower() in ("1", "true", "yes", "on")
+        self.verbose_stdout = os.environ["ORCHESTRATOR_VERBOSE_STDOUT"].strip().lower() in (
+            "1", "true", "yes", "on", "1.0"
+        )
         self.zombie_cooldown_sec = float(os.environ["ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC"])
         if not math.isfinite(self.zombie_cooldown_sec) or self.zombie_cooldown_sec < 0:
             raise ValueError(f"Invalid ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC: {self.zombie_cooldown_sec!r}")
@@ -85,7 +87,7 @@ class BotManager:
                         except (TypeError, ValueError):
                             hb_stale_sec = 0.0
 
-                        clean_stem = os.path.basename(label or pat).replace(".py", "")
+                        clean_stem = os.path.basename((label or pat).rstrip("$")).removesuffix(".py")
                         log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
 
                         hb_files = []
