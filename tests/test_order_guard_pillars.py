@@ -725,6 +725,87 @@ def test_gllm1_bypass_does_not_leak_to_gllm2_or_gllm3():
     assert GUARD_REGISTRY["GLLM3"].is_bypassed(all_llm) is True
 
 
+def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(tmp_path, monkeypatch):
+    """Verify summary_store visible_conversations_dir handling, topics.get_topic_registry_path, AutonomousIntentGateway string wallet balance & status normalization, and GeopoliticalShockGuard BID/LONG/percentage downscale."""
+    import sqlite3
+    from types import SimpleNamespace
+    from orchestratorOS.agy import summary_store, topics
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+
+    # 1. summary_store respects visible_conversations_dir for antigravity-cli store layout
+    gem_dir = tmp_path / ".gemini"
+    cli_base = gem_dir / "antigravity-cli"
+    vis_dir = gem_dir / "antigravity" / "conversations"
+    (cli_base / "conversations").mkdir(parents=True)
+    vis_dir.mkdir(parents=True)
+    db_path = cli_base / "conversation_summaries.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, step_count INTEGER, status TEXT)")
+    conn.execute("INSERT INTO conversation_summaries VALUES ('cid_vis', 'Visible Thread', 5, 'CASCADE_RUN_STATUS_IDLE')")
+    conn.execute("INSERT INTO conversation_summaries VALUES ('cid_orphan', 'Orphan Thread', 1, 'CASCADE_RUN_STATUS_IDLE')")
+    conn.commit()
+    conn.close()
+
+    vis_db = vis_dir / "cid_vis.db"
+    vis_db.write_bytes(b"sqlite_dummy_data")
+    assert summary_store.get_thread_step_count("cid_vis", str(cli_base)) == (True, 5, "CASCADE_RUN_STATUS_IDLE")
+    removed = summary_store.clean_orphan_summaries(str(cli_base), dry_run=False)
+    assert removed == 1
+    assert summary_store.read_summary_row(str(cli_base), "cid_vis") is not None
+    assert summary_store.read_summary_row(str(cli_base), "cid_orphan") is None
+
+    cnt, freed = summary_store.delete_threads({"cid_vis"}, str(cli_base), dry_run=False)
+    assert cnt == 1 and freed == len(b"sqlite_dummy_data")
+    assert not vis_db.exists()
+    assert summary_store.read_summary_row(str(cli_base), "cid_vis") is None
+
+    # 2. topics.get_topic_registry_path respects MPTRADE_CACHEDB_DIR when LLM_TOPIC_REGISTRY_PATH is unset
+    monkeypatch.delenv("LLM_TOPIC_REGISTRY_PATH", raising=False)
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+    assert topics.get_topic_registry_path() == str(tmp_path / "llm_topic_threads.json")
+
+    # 3. AutonomousIntentGateway._clamp_notional_to_wallet_balance parses numeric string balances and normalizes lowercase status
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", max_notional_usd=500.0, min_confidence=0.80, notify_enabled=False)
+    inst_zero = SimpleNamespace(
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        provider_name="binance",
+        _provider=SimpleNamespace(free_balance=lambda asset: "0.0"),
+    )
+    ok_bal, clamped_usd, reason_bal = gw._clamp_notional_to_wallet_balance(inst_zero, "BUY", 60000.0, 200.0)
+    assert ok_bal is False and clamped_usd == 0.0 and "Insufficient" in reason_bal
+
+    inst_neg = SimpleNamespace(
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        provider_name="binance",
+        _provider=SimpleNamespace(free_balance=lambda asset: -1.0),
+    )
+    ok_neg, clamped_neg, _ = gw._clamp_notional_to_wallet_balance(inst_neg, "BUY", 60000.0, 200.0)
+    assert ok_neg is True and clamped_neg == 200.0
+
+    gw.save_all_intents([{"intent_id": "i1", "status": " pending ", "decision": "HOLD"}])
+    assert len(gw.get_pending_intents()) == 1
+
+    # 4. GeopoliticalShockGuard normalizes percentage downscale_factor and checks BID/LONG
+    gsg = GeopoliticalShockGuard(downscale_factor=40.0)
+    assert gsg.downscale_factor == 0.40
+    elev_assess = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.6,
+        summary="Tensions",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=3,
+        ts=1000.0,
+    )
+    dec_long = gsg.check("BTCUSDC", "LONG", elev_assess)
+    assert dec_long.allowed is True and dec_long.suggested_scale == 0.40
+
+
+
 
 
 

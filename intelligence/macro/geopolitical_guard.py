@@ -28,6 +28,8 @@ class GeopoliticalShockGuard:
         if downscale_factor is not None and not isinstance(downscale_factor, bool):
             try:
                 f = float(downscale_factor)
+                if math.isfinite(f) and 1.0 < f <= 100.0:
+                    f = f / 100.0
                 if math.isfinite(f) and 0.0 < f <= 1.0:
                     df = f
             except (TypeError, ValueError):
@@ -42,7 +44,7 @@ class GeopoliticalShockGuard:
     ) -> GuardDecision:
         """Evaluate order against current geopolitical threat assessment."""
         # Only BUY orders are restrained; SELL / Stop-Loss orders always pass freely
-        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B"):
+        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B", "BID", "LONG"):
             return GuardDecision.allow("GeopoliticalShockGuard", "sell_permitted_in_shock")
 
         if assessment is None:

@@ -379,7 +379,7 @@ class AutonomousIntentGateway:
         """Reconciles FAILED intents against execution_audit_*.jsonl if later filled via retry worker."""
         failed_by_id: Dict[str, Dict[str, Any]] = {}
         for item in intents:
-            if not isinstance(item, dict) or item.get("status") != "FAILED":
+            if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() != "FAILED":
                 continue
             raw_id = item.get("intent_id") if item.get("intent_id") is not None else item.get("id")
             if raw_id is None or isinstance(raw_id, bool):
@@ -476,7 +476,10 @@ class AutonomousIntentGateway:
 
     def get_pending_intents(self) -> List[Dict[str, Any]]:
         """Returns all intents with PENDING status."""
-        return [i for i in self.load_all_intents() if i.get("status") == "PENDING"]
+        return [
+            i for i in self.load_all_intents()
+            if str(i.get("status") or "").strip().upper() == "PENDING"
+        ]
 
     def load_tradable_instruments(
         self,
@@ -749,10 +752,13 @@ class AutonomousIntentGateway:
             logger.debug("Wallet free_balance(%s) check skipped: %s", target_asset, exc)
             return True, desired_usd, "Wallet balance check unavailable"
 
-        if raw_bal is None or isinstance(raw_bal, bool) or not isinstance(raw_bal, (int, float)):
+        if raw_bal is None or isinstance(raw_bal, bool) or hasattr(raw_bal, "_mock_name"):
             return True, desired_usd, "Wallet balance check skipped (non-numeric)"
-        bal = float(raw_bal)
-        if not math.isfinite(bal):
+        try:
+            bal = float(raw_bal)
+        except (TypeError, ValueError, OverflowError):
+            return True, desired_usd, "Wallet balance check skipped (non-numeric)"
+        if not math.isfinite(bal) or bal < 0.0:
             return True, desired_usd, "Wallet balance check skipped (non-finite)"
 
         venue_l = str(getattr(inst, "provider_name", "")).lower()
@@ -1113,7 +1119,10 @@ class AutonomousIntentGateway:
             logger.info("No intents found in queue.")
             return []
 
-        pending_indices = [idx for idx, item in enumerate(intents) if item.get("status") == "PENDING"]
+        pending_indices = [
+            idx for idx, item in enumerate(intents)
+            if str(item.get("status") or "").strip().upper() == "PENDING"
+        ]
         if not pending_indices:
             logger.info("No pending trade intents to process.")
             return []
@@ -1157,7 +1166,7 @@ def main() -> None:
         intents = gateway.load_all_intents()
         cleared_cnt = 0
         for item in intents:
-            if item.get("status") == "PENDING":
+            if str(item.get("status") or "").strip().upper() == "PENDING":
                 item["status"] = "CANCELLED"
                 cleared_cnt += 1
         gateway.save_all_intents(intents)

@@ -140,6 +140,9 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
         return (False, 0, "")
     clean_cid = cid.strip()
     exists = os.path.exists(conversation_db(cli_base, clean_cid))
+    if not exists and isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
+        from orchestratorOS.agy.paths import visible_conversations_dir
+        exists = os.path.exists(os.path.join(visible_conversations_dir(cli_base), f"{clean_cid}.db"))
     row = read_summary_row(cli_base, clean_cid)
     if not row:
         return (exists, 0, "")
@@ -282,17 +285,35 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
         return (0, 0)
+    vis_dir = ""
+    if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
+        from orchestratorOS.agy.paths import visible_conversations_dir
+        vis_dir = visible_conversations_dir(cli_base)
     freed = 0
+    seen_inodes: set[Tuple[int, int]] = set()
     for cid in clean_cids:
         db = conversation_db(cli_base, cid)
         files = [db, db + "-shm", db + "-wal",
                  os.path.join(cli_base, "annotations", f"{cid}.pbtxt"),
                  os.path.join(cli_base, "presence", f"{cid}.lock")]
+        if vis_dir:
+            vis_db = os.path.join(vis_dir, f"{cid}.db")
+            files.extend([vis_db, vis_db + "-shm", vis_db + "-wal"])
         for path in files:
             if os.path.exists(path):
-                freed += os.path.getsize(path)
+                try:
+                    st = os.stat(path)
+                    ino_key = (st.st_dev, st.st_ino)
+                    if ino_key not in seen_inodes:
+                        seen_inodes.add(ino_key)
+                        freed += st.st_size
+                except OSError:
+                    pass
                 if not dry_run:
-                    os.remove(path)
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
         brain = os.path.join(cli_base, "brain", cid)
         if os.path.isdir(brain):
             for root, _, names in os.walk(brain):
@@ -315,6 +336,10 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
     finally:
         conn.close()
+    vis_dir = ""
+    if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
+        from orchestratorOS.agy.paths import visible_conversations_dir
+        vis_dir = visible_conversations_dir(cli_base)
     active = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
     orphans = {
         cid.strip()
@@ -323,6 +348,7 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         and cid.strip()
         and cid.strip() != active
         and not os.path.exists(conversation_db(cli_base, cid.strip()))
+        and not (vis_dir and os.path.exists(os.path.join(vis_dir, f"{cid.strip()}.db")))
     }
     for cid, title in rows:
         if isinstance(cid, str) and cid.strip() in orphans:
