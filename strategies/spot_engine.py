@@ -76,6 +76,43 @@ def _clean_nonneg_float(val: object) -> float | None:
     return f if math.isfinite(f) and f >= 0.0 else None
 
 
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
+def _clean_order_id(val: object) -> str | None:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return None
+    if isinstance(val, int):
+        return str(val) if val > 0 else None
+    if isinstance(val, float):
+        if not math.isfinite(val) or val <= 0:
+            return None
+        return str(int(val)) if val == int(val) else str(val)
+    text = str(val).strip()
+    if not text or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}:
+        return None
+    try:
+        f = float(text)
+        if not math.isfinite(f) or f <= 0:
+            return None
+        if text.endswith(".0") and f == int(f):
+            return str(int(f))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return text
+
+
 def state_path_for(pair: str, state_dir: str | None = None) -> str:
     """Return the state path, retaining the Kraken fallback for live compatibility."""
     if isinstance(pair, bool) or not isinstance(pair, str):
@@ -524,11 +561,8 @@ class Strategy:
             state_path_for(pair) if state_dir is None else state_path_for(pair, state_dir)
         )
         self._state_write_failed = False
-        self.s = initial_state if initial_state is not None else self._load()
-        self.s.setdefault("pending_intent", None)
-        self.s.setdefault("placement_backoffs", {})
-        self.s.setdefault("ledger_reconcile_required", False)
-        self.s.setdefault("sl_bounce_state", {})
+        raw_state = initial_state if isinstance(initial_state, dict) else self._load()
+        self.s = self._sanitize_spot_state(raw_state)
         self.exit_manager: PositionExitManager | None = (
             self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
         )
@@ -594,7 +628,54 @@ class Strategy:
         )
 
     def _load(self) -> dict:
-        return self._store().load()
+        return self._sanitize_spot_state(self._store().load())
+
+    @staticmethod
+    def _sanitize_spot_state(state: dict | None) -> dict:
+        if not isinstance(state, dict):
+            state = _new_state()
+        for k, v in _new_state().items():
+            state.setdefault(k, v)
+        for bkey in (
+            "trend_mode",
+            "ledger_reconcile_required",
+            "surge_active",
+            "slow_grind_active",
+            "adopted",
+        ):
+            if bkey in state:
+                state[bkey] = _parse_bool_flag(state.get(bkey), False)
+        if isinstance(state.get("orders"), list):
+            for o in state["orders"]:
+                if not isinstance(o, dict):
+                    continue
+                if "txid" in o:
+                    clean_txid = _clean_order_id(o.get("txid"))
+                    if clean_txid is not None:
+                        o["txid"] = clean_txid
+                if "intent_id" in o:
+                    o["intent_id"] = _clean_order_id(o.get("intent_id"))
+                if "market" in o:
+                    o["market"] = _parse_bool_flag(o.get("market"), False)
+                if "cancel_requested" in o:
+                    o["cancel_requested"] = _parse_bool_flag(o.get("cancel_requested"), False)
+        else:
+            state["orders"] = []
+        pi = state.get("pending_intent")
+        if isinstance(pi, dict):
+            if "order_id" in pi and pi.get("order_id") is not None:
+                pi["order_id"] = _clean_order_id(pi.get("order_id"))
+            if "intent_id" in pi and pi.get("intent_id") is not None:
+                pi["intent_id"] = _clean_order_id(pi.get("intent_id"))
+            if "market" in pi:
+                pi["market"] = _parse_bool_flag(pi.get("market"), False)
+            meta = pi.get("metadata")
+            if isinstance(meta, dict) and "market" in meta:
+                meta["market"] = _parse_bool_flag(meta.get("market"), False)
+        pe = state.get("pending_exit")
+        if isinstance(pe, dict) and "soft_floor" in pe:
+            pe["soft_floor"] = _parse_bool_flag(pe.get("soft_floor"), False)
+        return state
 
     def _save(self) -> None:
         self._state_write_failed = True
@@ -628,23 +709,24 @@ class Strategy:
         market_val = pending.get("market")
         if market_val is None and isinstance(meta, dict):
             market_val = meta.get("market")
+        txid = _clean_order_id(pending.get("order_id")) or str(pending.get("order_id") or "").strip()
         return {
-            "txid": str(pending["order_id"]),
+            "txid": txid,
             "side": str(pending["side"]).lower(),
             "vol": eff_vol,
             "price": price,
             "amount": amount,
             "kind": pending.get("kind"),
-            "market": bool(market_val),
-            "intent_id": pending.get("intent_id"),
+            "market": _parse_bool_flag(market_val, False),
+            "intent_id": _clean_order_id(pending.get("intent_id")),
             "ts": ts,
         }
 
     def _adopt_pending_order(self, pending: dict) -> None:
-        order_id = str(pending.get("order_id") or "")
+        order_id = _clean_order_id(pending.get("order_id"))
         if not order_id:
             return
-        if not any(str(order.get("txid")) == order_id for order in self.s["orders"]):
+        if not any((_clean_order_id(order.get("txid")) or str(order.get("txid"))) == order_id for order in self.s["orders"]):
             self.s["orders"].append(self._order_from_pending(pending))
         self.s["pending_intent"] = None
         self._save()
@@ -654,9 +736,9 @@ class Strategy:
         if not pending or self.dry_run:
             return
         submit_error = pending.get("submit_error") or pending.get("refusal_reason")
-        if not pending.get("order_id") and self._insufficient_funds_error(submit_error):
+        if not _clean_order_id(pending.get("order_id")) and self._insufficient_funds_error(submit_error):
             self.s["ledger_reconcile_required"] = True
-            if not pending.get("market"):
+            if not _parse_bool_flag(pending.get("market"), False):
                 self._record_placement_backoff(
                     str(pending.get("side") or "buy"),
                     str(pending.get("kind") or "ENTRY"),
@@ -685,7 +767,9 @@ class Strategy:
 
     # -- Helpers ---------------------------------------------------------------
     def _avg(self) -> float | None:
-        return self.s["cost"] / self.s["qty"] if self.s["qty"] > 1e-12 else None
+        qty = _clean_pos_float(self.s.get("qty"))
+        cost = _clean_nonneg_float(self.s.get("cost"))
+        return cost / qty if (qty is not None and cost is not None and qty > 1e-12) else None
 
     def _qty_for(self, amount: float, price: float) -> float:
         if (

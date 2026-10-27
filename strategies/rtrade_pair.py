@@ -17,6 +17,43 @@ from typing import Callable, Optional, Protocol
 _MAX_LIMIT_REVISION = 1_000_000
 
 
+def _clean_ticket_order_id(val: object) -> Optional[str]:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return None
+    if isinstance(val, int):
+        return str(val) if val > 0 else None
+    if isinstance(val, float):
+        if not math.isfinite(val) or val <= 0:
+            return None
+        return str(int(val)) if val == int(val) else str(val)
+    text = str(val).strip()
+    if not text or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}:
+        return None
+    try:
+        f = float(text)
+        if not math.isfinite(f) or f <= 0:
+            return None
+        if text.endswith(".0") and f == int(f):
+            return str(int(f))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return text
+
+
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else False
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 @dataclass
 class OrderTicket:
     order_id: str
@@ -28,10 +65,9 @@ class OrderTicket:
     revision: int = 0
 
     def __post_init__(self):
+        clean_oid = _clean_ticket_order_id(self.order_id)
         if (
-            self.order_id is None
-            or isinstance(self.order_id, bool)
-            or not str(self.order_id).strip()
+            clean_oid is None
             or self.side is None
             or isinstance(self.side, bool)
             or isinstance(self.price, bool)
@@ -39,7 +75,7 @@ class OrderTicket:
             or isinstance(self.revision, bool)
         ):
             raise ValueError("ticket rtrade invalid")
-        self.order_id = str(self.order_id).strip()
+        self.order_id = clean_oid
         self.side = str(self.side).strip().upper()
         try:
             self.price = float(self.price)
@@ -54,10 +90,7 @@ class OrderTicket:
                 or self.price <= 0 or not math.isfinite(self.qty) or self.qty <= 0
                 or not 0 <= self.revision <= _MAX_LIMIT_REVISION):
             raise ValueError("ticket rtrade invalid")
-        if isinstance(self.active, str):
-            self.active = self.active.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
-        else:
-            self.active = bool(self.active)
+        self.active = _parse_bool_flag(self.active, default=False)
 
 
 @dataclass(frozen=True)
@@ -422,19 +455,25 @@ class PairCoordinator:
         obj = cls(venue, state["qty"], policy, start_side=state["start_side"],
                   clock=clock, sleeper=sleeper)
         raw_pair_id = state.get("pair_id")
-        if raw_pair_id is None or isinstance(raw_pair_id, bool) or not str(raw_pair_id).strip():
+        if (
+            raw_pair_id is None
+            or isinstance(raw_pair_id, (bool, dict, list, tuple, set))
+            or not str(raw_pair_id).strip()
+            or str(raw_pair_id).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
+        ):
             raise ValueError("invalid rtrade checkpoint pair_id")
         obj.pair_id = str(raw_pair_id).strip()
         raw_phase = state.get("phase")
-        if raw_phase is None or isinstance(raw_phase, bool) or not str(raw_phase).strip():
+        if (
+            raw_phase is None
+            or isinstance(raw_phase, (bool, dict, list, tuple, set))
+            or not str(raw_phase).strip()
+            or str(raw_phase).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
+        ):
             raise ValueError("invalid rtrade checkpoint phase")
         obj.phase = str(raw_phase).strip()
         obj.reason = state.get("reason")
-        raw_shock = state.get("shock", False)
-        if isinstance(raw_shock, str):
-            obj.shock = raw_shock.strip().lower() in ("1", "true", "yes", "on")
-        else:
-            obj.shock = bool(raw_shock)
+        obj.shock = _parse_bool_flag(state.get("shock", False), default=False)
         raw_elapsed = state.get("elapsed_sec")
         if raw_elapsed is None:
             elapsed_f = 0.0
@@ -470,19 +509,19 @@ class PairCoordinator:
             raise ValueError("invalid rtrade checkpoint snapshots")
         try:
             obj.snapshots = {
-                str(order_id): OrderSnapshot(**snapshot) if isinstance(snapshot, dict) else (_ for _ in ()).throw(TypeError("snapshot not dict"))
+                (_clean_ticket_order_id(order_id) or str(order_id).strip()): OrderSnapshot(**snapshot) if isinstance(snapshot, dict) else (_ for _ in ()).throw(TypeError("snapshot not dict"))
                 for order_id, snapshot in raw_snapshots.items()
             }
         except TypeError as exc:
             raise ValueError("invalid rtrade checkpoint snapshots") from exc
-        stop_order_id = state.get("stop_order_id")
+        clean_stop_oid = _clean_ticket_order_id(state.get("stop_order_id"))
         obj.stop_ticket = (
             next(
                 (ticket for ticket in obj.tickets
-                 if ticket.order_id == str(stop_order_id).strip()),
+                 if ticket.order_id == clean_stop_oid),
                 None,
             )
-            if stop_order_id is not None and not isinstance(stop_order_id, bool) and str(stop_order_id).strip()
+            if clean_stop_oid is not None
             else None
         )
         if obj.stop_ticket is None and obj.phase == "stopping" and obj.tickets:

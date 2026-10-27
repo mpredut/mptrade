@@ -14236,7 +14236,7 @@ def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
         expiration_trend_time_override=float("nan"),
         retry_interval_sec=float("nan"),
     )
-    inst = ts_cls("BTCUSDC")
+    inst = ts_cls("BTCUSDC", 3600.0, 300.0)
     assert inst.can_retry("UP", 1000.0) is True
     inst.mark_attempt("UP", 1000.0)
     assert inst.can_retry("UP", float("nan")) is False
@@ -14250,6 +14250,127 @@ def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
     assert tracker.window_sec == 3600.0
     assert tracker.reeval_sec == 60.0
     assert tracker.min_points == 30
+
+
+def test_iteration144_spot_engine_rtrade_pair_and_spot_rules_hygiene():
+    """Verify spot_rules._bool_flag, spot_engine._sanitize_spot_state / _order_from_pending / _avg, and rtrade_pair.OrderTicket / PairCoordinator.from_state hygiene."""
+    from types import SimpleNamespace
+    from strategies import spot_rules as sr
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    from strategies.spot_engine import StratParams, Strategy, _clean_order_id, _parse_bool_flag
+
+    # 1. spot_rules._bool_flag rejects NaN and containers
+    assert sr._bool_flag(float("nan")) is False
+    assert sr._bool_flag(["true"]) is False
+    assert sr._bool_flag("0") is False
+    assert sr._bool_flag("true") is True
+    assert sr._bool_flag(1) is True
+
+    # 2. spot_engine._parse_bool_flag, _clean_order_id, and _sanitize_spot_state
+    assert _parse_bool_flag("false") is False
+    assert _parse_bool_flag("0") is False
+    assert _parse_bool_flag(float("nan")) is False
+    assert _clean_order_id(12345.0) == "12345"
+    assert _clean_order_id("nan") is None
+    assert _clean_order_id("0") is None
+    assert _clean_order_id(["1"]) is None
+
+    fake_client = SimpleNamespace(
+        pair_precision=lambda pair: SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.01)
+    )
+    params = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.5,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=5,
+        takeprofit_pct=3.0,
+        max_budget=500.0,
+        max_dca_buys=4,
+        enable_takeprofit=True,
+        order_ttl_min=60,
+    )
+    dirty_state = {
+        "qty": 2.0,
+        "cost": "nan",
+        "trend_mode": "false",
+        "ledger_reconcile_required": "0",
+        "surge_active": "no",
+        "slow_grind_active": float("nan"),
+        "orders": [
+            {
+                "txid": 98765.0,
+                "side": "buy",
+                "vol": 1.0,
+                "price": 100.0,
+                "market": "false",
+                "cancel_requested": "0",
+                "intent_id": "nan",
+            }
+        ],
+        "pending_intent": {
+            "order_id": 54321.0,
+            "side": "BUY",
+            "requested_qty": 1.0,
+            "requested_price": 100.0,
+            "market": "false",
+            "intent_id": "null",
+        },
+        "pending_exit": {"kind": "TP", "soft_floor": "false"},
+    }
+    strat = Strategy(fake_client, "HYPEUSD", params, dry_run=True, initial_state=dirty_state, replay_mode=True)
+    assert strat.s["trend_mode"] is False
+    assert strat.s["ledger_reconcile_required"] is False
+    assert strat.s["surge_active"] is False
+    assert strat.s["slow_grind_active"] is False
+    assert strat.s["orders"][0]["txid"] == "98765"
+    assert strat.s["orders"][0]["market"] is False
+    assert strat.s["orders"][0]["cancel_requested"] is False
+    assert strat.s["orders"][0]["intent_id"] is None
+    assert strat.s["pending_exit"]["soft_floor"] is False
+    assert strat._avg() is None
+
+    adopted = strat._order_from_pending(strat.s["pending_intent"])
+    assert adopted["txid"] == "54321"
+    assert adopted["market"] is False
+    assert adopted["intent_id"] is None
+
+    # 3. rtrade_pair OrderTicket and PairCoordinator.from_state hygiene
+    for bad_oid in ("nan", "null", "none", "0", 0, -5, ["123"], {"id": 1}, True, None, ""):
+        with pytest.raises(ValueError):
+            OrderTicket(order_id=bad_oid, side="BUY", price=100.0, qty=1.0)  # type: ignore[arg-type]
+
+    t_good = OrderTicket(order_id=777.0, side="BUY", price=100.0, qty=1.0, active=float("nan"))  # type: ignore[arg-type]
+    assert t_good.order_id == "777"
+    assert t_good.active is False
+
+    fake_venue = SimpleNamespace()
+    with pytest.raises(ValueError):
+        PairCoordinator.from_state(
+            fake_venue,
+            PairPolicy(0.01),
+            {"pair_id": "nan", "qty": 1.0, "start_side": "BUY", "phase": "quoted", "tickets": []},
+        )
+    coord = PairCoordinator.from_state(
+        fake_venue,
+        PairPolicy(0.01),
+        {
+            "pair_id": "p-1",
+            "qty": 1.0,
+            "start_side": "BUY",
+            "phase": "stopping",
+            "shock": "false",
+            "stop_order_id": 777.0,
+            "tickets": [{"order_id": 777.0, "side": "SELL", "price": 99.0, "qty": 1.0, "active": "true"}],
+            "snapshots": {"777.0": {"status": "open", "filled_qty": 0.0, "cost": 0.0, "fee": 0.0}},
+        },
+    )
+    assert coord.shock is False
+    assert coord.stop_ticket is not None
+    assert coord.stop_ticket.order_id == "777"
+    assert "777" in coord.snapshots
+
 
 
 

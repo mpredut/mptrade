@@ -28,9 +28,11 @@ def _finite_float(val, default=None):
 def _bool_flag(val: object) -> bool:
     if isinstance(val, bool):
         return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else False
     if isinstance(val, str):
-        return val.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(val)
+        return val.strip().lower() in {"1", "true", "yes", "on", "y", "t"}
+    return False
 
 
 def diff_percent(v1: float, v2: float) -> float:
