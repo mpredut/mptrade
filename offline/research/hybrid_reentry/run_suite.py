@@ -29,8 +29,11 @@ def _safe_int(val, default: int = 0) -> int:
         return default
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "kraken"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+_KRAKEN_DIR = os.path.join(ROOT, "kraken")
+if _KRAKEN_DIR not in sys.path:
+    sys.path.append(_KRAKEN_DIR)
 
 from strategies import spot_dca as strat
 from offline.research.hybrid_reentry.harness import (

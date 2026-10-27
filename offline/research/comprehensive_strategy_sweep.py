@@ -17,11 +17,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "kraken"))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(ROOT / "kraken") not in sys.path:
+    sys.path.append(str(ROOT / "kraken"))
 
 from botcore import parse_dotenv
-import replay as kraken_replay
+from kraken import replay as kraken_replay
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits

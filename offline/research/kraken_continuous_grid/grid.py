@@ -24,8 +24,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "kraken"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+_KRAKEN_DIR = os.path.join(ROOT, "kraken")
+if _KRAKEN_DIR not in sys.path:
+    sys.path.append(_KRAKEN_DIR)
 os.chdir(ROOT)
 from botcore import parse_dotenv  # noqa: E402
 from strategies import spot_dca as strat  # noqa: E402

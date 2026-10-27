@@ -18,9 +18,10 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-for _p in (_HERE, _ROOT):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary

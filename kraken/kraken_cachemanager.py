@@ -30,17 +30,17 @@ import json
 import math
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 from kraken_common import (load_env_stack, log, required_env, required_float_env,
                            single_instance)
 from kraken_client import KrakenClient
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
 from cachepaths import cache_path
 from instrument_registry import symbols_for
 from providers.base import (

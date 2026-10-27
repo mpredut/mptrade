@@ -4527,3 +4527,27 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
     assert list(mgr.recent_lines["test_bot"]) == ["hello world", "second line"]
 
 
+def test_batch27_research_syspath_and_ml_forecast_hardening():
+    import numpy as np
+    import sys
+    import offline.research.hybrid_reentry.harness as hr_harness
+    import kraken.backtest_adaptive as kba
+    from offline.research.ml_forecast.forecast import build_dataset
+    from offline.research.ml_forecast.vol_chronos import realized_vol_series
+
+    # 1. Importing research/kraken modules does not place kraken/ at sys.path[0]
+    assert not sys.path[0].endswith("/kraken")
+
+    # 2. kraken.backtest_adaptive.trailing_vol_series handles invalid closes/sample_rate_sec
+    assert len(kba.trailing_vol_series(None)) == 0  # type: ignore[arg-type]
+    series = kba.trailing_vol_series([100.0 + i * 0.5 for i in range(30)], sample_rate_sec=False)  # type: ignore[arg-type]
+    assert len(series) == 30 and np.isfinite(series[-1])
+
+    # 3. ml_forecast.vol_chronos.realized_vol_series and forecast.build_dataset ignore inf/negative prices
+    rv = realized_vol_series(np.array([100.0] * 25 + [float("inf"), 102.0]), win=5)
+    assert np.isnan(rv[-1])
+    X, y_dir, y_mag = build_dataset(np.array([[100.0 + i * 0.1 for i in range(270)]]))
+    assert X.shape[1] == 11 and len(X) == len(y_dir) == len(y_mag)
+
+
+

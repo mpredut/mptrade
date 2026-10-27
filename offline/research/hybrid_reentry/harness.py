@@ -25,7 +25,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if KRAKEN_DIR not in sys.path:
-    sys.path.insert(0, KRAKEN_DIR)
+    sys.path.append(KRAKEN_DIR)
 
 from strategies.spot_replay import run_replay
 from strategies import spot_engine as strat

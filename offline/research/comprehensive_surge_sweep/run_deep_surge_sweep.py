@@ -28,8 +28,11 @@ from pathlib import Path
 from typing import Any
 
 ROOT = str(Path(__file__).resolve().parents[3])
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "kraken"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+_KRAKEN_DIR = os.path.join(ROOT, "kraken")
+if _KRAKEN_DIR not in sys.path:
+    sys.path.append(_KRAKEN_DIR)
 
 from botcore import parse_dotenv
 from strategies.spot_replay import run_replay

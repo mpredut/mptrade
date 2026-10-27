@@ -27,17 +27,18 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 try:
     from kraken.backtest import _bt_params, fetch_candles
     from kraken import replay as rp
 except ImportError:
     from backtest import _bt_params, fetch_candles  # noqa: E402
     import replay as rp  # noqa: E402
-
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_ROOT, "forecast"))
-sys.path.insert(0, _ROOT)
 
 from offline.backtests.metrics import format_performance_summary
 import shadow_signals as ss  # noqa: E402  (reuse the exact K_DCA/vol_1h_pct formula)
@@ -52,10 +53,20 @@ def _nanmean(arr: np.ndarray) -> float:
 
 def trailing_vol_series(closes: list[float], sample_rate_sec: float = 3600.0) -> np.ndarray:
     """Compute causal vol_1h_pct per bar using the exact shadow-signals formula."""
+    if closes is None or isinstance(closes, (bool, int, float, str)):
+        return np.empty(0, dtype=float)
+    if sample_rate_sec is None or isinstance(sample_rate_sec, bool):
+        sr = 3600.0
+    else:
+        try:
+            sr_f = float(sample_rate_sec)
+            sr = sr_f if (np.isfinite(sr_f) and sr_f > 0) else 3600.0
+        except (TypeError, ValueError):
+            sr = 3600.0
     out = np.full(len(closes), np.nan)
     for i in range(WIN, len(closes)):
         window = closes[i - WIN:i + 1]
-        v = ss.vol_1h_pct(window, sample_rate_sec=sample_rate_sec)
+        v = ss.vol_1h_pct(window, sample_rate_sec=sr)
         out[i] = v if v is not None else np.nan
     return out
 
@@ -68,8 +79,16 @@ def chronos_forecast_series(vol_trail: np.ndarray, refresh: int, horizon: int) -
     """
     from chronos import ChronosPipeline
     import torch
-    refresh_eff = max(1, int(refresh))
-    horizon_eff = max(1, int(horizon))
+    try:
+        ref_f = float(refresh) if refresh is not None and not isinstance(refresh, bool) else 6.0
+        refresh_eff = max(1, int(ref_f)) if np.isfinite(ref_f) else 6
+    except (TypeError, ValueError):
+        refresh_eff = 6
+    try:
+        hor_f = float(horizon) if horizon is not None and not isinstance(horizon, bool) else 24.0
+        horizon_eff = max(1, int(hor_f)) if np.isfinite(hor_f) else 24
+    except (TypeError, ValueError):
+        horizon_eff = 24
     print("  incarc amazon/chronos-t5-tiny...")
     pipe = ChronosPipeline.from_pretrained("amazon/chronos-t5-tiny", device_map="cpu",
                                             torch_dtype=torch.float32)
@@ -120,8 +139,12 @@ def simulate_variant(ohlc, P, drop_arr):
 
 
 def report(name, m, budget):
-    tot = m["total"]/budget*100 if budget > 0 else 0.0
-    wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
+    try:
+        bud_f = float(budget) if budget is not None and not isinstance(budget, bool) else 0.0
+    except (TypeError, ValueError):
+        bud_f = 0.0
+    tot = m["total"] / bud_f * 100 if (np.isfinite(bud_f) and bud_f > 0) else 0.0
+    wr = 100 * m["wins"] / m["cycles"] if m.get("cycles") else 0
     print(f"  [{name:16s}] TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
           f"cicluri={m['cycles']:<3} win-rate={wr:3.0f}%  maxDD=${m['maxdd']:.2f}  "
           f"pozitie deschisa={m['open_qty']:.4f}")

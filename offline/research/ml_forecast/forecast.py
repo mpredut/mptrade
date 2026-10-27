@@ -68,9 +68,9 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
 
 
 def build_dataset(px: np.ndarray):
-    px_arr = np.asarray(px, dtype=float)
+    px_arr = np.asarray(px, dtype=float).reshape(-1)
     with np.errstate(divide="ignore", invalid="ignore"):
-        logp = np.where(px_arr > 0, np.log(px_arr), np.nan)
+        logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     X, y_dir, y_mag = [], [], []
     for i in range(WARMUP, len(px_arr) - HORIZON_H):
         row = _feat_row(i, logp, px_arr)
@@ -147,9 +147,9 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     logit_acc = _safe_f(rep.get("logit"), None) if isinstance(rep, dict) else None
     lindy_acc = _safe_f(rep.get("lindy"), None) if isinstance(rep, dict) else None
     use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
-    px_arr = np.asarray(px, dtype=float)
+    px_arr = np.asarray(px, dtype=float).reshape(-1)
     with np.errstate(divide="ignore", invalid="ignore"):
-        logp = np.where(px_arr > 0, np.log(px_arr), np.nan)
+        logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     raw_row = _feat_row(len(px_arr) - 1, logp, px_arr) if len(px_arr) > WARMUP else [0.0] * len(FEATURES)
     clean_row = [float(v) if np.isfinite(v) else 0.0 for v in raw_row]
     row = np.array([clean_row], dtype=float)

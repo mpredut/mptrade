@@ -19,10 +19,10 @@ Rulare:  python3 offline/research/kraken_adaptive_thresholds/verify_adaptive_dca
 import sys, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-if os.path.join(ROOT, "kraken") not in sys.path:
-    sys.path.insert(0, os.path.join(ROOT, "kraken"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+if os.path.join(ROOT, "kraken") not in sys.path:
+    sys.path.append(os.path.join(ROOT, "kraken"))
 
 import numpy as np
 from kraken.backtest import fetch_candles

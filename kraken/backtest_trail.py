@@ -18,11 +18,11 @@ import os
 import sys
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
-if _DIR not in sys.path:
-    sys.path.insert(0, _DIR)
 _ROOT = os.path.dirname(_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+if _DIR not in sys.path:
+    sys.path.append(_DIR)
 
 try:
     from kraken.backtest import _bt_params, fetch_candles, simulate
