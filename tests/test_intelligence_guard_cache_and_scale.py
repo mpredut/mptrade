@@ -16592,3 +16592,95 @@ def test_iteration174_intelligence_guards_side_aliases_and_dict_regime_context()
     )
     assert "bull (gradient=+0.0123, epsilon=0.0050)" in telem.get("Technical Trend Regime", "")
 
+
+def test_iteration175_dict_snapshot_and_telemetry_support_across_external_macro_and_llm_guards(tmp_path):
+    from types import SimpleNamespace
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+
+    # 1. WhaleDivergenceGuard, OrderbookWallGuard, FundingCrowdingGuard accept dict snapshots
+    w_dec = WhaleDivergenceGuard().check(
+        "BTCUSDC",
+        "BUY",
+        snapshot={"divergence_regime": "short_covering", "open_interest_1h_change_pct": -4.5},
+    )
+    assert w_dec.allowed is False and "short_covering_fakeout" in w_dec.reason
+
+    ob_dec = OrderbookWallGuard(min_buy_imbalance=0.30).check(
+        "BTCUSDC",
+        "BUY",
+        snapshot={"imbalance_ratio": 0.15, "largest_ask_wall_usd": 0.0},
+    )
+    assert ob_dec.allowed is False and "orderbook_heavily_ask_dominated" in ob_dec.reason
+
+    f_dec = FundingCrowdingGuard(max_long_funding_rate=0.001, crowding_policy="defer").check(
+        "BTCUSDC",
+        "BUY",
+        telemetry={"funding_rate": 0.005},
+    )
+    assert f_dec.allowed is False and "long_crowding_extreme" in f_dec.reason
+
+    # 2. GeopoliticalShockGuard accepts dict assessment
+    g_dec = GeopoliticalShockGuard().check(
+        "BTCUSDC",
+        "BUY",
+        assessment={"threat_level": "CRITICAL_SHOCK", "risk_score": 0.95, "summary": "Test shock"},
+    )
+    assert g_dec.allowed is False and "veto_critical_geopolitical_shock" in g_dec.reason
+
+    # 3. GeopoliticalThreatAnalyzer.assess accepts dict news_snapshot and dict headlines
+    captured_prompts = []
+    fake_gemini = SimpleNamespace(
+        query_json=lambda prompt, **kw: (
+            captured_prompts.append(prompt)
+            or {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.65,
+                "summary": "Elevated tension",
+                "recommended_brake": "DOWNSCALE_50",
+            }
+        )
+    )
+    geo_analyzer = GeopoliticalThreatAnalyzer(
+        gemini_client=fake_gemini,
+        state_file=str(tmp_path / "geo_eval.json"),
+    )
+    geo_res = geo_analyzer.assess(
+        {
+            "headlines": [{"title": "Major airstrike near oil hub", "source": "Reuters", "is_high_severity": True}],
+            "has_critical_shock_keywords": True,
+        },
+        force_refresh=True,
+    )
+    assert geo_res.threat_level == "ELEVATED" and geo_res.risk_score == pytest.approx(0.65)
+    assert any("Major airstrike near oil hub (Reuters)" in p for p in captured_prompts)
+
+    # 4. SentimentAdvisor.review accepts dict fear_greed and dict breadth
+    sa_prompts = []
+    sa_gemini = SimpleNamespace(
+        query_json=lambda prompt, **kw: (
+            sa_prompts.append(prompt)
+            or {
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "confidence": 0.8,
+                "summary": "Bearish breadth",
+                "key_risks": ["liquidity"],
+                "recommended_action": "DEFENSIVE",
+            }
+        )
+    )
+    sa = SentimentAdvisor(gemini_client=sa_gemini, cache_file=str(tmp_path / "sa_eval.json"))
+    sa_res = sa.review(
+        fear_greed={"value": 18, "classification": "Extreme Fear", "trend_7d_change": -12},
+        breadth={"advance_ratio": 0.22, "median_change_pct": -3.4, "regime": "BEARISH"},
+        force_refresh=True,
+    )
+    assert sa_res is not None and sa_res.market_bias == "BEARISH"
+    assert any("18/100 (Extreme Fear)" in p and "22.0% advancing" in p for p in sa_prompts)
+
+

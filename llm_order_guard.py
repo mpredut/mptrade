@@ -137,11 +137,18 @@ def evaluate_high_stake_order_guard(
     )
     needs_eval = prev_notional is None or prev_notional < min_notional or notional_jump
     if needs_eval:
-        if dur_sec is None and valid_context:
-            dur_sec = (
-                getattr(regime_context, "trend_duration_seconds", None)
-                or getattr(regime_context, "resolved_duration_sec", None)
-            )
+        ctx_usable = valid_context or isinstance(regime_context, dict)
+        if dur_sec is None and ctx_usable:
+            if isinstance(regime_context, dict):
+                dur_sec = (
+                    regime_context.get("trend_duration_seconds")
+                    or regime_context.get("resolved_duration_sec")
+                )
+            else:
+                dur_sec = (
+                    getattr(regime_context, "trend_duration_seconds", None)
+                    or getattr(regime_context, "resolved_duration_sec", None)
+                )
         timeout_sec = _pos_float(margins.get("llm_timeout_sec"), 5.0)
         fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
         llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
@@ -152,7 +159,7 @@ def evaluate_high_stake_order_guard(
                 price,
                 qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
-                regime_context=regime_context if valid_context else None,
+                regime_context=regime_context if ctx_usable else None,
                 dur_sec=dur_sec,
                 now=now,
             )
@@ -340,11 +347,14 @@ def check_geopolitical_order_guards(
                             else:
                                 geo_title = f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
 
-                            clean_summary = cached_geo.summary or geo_dec.reason
+                            raw_sum = cached_geo.get("summary") if isinstance(cached_geo, dict) else getattr(cached_geo, "summary", None)
+                            clean_summary = raw_sum or geo_dec.reason
                             if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
                                 clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
 
-                            geo_body = f"Threat: {cached_geo.threat_level} (Risk: {cached_geo.risk_score:.2f}, Scale: {scale_pct}%)\n{clean_summary}"
+                            raw_tl = cached_geo.get("threat_level") if isinstance(cached_geo, dict) else getattr(cached_geo, "threat_level", "UNKNOWN")
+                            raw_rs = _pos_float(cached_geo.get("risk_score") if isinstance(cached_geo, dict) else getattr(cached_geo, "risk_score", 0.0), 0.0)
+                            geo_body = f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}"
                             notify(
                                 title=geo_title,
                                 body=geo_body,

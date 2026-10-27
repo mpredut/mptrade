@@ -78,7 +78,8 @@ class FundingCrowdingGuard:
                 reason="no_telemetry_data",
             )
 
-        fr = _safe_float(getattr(telemetry, "funding_rate", None), 0.0)
+        raw_fr = telemetry.get("funding_rate") if isinstance(telemetry, dict) else getattr(telemetry, "funding_rate", None)
+        fr = _safe_float(raw_fr, 0.0)
 
         # 1. Entering BUY when market is hyper-crowded long
         if side_norm == "BUY" and fr >= self.max_long_funding_rate:

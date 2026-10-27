@@ -74,11 +74,14 @@ class OrderbookWallGuard:
                 reason="no_orderbook_snapshot",
             )
 
-        imb = _safe_float(getattr(snapshot, "imbalance_ratio", None), 0.5)
-        ask_wall_usd = _safe_float(getattr(snapshot, "largest_ask_wall_usd", None), 0.0)
-        ask_wall_px = _safe_float(getattr(snapshot, "largest_ask_wall_price", None), 0.0)
-        bid_wall_usd = _safe_float(getattr(snapshot, "largest_bid_wall_usd", None), 0.0)
-        bid_wall_px = _safe_float(getattr(snapshot, "largest_bid_wall_price", None), 0.0)
+        def _snap_attr(key: str, default: Any = None) -> Any:
+            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
+
+        imb = _safe_float(_snap_attr("imbalance_ratio"), 0.5)
+        ask_wall_usd = _safe_float(_snap_attr("largest_ask_wall_usd"), 0.0)
+        ask_wall_px = _safe_float(_snap_attr("largest_ask_wall_price"), 0.0)
+        bid_wall_usd = _safe_float(_snap_attr("largest_bid_wall_usd"), 0.0)
+        bid_wall_px = _safe_float(_snap_attr("largest_bid_wall_price"), 0.0)
 
         # 1. Evaluate BUY side against ask walls and heavy ask imbalance
         if side_norm == "BUY":

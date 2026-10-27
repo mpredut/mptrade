@@ -181,16 +181,19 @@ class SentimentAdvisor:
             except (TypeError, ValueError, OverflowError):
                 return default
 
+        def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
         prompt_context = []
         if fear_greed:
-            fg_val = int(round(_sf(getattr(fear_greed, "value", 50), 50.0)))
-            fg_cls = str(getattr(fear_greed, "classification", None) or "Neutral")
-            fg_t7d = int(round(_sf(getattr(fear_greed, "trend_7d_change", 0), 0.0)))
+            fg_val = int(round(_sf(_obj_attr(fear_greed, "value", 50), 50.0)))
+            fg_cls = str(_obj_attr(fear_greed, "classification", None) or "Neutral")
+            fg_t7d = int(round(_sf(_obj_attr(fear_greed, "trend_7d_change", 0), 0.0)))
             prompt_context.append(f"- Fear & Greed Index: {fg_val}/100 ({fg_cls}), 7d trend change: {fg_t7d:+d}")
         if breadth:
-            mb_adv = _sf(getattr(breadth, "advance_ratio", 0.5), 0.5)
-            mb_med = _sf(getattr(breadth, "median_change_pct", 0.0), 0.0)
-            mb_reg = str(getattr(breadth, "regime", None) or "NEUTRAL")
+            mb_adv = _sf(_obj_attr(breadth, "advance_ratio", 0.5), 0.5)
+            mb_med = _sf(_obj_attr(breadth, "median_change_pct", 0.0), 0.0)
+            mb_reg = str(_obj_attr(breadth, "regime", None) or "NEUTRAL")
             prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%, regime: {mb_reg}")
         if whale_telemetry:
             prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
@@ -216,7 +219,7 @@ class SentimentAdvisor:
             "}"
         )
 
-        fg_label = f"F&G={int(round(_sf(getattr(fear_greed, 'value', 50), 50.0)))}" if fear_greed else "Pulse"
+        fg_label = f"F&G={int(round(_sf(_obj_attr(fear_greed, 'value', 50), 50.0)))}" if fear_greed else "Pulse"
         macro_thread_title = f"{topic_spec('macro_sentiment').title} — {fg_label}"
         resp = self.gemini_client.query_json(
             prompt,

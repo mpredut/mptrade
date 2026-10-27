@@ -97,10 +97,13 @@ class WhaleDivergenceGuard:
                 reason="no_whale_snapshot_data",
             )
 
-        regime = str(getattr(snapshot, "divergence_regime", None) or "neutral").strip().lower()
-        oi_1h = _safe_float(getattr(snapshot, "open_interest_1h_change_pct", None), 0.0)
-        taker_ratio = _safe_float(getattr(snapshot, "taker_buy_sell_ratio", None), 1.0)
-        top_long_pct = _safe_float(getattr(snapshot, "top_traders_long_pct", None), 0.5)
+        def _snap_attr(key: str, default: Any = None) -> Any:
+            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
+
+        regime = str(_snap_attr("divergence_regime") or "neutral").strip().lower()
+        oi_1h = _safe_float(_snap_attr("open_interest_1h_change_pct"), 0.0)
+        taker_ratio = _safe_float(_snap_attr("taker_buy_sell_ratio"), 1.0)
+        top_long_pct = _safe_float(_snap_attr("top_traders_long_pct"), 0.5)
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":

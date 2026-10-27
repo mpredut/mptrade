@@ -205,16 +205,19 @@ class GeopoliticalThreatAnalyzer:
         )
         age_sec = now - self._last_eval_ts
         is_stale = age_sec < 0.0 or age_sec >= effective_ttl
+        def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
         acute_shock_alert = (
             news_snapshot is not None
-            and self._as_bool_flag(getattr(news_snapshot, "has_critical_shock_keywords", False))
+            and self._as_bool_flag(_obj_attr(news_snapshot, "has_critical_shock_keywords", False))
             and self._cached_assessment is not None
             and self._cached_assessment.threat_level == "NORMAL"
         )
         if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             return self._cached_assessment
 
-        raw_headlines = getattr(news_snapshot, "headlines", None) if news_snapshot is not None else None
+        raw_headlines = _obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
         if not isinstance(raw_headlines, (list, tuple)) or len(raw_headlines) == 0:
             return self._cached_assessment or GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
@@ -226,7 +229,7 @@ class GeopoliticalThreatAnalyzer:
             )
 
         # Stage 1: Local screen — if zero high-severity headlines, return NORMAL immediately
-        high_sev = [h for h in raw_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
+        high_sev = [h for h in raw_headlines if self._as_bool_flag(_obj_attr(h, "is_high_severity", False))]
         if not high_sev:
             normal_assessment = GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
@@ -243,7 +246,7 @@ class GeopoliticalThreatAnalyzer:
             return normal_assessment
 
         # Stage 2: High-severity headlines present -> Check if headlines have changed
-        headline_digest = " || ".join(str(getattr(h, "title", None) or "") for h in high_sev[:12])
+        headline_digest = " || ".join(str(_obj_attr(h, "title", None) or "") for h in high_sev[:12])
         if (
             not force_refresh
             and not acute_shock_alert
@@ -259,7 +262,7 @@ class GeopoliticalThreatAnalyzer:
 
         # Stage 3: New high-severity headlines detected -> Query Google Gemini LLM
         headline_list = "\n".join(
-            f"- {getattr(h, 'title', None) or ''} ({getattr(h, 'source', None) or 'Unknown'})"
+            f"- {_obj_attr(h, 'title', None) or ''} ({_obj_attr(h, 'source', None) or 'Unknown'})"
             for h in high_sev[:12]
         )
         prompt = (
@@ -277,7 +280,7 @@ class GeopoliticalThreatAnalyzer:
             "}"
         )
 
-        lead_headline = str(getattr(high_sev[0], "title", None) or "")[:60] if high_sev else "Macro Geopolitical Assessment"
+        lead_headline = str(_obj_attr(high_sev[0], "title", None) or "")[:60] if high_sev else "Macro Geopolitical Assessment"
         macro_thread_title = f"{topic_spec('macro_geopolitical').title} — {lead_headline}"
 
         resp = self.gemini_client.query_json(
@@ -288,7 +291,7 @@ class GeopoliticalThreatAnalyzer:
         )
         if not resp or not isinstance(resp, dict):
             has_acute_phrase = any(
-                phrase in str(getattr(h, "title", None) or "").lower()
+                phrase in str(_obj_attr(h, "title", None) or "").lower()
                 for h in high_sev
                 for phrase in ACUTE_SHOCK_PHRASES
             )
