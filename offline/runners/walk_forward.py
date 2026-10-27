@@ -46,9 +46,11 @@ VENUE_RUNNER_MODULES = {
 
 
 def canonical_venue(venue: str | None) -> str | None:
-    if venue is None:
+    if venue is None or isinstance(venue, bool):
         return None
-    normalized = venue.strip().lower()
+    normalized = str(getattr(venue, "name", venue) or "").strip().lower()
+    if not normalized:
+        return None
     if normalized == "trading212":
         return "t212"
     return normalized
@@ -72,8 +74,9 @@ def run_compare(argv: list[str] | None = None, venue: str | None = None) -> int:
     from offline.runners import walk_forward_compare
 
     forward_args = list(argv or [])
-    if venue and not any(a == "--venue" or a.startswith("--venue=") for a in forward_args):
-        forward_args.extend(["--venue", canonical_venue(venue)])
+    norm_venue = canonical_venue(venue)
+    if norm_venue and not any(a == "--venue" or a.startswith("--venue=") for a in forward_args):
+        forward_args.extend(["--venue", norm_venue])
     return walk_forward_compare.main(forward_args)
 
 

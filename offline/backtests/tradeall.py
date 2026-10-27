@@ -73,7 +73,15 @@ class BacktestBroker:
         # from the main loop). trend_gate=None => OFF (the old behaviour).
         self.trend_gate = trend_gate
         self.trend_gate_timeout_sec = trend_gate_timeout_sec
-        self.trend_gate_max_wait_sec = float(trend_gate_max_wait_sec)
+        _max_wait = 3600.0
+        if trend_gate_max_wait_sec is not None and not isinstance(trend_gate_max_wait_sec, bool):
+            try:
+                _mw = float(trend_gate_max_wait_sec)
+                if math.isfinite(_mw) and _mw >= 0.0:
+                    _max_wait = _mw
+            except (TypeError, ValueError):
+                pass
+        self.trend_gate_max_wait_sec = _max_wait
         self.pending = []          # [{side, symbol, qty_arg, motivation, deadline}]
         self.n_waited = 0          # How many orders were delayed (and then executed).
         self._log_f = None
@@ -88,6 +96,9 @@ class BacktestBroker:
 
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
         """The real P&L accounting (no gate) — used directly or after waiting."""
+        order_type = str(order_type or "").strip().upper()
+        if order_type not in ("BUY", "SELL"):
+            return None
         if isinstance(price, bool):
             return None
         try:
@@ -130,6 +141,9 @@ class BacktestBroker:
         return {"orderId": -1, "backtest": True}   # A truthy object, as in logic()'s "if order:".
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
+        order_type = str(order_type or "").strip().upper()
+        if order_type not in ("BUY", "SELL"):
+            return None
         if order_type != "BUY" and self.pos_qty <= 1e-12:
             return None
         # The gate applies UNCONDITIONALLY (force=True included) — user (29 Jul, "the

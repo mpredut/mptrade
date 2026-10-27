@@ -87,19 +87,49 @@ def default_candidates() -> list[Candidate]:
     ]
 
 
+def _as_bool(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes", "on", "y", "t"):
+        return True
+    if s in ("0", "false", "no", "off", "n", "f", "none", "null", ""):
+        return False
+    return default
+
+
+def _safe_f(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+    except (TypeError, ValueError):
+        return default
+    return vf if math.isfinite(vf) else default
+
+
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
-    if cli_venue:
-        return cli_venue.strip().lower()
-    if report.get("venue") is not None:
-        return str(report["venue"]).strip().lower()
-    purpose = str(report.get("purpose") or "").lower()
+    if cli_venue is not None and not isinstance(cli_venue, bool):
+        cv = str(getattr(cli_venue, "name", cli_venue) or "").strip().lower()
+        if cv:
+            return cv
+    raw_rep_venue = report.get("venue") if isinstance(report, dict) else None
+    if raw_rep_venue is not None and not isinstance(raw_rep_venue, bool):
+        rv = str(raw_rep_venue).strip().lower()
+        if rv:
+            return rv
+    purpose = str((report.get("purpose") if isinstance(report, dict) else None) or "").lower()
     if "binance" in purpose:
         return "binance"
     if "hyperliquid" in purpose:
         return "hyperliquid"
     if "trading212" in purpose or "trading 212" in purpose or "t212" in purpose:
         return "trading212"
-    runtime = report.get("runtime")
+    runtime = report.get("runtime") if isinstance(report, dict) else None
     if not isinstance(runtime, dict):
         runtime = {}
     if "profile" in runtime or str(runtime.get("ticker") or "").endswith("_EQ"):
@@ -312,9 +342,10 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         if raw_fee is None:
             raw_fee = raw_params.get("fx_fee_pct")
         base_fee = float(raw_fee if raw_fee is not None else 0.0)
-        fx_model = source_report.get("fx_model") or {}
-        fx_fixed = float(fx_model["usd_per_unit"]) if fx_model.get("usd_per_unit") is not None else 1.0
-        fx_invert = bool(fx_model.get("invert", False))
+        fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
+        raw_fx_unit = _safe_f(fx_model.get("usd_per_unit"), 1.0)
+        fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
+        fx_invert = _as_bool(fx_model.get("invert", False), False)
         fx_records = None
         if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
             fx_path = Path(fx_model["frozen_file"])
@@ -541,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Pareto: {', '.join(report['pareto_frontier'])}")
     print(f"Dominates live: {', '.join(report['dominates_live']) or '-'}")
     for name, item in sorted(
-            results.items(), key=lambda pair: float(pair[1]["summary"].get("mean_return_pct") or 0.0),
+            results.items(), key=lambda pair: _safe_f(pair[1]["summary"].get("mean_return_pct"), 0.0),
             reverse=True)[:5]:
         summary = item["summary"]
         relative = item["relative_to_live"]

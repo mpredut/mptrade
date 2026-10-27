@@ -13635,3 +13635,58 @@ def test_iteration133_bapi_open_orders_cancel_and_cache_health_hygiene(monkeypat
     assert bch._normalize_cache_name(CacheOrderManager) == "CacheOrderManager"
 
 
+def test_iteration134_promotion_backtest_broker_and_walk_forward_runner_safety(tmp_path):
+    """Verify promotion _one_sided_sign_pvalue/duplicate-window rejection, BacktestBroker side/max_wait hygiene, and walk_forward / walk_forward_compare venue & fx normalization."""
+    from types import SimpleNamespace
+    from offline.backtests.promotion import _identity, _one_sided_sign_pvalue, evaluate_promotion
+    from offline.backtests.tradeall import BacktestBroker
+    from offline.runners.walk_forward import canonical_venue
+    from offline.runners.walk_forward_compare import _detect_venue
+
+    # 1. _one_sided_sign_pvalue does not overflow for active >= 1024 and handles negative/bool inputs
+    assert 0.0 <= _one_sided_sign_pvalue(600, 600) <= 1.0
+    assert _one_sided_sign_pvalue(-5, 0) == pytest.approx(1.0)
+    assert _identity({"dataset": None, "walk_forward": None}) == (None,) * 9
+
+    # Duplicate window keys in scenario are rejected by evaluate_promotion
+    base_rep = {
+        "dataset": {"sha256": "h1", "bars": 100},
+        "walk_forward": {"train": 10, "validation": 5, "test": 5, "step": 5, "warmup": 2},
+        "scenarios": {
+            "central": {
+                "assumptions": {},
+                "aggregate": {},
+                "windows": [{"key": "w1", "return_pct": 1.0}, {"key": "w1", "return_pct": 2.0}],
+            }
+        },
+    }
+    cand_rep = {
+        "dataset": {"sha256": "h1", "bars": 100},
+        "walk_forward": {"train": 10, "validation": 5, "test": 5, "step": 5, "warmup": 2},
+        "scenarios": {
+            "central": {
+                "assumptions": {},
+                "aggregate": {},
+                "windows": [{"key": "w1", "return_pct": 1.5}],
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="different windows"):
+        evaluate_promotion(base_rep, cand_rep)
+
+    # 2. BacktestBroker normalizes lowercase/whitespace order_type and sanitizes NaN trend_gate_max_wait_sec
+    broker = BacktestBroker(str(tmp_path), clock=lambda: 1000.0, trend_gate_max_wait_sec=float("nan"))
+    assert broker.trend_gate_max_wait_sec == pytest.approx(3600.0)
+    assert broker.place_order_smart("invalid_side", "BTCUSDC", 50000.0, 0.1) is None
+    res_buy = broker.place_order_smart(" buy ", "BTCUSDC", 50000.0, 0.1)
+    assert res_buy is not None
+    assert broker.n_buy == 1
+    assert broker.n_sell == 0
+
+    # 3. canonical_venue and _detect_venue handle bool, provider objects, and empty/whitespace strings
+    assert canonical_venue(True) is None  # type: ignore[arg-type]
+    assert canonical_venue("   ") is None
+    assert canonical_venue(SimpleNamespace(name=" Trading212 ")) == "t212"  # type: ignore[arg-type]
+    assert _detect_venue({"venue": "   ", "purpose": "Binance walk-forward"}, cli_venue="  ") == "binance"
+    assert _detect_venue({"venue": True, "purpose": "Hyperliquid"}, cli_venue=False) == "hyperliquid"  # type: ignore[arg-type]
+

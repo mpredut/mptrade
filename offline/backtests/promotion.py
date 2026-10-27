@@ -35,8 +35,12 @@ class RiskAdjustedThresholds:
 
 
 def _identity(report: dict) -> tuple:
-    dataset = report.get("dataset", {})
-    walk = report.get("walk_forward", {})
+    if not isinstance(report, dict):
+        return (None,) * 9
+    raw_ds = report.get("dataset")
+    dataset = raw_ds if isinstance(raw_ds, dict) else {}
+    raw_wf = report.get("walk_forward")
+    walk = raw_wf if isinstance(raw_wf, dict) else {}
     return (
         dataset.get("sha256"), dataset.get("bars"),
         report.get("initial_capital_usd"), walk.get("interval_minutes"),
@@ -47,12 +51,13 @@ def _identity(report: dict) -> tuple:
 
 def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
     """P(X >= wins), X~Binomial(wins+losses, 0.5), ignoring ties."""
-    active = wins + losses
+    w = max(0, int(wins)) if not isinstance(wins, bool) else 0
+    l = max(0, int(losses)) if not isinstance(losses, bool) else 0
+    active = w + l
     if active == 0:
         return 1.0
-    return sum(math.comb(active, value) for value in range(wins, active + 1)) / (
-        2 ** active
-    )
+    total_comb = sum(math.comb(active, value) for value in range(w, active + 1))
+    return float(total_comb / (1 << active))
 
 
 def _finite(value) -> float | None:
@@ -103,9 +108,23 @@ def evaluate_promotion(
         cand = candidate_scenarios[name]
         if base.get("assumptions") != cand.get("assumptions"):
             raise ValueError(f"different execution assumptions in scenario {name}")
-        base_windows = {window["key"]: window for window in base.get("windows", [])}
-        cand_windows = {window["key"]: window for window in cand.get("windows", [])}
-        if set(base_windows) != set(cand_windows):
+        base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
+        cand_win_list = cand.get("windows") if isinstance(cand.get("windows"), list) else []
+        base_windows = {
+            window["key"]: window
+            for window in base_win_list
+            if isinstance(window, dict) and "key" in window
+        }
+        cand_windows = {
+            window["key"]: window
+            for window in cand_win_list
+            if isinstance(window, dict) and "key" in window
+        }
+        if (
+            len(base_windows) != len(base_win_list)
+            or len(cand_windows) != len(cand_win_list)
+            or set(base_windows) != set(cand_windows)
+        ):
             raise ValueError(f"different windows in scenario {name}")
         deltas = [
             _diff(cand_windows[key].get("return_pct"), base_windows[key].get("return_pct"))
@@ -123,8 +142,8 @@ def evaluate_promotion(
         losses = sum(math.isfinite(delta) and delta < -tolerance for delta in deltas)
         active_windows = wins + losses
         sign_pvalue = _one_sided_sign_pvalue(wins, losses)
-        base_aggregate = base["aggregate"]
-        candidate_aggregate = cand["aggregate"]
+        base_aggregate = base.get("aggregate") if isinstance(base.get("aggregate"), dict) else {}
+        candidate_aggregate = cand.get("aggregate") if isinstance(cand.get("aggregate"), dict) else {}
         mean_delta = _diff(
             candidate_aggregate.get("mean_return_pct"),
             base_aggregate.get("mean_return_pct"),
@@ -208,9 +227,23 @@ def evaluate_risk_adjusted_promotion(
         cand = candidate_scenarios[name]
         if base.get("assumptions") != cand.get("assumptions"):
             raise ValueError(f"different execution assumptions in scenario {name}")
-        base_windows = {window["key"]: window for window in base.get("windows", [])}
-        cand_windows = {window["key"]: window for window in cand.get("windows", [])}
-        if set(base_windows) != set(cand_windows):
+        base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
+        cand_win_list = cand.get("windows") if isinstance(cand.get("windows"), list) else []
+        base_windows = {
+            window["key"]: window
+            for window in base_win_list
+            if isinstance(window, dict) and "key" in window
+        }
+        cand_windows = {
+            window["key"]: window
+            for window in cand_win_list
+            if isinstance(window, dict) and "key" in window
+        }
+        if (
+            len(base_windows) != len(base_win_list)
+            or len(cand_windows) != len(cand_win_list)
+            or set(base_windows) != set(cand_windows)
+        ):
             raise ValueError(f"different windows in scenario {name}")
 
         drawdown_improvements = [
@@ -229,8 +262,8 @@ def evaluate_risk_adjusted_promotion(
         active_windows = wins + losses
         sign_pvalue = _one_sided_sign_pvalue(wins, losses)
 
-        base_aggregate = base["aggregate"]
-        candidate_aggregate = cand["aggregate"]
+        base_aggregate = base.get("aggregate") if isinstance(base.get("aggregate"), dict) else {}
+        candidate_aggregate = cand.get("aggregate") if isinstance(cand.get("aggregate"), dict) else {}
         cand_mean_return = _finite(candidate_aggregate.get("mean_return_pct"))
         mean_delta = _diff(
             candidate_aggregate.get("mean_return_pct"),
