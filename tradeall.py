@@ -332,14 +332,15 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     except Exception:
         outbox_order_ids = []
 
-    to_cancel = list(order_ids)
-    existing_str = {str(x) for x in to_cancel}
-    for oid in outbox_order_ids:
-        if str(oid) not in existing_str:
-            to_cancel.append(oid)
-            existing_str.add(str(oid))
+    to_cancel = []
+    existing_str = set()
+    for raw_oid in list(order_ids) + list(outbox_order_ids):
+        clean_oid = extract_order_id(raw_oid, default=None)
+        if clean_oid and clean_oid not in {"0", "0.0", "-0", "+0"} and clean_oid not in existing_str:
+            to_cancel.append(clean_oid)
+            existing_str.add(clean_oid)
 
-    if to_cancel:
+    if to_cancel or order_ids:
         for order_id in to_cancel:
             try:
                 mkt.cancel_order(symbol, str(order_id))
@@ -367,13 +368,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
         adjusted_price = base_price * (1 + direction * i * price_step / 100)
         order = _fire_order(symbol, action, adjusted_price, reason, **kwargs)
         if order:
-            oid = (
-                order.get("orderId") or order.get("id")
-                if isinstance(order, dict) and (order.get("orderId") or order.get("id"))
-                else extract_order_id(order)
-            )
-            if oid:
-                order_ids.append(oid)
+            oid = extract_order_id(order, default=None)
+            if oid and oid not in {"0", "0.0", "-0", "+0"}:
+                raw_id = order.get("orderId") or order.get("id") if isinstance(order, dict) else None
+                if not isinstance(raw_id, bool) and isinstance(raw_id, int) and raw_id != 0:
+                    order_ids.append(raw_id)
+                else:
+                    order_ids.append(oid)
 
     return order_ids
 

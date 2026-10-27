@@ -15506,3 +15506,107 @@ def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypa
     assert isinstance(term_state["terminal_orders"], list) and len(term_state["terminal_orders"]) == 1
 
 
+def test_iteration158_monitortrades_tradeall_rtrade_hygiene(monkeypatch, tmp_path):
+    """Verify monitortrades.py, tradeall.py, and rtrade.py handle sentinel IDs,
+    corrupted state sub-dicts, boolean flags, and NaN final_qty/revisions."""
+    import json
+    import math
+    import monitortrades as mt
+    import tradeall as ta
+    import rtrade as rt
+
+    # 1. monitortrades._extract_trade_uid rejects "0" and normalizes .0
+    assert mt._extract_trade_uid({"id": "0", "tradeId": 0, "a": "777.0"}) == "777"
+    assert mt._extract_trade_uid({"id": "0", "tradeId": "nan"}) == ""
+
+    # 2. monitortrades._load_mt_state tolerates bool now_curr and non-dict sub-entries
+    mt_state_file = tmp_path / "mt_state.json"
+    mt_state_file.write_text(json.dumps({
+        "sl_bounce_state": "corrupt",
+        "reentry_state": ["not-a-dict"],
+        "last_exit_kind": {"btcusdc": "STOP"},
+        "hard_tp_last": {"btcusdc": 1000.0},
+    }))
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
+    monkeypatch.setattr(mt, "_MT_STATE_FILE", str(mt_state_file))
+    mt._LAST_EXIT_KIND.clear()
+    mt._hard_tp_last.clear()
+    mt._load_mt_state(now_curr=True)
+    assert mt._LAST_EXIT_KIND.get("BTCUSDC") == "STOP"
+
+    # 3. monitortrades._can_pass_buy_quantity_policy rejects NaN final_qty
+    class _NanDecision:
+        final_qty = float("nan")
+        refuse_reason = "nan_qty"
+        balance_asset = "USDC"
+
+    class _NanProvider:
+        name = "binance"
+
+        def quantity_decision(self, *a, **kw):
+            return _NanDecision()
+
+        def free_balance(self, asset):
+            return 100.0
+
+    class _NanInst:
+        provider = _NanProvider()
+        base = "BTC"
+        quote = "USDC"
+        params = {}
+
+    assert mt._can_pass_buy_quantity_policy(_NanInst(), "BTCUSDC", 60000.0, 0.01) is False
+
+    # 4. tradeall.track_and_place_order deduplicates .0 IDs, ignores "0", and stores clean orderId
+    cancelled_oids = []
+    monkeypatch.setattr(ta.mkt, "cancel_order", lambda sym, oid: cancelled_oids.append((sym, oid)))
+    monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *a, **kw: None)
+    monkeypatch.setattr(ta, "_fire_order", lambda sym, act, px, reason, **kw: {"orderId": 444.0})
+    import order_retry
+    monkeypatch.setattr(order_retry, "get_accepted_order_ids_for_owner", lambda sym, owner: ["333", "0"])
+    monkeypatch.setattr(order_retry, "resolve_accepted_order", lambda sym, oid: None)
+    tracked = ["333.0", "0", "nan"]
+    out_ids = ta.track_and_place_order("BUY", "BTCUSDC", 1, 60000.0, 60100.0, order_ids=tracked)
+    assert cancelled_oids == [("BTCUSDC", "333")]
+    assert out_ids == ["444"]
+
+    # 5. rtrade._touch_rtrade_heartbeat and _LivePairVenue hygiene
+    hb_path = tmp_path / "rtrade.heartbeat"
+    monkeypatch.setattr(rt, "_RTRADE_HEARTBEAT_PATH", str(hb_path))
+    monkeypatch.setattr(rt, "_rtrade_heartbeat_last", 100.0)
+    rt._touch_rtrade_heartbeat(force="false", now=105.0)
+    assert rt._rtrade_heartbeat_last == 100.0
+    rt._touch_rtrade_heartbeat(force=float("nan"), now=float("nan"))
+    assert math.isfinite(rt._rtrade_heartbeat_last)
+
+    venue = object.__new__(rt._LivePairVenue)
+    venue.symbol = "TAOUSDC"
+    venue._known_tickets = rt.deque(maxlen=16)
+    venue._recovery_blocked_pairs = set()
+    venue.recovery_blocked = False
+    venue.pair_store = None
+    venue._set_pair_recovery_blocked("p1", blocked="false")
+    assert venue.pair_recovery_blocked("p1") is False
+    assert venue._ticket_from_pending({"order_id": "0", "side": "BUY", "requested_qty": 1.0, "requested_price": 100.0}, "p1") is None
+    t_ok = venue._ticket_from_pending({"order_id": "555.0", "side": "BUY", "requested_qty": 1.0, "requested_price": 100.0, "kind": "limit"}, "p1")
+    assert t_ok is not None and t_ok.order_id == "555"
+
+    canon = venue._canonical_intent(
+        {"pair_id": "p1", "symbol": "TAOUSDC", "start_side": "BUY", "created_ts": 1000.0},
+        {"client_order_id": "cid-1", "qty": 1.0, "price": 100.0, "attempt": "2.0", "lookup_misses": "3.0"},
+    )
+    assert canon["attempt"] == 2 and canon["lookup_misses"] == 3
+
+    with pytest.raises(ValueError):
+        venue.merge_checkpoint_intents({"pair_id": "p1", "intents": {}}, {"limit_revisions": {"BUY": True}})
+    with pytest.raises(ValueError):
+        venue.merge_checkpoint_intents({"pair_id": "p1", "intents": {}}, {"hard_stop_revision": True})
+    merged = venue.merge_checkpoint_intents(
+        {"pair_id": "p1", "intents": {}},
+        {"limit_revisions": {"BUY": "2.0"}, "hard_stop_revision": "1.0"},
+    )
+    assert merged["limit_revisions"]["BUY"] == 2
+    assert merged["hard_stop_revision"] == 1
+
+
+

@@ -49,6 +49,22 @@ _rtrade_heartbeat_lock = threading.Lock()
 _rtrade_heartbeat_last = float("-inf")
 
 
+def _parse_bool_flag(raw, default=False):
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw) if math.isfinite(float(raw)) else default
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("1", "1.0", "true", "yes", "on"):
+            return True
+        if s in ("0", "0.0", "false", "no", "off", "none", "null", "nan", ""):
+            return False
+    return default
+
+
 def _touch_rtrade_heartbeat(*, force=False, now=None):
     """Publish actual coordinator progress independently from buffered stdout.
 
@@ -58,9 +74,18 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
     dead loop, unlike a separate heartbeat thread that could outlive the work.
     """
     global _rtrade_heartbeat_last
-    now = time.monotonic() if now is None else float(now)
+    force_flag = _parse_bool_flag(force, default=False)
+    now_val = None
+    if now is not None and not isinstance(now, bool):
+        try:
+            nf = float(now)
+            if math.isfinite(nf):
+                now_val = nf
+        except (TypeError, ValueError, OverflowError):
+            now_val = None
+    now = time.monotonic() if now_val is None else now_val
     with _rtrade_heartbeat_lock:
-        if not force and now - _rtrade_heartbeat_last < _RTRADE_HEARTBEAT_INTERVAL_SEC:
+        if not force_flag and now - _rtrade_heartbeat_last < _RTRADE_HEARTBEAT_INTERVAL_SEC:
             return
         try:
             os.makedirs(os.path.dirname(_RTRADE_HEARTBEAT_PATH), exist_ok=True)
@@ -234,10 +259,11 @@ class _LivePairVenue:
 
     def _set_pair_recovery_blocked(self, pair_id, blocked=True):
         pair_id = str(pair_id or "")
+        blocked_flag = _parse_bool_flag(blocked, default=True)
         was_blocked = self.recovery_blocked
         prev_count = len(self._recovery_blocked_pairs)
         if pair_id:
-            if blocked:
+            if blocked_flag:
                 self._recovery_blocked_pairs.add(pair_id)
             else:
                 self._recovery_blocked_pairs.discard(pair_id)
@@ -245,7 +271,7 @@ class _LivePairVenue:
         if self.recovery_blocked != was_blocked or len(self._recovery_blocked_pairs) != prev_count:
             sym = getattr(self, "symbol", "UNKNOWN")
             print(
-                f"[{sym}] pair recovery state changed: pair={pair_id} blocked={blocked} "
+                f"[{sym}] pair recovery state changed: pair={pair_id} blocked={blocked_flag} "
                 f"-> total_blocked={len(self._recovery_blocked_pairs)} {list(self._recovery_blocked_pairs)}"
             )
 
@@ -274,7 +300,7 @@ class _LivePairVenue:
 
     def preflight_order(self, side, qty, price=None, *, market=False, kind=None):
         return self.audited_executor.preflight_order(
-            self.symbol, side, qty, price, market=market, kind=kind)
+            self.symbol, side, qty, price, market=_parse_bool_flag(market, default=False), kind=kind)
 
     @staticmethod
     def _intent_id(pair_id, side, kind):
@@ -327,8 +353,8 @@ class _LivePairVenue:
         return ticket
 
     def _ticket_from_pending(self, pending, pair_id):
-        order_id = pending.get("order_id")
-        if not order_id:
+        order_id = extract_order_id(pending.get("order_id"), default=None)
+        if not order_id or order_id in {"0", "0.0", "-0", "+0"}:
             return None
         ticket_price = _finite_pos_float(
             pending.get("submitted_price")
@@ -400,6 +426,24 @@ class _LivePairVenue:
         kind = str(pending.get("kind") or "limit")
         requested_qty = pending.get("requested_qty", pending.get("qty"))
         requested_price = pending.get("requested_price", pending.get("price"))
+        raw_attempt = pending.get("attempt")
+        att_int = 1
+        if raw_attempt is not None and not isinstance(raw_attempt, bool):
+            try:
+                att_f = float(raw_attempt)
+                if math.isfinite(att_f) and att_f >= 1:
+                    att_int = int(att_f)
+            except (TypeError, ValueError, OverflowError):
+                att_int = 1
+        raw_misses = pending.get("lookup_misses")
+        misses_int = 0
+        if raw_misses is not None and not isinstance(raw_misses, bool):
+            try:
+                mf = float(raw_misses)
+                if math.isfinite(mf) and mf >= 0:
+                    misses_int = int(mf)
+            except (TypeError, ValueError, OverflowError):
+                misses_int = 0
         pending.update({
             "intent_id": pending.get("intent_id")
                          or self._intent_id(record["pair_id"], side, kind),
@@ -410,11 +454,11 @@ class _LivePairVenue:
             "requested_qty": float(requested_qty),
             "requested_price": (None if requested_price is None
                                 else float(requested_price)),
-            "attempt": int(pending.get("attempt") or 1),
+            "attempt": att_int,
             "created_at": float(
                 pending.get("created_at") or record.get("created_ts")
                 or time.time()),
-            "lookup_misses": int(pending.get("lookup_misses") or 0),
+            "lookup_misses": misses_int,
             "pair_id": pending.get("pair_id") or record["pair_id"],
         })
         return pending
@@ -605,11 +649,22 @@ class _LivePairVenue:
                 merged.get("limit_revisions") or {}).items():
             side_u = str(side).upper()
             if side_u in limit_revisions:
-                revision = int(value or 0)
+                if isinstance(value, bool):
+                    raise ValueError(f"invalid {side_u} limit revision: {value!r}")
+                rev_f = float(0 if value is None else value)
+                if not math.isfinite(rev_f) or not rev_f.is_integer():
+                    raise ValueError(f"invalid {side_u} limit revision: {value!r}")
+                revision = int(rev_f)
                 if not 0 <= revision <= 1_000_000:
                     raise ValueError(f"invalid {side_u} limit revision: {revision}")
                 limit_revisions[side_u] = revision
-        hard_stop_revision = int(merged.get("hard_stop_revision", 0) or 0)
+        raw_hs_rev = merged.get("hard_stop_revision", 0)
+        if isinstance(raw_hs_rev, bool):
+            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev!r}")
+        hs_rev_f = float(0 if raw_hs_rev is None else raw_hs_rev)
+        if not math.isfinite(hs_rev_f) or not hs_rev_f.is_integer():
+            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev!r}")
+        hard_stop_revision = int(hs_rev_f)
         if not 0 <= hard_stop_revision <= 1_000_000:
             raise ValueError(
                 f"invalid hard-stop revision: {hard_stop_revision}")
@@ -872,14 +927,15 @@ class _LivePairVenue:
                 f"[{self.symbol}] {side} hard-stop response is ambiguous; "
                 "the persisted client ID must be reconciled")
             return None
-        if order_id is None or not str(order_id).strip():
+        clean_oid = extract_order_id(order_id, default=None)
+        if not clean_oid or clean_oid in {"0", "0.0", "-0", "+0"}:
             if self.pair_store is not None and pair_id:
                 self._set_pair_recovery_blocked(pair_id)
                 self._last_place_failures[side] = (
                     f"{side.lower()}_recovery_pending")
             return None
         ticket = PairOrderTicket(
-            order_id=str(order_id), side=side, price=price, qty=final_qty,
+            order_id=clean_oid, side=side, price=price, qty=final_qty,
             pair_id=pair_id, revision=revision)
         self._known_tickets.append(ticket)
         if self.pair_store is not None and pair_id:

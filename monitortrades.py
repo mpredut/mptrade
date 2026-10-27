@@ -131,12 +131,28 @@ def _safe_f(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
         return default
 
 
+def _parse_bool_flag(raw: Any, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw) if math.isfinite(float(raw)) else default
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("1", "1.0", "true", "yes", "on"):
+            return True
+        if s in ("0", "0.0", "false", "no", "off", "none", "null", "nan", ""):
+            return False
+    return default
+
+
 def _extract_trade_uid(trade: Any) -> str:
     if not isinstance(trade, dict):
         return ""
     for key in ("id", "tradeId", "a"):
         val = extract_order_id(trade.get(key), default="") or ""
-        if val:
+        if val not in ("", "0", "0.0", "-0", "+0"):
             return val
     return ""
 
@@ -198,7 +214,8 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
             # Group newly executed fills by orderId
             trades_by_order = {}
             for t in new_trades:
-                oid = extract_order_id(t) or _extract_trade_uid(t)
+                raw_oid = extract_order_id(t, default="") or ""
+                oid = raw_oid if raw_oid not in ("", "0", "0.0", "-0", "+0") else _extract_trade_uid(t)
                 trades_by_order.setdefault(oid, []).append(t)
 
             for oid, group in trades_by_order.items():
@@ -439,7 +456,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     total_sell_qty, total_sell_value, sell_sig = _summarize_orders(sell_orders)
     entry_sig = (buy_sig, sell_sig)
 
-    if not force_refresh:
+    if not _parse_bool_flag(force_refresh, default=False):
         cached = _position_stats_cache.get(cache_key)
         if cached is not None:
             cached_sig, cached_time, cached_val = cached
@@ -534,9 +551,10 @@ def _save_mt_state(ts: float | None = None):
         cache_key = (_MT_STATE_FILE, serialized)
         if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(_MT_STATE_FILE):
             return
+        ts_val = _safe_f(ts, None)
         data = {
             "version": 1,
-            "ts": float(ts) if ts is not None else time.time(),
+            "ts": ts_val if (ts_val is not None and ts_val > 0) else time.time(),
             **payload,
         }
         save_json_state(_MT_STATE_FILE, data, indent=2)
@@ -553,15 +571,17 @@ def _load_mt_state(now_curr: float | None = None):
         data = read_recovering_previous(_MT_STATE_FILE, json.loads, default=None)
         if not isinstance(data, dict):
             return
-        now_curr = float(now_curr) if now_curr is not None else time.time()
-        if not math.isfinite(now_curr) or now_curr <= 0:
-            now_curr = time.time()
+        now_val = _safe_f(now_curr, None)
+        now_curr = now_val if (now_val is not None and now_val > 0) else time.time()
         for key, target in (
             ("sl_bounce_state", _SL_BOUNCE_STATE),
             ("sl_episode_state", _SL_EPISODE_STATE),
             ("tp_ride_state", _TP_RIDE_STATE),
         ):
-            for sym, state in (data.get(key) or {}).items():
+            raw_map = data.get(key)
+            if not isinstance(raw_map, dict):
+                continue
+            for sym, state in raw_map.items():
                 if isinstance(state, dict):
                     raw_started = state.get("started_at", 0)
                     if isinstance(raw_started, bool):
@@ -587,47 +607,57 @@ def _load_mt_state(now_curr: float | None = None):
                             state["last_peak_time"] = now_curr
                     if 0 <= (now_curr - started) < 86400:
                         target[str(sym).upper()] = state
-        for sym, state in (data.get("reentry_state") or {}).items():
-            if isinstance(state, dict):
-                _REENTRY_STATE[str(sym).upper()] = state
-        for sym, kind in (data.get("last_exit_kind") or {}).items():
-            if isinstance(kind, str):
-                _LAST_EXIT_KIND[str(sym).upper()] = kind
-        for sym, s_ts in (data.get("reentry_done_sell_time") or {}).items():
-            try:
-                if isinstance(s_ts, bool):
-                    continue
-                s_ts_val = float(s_ts)
-                if math.isfinite(s_ts_val) and s_ts_val > 0 and 0 <= (now_curr - s_ts_val) < 7 * 86400:
-                    _REENTRY_DONE_SELL_TIME[str(sym).upper()] = s_ts_val
-            except (TypeError, ValueError):
-                pass
-        for sym, state in (data.get("pending_stop_exit") or {}).items():
-            if isinstance(state, dict):
-                raw_pts = state.get("time", 0)
-                if isinstance(raw_pts, bool):
-                    continue
+        raw_reentry = data.get("reentry_state")
+        if isinstance(raw_reentry, dict):
+            for sym, state in raw_reentry.items():
+                if isinstance(state, dict):
+                    _REENTRY_STATE[str(sym).upper()] = state
+        raw_exit_kind = data.get("last_exit_kind")
+        if isinstance(raw_exit_kind, dict):
+            for sym, kind in raw_exit_kind.items():
+                if isinstance(kind, str):
+                    _LAST_EXIT_KIND[str(sym).upper()] = kind
+        raw_done_sell = data.get("reentry_done_sell_time")
+        if isinstance(raw_done_sell, dict):
+            for sym, s_ts in raw_done_sell.items():
                 try:
-                    p_ts = float(raw_pts)
+                    if isinstance(s_ts, bool):
+                        continue
+                    s_ts_val = float(s_ts)
+                    if math.isfinite(s_ts_val) and s_ts_val > 0 and 0 <= (now_curr - s_ts_val) < 7 * 86400:
+                        _REENTRY_DONE_SELL_TIME[str(sym).upper()] = s_ts_val
                 except (TypeError, ValueError):
-                    continue
-                if not math.isfinite(p_ts) or p_ts <= 0:
-                    continue
-                if p_ts > now_curr:
-                    state = dict(state)
-                    state["time"] = now_curr
-                    p_ts = now_curr
-                if 0 <= (now_curr - p_ts) < 300:
-                    _PENDING_STOP_EXIT[str(sym).upper()] = state
-        for sym, h_ts in (data.get("hard_tp_last") or {}).items():
-            try:
-                if isinstance(h_ts, bool):
-                    continue
-                h_ts_val = float(h_ts)
-                if math.isfinite(h_ts_val) and h_ts_val > 0 and 0 <= (now_curr - h_ts_val) < 86400:
-                    _hard_tp_last[str(sym).upper()] = h_ts_val
-            except (TypeError, ValueError):
-                pass
+                    pass
+        raw_pending_stop = data.get("pending_stop_exit")
+        if isinstance(raw_pending_stop, dict):
+            for sym, state in raw_pending_stop.items():
+                if isinstance(state, dict):
+                    raw_pts = state.get("time", 0)
+                    if isinstance(raw_pts, bool):
+                        continue
+                    try:
+                        p_ts = float(raw_pts)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(p_ts) or p_ts <= 0:
+                        continue
+                    if p_ts > now_curr:
+                        state = dict(state)
+                        state["time"] = now_curr
+                        p_ts = now_curr
+                    if 0 <= (now_curr - p_ts) < 300:
+                        _PENDING_STOP_EXIT[str(sym).upper()] = state
+        raw_hard_tp = data.get("hard_tp_last")
+        if isinstance(raw_hard_tp, dict):
+            for sym, h_ts in raw_hard_tp.items():
+                try:
+                    if isinstance(h_ts, bool):
+                        continue
+                    h_ts_val = float(h_ts)
+                    if math.isfinite(h_ts_val) and h_ts_val > 0 and 0 <= (now_curr - h_ts_val) < 86400:
+                        _hard_tp_last[str(sym).upper()] = h_ts_val
+                except (TypeError, ValueError):
+                    pass
     except Exception:
         pass
 
@@ -676,7 +706,7 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
         _LAST_EXIT_KIND[symbol] = kind
     _REENTRY_STATE.pop(symbol, None)
     _REENTRY_DONE_SELL_TIME.pop(symbol, None)
-    if clear_pending:
+    if _parse_bool_flag(clear_pending, default=True):
         _PENDING_STOP_EXIT.pop(symbol, None)
         _SL_BOUNCE_STATE.pop(symbol, None)
         _SL_EPISODE_STATE.pop(symbol, None)
@@ -1046,12 +1076,15 @@ def _is_pending_exit_active(
         return False
 
     active_sell_exists = False
-    p_cid = pending_stop.get("client_order_id")
+    p_cid = extract_order_id(pending_stop.get("client_order_id"), default=None)
+    if p_cid in (None, "0", "0.0", "-0", "+0"):
+        p_cid = None
     prov = getattr(inst, "_provider", None)
     if p_cid and prov and hasattr(prov, "order_by_client_id"):
         try:
             found = prov.order_by_client_id(symbol, p_cid)
-            if found and extract_order_id(found):
+            found_oid = extract_order_id(found, default=None)
+            if found and found_oid not in (None, "0", "0.0", "-0", "+0"):
                 st = str(found.get("status") or "").upper()
                 if st in ("FILLED", "RESOLVED"):
                     print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
@@ -1122,8 +1155,8 @@ def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
         active_orders = open_orders_fn() if callable(open_orders_fn) else []
         for active_ord in (active_orders or []):
             if extract_order_side(active_ord) == "SELL":
-                oid = extract_order_id(active_ord) or ""
-                if oid:
+                oid = extract_order_id(active_ord, default="") or ""
+                if oid not in ("", "0", "0.0", "-0", "+0"):
                     print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
                     cancel_fn = getattr(inst, "cancel_order", None)
                     if callable(cancel_fn):
@@ -1281,7 +1314,8 @@ def _execute_take_profit(
             _save_mt_state()
         return False
 
-    sell_frac = float(getattr(tp_decision, "sell_fraction", 1.0) or 1.0)
+    sell_frac_f = _safe_f(getattr(tp_decision, "sell_fraction", 1.0), 1.0)
+    sell_frac = sell_frac_f if (sell_frac_f is not None and sell_frac_f > 0.0) else 1.0
     sell_qty = (
         round(sellable_qty * sell_frac, 8)
         if 0.0 < sell_frac < 1.0
@@ -1593,7 +1627,7 @@ def _can_pass_buy_quantity_policy(
         )
         if decision is None:
             return True
-        final_qty = float(getattr(decision, "final_qty", 0.0) or 0.0)
+        final_qty = _safe_f(getattr(decision, "final_qty", 0.0), 0.0) or 0.0
         if final_qty <= 0.0:
             refuse_reason = getattr(decision, "refuse_reason", None) or "qty_zero_after_policy"
             balance_asset = getattr(decision, "balance_asset", None) or quote_asset or "quote"
@@ -1650,8 +1684,9 @@ def _can_pass_buy_quantity_policy(
                 f"intelligence_guard ({intel_reason})"
             )
             return False
-        if intel_scale is not None and 0.0 < float(intel_scale) < 1.0:
-            scaled_qty = final_qty * float(intel_scale)
+        intel_scale_f = _safe_f(intel_scale, 1.0)
+        if intel_scale_f is not None and 0.0 < intel_scale_f < 1.0:
+            scaled_qty = final_qty * intel_scale_f
             round_fn = (
                 getattr(provider, "round_amount", None)
                 or getattr(provider, "round_quantity", None)
@@ -1775,7 +1810,7 @@ def _apply_post_stop_ai_guard(
                     market=False,
                 )
                 if q_dec is not None:
-                    policy_qty = float(getattr(q_dec, "final_qty", 0.0) or 0.0)
+                    policy_qty = _safe_f(getattr(q_dec, "final_qty", 0.0), 0.0) or 0.0
                     if 0.0 < policy_qty < _est_qty:
                         _est_qty = round(policy_qty, 6)
             except Exception:
@@ -1792,12 +1827,15 @@ def _apply_post_stop_ai_guard(
             last_sell_time_s=sell_time,
             now=reentry_snap.current_time_s,
         )
+        ps_scale = _safe_f(getattr(_ps_dec, "suggested_scale", 1.0), 1.0)
+        if ps_scale is None or not (0.0 < ps_scale <= 1.0):
+            ps_scale = 1.0
         if not _ps_dec.allowed:
             print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {_ps_dec.reason}")
             return False, buy_budget, buy_qty_cfg, qty
-        elif _ps_dec.suggested_scale < 1.0:
-            print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {_ps_dec.suggested_scale * 100:.0f}%: {_ps_dec.reason}")
-            scale = float(_ps_dec.suggested_scale)
+        elif ps_scale < 1.0:
+            print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {ps_scale * 100:.0f}%: {_ps_dec.reason}")
+            scale = float(ps_scale)
             scaled_qty = _est_qty * scale
             if provider is not None and not isinstance(provider, str):
                 round_fn = (
@@ -1869,8 +1907,9 @@ def _execute_reentry_buy(
     else:
         reentry_bypass = {"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None
     extra_kwargs = {}
-    if 0.0 < float(applied_scale) < 1.0 and not _is_simulated_env_or_inst(inst):
-        extra_kwargs["applied_scale"] = float(applied_scale)
+    applied_scale_f = _safe_f(applied_scale, 1.0)
+    if applied_scale_f is not None and 0.0 < applied_scale_f < 1.0 and not _is_simulated_env_or_inst(inst):
+        extra_kwargs["applied_scale"] = applied_scale_f
     placed = _place_guarded(
         inst, "BUY", current_price + _buy_offset, buy_qty, min_qty,
         safeback_seconds=sbs, cancelorders=True,
