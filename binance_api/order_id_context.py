@@ -194,7 +194,7 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     for prefix, bot in sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
         if cid.startswith(prefix):
             return bot
-    if cid.startswith(MANUAL_PREFIXES):
+    if cid.lower().startswith(MANUAL_PREFIXES):
         return "manual"
     return f"alt:{cid[:4]}" if len(cid) >= 4 else "unknown"
 

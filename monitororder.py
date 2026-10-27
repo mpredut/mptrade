@@ -56,18 +56,21 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     4. Enforce MAX_GLOBAL_ORDER_TTL_SEC hard cap (3 days) without exception.
     """
     custom_map = custom_ttl_map if isinstance(custom_ttl_map, dict) else {}
-    oid_str = str(order_id).strip() if order_id is not None and not isinstance(order_id, bool) else ""
-    cid_str = str(client_order_id).strip() if client_order_id is not None and not isinstance(client_order_id, bool) else ""
+    oid_str = extract_order_id(order_id, default="") or ""
+    cid_str = extract_order_id(client_order_id, default="") or ""
 
     # 1. Custom TTL from placement
-    custom_ttl = (custom_map.get(oid_str) if oid_str else None) or (custom_map.get(cid_str) if cid_str else None)
-    if custom_ttl is not None and not isinstance(custom_ttl, bool):
-        try:
-            val = float(custom_ttl)
-            if math.isfinite(val) and val > 0:
-                return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
-        except (TypeError, ValueError):
-            pass
+    for candidate_key in (oid_str, cid_str):
+        if not candidate_key:
+            continue
+        custom_ttl = custom_map.get(candidate_key)
+        if custom_ttl is not None and not isinstance(custom_ttl, bool):
+            try:
+                val = float(custom_ttl)
+                if math.isfinite(val) and val > 0:
+                    return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
+            except (TypeError, ValueError, OverflowError):
+                pass
 
     # 2. Module default based on owner
     if (not owner or isinstance(owner, bool)) and cid_str:
@@ -160,7 +163,7 @@ def reset_monitororder_state_for_test():
 
 def _should_notify_order_launched(owner):
     """Return False for fast scalpers (rtrade) to prevent notification spam on placement."""
-    if not owner:
+    if not owner or isinstance(owner, bool):
         return True
     return str(owner).strip().lower() != "rtrade"
 
@@ -263,8 +266,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Invalid price ({price}) for order {order_id}, skipping.")
             continue
 
-        oid_str = str(order_id)
-        cid = str(order.get("clientOrderId") or "")
+        oid_str = extract_order_id(order_id, default=None) or str(order_id).strip()
+        raw_cid = order.get("clientOrderId")
+        cid = str(raw_cid).strip() if raw_cid is not None and not isinstance(raw_cid, bool) else ""
         owner = rc.resolve_order_owner(cid)
         if owner == "order_retry":
             owner = accepted_owner_map.get(oid_str) or accepted_owner_map.get(cid) or owner
@@ -647,7 +651,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     'quantity': quantity
                 }
                 _remember_initial_price(
-                    initial_prices, raw_new_id, initial_prices.pop(order_id))
+                    initial_prices, raw_new_id, initial_prices.pop(order_id, float(price)))
                 print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             elif not terminal_pre_submit_refusal:
                 print(

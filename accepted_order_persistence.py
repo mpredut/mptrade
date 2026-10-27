@@ -42,10 +42,10 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
             current_client_id = rpk.get("client_order_id") if isinstance(rpk, dict) else None
             return (
                 str(record.get("lifecycle") or "").lower() == "accepted"
-                and str(record.get("order_id") or "") == str(expected_order_id)
+                and str(record.get("order_id") or "").strip() == str(expected_order_id).strip()
                 and expected_order_id is not None
                 and expected_client_id is not None
-                and current_client_id == expected_client_id
+                and str(current_client_id or "").strip() == str(expected_client_id).strip()
             )
     except Exception:  # noqa: BLE001 - the bounded exact retry remains authoritative.
         return False
@@ -110,6 +110,8 @@ def complete_accepted_claim(
     last_alert_ts = _ALERTED_PERSISTENCE_FAILURES.get(dedup_key)
     if last_alert_ts is None or (now_mono - last_alert_ts) >= _PERSISTENCE_ALERT_COOLDOWN_SEC:
         _ALERTED_PERSISTENCE_FAILURES[dedup_key] = now_mono
+        while len(_ALERTED_PERSISTENCE_FAILURES) > 1000:
+            _ALERTED_PERSISTENCE_FAILURES.pop(next(iter(_ALERTED_PERSISTENCE_FAILURES)), None)
         alert.notify(
             title="🛑 CRITICAL accepted order tracking persistence failure",
             body=detail,

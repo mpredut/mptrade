@@ -135,11 +135,9 @@ def _extract_trade_uid(trade: Any) -> str:
     if not isinstance(trade, dict):
         return ""
     for key in ("id", "tradeId", "a"):
-        raw = trade.get(key)
-        if raw is not None and not isinstance(raw, bool):
-            val = str(raw).strip()
-            if val:
-                return val
+        val = extract_order_id(trade.get(key), default="") or ""
+        if val:
+            return val
     return ""
 
 
@@ -206,7 +204,12 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
             for oid, group in trades_by_order.items():
                 first = group[0]
                 side = extract_order_side(first) or "SELL"
-                sym_name = first.get('symbol', symbol)
+                raw_sym = first.get("symbol") if isinstance(first, dict) else None
+                sym_name = (
+                    str(raw_sym).strip()
+                    if raw_sym is not None and not isinstance(raw_sym, bool) and str(raw_sym).strip()
+                    else str(symbol)
+                )
                 total_qty = sum(extract_order_qty(t) for t in group)
                 total_val = sum(extract_order_qty(t) * extract_order_price(t) for t in group)
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)

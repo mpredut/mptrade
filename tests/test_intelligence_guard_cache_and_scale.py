@@ -12978,6 +12978,42 @@ def test_iteration123_submission_outcome_audit_and_retry_id_hygiene(tmp_path):
     assert "ID: rec-1" in ctx_str
 
 
+def test_iteration124_monitororder_ttl_owner_and_monitortrades_uid_safety():
+    """Verify Iteration 124 monitororder custom TTL fallback across invalid oid_str, case-insensitive manual prefixes, and monitortrades _extract_trade_uid hygiene."""
+    import monitororder as mo
+    import monitortrades as mt
+    from binance_api import order_id_context as rc
+
+    # 1. resolve_effective_order_ttl falls back to client_order_id TTL when order_id TTL is invalid/NaN, and normalizes integer float IDs
+    ttl = mo.resolve_effective_order_ttl(
+        1001.0,
+        "TA_main_123",
+        custom_ttl_map={"1001": float("nan"), "TA_main_123": 1800.0},
+    )
+    assert ttl == 1800.0
+    ttl_float_id = mo.resolve_effective_order_ttl(
+        2002.0,
+        "",
+        custom_ttl_map={"2002": 900.0},
+    )
+    assert ttl_float_id == 900.0
+
+    # 2. _should_notify_order_launched treats boolean owner as True (not suppressed)
+    assert mo._should_notify_order_launched(True) is True
+    assert mo._should_notify_order_launched("rtrade") is False
+
+    # 3. resolve_order_owner matches uppercase/mixed-case manual prefixes
+    assert rc.resolve_order_owner("WEB_abc123") == "manual"
+    assert rc.resolve_order_owner("IOS_xyz987") == "manual"
+    assert rc.resolve_order_owner("And_555") == "manual"
+
+    # 4. monitortrades._extract_trade_uid normalizes integer floats and rejects NaN/"nan"/"null"
+    assert mt._extract_trade_uid({"id": 555666.0}) == "555666"
+    assert mt._extract_trade_uid({"id": float("nan"), "tradeId": "nan", "a": "777888"}) == "777888"
+    assert mt._extract_trade_uid({"id": "null", "tradeId": 12.5}) == ""
+
+
+
 
 
 
