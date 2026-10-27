@@ -14,9 +14,29 @@ from strategies import spot_engine as strat
 from strategies.spot_replay import run_replay
 
 
+def _safe_f(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def run_comparison(csv_path=None):
     csv_file = csv_path or os.path.join(ROOT, "offline", "research", "hype_dataset", "HYPEUSDC_240m_hlspot.csv")
-    if not os.path.exists(csv_file):
+    if not csv_file or isinstance(csv_file, (bool, int, float)) or not os.path.exists(str(csv_file)):
         print(f"Dataset not found at {csv_file}")
         return []
 
@@ -28,7 +48,11 @@ def run_comparison(csv_path=None):
                 bar = (float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if all(math.isfinite(v) and v > 0 for v in bar) and bar[1] >= bar[2]:
+            if (
+                all(math.isfinite(v) and v > 0 for v in bar)
+                and bar[1] >= max(bar[0], bar[2], bar[3])
+                and bar[2] <= min(bar[0], bar[1], bar[3])
+            ):
                 bars.append(bar)
 
     if not bars:
@@ -77,16 +101,16 @@ def run_comparison(csv_path=None):
     print("=" * 92)
 
     for sl, base, prop in results:
-        b_cyc = int(base.get('cycles') or 0)
-        p_cyc = int(prop.get('cycles') or 0)
-        b_wins = int(base.get('wins') or 0)
-        p_wins = int(prop.get('wins') or 0)
-        b_net = float(base.get('net') or 0.0)
-        p_net = float(prop.get('net') or 0.0)
-        b_dd = float(base.get('maxdd') or 0.0)
-        p_dd = float(prop.get('maxdd') or 0.0)
-        b_fills = int(base.get('fills') or 0)
-        p_fills = int(prop.get('fills') or 0)
+        b_cyc = max(0, _safe_int(base.get('cycles'), 0))
+        p_cyc = max(0, _safe_int(prop.get('cycles'), 0))
+        b_wins = max(0, _safe_int(base.get('wins'), 0))
+        p_wins = max(0, _safe_int(prop.get('wins'), 0))
+        b_net = _safe_f(base.get('net'), 0.0)
+        p_net = _safe_f(prop.get('net'), 0.0)
+        b_dd = _safe_f(base.get('maxdd'), 0.0)
+        p_dd = _safe_f(prop.get('maxdd'), 0.0)
+        b_fills = max(0, _safe_int(base.get('fills'), 0))
+        p_fills = max(0, _safe_int(prop.get('fills'), 0))
         base_win_pct = (b_wins / b_cyc * 100) if b_cyc > 0 else 0.0
         prop_win_pct = (p_wins / p_cyc * 100) if p_cyc > 0 else 0.0
 

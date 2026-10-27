@@ -43,6 +43,26 @@ ASSETS = ["HYPE", "TAO", "ADA", "BTC", "ETH"]
 DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
 
 
+def _safe_f(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return int(f) if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def load_base_params(config_path: str | Path) -> strat.StratParams:
     """Read one explicit profile without inheriting shell variables or secrets."""
     path = Path(config_path).resolve(strict=True)
@@ -188,9 +208,9 @@ def evaluate_single_candidate(
                 warmup_ohlc=warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            pnl = float(res.get("total") or 0.0)
-            dd = float(res.get("max_drawdown_pct") or 0.0)
-            cyc = int(res.get("cycles") or 0)
+            pnl = _safe_f(res.get("total"), 0.0)
+            dd = _safe_f(res.get("max_drawdown_pct"), 0.0)
+            cyc = max(0, _safe_int(res.get("cycles"), 0))
 
             total_profit += pnl
             worst_maxdd = max(worst_maxdd, dd)
@@ -219,8 +239,8 @@ def evaluate_single_candidate(
                 warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            h1_profits += float(res_h1.get("total") or 0.0)
-            h2_profits += float(res_h2.get("total") or 0.0)
+            h1_profits += _safe_f(res_h1.get("total"), 0.0)
+            h2_profits += _safe_f(res_h2.get("total"), 0.0)
 
     pnl_per_drawdown_point = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
 
@@ -259,9 +279,9 @@ def _run_slice_replay(
         initial_cash=initial_cash,
     )
     metrics = (
-        float(res.get("total") or 0.0),
-        float(res.get("max_drawdown_pct") or 0.0),
-        int(res.get("cycles") or 0),
+        _safe_f(res.get("total"), 0.0),
+        _safe_f(res.get("max_drawdown_pct"), 0.0),
+        max(0, _safe_int(res.get("cycles"), 0)),
     )
     diag = _spot_replay._LAST_REPLAY_DIAG
     return (

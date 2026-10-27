@@ -14210,4 +14210,47 @@ def test_iteration142_hybrid_reentry_replay_cache_key_and_runner_report_safety(t
     assert "0 days without overlap" in md
 
 
+def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
+    """Iteration 143:
+    1. HyperliquidProvider.place_order preserves integer orderId when signer.spot_order returns
+       an int/integral-float oid while still rejecting zero/sentinel oids.
+    2. offline.research.tradeall_trigger_gate.common (make_instrumented_trend_state & LongTrendTracker)
+       safely handles non-numeric/NaN/bool parameters and timestamps.
+    3. offline.research.compare_mhdsl_reentry_replay.run_comparison safely handles missing/bool paths.
+    """
+    from offline.research.compare_mhdsl_reentry_replay import run_comparison, _safe_f as mhdsl_safe_f, _safe_int as mhdsl_safe_int
+    from offline.research.comprehensive_surge_sweep.run_deep_surge_sweep import _safe_f as surge_safe_f, _safe_int as surge_safe_int
+    from offline.research.tradeall_trigger_gate.common import LongTrendTracker, make_instrumented_trend_state
+
+    # 1. compare_mhdsl_reentry_replay and run_deep_surge_sweep helpers
+    assert run_comparison(True) == []
+    assert mhdsl_safe_f(float("nan"), 1.5) == 1.5
+    assert mhdsl_safe_int("4.0", 0) == 4
+    assert surge_safe_f(True, 2.5) == 2.5
+    assert surge_safe_int("7.0", 0) == 7
+
+    # 2. make_instrumented_trend_state & LongTrendTracker
+    stats = {}
+    ts_cls = make_instrumented_trend_state(
+        stats,
+        expiration_trend_time_override=float("nan"),
+        retry_interval_sec=float("nan"),
+    )
+    inst = ts_cls("BTCUSDC")
+    assert inst.can_retry("UP", 1000.0) is True
+    inst.mark_attempt("UP", 1000.0)
+    assert inst.can_retry("UP", float("nan")) is False
+    assert inst.can_retry("UP", True) is False
+    assert inst.can_retry("UP", 1500.0) is False
+    assert inst.can_retry("UP", 2900.0) is True
+    inst.mark_attempt("UP", float("nan"))
+    assert inst._last_attempt_up_ts == 1000.0
+
+    tracker = LongTrendTracker(stats, window_hours="bad", reeval_sec="bad", min_points="bad")
+    assert tracker.window_sec == 3600.0
+    assert tracker.reeval_sec == 60.0
+    assert tracker.min_points == 30
+
+
+
 

@@ -38,6 +38,16 @@ def default_down_cond(gradient: float, slope: float) -> bool:
     return gradient < 0 and slope > 0
 
 
+def _safe_pos_f(val, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if (math.isfinite(f) and f > 0) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def make_instrumented_trend_state(
     stats: dict,
     *,
@@ -46,14 +56,22 @@ def make_instrumented_trend_state(
     retry_interval_sec: float = 1800.0,
 ):
     """Create a fresh TrendState subclass rooted at ORIG_TREND_STATE (never chained across runs)."""
+    retry_sec = _safe_pos_f(retry_interval_sec, 1800.0)
+    exp_override = (
+        _safe_pos_f(expiration_trend_time_override, 0.0)
+        if expiration_trend_time_override is not None
+        else None
+    )
+    if exp_override == 0.0:
+        exp_override = None
 
     class InstrumentedTrendState(ORIG_TREND_STATE):
         def __init__(self, *a, **kw):
-            if expiration_trend_time_override is not None:
+            if exp_override is not None:
                 if len(a) >= 2:
-                    a = (a[0], expiration_trend_time_override, *a[2:])
+                    a = (a[0], exp_override, *a[2:])
                 else:
-                    kw["expiration_trend_time"] = expiration_trend_time_override
+                    kw["expiration_trend_time"] = exp_override
             super().__init__(*a, **kw)
             self._fired_up = False
             self._fired_down = False
@@ -129,13 +147,29 @@ def make_instrumented_trend_state(
 
         def can_retry(self, direction: str, ts: float) -> bool:
             last = self._last_attempt_up_ts if direction == "UP" else self._last_attempt_down_ts
-            return last is None or (ts - last) >= retry_interval_sec
+            if last is None:
+                return True
+            if isinstance(ts, bool) or ts is None:
+                return False
+            try:
+                ts_f = float(ts)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            return math.isfinite(ts_f) and (ts_f - last) >= retry_sec
 
         def mark_attempt(self, direction: str, ts: float):
+            if isinstance(ts, bool) or ts is None:
+                return
+            try:
+                ts_f = float(ts)
+            except (TypeError, ValueError, OverflowError):
+                return
+            if not math.isfinite(ts_f):
+                return
             if direction == "UP":
-                self._last_attempt_up_ts = ts
+                self._last_attempt_up_ts = ts_f
             else:
-                self._last_attempt_down_ts = ts
+                self._last_attempt_down_ts = ts_f
 
     return InstrumentedTrendState
 
@@ -239,12 +273,12 @@ class LongTrendTracker:
     """Multi-hour linear-regression regime tracker evaluated at fixed intervals."""
 
     def __init__(self, stats: dict, window_hours: float, reeval_sec: float, min_points: int = 30):
-        wh_f = float(window_hours) if not isinstance(window_hours, bool) and window_hours is not None else 1.0
-        re_f = float(reeval_sec) if not isinstance(reeval_sec, bool) and reeval_sec is not None else 60.0
-        mp_f = float(min_points) if not isinstance(min_points, bool) and min_points is not None else 30.0
-        self.window_sec = max(60.0, wh_f * 3600.0) if math.isfinite(wh_f) and wh_f > 0 else 3600.0
-        self.reeval_sec = max(1.0, re_f) if math.isfinite(re_f) and re_f > 0 else 60.0
-        self.min_points = max(2, int(mp_f)) if math.isfinite(mp_f) and mp_f >= 2 else 30
+        wh_f = _safe_pos_f(window_hours, 1.0)
+        re_f = _safe_pos_f(reeval_sec, 60.0)
+        mp_f = _safe_pos_f(min_points, 30.0)
+        self.window_sec = max(60.0, wh_f * 3600.0)
+        self.reeval_sec = max(1.0, re_f)
+        self.min_points = max(2, int(mp_f)) if mp_f >= 2 else 30
         self.buf = deque()
         self.last_eval_ts: Optional[float] = None
         self.sign = 0
