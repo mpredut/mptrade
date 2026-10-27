@@ -16142,5 +16142,101 @@ def test_iteration167_symbols_bapi_placeorder_and_bapi_ws_hygiene(monkeypatch):
     assert "TAOUSDC" not in ps.running_symbols
 
 
+def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygiene(tmp_path, monkeypatch):
+    from decimal import Decimal
+    import config as cfg_mod
+    import order_outcomes_log as ool
+    from providers import binance_filters as bf
+    from providers import http_resilience as hr
+    from providers import quantity as qty_mod
+
+    # 1. binance_filters.decimal_places with Decimal, str, float, and invalid inputs
+    assert bf.decimal_places(Decimal("0.001")) == 3
+    assert bf.decimal_places("0.0001") == 4
+    assert bf.decimal_places(0.01) == 2
+    assert bf._parse_bool("", default=True) is True
+    assert bf._parse_bool("y", default=False) is True
+    assert bf._parse_bool("n", default=True) is False
+    with pytest.raises(bf.BinanceFilterError):
+        bf.decimal_places(True)
+    with pytest.raises(bf.BinanceFilterError):
+        bf.decimal_places(0)
+
+    # 2. providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag
+    assert qty_mod.resolve_assets("BTCUSDT") == ("BTC", "USDT")
+    assert qty_mod.resolve_assets("ETHFDUSD") == ("ETH", "FDUSD")
+    assert qty_mod.resolve_assets("SOLGBP") == ("SOL", "GBP")
+    assert qty_mod._parse_bool_flag(2, default=False) is True
+    assert qty_mod._parse_bool_flag("y", default=False) is True
+    assert qty_mod._parse_bool_flag("n", default=True) is False
+    assert qty_mod._clean_fill_id(frozenset({"1"})) == ""
+
+    # 3. providers.http_resilience.mount_connect_retry with string numbers and raise_on_status="false"
+    mounted = {}
+
+    class _DummySession:
+        def mount(self, prefix, adapter):
+            mounted[prefix] = adapter
+
+    sess = _DummySession()
+    assert hr.mount_connect_retry(
+        sess,
+        attempts="3",
+        backoff="0.5",
+        read="2",
+        status_forcelist=["502", 503],
+        raise_on_status="false",
+    ) is True
+    assert "https://" in mounted
+    assert mounted["https://"].max_retries.raise_on_status is False
+    assert hr.mount_connect_retry(sess, status_forcelist="500") is False
+
+    # 4. config.load_config with empty TRADE_ENABLED env var
+    monkeypatch.setenv("TRADE_ENABLED", "   ")
+    monkeypatch.setattr(cfg_mod, "CONFIG_ENV_PATH", str(tmp_path / "nonexistent.env"))
+    monkeypatch.setattr(cfg_mod, "CONFIG_TXT_PATH", str(tmp_path / "nonexistent.txt"))
+    cfg_mod.load_config()
+    assert cfg_mod.is_trade_enabled() is True
+
+    # 5. order_outcomes_log with dict regime_context and primitive regime_context
+    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ool.log_order_outcome(
+        "BTCUSDC",
+        "BUY",
+        65000.0,
+        0.01,
+        "accepted",
+        "",
+        "entry",
+        caller="test",
+        regime_context={
+            "regime": "bull",
+            "strength": "0.75",
+            "source": "cache",
+            "fresh": "yes",
+            "fallback_used": "no",
+            "reason": "strong_trend",
+        },
+    )
+    ool.log_order_outcome(
+        "BTCUSDC",
+        "SELL",
+        66000.0,
+        0.01,
+        "accepted",
+        "",
+        "exit",
+        caller="test",
+        regime_context=False,
+    )
+    log_files = list(tmp_path.glob("order_outcomes_*.log"))
+    assert len(log_files) == 1
+    lines = log_files[0].read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert "bull|0.7500|cache|True|False|strong_trend" in lines[0]
+    assert len(lines[1].split("|")) == 9
+
+
+
 
 

@@ -6,12 +6,12 @@ import math
 from typing import Callable, Optional
 
 
-QUOTE_SUFFIXES = ("USDC", "EUR", "RON", "BTC", "ETH", "USD")
+QUOTE_SUFFIXES = ("USDT", "USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
 _INVALID_FILL_IDS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
 
 
 def _clean_fill_id(val: object) -> str:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return ""
     if isinstance(val, float):
         if not math.isfinite(val):
@@ -27,24 +27,21 @@ def _clean_fill_id(val: object) -> str:
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
+            return fb
+        return bool(val)
     s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "false", "no", "off"}:
+    if s in {"0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 def remaining_average_cost(fills, held_qty):

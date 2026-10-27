@@ -26,7 +26,7 @@ def _parse_bool(value, default: bool = False) -> bool:
         lowered = cleaned.lower()
         if lowered in ("true", "1", "yes", "on", "y", "t"):
             return True
-        if lowered in ("false", "0", "no", "off", "n", "f", ""):
+        if lowered in ("false", "0", "no", "off", "n", "f"):
             return False
         return fb
     return fb
@@ -61,9 +61,9 @@ def _read_properties_file(path: str) -> dict:
                             value = value.split("#", 1)[0].strip().strip("'").strip('"')
                     else:
                         value = value.split("#", 1)[0].strip()
-                    if value.lower() in ("true", "1", "yes", "on"):
+                    if value.lower() in ("true", "1", "yes", "on", "y", "t"):
                         value = True
-                    elif value.lower() in ("false", "0", "no", "off"):
+                    elif value.lower() in ("false", "0", "no", "off", "n", "f"):
                         value = False
                     result[key] = value
     except Exception:
@@ -80,23 +80,24 @@ def load_config():
 
     # 1. Load from centralized config.env
     env_file_settings = _read_properties_file(CONFIG_ENV_PATH)
-    if "TRADE_ENABLED" in env_file_settings:
-        new_config["trade_enabled"] = _parse_bool(env_file_settings["TRADE_ENABLED"])
-    elif "trade_enabled" in env_file_settings:
-        new_config["trade_enabled"] = _parse_bool(env_file_settings["trade_enabled"])
+    if "TRADE_ENABLED" in env_file_settings and env_file_settings["TRADE_ENABLED"] != "":
+        new_config["trade_enabled"] = _parse_bool(env_file_settings["TRADE_ENABLED"], default=True)
+    elif "trade_enabled" in env_file_settings and env_file_settings["trade_enabled"] != "":
+        new_config["trade_enabled"] = _parse_bool(env_file_settings["trade_enabled"], default=True)
 
     # 2. Legacy config.txt if present
     txt_settings = _read_properties_file(CONFIG_TXT_PATH)
     for k, v in txt_settings.items():
         if k.lower() == "trade_enabled":
-            new_config["trade_enabled"] = _parse_bool(v)
+            if v != "":
+                new_config["trade_enabled"] = _parse_bool(v, default=True)
         else:
             new_config[k.lower()] = v
 
     # 3. Environment variables take highest priority
     env_trade = os.environ.get("TRADE_ENABLED")
-    if env_trade is not None:
-        new_config["trade_enabled"] = _parse_bool(env_trade)
+    if env_trade is not None and env_trade.strip() != "":
+        new_config["trade_enabled"] = _parse_bool(env_trade, default=True)
 
     # Default to true if not specified
     if "trade_enabled" not in new_config:
@@ -112,15 +113,14 @@ def config_watcher(interval=5 * 60):  # 5 minutes
     """
     Periodically monitor configuration and reload the cache.
     """
-    if (
-        isinstance(interval, bool)
-        or not isinstance(interval, (int, float))
-        or not math.isfinite(float(interval))
-        or float(interval) <= 0
-    ):
-        wait_sec = 5.0 * 60.0
-    else:
-        wait_sec = float(interval)
+    wait_sec = 5.0 * 60.0
+    if not isinstance(interval, bool) and interval is not None:
+        try:
+            cand = float(interval)
+            if math.isfinite(cand) and cand > 0:
+                wait_sec = cand
+        except (TypeError, ValueError, OverflowError):
+            pass
     while not _watcher_stop_event.is_set():
         load_config()
         if _watcher_stop_event.wait(wait_sec):

@@ -24,7 +24,7 @@ _INVALID_LOG_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
 
 def _sanitize_outcome_field(value):
     """Remove characters that would break the pipe-delimited record format."""
-    if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+    if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
         return ""
     if isinstance(value, float) and not math.isfinite(value):
         return ""
@@ -33,7 +33,7 @@ def _sanitize_outcome_field(value):
 
 
 def _clean_numeric_field(value):
-    if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+    if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
         return ""
     if isinstance(value, float):
         return value if math.isfinite(value) else ""
@@ -50,7 +50,7 @@ def _clean_numeric_field(value):
 
 
 def _clean_bool_field(value) -> str:
-    if value is None or isinstance(value, (dict, list, tuple, set)):
+    if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
         return ""
     if isinstance(value, bool):
         return str(value)
@@ -65,6 +65,12 @@ def _clean_bool_field(value) -> str:
         if s in {"0", "false", "no", "off", "n", "f"}:
             return "False"
     return ""
+
+
+def _regime_attr(ctx, key: str, default=None):
+    if isinstance(ctx, dict):
+        return ctx.get(key, default)
+    return getattr(ctx, key, default)
 
 
 def log_order_outcome(
@@ -98,8 +104,10 @@ def log_order_outcome(
         mot_val = _sanitize_outcome_field(motivation)
         cols = [time.time(), sym_val, side_val, price_val, qty_val, out_val,
                 ref_val, cal_val, mot_val]
-        if regime_context is not None:
-            strength_val = getattr(regime_context, "strength", None)
+        if regime_context is not None and not isinstance(
+            regime_context, (bool, int, float, str, bytes, list, tuple, set, frozenset)
+        ):
+            strength_val = _regime_attr(regime_context, "strength", None)
             strength_str = ""
             if strength_val is not None and not isinstance(strength_val, bool):
                 try:
@@ -108,11 +116,11 @@ def log_order_outcome(
                         strength_str = f"{sf:.4f}"
                 except (TypeError, ValueError, OverflowError):
                     strength_str = ""
-            reg_raw = getattr(regime_context, "regime", "")
-            src_raw = getattr(regime_context, "source", "")
-            rsn_raw = getattr(regime_context, "reason", "")
-            fresh_raw = getattr(regime_context, "fresh", None)
-            fb_raw = getattr(regime_context, "fallback_used", None)
+            reg_raw = _regime_attr(regime_context, "regime", "")
+            src_raw = _regime_attr(regime_context, "source", "")
+            rsn_raw = _regime_attr(regime_context, "reason", "")
+            fresh_raw = _regime_attr(regime_context, "fresh", None)
+            fb_raw = _regime_attr(regime_context, "fallback_used", None)
             cols.extend([
                 _sanitize_outcome_field(reg_raw) if isinstance(reg_raw, str) else "",
                 strength_str,

@@ -20,6 +20,25 @@ from __future__ import annotations
 import math
 
 
+def _as_bool(value, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return fb
+    if isinstance(value, (int, float)):
+        if not math.isfinite(float(value)):
+            return fb
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("1", "true", "yes", "on", "y", "t"):
+            return True
+        if s in ("0", "false", "no", "off", "n", "f"):
+            return False
+    return fb
+
+
 def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
                         read: int = 0, status_forcelist=None,
                         raise_on_status: bool = False) -> bool:
@@ -36,13 +55,14 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
     """
     try:
         if (
-            isinstance(attempts, bool)
+            session is None
+            or isinstance(attempts, bool)
             or isinstance(read, bool)
             or isinstance(backoff, bool)
-            or isinstance(status_forcelist, bool)
-            or not isinstance(attempts, (int, float))
-            or not isinstance(read, (int, float))
-            or not isinstance(backoff, (int, float))
+            or isinstance(status_forcelist, (bool, str, bytes))
+            or not isinstance(attempts, (int, float, str))
+            or not isinstance(read, (int, float, str))
+            or not isinstance(backoff, (int, float, str))
         ):
             return False
         att_f = float(attempts)
@@ -54,17 +74,24 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
         read_i = int(read_f)
         if att_i < 0 or read_i < 0 or bo_f < 0.0:
             return False
+        forcelist = None
+        if status_forcelist:
+            forcelist = []
+            for code in status_forcelist:
+                if isinstance(code, bool):
+                    return False
+                forcelist.append(int(code))
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         retry = Retry(
             total=att_i,
             connect=att_i,
             read=read_i,
-            status=att_i if status_forcelist else 0,
+            status=att_i if forcelist else 0,
             redirect=0,
             backoff_factor=bo_f,
-            status_forcelist=list(status_forcelist) if status_forcelist else None,
-            raise_on_status=bool(raise_on_status),
+            status_forcelist=forcelist if forcelist else None,
+            raise_on_status=_as_bool(raise_on_status, default=False),
         )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("https://", adapter)

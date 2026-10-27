@@ -21,22 +21,23 @@ def binance_filter_refusal_reason(error: Exception) -> str:
 
 
 def _parse_bool(value, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if value is None:
-        return bool(default)
+        return fb
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
         if not math.isfinite(float(value)):
-            return bool(default)
+            return fb
         return bool(value)
     if isinstance(value, str):
         cleaned = value.strip().lower()
-        if cleaned in ("1", "true", "yes", "on"):
+        if cleaned in ("1", "true", "yes", "on", "y", "t"):
             return True
-        if cleaned in ("0", "false", "no", "off", ""):
+        if cleaned in ("0", "false", "no", "off", "n", "f"):
             return False
-        return bool(default)
-    return bool(default)
+        return fb
+    return fb
 
 
 def _decimal(value, *, name: str, allow_zero: bool = True) -> Decimal:
@@ -176,8 +177,16 @@ class BinanceOrderRules:
         return qty, normalized_price
 
 
-def decimal_places(step: Decimal) -> int:
+def decimal_places(step: Decimal | str | int | float) -> int:
     """Return display precision implied by a positive tick or step."""
-    if not isinstance(step, Decimal) or not step.is_finite() or step <= 0:
+    if isinstance(step, bool) or step is None:
         raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
-    return max(0, -int(step.normalize().as_tuple().exponent))
+    if isinstance(step, Decimal):
+        if not step.is_finite() or step <= 0:
+            raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
+        parsed = step
+    elif isinstance(step, (int, float, str)):
+        parsed = _decimal(step, name="step for decimal_places", allow_zero=False)
+    else:
+        raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
+    return max(0, -int(parsed.normalize().as_tuple().exponent))
