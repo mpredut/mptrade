@@ -41,9 +41,13 @@ def _safe_pos_interval(val: Any, default: float) -> float:
 def _as_bool(val: Any) -> bool:
     if isinstance(val, bool):
         return val
+    if val is None:
+        return False
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else False
     if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    return bool(val)
+        return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
+    return False
 
 
 class IntelligenceTelemetryDaemon:
@@ -196,6 +200,8 @@ class IntelligenceTelemetryDaemon:
         try:
             news_snap = self.news_collector.fetch(force_refresh=force)
             assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
+            if not assessment:
+                return False
             logger.info(
                 "Macro threat assessment: threat=%s, risk=%.2f, headlines=%d",
                 assessment.threat_level, assessment.risk_score, assessment.headlines_analyzed,
@@ -294,10 +300,16 @@ class IntelligenceTelemetryDaemon:
         """Write heartbeat metadata atomically to cachedb."""
         try:
             from state_io import atomic_write_json
+            raw_status = status if isinstance(status, dict) else {}
+            hb_ts = _safe_pos_interval(raw_status.get("ts"), time.time())
+            safe_status = {
+                k: (hb_ts if k == "ts" else (None if isinstance(v, float) and not math.isfinite(v) else v))
+                for k, v in raw_status.items()
+            }
             payload = {
                 "pid": os.getpid(),
                 "status": "alive",
-                "ts": status.get("ts", time.time()),
+                "ts": hb_ts,
                 "symbols": self.symbols,
                 "intervals": {
                     "orderbook": self.orderbook_interval_sec,
@@ -306,7 +318,7 @@ class IntelligenceTelemetryDaemon:
                     "macro": self.macro_interval_sec,
                     "macro_llm": self.macro_llm_interval_sec,
                 },
-                "last_run": status,
+                "last_run": safe_status,
             }
             atomic_write_json(self.heartbeat_path, payload, indent=2)
         except Exception as e:

@@ -316,6 +316,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
 def print_intelligence_report(report: Dict[str, Any]) -> None:
     """Print structured, human-readable terminal report."""
+    if not isinstance(report, dict):
+        report = {}
     symbol = str(report.get("symbol") or "UNKNOWN")
     raw_p1 = report.get("pillar1_internal")
     p1 = raw_p1 if isinstance(raw_p1, dict) else {}
@@ -402,14 +404,23 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
         print("  • Macro Threat:   [No threat assessment in cachedb]")
 
     # Order Guard Preview
+    def _as_bool_preview(val: Any) -> bool:
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val) if math.isfinite(val) else False
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
+        return False
+
     print("\n🚦 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
     buy_std = gp.get("buy_standard")
     if isinstance(buy_std, dict) and buy_std:
-        status_std = "✅ ALLOWED" if buy_std.get("allowed") else "⛔ BLOCKED"
+        status_std = "✅ ALLOWED" if _as_bool_preview(buy_std.get("allowed")) else "⛔ BLOCKED"
         print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {_safe_float(buy_std.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_std.get('reason', '')}")
     buy_hi = gp.get("buy_high_stake")
     if isinstance(buy_hi, dict) and buy_hi:
-        status_hi = "✅ ALLOWED" if buy_hi.get("allowed") else "⛔ BLOCKED"
+        status_hi = "✅ ALLOWED" if _as_bool_preview(buy_hi.get("allowed")) else "⛔ BLOCKED"
         print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {_safe_float(buy_hi.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_hi.get('reason', '')}")
 
     print("=" * 76 + "\n")

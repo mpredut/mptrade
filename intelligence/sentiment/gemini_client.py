@@ -49,11 +49,20 @@ class GeminiClient:
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
         project_id: Optional[str] = None,
     ) -> None:
-        self.model = model
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self.model = model.strip() if isinstance(model, str) and model.strip() else DEFAULT_MODEL
+        raw_key = (
+            api_key
+            if isinstance(api_key, str) and api_key.strip()
+            else (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "")
+        )
+        self.api_key = raw_key.strip() if isinstance(raw_key, str) and raw_key.strip() else None
         self.cli_path = resolve_agy_bot_bin(cli_path) if cli_path else AGY_CLI_PATH
         # agy resolves `--project` by name or id; the configured name is the SSOT.
-        self.project_id = project_id or required_env("AGY_PROJECT")
+        self.project_id = (
+            project_id.strip()
+            if isinstance(project_id, str) and project_id.strip()
+            else required_env("AGY_PROJECT")
+        )
         self._custom_runner = custom_runner
         self._cache: Dict[str, tuple[float, str]] = {}
 
@@ -69,8 +78,10 @@ class GeminiClient:
         conversation_id: Optional[str] = None,
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
         now = time.time()
-        selected_model = model or self.model
+        selected_model = (model.strip() if isinstance(model, str) and model.strip() else None) or self.model
         timeout_f = 15.0
         if timeout_sec is not None and not isinstance(timeout_sec, bool):
             try:

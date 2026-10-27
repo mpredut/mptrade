@@ -3812,3 +3812,59 @@ def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monke
     assert asf._as_bool_flag("false", True) is False
 
 
+def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(capsys, tmp_path):
+    import math
+    from intelligence import cli as icli
+    from intelligence import daemon as idaemon
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
+
+    # 1. IntelligenceTelemetryDaemon._as_bool rejects NaN and write_heartbeat sanitizes NaN/None status
+    assert idaemon._as_bool(float("nan")) is False
+    dm = object.__new__(idaemon.IntelligenceTelemetryDaemon)
+    dm.symbols = ["BTCUSDC"]
+    dm.orderbook_interval_sec = 15.0
+    dm.derivatives_interval_sec = 30.0
+    dm.whale_interval_sec = 60.0
+    dm.macro_interval_sec = 120.0
+    dm.macro_llm_interval_sec = 3600.0
+    dm.heartbeat_path = str(tmp_path / "dm.hb")
+    dm.write_heartbeat({"ts": float("nan"), "extra": float("inf")})
+    dm_hb = json.loads((tmp_path / "dm.hb").read_text(encoding="utf-8"))
+    assert math.isfinite(dm_hb["ts"]) and dm_hb["ts"] > 0
+    assert dm_hb["last_run"]["extra"] is None
+
+    # 2. GeminiClient rejects blank/non-string prompts without calling custom_runner and sanitizes blank model/api_key
+    calls = []
+    gc = GeminiClient(model="   ", api_key="   ", project_id="   ", custom_runner=lambda p, m, t: (calls.append((p, m, t)), "ok")[1])
+    assert gc.api_key is None
+    assert gc.model != ""
+    assert gc.project_id != ""
+    assert gc.query_text("   ") is None
+    assert gc.query_text(None) is None  # type: ignore[arg-type]
+    assert calls == []
+    assert gc.query_text("valid prompt", model="   ") == "ok"
+    assert calls[0][1] == gc.model
+
+    # 3. SentimentAdvisor.review treats NaN force_refresh as False so fresh cached assessment is returned
+    adv = object.__new__(SentimentAdvisor)
+    adv.cache_ttl_sec = 3600.0
+    adv._last_eval_ts = 1000.0
+    cached = SentimentAdvisorAssessment("NEUTRAL", "MODERATE", 0.5, "ok", [], "HOLD", 1000.0)
+    adv._cached_assessment = cached
+    assert adv.review(force_refresh=float("nan"), now_ts=1050.0) is cached  # type: ignore[arg-type]
+
+    # 4. intelligence.cli.print_intelligence_report handles non-dict report and string "false" allowed flag
+    icli.print_intelligence_report(None)  # type: ignore[arg-type]
+    icli.print_intelligence_report(
+        {
+            "symbol": "BTCUSDC",
+            "guard_preview": {
+                "buy_standard": {"allowed": "false", "suggested_scale": 0.0, "reason": "vetoed"},
+            },
+        }
+    )
+    out = capsys.readouterr().out
+    assert "⛔ BLOCKED" in out
+
+

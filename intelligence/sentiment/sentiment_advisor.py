@@ -153,10 +153,14 @@ class SentimentAdvisor:
         now_ts: Optional[float] = None,
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
-        if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+        if isinstance(force_refresh, bool):
+            pass
+        elif isinstance(force_refresh, str):
+            force_refresh = force_refresh.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
+        elif isinstance(force_refresh, (int, float)):
+            force_refresh = bool(force_refresh) if math.isfinite(force_refresh) else False
         else:
-            force_refresh = bool(force_refresh)
+            force_refresh = False
         now = time.time()
         if now_ts is not None and not isinstance(now_ts, bool):
             try:
