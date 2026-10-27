@@ -135,9 +135,9 @@ class CompositeMarketIntelligence:
         recognized_tokens = [t for t in raw_bypass_tokens if t in _ALL_GUARD_ALIASES]
         bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
         side = side.strip().upper() if isinstance(side, str) else ""
-        if side == "B":
+        if side in ("B", "BID", "LONG"):
             side = "BUY"
-        elif side == "S":
+        elif side in ("S", "A", "ASK", "SHORT"):
             side = "SELL"
 
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
@@ -164,6 +164,8 @@ class CompositeMarketIntelligence:
             else:
                 try:
                     sf = float(raw_scale)
+                    if math.isfinite(sf) and 1.0 < sf <= 100.0:
+                        sf = sf / 100.0
                     s_val = sf if (math.isfinite(sf) and 0.0 <= sf <= 1.0) else 1.0
                 except (TypeError, ValueError):
                     s_val = 1.0
@@ -460,9 +462,9 @@ class CompositeMarketIntelligence:
             active_trigger = triggered_events[0] if triggered_events else None
         raw_side = getattr(active_trigger.side, "value", active_trigger.side) if active_trigger else "HOLD"
         side = str(raw_side or "HOLD").strip().upper() if not isinstance(raw_side, bool) else "HOLD"
-        if side == "B":
+        if side in ("B", "BID", "LONG"):
             side = "BUY"
-        elif side == "S":
+        elif side in ("S", "A", "ASK", "SHORT"):
             side = "SELL"
 
         # Evaluate guards against active side
@@ -496,6 +498,8 @@ class CompositeMarketIntelligence:
         if raw_sc is not None and not isinstance(raw_sc, bool):
             try:
                 sf = float(raw_sc)
+                if math.isfinite(sf) and 1.0 < sf <= 100.0:
+                    sf = sf / 100.0
                 sc_val = min(1.0, max(0.0, sf)) if math.isfinite(sf) else 0.0
             except (TypeError, ValueError, OverflowError):
                 sc_val = 0.0

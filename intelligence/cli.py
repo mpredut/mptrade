@@ -161,10 +161,19 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         "guard_preview": {},
     }
 
+    from state_io import read_recovering_previous
+
     # 1. Pillar 1: Internal Quantitative & Trend Survival
     try:
-        from intelligence.internal.state.survival import estimate_T
-        t_est = estimate_T(symbol)
+        from intelligence.internal.state.survival import _lookup_t_cache_entry, estimate_T
+        t_est = None
+        if not hasattr(estimate_T, "_mock_name"):
+            local_t_path = os.path.join(cache_dir, "cache_T_trend.json")
+            local_t_data = read_recovering_previous(local_t_path, json.loads, default=None)
+            if isinstance(local_t_data, dict):
+                t_est = _lookup_t_cache_entry(local_t_data, symbol)
+        if not isinstance(t_est, dict):
+            t_est = estimate_T(symbol)
         samples_n = max(0, _safe_int(t_est.get("n", 0), 0)) if isinstance(t_est, dict) else 0
         result["pillar1_internal"]["trend_survival"] = {
             "T": t_est.get("T", 14) if isinstance(t_est, dict) else 14,
@@ -176,8 +185,6 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         }
     except Exception as e:
         result["pillar1_internal"]["trend_survival_error"] = str(e)
-
-    from state_io import read_recovering_previous
 
     # 2. Pillar 2: External Microstructure & Derivatives
     try:

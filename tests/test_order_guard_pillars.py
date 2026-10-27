@@ -805,6 +805,75 @@ def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(
     assert dec_long.allowed is True and dec_long.suggested_scale == 0.40
 
 
+def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
+    """Verify CompositeMarketIntelligence side alias & percentage scale normalization, IntelligenceTelemetryDaemon update_macro now propagation, and intelligence.cli local cache_T_trend lookup."""
+    import json
+    from types import SimpleNamespace
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.cli import inspect_symbol_intelligence
+    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+
+    # 1. CompositeMarketIntelligence.evaluate_guards normalizes LONG/BID/SHORT/ASK and percentage scale
+    comp = CompositeMarketIntelligence()
+    elev_assess = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.6,
+        summary="Tensions",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=3,
+        ts=1000.0,
+    )
+    dec_long = comp.evaluate_guards("BTCUSDC", "LONG", 60000.0, geopolitical_assessment=elev_assess)
+    assert dec_long.allowed is True and dec_long.suggested_scale == 0.50
+
+    monkeypatch.setattr(
+        comp.geopolitical_guard,
+        "check",
+        lambda sym, side, assess: SimpleNamespace(
+            guard_name="GeopoliticalShockGuard",
+            allowed=True,
+            brake_action=BrakeAction.DOWNSCALE_QTY,
+            suggested_scale=35.0,
+            reason="pct_scale",
+            metadata={},
+        ),
+    )
+    dec_pct = comp.evaluate_guards("BTCUSDC", "BID", 60000.0, geopolitical_assessment=elev_assess)
+    assert dec_pct.allowed is True and dec_pct.suggested_scale == 0.35
+
+    # 2. IntelligenceTelemetryDaemon.run_cycle propagates now to update_macro -> news_collector.fetch & geopolitical_analyzer.assess
+    daemon = IntelligenceTelemetryDaemon(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_external=True, skip_macro=False)
+    captured_now = {}
+
+    def _fake_fetch(*, force_refresh=False, now_ts=None):
+        captured_now["fetch_now"] = now_ts
+        return SimpleNamespace(headlines=(), has_critical_shock_keywords=False)
+
+    def _fake_assess(snap, *, force_refresh=False, now_ts=None):
+        captured_now["assess_now"] = now_ts
+        return elev_assess
+
+    monkeypatch.setattr(daemon.news_collector, "fetch", _fake_fetch)
+    monkeypatch.setattr(daemon.geopolitical_analyzer, "assess", _fake_assess)
+    res = daemon.run_cycle(force=True, now=12345.0)
+    assert res["macro_updated"] is True
+    assert captured_now["fetch_now"] == 12345.0
+    assert captured_now["assess_now"] == 12345.0
+
+    # 3. inspect_symbol_intelligence reads cache_T_trend.json from cache_dir before falling back to estimate_T
+    (tmp_path / "cache_T_trend.json").write_text(
+        json.dumps({"BTCUSDC": {"T": 11, "T_emp": 12.5, "median_d": 4.2, "p90_d": 9.1, "n": 42, "ts": 1000.0}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("order_guard.check_intelligence_guards", lambda *a, **kw: (True, "ok", 1.0))
+    rep = inspect_symbol_intelligence("BTC/USDC", cache_dir=str(tmp_path))
+    assert rep["pillar1_internal"]["trend_survival"]["T"] == 11
+    assert rep["pillar1_internal"]["trend_survival"]["P90_days"] == 9.1
+    assert rep["pillar1_internal"]["trend_survival"]["samples"] == 42
+
+
+
 
 
 

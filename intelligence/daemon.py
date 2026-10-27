@@ -194,12 +194,18 @@ class IntelligenceTelemetryDaemon:
             logger.warning("[%s] Failed updating whale positioning: %s", symbol, e)
         return False
 
-    def update_macro(self, force: bool = False) -> bool:
+    def update_macro(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro news and update geopolitical threat assessment."""
         force = _as_bool(force)
         try:
-            news_snap = self.news_collector.fetch(force_refresh=force)
-            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
+            try:
+                news_snap = self.news_collector.fetch(force_refresh=force, now_ts=now)
+            except TypeError:
+                news_snap = self.news_collector.fetch(force_refresh=force)
+            try:
+                assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=now)
+            except TypeError:
+                assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
             if not assessment:
                 return False
             logger.info(
@@ -258,7 +264,11 @@ class IntelligenceTelemetryDaemon:
         # Pillar 4: Macro Geopolitical Shield update
         if not self.skip_macro:
             if force or not (0.0 <= (current_ts - self._last_macro_ts) < self.macro_interval_sec):
-                if self.update_macro(force=force):
+                try:
+                    macro_ok = self.update_macro(force=force, now=current_ts)
+                except TypeError:
+                    macro_ok = self.update_macro(force=force)
+                if macro_ok:
                     results["macro_updated"] = True
                     self._last_macro_ts = current_ts
 
@@ -299,7 +309,7 @@ class IntelligenceTelemetryDaemon:
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb."""
         try:
-            from state_io import atomic_write_json
+            from state_io import save_json_state
             raw_status = status if isinstance(status, dict) else {}
             hb_ts = _safe_pos_interval(raw_status.get("ts"), time.time())
             safe_status = {
@@ -320,7 +330,7 @@ class IntelligenceTelemetryDaemon:
                 },
                 "last_run": safe_status,
             }
-            atomic_write_json(self.heartbeat_path, payload, indent=2)
+            save_json_state(self.heartbeat_path, payload, indent=2)
         except Exception as e:
             logger.debug("Failed writing daemon heartbeat: %s", e)
 
