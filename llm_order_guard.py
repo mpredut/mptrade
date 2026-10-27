@@ -193,6 +193,8 @@ def evaluate_high_stake_order_guard(
             cd_key = (str(symbol or "").strip().upper().replace("/", ""), side)
             if not (0.0 <= (now_ts - _LLM_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                 _LLM_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+                while len(_LLM_SHADOW_NOTIFY_COOLDOWN) > 1000:
+                    _LLM_SHADOW_NOTIFY_COOLDOWN.pop(next(iter(_LLM_SHADOW_NOTIFY_COOLDOWN)), None)
                 try:
                     from notify_engine.alertnotifiers import notify
                     from orchestratorOS.agy.topics import topic_spec
@@ -317,6 +319,8 @@ def check_geopolitical_order_guards(
                     now_ts = _resolve_now_ts(now)
                     if not (0.0 <= (now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                         _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+                        while len(_GEO_SHADOW_NOTIFY_COOLDOWN) > 1000:
+                            _GEO_SHADOW_NOTIFY_COOLDOWN.pop(next(iter(_GEO_SHADOW_NOTIFY_COOLDOWN)), None)
                         try:
                             from notify_engine.alertnotifiers import notify
                             from orchestratorOS.agy.topics import topic_spec

@@ -13243,6 +13243,25 @@ def test_iteration127_prune_threads_replay_provider_rtrade_pair_and_state_store_
     assert store.fail_closed is False
 
 
+def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
+    """Verify order_guard config getters accept provider instances/booleans and compute_weight_capped_qty preserves +inf auto-quantity while rejecting -inf/NaN."""
+    import order_guard as og
+
+    fake_kraken = type("KrakenProv", (), {"name": " kraken "})()
+    assert og.get_margin_cfg(fake_kraken) == og.get_margin_cfg("kraken")
+    assert og.get_weight_proxy_cfg(fake_kraken) == og.get_weight_proxy_cfg("kraken")
+    assert og.get_chop_weight_cfg(fake_kraken) == og.get_chop_weight_cfg("kraken")
+    assert og.get_max_daily_trades_cfg(fake_kraken) == og.get_max_daily_trades_cfg("kraken")
+    assert og.get_antispam_sec_cfg(fake_kraken) == og.get_antispam_sec_cfg("kraken")
+    assert og.get_safeback_sec_cfg(fake_kraken) == og.get_safeback_sec_cfg("kraken")
+    assert og.get_margin_cfg(True) == og.get_margin_cfg("default")
+
+    assert og.compute_weight_capped_qty(0.5, 100.0, float("inf"), 10.0, 0.0) == 5.0
+    assert og.compute_weight_capped_qty(0.5, 100.0, float("-inf"), 10.0, 0.0) == 0.0
+    assert og.compute_weight_capped_qty(0.5, 100.0, float("nan"), 10.0, 0.0) == 0.0
+
+
+
 
 
 

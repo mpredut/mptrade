@@ -26,15 +26,23 @@ def get_coinmarketcap_coins():
     coins = []
     start = 1  # Start with the first listing.
     limit = 1000  # Requested page size.
+    max_pages = 50
+    pages = 0
 
-    while True:
+    while pages < max_pages:
+        pages += 1
         params_cmc = {
             'start': str(start),
             'limit': str(limit),
             'convert': 'USD'
         }
         time.sleep(5)
-        response = requests.get(url_cmc, headers=headers_cmc, params=params_cmc, timeout=15)
+        try:
+            response = requests.get(url_cmc, headers=headers_cmc, params=params_cmc, timeout=15)
+        except requests.RequestException:
+            break
+        if getattr(response, "status_code", 200) != 200:
+            break
         try:
             data = response.json()
         except ValueError:
@@ -90,7 +98,12 @@ def get_coinmarketcap_coins():
 # Fetch all Binance ticker prices and strip trailing ``USDT`` suffix from symbols.
 def get_binance_coins():
     url_binance = "https://api.binance.com/api/v3/ticker/price"
-    response = requests.get(url_binance, timeout=15)
+    try:
+        response = requests.get(url_binance, timeout=15)
+    except requests.RequestException:
+        return {}
+    if getattr(response, "status_code", 200) != 200:
+        return {}
     try:
         data = response.json()
     except ValueError:

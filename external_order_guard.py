@@ -154,6 +154,8 @@ def check_external_order_guards(
         if math.isfinite(last_cd) and 0.0 <= (now_ts - last_cd) < 1800.0:
             return
         _MICRO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+        while len(_MICRO_SHADOW_NOTIFY_COOLDOWN) > 1000:
+            _MICRO_SHADOW_NOTIFY_COOLDOWN.pop(next(iter(_MICRO_SHADOW_NOTIFY_COOLDOWN)), None)
         try:
             from notify_engine.alertnotifiers import notify
             price_str = f" @ ${price_f:,.2f}" if price_f > 0.0 else ""

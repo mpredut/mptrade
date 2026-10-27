@@ -633,7 +633,8 @@ def _symbol_trend(
 def get_margin_cfg(provider_name):
     """Return the venue's configured minimum profit percentage from order_guard.conf."""
     m = _load_margins()
-    return m.get((provider_name or "").lower(), m["default"])
+    venue = _provider_name(provider_name).strip().lower()
+    return m.get(venue, m["default"])
 
 
 def _is_favorable_trend(side: str, trend: str) -> bool:
@@ -747,7 +748,8 @@ def get_weight_proxy_cfg(provider_name):
     its own long trend (e.g. HYPE -> BTC until data exists). Uses `<venue>_weight_proxy`
     or `default_weight_proxy`."""
     m = _load_margins()
-    return m.get((provider_name or "").lower() + "_weight_proxy", m["default_weight_proxy"])
+    venue = _provider_name(provider_name).strip().lower()
+    return m.get(venue + "_weight_proxy", m["default_weight_proxy"])
 
 
 def _order_ts_qty_price(o):
@@ -931,7 +933,8 @@ def window_reference(
 def get_chop_weight_cfg(provider_name):
     """Return the venue's conservative chop fallback weight from order_guard.conf."""
     m = _load_margins()
-    key = (provider_name or "").lower() + "_chop_weight"
+    venue = _provider_name(provider_name).strip().lower()
+    key = venue + "_chop_weight"
     val = float(m.get(key, m["default_chop_weight"]))
     if not math.isfinite(val) or val <= 0:
         raise ValueError(f"Invalid chop_weight in order_guard.conf: {val!r}")
@@ -1052,21 +1055,24 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
 def get_max_daily_trades_cfg(provider_name):
     """Return the venue's 24h trade cap strictly from order_guard.conf."""
     m = _load_margins()
-    key = (provider_name or "").lower() + "_max_daily_trades"
+    venue = _provider_name(provider_name).strip().lower()
+    key = venue + "_max_daily_trades"
     return int(m.get(key, m["default_max_daily_trades"]))
 
 
 def get_antispam_sec_cfg(provider_name):
     """Return the per-symbol anti-spam pause in seconds from order_guard.conf."""
     m = _load_margins()
-    key = (provider_name or "").lower() + "_antispam_sec"
+    venue = _provider_name(provider_name).strip().lower()
+    key = venue + "_antispam_sec"
     return float(m.get(key, m["default_antispam_sec"]))
 
 
 def get_safeback_sec_cfg(provider_name):
     """Return the per-venue historical lookback window in seconds for the profit guard reference."""
     m = _load_margins()
-    key = (provider_name or "").lower() + "_safeback_sec"
+    venue = _provider_name(provider_name).strip().lower()
+    key = venue + "_safeback_sec"
     return float(m.get(key, m["default_safeback_sec"]))
 
 
@@ -1212,6 +1218,8 @@ def _read_cached_trend_duration(symbol: str) -> float:
         if not isinstance(data, dict):
             return 0.0
         all_items = data.get("items", {})
+        if not isinstance(all_items, dict):
+            return 0.0
         items = all_items.get(symbol) or all_items.get(symbol.upper())
         if not items:
             su_base = _normalize_base_asset(symbol)
@@ -1261,6 +1269,8 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
         if not isinstance(data, dict):
             return None
         all_items = data.get("items", {})
+        if not isinstance(all_items, dict):
+            return None
         items = all_items.get(symbol) or all_items.get(symbol.upper())
         if not items:
             su_base = _normalize_base_asset(symbol)
@@ -1272,8 +1282,8 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
             for entry in reversed(items):
                 if entry is None:
                     break
-                if isinstance(entry, dict) and entry.get("direction"):
-                    d = str(entry.get("direction")).strip().lower()
+                if isinstance(entry, dict) and isinstance(entry.get("direction"), str):
+                    d = entry.get("direction").strip().lower()
                     if d in ("up", "down", "bull", "bear"):
                         return d
     except Exception:
