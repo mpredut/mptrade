@@ -21,8 +21,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 KRAKEN_DIR = ROOT / "kraken"
-sys.path.insert(0, str(KRAKEN_DIR))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(KRAKEN_DIR) not in sys.path:
+    sys.path.append(str(KRAKEN_DIR))
 
 from botcore import parse_dotenv  # noqa: E402
 from kraken import market_data as kraken_market_data  # noqa: E402

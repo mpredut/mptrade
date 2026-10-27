@@ -16,8 +16,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 KRAKEN_DIR = ROOT / "kraken"
-sys.path.insert(0, str(KRAKEN_DIR))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(KRAKEN_DIR) not in sys.path:
+    sys.path.append(str(KRAKEN_DIR))
 
 from kraken.kraken_common import load_dotenv  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
@@ -68,17 +70,33 @@ def _git_state() -> dict:
 def _load_expected_dataset(manifest_path: Path, interval: int) -> dict:
     with manifest_path.open(encoding="utf-8") as handle:
         manifest = json.load(handle)
-    expected = (manifest.get("datasets") or {}).get(str(interval))
-    if not expected:
+    if not isinstance(manifest, dict):
+        raise ValueError("the manifest must be a JSON object")
+    datasets_map = manifest.get("datasets")
+    expected = datasets_map.get(str(interval)) if isinstance(datasets_map, dict) else None
+    if not isinstance(expected, dict) or not expected:
         raise ValueError(f"the manifest does not declare the {interval}m dataset")
     return {"manifest": manifest, "expected": expected}
 
 
 def strat_params_from_dict(values: dict) -> StratParams:
     """Build StratParams from a stored report, dropping fields that no longer exist."""
+    spot_defaults = {
+        "currency": "USDC",
+        "entry_amount": 50.0,
+        "entry_discount_pct": 0.2,
+        "dca_amount": 30.0,
+        "dca_drop_pct": 2.0,
+        "check_minutes": 60.0,
+        "takeprofit_pct": 5.0,
+        "max_budget": 500.0,
+        "max_dca_buys": 10,
+        "enable_takeprofit": True,
+        "order_ttl_min": 120.0,
+        "sl_mhdsl_enabled": False,
+    }
     raw = dict(values) if isinstance(values, dict) else {}
-    merged = {"sl_mhdsl_enabled": False, **raw}
-    return StratParams.from_dict(merged, warn_dropped=False)
+    return StratParams.from_dict(raw, defaults=spot_defaults, warn_dropped=False)
 
 
 def _load_params(args) -> StratParams:
@@ -161,7 +179,11 @@ def build_report(
         raise ValueError(
             f"hash dataset diferit: {digest} != {expected.get('sha256')}"
         )
-    if len(records) != int(expected.get("bars", -1)):
+    try:
+        expected_bars = int(expected.get("bars", -1))
+    except (TypeError, ValueError):
+        expected_bars = -1
+    if len(records) != expected_bars:
         raise ValueError(f"different bar count: {len(records)} != {expected.get('bars')}")
 
     scenarios = {}
@@ -195,8 +217,8 @@ def build_report(
             "bars": len(records),
             "start_utc": iso_utc(int(records[0]["timestamp"])),
             "end_utc": iso_utc(int(records[-1]["timestamp"])),
-            "venue": manifest_info["manifest"].get("source", {}).get("venue"),
-            "market": manifest_info["manifest"].get("source", {}).get("market"),
+            "venue": (manifest_info["manifest"].get("source") if isinstance(manifest_info["manifest"].get("source"), dict) else {}).get("venue"),
+            "market": (manifest_info["manifest"].get("source") if isinstance(manifest_info["manifest"].get("source"), dict) else {}).get("market"),
             "role": "cross-venue price-path proxy; not Kraken execution",
         },
         "walk_forward": {
@@ -298,18 +320,22 @@ def markdown_report(report: dict) -> str:
 
 
 def _projection(report: dict) -> dict:
-    raw_params = dict(report.get("strategy_params") or {})
+    rep = report if isinstance(report, dict) else {}
+    raw_sp = rep.get("strategy_params")
+    raw_params = dict(raw_sp) if isinstance(raw_sp, dict) else {}
     strategy_params = dataclasses.asdict(strat_params_from_dict(raw_params))
+    raw_ds = rep.get("dataset")
+    ds_map = raw_ds if isinstance(raw_ds, dict) else {}
     return {
-        "schema_version": report.get("schema_version"),
+        "schema_version": rep.get("schema_version"),
         "strategy_params": strategy_params,
-        "initial_capital_usd": report.get("initial_capital_usd"),
+        "initial_capital_usd": rep.get("initial_capital_usd"),
         "dataset": {
-            key: report.get("dataset", {}).get(key)
+            key: ds_map.get(key)
             for key in ("sha256", "bars", "venue", "market", "role")
         },
-        "walk_forward": report.get("walk_forward"),
-        "scenarios": report.get("scenarios"),
+        "walk_forward": rep.get("walk_forward"),
+        "scenarios": rep.get("scenarios"),
     }
 
 

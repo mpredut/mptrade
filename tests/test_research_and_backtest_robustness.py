@@ -4870,5 +4870,67 @@ def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(
     assert last_buy_px == pytest.approx(100.0)
 
 
+def test_batch31_priceprediction_backtest_ranges_promotion_and_runners_hardening(tmp_path):
+    import json
+    import pytest
+    from offline.research.ml_forecast.priceprediction import PricePrediction
+    from offline.research.backtest_ranges import scan_all
+    from offline.backtests.promotion import (
+        _one_sided_sign_pvalue,
+        evaluate_promotion,
+        evaluate_risk_adjusted_promotion,
+    )
+    from offline.runners import (
+        kraken_financial_benchmark as kfb,
+        walk_forward_compare as wfc,
+    )
 
+    # 1. PricePrediction.process_prices resets trained state on short/invalid batch and guards non-iterable
+    pp = PricePrediction(window_size=4, epochs=2)
+    pp.process_prices([100.0 + i for i in range(10)])
+    assert pp.trained is True
+    assert pp.predict_next_price() is not None
+    pp.process_prices([100.0, 101.0])  # too short (< window_size * 2)
+    assert pp.trained is False
+    assert pp.predict_next_price() is None
+    pp.process_prices(None)  # type: ignore[arg-type]
+    assert pp.prices == []
+
+    # 2. backtest_ranges.scan_all handles None, single string/Path, and non-iterable safely
+    cfg_file = tmp_path / "sample.conf"
+    cfg_file.write_text("# BACKTEST: 1.0, 2.0\nmt.gain = 1.5\n", encoding="utf-8")
+    assert scan_all(None) == {}  # type: ignore[arg-type]
+    assert scan_all(123) == {}  # type: ignore[arg-type]
+    single_res = scan_all(str(cfg_file))  # type: ignore[arg-type]
+    assert single_res == {str(cfg_file): {"mt.gain": ["1.0", "2.0"]}}
+
+    # 3. promotion._one_sided_sign_pvalue and evaluate_promotion / evaluate_risk_adjusted_promotion guards
+    assert _one_sided_sign_pvalue(None, "bad") == 1.0  # type: ignore[arg-type]
+    assert _one_sided_sign_pvalue(5, float("nan")) == pytest.approx(1.0 / 32.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        evaluate_promotion(None, {})  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        evaluate_risk_adjusted_promotion({}, None)  # type: ignore[arg-type]
+    bad_scen_rep = {"dataset": {}, "walk_forward": {}, "scenarios": {"central": None}}
+    with pytest.raises(ValueError, match="invalid scenario structure"):
+        evaluate_promotion(bad_scen_rep, bad_scen_rep)
+    with pytest.raises(ValueError, match="invalid scenario structure"):
+        evaluate_risk_adjusted_promotion(bad_scen_rep, bad_scen_rep)
+
+    # 4. kraken_financial_benchmark._projection and _load_expected_dataset guard non-dict / None fields
+    proj = kfb._projection({"strategy_params": None, "dataset": None})
+    assert proj["dataset"]["sha256"] is None
+    bad_manifest = tmp_path / "bad_manifest.json"
+    bad_manifest.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON object"):
+        kfb._load_expected_dataset(bad_manifest, 240)
+
+    # 5. walk_forward_compare._load_report and _build_venue_evaluator guard non-dict / None fields
+    bad_rep_path = tmp_path / "bad_rep.json"
+    bad_rep_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    with pytest.raises(ValueError, match="incompatible or empty"):
+        wfc._load_report(bad_rep_path)
+    base_p, base_fee, _ = wfc._build_venue_evaluator("kraken", {"strategy_params": None, "fee_pct_per_leg": None})
+    assert base_fee == pytest.approx(0.26)
+    assert base_p.entry_amount > 0
 

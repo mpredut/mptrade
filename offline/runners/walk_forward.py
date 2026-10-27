@@ -28,10 +28,10 @@ import sys
 
 RUNNER_DIR = Path(__file__).resolve().parent
 ROOT = RUNNER_DIR.parents[1]
-if str(RUNNER_DIR) not in sys.path:
-    sys.path.insert(0, str(RUNNER_DIR))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(RUNNER_DIR) not in sys.path:
+    sys.path.append(str(RUNNER_DIR))
 
 SUPPORTED_VENUES = ("kraken", "binance", "hyperliquid", "trading212", "t212")
 SUPPORTED_MODES = ("baseline", "compare")

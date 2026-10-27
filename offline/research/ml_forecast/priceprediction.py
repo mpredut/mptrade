@@ -92,7 +92,15 @@ class PricePrediction:
 
     def process_prices(self, prices: list[float]) -> None:
         """Batch set prices and trigger retraining if enough points exist."""
-        self.prices = [v for p in prices if (v := self._valid_price(p)) is not None]
+        if prices is None or isinstance(prices, (str, bytes, bool)):
+            self.prices = []
+        else:
+            try:
+                self.prices = [v for p in prices if (v := self._valid_price(p)) is not None]
+            except TypeError:
+                self.prices = []
+        self.trained = False
+        self._fallback_weights = None
         if len(self.prices) >= self.window_size * 2:
             self.train_lstm_model()
 
@@ -154,14 +162,16 @@ class PricePrediction:
             x_aug = np.append(last_seq_scaled.reshape(1, -1), [[1.0]], axis=1)
             pred_scaled = x_aug @ self._fallback_weights
             pred = self.scaler.inverse_transform(pred_scaled)
-            return float(pred[0][0])
+            val = float(pred[0][0])
+            return val if np.isfinite(val) else None
 
         self.model.eval()
         with torch.no_grad():
             X_t = torch.tensor(last_seq_scaled, dtype=torch.float32)
             pred_scaled = self.model(X_t).numpy()
             pred = self.scaler.inverse_transform(pred_scaled)
-            return float(pred[0][0])
+            val = float(pred[0][0])
+            return val if np.isfinite(val) else None
 
 
 if __name__ == "__main__":

@@ -51,8 +51,17 @@ def _identity(report: dict) -> tuple:
 
 def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
     """P(X >= wins), X~Binomial(wins+losses, 0.5), ignoring ties."""
-    w = max(0, int(wins)) if not isinstance(wins, bool) else 0
-    l = max(0, int(losses)) if not isinstance(losses, bool) else 0
+    def _safe_nonneg_int(val) -> int:
+        if val is None or isinstance(val, bool):
+            return 0
+        try:
+            f = float(val)
+            return max(0, int(f)) if math.isfinite(f) else 0
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    w = _safe_nonneg_int(wins)
+    l = _safe_nonneg_int(losses)
     active = w + l
     if active == 0:
         return 1.0
@@ -94,11 +103,15 @@ def evaluate_promotion(
 ) -> dict:
     """The candidate passes only if it is robust in ALL shared scenarios."""
     limits = thresholds or PromotionThresholds()
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("baseline and candidate must be dictionaries")
     if _identity(baseline) != _identity(candidate):
         raise ValueError("baseline and candidate use different datasets or windows")
 
-    base_scenarios = baseline.get("scenarios") or {}
-    candidate_scenarios = candidate.get("scenarios") or {}
+    raw_base_scen = baseline.get("scenarios")
+    raw_cand_scen = candidate.get("scenarios")
+    base_scenarios = raw_base_scen if isinstance(raw_base_scen, dict) else {}
+    candidate_scenarios = raw_cand_scen if isinstance(raw_cand_scen, dict) else {}
     if not base_scenarios or set(base_scenarios) != set(candidate_scenarios):
         raise ValueError("baseline and candidate must have the same scenarios")
 
@@ -106,6 +119,8 @@ def evaluate_promotion(
     for name in sorted(base_scenarios):
         base = base_scenarios[name]
         cand = candidate_scenarios[name]
+        if not isinstance(base, dict) or not isinstance(cand, dict):
+            raise ValueError(f"invalid scenario structure in scenario {name}")
         if base.get("assumptions") != cand.get("assumptions"):
             raise ValueError(f"different execution assumptions in scenario {name}")
         base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
@@ -212,11 +227,15 @@ def evaluate_risk_adjusted_promotion(
     each fold's curve, and the gate compares the medians of those values.
     """
     limits = thresholds or RiskAdjustedThresholds()
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("baseline and candidate must be dictionaries")
     if _identity(baseline) != _identity(candidate):
         raise ValueError("baseline and candidate use different datasets or windows")
 
-    base_scenarios = baseline.get("scenarios") or {}
-    candidate_scenarios = candidate.get("scenarios") or {}
+    raw_base_scen = baseline.get("scenarios")
+    raw_cand_scen = candidate.get("scenarios")
+    base_scenarios = raw_base_scen if isinstance(raw_base_scen, dict) else {}
+    candidate_scenarios = raw_cand_scen if isinstance(raw_cand_scen, dict) else {}
     if not base_scenarios or set(base_scenarios) != set(candidate_scenarios):
         raise ValueError("baseline and candidate must have the same scenarios")
 
@@ -225,6 +244,8 @@ def evaluate_risk_adjusted_promotion(
     for name in sorted(base_scenarios):
         base = base_scenarios[name]
         cand = candidate_scenarios[name]
+        if not isinstance(base, dict) or not isinstance(cand, dict):
+            raise ValueError(f"invalid scenario structure in scenario {name}")
         if base.get("assumptions") != cand.get("assumptions"):
             raise ValueError(f"different execution assumptions in scenario {name}")
         base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []

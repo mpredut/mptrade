@@ -18,8 +18,10 @@ from typing import Any
 
 RUNNER_DIR = Path(__file__).resolve().parent
 ROOT = RUNNER_DIR.parents[1]
-sys.path.insert(0, str(RUNNER_DIR))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(RUNNER_DIR) not in sys.path:
+    sys.path.append(str(RUNNER_DIR))
 
 from offline.backtests.comparison import (
     dominates as _dominates,
@@ -140,9 +142,12 @@ def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
 def _load_report(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
-    has_intervals = report.get("intervals") is not None and len(report.get("intervals", {})) > 0
-    has_single_dataset = report.get("dataset") is not None and (
-        report.get("windows") is not None or report.get("window_sizes") is not None
+    if not isinstance(report, dict):
+        raise ValueError("an incompatible or empty baseline report")
+    intervals = report.get("intervals")
+    has_intervals = isinstance(intervals, dict) and len(intervals) > 0
+    has_single_dataset = isinstance(report.get("dataset"), dict) and (
+        isinstance(report.get("windows"), dict) or isinstance(report.get("window_sizes"), dict)
     )
     if report.get("schema_version") != 1 or (not has_intervals and not has_single_dataset):
         raise ValueError("an incompatible or empty baseline report")
@@ -167,9 +172,11 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             return ROOT / p
         return p
 
-    if "intervals" in report:
+    if isinstance(report.get("intervals"), dict) and report["intervals"]:
         for interval_text, section in report["intervals"].items():
             interval = int(interval_text)
+            if not isinstance(section, dict) or not isinstance(section.get("dataset"), dict):
+                raise ValueError(f"missing dataset metadata for {interval}m")
             path = _resolve_frozen_file(section["dataset"]["frozen_file"])
             records = load_frozen_dataset(path)
             actual_hash = dataset_sha256(records)
@@ -178,13 +185,19 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
                 raise ValueError(
                     f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
                 )
-            window_sizes = section.get("window_sizes") or section.get("windows") or {}
+            raw_ws = section.get("window_sizes") or section.get("windows")
+            window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
             warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
             datasets[interval] = (records, window_sizes, warmup)
-    elif "dataset" in report and ("windows" in report or "window_sizes" in report):
+    elif isinstance(report.get("dataset"), dict) and (
+        isinstance(report.get("windows"), dict) or isinstance(report.get("window_sizes"), dict)
+    ):
+        runtime_meta = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+        dataset_meta = report["dataset"]
+        exec_meta = report.get("execution_model") if isinstance(report.get("execution_model"), dict) else {}
         interval_raw = (
-            report.get("runtime", {}).get("interval_minutes")
-            or report.get("runtime", {}).get("interval")
+            runtime_meta.get("interval_minutes")
+            or runtime_meta.get("interval")
         )
         if interval_raw is not None:
             try:
@@ -192,17 +205,17 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             except ValueError:
                 from binance_api.market_data import parse_interval_minutes
                 interval = parse_interval_minutes(str(interval_raw))
-        elif report.get("dataset", {}).get("median_step_seconds"):
-            step_min = int(round(float(report["dataset"]["median_step_seconds"]) / 60.0))
+        elif dataset_meta.get("median_step_seconds"):
+            step_min = int(round(float(dataset_meta["median_step_seconds"]) / 60.0))
             interval = 1440 if step_min >= 1440 else max(1, step_min)
-        elif report.get("execution_model", {}).get("calendar_periods_per_year") == 252.0:
+        elif exec_meta.get("calendar_periods_per_year") == 252.0:
             interval = 1440
         else:
             interval = 240
 
-        frozen_spec = report["dataset"].get("frozen_file")
+        frozen_spec = dataset_meta.get("frozen_file")
         if not frozen_spec:
-            source = str(report["dataset"].get("source", ""))
+            source = str(dataset_meta.get("source", ""))
             if "frozen to " in source:
                 frozen_spec = source.split("frozen to ", 1)[1].strip()
             elif "frozen file: " in source:
@@ -212,12 +225,13 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
         path = _resolve_frozen_file(frozen_spec)
         records = load_frozen_dataset(path)
         actual_hash = dataset_sha256(records)
-        expected_hash = report["dataset"]["sha256"]
+        expected_hash = dataset_meta["sha256"]
         if actual_hash != expected_hash:
             raise ValueError(
                 f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
             )
-        window_sizes = report.get("windows") or report.get("window_sizes") or {}
+        raw_ws = report.get("windows") or report.get("window_sizes")
+        window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
         warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
         datasets[interval] = (records, window_sizes, warmup)
     return datasets
@@ -228,7 +242,10 @@ def _load_hl_replay():
     hl_dir = ROOT / "hyperliquid"
     orig_sys_path = list(sys.path)
     try:
-        sys.path.insert(0, str(hl_dir))
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        if str(hl_dir) not in sys.path:
+            sys.path.append(str(hl_dir))
         spec = importlib.util.spec_from_file_location("hl_wf_replay", str(hl_dir / "replay.py"))
         mod = importlib.util.module_from_spec(spec)
         sys.modules["hl_wf_replay"] = mod
@@ -243,7 +260,10 @@ def _load_t212_replay():
     t212_dir = ROOT / "212trading"
     orig_sys_path = list(sys.path)
     try:
-        sys.path.insert(0, str(t212_dir))
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        if str(t212_dir) not in sys.path:
+            sys.path.append(str(t212_dir))
         spec = importlib.util.spec_from_file_location("t212_wf_replay", str(t212_dir / "replay.py"))
         mod = importlib.util.module_from_spec(spec)
         sys.modules["t212_wf_replay"] = mod
@@ -255,8 +275,9 @@ def _load_t212_replay():
 
 def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
     """Return (base_params, base_fee, evaluate_segment_fn)."""
-    norm_venue = venue.lower()
-    raw_params = source_report.get("strategy_params", {})
+    norm_venue = str(venue or "").strip().lower()
+    raw_sp = source_report.get("strategy_params") if isinstance(source_report, dict) else None
+    raw_params = raw_sp if isinstance(raw_sp, dict) else {}
 
     spot_defaults = {
         "currency": "USDC",
@@ -274,15 +295,16 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
 
     if norm_venue in ("kraken", "binance"):
         base_params = StratParams.from_dict(raw_params, defaults=spot_defaults)
-        raw_fee = source_report.get("fee_pct_per_leg")
+        raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
         base_fee = max(0.0, _safe_f(raw_fee, 0.26 if norm_venue == "kraken" else 0.10))
         return base_params, base_fee, _segment_result
 
     if norm_venue == "hyperliquid":
         hl_replay = _load_hl_replay()
-        runtime_cfg = source_report.get("runtime", {})
+        raw_rt = source_report.get("runtime") if isinstance(source_report, dict) else None
+        runtime_cfg = raw_rt if isinstance(raw_rt, dict) else {}
         engine = str(runtime_cfg.get("engine") or raw_params.get("engine") or "perp").lower()
-        raw_fee = source_report.get("fee_pct_per_leg")
+        raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
         if raw_fee is None:
             raw_fee = raw_params.get("fee_pct")
         base_fee = max(0.0, _safe_f(raw_fee, 0.035))
@@ -491,8 +513,10 @@ def main(argv: list[str] | None = None) -> int:
         venue, source_report, baseline_dir=baseline_path.parent
     )
     valid_exec_fields = {f.name for f in dataclasses.fields(ExecutionModel)}
+    raw_exec_model = source_report.get("execution_model")
+    exec_model_dict = raw_exec_model if isinstance(raw_exec_model, dict) else {}
     filtered_exec = {
-        k: v for k, v in source_report.get("execution_model", {}).items() if k in valid_exec_fields
+        k: v for k, v in exec_model_dict.items() if k in valid_exec_fields
     }
     execution = ExecutionModel(**filtered_exec)
 

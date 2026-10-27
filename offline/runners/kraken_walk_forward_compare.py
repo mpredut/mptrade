@@ -12,8 +12,10 @@ import sys
 
 RUNNER_DIR = Path(__file__).resolve().parent
 ROOT = RUNNER_DIR.parents[1]
-sys.path.insert(0, str(RUNNER_DIR))
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(RUNNER_DIR) not in sys.path:
+    sys.path.append(str(RUNNER_DIR))
 
 from offline.runners.walk_forward_compare import *  # noqa: F401,F403
 from offline.runners.walk_forward_compare import (

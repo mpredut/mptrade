@@ -19,8 +19,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(RUNNER_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(RUNNER_DIR) not in sys.path:
+    sys.path.append(str(RUNNER_DIR))
 
 import kraken_financial_benchmark as benchmark  # noqa: E402
 from offline.backtests.hype_candidates import (  # noqa: E402
@@ -49,6 +51,8 @@ def _scenario_summary(report: dict) -> dict:
 
 def build_comparison(args) -> dict:
     baseline_report = _load_json(args.baseline)
+    if not isinstance(baseline_report, dict) or not isinstance(baseline_report.get("strategy_params"), dict):
+        raise ValueError("baseline report must be a JSON object containing strategy_params")
     base_params = benchmark.strat_params_from_dict(baseline_report["strategy_params"])
     candidates = financial_priority_candidates()
     selected = set(args.candidate or [])
