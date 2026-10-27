@@ -107,18 +107,24 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
-    if not isinstance(tr, dict) or txid is None or isinstance(txid, bool) or not str(txid).strip():
+    if (
+        not isinstance(tr, dict)
+        or txid is None
+        or isinstance(txid, (bool, float, dict, list, tuple, set, frozenset))
+        or not isinstance(txid, (str, int))
+        or not str(txid).strip()
+        or str(txid).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+    ):
         return {}
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
     side = extract_order_side(tr) or None
     is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
     qty = extract_order_qty(tr, default=0.0)
     price = extract_order_price(tr, default=0.0)
-    order_id = tr.get("ordertxid", tr.get("orderId"))
-    if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+    raw_oid = tr.get("ordertxid", tr.get("orderId"))
+    order_id = extract_order_id({"orderId": raw_oid}, default=None) if raw_oid is not None else None
+    if order_id is None:
         order_id = extract_order_id(tr)
-    else:
-        order_id = str(order_id).strip()
     raw_sym = tr.get("pair", tr.get("symbol"))
     sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
     normalized = {
@@ -159,11 +165,14 @@ def _load_initial_cache(path):
                 continue
             valid_rows: list[dict] = []
             for row in v:
+                raw_id = row.get("id") if isinstance(row, dict) else None
                 if (
                     not isinstance(row, dict)
-                    or row.get("id") is None
-                    or isinstance(row.get("id"), bool)
-                    or not str(row.get("id")).strip()
+                    or raw_id is None
+                    or isinstance(raw_id, (bool, float, dict, list, tuple, set, frozenset))
+                    or not isinstance(raw_id, (str, int))
+                    or not str(raw_id).strip()
+                    or str(raw_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
                 ):
                     continue
                 raw_t = row.get("time")
@@ -207,7 +216,13 @@ def _ledger_to_fills(ledger):
         if not isinstance(x, dict):
             continue
         refid = x.get("refid")
-        if refid and not isinstance(refid, bool) and str(refid).strip():
+        if (
+            refid is not None
+            and not isinstance(refid, (bool, float, dict, list, tuple, set, frozenset))
+            and isinstance(refid, (str, int))
+            and str(refid).strip()
+            and str(refid).strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
             by_ref.setdefault(str(refid).strip(), []).append(x)
     fills = []
     for refid, legs in by_ref.items():

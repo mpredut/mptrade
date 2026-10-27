@@ -13690,3 +13690,58 @@ def test_iteration134_promotion_backtest_broker_and_walk_forward_runner_safety(t
     assert _detect_venue({"venue": "   ", "purpose": "Binance walk-forward"}, cli_venue="  ") == "binance"
     assert _detect_venue({"venue": True, "purpose": "Hyperliquid"}, cli_venue=False) == "hyperliquid"  # type: ignore[arg-type]
 
+
+def test_iteration135_kraken_client_txid_and_cachemanager_id_hygiene(tmp_path):
+    """Verify KrakenClient._clean_txid / cancel_order / query_orders sentinel & container rejection and kraken_cachemanager._normalize / _load_initial_cache / _ledger_to_fills ID hygiene."""
+    import json
+    from kraken import kraken_cachemanager as kcm
+    from kraken.kraken_client import KrakenClient
+
+    # 1. KrakenClient.cancel_order and query_orders reject sentinel strings ("nan", "null") and containers/floats
+    kc = KrakenClient("k", "c2VjcmV0")
+    for bad_txid in ("nan", "null", "none", "inf", float("nan"), ["OX123"], {"a": 1}, True, None):
+        with pytest.raises(ValueError, match="invalid Kraken txid"):
+            kc.cancel_order(bad_txid)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="invalid Kraken txid"):
+            kc.query_orders(bad_txid)  # type: ignore[arg-type]
+
+    # 2. kraken_cachemanager._normalize rejects sentinel txid and normalizes integer float ordertxid
+    assert kcm._normalize("nan", {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
+    assert kcm._normalize(["T1"], {"type": "buy", "price": "10", "vol": "1", "time": 1700000000}) == {}
+    norm = kcm._normalize(
+        " TX-100 ",
+        {"type": "buy", "price": "10", "vol": "1", "time": 1700000000, "ordertxid": "nan", "id": 999.0},
+    )
+    assert norm["id"] == "TX-100"
+    assert norm["orderId"] == "999"
+
+    # 3. kraken_cachemanager._load_initial_cache filters out sentinel/container fill IDs
+    cache_file = str(tmp_path / "cache_trade_kraken.json")
+    with open(cache_file, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"id": "nan", "time": 1700000000000},
+                        {"id": ["bad"], "time": 1700000000000},
+                        {"id": " VALID-1 ", "time": 1700000005000.0},
+                    ]
+                },
+                "fetchtime": {"HYPEUSD": 1700000005000},
+            },
+            fh,
+        )
+    loaded = kcm._load_initial_cache(cache_file)
+    assert [r["id"] for r in loaded["items"]["HYPEUSD"]] == ["VALID-1"]
+
+    # 4. kraken_cachemanager._ledger_to_fills ignores entries with sentinel/container refid
+    fills = kcm._ledger_to_fills(
+        {
+            "L1": {"refid": "nan", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000000.0},
+            "L2": {"refid": "nan", "asset": "ZUSD", "amount": "-100.0", "type": "trade", "time": 1700000000.0},
+            "L3": {"refid": "REF-OK", "asset": "HYPE", "amount": "2.0", "type": "trade", "time": 1700000000.0},
+            "L4": {"refid": "REF-OK", "asset": "ZUSD", "amount": "-100.0", "type": "trade", "time": 1700000000.0},
+        }
+    )
+    assert [f["id"] for f in fills] == ["REF-OK"]
+

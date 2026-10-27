@@ -175,7 +175,8 @@ def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
                     log(f"  [verify] {pair} is LISTED and tradable after API recovery — starting.")
                     return True
                 p = get_price(client, pair)
-                display_label = pair if label.strip().lower() in ("", "kraken") else f"{label} ({pair})"
+                clean_lbl = label.strip() if isinstance(label, str) else ""
+                display_label = pair if clean_lbl.lower() in ("", "kraken") else f"{clean_lbl} ({pair})"
                 body = f"{display_label} is available on Kraken, price {p}"
                 log("############################################")
                 log(f">>> {display_label} LISTED ON KRAKEN — STARTING <<<")

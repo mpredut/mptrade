@@ -203,7 +203,7 @@ class KrakenClient:
         """Return pair price/volume precision and minimum order, or None if absent."""
         if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return None
-        res = self._public("AssetPairs", {"pair": pair.strip()})
+        res = self._public("AssetPairs", {"pair": pair.strip().upper()})
         if not res:
             return None
         return next((v for v in res.values() if isinstance(v, dict)), None)
@@ -211,7 +211,7 @@ class KrakenClient:
     def ticker(self, pair: str) -> dict | None:
         if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return None
-        res = self._public("Ticker", {"pair": pair.strip()})
+        res = self._public("Ticker", {"pair": pair.strip().upper()})
         return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
     def ohlc_closes_with_timestamps(
@@ -370,16 +370,25 @@ class KrakenClient:
             data["validate"] = "true"
         return self._private("AddOrder", data)
 
-    def cancel_order(self, txid: str) -> dict:
-        if not txid or isinstance(txid, bool) or not str(txid).strip():
+    @staticmethod
+    def _clean_txid(txid: object) -> str:
+        if (
+            txid is None
+            or isinstance(txid, (bool, float, dict, list, tuple, set, frozenset))
+            or not isinstance(txid, (str, int))
+        ):
             raise ValueError(f"invalid Kraken txid: {txid!r}")
-        return self._private("CancelOrder", {"txid": str(txid).strip()})
+        cleaned = str(txid).strip()
+        if not cleaned or cleaned.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+            raise ValueError(f"invalid Kraken txid: {txid!r}")
+        return cleaned
+
+    def cancel_order(self, txid: str) -> dict:
+        return self._private("CancelOrder", {"txid": self._clean_txid(txid)})
 
     def query_orders(self, txids: str) -> dict:
         """Return order status by txid, including closed orders without T212-style 404s."""
-        if not txids or isinstance(txids, bool) or not str(txids).strip():
-            raise ValueError(f"invalid Kraken txid: {txids!r}")
-        return self._private("QueryOrders", {"txid": str(txids).strip()})
+        return self._private("QueryOrders", {"txid": self._clean_txid(txids)})
 
     def open_orders(self) -> dict:
         raw = self._private("OpenOrders").get("open")
