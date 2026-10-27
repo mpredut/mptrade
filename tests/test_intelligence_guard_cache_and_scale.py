@@ -15064,15 +15064,114 @@ def test_iteration153_t212_order_manager_hl_shadow_and_delta_neutral_safety(tmp_
     assert dn.s["funding_hist"] == [[1700000000.0, 0.0002]]
 
 
+def test_iteration154_t212_market_data_import_and_quantity_filters_base_hygiene(monkeypatch):
+    """Verify 212trading/order_manager + ipo import isolation when sys.modules['market_data'] is polluted,
+    plus providers/quantity.py, providers/binance_filters.py, and providers/base.py hardening."""
+    import importlib.util
+    import os
+    import sys
+    from decimal import Decimal
+    from types import SimpleNamespace
 
+    from providers.base import aggregate_fills_by_order_id, extract_order_id
+    from providers.binance_filters import BinanceOrderRules
+    from providers.quantity import decide_quantity, remaining_average_cost
 
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
+    def _load_mod(name, rel):
+        p = os.path.join(root, rel)
+        spec = importlib.util.spec_from_file_location(name, p)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules[name] = m
+        spec.loader.exec_module(m)
+        return m
 
+    # 1. Simulate sys.modules["market_data"] polluted by hyperliquid/market_data.py
+    hl_md = _load_mod("hl_market_data_polluter", "hyperliquid/market_data.py")
+    monkeypatch.setitem(sys.modules, "market_data", hl_md)
+    om_mod = _load_mod("t212_om_it154", "212trading/order_manager.py")
+    assert callable(getattr(om_mod, "get_usd_ron", None))
 
+    # 2. providers/quantity.py: remaining_average_cost fill ID normalization & sentinel rejection
+    # Duplicate id=1001.0 vs "1001" is detected and rejected (returns None)
+    assert remaining_average_cost(
+        [
+            {"id": 1001.0, "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 1000, "base_fee": 0.0, "quote_fee": 0.0},
+            {"id": "1001", "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 2000, "base_fee": 0.0, "quote_fee": 0.0},
+        ],
+        4.0,
+    ) is None
+    # Sentinel id="0" is rejected (returns None)
+    assert remaining_average_cost(
+        [
+            {"id": "0", "side": "BUY", "price": 20.0, "qty": 2.0, "timestamp": 2000, "base_fee": 0.0, "quote_fee": 0.0},
+        ],
+        2.0,
+    ) is None
+    # Valid id=1001.0 succeeds
+    assert remaining_average_cost(
+        [
+            {"id": 1001.0, "side": "BUY", "price": 10.0, "qty": 2.0, "timestamp": 1000, "base_fee": 0.0, "quote_fee": 0.0},
+        ],
+        2.0,
+    ) == 10.0
 
+    # 3. providers/quantity.py: decide_quantity string boolean parsing
+    captured = {}
 
+    class DummyProvider:
+        def free_balance(self, asset):
+            return 1000.0
 
+        def policy_cap_quantity(self, *args, **kwargs):
+            captured["policy_called"] = True
+            return 1.0
 
+        def fee_cap_quantity(self, symbol, side, price, balance_cap):
+            return balance_cap
 
+        def order_filter_refusal(self, symbol, side, price, qty, *, market=False, enforce_business_minimum=True):
+            captured["market"] = market
+            captured["enforce_business_minimum"] = enforce_business_minimum
+            return None
 
+    dec = decide_quantity(
+        DummyProvider(),
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        2.0,
+        apply_policy="false",  # type: ignore[arg-type]
+        market="false",  # type: ignore[arg-type]
+        enforce_business_minimum="false",  # type: ignore[arg-type]
+    )
+    assert dec.final_qty == 2.0
+    assert "policy_called" not in captured
+    assert captured["market"] is False
+    assert captured["enforce_business_minimum"] is False
+
+    # 4. providers/binance_filters.py: BinanceOrderRules.normalize string boolean market="false"
+    rules = BinanceOrderRules.from_symbol_info({
+        "baseAsset": "BTC",
+        "quoteAsset": "USDC",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.10", "minPrice": "1.0", "maxPrice": "1000000.0"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01", "maxQty": "1000.0"},
+        ],
+    })
+    norm_qty, norm_px = rules.normalize(quantity="1.234", price="100.56", market="false")  # type: ignore[arg-type]
+    assert norm_qty == Decimal("1.23")
+    assert norm_px == Decimal("100.50")
+
+    # 5. providers/base.py: extract_order_id & aggregate_fills_by_order_id .0 normalization & sentinel rejection
+    assert extract_order_id({"orderId": "12345.0"}) == "12345"
+    agg = aggregate_fills_by_order_id([
+        {"orderId": 555.0, "side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000},
+        {"orderId": "555", "side": "BUY", "price": 200.0, "qty": 1.0, "timestamp": 2000},
+        {"orderId": "0", "side": "BUY", "price": 300.0, "qty": 1.0, "timestamp": 3000},
+        {"orderId": "0", "side": "BUY", "price": 400.0, "qty": 1.0, "timestamp": 4000},
+    ])
+    assert len(agg) == 3
+    assert agg[0]["price"] == 150.0 and agg[0]["qty"] == 2.0
 

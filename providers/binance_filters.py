@@ -142,6 +142,7 @@ class BinanceOrderRules:
 
     def normalize(self, *, quantity, price=None, market: bool = False,
                   reference_price=None, business_min_notional=0) -> tuple[Decimal, Decimal | None]:
+        market = _parse_bool(market, default=False)
         qty = _decimal(quantity, name="quantity", allow_zero=False)
         step = self.market_step if market else self.lot_step
         minimum = self.market_min if market else self.lot_min

@@ -147,6 +147,8 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     text = str(val).strip()
     if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
         return None
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
     return text
 
 
@@ -525,9 +527,9 @@ def aggregate_fills_by_order_id(
             continue
         parent_oid = None
         for k in _PARENT_ORDER_ID_KEYS:
-            val = r.get(k)
-            if val is not None and not isinstance(val, bool) and str(val).strip():
-                parent_oid = str(val).strip()
+            cleaned_oid = _clean_single_order_id(r.get(k))
+            if cleaned_oid is not None and cleaned_oid != "0":
+                parent_oid = cleaned_oid
                 break
         norm = normalize_order(r)
         ts_ms = norm["timestamp"]

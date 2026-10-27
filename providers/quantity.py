@@ -7,6 +7,44 @@ from typing import Callable, Optional
 
 
 QUOTE_SUFFIXES = ("USDC", "EUR", "RON", "BTC", "ETH", "USD")
+_INVALID_FILL_IDS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
+
+
+def _clean_fill_id(val: object) -> str:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+        return ""
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            return ""
+        if val.is_integer():
+            val = int(val)
+    s = str(val).strip()
+    if s.lower() in _INVALID_FILL_IDS:
+        return ""
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    return s if s and s.lower() not in _INVALID_FILL_IDS else ""
+
+
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def remaining_average_cost(fills, held_qty):
@@ -34,10 +72,7 @@ def remaining_average_cost(fills, held_qty):
             if any(isinstance(row[key], bool) for key in fields):
                 return None
             ts, amount, price, base_fee, quote_fee = (float(row[key]) for key in fields)
-            raw_id = row["id"]
-            if raw_id is None or isinstance(raw_id, bool):
-                return None
-            identity = str(raw_id).strip()
+            identity = _clean_fill_id(row["id"])
             raw_side = row["side"]
             if raw_side is None or isinstance(raw_side, bool):
                 return None
@@ -216,11 +251,11 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         return QuantityDecision(requested, 0.0, 0.0, 0.0, 0.0,
                                 "insufficient_funds", asset)
     policy_cap = requested
-    if apply_policy:
+    if _parse_bool_flag(apply_policy, default=True):
         raw_policy_cap = provider.policy_cap_quantity(
             symbol, side, price, requested, balance_cap,
             base=base, quote=quote,
-            cancelorders=cancelorders, hours=hours)
+            cancelorders=_parse_bool_flag(cancelorders, default=False), hours=hours)
         if raw_policy_cap is None or isinstance(raw_policy_cap, bool):
             return QuantityDecision(requested, balance_cap, None, None, 0.0,
                                     "policy_unavailable", asset)
@@ -304,8 +339,8 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     filter_check = getattr(provider, "order_filter_refusal", None)
     refusal = (
         filter_check(
-            symbol, side, price, final, market=market,
-            enforce_business_minimum=enforce_business_minimum)
+            symbol, side, price, final, market=_parse_bool_flag(market, default=False),
+            enforce_business_minimum=_parse_bool_flag(enforce_business_minimum, default=True))
         if final > 0 and callable(filter_check) else None
     )
     if refusal:
