@@ -458,6 +458,8 @@ class KrakenProvider(MarketDataProvider):
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return []
         cli = self._client()
         res = cli._private("TradesHistory")
         if not isinstance(res, dict) or "trades" not in res:
@@ -465,7 +467,7 @@ class KrakenProvider(MarketDataProvider):
         trades = res.get("trades")
         if not isinstance(trades, dict):
             raise ProviderError(f"TradesHistory({symbol}): trades mapping in payload is invalid")
-        su = symbol.upper()
+        su = str(symbol).strip().upper()
         rows = []
         for tr in trades.values():
             if not isinstance(tr, dict):
@@ -750,11 +752,15 @@ class KrakenProvider(MarketDataProvider):
                 f"cancel_order {order_id}: missing count in Kraken response ({result})"
             )
         try:
-            if isinstance(result["count"], bool) or int(result["count"]) < 1:
+            raw_cnt = result["count"]
+            if isinstance(raw_cnt, bool):
+                raise ValueError("bool count")
+            cnt_f = float(raw_cnt)
+            if not math.isfinite(cnt_f) or not cnt_f.is_integer() or int(cnt_f) < 1:
                 raise ProviderError(
                     f"cancel_order {order_id}: Kraken did not confirm the cancellation"
                 )
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(
                 f"cancel_order {order_id}: invalid response ({result})"
             ) from e

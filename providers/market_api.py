@@ -416,7 +416,9 @@ class BinanceProvider(MarketDataProvider):
 
     def adjust_order_price(self, symbol: str, side: str, price: float, cancel_opposite: bool = True) -> float:
         from binance_api import bapi_placeorder as _po
-        return _po.adjust_price_and_cancel_opposite(side, symbol, price, cancel_opposite=cancel_opposite)
+        return _po.adjust_price_and_cancel_opposite(
+            side, symbol, price, cancel_opposite=_parse_bool_flag(cancel_opposite, True)
+        )
 
     def cancel_opposite_orders(self, symbol: str, side: str,
                                requested_price: float) -> None:
@@ -591,7 +593,7 @@ class BinanceProvider(MarketDataProvider):
         observed_at = timestamps[-1] if timestamps else None
         return ClosedPriceSeries(
             closes,
-            int(interval_min),
+            int(float(interval_min)),
             observed_at,
             timestamps,
         )
@@ -1113,6 +1115,8 @@ class MarketApi:
             raise ValueError("now must be finite") from exc
         if not math.isfinite(evaluated_at):
             raise ValueError("now must be finite")
+        use_runtime_snapshot = _parse_bool_flag(use_runtime_snapshot, True)
+        allow_fallback = _parse_bool_flag(allow_fallback, True)
         if snapshot_max_age_seconds is None:
             snapshot_max_age_seconds = (
                 self._regime_service.default_snapshot_max_age_seconds())
@@ -1172,6 +1176,8 @@ class MarketApi:
         now=None,
     ) -> MarketRegimeResolution:
         """Return the selected decision and every source examined for its horizon."""
+        allow_fallback = _parse_bool_flag(allow_fallback, True)
+        include_alternates = _parse_bool_flag(include_alternates, False)
         service = self._regime_service_for(strength_threshold)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return service.resolve_with_evidence(
@@ -1229,6 +1235,8 @@ class MarketApi:
         now=None,
     ) -> MarketRegimeBundle:
         """Collect evidence and select only fresh, usable directional sources."""
+        allow_fallback = _parse_bool_flag(allow_fallback, True)
+        include_alternates = _parse_bool_flag(include_alternates, False)
         service = self._regime_service_for(strength_threshold)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         if isinstance(now, bool):
@@ -1483,7 +1491,9 @@ class MarketApi:
         Instrument uses this for explicit venue routing so identical assets on
         multiple venues are not inferred from the symbol string.
         """
-        if not isinstance(name, str):
+        if hasattr(name, "name") and isinstance(getattr(name, "name", None), str):
+            name = name.name
+        if isinstance(name, bool) or not isinstance(name, str):
             return None
         return self._by_name.get(name.strip().lower())
 

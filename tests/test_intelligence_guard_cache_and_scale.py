@@ -15937,3 +15937,51 @@ def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_pa
     with pytest.raises(ValueError):
         log.configure(log_folder=True)
 
+
+def test_iteration164_providers_base_market_api_kraken_and_t212_hygiene(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from providers import base as pbase
+    from providers import market_api as mapi
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+
+    # 1. providers.base: env_value quoted value with trailing comment, bool_env default="false", extract_order_fee(require_explicit_asset="false")
+    (tmp_path / ".env").write_text('QUOTED_KEY="my_secret#1" # trailing comment\nFLAG_KEY="true" # comment\n', encoding="utf-8")
+    assert pbase.env_value(str(tmp_path), "QUOTED_KEY") == "my_secret#1"
+    assert pbase.bool_env("FLAG_KEY", folder=str(tmp_path), default="false") is True
+    assert pbase.bool_env("MISSING_KEY", folder=str(tmp_path), default="false") is False
+    assert pbase.bool_env("MISSING_KEY", folder=str(tmp_path), default=float("nan")) is False
+    fee_res = pbase.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="false")
+    assert fee_res is not None and fee_res["fee_asset"] == "USDC"
+    assert pbase.extract_order_fee({"commission": 0.5, "price": 100.0}, quote_asset="USDC", require_explicit_asset="true") is None
+
+    # 2. providers.market_api: BinanceProvider.ohlc_series with "15.0", MarketApi.provider_by_name with provider object, and market_regime_context(use_runtime_snapshot="false")
+    bp = mapi.BinanceProvider()
+    fake_klines = [[0, "1", "2", "0.5", "100.0", "10", 1700000000000] for _ in range(25)]
+    monkeypatch.setattr(
+        mapi,
+        "_get_bapi",
+        lambda: SimpleNamespace(client=SimpleNamespace(get_klines=lambda **kw: fake_klines)),
+    )
+    series = bp.ohlc_series("BTCUSDC", "15.0")
+    assert series.interval_min == 15 and len(series.closes) == 24
+    assert mapi.api.provider_by_name(bp) is not None
+
+    snap_called = []
+    custom_api = mapi.MarketApi(
+        [bp],
+        regime_snapshot_resolver=lambda sym, now=None: (snap_called.append(sym), None)[1],
+    )
+    custom_api.market_regime_context("BTCUSDC", use_runtime_snapshot="false", allow_fallback="false", now=1700000000.0)
+    assert snap_called == []
+
+    # 3. KrakenProvider: _fills_from_api(None) and cancel_order_by_id with count="1.0"
+    kp = KrakenProvider(client=SimpleNamespace(cancel_order=lambda oid: {"count": "1.0"}))
+    assert kp._fills_from_api(None) == []
+    assert kp._fills_from_api(True) == []
+    kp.cancel_order_by_id("HYPEUSD", "OQCLML-BW3P3-BUCMWZ")
+
+    # 4. T212Provider: _position(None, strict="false") returns None without raising ProviderError
+    tp = T212Provider(client=SimpleNamespace(get_portfolio=lambda: []))
+    assert tp._position(None, strict="false") is None
+

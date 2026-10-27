@@ -158,6 +158,7 @@ class T212Provider(MarketDataProvider):
 
     def _position(self, symbol: str, *, strict: bool = False) -> Optional[dict]:
         """Return the portfolio position for the ticker, or None."""
+        strict = _parse_bool_flag(strict, False)
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             if strict:
                 raise ProviderError(f"portfolio({symbol}): invalid symbol")
