@@ -96,6 +96,18 @@ def _safe_pos_int(val: Any, default: int = 1) -> int:
         return default
 
 
+def _as_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    return default
+
+
 def _delivery_state_path() -> Path:
     configured = os.environ.get("NOTIFICATION_STATE_FILE")
     return Path(configured).expanduser() if configured else BASE_DIR / "logs/notification_delivery_state.json"
@@ -401,6 +413,7 @@ def pass_common_gate(
        once the 5-minute gate opens.
     """
     now_ts = time.time()
+    urgent = _as_bool_flag(urgent, False)
     if now is not None and not isinstance(now, bool):
         try:
             nf = float(now)
@@ -545,6 +558,7 @@ def pop_due_bulk_batch(
 ) -> Optional[tuple[str, str, str, str]]:
     """Pop and synthesize buffered distinct notifications once the 5-minute gate opens."""
     now_ts = time.time()
+    force = _as_bool_flag(force, False)
     if now is not None and not isinstance(now, bool):
         try:
             nf = float(now)
@@ -891,15 +905,15 @@ class AlertNotifier:
              enable_email=False, enable_phone_webhook=False, webhook_url=None,
              filename="alerts.log"):
         alerts = [alert] if not isinstance(alert, list) else alert
-        if enable_console:
+        if _as_bool_flag(enable_console, True):
             for item in alerts:
                 AlertNotifier.print_to_console(item)
-        if enable_file:
+        if _as_bool_flag(enable_file, True):
             for item in alerts:
                 AlertNotifier.save_to_file(item, filename=filename)
-        if enable_email:
+        if _as_bool_flag(enable_email, False):
             AlertNotifier.send_email_batch(alerts)
-        if enable_phone_webhook:
+        if _as_bool_flag(enable_phone_webhook, False):
             AlertNotifier.send_phone_webhook_batch(alerts, webhook_url=webhook_url)
 
 
@@ -970,7 +984,11 @@ def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol:
 def bind_notify(symbol_env_keys: tuple, default_symbol: str):
     import os
     def bound_notify(title: str, body: str, source: str, price: float = None, desktop: bool = False, symbol: str = None, email: bool = None):
-        resolved = symbol or next((os.environ[key] for key in symbol_env_keys if os.environ.get(key)), default_symbol)
+        sym_clean = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
+        resolved = sym_clean or next(
+            (os.environ[key].strip() for key in symbol_env_keys if os.environ.get(key, "").strip()),
+            default_symbol,
+        )
         notify(title, body, source, resolved, price=price, desktop=desktop, email=email)
     bound_notify.__name__ = "notify"
     return bound_notify

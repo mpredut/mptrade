@@ -232,16 +232,20 @@ class NotificationServer:
         return flushed
 
     def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False, skip_email: bool = False) -> bool:
-        if not topic:
+        topic_str = "" if isinstance(topic, bool) or topic is None else str(topic).strip()
+        if not topic_str:
             return True
+        title = "Alert" if isinstance(title, bool) or title is None else (str(title).strip() or "Alert")
+        message = "" if isinstance(message, bool) or message is None else str(message)
+        priority = "default" if isinstance(priority, bool) or priority is None else (str(priority).strip() or "default")
         if any(
             os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
             for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
         ):
-            logging.debug(f"External notifications disabled: would send to {topic}: {title}")
+            logging.debug(f"External notifications disabled: would send to {topic_str}: {title}")
             return True
 
-        check_text = f"{title} {message} {topic}".upper()
+        check_text = f"{title} {message} {topic_str}".upper()
         if any(fake in check_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
             logging.info(f"Skipping test/fake alert in _send_ntfy: {title}")
             return True
@@ -253,7 +257,7 @@ class NotificationServer:
                 title,
                 message,
                 priority,
-                topic,
+                topic_str,
                 urgent=(priority == "urgent"),
             )
             if not allowed:
@@ -261,19 +265,21 @@ class NotificationServer:
                 if (
                     reason not in ("duplicate", "similar_eliminated", "buffered_for_bulk")
                     and not skip_email
-                    and is_email_mirrored(topic)
+                    and is_email_mirrored(topic_str)
                 ):
                     self._send_email(title, message)
                 return False
             if out_payload:
-                title, message, priority, topic = out_payload
+                title, message, priority, topic_str = out_payload
 
         # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
         # Sent before the push so an ntfy outage or quota never swallows the email.
-        if not is_retry and not skip_email and is_email_mirrored(topic):
+        if not is_retry and not skip_email and is_email_mirrored(topic_str):
             self._send_email(title, message)
         
-        topic_str = "" if isinstance(topic, bool) else str(topic or "").strip()
+        topic_str = "" if isinstance(topic_str, bool) else str(topic_str or "").strip()
+        if not topic_str:
+            return True
         if topic_str.startswith(("http://", "https://")):
             url = topic_str
         else:
@@ -578,13 +584,25 @@ class NotificationServer:
                 if intent == "ntfy_webhook":
                     # Direct retry or pre-formatted [auto_...] topic payload
                     if "title" in payload:
+                        raw_t = payload.get("title")
+                        raw_m = payload.get("message")
+                        raw_p = payload.get("priority")
+                        raw_top = payload.get("topic")
+                        t_val = "Alert" if isinstance(raw_t, bool) or raw_t is None else (str(raw_t).strip() or "Alert")
+                        m_val = "" if isinstance(raw_m, bool) or raw_m is None else str(raw_m)
+                        p_val = "default" if isinstance(raw_p, bool) or raw_p is None else (str(raw_p).strip() or "default")
+                        top_val = (
+                            self._resolve_topic("ERROR")
+                            if isinstance(raw_top, bool) or raw_top is None or not str(raw_top).strip()
+                            else str(raw_top).strip()
+                        )
                         self._gate_and_send_ntfy(
-                            str(payload.get("title") or "Alert"),
-                            str(payload.get("message") or ""),
-                            str(payload.get("priority") or "default"),
-                            str(payload.get("topic") or self._resolve_topic("ERROR")),
+                            t_val,
+                            m_val,
+                            p_val,
+                            top_val,
                             alerts=payload.get("alerts"),
-                            urgent=(payload.get("priority") == "urgent"),
+                            urgent=(p_val == "urgent"),
                         )
                         return
 
@@ -595,7 +613,11 @@ class NotificationServer:
 
                 elif intent == "email":
                     # Same schema as the retry queue; rendered by AlertNotifier.send_email_batch.
-                    self._send_email(payload.get("subject") or "Alert", payload.get("message") or "")
+                    raw_s = payload.get("subject")
+                    raw_em = payload.get("message")
+                    s_val = "Alert" if isinstance(raw_s, bool) or raw_s is None else (str(raw_s).strip() or "Alert")
+                    em_val = "" if isinstance(raw_em, bool) or raw_em is None else str(raw_em)
+                    self._send_email(s_val, em_val)
                 return
             except json.JSONDecodeError as e:
                 logging.warning(f"Failed to decode orchestrator intent JSON from {bot_name}: {e} (raw line: {line.strip()})")

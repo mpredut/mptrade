@@ -3601,6 +3601,51 @@ def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
     assert ui_mirror.mirror_topic_thread_to_ui("../bad", "Title", bot_cli_base=str(cli_base), ui_cli_base=str(tmp_path / "ui")) is False
 
 
+def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypatch, tmp_path):
+    from notify_engine import alertnotifiers, mailer, server
+
+    # 1. server._send_ntfy rejects bool/whitespace topic without posting to root ntfy.sh
+    monkeypatch.setenv("NOTIFICATION_QUEUE_FILE", str(tmp_path / "queue.jsonl"))
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(tmp_path / "state.json"))
+    ns = server.NotificationServer()
+    assert ns._send_ntfy("Title", "Body", "default", "   ") is True
+    assert ns._send_ntfy("Title", "Body", "default", True) is True  # type: ignore[arg-type]
+
+    # 2. AlertNotifier.send respects string boolean flags ("false")
+    sent_calls = []
+    monkeypatch.setattr(alertnotifiers.AlertNotifier, "send_email_batch", staticmethod(lambda *a, **kw: sent_calls.append("email")))
+    monkeypatch.setattr(alertnotifiers.AlertNotifier, "send_phone_webhook_batch", staticmethod(lambda *a, **kw: sent_calls.append("phone")))
+    alertnotifiers.AlertNotifier.send(
+        {"type": "bot_event", "name": "Test", "body": "B"},
+        enable_console="false",
+        enable_file="false",
+        enable_email="false",
+        enable_phone_webhook="false",
+    )
+    assert sent_calls == []
+
+    # 3. bind_notify ignores whitespace/bool symbol and whitespace env vars
+    monkeypatch.setenv("TEST_SYM_ENV_IT14", "   ")
+    captured = []
+    monkeypatch.setattr(alertnotifiers, "notify", lambda title, body, src, sym, **kw: captured.append(sym))
+    fn = alertnotifiers.bind_notify(("TEST_SYM_ENV_IT14",), "FALLBACK_SYM")
+    fn("T", "B", "src", symbol="   ")
+    fn("T", "B", "src", symbol=True)  # type: ignore[arg-type]
+    assert captured == ["FALLBACK_SYM", "FALLBACK_SYM"]
+
+    # 4. mailer.send_email respects dedup="false" without calling pass_common_gate
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    monkeypatch.setattr(mailer, "_config", lambda: {"server": "localhost", "port": 25, "username": "u", "password": "p", "to": "t"})
+    monkeypatch.setattr(mailer, "_smtp_send", lambda msg, cfg: None)
+    monkeypatch.setattr(
+        alertnotifiers,
+        "pass_common_gate",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("pass_common_gate should not run when dedup='false'")),
+    )
+    assert mailer.send_email("Subj", "Body", dedup="false") is True  # type: ignore[arg-type]
+
+
+
 
 
 
