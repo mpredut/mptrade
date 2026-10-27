@@ -68,6 +68,10 @@ class MeanReversionTracker:
             pb_low = 0.0
         if isinstance(pb_high, bool) or not isinstance(pb_high, (int, float)) or not math.isfinite(float(pb_high)):
             pb_high = 1.0
+        if float(rsi_low) <= 0.0 or float(rsi_high) >= 100.0 or float(rsi_low) >= float(rsi_high):
+            rsi_low, rsi_high = 30.0, 70.0
+        if float(pb_low) >= float(pb_high):
+            pb_low, pb_high = 0.0, 1.0
         self.rsi_period = max(1, int(rsi_period))
         self.rsi_low, self.rsi_high = float(rsi_low), float(rsi_high)
         self.bb_period = max(1, int(bb_period))
@@ -202,8 +206,10 @@ def run_variant(tag, symbol, start_ts, end_ts, period_label):
         logic_fn=make_logic(run_tag),
         disable_small=True,
     )
-    net = pnl.get("net_total")
-    bh = pnl.get("buy_hold_net")
+    raw_net = pnl.get("net_total") if isinstance(pnl, dict) else None
+    raw_bh = pnl.get("buy_hold_net") if isinstance(pnl, dict) else None
+    net = float(raw_net) if (raw_net is not None and not isinstance(raw_net, bool) and isinstance(raw_net, (int, float)) and math.isfinite(float(raw_net))) else None
+    bh = float(raw_bh) if (raw_bh is not None and not isinstance(raw_bh, bool) and isinstance(raw_bh, (int, float)) and math.isfinite(float(raw_bh))) else None
     edge = (net - bh) if (net is not None and bh is not None) else None
     st = STATS[run_tag]
     fires = st["fire_confirmed_up"] + st["fire_confirmed_down"]

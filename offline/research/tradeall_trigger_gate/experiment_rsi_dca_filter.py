@@ -105,12 +105,14 @@ def load_ticks(symbol):
 
 def hourly_ohlc(ticks, start_ts, end_ts):
     buckets, order = {}, []
-    for ts, p in ticks:
-        if isinstance(ts, bool) or isinstance(p, bool) or not (math.isfinite(ts) and math.isfinite(p) and p > 0):
+    s_ts = float(start_ts) if (start_ts is not None and not isinstance(start_ts, bool) and isinstance(start_ts, (int, float)) and math.isfinite(float(start_ts))) else None
+    e_ts = float(end_ts) if (end_ts is not None and not isinstance(end_ts, bool) and isinstance(end_ts, (int, float)) and math.isfinite(float(end_ts))) else None
+    for ts, p in ticks or ():
+        if isinstance(ts, bool) or isinstance(p, bool) or not isinstance(ts, (int, float)) or not isinstance(p, (int, float)) or not (math.isfinite(ts) and math.isfinite(p) and p > 0):
             continue
-        if ts < start_ts:
+        if s_ts is not None and ts < s_ts:
             continue
-        if end_ts is not None and ts > end_ts:
+        if e_ts is not None and ts > e_ts:
             break
         hour = int(ts // 3600)
         bar = buckets.get(hour)

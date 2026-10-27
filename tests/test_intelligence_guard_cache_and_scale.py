@@ -14422,6 +14422,15 @@ def test_iteration145_continuous_grid_and_ml_forecast_safety(tmp_path):
     assert pp.window_size == 10
     assert pp.epochs == 30
 
+    # 4. tradeall_trigger_gate MeanReversionTracker & hourly_ohlc
+    from offline.research.tradeall_trigger_gate.experiment_rsi_bollinger import MeanReversionTracker
+    from offline.research.tradeall_trigger_gate.experiment_rsi_dca_filter import hourly_ohlc
+
+    mrt = MeanReversionTracker("test", "BTCUSDC", mode="both", rsi_low=80.0, rsi_high=20.0, pb_low=2.0, pb_high=1.0)
+    assert mrt.rsi_low == 30.0 and mrt.rsi_high == 70.0
+    assert mrt.pb_low == 0.0 and mrt.pb_high == 1.0
+    assert hourly_ohlc([(3600.0, 100.0), (3610.0, 105.0)], start_ts=None, end_ts=True) == [(100.0, 105.0, 100.0, 105.0)]
+
 
 def test_iteration146_position_exit_manager_hl_strategy_xstock_watch_and_price_alert_hygiene(tmp_path, monkeypatch):
     """Verify PositionSnapshot/ReentrySnapshot boolean & tolerance hygiene, hyperliquid/strategy.py oid & dca_counted hygiene, kraken_xstock_watch._load_state/_bot_alive, and price_alert._parse_armed_flag."""
@@ -14531,6 +14540,76 @@ def test_iteration146_position_exit_manager_hl_strategy_xstock_watch_and_price_a
     assert pa_mod._parse_armed_flag("null") is False
     assert pa_mod._parse_armed_flag(float("nan"), default=True) is True
     assert pa_mod._parse_armed_flag("true") is True
+
+
+def test_iteration147_kraken_cachemanager_shadow_live_and_hl_signals_hygiene(tmp_path):
+    """Verify kraken_cachemanager._clean_cache_id / _normalize / _load_initial_cache, kraken/shadow_live._get_anchor, and hyperliquid/signals._file_signal hygiene."""
+    import importlib.util
+    import json
+    import os
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from kraken import kraken_cachemanager as kcm
+    from kraken import shadow_live as ksl
+
+    # 1. kraken_cachemanager._clean_cache_id, _normalize, and _load_initial_cache
+    for bad_id in ("nan", "null", "none", "0", 0, -5, 12.5, ["123"], {"id": 1}, True, None, ""):
+        assert kcm._clean_cache_id(bad_id) is None
+        assert kcm._normalize(bad_id, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000}) == {}
+
+    assert kcm._clean_cache_id(777.0) == "777"
+    assert kcm._clean_cache_id("777.0") == "777"
+    norm_ok = kcm._normalize(777.0, {"price": "20.0", "qty": "1.0", "side": "BUY", "time": 1700000000})
+    assert norm_ok["id"] == "777"
+
+    cache_file = tmp_path / "cache_trade_kraken.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"id": "0", "time": 1700000000000, "isBuyer": "false"},
+                        {"id": "888.0", "time": 1700000001000, "isBuyer": "false"},
+                    ]
+                },
+                "fetchtime": {"HYPEUSD": 1700000001000},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded_cache = kcm._load_initial_cache(str(cache_file))
+    assert len(loaded_cache["items"]["HYPEUSD"]) == 1
+    assert loaded_cache["items"]["HYPEUSD"][0]["id"] == "888"
+    assert loaded_cache["items"]["HYPEUSD"][0]["isBuyer"] is False
+
+    # 2. kraken/shadow_live._get_anchor handles integral float strings and non-finite default_ts
+    orig_log_dir = ksl.LOG_DIR
+    ksl.LOG_DIR = str(tmp_path / "shadow_logs")
+    try:
+        os.makedirs(ksl.LOG_DIR, exist_ok=True)
+        anchor_p = ksl._anchor_path("HYPEUSD", 240)
+        with open(anchor_p, "w", encoding="utf-8") as fh:
+            fh.write("1700000000.0\n")
+        assert ksl._get_anchor("HYPEUSD", 240, 1600000000) == 1700000000
+        assert ksl._get_anchor("ADAUSD", 240, float("nan")) == 0  # type: ignore[arg-type]
+    finally:
+        ksl.LOG_DIR = orig_log_dir
+
+    # 3. hyperliquid/signals._file_signal guards directory/bool/empty paths
+    hl_sig_spec = importlib.util.spec_from_file_location("hl_sig_t147", os.path.join(root, "hyperliquid", "signals.py"))
+    hl_sig_mod = importlib.util.module_from_spec(hl_sig_spec)
+    assert hl_sig_spec and hl_sig_spec.loader
+    sys.modules["hl_sig_t147"] = hl_sig_mod
+    try:
+        hl_sig_spec.loader.exec_module(hl_sig_mod)
+    finally:
+        sys.modules.pop("hl_sig_t147", None)
+
+    assert hl_sig_mod._file_signal("")["source"] == "file(missing)"
+    assert hl_sig_mod._file_signal(True)["source"] == "file(missing)"  # type: ignore[arg-type]
+    assert hl_sig_mod._file_signal(str(tmp_path))["source"] == "file(missing)"
+
 
 
 
