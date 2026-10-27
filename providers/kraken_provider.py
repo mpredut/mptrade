@@ -260,6 +260,8 @@ class KrakenProvider(MarketDataProvider):
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending public OHLC closes as timestamp/price mappings."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
         if isinstance(lookback_h, bool):
             return None
         try:
@@ -271,9 +273,11 @@ class KrakenProvider(MarketDataProvider):
             raw_interval = max(1, int(math.ceil((lookback_f * 60.0) / 720.0)))
             valid_intervals = (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
-            res = cli._public("OHLC", {"pair": symbol, "interval": interval})
+            res = cli._public("OHLC", {"pair": str(symbol).strip(), "interval": interval})
+            if not isinstance(res, dict):
+                return None
             rows = next((v for k, v in res.items() if k != "last"), None)
-            if not rows:
+            if not rows or not isinstance(rows, (list, tuple)):
                 return None
             cutoff = time.time() - lookback_f * 3600
             out = []
@@ -290,6 +294,7 @@ class KrakenProvider(MarketDataProvider):
                 if not (math.isfinite(t) and math.isfinite(p)) or p <= 0 or t < cutoff:
                     continue
                 out.append({"timestamp": int(t * 1000), "price": p})
+            out.sort(key=lambda x: x["timestamp"])
             return out or None
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] history {symbol}: {e}")

@@ -16,11 +16,14 @@ import cacheManager as cm
 
 
 def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
+    if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        return []
+    sym_key = str(symbol).strip().upper()
     mgr = getattr(cm, "price_cache_manager", None)
-    entry = mgr.get(symbol) if isinstance(mgr, dict) else None
+    entry = (mgr.get(sym_key) or mgr.get(symbol)) if isinstance(mgr, dict) else None
     raw = getattr(entry, "cache", None) if entry is not None else None
     if isinstance(raw, dict):
-        raw = raw.get(symbol, [])
+        raw = raw.get(sym_key, raw.get(symbol, []))
     if not raw or not isinstance(raw, (list, tuple)):
         return []
     out: List[Tuple[int, float]] = []
@@ -103,6 +106,8 @@ def min_max_scale(arr: np.ndarray):
     return scaled, vmin, vmax
 
 def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
+    if arr_scaled is None or isinstance(arr_scaled, (bool, str, bytes)) or len(arr_scaled) == 0:
+        return np.array([], dtype=np.float64)
     arr_f = np.asarray(arr_scaled, dtype=np.float64)
     if isinstance(vmin, bool) or isinstance(vmax, bool):
         return np.zeros_like(arr_f, dtype=np.float64)
@@ -225,7 +230,7 @@ def _safe_pos_int(val, default: int = 1) -> int:
 
 def make_sequences(series: np.ndarray, window: int):
     win = _safe_pos_int(window, 1)
-    if len(series) <= win:
+    if series is None or isinstance(series, (bool, str, bytes)) or len(series) <= win:
         return np.empty((0, win, 1), dtype=np.float64), np.empty((0,), dtype=np.float64)
     X, y = [], []
     for i in range(win, len(series)):

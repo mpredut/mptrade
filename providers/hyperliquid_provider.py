@@ -174,6 +174,7 @@ class HyperliquidProvider(MarketDataProvider):
         if self._env_loaded:
             return
         self._env_loaded = True
+        saved_path = list(sys.path)
         try:
             if _HL_DIR not in sys.path:
                 sys.path.insert(0, _HL_DIR)
@@ -181,12 +182,18 @@ class HyperliquidProvider(MarketDataProvider):
             load_env_stack(os.path.join(_HL_DIR, ".env"))
         except Exception as e:  # noqa: BLE001 — Without env files, use public data only.
             print(f"[HL] _load_env failed: {e}")
+        finally:
+            sys.path[:] = saved_path
 
     def _new_client(self, secret_key=None):
         """Build one consistently configured SDK client for reads or signing."""
-        if _HL_DIR not in sys.path:
-            sys.path.insert(0, _HL_DIR)
-        from hl_client import HLClient
+        saved_path = list(sys.path)
+        try:
+            if _HL_DIR not in sys.path:
+                sys.path.insert(0, _HL_DIR)
+            from hl_client import HLClient
+        finally:
+            sys.path[:] = saved_path
         return HLClient(
             secret_key=secret_key,
             account_address=os.environ.get("HL_ACCOUNT_ADDRESS"),
@@ -442,9 +449,13 @@ class HyperliquidProvider(MarketDataProvider):
             sz_dec = int(getattr(pp, "volume_decimals", 2)) if pp is not None else 2
         except Exception:
             sz_dec = 2
-        if _HL_DIR not in sys.path:
-            sys.path.insert(0, _HL_DIR)
-        from hl_client import _round_px
+        saved_path = list(sys.path)
+        try:
+            if _HL_DIR not in sys.path:
+                sys.path.insert(0, _HL_DIR)
+            from hl_client import _round_px
+        finally:
+            sys.path[:] = saved_path
         try:
             return _round_px(price_f, sz_decimals=sz_dec, is_perp=False)
         except Exception:
@@ -882,7 +893,8 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order status ({raw_status})"
                 )
-            venue_status = str(raw_venue_status or "")
+            venue_status = str(raw_venue_status or "").strip()
+            venue_status_lc = venue_status.lower()
             order_payload = status_payload.get("order")
             if not isinstance(order_payload, dict):
                 raise ProviderError(
@@ -968,7 +980,7 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order sizes"
                 )
-            if venue_status in {"open", "filled"} or remaining > 0:
+            if venue_status_lc in {"open", "filled"} or remaining > 0:
                 expected_filled = max(0.0, original - remaining)
             else:
                 expected_filled = 0.0
@@ -980,9 +992,9 @@ class HyperliquidProvider(MarketDataProvider):
                     f"order_status({order_id}): fills incomplete "
                     f"({filled} < {expected_filled})"
                 )
-            if venue_status == "open":
+            if venue_status_lc == "open":
                 normalized = "open"
-            elif venue_status == "filled":
+            elif venue_status_lc == "filled":
                 normalized = "closed"
             else:
                 # Every rejection or cancellation is terminal, not a temporarily

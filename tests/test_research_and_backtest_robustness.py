@@ -4550,4 +4550,94 @@ def test_batch27_research_syspath_and_ml_forecast_hardening():
     assert X.shape[1] == 11 and len(X) == len(y_dir) == len(y_mag)
 
 
+def test_batch28_providers_spot_engine_and_visuals_hardening(monkeypatch):
+    from types import SimpleNamespace
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from providers.t212_provider import T212Provider
+    from providers.strategy_executor import ProviderError
+    from strategies.spot_engine import StratParams
+    import visuals.drawprices as dp
+    import visuals.tradeall_observe as tobs
+
+    # 1. HyperliquidProvider.order_status normalizes uppercase/whitespace venue_status ("FILLED" / "OPEN")
+    monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef")
+    hl = HyperliquidProvider(token="HYPE")
+    hl._spot_pair = "@107"
+    hl._client_tried = True
+    hl._client = SimpleNamespace(
+        info=SimpleNamespace(
+            query_order_by_oid=lambda _addr, _oid: {
+                "status": "order",
+                "order": {
+                    "status": " FILLED ",
+                    "order": {"origSz": "2.0", "sz": "0.0"},
+                },
+            },
+            user_fills=lambda _addr: [
+                {"oid": 777, "sz": "2.0", "px": "25.0", "fee": "0.05", "feeToken": "USDC"}
+            ],
+        )
+    )
+    st = hl.order_status("HYPEUSDC", "777")
+    assert st.status == "closed"
+    assert st.filled_qty == pytest.approx(2.0)
+
+    # 2. KrakenProvider.get_price_history rejects empty/bool symbol and sorts descending rows
+    kp = KrakenProvider(
+        client=SimpleNamespace(
+            _public=lambda _ep, _params: {
+                "XXBTZUSD": [
+                    [1999999900, "1", "1", "1", "65000.0"],
+                    [1999999800, "1", "1", "1", "64000.0"],
+                ]
+            }
+        )
+    )
+    assert kp.get_price_history("", 24.0) is None
+    assert kp.get_price_history(True, 24.0) is None  # type: ignore[arg-type]
+    hist = kp.get_price_history(" BTCUSD ", 24.0)
+    assert hist is not None and [h["price"] for h in hist] == [64000.0, 65000.0]
+
+    # 3. T212Provider._send_order rejects invalid symbol and order_status handles bool symbol
+    t212 = T212Provider(
+        client=SimpleNamespace(
+            get_order_status=lambda _oid: {
+                "ticker": "NVDA_US_EQ",
+                "status": "FILLED",
+                "filledQuantity": 1.0,
+                "filledValue": 120.0,
+                "fee": 0.0,
+            }
+        )
+    )
+    with pytest.raises(ProviderError, match="invalid T212 symbol"):
+        t212._send_order("   ", "BUY", 1.0, 100.0, market=True)
+    t212_st = t212.order_status(True, "901")  # type: ignore[arg-type]
+    assert t212_st.status == "closed"
+
+    # 4. StratParams.__post_init__ normalizes string enable_takeprofit and string tp_tranches
+    sp = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=1.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=0.0,
+        max_budget=500.0,
+        max_dca_buys=3,
+        enable_takeprofit="false",  # type: ignore[arg-type]
+        order_ttl_min=10.0,
+        tp_tranches="3:50,6:50",  # type: ignore[arg-type]
+    )
+    assert sp.enable_takeprofit is False
+    assert sp.tp_tranches == [(3.0, 50.0), (6.0, 50.0)]
+
+    # 5. visuals/drawprices and visuals/tradeall_observe edge-case hardening
+    assert len(dp.min_max_inverse(None, 0.0, 1.0)) == 0  # type: ignore[arg-type]
+    X_seq, y_seq = dp.make_sequences(None, 5)  # type: ignore[arg-type]
+    assert X_seq.shape == (0, 5, 1) and y_seq.shape == (0,)
+    assert tobs.build_trend_regions(None, 100.0, 200.0) == []
+    assert tobs.build_trend_regions([{"ts": 120.0, "state": "UP"}, {"bad": 1}], 100.0, 200.0) == [(120.0, 200.0, "UP")]
 

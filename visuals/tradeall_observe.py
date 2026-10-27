@@ -462,10 +462,17 @@ def load_backtest_shadow_events(directory, symbol):
 
 def build_trend_regions(events, window_start, window_end):
     """Build state regions from each trend start to the next (plan steps A/C)."""
+    if not events:
+        return []
+    ws = _safe_float(window_start, 0.0)
+    we = _safe_float(window_end, 0.0)
     regions = []
     for i, ev in enumerate(events):
-        end = events[i + 1]["ts"] if i + 1 < len(events) else window_end
-        start, end = max(ev["ts"], window_start), min(end, window_end)
+        if not isinstance(ev, dict) or "ts" not in ev or "state" not in ev:
+            continue
+        ev_ts = _safe_float(ev.get("ts"), 0.0)
+        next_ts = _safe_float(events[i + 1].get("ts"), we) if (i + 1 < len(events) and isinstance(events[i + 1], dict)) else we
+        start, end = max(ev_ts, ws), min(next_ts, we)
         if end > start:
             regions.append((start, end, ev["state"]))
     return regions
@@ -902,7 +909,8 @@ def render_symbol_charts_live(symbol, chart_specs, *, window_end=None):
     """
     if not chart_specs:
         return
-    window_end = time.time() if window_end is None else window_end
+    we_val = _safe_float(window_end, 0.0)
+    window_end = we_val if we_val > 0.0 else time.time()
     max_window = max(window_seconds for _, window_seconds, _ in chart_specs)
     days_back = 9 if max_window > DAY_SECONDS else 2
     include_history = max_window > DAY_SECONDS
@@ -990,7 +998,7 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
         ch_f = 24.0
     chunk_sec = ch_f * 3600
     range_start, range_end = min(all_ts), max(all_ts)
-    n_chunks = max(1, int((range_end - range_start) // chunk_sec) + 1)
+    n_chunks = max(1, int(math.ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1
 
     paths = []
     for i in range(n_chunks):

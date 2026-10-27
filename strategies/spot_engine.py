@@ -261,6 +261,11 @@ class StratParams:
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
         self.takeprofit_pct = finite("STRAT_TAKEPROFIT_PCT", self.takeprofit_pct)
         self.stop_loss_pct = finite("STRAT_STOP_LOSS_PCT", self.stop_loss_pct)
+        self.enable_takeprofit = _parse_bool_flag(self.enable_takeprofit, True)
+        if isinstance(self.tp_tranches, str):
+            self.tp_tranches = _parse_tranches(self.tp_tranches)
+        elif self.tp_tranches is None:
+            self.tp_tranches = []
 
         if self.trend_topup <= 0:
             raise ValueError("STRAT_TREND_TOPUP must be > 0")

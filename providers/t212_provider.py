@@ -339,6 +339,9 @@ class T212Provider(MarketDataProvider):
 
     def _send_order(self, symbol: str, side: str, qty: float,
                     price: Optional[float], *, market: bool) -> tuple[int, dict]:
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ProviderError(f"invalid T212 symbol: {symbol!r}")
+        symbol = symbol.strip()
         signed = self._signed_qty(side, qty)
         if _parse_bool_flag(market, False):
             return self._client().place_market_order(symbol, signed, extended_hours=False)
@@ -447,7 +450,7 @@ class T212Provider(MarketDataProvider):
         instrument = raw.get("instrument")
         instrument_ticker = instrument.get("ticker") if isinstance(instrument, dict) else ""
         ticker = str(raw.get("ticker") or instrument_ticker or "").strip()
-        expected_symbol = str(symbol or "").strip()
+        expected_symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
         if ticker and expected_symbol and ticker.upper() != expected_symbol.upper():
             raise ProviderError(
                 f"order_status({order_id}): ticker {ticker!r}, asteptat {symbol!r}")
