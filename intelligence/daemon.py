@@ -38,6 +38,14 @@ def _safe_pos_interval(val: Any, default: float) -> float:
     return f if (math.isfinite(f) and f > 0.0) else default
 
 
+def _as_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
 class IntelligenceTelemetryDaemon:
     """Orchestrates periodic background updates of external microstructure and macro threat state."""
 
@@ -66,22 +74,20 @@ class IntelligenceTelemetryDaemon:
             macro_llm_interval_sec,
             required_float_env("MACRO_LLM_INTERVAL_SEC"),
         )
-        def _as_bool(val: Any) -> bool:
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                return val.strip().lower() in ("1", "true", "yes", "on")
-            return bool(val)
-
         self.thread_prune_interval_sec = _safe_pos_interval(thread_prune_interval_sec, 10800.0)
         self.skip_macro = _as_bool(skip_macro)
         self.skip_external = _as_bool(skip_external)
         self.running = False
 
         # Resolve target symbols
+        raw_syms = (
+            symbols.split(",")
+            if isinstance(symbols, str)
+            else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
+        )
         cleaned_symbols = [
             str(s).strip().upper()
-            for s in (symbols or [])
+            for s in raw_syms
             if s is not None and not isinstance(s, bool) and str(s).strip()
         ]
         if cleaned_symbols:
@@ -186,6 +192,7 @@ class IntelligenceTelemetryDaemon:
 
     def update_macro(self, force: bool = False) -> bool:
         """Fetch breaking macro news and update geopolitical threat assessment."""
+        force = _as_bool(force)
         try:
             news_snap = self.news_collector.fetch(force_refresh=force)
             assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
@@ -200,6 +207,7 @@ class IntelligenceTelemetryDaemon:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating tasks whose scheduled interval has elapsed."""
+        force = _as_bool(force)
         current_ts = time.time()
         if now is not None and not isinstance(now, bool):
             try:

@@ -109,7 +109,7 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     per = alert_config.get("per_coin")
     if not isinstance(per, dict):
         per = {}
-    sym_str = str(symbol or "").strip()
+    sym_str = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
     sym_up = sym_str.upper()
     if isinstance(per.get(sym_str), dict):
         return per[sym_str]

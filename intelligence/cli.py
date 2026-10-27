@@ -82,7 +82,9 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
                 # Check process existence via signal 0
                 os.kill(pid, 0)
                 is_alive = True
-            except OSError:
+            except PermissionError:
+                is_alive = True
+            except (OSError, OverflowError):
                 is_alive = False
 
         status_str = "alive" if (is_alive and age < 120.0) else ("stale" if is_alive else "dead")
@@ -124,7 +126,9 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
             try:
                 os.kill(pid, 0)
                 is_alive = True
-            except OSError:
+            except PermissionError:
+                is_alive = True
+            except (OSError, OverflowError):
                 is_alive = False
 
         status_str = "alive" if (is_alive and age < 300.0) else ("stale" if is_alive else "dead")
@@ -145,7 +149,7 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
 
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Consolidate full multi-pillar state for a symbol."""
-    symbol = str(symbol or "").strip().upper()
+    symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip().upper()
     now = time.time()
     result: Dict[str, Any] = {
         "symbol": symbol,

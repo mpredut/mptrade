@@ -39,6 +39,14 @@ def _safe_pos_interval(val: Any, default: float) -> float:
     return f if (math.isfinite(f) and f > 0.0) else default
 
 
+def _as_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
 class GlobalTelemetryCollector:
     """Orchestrates periodic background ingestion of external microstructure and macro telemetry."""
 
@@ -63,13 +71,6 @@ class GlobalTelemetryCollector:
             news_interval_sec,
             required_float_env("MACRO_NEWS_INTERVAL_SEC"),
         )
-        def _as_bool(val: Any) -> bool:
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                return val.strip().lower() in ("1", "true", "yes", "on")
-            return bool(val)
-
         self.fear_greed_interval_sec = _safe_pos_interval(fear_greed_interval_sec, 1800.0)
         self.breadth_interval_sec = _safe_pos_interval(breadth_interval_sec, 900.0)
         self.skip_news = _as_bool(skip_news)
@@ -77,9 +78,14 @@ class GlobalTelemetryCollector:
         self.running = False
 
         # Resolve target symbols
+        raw_syms = (
+            symbols.split(",")
+            if isinstance(symbols, str)
+            else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
+        )
         cleaned_symbols = [
             str(s).strip().upper()
-            for s in (symbols or [])
+            for s in raw_syms
             if s is not None and not isinstance(s, bool) and str(s).strip()
         ]
         if cleaned_symbols:
@@ -189,6 +195,7 @@ class GlobalTelemetryCollector:
 
     def update_news(self, force: bool = False) -> bool:
         """Fetch breaking macro RSS headlines and update local rolling pool (zero LLM)."""
+        force = _as_bool(force)
         try:
             news_snap = self.news_collector.fetch(force_refresh=force)
             if news_snap:
@@ -200,6 +207,7 @@ class GlobalTelemetryCollector:
 
     def update_fear_greed(self, force: bool = False) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
+        force = _as_bool(force)
         try:
             snap = self.fear_greed_collector.fetch(force_refresh=force)
             if snap:
@@ -226,10 +234,14 @@ class GlobalTelemetryCollector:
 
     def update_market_breadth(self, force: bool = False) -> bool:
         """Fetch Binance 24h market breadth and persist snapshot to cachedb/."""
+        force = _as_bool(force)
         try:
             breadth = self.breadth_collector.fetch(force_refresh=force)
             if breadth:
                 from state_io import save_json_state
+                raw_gainers = getattr(breadth, "top_gainers", None) or ()
+                raw_losers = getattr(breadth, "top_losers", None) or ()
+                breadth_ts = _safe_pos_interval(getattr(breadth, "ts", None), time.time())
                 payload = {
                     "advance_ratio": breadth.advance_ratio,
                     "median_change_pct": breadth.median_change_pct,
@@ -242,9 +254,9 @@ class GlobalTelemetryCollector:
                     "advancing_count": breadth.advancing_count,
                     "declining": breadth.declining_count,
                     "declining_count": breadth.declining_count,
-                    "top_gainers": [list(x) for x in getattr(breadth, "top_gainers", ())],
-                    "top_losers": [list(x) for x in getattr(breadth, "top_losers", ())],
-                    "ts": breadth.ts,
+                    "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
+                    "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
+                    "ts": breadth_ts,
                 }
                 # Standardized collect file + legacy cache file
                 save_json_state(os.path.join(self.cache_dir, "market_breadth_collect.json"), payload, indent=2)
@@ -260,6 +272,7 @@ class GlobalTelemetryCollector:
         """Execute a collector step in a daemon thread so a hung DNS/socket read cannot freeze the daemon."""
         import threading
 
+        timeout_sec = _safe_pos_interval(timeout_sec, 15.0)
         outcome: List[bool] = [False]
         err_holder: List[BaseException] = []
 
@@ -282,6 +295,7 @@ class GlobalTelemetryCollector:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
+        force = _as_bool(force)
         current_ts = time.time()
         if now is not None and not isinstance(now, bool):
             try:

@@ -30,6 +30,14 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.macro_analyzer")
 
 
+def _as_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
 class MacroAnalyzer:
     """Orchestrates periodic macro and sentiment LLM synthesis and publishes assessments."""
 
@@ -64,9 +72,14 @@ class MacroAnalyzer:
             "1", "1.0", "true", "yes", "on"
         )
         self.thread_prune_interval_sec = _clean_pos_interval(thread_prune_interval_sec, 10800.0)
+        raw_syms = (
+            symbols.split(",")
+            if isinstance(symbols, str)
+            else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
+        )
         cleaned_symbols = [
             str(s).strip().upper()
-            for s in (symbols or [])
+            for s in raw_syms
             if s is not None and not isinstance(s, bool) and str(s).strip()
         ]
         self.symbols = cleaned_symbols or ["BTCUSDC"]
@@ -122,6 +135,7 @@ class MacroAnalyzer:
 
     def assess_geopolitical_threat(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
+        force = _as_bool(force)
         try:
             eval_now = self._resolve_now(now)
             from intelligence.macro.news_feed_collector import NewsFeedCollector
@@ -209,6 +223,7 @@ class MacroAnalyzer:
 
     def assess_market_advisor(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Synthesize multi-source sentiment & whale telemetry into a macro perspective."""
+        force = _as_bool(force)
         try:
             eval_now = self._resolve_now(now)
             from state_io import read_recovering_previous
@@ -470,6 +485,7 @@ class MacroAnalyzer:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, publishing assessments whose interval has elapsed."""
+        force = _as_bool(force)
         current_ts = self._resolve_now(now)
         results: Dict[str, Any] = {
             "ts": current_ts,

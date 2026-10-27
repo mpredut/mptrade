@@ -477,9 +477,17 @@ class StockYahooPricePlatform(PricePlatformInterface):
             if not configured:
                 raise ValueError("STOCK_TICKERS is required when tickers are not injected")
             src = configured.split(",")
-        else:
+        elif isinstance(tickers, str):
+            src = tickers.split(",")
+        elif isinstance(tickers, (list, tuple, set, frozenset)):
             src = tickers
-        self._symbols: Set[str] = {t.strip().upper() for t in src if t.strip()}
+        else:
+            src = []
+        self._symbols: Set[str] = {
+            t.strip().upper()
+            for t in src
+            if isinstance(t, str) and t.strip()
+        }
 
     @property
     def platform_name(self) -> str:
@@ -498,8 +506,9 @@ class StockYahooPricePlatform(PricePlatformInterface):
         try:
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
+            import urllib.parse
             sym_y = symbol.strip().upper().split("_")[0]                      # NVDA_US_EQ -> NVDA
-            url = self._YAHOO.format(sym=sym_y) + "?range=1d&interval=5m"
+            url = self._YAHOO.format(sym=urllib.parse.quote(sym_y, safe="")) + "?range=1d&interval=5m"
             resp = requests.get(url, headers=self._UA, timeout=10)
             resp.raise_for_status()
             payload = resp.json()
