@@ -42,7 +42,7 @@ def _parse_bool_flag(val: Any, default: bool = False) -> bool:
     s = str(val).strip().lower()
     if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
+    if s in {"0", "0.0", "false", "no", "off", "n", "f", "none", "null", "nan"}:
         return False
     return fb
 
