@@ -15609,4 +15609,93 @@ def test_iteration158_monitortrades_tradeall_rtrade_hygiene(monkeypatch, tmp_pat
     assert merged["hard_stop_revision"] == 1
 
 
+def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
+    import monitororder as mo
+    from binance_api import bapi, bapi_placeorder, bapi_allorders, order_id_context as rc
+
+    # 1. order_id_context: _base36 parses float strings ("36.0") and resolve_order_owner treats "None"/"null"/"0" as unspecified
+    assert rc._base36("36.0") == "10"
+    assert rc._base36(True) == "0"
+    assert rc.resolve_order_owner("None") == "unspecified"
+    assert rc.resolve_order_owner("null") == "unspecified"
+    assert rc.resolve_order_owner("0") == "unspecified"
+    assert rc.is_order_repriceable_by_monitororder("None") is True
+
+    # 2. monitororder: resolve_effective_order_ttl rejects "0" sentinel IDs
+    assert mo.resolve_effective_order_ttl("0", "0", custom_ttl_map={"0": 99.0}) == min(
+        mo.DEFAULT_ORDER_TTL_SEC, mo.MAX_GLOBAL_ORDER_TTL_SEC
+    )
+    assert mo.resolve_effective_order_ttl("123.0", "", custom_ttl_map={"123": 120.0}) == 120.0
+    assert mo._safe_pos_float(float("nan")) == 0.0
+    assert mo._safe_pos_float(True) == 0.0
+
+    # 3. bapi: cancel_order, check_order_filled, and get_open_orders reject "0"/negative orderIds and parse bool flags
+    monkeypatch.setattr(bapi.client, "cancel_order", lambda **kw: (_ for _ in ()).throw(AssertionError("should not call cancel")))
+    assert bapi.cancel_order("BTCUSDC", 0) is False
+    assert bapi.cancel_order("BTCUSDC", "0.0") is False
+    assert bapi.cancel_order("BTCUSDC", -5) is False
+    assert bapi.check_order_filled("0", "BTCUSDC") is False
+
+    monkeypatch.setattr(
+        bapi.client,
+        "get_open_orders",
+        lambda symbol: [
+            {"orderId": 0, "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
+            {"orderId": "0.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
+            {"orderId": "777.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000, "clientOrderId": "None"},
+        ],
+    )
+    open_map = bapi.get_open_orders("BUY", "BTCUSDC", strict="false")
+    assert list(open_map.keys()) == ["777"]
+    assert open_map["777"]["clientOrderId"] == ""
+
+    # 4. bapi_placeorder: order_candidate_price and _submit_binance_order handle market="false" and client_order_id="0"
+    assert bapi_placeorder.order_candidate_price("BUY", 60000.0, 60100.0, market="false") == 60000.0
+    captured_submit = {}
+
+    class _DummyBinanceClient:
+        def order_limit_buy(self, **kw):
+            captured_submit.update(kw)
+            return {"orderId": 888}
+
+    monkeypatch.setattr(bapi_placeorder.cfg, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(bapi_placeorder, "require_account_cache_for_submit", lambda: None)
+    res_order = bapi_placeorder._submit_binance_order(
+        "BUY",
+        "BTCUSDC",
+        0.01,
+        price=60000.0,
+        market="false",
+        client_order_id="0",
+        api_client=_DummyBinanceClient(),
+    )
+    assert res_order == {"orderId": 888}
+    assert captured_submit["newClientOrderId"] != "0"
+
+    # 5. bapi_allorders: paginate_my_trades accepts "100.0" tail id and get_filled_orders does not group orderId=0 fills
+    pages = [
+        [{"id": "100.0", "orderId": 0, "price": "100.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
+        [{"id": "101", "orderId": "0.0", "price": "200.0", "qty": "1.0", "time": int(time.time() * 1000), "isBuyer": True}],
+    ]
+
+    class _PagerClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get_my_trades(self, **kw):
+            idx = self.calls
+            self.calls += 1
+            return pages[idx] if idx < len(pages) else []
+
+    pager = _PagerClient()
+    monkeypatch.setattr(bapi_allorders.time, "sleep", lambda _s: None)
+    all_trades = bapi_allorders.paginate_my_trades(pager, "BTCUSDC", int(time.time() * 1000) - 10000, limit=1, strict="false")
+    assert len(all_trades) == 2
+
+    monkeypatch.setattr(bapi_allorders, "paginate_my_trades", lambda *a, **kw: all_trades)
+    filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDC", int(time.time() * 1000) - 10000, strict="false")
+    assert len(filled) == 2
+
+
+
 

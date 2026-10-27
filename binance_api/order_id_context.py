@@ -137,7 +137,11 @@ def _base36(value):
         try:
             value = max(0, int(value))
         except (TypeError, ValueError, OverflowError):
-            value = 0
+            try:
+                f = float(value)
+                value = max(0, int(f)) if math.isfinite(f) and f.is_integer() else 0
+            except (TypeError, ValueError, OverflowError):
+                value = 0
     if value == 0:
         return "0"
 
@@ -189,7 +193,7 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     if not isinstance(client_order_id, str):
         return "unspecified"
     cid = client_order_id.strip()
-    if not cid:
+    if not cid or cid.lower() in {"none", "null", "nan", "inf", "-inf", "+inf", "0", "0.0", "-0", "+0"}:
         return "unspecified"
     for prefix, bot in sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
         if cid.startswith(prefix):

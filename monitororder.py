@@ -47,6 +47,28 @@ MODULE_ORDER_TTLS = {
 }
 
 
+_INVALID_MONITOR_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+
+
+def _clean_monitor_id(val) -> str:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return ""
+    cleaned = extract_order_id(val, default="") or ""
+    if cleaned.strip().lower() in _INVALID_MONITOR_ID_STRINGS:
+        return ""
+    return cleaned.strip()
+
+
+def _safe_pos_float(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and f >= 0.0 else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_ttl_map=None) -> float:
     """Resolve the effective TTL for an open order.
 
@@ -56,8 +78,8 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     4. Enforce MAX_GLOBAL_ORDER_TTL_SEC hard cap (3 days) without exception.
     """
     custom_map = custom_ttl_map if isinstance(custom_ttl_map, dict) else {}
-    oid_str = extract_order_id(order_id, default="") or ""
-    cid_str = extract_order_id(client_order_id, default="") or ""
+    oid_str = _clean_monitor_id(order_id)
+    cid_str = _clean_monitor_id(client_order_id)
 
     # 1. Custom TTL from placement
     for candidate_key in (oid_str, cid_str):
@@ -88,8 +110,8 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
     """Notify when an expired open order is canceled by monitororder."""
     try:
         import alertnotifiers as alert
-        qty = float(quantity or 0.0)
-        px = float(price or 0.0)
+        qty = _safe_pos_float(quantity, 0.0)
+        px = _safe_pos_float(price, 0.0)
         val = px * qty
         quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
         side = str(order_type).upper()
@@ -174,8 +196,8 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         return
     try:
         import alertnotifiers as alert
-        qty = float(quantity or 0.0)
-        px = float(price or 0.0)
+        qty = _safe_pos_float(quantity, 0.0)
+        px = _safe_pos_float(price, 0.0)
         val = px * qty
         quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
         side = str(order_type).upper()
@@ -225,7 +247,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     order_type = order_type_u
 
     orders = api.get_open_orders(order_type, symbol)
-    if not orders:
+    if not orders or not isinstance(orders, dict):
         print(f"For {symbol} there are no open {order_type} orders to begin with.")
         return
     
@@ -266,9 +288,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Invalid price ({price}) for order {order_id}, skipping.")
             continue
 
-        oid_str = extract_order_id(order_id, default=None) or str(order_id).strip()
+        oid_str = _clean_monitor_id(order_id) or _clean_monitor_id(order)
+        if not oid_str:
+            print(f"Invalid order ID ({order_id}) for {symbol}, skipping.")
+            continue
         raw_cid = order.get("clientOrderId")
-        cid = str(raw_cid).strip() if raw_cid is not None and not isinstance(raw_cid, bool) else ""
+        cid = _clean_monitor_id(raw_cid)
         owner = rc.resolve_order_owner(cid)
         if owner == "order_retry":
             owner = accepted_owner_map.get(oid_str) or accepted_owner_map.get(cid) or owner
@@ -286,7 +311,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         order_ts = extract_timestamp_s(order, default=0.0) or 0.0
         age_sec = 0.0
         effective_ttl = resolve_effective_order_ttl(
-            order_id, cid, owner=owner, custom_ttl_map=custom_ttl_map)
+            oid_str, cid, owner=owner, custom_ttl_map=custom_ttl_map)
         if order_ts > 0:
             now = time.time()
             age_sec = max(0.0, now - order_ts)
@@ -298,14 +323,14 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
                 )
                 try:
-                    canceled = mkt.cancel_order(symbol, str(order_id))
+                    canceled = mkt.cancel_order(symbol, oid_str)
                     if canceled is False:
                         print(f"[MONITORORDER] Cancel returned False for expired order {order_id}; will retry next cycle.")
                         continue
                     initial_prices.pop(order_id, None)
                     initial_prices.pop(oid_str, None)
                     try:
-                        order_retry.resolve_accepted_order(symbol, order_id)
+                        order_retry.resolve_accepted_order(symbol, oid_str)
                     except Exception:
                         pass
                     print(f"[MONITORORDER] 🛑 Successfully canceled expired order {order_id}")
@@ -461,9 +486,13 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 continue
             replacement_claim = claimed[0]
-            client_order_id = dict(
-                replacement_claim.get("place_kwargs") or {}).get(
-                    "client_order_id")
+            raw_place_kw = (
+                replacement_claim.get("place_kwargs")
+                if isinstance(replacement_claim, dict)
+                else None
+            )
+            place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
+            client_order_id = _clean_monitor_id(place_kw.get("client_order_id")) or None
             if not client_order_id:
                 order_retry.complete_claim(
                     replacement_claim, "success")
@@ -643,7 +672,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     if isinstance(new_order, dict) and "orderId" in new_order
                     else extract_order_id(new_order)
                 )
-                new_oid = str(raw_new_id)
+                new_oid = _clean_monitor_id(raw_new_id) or str(raw_new_id)
                 _derived_replacement_order_ids.add(new_oid)
                 _notified_placed_order_ids.add(new_oid)
                 orders[raw_new_id] = {
@@ -682,8 +711,11 @@ def warmup_open_orders():
         for side in ("SELL", "BUY"):
             try:
                 orders = api.get_open_orders(side, symbol)
-                if orders:
+                if orders and isinstance(orders, dict):
                     for oid in orders.keys():
+                        clean_oid = _clean_monitor_id(oid)
+                        if clean_oid:
+                            _notified_placed_order_ids.add(clean_oid)
                         _notified_placed_order_ids.add(str(oid))
             except Exception as exc:
                 print(f"[MONITORORDER] Warmup error for {symbol} {side}: {exc}")

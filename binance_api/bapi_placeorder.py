@@ -84,6 +84,7 @@ class _AccountCacheSubmitPermit:
             raise TypeError("account-cache submit permits are issued internally")
         issued_at = time.monotonic()
         issued_at_wall = time.time()
+        is_market = api._parse_bool_flag(market, False)
         object.__setattr__(self, "_scope", _AccountCacheSubmitScope(
             pid=os.getpid(),
             issued_at=issued_at,
@@ -94,9 +95,9 @@ class _AccountCacheSubmitPermit:
             symbol=str(symbol).upper(),
             side=str(side).upper(),
             max_qty=float(qty),
-            requested_price=None if market else float(price),
+            requested_price=None if is_market else float(price),
             price_tick_size=float(price_tick_size),
-            market=bool(market),
+            market=is_market,
             kind=str(kind or ""),
         ))
         object.__setattr__(self, "_consumed", False)
@@ -305,6 +306,7 @@ def _require_submit_permit_headroom(status):
 def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
                                       market=False, kind=None, api_client=None):
     """Authorize one narrowly scoped submit after a complete cache validation."""
+    market = api._parse_bool_flag(market, False)
     if side is None or isinstance(side, bool) or symbol is None or isinstance(symbol, bool):
         raise SubmissionRefused("invalid_order_parameters")
     side = str(side).strip().upper()
@@ -358,6 +360,7 @@ def _consume_account_cache_submit_permit(
         permit, *, symbol, side, qty, actual_price, requested_price,
         market, kind):
     """Consume a matching permit once or refuse before any client side effect."""
+    market = api._parse_bool_flag(market, False)
     if not isinstance(permit, _AccountCacheSubmitPermit):
         raise SubmissionRefused("account_cache_not_fresh")
     with permit._lock:
@@ -417,6 +420,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
                           cache_permit=None, permit_requested_price=None,
                           kind=None, cancel_opposite_requested_price=None):
     """Single low-level dispatch after common filter normalization."""
+    market = api._parse_bool_flag(market, False)
     side = "" if order_type is None or isinstance(order_type, bool) else str(_normalize_side(order_type))
     if isinstance(qty, bool) or (not market and isinstance(price, bool)):
         raise SubmissionRefused("invalid_order_parameters")
@@ -452,6 +456,8 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
         if not isinstance(client_order_id, (dict, list, tuple, set, frozenset))
         else None
     )
+    if cleaned_cid is not None and str(cleaned_cid).strip().lower() in api._INVALID_BAPI_ID_STRINGS:
+        cleaned_cid = None
     client_order_id = cleaned_cid or rc.create_client_order_id()
     if market:
         method = (
@@ -567,7 +573,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
-    allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
+    allow_math_reference_sell = api._parse_bool_flag(kwargs.pop("allow_math_reference_sell", False), False)
     m = order_guard._load_margins()
     venue_bypass = normalize_bypassed_guards(
         bypass_guards=m.get("binance_bypass_guards", m["default_bypass_guards"])
@@ -903,6 +909,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
 def adjust_price_and_cancel_opposite(order_type, symbol, price,
                                      cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
+    cancel_opposite = api._parse_bool_flag(cancel_opposite, True)
     if isinstance(order_type, bool) or isinstance(price, bool):
         raise SubmissionRefused("invalid_order_parameters")
     order_type = str(order_type or "").strip().upper()
@@ -942,7 +949,7 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price,
 
 def order_candidate_price(order_type, requested_price, current_price, *, market=False):
     """Return the exact price used by Binance filter normalization."""
-    if market:
+    if api._parse_bool_flag(market, False):
         return None
     if isinstance(order_type, bool):
         raise ValueError("order_type must be BUY or SELL")
@@ -990,7 +997,13 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     """
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol, price, qty)
-    is_market = bool(force or market or kwargs.get("market", False) or kwargs.get("force", False))
+    enforce_business_minimum = api._parse_bool_flag(enforce_business_minimum, True)
+    is_market = (
+        api._parse_bool_flag(force, False)
+        or api._parse_bool_flag(market, False)
+        or api._parse_bool_flag(kwargs.get("market", False), False)
+        or api._parse_bool_flag(kwargs.get("force", False), False)
+    )
     try:
         from providers.quantity import balance_cap_quantity, fee_cap_quantity
         balance_fn = (
@@ -1001,7 +1014,10 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
         available_qty, _balance_asset = balance_cap_quantity(
             balance_fn, symbol, order_type, price)
         if available_qty is None:
-            if kwargs.get("_balance_verified") or kwargs.get("caller_owns_retry"):
+            if (
+                api._parse_bool_flag(kwargs.get("_balance_verified"), False)
+                or api._parse_bool_flag(kwargs.get("caller_owns_retry"), False)
+            ):
                 print(f"Balance check soft-skipped for {order_type} {symbol}; using verified qty={qty:.8f}")
             else:
                 print(f"Balance unavailable for {order_type} {symbol}; order skipped.")

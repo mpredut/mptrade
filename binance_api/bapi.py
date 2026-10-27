@@ -59,6 +59,27 @@ except (ValueError, AttributeError):
 cprice = {}
 cprice_time = {}
 
+_INVALID_BAPI_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+
+
+def _parse_bool_flag(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        return val != 0
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 def _normalize_side(order_type):
     if isinstance(order_type, str):
         cleaned = order_type.strip().upper()
@@ -158,6 +179,7 @@ def get_free_balance(asset: str):
 
 
 def get_account_assets_balances(raise_errors=False):
+    raise_errors = _parse_bool_flag(raise_errors, False)
     try:
         account = client.get_account()
         balances = (account.get("balances") if isinstance(account, dict) else None) or []
@@ -206,7 +228,7 @@ def get_account_assets_balances(raise_errors=False):
 
 
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
-
+    strict = _parse_bool_flag(strict, False)
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
         
@@ -221,7 +243,9 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
             if extract_order_side(order) != order_type.upper():
                 continue
             raw_cid = order.get('clientOrderId')
-            cid = raw_cid.strip() if isinstance(raw_cid, str) else ''
+            cid = extract_order_id(raw_cid, default='') if raw_cid is not None and not isinstance(raw_cid, (bool, dict, list, tuple, set, frozenset)) else ''
+            if cid and cid.strip().lower() in _INVALID_BAPI_ID_STRINGS:
+                cid = ''
             if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
                 if cid.startswith("OR_"):
                     if accepted_owner_map is None:
@@ -270,18 +294,25 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                     pass
             raw_oid = order.get('orderId')
             if isinstance(raw_oid, float):
-                if not math.isfinite(raw_oid) or not raw_oid.is_integer():
+                if not math.isfinite(raw_oid) or not raw_oid.is_integer() or raw_oid <= 0:
                     raw_oid = None
                 else:
                     raw_oid = int(raw_oid)
             elif isinstance(raw_oid, str):
                 raw_oid = raw_oid.strip() or None
-                if raw_oid is not None and raw_oid.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
-                    raw_oid = None
-            elif not isinstance(raw_oid, int) or isinstance(raw_oid, bool):
+                if raw_oid is not None:
+                    if raw_oid.lower() in _INVALID_BAPI_ID_STRINGS:
+                        raw_oid = None
+                    elif raw_oid.endswith(".0") and raw_oid[:-2].isdigit():
+                        raw_oid = raw_oid[:-2]
+                        if raw_oid in _INVALID_BAPI_ID_STRINGS:
+                            raw_oid = None
+            elif not isinstance(raw_oid, int) or isinstance(raw_oid, bool) or raw_oid <= 0:
                 raw_oid = None
             if raw_oid is None:
                 raw_oid = extract_order_id(order)
+                if isinstance(raw_oid, str) and raw_oid.strip().lower() in _INVALID_BAPI_ID_STRINGS:
+                    raw_oid = None
             if raw_oid is None or isinstance(raw_oid, bool):
                 continue
             filtered_orders[raw_oid] = {
@@ -313,11 +344,15 @@ def cancel_order(symbol, order_id):
             if not isinstance(order_id, (dict, list, tuple, set, frozenset))
             else None
         )
-        if cleaned_oid is None:
+        if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
             return False
         if isinstance(order_id, int) and not isinstance(order_id, bool):
+            if order_id <= 0:
+                return False
             oid_arg = order_id
         elif isinstance(order_id, float) and math.isfinite(order_id) and order_id.is_integer():
+            if int(order_id) <= 0:
+                return False
             oid_arg = int(order_id)
         else:
             oid_arg = cleaned_oid
@@ -436,7 +471,7 @@ def check_order_filled(order_id, symbol):
             if not isinstance(order_id, (dict, list, tuple, set, frozenset))
             else None
         )
-        if cleaned_oid is None:
+        if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
             return False
         from providers.market_api import api as market_api
         return market_api.order_status(symbol, cleaned_oid).fully_filled
@@ -498,6 +533,8 @@ def _convert_to_usdc(asset, amount):
 
 
 def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CACHE_TTL_SECONDS, raise_errors=False):
+    use_cache = _parse_bool_flag(use_cache, True)
+    raise_errors = _parse_bool_flag(raise_errors, False)
     now = time.time()
     ttl_f = float(ASSET_VALUE_CACHE_TTL_SECONDS)
     if cache_ttl_seconds is not None and not isinstance(cache_ttl_seconds, bool):
