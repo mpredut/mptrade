@@ -15769,6 +15769,68 @@ def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, m
         bch._positive_int(True, "pid")
 
 
+def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tmp_path, monkeypatch):
+    import state_io
+    import accepted_order_persistence as aop
+    import market_regime as mr
+
+    # 1. state_io: load_json_state with fail_closed="false", truncate_file_bytes with "4.0", atomic_gzip_file with remove_source="false"
+    corrupt_json = tmp_path / "corrupt.json"
+    corrupt_json.write_text("not-json", encoding="utf-8")
+    assert state_io.load_json_state(str(corrupt_json), default_factory=dict, fail_closed="false", label="test") == {}
+
+    bin_file = tmp_path / "data.bin"
+    bin_file.write_bytes(b"0123456789")
+    state_io.truncate_file_bytes(str(bin_file), "4.0")
+    assert bin_file.read_bytes() == b"0123"
+
+    gz_path = state_io.atomic_gzip_file(str(bin_file), remove_source="false")
+    assert bin_file.exists()
+    assert (tmp_path / "data.bin.gz").exists()
+
+    # 2. accepted_order_persistence: complete_claim returning "false" is not treated as success
+    class _FakeRetry:
+        @staticmethod
+        def complete_claim(claim, status, **kw):
+            return "false"
+
+        @staticmethod
+        def load_all():
+            return None
+
+        @staticmethod
+        def order_id_from_response(order):
+            return "555.0"
+
+    monkeypatch.setattr(aop.time, "sleep", lambda _s: None)
+    notified = []
+    monkeypatch.setattr(aop.alert, "notify", lambda **kw: notified.append(kw))
+    ok = aop.complete_accepted_claim(
+        _FakeRetry,
+        {"id": "c1", "qty": float("nan"), "requested_price": True, "place_kwargs": {"client_order_id": "cid-1"}},
+        order={"orderId": 555},
+        provider_name="Binance",
+        symbol="BTCUSDC",
+        side="BUY",
+    )
+    assert ok is False
+    assert len(notified) == 1
+    assert "qty=None price=None" in notified[0]["body"]
+
+    # 3. market_regime: evaluate_closes with interval_min="5.0", evaluate with n_samples="15.0", and is_valid_for with require_identity="false"
+    svc = mr.MarketRegimeService(cache_max="64.0")
+    assert svc.cache_max == 64
+    dec = svc.evaluate_closes([100.0 + i for i in range(10)], interval_min="5.0", window_seconds="1800.0")
+    assert dec.fresh is True and dec.regime == "bull"
+
+    snap_dec = svc.evaluate_snapshot({"gradient_recent": 0.01, "epsilon": 0.001, "n_samples": "15.0", "window_seconds": "900.0"})
+    assert snap_dec.fresh is True and snap_dec.n_samples == 15
+
+    ctx = mr.MarketRegimeContext.from_decision(snap_dec, evaluated_at=1000.0)
+    assert ctx.is_valid_for(now=1005.0, require_identity="false") is True
+
+
+
 
 
 

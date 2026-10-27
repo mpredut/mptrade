@@ -11,6 +11,7 @@ import contextlib
 import glob
 import gzip
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -18,6 +19,24 @@ from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+
+def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        return val != 0
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
 
 
 class StateReadError(RuntimeError):
@@ -98,6 +117,7 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
     present, or raises in fail-closed mode; paper, shadow, and monitoring callers
     may explicitly opt into a clean default.
     """
+    fail_closed = _parse_bool_flag(fail_closed, True)
     target_path = os.fspath(path)
     backup_path = previous_generation_path(target_path)
     if not os.path.exists(target_path) and not os.path.exists(backup_path):
@@ -155,9 +175,19 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
                       sort_keys: bool = False, separators=None,
                       ensure_ascii: bool = True) -> None:
     """Serialize JSON through ``atomic_text_writer``."""
+    sort_keys = _parse_bool_flag(sort_keys, False)
+    ensure_ascii = _parse_bool_flag(ensure_ascii, True)
+    clean_indent: int | None = None
+    if indent is not None and not isinstance(indent, bool):
+        try:
+            ind_f = float(indent)
+            if math.isfinite(ind_f) and ind_f.is_integer() and int(ind_f) >= 0:
+                clean_indent = int(ind_f)
+        except (TypeError, ValueError, OverflowError):
+            clean_indent = None
     with atomic_text_writer(path) as handle:
         json.dump(
-            value, handle, indent=indent, sort_keys=sort_keys,
+            value, handle, indent=clean_indent, sort_keys=sort_keys,
             separators=separators, ensure_ascii=ensure_ascii,
             allow_nan=False,
         )
@@ -274,6 +304,7 @@ def atomic_gzip_file(
     chunk_size: int = 1024 * 1024,
 ) -> str:
     """Compress ``source`` into ``destination`` (default ``<source>.gz``) atomically."""
+    remove_source = _parse_bool_flag(remove_source, False)
     eff_chunk = _positive_chunk_size(chunk_size, 1024 * 1024)
     source_path = os.path.abspath(os.fspath(source))
     target_path = os.path.abspath(
@@ -339,11 +370,11 @@ def truncate_file_bytes(path: str, size: int) -> None:
         raise ValueError("size must be a non-negative integer")
     try:
         size_f = float(size)
-        size_i = int(size)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("size must be a non-negative integer") from exc
-    if not (size_f == size_i and size_i >= 0):
+    if not (math.isfinite(size_f) and size_f.is_integer() and int(size_f) >= 0):
         raise ValueError("size must be a non-negative integer")
+    size_i = int(size_f)
     with open(path, "r+b") as handle:
         handle.truncate(size_i)
         handle.flush()
@@ -455,11 +486,13 @@ def commit_file_and_meta(
             backup_path = stage_previous_generation(target_path)
         elif not had_prior_file:
             discard_generation_file(previous_generation_path(target_path))
+    else:
+        had_prior_file = _parse_bool_flag(had_prior_file, False)
     data_replaced = False
     try:
         write_data_fn()
         data_replaced = True
-        if not write_meta_fn():
+        if not _parse_bool_flag(write_meta_fn(), False):
             if backup_path is not None and os.path.exists(backup_path):
                 restore_previous_generation(target_path, backup_path=backup_path)
             elif not had_prior_file:

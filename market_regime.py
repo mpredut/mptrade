@@ -15,6 +15,24 @@ from collections import OrderedDict
 from typing import Mapping, Optional
 
 
+def _parse_bool_flag(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        return val != 0
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return True
+        if s in {"0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+            return False
+    return default
+
+
 def normalize_market_regime_snapshot(
     snapshot: Optional[Mapping],
 ) -> Optional[dict]:
@@ -179,6 +197,7 @@ class MarketRegimeContext:
                 return False
 
         # 4. Identity validation
+        require_identity = _parse_bool_flag(require_identity, False)
         if require_identity:
             if not isinstance(self.symbol, str) or not self.symbol.strip():
                 return False
@@ -457,6 +476,10 @@ class MarketRegimeEvaluator:
         window = snapshot.get("window_seconds")
         try:
             if samples is not None:
+                if isinstance(samples, str):
+                    s_clean = samples.strip()
+                    if s_clean.endswith(".0") and s_clean[:-2].isdigit():
+                        samples = s_clean[:-2]
                 parsed_samples = int(samples)
                 if (
                     isinstance(samples, bool)
@@ -568,7 +591,10 @@ class MarketRegimeService:
             raise ValueError("cache settings must be numeric, not boolean")
         self.cache_ttl_sec = float(cache_ttl_sec)
         self.negative_cache_ttl_sec = float(negative_cache_ttl_sec)
-        self.cache_max = max(1, int(cache_max))
+        cm_f = float(cache_max)
+        if not math.isfinite(cm_f) or not cm_f.is_integer():
+            raise ValueError("cache_max must be a finite integer")
+        self.cache_max = max(1, int(cm_f))
         self.clock = clock
         if not math.isfinite(self.cache_ttl_sec) or self.cache_ttl_sec < 0:
             raise ValueError("cache_ttl_sec must be finite and >= 0")
@@ -586,7 +612,7 @@ class MarketRegimeService:
     @staticmethod
     def _annotate(decision, *, horizon, source, fallback_used=False):
         return replace(decision, horizon=horizon.value, source=str(source),
-                       fallback_used=bool(fallback_used))
+                       fallback_used=_parse_bool_flag(fallback_used, False))
 
     @staticmethod
     def _snapshot_observed_at(snapshot: Optional[Mapping]) -> Optional[float]:
@@ -726,6 +752,8 @@ class MarketRegimeService:
         evaluation; alternatives never replace the first usable source.
         """
         parsed = MarketRegimeHorizon.parse(horizon)
+        allow_fallback = _parse_bool_flag(allow_fallback, True)
+        include_alternates = _parse_bool_flag(include_alternates, False)
         role = role.strip() if isinstance(role, str) and role.strip() else f"asset_{parsed.value}"
         if isinstance(now, bool):
             raise ValueError("now must be a positive finite Unix timestamp")
@@ -1067,15 +1095,27 @@ class MarketRegimeService:
                 raw_iv = series.get("interval_min", interval_min)
                 if isinstance(raw_iv, bool):
                     raise ValueError("ohlc_series returned the wrong interval")
+                try:
+                    iv_f = float(raw_iv)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("ohlc_series returned the wrong interval") from exc
+                if not math.isfinite(iv_f) or not iv_f.is_integer():
+                    raise ValueError("ohlc_series returned the wrong interval")
                 series = ClosedPriceSeries(
                     tuple(series.get("closes") or ()),
-                    int(raw_iv),
+                    int(iv_f),
                     series.get("last_closed_at"),
                     tuple(series.get("timestamps") or ()),
                 )
             if not isinstance(series, ClosedPriceSeries):
                 raise TypeError("ohlc_series must return ClosedPriceSeries")
-            if isinstance(series.interval_min, bool) or int(series.interval_min) != interval_min:
+            if isinstance(series.interval_min, bool):
+                raise ValueError("ohlc_series returned the wrong interval")
+            try:
+                s_iv_f = float(series.interval_min)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("ohlc_series returned the wrong interval") from exc
+            if not math.isfinite(s_iv_f) or not s_iv_f.is_integer() or int(s_iv_f) != interval_min:
                 raise ValueError("ohlc_series returned the wrong interval")
             return series
         return ClosedPriceSeries(
@@ -1272,7 +1312,7 @@ class MarketRegimeService:
         if n < 3:
             return self.evaluator.unknown("insufficient_samples")
 
-        cache_key = (int(interval_min), float(window_seconds), self.evaluator.strength_threshold, values)
+        cache_key = (itv, win, self.evaluator.strength_threshold, values)
         cached = self._EVAL_CLOSES_CACHE.get(cache_key)
         if cached is not None:
             return cached
@@ -1302,7 +1342,7 @@ class MarketRegimeService:
             "gradient_recent": slope,
             "epsilon": epsilon,
             "n_samples": n,
-            "window_seconds": float(window_seconds),
+            "window_seconds": win,
         })
         if len(self._EVAL_CLOSES_CACHE) >= self._EVAL_CLOSES_CACHE_MAX:
             self._EVAL_CLOSES_CACHE.clear()

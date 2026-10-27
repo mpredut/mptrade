@@ -57,7 +57,7 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
         expected_client_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
         if claim_id is None or expected_order_id is None or expected_client_id is None:
             return False
-        for record in order_retry_module.load_all():
+        for record in (order_retry_module.load_all() or ()):
             if not isinstance(record, dict) or _clean_id(record.get("id")) != claim_id:
                 continue
             rpk = record.get("place_kwargs")
@@ -88,9 +88,10 @@ def complete_accepted_claim(
     last_error = None
     for attempt in range(ACCEPTED_TRACKING_PERSIST_ATTEMPTS):
         try:
-            if order_retry_module.complete_claim(
-                    claim, "accepted", order=order,
-                    provider_name=provider_name):
+            res = order_retry_module.complete_claim(
+                claim, "accepted", order=order,
+                provider_name=provider_name)
+            if res is True or (not isinstance(res, (bool, str, float, dict, list, tuple, set)) and bool(res)):
                 return True
             last_error = RuntimeError(
                 "exact accepted-order claim completion returned false")
@@ -111,6 +112,10 @@ def complete_accepted_claim(
     client_order_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
     qty = claim_dict.get("qty")
     px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
+    if isinstance(qty, bool) or (isinstance(qty, float) and not math.isfinite(qty)):
+        qty = None
+    if isinstance(px, bool) or (isinstance(px, float) and not math.isfinite(px)):
+        px = None
     val_str = "N/A"
     if qty is not None and px is not None and not isinstance(qty, bool) and not isinstance(px, bool):
         try:
