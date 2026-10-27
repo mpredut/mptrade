@@ -14,6 +14,7 @@ import statistics
 import time
 from collections import deque
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Callable
 
 from alertnotifiers import bind_notify
@@ -57,7 +58,7 @@ notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 
 def _clean_pos_float(val: object) -> float | None:
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str, Decimal)):
         return None
     try:
         f = float(val)
@@ -67,7 +68,7 @@ def _clean_pos_float(val: object) -> float | None:
 
 
 def _clean_nonneg_float(val: object) -> float | None:
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str, Decimal)):
         return None
     try:
         f = float(val)
@@ -77,7 +78,7 @@ def _clean_nonneg_float(val: object) -> float | None:
 
 
 def _clean_finite_float(val: object) -> float | None:
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str, Decimal)):
         return None
     try:
         f = float(val)
@@ -864,7 +865,7 @@ class Strategy:
     # -- Helpers ---------------------------------------------------------------
     def _avg(self) -> float | None:
         qty = _clean_pos_float(self.s.get("qty"))
-        cost = _clean_nonneg_float(self.s.get("cost"))
+        cost = _clean_pos_float(self.s.get("cost"))
         return cost / qty if (qty is not None and cost is not None and qty > 1e-12) else None
 
     def _qty_for(self, amount: float, price: float) -> float:
@@ -1020,8 +1021,8 @@ class Strategy:
         if (
             isinstance(vol, bool)
             or isinstance(price, bool)
-            or vol is None
-            or price is None
+            or not isinstance(vol, (int, float, str, Decimal))
+            or not isinstance(price, (int, float, str, Decimal))
         ):
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
             return False

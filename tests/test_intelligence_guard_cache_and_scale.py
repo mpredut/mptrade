@@ -15459,9 +15459,11 @@ def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypa
 
     assert oq.TrackedOrderLifecycle._order_fields({"orderId": "0"}) == {}
     assert oq.TrackedOrderLifecycle._order_fields({"orderId": "333.0"}) == {"order_id": "333"}
-    assert oq.TrackedOrderLifecycle._order_fields(
+    with pytest.raises(ValueError):
         SubmissionOutcome("accepted", order_id="0")
-    ) == {"submission_outcome": "accepted"}
+    assert oq.TrackedOrderLifecycle._order_fields(
+        SubmissionOutcome("unknown", native={"orderId": "0"})
+    ) == {"submission_outcome": "unknown"}
 
     # 4. assetguardian boolean flags, _safe_tier_attempt, and _reuse_unaccepted_attempt
     st = ag.AssetGuardianState(path=str(tmp_path / "ag.json"), fail_closed="false")
