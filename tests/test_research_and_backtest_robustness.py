@@ -3868,3 +3868,77 @@ def test_batch17_intelligence_daemon_gemini_client_advisor_and_cli_hardening(cap
     assert "⛔ BLOCKED" in out
 
 
+def test_batch18_geopolitical_news_and_sentiment_collectors_guards_hardening(tmp_path):
+    from types import SimpleNamespace
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.guards.high_stake_guard import evaluate_llm_guard_response, is_llm_guard_exempt
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard, get_post_stop_reentry_guard
+
+    # 1. GeopoliticalThreatAnalyzer._as_bool_flag rejects NaN and string "false" for shock/high-severity flags
+    ga = object.__new__(GeopoliticalThreatAnalyzer)
+    ga.cache_ttl_sec = 3600.0
+    ga.fallback_retry_ttl_sec = 900.0
+    ga._last_eval_ts = 1000.0
+    ga._last_headlines_digest = ""
+    cached_ga = GeopoliticalThreatAssessment("NORMAL", 0.1, "ok", "NONE", 1, 1000.0, is_fallback=False)
+    ga._cached_assessment = cached_ga
+    fake_snap = SimpleNamespace(
+        has_critical_shock_keywords="false",
+        headlines=[SimpleNamespace(title="Calm news", is_high_severity="false")],
+    )
+    assert ga.assess(fake_snap, force_refresh=float("nan"), now_ts=1050.0) is cached_ga  # type: ignore[arg-type]
+
+    # 2. NewsFeedCollector._aggregate & get_pool_snapshot handle string "false" is_high_severity and non-snapshot input
+    nfc = object.__new__(NewsFeedCollector)
+    nfc.rolling_window_sec = 3600.0
+    nfc.history_file = str(tmp_path / "news.json")
+    nfc._aggregated_pool = {
+        "calm": (
+            1000.0,
+            NewsHeadline("Calm headline", "Src", "", "", (), is_high_severity="false"),  # type: ignore[arg-type]
+        )
+    }
+    snap = nfc.get_pool_snapshot(now_ts=1010.0)
+    assert snap.high_severity_count == 0
+    agg = nfc._aggregate(None, 1010.0)  # type: ignore[arg-type]
+    assert agg.high_severity_count == 0
+
+    # 3. FearGreedCollector.fetch & MarketBreadthCollector.parse_tickers / fetch handle NaN force_refresh and tuple tickers
+    fgc = FearGreedCollector(cache_ttl_sec=3600.0)
+    fg_snap = FearGreedSnapshot(50, "Neutral", 1000, (50,), 0, False, False)
+    fgc._cached_snapshot = fg_snap
+    fgc._last_fetch_ts = 1000.0
+    mbc = MarketBreadthCollector(cache_ttl_sec=3600.0, min_volume_usd=100.0)
+    tickers_tuple = tuple(
+        {"symbol": f"COIN{i}USDT", "quoteVolume": "1000", "priceChangePercent": "2.5"}
+        for i in range(6)
+    )
+    mb_snap = mbc.parse_tickers(tickers_tuple, min_volume_usd=100.0, now_ts=1000.0)  # type: ignore[arg-type]
+    assert mb_snap is not None and mb_snap.total_count == 6
+
+    # 4. PostStopReentryGuard mode/notify normalization and HighStakeGuard helpers
+    psg = PostStopReentryGuard(mode=0, notify_enabled=float("nan"))  # type: ignore[arg-type]
+    assert psg.mode == "off"
+    assert psg.notify_enabled is False
+    psg2 = get_post_stop_reentry_guard(
+        margins={
+            "post_stop_reentry_mode": "enforce",
+            "intelligence_guards_mode": False,
+            "llm_guard_mode": "enforce",
+            "post_stop_reentry_timeout_sec": 10.0,
+            "post_stop_reentry_fallback": "allow",
+            "post_stop_reentry_notify": float("nan"),
+            "post_stop_reentry_cache_ttl_sec": 60.0,
+        }
+    )
+    assert psg2.mode == "off"
+    assert psg2.notify_enabled is False
+    dec = evaluate_llm_guard_response("HighStakeGuard", "BUY", None, fallback_action="allow", notional_eur=float("nan"))
+    assert dec.metadata["notional_eur"] == 0.0
+    assert is_llm_guard_exempt("true") is False
+
+
+

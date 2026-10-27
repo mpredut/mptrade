@@ -461,8 +461,14 @@ _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecisio
 
 def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
     """True when LLM pre-trade guards are suppressed via environment flags (backtest/replay/disabled)."""
-    return not explicit_client and any(
-        os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(explicit_client, str):
+        exp_b = explicit_client.strip().lower() in ("1", "1.0", "true", "yes", "on")
+    elif isinstance(explicit_client, (int, float)) and not isinstance(explicit_client, bool):
+        exp_b = math.isfinite(float(explicit_client)) and float(explicit_client) != 0.0
+    else:
+        exp_b = bool(explicit_client)
+    return not exp_b and any(
+        os.environ.get(k, "").strip().lower() in ("1", "1.0", "true", "yes", "on")
         for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
     )
 
@@ -476,15 +482,23 @@ def evaluate_llm_guard_response(
     notional_eur: float,
 ) -> GuardDecision:
     """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
+    safe_notional = 0.0
+    if notional_eur is not None and not isinstance(notional_eur, bool):
+        try:
+            nf = float(notional_eur)
+            if math.isfinite(nf) and nf >= 0.0:
+                safe_notional = nf
+        except (TypeError, ValueError, OverflowError):
+            safe_notional = 0.0
     fb_norm = str(fallback_action or "allow").strip().lower()
     if not resp or not isinstance(resp, dict):
         if fb_norm in ("veto", "block"):
-            return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=notional_eur)
+            return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=safe_notional)
         if fb_norm == "downscale":
             return GuardDecision.downscale(
-                guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional_eur
+                guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=safe_notional
             )
-        return GuardDecision.allow(guard_name, "llm_query_timeout_fallback_allowed", notional_eur=notional_eur)
+        return GuardDecision.allow(guard_name, "llm_query_timeout_fallback_allowed", notional_eur=safe_notional)
 
     raw_dec = resp.get("decision")
     decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
@@ -508,7 +522,7 @@ def evaluate_llm_guard_response(
         return GuardDecision.veto(
             guard_name,
             f"Gemini vetoed {action_label}: {reason}",
-            notional_eur=notional_eur,
+            notional_eur=safe_notional,
             gemini_reason=reason,
         )
     if decision_str == "DOWNSCALE":
@@ -519,13 +533,13 @@ def evaluate_llm_guard_response(
             guard_name,
             scale=clamped_scale,
             reason=f"Gemini downscaled {action_label}: {reason}",
-            notional_eur=notional_eur,
+            notional_eur=safe_notional,
             gemini_reason=reason,
         )
     return GuardDecision.allow(
         guard_name,
         f"Gemini approved {action_label}: {reason}",
-        notional_eur=notional_eur,
+        notional_eur=safe_notional,
         gemini_reason=reason,
     )
 
@@ -646,7 +660,7 @@ class HighStakeGuard:
                 return cached[1]
 
         # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM
-        effective_telemetry = telemetry if telemetry is not None else collect_pretrade_telemetry(
+        effective_telemetry = telemetry if isinstance(telemetry, dict) else collect_pretrade_telemetry(
             symbol, regime_context=regime_context, dur_sec=dur_sec
         )
         context_items = [
@@ -656,7 +670,7 @@ class HighStakeGuard:
             f"- Requested Quantity: {qty}",
             f"- Total Notional Value: €{notional:,.2f} EUR",
         ]
-        if effective_telemetry:
+        if isinstance(effective_telemetry, dict) and effective_telemetry:
             for k, v in effective_telemetry.items():
                 context_items.append(f"- {k}: {v}")
 

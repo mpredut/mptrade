@@ -47,6 +47,31 @@ def clear_post_stop_reentry_cache() -> None:
 class PostStopReentryGuard:
     """Evaluates re-entry buy orders following a STOP-LOSS exit using Gemini LLM reasoning."""
 
+    @staticmethod
+    def _normalize_mode(val: Any, default: str = "enforce") -> str:
+        if val is False:
+            return "off"
+        if val is True:
+            return "enforce"
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if not math.isfinite(float(val)):
+                return default
+            return "off" if float(val) == 0.0 else "enforce"
+        raw_m = str(val if val is not None else default).strip().lower()
+        if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
+            return "off"
+        if raw_m in ("1", "1.0", "true", "yes", "on", ""):
+            return "enforce"
+        return raw_m
+
+    @staticmethod
+    def _as_bool_flag(val: Any) -> bool:
+        if isinstance(val, str):
+            return val.strip().lower() not in ("0", "0.0", "false", "no", "off", "disabled", "nan", "")
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return math.isfinite(float(val)) and float(val) != 0.0
+        return bool(val)
+
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
@@ -68,17 +93,8 @@ class PostStopReentryGuard:
                 pass
         self.timeout_sec = t_sec
         self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
-        if mode is False:
-            self.mode = "off"
-        elif mode is True:
-            self.mode = "enforce"
-        else:
-            raw_m = str(mode or "enforce").strip().lower()
-            self.mode = "enforce" if raw_m in ("1", "true", "yes", "on", "") else raw_m
-        if isinstance(notify_enabled, str):
-            self.notify_enabled = notify_enabled.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
-        else:
-            self.notify_enabled = bool(notify_enabled)
+        self.mode = self._normalize_mode(mode, default="enforce")
+        self.notify_enabled = self._as_bool_flag(notify_enabled)
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
             try:
                 cf = float(cache_ttl_sec)
@@ -155,7 +171,7 @@ class PostStopReentryGuard:
         # Build multi-pillar context
         effective_telemetry = (
             telemetry
-            if telemetry is not None
+            if isinstance(telemetry, dict)
             else collect_pretrade_telemetry(symbol, regime_context=regime_context)
         )
 
@@ -175,7 +191,7 @@ class PostStopReentryGuard:
         if elapsed_str:
             context_items.append(elapsed_str)
 
-        if effective_telemetry:
+        if isinstance(effective_telemetry, dict) and effective_telemetry:
             for k, v in effective_telemetry.items():
                 context_items.append(f"- {k}: {v}")
 
@@ -236,8 +252,10 @@ class PostStopReentryGuard:
                 _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, final_dec)
             return final_dec
 
-        decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
-        reason = str(resp.get("reason") or "evaluated by LLM")
+        raw_dec = resp.get("decision")
+        decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
+        raw_reason = resp.get("reason")
+        reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
         dec = evaluate_llm_guard_response(
             "PostStopReentryGuard",
             "post-stop re-entry",
@@ -346,17 +364,10 @@ def get_post_stop_reentry_guard(
     else:
         m = margins
     raw_mode = m["post_stop_reentry_mode"]
-    if raw_mode is False:
-        mode = "off"
-    elif raw_mode is True:
-        mode = "enforce"
-    else:
-        mode = str(raw_mode or "enforce").strip().lower()
-        if mode in ("1", "true", "yes", "on"):
-            mode = "enforce"
-    intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
-    llm_master = str(m.get("llm_guard_mode", "enforce") or "enforce").strip().lower()
-    if intel_master in ("off", "0", "false", "no", "disabled") or llm_master in ("off", "0", "false", "no", "disabled"):
+    mode = PostStopReentryGuard._normalize_mode(raw_mode, default="enforce")
+    intel_master = PostStopReentryGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
+    llm_master = PostStopReentryGuard._normalize_mode(m.get("llm_guard_mode", "enforce"), default="enforce")
+    if intel_master == "off" or llm_master == "off":
         mode = "off"
     elif llm_master == "shadow" and mode == "enforce":
         mode = "shadow"
@@ -374,7 +385,7 @@ def get_post_stop_reentry_guard(
     if timeout <= 0.0:
         timeout = DEFAULT_TIMEOUT_SEC
     fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
-    notify_en = str(m["post_stop_reentry_notify"]).strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+    notify_en = PostStopReentryGuard._as_bool_flag(m["post_stop_reentry_notify"])
     cache_ttl = _safe_pos_f(m["post_stop_reentry_cache_ttl_sec"], DEFAULT_POST_STOP_CACHE_TTL_SEC)
 
     if gemini_client is not None:

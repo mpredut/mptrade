@@ -107,10 +107,8 @@ class GeopoliticalThreatAnalyzer:
                 raw_fb = data.get("is_fallback")
                 if raw_fb is None:
                     is_fb = "LLM fallback" in summary_str
-                elif isinstance(raw_fb, str):
-                    is_fb = raw_fb.strip().lower() in ("1", "true", "yes", "on")
                 else:
-                    is_fb = bool(raw_fb)
+                    is_fb = self._as_bool_flag(raw_fb)
                 raw_risk = data.get("risk_score", 0.1)
                 if raw_risk is None or isinstance(raw_risk, bool):
                     risk_val = 0.1
@@ -175,6 +173,14 @@ class GeopoliticalThreatAnalyzer:
         except Exception as e:
             logger.warning("Could not persist geopolitical state to %s: %s", state_file, e)
 
+    @staticmethod
+    def _as_bool_flag(val: Any) -> bool:
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "1.0", "true", "yes", "on")
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return math.isfinite(float(val)) and float(val) != 0.0
+        return bool(val)
+
     def assess(
         self,
         news_snapshot: Optional[NewsFeedSnapshot],
@@ -183,10 +189,7 @@ class GeopoliticalThreatAnalyzer:
         now_ts: Optional[float] = None,
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
-        if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
-        else:
-            force_refresh = bool(force_refresh)
+        force_refresh = self._as_bool_flag(force_refresh)
         now = time.time()
         if now_ts is not None and not isinstance(now_ts, bool):
             try:
@@ -204,7 +207,7 @@ class GeopoliticalThreatAnalyzer:
         is_stale = age_sec < 0.0 or age_sec >= effective_ttl
         acute_shock_alert = (
             news_snapshot is not None
-            and bool(getattr(news_snapshot, "has_critical_shock_keywords", False))
+            and self._as_bool_flag(getattr(news_snapshot, "has_critical_shock_keywords", False))
             and self._cached_assessment is not None
             and self._cached_assessment.threat_level == "NORMAL"
         )
@@ -223,7 +226,7 @@ class GeopoliticalThreatAnalyzer:
             )
 
         # Stage 1: Local screen — if zero high-severity headlines, return NORMAL immediately
-        high_sev = [h for h in raw_headlines if bool(getattr(h, "is_high_severity", False))]
+        high_sev = [h for h in raw_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
         if not high_sev:
             normal_assessment = GeopoliticalThreatAssessment(
                 threat_level="NORMAL",

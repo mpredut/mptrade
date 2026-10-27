@@ -133,11 +133,7 @@ class NewsFeedCollector:
                         raw_pub = item.get("pub_date")
                         raw_url = item.get("url")
                         raw_sev = item.get("is_high_severity", False)
-                        is_sev = (
-                            raw_sev.strip().lower() in ("1", "true", "yes", "on")
-                            if isinstance(raw_sev, str)
-                            else bool(raw_sev)
-                        )
+                        is_sev = self._as_bool_flag(raw_sev)
                         h = NewsHeadline(
                             title=raw_title.strip(),
                             source=raw_src.strip() if isinstance(raw_src, str) else "",
@@ -175,13 +171,26 @@ class NewsFeedCollector:
         except Exception as e:
             logger.debug("Could not save news history to %s: %s", self.history_file, e)
 
+    @staticmethod
+    def _as_bool_flag(val: Any) -> bool:
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "1.0", "true", "yes", "on")
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return math.isfinite(float(val)) and float(val) != 0.0
+        return bool(val)
+
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool and return aggregated snapshot."""
         # 1. Merge new headlines
-        for h in latest_snapshot.headlines:
-            norm = self._normalize_title(h.title)
-            if norm and norm not in self._aggregated_pool:
-                self._aggregated_pool[norm] = (now, h)
+        raw_headlines = getattr(latest_snapshot, "headlines", None) if latest_snapshot is not None else None
+        if isinstance(raw_headlines, (list, tuple)):
+            for h in raw_headlines:
+                raw_title = getattr(h, "title", None)
+                if not isinstance(raw_title, str):
+                    continue
+                norm = self._normalize_title(raw_title)
+                if norm and norm not in self._aggregated_pool:
+                    self._aggregated_pool[norm] = (now, h)
 
         # 2. Prune old headlines past rolling horizon
         cutoff = now - self.rolling_window_sec
@@ -194,6 +203,7 @@ class NewsFeedCollector:
             and isinstance(v[0], (int, float))
             and math.isfinite(float(v[0]))
             and float(v[0]) >= cutoff
+            and hasattr(v[1], "title")
         }
         self._save_history()
 
@@ -202,11 +212,11 @@ class NewsFeedCollector:
             v[1]
             for v in sorted(
                 self._aggregated_pool.values(),
-                key=lambda x: (1 if x[1].is_high_severity else 0, x[0]),
+                key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),
                 reverse=True,
             )
         ]
-        high_sev = [h for h in all_headlines if getattr(h, "is_high_severity", False)]
+        high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
         has_shock = len(high_sev) >= 3 or any(
             any(
                 w in (h.title.lower() if isinstance(getattr(h, "title", None), str) else "")
@@ -250,11 +260,11 @@ class NewsFeedCollector:
             v[1]
             for v in sorted(
                 active_pool.values(),
-                key=lambda x: (1 if x[1].is_high_severity else 0, x[0]),
+                key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),
                 reverse=True,
             )
         ]
-        high_sev = [h for h in all_headlines if getattr(h, "is_high_severity", False)]
+        high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
         has_shock = len(high_sev) >= 3 or any(
             any(
                 w in (h.title.lower() if isinstance(getattr(h, "title", None), str) else "")
@@ -344,10 +354,7 @@ class NewsFeedCollector:
 
     def fetch(self, force_refresh: bool = False) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines with caching, aggregation, and error handling."""
-        if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
-        else:
-            force_refresh = bool(force_refresh)
+        force_refresh = self._as_bool_flag(force_refresh)
         now = time.time()
         if not force_refresh and self._cached_snapshot and 0.0 <= (now - self._last_fetch_ts) < self.cache_ttl_sec:
             return self._cached_snapshot

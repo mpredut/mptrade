@@ -68,7 +68,7 @@ class MarketBreadthCollector:
         now_ts: Optional[float] = None,
     ) -> Optional[MarketBreadthSnapshot]:
         """Parse raw 24hr ticker data and calculate market breadth statistics."""
-        if not tickers or not isinstance(tickers, list):
+        if not tickers or not isinstance(tickers, (list, tuple)):
             return None
 
         now = time.time()
@@ -165,7 +165,9 @@ class MarketBreadthCollector:
     def fetch(self, force_refresh: bool = False) -> Optional[MarketBreadthSnapshot]:
         """Fetch latest 24hr tickers from public Binance API and return market breadth snapshot."""
         if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+            force_refresh = force_refresh.strip().lower() in ("1", "1.0", "true", "yes", "on")
+        elif isinstance(force_refresh, (int, float)) and not isinstance(force_refresh, bool):
+            force_refresh = math.isfinite(float(force_refresh)) and float(force_refresh) != 0.0
         else:
             force_refresh = bool(force_refresh)
         now = time.time()

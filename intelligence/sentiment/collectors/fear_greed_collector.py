@@ -118,7 +118,9 @@ class FearGreedCollector:
     def fetch(self, force_refresh: bool = False) -> Optional[FearGreedSnapshot]:
         """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
         if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+            force_refresh = force_refresh.strip().lower() in ("1", "1.0", "true", "yes", "on")
+        elif isinstance(force_refresh, (int, float)) and not isinstance(force_refresh, bool):
+            force_refresh = math.isfinite(float(force_refresh)) and float(force_refresh) != 0.0
         else:
             force_refresh = bool(force_refresh)
         now = time.time()
