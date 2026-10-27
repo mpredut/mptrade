@@ -168,8 +168,19 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
     return wma
 
 
+def _clean_pos_float(val, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and f > 0.0 else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 # Weighted moving average (WMA).
 def trend_wma(symbol: str, window_hours: int = 6):
+    window_hours = _clean_pos_float(window_hours, 6.0)
     data = priceLstFor(symbol)
     if len(data) < 2:
         return None
@@ -185,7 +196,7 @@ def trend_wma(symbol: str, window_hours: int = 6):
     if not np.isfinite(delta) or delta <= 0:
         return None
     points_per_hour = max(1, int(round(3600.0 / delta)))
-    window = max(1, min(points_per_hour * window_hours, len(prices)))
+    window = max(1, min(int(round(points_per_hour * window_hours)), len(prices)))
 
     wma_prices = weighted_moving_average(prices, window)
 
@@ -279,6 +290,10 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
                                 slope_tolerance: float = 0.0028, persistence_factor: float = 1.5,
                                 lookback_days=30, draw: bool = True) -> Optional[dict]:
 
+    window_hours = _clean_pos_float(window_hours, 24.0)
+    step_hours = _clean_pos_float(step_hours, 8.0)
+    persistence_factor = _clean_pos_float(persistence_factor, 1.5)
+    lookback_days = _clean_pos_float(lookback_days, 30.0)
     data: List[Tuple[int, float]] = priceLstFor(symbol)
     if len(data) < 2:
         return None
@@ -300,8 +315,8 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
     if not np.isfinite(delta) or delta <= 0:
         return None
     points_per_hour = max(1, int(round(3600.0 / delta))) # Price points per hour.
-    window = max(1, min(points_per_hour * window_hours, len(prices))) # Points per window.
-    step = max(1, points_per_hour * step_hours)     # Points per step.
+    window = max(1, min(int(round(points_per_hour * window_hours)), len(prices))) # Points per window.
+    step = max(1, int(round(points_per_hour * step_hours)))     # Points per step.
     
     _dbg(f"[DEBUG] {symbol}: numar puncte={len(prices)}, window={window}, step={step}, delta(s)={delta}")
     _dbg(f"[DEBUG] {symbol}: window count={len(prices)/window}, step count in price {len(prices)/step}")
@@ -716,6 +731,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     # detection_lag_hours models the empirical delay between trend start and
     # detector confirmation. mk_alpha requires current-window Mann-Kendall
     # significance; None disables that filter.
+    lookback_days = _clean_pos_float(lookback_days, 30.0)
     data: List[Tuple[int, float]] = priceLstFor(symbol)
     if len(data) < 2:
         return None
@@ -724,15 +740,17 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     
     # Select the last N days.
     cutoff_timestamp = time.time() - (lookback_days * 86400)
-    data = [(ts, p) for ts, p in data if ts/1000 > cutoff_timestamp]
+    data = [(ts, p) for ts, p in data if (ts / 1000.0 if ts > 1e11 else ts) > cutoff_timestamp]
     
     if len(data) < 2:
         print(f"[{symbol}] Not enough data in the last {lookback_days} days")
         return None
     
     timestamps, prices = zip(*data)
-    timestamps = np.array(timestamps) / 1000      # Milliseconds to seconds.
-    prices = np.array(prices)
+    timestamps = np.array(timestamps, dtype=float)
+    if timestamps[-1] > 1e11:
+        timestamps = timestamps / 1000.0      # Milliseconds to seconds.
+    prices = np.array(prices, dtype=float)
 
     # Use time-defined windows to tolerate uneven density while respecting gaps.
     res = detect_long_term_trend(
@@ -779,24 +797,27 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
 def write_all_trends(all_trends, filename=None):
     """Atomically write trend results and display a human-readable summary."""
     filename = filename or os.path.join(_CONFIG_ROOT, "priceanalysis.json")
+    if not isinstance(all_trends, dict):
+        all_trends = {}
 
     print("\n" + "="*80)
     print("TREND SUMMARY".center(80))
     print("="*80)
     
     for symbol, trend_data in all_trends.items():
-        if trend_data is None:
+        if not isinstance(trend_data, dict):
             print(f"\n{symbol}: ❌ Not enough data")
             continue
             
-        direction = trend_data['direction']
+        direction = str(trend_data.get('direction') or 'down').strip().lower()
         emoji = "📈" if direction == 'up' else "📉"
         
-        start_str = format_timestamp(trend_data['start_timestamp'])
-        duration_str = format_duration(trend_data['duration_seconds'])
-        duration_days = trend_data['duration_seconds'] / 86400
+        start_str = format_timestamp(trend_data.get('start_timestamp', 0))
+        dur_sec = _clean_pos_float(trend_data.get('duration_seconds', 0), 0.0)
+        duration_str = format_duration(dur_sec)
+        duration_days = dur_sec / 86400
         
-        future_hours = trend_data['estimated_future_hours']
+        future_hours = _clean_pos_float(trend_data.get('estimated_future_hours', 0), 0.0)
         future_str = format_duration(future_hours * 3600)
         future_days = future_hours / 24
         

@@ -71,16 +71,20 @@ def parse_order_execution_report(
             raise ValueError("non-integer Binance trade ID")
         elif isinstance(raw_t, str):
             raw_t = raw_t.strip()
-            if raw_t.endswith(".0") and raw_t[:-2].isdigit():
+            if raw_t.endswith(".0") and raw_t[:-2].lstrip("+-").isdigit():
                 raw_t = raw_t[:-2]
+            if raw_t.startswith("+") and raw_t[1:].isdigit():
+                raw_t = raw_t[1:]
         if isinstance(raw_i, float):
             if not math.isfinite(raw_i) or not raw_i.is_integer():
                 raise ValueError("non-integer Binance order ID")
             raw_i = int(raw_i)
         elif isinstance(raw_i, str):
             raw_i = raw_i.strip() or None
-            if raw_i is not None and raw_i.endswith(".0") and raw_i[:-2].isdigit():
+            if raw_i is not None and raw_i.endswith(".0") and raw_i[:-2].lstrip("+-").isdigit():
                 raw_i = raw_i[:-2]
+            if raw_i is not None and raw_i.startswith("+") and raw_i[1:].isdigit():
+                raw_i = raw_i[1:]
             if raw_i is not None and (
                 raw_i in {"0", "+0", "-0"}
                 or raw_i.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
@@ -178,8 +182,10 @@ def parse_trade_execution_report(
         raw_trade_id = int(raw_trade_id)
     elif isinstance(raw_trade_id, str):
         raw_trade_id = raw_trade_id.strip() or None
-        if raw_trade_id is not None and raw_trade_id.endswith(".0") and raw_trade_id[:-2].isdigit():
+        if raw_trade_id is not None and raw_trade_id.endswith(".0") and raw_trade_id[:-2].lstrip("+-").isdigit():
             raw_trade_id = raw_trade_id[:-2]
+        if raw_trade_id is not None and raw_trade_id.startswith("+") and raw_trade_id[1:].isdigit():
+            raw_trade_id = raw_trade_id[1:]
         if raw_trade_id is not None and (
             raw_trade_id.startswith("-")
             or raw_trade_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
@@ -196,8 +202,10 @@ def parse_trade_execution_report(
             raw_order_id = int(raw_order_id)
     elif isinstance(raw_order_id, str):
         raw_order_id = raw_order_id.strip() or None
-        if raw_order_id is not None and raw_order_id.endswith(".0") and raw_order_id[:-2].isdigit():
+        if raw_order_id is not None and raw_order_id.endswith(".0") and raw_order_id[:-2].lstrip("+-").isdigit():
             raw_order_id = raw_order_id[:-2]
+        if raw_order_id is not None and raw_order_id.startswith("+") and raw_order_id[1:].isdigit():
+            raw_order_id = raw_order_id[1:]
         if raw_order_id is not None and (
             raw_order_id.startswith("-")
             or raw_order_id in {"0", "+0", "-0"}

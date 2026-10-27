@@ -99,8 +99,10 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
                 tid_int = int(raw_tid)
             else:
                 tid_str = str(raw_tid).strip()
-                if tid_str.endswith(".0") and tid_str[:-2].isdigit():
+                if tid_str.endswith(".0") and tid_str[:-2].lstrip("+").isdigit():
                     tid_str = tid_str[:-2]
+                if tid_str.startswith("+") and tid_str[1:].isdigit():
+                    tid_str = tid_str[1:]
                 if not tid_str or not tid_str.isascii() or not tid_str.isdigit():
                     raise ValueError("invalid tail trade id")
                 tid_int = int(tid_str)
@@ -185,12 +187,15 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
                 raw_oid = int(raw_oid)
             if isinstance(raw_oid, str):
                 raw_oid = raw_oid.strip()
-                if raw_oid.endswith(".0") and raw_oid[:-2].isdigit():
+                if raw_oid.endswith(".0") and raw_oid[:-2].lstrip("+-").isdigit():
                     raw_oid = raw_oid[:-2]
+                if raw_oid.startswith("+") and raw_oid[1:].isdigit():
+                    raw_oid = raw_oid[1:]
             valid_oid = (
                 raw_oid is not None
                 and not isinstance(raw_oid, (bool, float, dict, list, tuple, set, frozenset))
                 and (not isinstance(raw_oid, int) or raw_oid > 0)
+                and (not isinstance(raw_oid, str) or not raw_oid.startswith("-"))
                 and bool(str(raw_oid).strip())
                 and str(raw_oid).strip().lower() not in _INVALID_BAPI_ID_STRINGS
             )

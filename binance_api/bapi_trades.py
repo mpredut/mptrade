@@ -71,6 +71,10 @@ def _valid_fill_id(val):
         s = val.strip()
         if not s or s.startswith("-") or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
             return None
+        if s.endswith(".0") and s[:-2].lstrip("+").isdigit():
+            s = s[:-2]
+        if s.startswith("+") and s[1:].isdigit():
+            s = s[1:]
         return s
     if isinstance(val, int):
         return val if val >= 0 else None
@@ -602,6 +606,8 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             )
             clean_tid = _valid_fill_id(trade.get('id'))
             clean_oid = _valid_fill_id(trade.get('orderId'))
+            if clean_oid in (0, "0", "0.0", "-0", "+0"):
+                clean_oid = None
             if clean_oid is None:
                 clean_oid = extract_order_id(trade)
             filtered_trades.append({

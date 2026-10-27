@@ -6067,6 +6067,79 @@ def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
     assert res_t212["initial_capital"] == pytest.approx(500.0)
 
 
+def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    from binance_api import bapi, bapi_allorders, bapi_trades, bapi_ws_normalize
+    import cacheintegrity as ci
+    import priceAnalysis as pa
+
+    # 1. bapi: _clean_bapi_oid_str, cancel_order, check_order_filled
+    assert bapi._clean_bapi_oid_str(" +12345.0 ") == "12345"
+    assert bapi._clean_bapi_oid_str("-5") is None
+    assert bapi._clean_bapi_oid_str("+0.0") is None
+    assert bapi._clean_bapi_oid_str("-0.0") is None
+    assert bapi.cancel_order("   ", 123) is False
+    assert bapi.cancel_order(True, 123) is False  # type: ignore[arg-type]
+    assert bapi.cancel_order("BTCUSDC", "-5") is False
+    assert bapi.cancel_order("BTCUSDC", "+0.0") is False
+    assert bapi.check_order_filled(123, "   ") is False
+    assert bapi.check_order_filled("-5", "BTCUSDC") is False
+
+    # 2. bapi_allorders: paginate_my_trades and get_filled_orders with '+123.0' and '-5'
+    pages = [
+        [{"id": "+100.0", "orderId": "+555.0", "price": "100.0", "qty": "1.0", "time": 1000, "isBuyer": True}],
+        [{"id": "-5", "orderId": "-9", "price": "101.0", "qty": "2.0", "time": 2000, "isBuyer": True}],
+    ]
+    call_idx = {"i": 0}
+
+    def _fake_my_trades(**kwargs):
+        idx = call_idx["i"]
+        call_idx["i"] += 1
+        return pages[idx] if idx < len(pages) else []
+
+    fake_cl = SimpleNamespace(get_my_trades=_fake_my_trades)
+    paginated = bapi_allorders.paginate_my_trades(fake_cl, "BTCUSDC", 500, limit=1)
+    assert len(paginated) == 2
+
+    monkeypatch.setattr(bapi_allorders, "paginate_my_trades", lambda *_a, **_k: pages[0] + pages[1])
+    monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda _s: None)
+    monkeypatch.setattr(bapi_allorders.sym, "validate_ordertype", lambda _o: None)
+    filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDC", 500)
+    oids = {r["orderId"] for r in filled}
+    assert "555" in oids
+    assert "-9" not in oids
+
+    # 3. bapi_ws_normalize: parse_order_execution_report and parse_trade_execution_report
+    ev_bad = {"e": "executionReport", "x": "TRADE", "X": "FILLED", "s": "BTCUSDC", "S": "BUY", "t": 10, "i": "+0.0", "l": "1.0", "L": "100.0", "T": 1000}
+    assert bapi_ws_normalize.parse_order_execution_report(ev_bad) is None
+    ev_good = {"e": "executionReport", "x": "TRADE", "X": "FILLED", "s": "BTCUSDC", "S": "BUY", "t": "+10.0", "i": "+777.0", "l": "1.0", "L": "100.0", "T": 1000}
+    parsed_ord = bapi_ws_normalize.parse_order_execution_report(ev_good)
+    assert parsed_ord is not None and parsed_ord[1]["orderId"] == "777" and parsed_ord[1]["_fillId"] == "10"
+    parsed_tr = bapi_ws_normalize.parse_trade_execution_report(ev_good)
+    assert parsed_tr is not None and parsed_tr[1]["orderId"] == "777" and parsed_tr[1]["id"] == "10"
+
+    # 4. bapi_trades._valid_fill_id normalizes '12345.0' and '+12345.0' -> '12345'
+    assert bapi_trades._valid_fill_id("12345.0") == "12345"
+    assert bapi_trades._valid_fill_id("+12345.0") == "12345"
+    assert bapi_trades._valid_fill_id("-5.0") is None
+
+    # 5. cacheintegrity: normalize_timestamp_map rejects blank symbol keys; _strict_int_field accepts '123.0'
+    with pytest.raises(ValueError):
+        ci.normalize_timestamp_map({"   ": 100})
+    assert ci._strict_int_field("12345.0") == 12345
+    assert ci._strict_int_field("+12345.0") == 12345
+
+    # 6. priceAnalysis.write_all_trends tolerates partial/corrupt trend_data dicts without KeyError
+    out_pa = tmp_path / "pa.json"
+    written = pa.write_all_trends(
+        {"BTCUSDC": {"direction": "up"}, "ETHUSDC": "not_a_dict"},  # type: ignore[dict-item]
+        filename=str(out_pa),
+    )
+    assert out_pa.exists()
+    assert "BTCUSDC" in written
+
+
 
 
 

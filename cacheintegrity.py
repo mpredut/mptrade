@@ -5,6 +5,7 @@ from collections import defaultdict
 from decimal import Decimal
 import hashlib
 import json
+import math
 import os
 from typing import Any, Callable, Iterable
 
@@ -27,6 +28,7 @@ def normalize_timestamp_map(
     for symbol, value in mapping.items():
         if (
             not isinstance(symbol, str)
+            or not symbol.strip()
             or isinstance(value, bool)
             or not isinstance(value, int)
             or value < 0
@@ -95,13 +97,15 @@ def _strict_int_field(val: Any) -> int:
     if isinstance(val, int):
         return val
     if isinstance(val, float):
-        if not val.is_integer():
+        if not math.isfinite(val) or not val.is_integer():
             raise ValueError("invalid Trade row field type")
         return int(val)
     if isinstance(val, str):
         s = val.strip()
         if not s:
             raise ValueError("invalid Trade row field type")
+        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+            s = s[:-2]
         return int(s)
     raise ValueError("invalid Trade row field type")
 
@@ -320,6 +324,7 @@ def load_versioned_account_meta_file(
         for symbol, count in counts.items():
             if (
                 not isinstance(symbol, str)
+                or not symbol.strip()
                 or isinstance(count, bool)
                 or not isinstance(count, int)
                 or count < 0

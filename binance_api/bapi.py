@@ -227,10 +227,26 @@ def get_account_assets_balances(raise_errors=False):
 
 
 
+def _clean_bapi_oid_str(val):
+    if not isinstance(val, str):
+        return val
+    s = val.strip()
+    if not s or s.lower() in _INVALID_BAPI_ID_STRINGS or s.startswith("-"):
+        return None
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
+    if not s or s.lower() in _INVALID_BAPI_ID_STRINGS or s.startswith("-"):
+        return None
+    return s
+
+
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
     strict = _parse_bool_flag(strict, False)
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
+    symbol = symbol.strip().upper()
         
     try:
         open_orders = client.get_open_orders(symbol=symbol)
@@ -299,20 +315,13 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 else:
                     raw_oid = int(raw_oid)
             elif isinstance(raw_oid, str):
-                raw_oid = raw_oid.strip() or None
-                if raw_oid is not None:
-                    if raw_oid.lower() in _INVALID_BAPI_ID_STRINGS:
-                        raw_oid = None
-                    elif raw_oid.endswith(".0") and raw_oid[:-2].isdigit():
-                        raw_oid = raw_oid[:-2]
-                        if raw_oid in _INVALID_BAPI_ID_STRINGS:
-                            raw_oid = None
+                raw_oid = _clean_bapi_oid_str(raw_oid)
             elif not isinstance(raw_oid, int) or isinstance(raw_oid, bool) or raw_oid <= 0:
                 raw_oid = None
             if raw_oid is None:
                 raw_oid = extract_order_id(order)
-                if isinstance(raw_oid, str) and raw_oid.strip().lower() in _INVALID_BAPI_ID_STRINGS:
-                    raw_oid = None
+                if isinstance(raw_oid, str):
+                    raw_oid = _clean_bapi_oid_str(raw_oid)
             if raw_oid is None or isinstance(raw_oid, bool):
                 continue
             filtered_orders[raw_oid] = {
@@ -339,11 +348,16 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
           
 def cancel_order(symbol, order_id):
     try:
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         cleaned_oid = (
             extract_order_id(order_id, default=None)
             if not isinstance(order_id, (dict, list, tuple, set, frozenset))
             else None
         )
+        if isinstance(cleaned_oid, str):
+            cleaned_oid = _clean_bapi_oid_str(cleaned_oid)
         if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
             return False
         if isinstance(order_id, int) and not isinstance(order_id, bool):
@@ -466,11 +480,16 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
 def check_order_filled(order_id, symbol):
     """Legacy adapter; new code uses market_api.order_status()."""
     try:
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         cleaned_oid = (
             extract_order_id(order_id, default=None)
             if not isinstance(order_id, (dict, list, tuple, set, frozenset))
             else None
         )
+        if isinstance(cleaned_oid, str):
+            cleaned_oid = _clean_bapi_oid_str(cleaned_oid)
         if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
             return False
         from providers.market_api import api as market_api
