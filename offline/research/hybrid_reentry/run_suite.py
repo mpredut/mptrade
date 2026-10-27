@@ -2,10 +2,31 @@
 """Run Tests 0 to 4 ablation across 11 crypto assets and US equities."""
 
 import json
+import math
 import os
 import statistics
 import sys
 import time
+
+
+def _safe_f(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+        return res if math.isfinite(res) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+        return int(res) if math.isfinite(res) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, ROOT)
@@ -117,11 +138,11 @@ def main():
         runs = [r for r in all_results if isinstance(r, dict) and r.get("test_id") == var and "error" not in r]
         if not runs:
             continue
-        rets = [float(r.get("total_return_pct") or 0.0) for r in runs]
-        dds = [float(r.get("max_drawdown_pct") or 0.0) for r in runs]
-        exposures = [float(r.get("exposure_pct") or 0.0) for r in runs]
-        cycles = [int(r.get("cycles") or 0) for r in runs]
-        wins = [int(r.get("wins") or 0) for r in runs]
+        rets = [_safe_f(r.get("total_return_pct"), 0.0) for r in runs]
+        dds = [_safe_f(r.get("max_drawdown_pct"), 0.0) for r in runs]
+        exposures = [_safe_f(r.get("exposure_pct"), 0.0) for r in runs]
+        cycles = [_safe_int(r.get("cycles"), 0) for r in runs]
+        wins = [_safe_int(r.get("wins"), 0) for r in runs]
         n = len(runs)
         pos_count = sum(1 for ret in rets if ret > 0)
 

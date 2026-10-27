@@ -9,6 +9,16 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
+def _safe_f(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+        return res if math.isfinite(res) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _load_jsonl_dicts(path: str) -> list[dict]:
     rows = []
     if not os.path.exists(path):
@@ -43,14 +53,29 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("Each step ranks the candidate set by trailing return/max(DD,5) and runs the winner on the "
              "next 90 days. `sum` = sum of out-of-sample 90-day returns (% of budget); `beat live` = "
              "steps where the pick beat `live`.\n")
-    cands = list(sel[0]["steps"][0]["oos"]) if (sel and sel[0].get("steps") and "oos" in sel[0]["steps"][0]) else []
+    cands = (
+        list(sel[0]["steps"][0]["oos"])
+        if (
+            sel
+            and isinstance(sel[0].get("steps"), list)
+            and sel[0]["steps"]
+            and isinstance(sel[0]["steps"][0], dict)
+            and isinstance(sel[0]["steps"][0].get("oos"), dict)
+        )
+        else []
+    )
     L.append("| asset | steps | selector sum | live sum | best static (sum) | selector rank | beat live | picks |")
     L.append("|---|---|---|---|---|---|---|---|")
     tot = defaultdict(float)
-    for r in sorted(sel, key=lambda r: r["asset"]):
-        s = r["steps"]
-        sums = {c: sum(x["oos"].get(c, 0.0) for x in s) for c in cands}
-        sel_sum = sum(x.get("pick_ret", 0.0) for x in s)
+    for r in sorted(sel, key=lambda r: str(r.get("asset", ""))):
+        s = [x for x in (r.get("steps") or []) if isinstance(x, dict)]
+        if not s:
+            continue
+        sums = {
+            c: sum(_safe_f((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get(c), 0.0) for x in s)
+            for c in cands
+        }
+        sel_sum = sum(_safe_f(x.get("pick_ret"), 0.0) for x in s)
         for c, v in sums.items():
             tot[c] += v
         tot["__selector__"] += sel_sum
@@ -62,8 +87,13 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             picks[x.get("pick", "-")] += 1
         top = ", ".join(f"{k}:{v}" for k, v in sorted(picks.items(), key=lambda kv: -kv[1])[:3])
         live_sum = sums.get("live", 0.0)
+        beat_cnt = sum(
+            _safe_f(x.get("pick_ret"), 0.0)
+            > _safe_f((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get("live"), float("-inf"))
+            for x in s
+        )
         L.append(f"| {r['asset']} | {len(s)} | {sel_sum:+.1f} | {live_sum:+.1f} | {best} ({best_sum:+.1f}) | "
-                 f"{rank}/{len(cands) + 1} | {sum(x.get('pick_ret', 0.0) > x.get('oos', {}).get('live', float('-inf')) for x in s)}/{len(s)} | {top} |")
+                 f"{rank}/{len(cands) + 1} | {beat_cnt}/{len(s)} | {top} |")
     if sel:
         L.append("\n**Sum over all assets and steps** (higher is better):\n")
         L.append("| strategy | OOS sum % |")
@@ -86,8 +116,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         if not assets or not all(a in d and isinstance(d[a].get("full"), dict) for a in assets):
             return None
         live = by.get(("live", "std"), {})
-        full = [float(d[a]["full"].get("ret") or 0.0) for a in assets]
-        dd = [float(d[a]["full"].get("dd") or 0.0) for a in assets]
+        full = [_safe_f(d[a]["full"].get("ret"), float("nan")) for a in assets]
+        dd = [_safe_f(d[a]["full"].get("dd"), float("nan")) for a in assets]
         if not all(math.isfinite(x) for x in full + dd):
             return None
         w90_means = []
@@ -101,7 +131,11 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             if w90_valid:
                 w90_means.append(st.mean(w90_valid))
                 w90pos_vals.append(100.0 * sum(v > 0 for v in w90_valid) / len(w90_valid))
-        beat_live = sum(d[a]["full"]["ret"] > live.get(a, {}).get("full", {}).get("ret", float("-inf")) for a in assets)
+        beat_live = sum(
+            _safe_f(d[a]["full"].get("ret"), float("-inf"))
+            > _safe_f((live.get(a, {}).get("full") or {}).get("ret") if isinstance(live.get(a, {}).get("full"), dict) else None, float("-inf"))
+            for a in assets
+        )
         return {"cfg": key[0], "fee": key[1],
                 "beat": beat_live,
                 "full_med": st.median(full) if full else 0.0, "full_min": min(full) if full else 0.0,

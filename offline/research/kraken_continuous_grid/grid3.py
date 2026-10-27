@@ -60,8 +60,12 @@ if __name__ == "__main__":
     workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
     with Pool(workers) as pool, open(os.path.join(EXP, "results3.jsonl"), "w") as fh:
         for r in pool.imap_unordered(task, canon_todo):
-            p, pk = grid2.ALL[r["cfg"]]
-            aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [r["cfg"]])
+            cfg_entry = grid2.ALL.get(r.get("cfg"))
+            aliases = (
+                canon_groups.get((r["asset"], repr(cfg_entry[0]), bool(cfg_entry[1])), [r["cfg"]])
+                if cfg_entry is not None
+                else [r.get("cfg", "?")]
+            )
             for idx, alias_cfg in enumerate(aliases):
                 done_count += 1
                 row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg}

@@ -14611,6 +14611,76 @@ def test_iteration147_kraken_cachemanager_shadow_live_and_hl_signals_hygiene(tmp
     assert hl_sig_mod._file_signal(str(tmp_path))["source"] == "file(missing)"
 
 
+def test_iteration148_report2_scheduled_pilot_and_run_suite_safety(tmp_path):
+    """Iteration 148:
+    1. offline.research.kraken_continuous_grid.report2.generate_report safely handles
+       None/bool/NaN values in select steps and views full metrics without TypeError.
+    2. offline.research.monitortrades_backtest.scheduled_pilot._edge and _env_float
+       safely handle malformed/bool/NaN values.
+    3. offline.research.hybrid_reentry.run_suite._safe_f and _safe_int safely handle
+       float-strings, bools, and NaNs.
+    """
+    import json
+    from offline.research.kraken_continuous_grid.report2 import generate_report as gen_report2
+    from offline.research.monitortrades_backtest.scheduled_pilot import _edge, _safe_f as sp_safe_f
+    from offline.research.hybrid_reentry.run_suite import _safe_f as rs_safe_f, _safe_int as rs_safe_int
+
+    # 1. report2.generate_report with None/bool/NaN values
+    exp_dir = tmp_path / "grid2_exp"
+    exp_dir.mkdir()
+    r2_file = exp_dir / "results2.jsonl"
+    r2_file.write_text(
+        json.dumps(
+            {
+                "kind": "select",
+                "asset": "BTC",
+                "steps": [
+                    {"pick": "ov650_t8", "pick_ret": None, "oos": {"live": None, "ov650_t8": 4.5}},
+                    {"pick": "live", "pick_ret": 2.0, "oos": "corrupt"},
+                ],
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "views",
+                "fee": "std",
+                "asset": "BTC",
+                "cfg": "live",
+                "full": {"ret": None, "dd": 10.0},
+                "w90": [[1.0]],
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "views",
+                "fee": "std",
+                "asset": "BTC",
+                "cfg": "ov650_t8",
+                "full": {"ret": 12.0, "dd": 8.0},
+                "w90": [[2.0, 5.0, 1.0, 2], ["bad"]],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    lines = gen_report2(str(exp_dir))
+    assert any("BTC" in line for line in lines)
+
+    # 2. scheduled_pilot._edge & _safe_f
+    assert _edge({"net": 15.0, "buy_hold": 5.0}) == 10.0
+    assert _edge({"net": None, "buy_hold": True}) == 0.0
+    assert _edge("not_a_dict") == 0.0
+    assert sp_safe_f(float("nan"), None) is None
+
+    # 3. hybrid_reentry.run_suite helpers
+    assert rs_safe_f(True, -1.0) == -1.0
+    assert rs_safe_int("4.0", 0) == 4
+    assert rs_safe_int(True, 0) == 0
+
+
+
 
 
 

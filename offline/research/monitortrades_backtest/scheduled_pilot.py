@@ -54,14 +54,35 @@ from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or isinstance(raw, bool):
+        return default
+    try:
+        val = float(str(raw).strip())
+        return val if math.isfinite(val) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _safe_f(val, default: float | None = 0.0) -> float | None:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+        return res if math.isfinite(res) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 INSTRUMENTS_CONF = os.path.join(ROOT, "instruments.conf")
 AUDIT_LOG = os.path.join(ROOT, "logger", "backtest_pilot_audit.jsonl")
-MIN_DAYS_BETWEEN_CHANGES = float(os.environ.get("PILOT_MIN_DAYS_BETWEEN_CHANGES", "7"))
+MIN_DAYS_BETWEEN_CHANGES = _env_float("PILOT_MIN_DAYS_BETWEEN_CHANGES", 7.0)
 # The winner must beat the CURRENT value by at least this much (net-buy_hold,
 # USD) on BOTH windows. Otherwise the change is below the noise, or the parameter is inert on
 # this history (e.g. found 28 Jul: hard-TP never fires -> every value gives
 # identical results, and max() on a tie falsely "applies" the first element of the grid).
-MIN_EDGE_MARGIN_USD = float(os.environ.get("PILOT_MIN_EDGE_MARGIN_USD", "1.0"))
+MIN_EDGE_MARGIN_USD = _env_float("PILOT_MIN_EDGE_MARGIN_USD", 1.0)
 
 # The keys in the pilot's scope (BTC/TAO, monitortrades) — the rest of the annotations in
 # instruments.conf are NOT touched without explicitly extending this list (a user
@@ -146,7 +167,11 @@ def _current_value(section, key):
 def _edge(pnl):
     """net - buy_hold — a measure of "how much better than simply holding",
     comparable between different windows (unlike the raw net)."""
-    return pnl["net"] - pnl["buy_hold"]
+    if not isinstance(pnl, dict):
+        return 0.0
+    net = _safe_f(pnl.get("net"), 0.0)
+    bh = _safe_f(pnl.get("buy_hold"), 0.0)
+    return float(net) - float(bh)
 
 
 def _num_str(x):
@@ -219,7 +244,9 @@ def _run_one(symbol, base, params, series):
             rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
         return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
-    out = {"net": res["net"], "buy_hold": res["buy_hold"]} if res else None
+    net_v = _safe_f(res.get("net"), None) if isinstance(res, dict) else None
+    bh_v = _safe_f(res.get("buy_hold"), None) if isinstance(res, dict) else None
+    out = {"net": net_v, "buy_hold": bh_v} if (net_v is not None and bh_v is not None) else None
     _RUN_ONE_CACHE[ck] = out
     diag = dict(
         rb._LAST_RUN_DIAGNOSTICS.get(tk)
