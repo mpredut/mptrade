@@ -13183,6 +13183,67 @@ def test_iteration126_composite_bypass_trigger_bounds_and_survival_allow_network
     assert res_surv["symbol"] == "BTCUSDC"
 
 
+def test_iteration127_prune_threads_replay_provider_rtrade_pair_and_state_store_safety(tmp_path):
+    """Verify Iteration 127 prune_llm_threads boolean/CSV normalization, ReplayMarketDataProvider fee_pct/cur_px guards, OrderTicket/PairCoordinator checkpoint validation, and JsonStateStore string fail_closed."""
+    from orchestratorOS.admin.prune_llm_threads import _as_bool, prune_old_cli_threads
+    from providers.replay_provider import ReplayMarketDataProvider
+    from strategies.rtrade_pair import OrderTicket, PairCoordinator, PairPolicy
+    from strategies.state_store import JsonStateStore
+
+    # 1. prune_llm_threads._as_bool and missing db_path with string flags
+    assert _as_bool("false", True) is False
+    assert _as_bool("0", True) is False
+    assert _as_bool("true", False) is True
+    assert prune_old_cli_threads(cli_base=str(tmp_path), dry_run="false", all_threads_in_project="false", exclude_cids="cid1, cid2") == (0, 0)
+
+    # 2. ReplayMarketDataProvider sanitizes fee_pct and non-finite cur_px in place_order
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, float("nan"))]}, fee_pct=True)
+    assert rp._fee_pct == 0.1
+    rp.advance("BTCUSDC")
+    ord_res = rp.place_order("BTCUSDC", "BUY", 100.0, 1.0)
+    assert ord_res is not None
+    assert rp.position("BTCUSDC") == (1.0, 100.0)
+
+    # 3. OrderTicket string active="false" and PairCoordinator.from_state validation
+    t_inactive = OrderTicket(order_id="oid-1", side="BUY", price=100.0, qty=1.0, active="false")
+    assert t_inactive.active is False
+
+    pol = PairPolicy(adjustment_fraction=0.01)
+    dummy_venue = type("V", (), {"current_price": lambda self: 100.0})()
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint pair_id"):
+        PairCoordinator.from_state(
+            dummy_venue,
+            pol,
+            {"pair_id": "  ", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": []},
+        )
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint phase"):
+        PairCoordinator.from_state(
+            dummy_venue,
+            pol,
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "bogus_phase", "tickets": []},
+        )
+    pc = PairCoordinator.from_state(
+        dummy_venue,
+        pol,
+        {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "shock": "false", "tickets": []},
+    )
+    assert pc.shock is False
+    pc_idle = PairCoordinator(dummy_venue, 1.0, pol)
+    with pytest.raises(ValueError, match="invalid rtrade pair_id"):
+        pc_idle.start(mid=100.0, pair_id="   ")
+
+    # 4. JsonStateStore normalizes string fail_closed="false"
+    store = JsonStateStore(
+        str(tmp_path / "corrupt.json"),
+        lambda: {"cycle": 1, "qty": 0.0},
+        label="test",
+        logger=lambda _m: None,
+        fail_closed="false",
+    )
+    assert store.fail_closed is False
+
+
+
 
 
 

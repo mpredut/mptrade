@@ -102,6 +102,16 @@ def is_automated_thread(title: str, preview: str) -> bool:
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
 
 
+def _as_bool(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
 def prune_old_cli_threads(
     cli_base: Optional[str] = None,
     retention_days: float = DEFAULT_RETENTION_DAYS,
@@ -112,6 +122,8 @@ def prune_old_cli_threads(
     max_threads: Optional[int] = DEFAULT_MAX_AUTONOMOUS_THREADS,
 ) -> Tuple[int, int]:
     """Delete automated LLM threads older than retention_days or beyond max_threads. Returns (count, bytes)."""
+    dry_run = _as_bool(dry_run, False)
+    all_threads_in_project = _as_bool(all_threads_in_project, False)
     base = resolve_bot_cli_base(cli_base)
     if not dry_run and cli_base is None:
         try:
@@ -125,7 +137,7 @@ def prune_old_cli_threads(
 
     project_bases = [base, resolve_ui_cli_base()]
     if isinstance(exclude_cids, str):
-        excl_set = {exclude_cids.strip()} if exclude_cids.strip() else set()
+        excl_set = {c.strip() for c in exclude_cids.split(",") if c.strip()}
     elif isinstance(exclude_cids, (set, list, tuple, frozenset)):
         excl_set = {str(c).strip() for c in exclude_cids if isinstance(c, str) and c.strip()}
     else:
@@ -146,7 +158,7 @@ def prune_old_cli_threads(
         logger.info("No non-protected target projects found to prune.")
         return (0, 0)
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

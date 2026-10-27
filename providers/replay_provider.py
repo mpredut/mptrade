@@ -84,7 +84,14 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._series = price_series
         self._cursor: Dict[str, int] = {s: 0 for s in price_series}
         self._last_ts: Dict[str, float] = {}
-        self._fee_pct = fee_pct
+        if fee_pct is None or isinstance(fee_pct, bool):
+            self._fee_pct = 0.1
+        else:
+            try:
+                fp_f = float(fee_pct)
+                self._fee_pct = fp_f if (math.isfinite(fp_f) and fp_f >= 0.0) else 0.1
+            except (TypeError, ValueError, OverflowError):
+                self._fee_pct = 0.1
         self._orders: Dict[str, List[dict]] = {s: [] for s in price_series}
         self._orders_version: int = 0
         self._orders_cache: Dict[Tuple[str, Optional[str]], Tuple[int, float, float, List[dict]]] = {}
@@ -301,13 +308,19 @@ class ReplayMarketDataProvider(MarketDataProvider):
         ts_ms = int(self.now(symbol) * 1000)
         pos_qty, pos_cost = self._positions.get(symbol, (0.0, 0.0))
         cur_px = self.get_current_price(symbol)
+        valid_cur = (
+            cur_px is not None
+            and not isinstance(cur_px, bool)
+            and math.isfinite(float(cur_px))
+            and float(cur_px) > 0
+        )
         if side == "BUY":
-            fill_px = min(price, cur_px) if (cur_px is not None and cur_px > 0) else price
+            fill_px = min(price, float(cur_px)) if valid_cur else price
             executed_qty = qty
             pos_qty += executed_qty
             pos_cost += executed_qty * fill_px
         else:
-            fill_px = max(price, cur_px) if (cur_px is not None and cur_px > 0) else price
+            fill_px = max(price, float(cur_px)) if valid_cur else price
             executed_qty = min(qty, pos_qty)
             if executed_qty <= 0:
                 return None

@@ -478,7 +478,15 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
         return params
     itv = int(bm_f)
     cap = _strat.MarketRegimeService.horizon_sample_capacity("long", itv)
-    cur_min_samples = int(getattr(params, "regime_min_samples", 20))
+    raw_min_s = getattr(params, "regime_min_samples", 20)
+    try:
+        cur_min_samples = (
+            int(float(raw_min_s))
+            if raw_min_s is not None and not isinstance(raw_min_s, bool) and math.isfinite(float(raw_min_s))
+            else 20
+        )
+    except (TypeError, ValueError, OverflowError):
+        cur_min_samples = 20
     clamped_min_samples = max(3, min(cur_min_samples, cap))
     if (
         getattr(params, "trend_interval", itv) == itv
@@ -506,16 +514,22 @@ def prewarm_trend_series(
     bar_minutes: float = 240.0,
 ) -> None:
     """Prewarm process-level replay regime and volatility caches for an OHLC series."""
-    if len(ohlc) <= warmup:
+    if not ohlc or warmup is None or isinstance(warmup, bool):
+        return
+    try:
+        warmup_i = max(0, int(float(warmup))) if math.isfinite(float(warmup)) else 40
+    except (TypeError, ValueError, OverflowError):
+        warmup_i = 40
+    if len(ohlc) <= warmup_i:
         return
     p = align_spot_interval_params(
         _strat.StratParams.from_env() if params is None else params,
         bar_minutes,
     )
     run_replay(
-        ohlc[warmup:],
+        ohlc[warmup_i:],
         p,
         fee_pct=0.26,
         bar_minutes=bar_minutes,
-        warmup_ohlc=ohlc[:warmup],
+        warmup_ohlc=ohlc[:warmup_i],
     )

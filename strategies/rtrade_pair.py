@@ -54,6 +54,10 @@ class OrderTicket:
                 or self.price <= 0 or not math.isfinite(self.qty) or self.qty <= 0
                 or not 0 <= self.revision <= _MAX_LIMIT_REVISION):
             raise ValueError("ticket rtrade invalid")
+        if isinstance(self.active, str):
+            self.active = self.active.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+        else:
+            self.active = bool(self.active)
 
 
 @dataclass(frozen=True)
@@ -286,7 +290,12 @@ class PairCoordinator:
             raise ValueError("the rtrade mid must be finite")
         buy_price, sell_price = quote_prices(
             mid, self.policy.adjustment_fraction, self.policy.price_decimals)
-        self.pair_id = pair_id or self.pair_id_factory()
+        if pair_id is not None:
+            if isinstance(pair_id, bool) or not str(pair_id).strip():
+                raise ValueError("invalid rtrade pair_id")
+            self.pair_id = str(pair_id).strip()
+        else:
+            self.pair_id = self.pair_id_factory()
         raw_started = self.clock()
         if isinstance(raw_started, bool) or not math.isfinite(float(raw_started)):
             raise ValueError("the rtrade clock must be finite")
@@ -412,10 +421,25 @@ class PairCoordinator:
             raise ValueError("incomplete rtrade checkpoint")
         obj = cls(venue, state["qty"], policy, start_side=state["start_side"],
                   clock=clock, sleeper=sleeper)
-        obj.pair_id = str(state["pair_id"])
-        obj.phase = str(state["phase"])
+        raw_pair_id = state.get("pair_id")
+        if raw_pair_id is None or isinstance(raw_pair_id, bool) or not str(raw_pair_id).strip():
+            raise ValueError("invalid rtrade checkpoint pair_id")
+        obj.pair_id = str(raw_pair_id).strip()
+        raw_phase = state.get("phase")
+        valid_phases = {
+            "idle", "quoting", "exposed", "closing", "stopping",
+            "startup_recovery", "hard_stop_recovery",
+            "complete", "expired", "failed", "hard_stop",
+        }
+        if raw_phase is None or isinstance(raw_phase, bool) or str(raw_phase).strip() not in valid_phases:
+            raise ValueError("invalid rtrade checkpoint phase")
+        obj.phase = str(raw_phase).strip()
         obj.reason = state.get("reason")
-        obj.shock = bool(state.get("shock", False))
+        raw_shock = state.get("shock", False)
+        if isinstance(raw_shock, str):
+            obj.shock = raw_shock.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            obj.shock = bool(raw_shock)
         raw_elapsed = state.get("elapsed_sec")
         if raw_elapsed is None:
             elapsed_f = 0.0

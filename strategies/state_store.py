@@ -22,7 +22,10 @@ class JsonStateStore:
         self.default_factory = default_factory
         self.label = label
         self.logger = logger
-        self.fail_closed = fail_closed
+        if isinstance(fail_closed, str):
+            self.fail_closed = fail_closed.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+        else:
+            self.fail_closed = bool(fail_closed)
 
     def load(self) -> dict:
         try:
