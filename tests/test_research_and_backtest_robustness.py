@@ -4995,3 +4995,115 @@ def test_batch32_backtests_metrics_evaluation_and_calibration_hardening():
     with pytest.raises(ValueError, match="cash must be a finite positive number"):
         review("HEAD:config.env", "HEAD:config.env", None)  # type: ignore[arg-type]
 
+
+def test_batch33_market_monitor_kraken_reconciler_and_notifier_hardening(tmp_path, monkeypatch):
+    import io
+    import json
+    import time
+    from types import SimpleNamespace
+    import urllib.request
+    import pytest
+    from market_monitor import new_coins_discovery as ncd
+    from market_monitor import pricefetcher as pf
+    from kraken import trailing_stop as k_ts
+    from kraken import kraken_xstock_watch as k_xw
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
+    from notify_engine.alertnotifiers import AlertNotifier
+
+    # 1. DexScreenerSource.refresh handles seconds and ms timestamps; NewCoinsMonitor normalizes symbols
+    now_s = time.time()
+    monkeypatch.setattr(
+        ncd.requests,
+        "get",
+        lambda *_a, **_k: SimpleNamespace(
+            status_code=200,
+            json=lambda: [
+                {"symbol": "HYPE", "name": "Hyper", "chainId": "hl", "tokenAddress": "0x1", "listedAt": now_s - 60.0},
+                {"symbol": "TAO", "name": "Bittensor", "chainId": "bt", "tokenAddress": "0x2", "listedAt": (now_s - 60.0) * 1000.0},
+            ],
+        ),
+    )
+    dex = ncd.DexScreenerSource()
+    new_dex = dex.get_new_coins(days_back=1)
+    assert {c["symbol"] for c in new_dex} == {"HYPE", "TAO"}
+    assert all(c["added_at"] is not None and c["added_at"].year >= 2024 for c in new_dex)
+
+    added_calls = []
+    dummy_pm = SimpleNamespace(
+        original_symbols=[],
+        active_symbols=set(),
+        max_monitored_symbols=10,
+        add_symbol=lambda sym, preferred_source=None: (added_calls.append((sym, preferred_source)) or True),
+    )
+    ncm = ncd.NewCoinsMonitor(dummy_pm, SimpleNamespace(get_all_new_coins=lambda *_a, **_k: {}, get_available_sources=lambda: []))
+    assert ncm.add_new_coin_to_watchlist({"symbol": True}) is False
+    assert ncm.add_new_coin_to_watchlist({"symbol": "  hype  ", "source": "coinmarketcap"}) is True
+    assert added_calls == [("HYPE", "coinmarketcap")]
+
+    # 2. CacheAllPriceFetcherManager.get_remote_items matches preferred_source case-insensitively
+    mgr = object.__new__(pf.CacheAllPriceFetcherManager)
+    mgr.symbol_preferred_source = {"HYPE": "coinmarketcap"}
+    mgr.price_factory = SimpleNamespace(
+        _platforms=[SimpleNamespace(platform_name="CoinMarketCap", get_price=lambda sym: 42.5)],
+        get_price=lambda sym: (_ for _ in ()).throw(AssertionError("should use preferred_source platform")),
+    )
+    items = mgr.get_remote_items("HYPE", 0)
+    assert len(items) == 1 and items[0][1] == pytest.approx(42.5)
+
+    # 3. KrakenTrailing._trend_value unwraps {"items": ...} in cache_short_trend.json
+    trend_file = tmp_path / "cache_short_trend.json"
+    trend_file.write_text(
+        json.dumps({"items": {"HYPEUSDC": {"ts": now_s - 2.0, "gradient_recent": 0.125}}, "fetchtime": {}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(k_ts, "CACHE_TREND", str(trend_file))
+    kt = object.__new__(k_ts.KrakenTrailing)
+    assert kt._trend_value("HYPE/USD") == pytest.approx(0.125)
+
+    # 4. kraken_xstock_watch.yahoo_last prefers freshest intraday close and handles meta=None
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *_a, **_k: io.BytesIO(
+            json.dumps(
+                {
+                    "chart": {
+                        "result": [
+                            {
+                                "meta": None,
+                                "indicators": {"quote": [{"close": [100.0, None, 105.5]}]},
+                            }
+                        ]
+                    }
+                }
+            ).encode("utf-8")
+        ),
+    )
+    assert k_xw.yahoo_last("SPCX") == pytest.approx(105.5)
+
+    # 5. AutonomousAIReconciler.harvest_sensors_telemetry unwraps {"items": ...} in cache_short_trend.json
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "cache_short_trend.json").write_text(
+        json.dumps({"items": {"BTCUSDC": {"current_price": 70000.0, "final_trend": 1, "slope_full": 0.02}}, "fetchtime": {}}),
+        encoding="utf-8",
+    )
+    reconciler = object.__new__(AutonomousAIReconciler)
+    reconciler.workspace_dir = str(tmp_path)
+    reconciler.log_dir = str(tmp_path)
+    reconciler.logs_dirs = [str(tmp_path)]
+    reconciler.cache_dir = str(cache_dir)
+    reconciler._intent_gateway = SimpleNamespace(load_tradable_instruments=lambda: [])
+    snap = reconciler.harvest_sensors_telemetry(include_fleet=False)
+    assert "BTCUSDC" in snap.prices_and_trends
+    assert "items" not in snap.prices_and_trends
+    assert snap.prices_and_trends["BTCUSDC"]["price"] == pytest.approx(70000.0)
+
+    # 6. AlertNotifier.format_human_readable_time and format_bot_event normalize ms timestamps
+    ms_ts = 1700000000000
+    hr = AlertNotifier.format_human_readable_time(ms_ts)
+    assert hr != str(ms_ts) and ":" in hr
+    be = AlertNotifier.format_bot_event({"name": "Filled", "source": "Binance", "added_at": ms_ts})
+    assert "11-1" in be
+
+

@@ -768,9 +768,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 self.symbol_preferred_source = {}
 
             preferred_source = self.symbol_preferred_source.get(symbol)
-            if preferred_source:
+            if preferred_source and isinstance(preferred_source, str) and preferred_source.strip():
+                pref_norm = preferred_source.strip().lower()
                 for platform in self.price_factory._platforms:
-                    if platform.platform_name == preferred_source:
+                    if str(platform.platform_name).strip().lower() == pref_norm:
                         price = platform.get_price(symbol)
                         if (
                             price is not None

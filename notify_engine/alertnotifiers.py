@@ -657,6 +657,8 @@ class AlertNotifier:
                 vf = float(value)
                 if not math.isfinite(vf) or vf <= 0.0:
                     return str(value)
+                if vf > 1e11:
+                    vf /= 1000.0
                 return datetime.fromtimestamp(vf).strftime("%m-%d %H:%M:%S")
             except Exception:
                 return str(value)
@@ -733,6 +735,8 @@ class AlertNotifier:
                 try:
                     ts_f = float(ts)
                     if math.isfinite(ts_f) and ts_f > 0:
+                        if ts_f > 1e11:
+                            ts_f /= 1000.0
                         parts.append(datetime.fromtimestamp(ts_f).strftime("%m-%d %H:%M"))
                 except Exception:  # noqa: BLE001
                     pass

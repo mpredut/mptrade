@@ -408,7 +408,8 @@ class DexScreenerSource(NewCoinsSource):
                         self._supported_symbols.add(symbol)
                         try:
                             listed_val = _safe_num(listed_at, 0.0)
-                            added_time = datetime.fromtimestamp(listed_val / 1000) if listed_val > 0 else None
+                            listed_sec = listed_val / 1000.0 if listed_val > 1e11 else listed_val
+                            added_time = datetime.fromtimestamp(listed_sec) if listed_sec > 0 else None
                         except (TypeError, ValueError, OSError, OverflowError):
                             added_time = None
                         self._cache.append({
@@ -684,10 +685,12 @@ class NewCoinsMonitor:
         if not self.price_monitor:
             print(f"[NewCoinsMonitor] No price_monitor available")
             return False
-        if not isinstance(coin_info, dict) or not coin_info.get('symbol'):
+        if not isinstance(coin_info, dict) or not coin_info.get('symbol') or isinstance(coin_info.get('symbol'), bool):
             return False
 
-        symbol = str(coin_info['symbol'])
+        symbol = str(coin_info['symbol']).strip().upper()
+        if not symbol:
+            return False
         source = coin_info.get('source', 'unknown')
 
         if not self.is_valid_symbol(symbol, coin_info.get('name', ''), coin_info.get('slug', '')):

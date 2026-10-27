@@ -206,6 +206,7 @@ class KrakenTrailing:
             data = read_recovering_previous(CACHE_TREND, json.loads, default=None)
             if not isinstance(data, dict):
                 return 0.0
+            items_map = data.get("items") if isinstance(data.get("items"), dict) else data
             raw = str(pair or "").strip().upper()
             cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
             base = cleaned
@@ -215,8 +216,8 @@ class KrakenTrailing:
                     break
             snap = None
             for cand in (pair, raw, cleaned, f"{base}USDC", f"{base}USDT", f"{base}USD", base):
-                if cand and isinstance(data.get(cand), dict):
-                    snap = data[cand]
+                if cand and isinstance(items_map.get(cand), dict):
+                    snap = items_map[cand]
                     break
             if isinstance(snap, dict):
                 raw_ts_val = snap.get("ts")

@@ -321,7 +321,7 @@ class AutonomousAIReconciler:
     @property
     def intent_gateway(self) -> Any:
         """The single trade-intent choke point (owns autonomous_trading_* config, clamping, dedup, mode)."""
-        if self._intent_gateway is None:
+        if getattr(self, "_intent_gateway", None) is None:
             self._intent_gateway = AutonomousIntentGateway(workspace_dir=self.workspace_dir)
         return self._intent_gateway
 
@@ -470,7 +470,10 @@ class AutonomousAIReconciler:
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
 
         if isinstance(trends_data, dict):
-            for sym, tinfo in trends_data.items():
+            trends_items = trends_data.get("items") if isinstance(trends_data.get("items"), dict) else trends_data
+            for sym, tinfo in trends_items.items():
+                if sym in ("items", "fetchtime", "rest_sync_cursor", "metadata", "counts"):
+                    continue
                 if isinstance(tinfo, dict):
                     px = tinfo.get("current_price", price_map.get(sym))
                     trend = tinfo.get("final_trend", 0)

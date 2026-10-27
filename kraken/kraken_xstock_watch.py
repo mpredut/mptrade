@@ -140,7 +140,21 @@ def yahoo_last(sym: str) -> float | None:
             data = json.loads(r.read())
         chart = data.get("chart") if isinstance(data, dict) and isinstance(data.get("chart"), dict) else {}
         res = (chart.get("result") or [None])[0]
-        raw_px = (res or {}).get("meta", {}).get("regularMarketPrice") if isinstance(res, dict) else None
+        if not isinstance(res, dict):
+            return None
+        indicators = res.get("indicators") if isinstance(res.get("indicators"), dict) else {}
+        quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
+        q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
+        for c in reversed(q.get("close") or []):
+            if c is not None and not isinstance(c, bool):
+                try:
+                    cf = float(c)
+                    if math.isfinite(cf) and cf > 0:
+                        return cf
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
+        raw_px = meta.get("regularMarketPrice")
         if raw_px is None or isinstance(raw_px, bool):
             return None
         px = float(raw_px)
