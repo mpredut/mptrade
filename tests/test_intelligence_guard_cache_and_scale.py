@@ -13316,6 +13316,93 @@ def test_iteration129_wsevents_fake_and_backtest_execution_evaluation_safety():
         parse_dataset_specs(["60=   "])
 
 
+def test_iteration130_bapi_placeorder_allorders_and_trades_id_hygiene(monkeypatch):
+    """Verify bapi_placeorder client_order_id/order print hygiene, bapi_allorders.get_filled_orders float/sentinel IDs, and bapi_trades._valid_fill_id/aggregate_trades/get_trade_orders resilience."""
+    import time
+    from types import SimpleNamespace
+    from binance_api import bapi_allorders, bapi_placeorder, bapi_trades
+
+    # 1. bapi_trades._valid_fill_id rejects containers, non-integer floats, and sentinel strings while normalizing integer floats
+    assert bapi_trades._valid_fill_id(777.0) == 777
+    assert bapi_trades._valid_fill_id(12.5) is None
+    assert bapi_trades._valid_fill_id("nan") is None
+    assert bapi_trades._valid_fill_id("null") is None
+    assert bapi_trades._valid_fill_id({"a": 1}) is None
+    assert bapi_trades._valid_fill_id([123]) is None
+
+    # 2. bapi_trades.aggregate_trades preserves symbol, id, and commissionAsset across multi-fill orders with partial missing fields
+    agg = bapi_trades.aggregate_trades(
+        [
+            {
+                "orderId": 888.0,
+                "id": None,
+                "symbol": "BTCUSDC",
+                "qty": "0.5",
+                "price": "50000",
+                "commission": "0.1",
+                "commissionAsset": "BNB",
+                "side": "BUY",
+                "time": 1700000000000,
+            },
+            {
+                "orderId": 888,
+                "id": 9001.0,
+                "symbol": None,
+                "qty": "0.5",
+                "price": "50000",
+                "commission": "0.1",
+                "commissionAsset": None,
+                "side": "BUY",
+                "time": 1700000001000,
+            },
+        ]
+    )
+    assert len(agg) == 1
+    assert agg[0]["orderId"] == 888
+    assert agg[0]["id"] == 9001
+    assert agg[0]["symbol"] == "BTCUSDC"
+    assert agg[0]["commissionAsset"] == "BNB"
+
+    # 3. bapi_allorders.get_filled_orders groups integer float and int orderIds together and separates sentinel strings
+    now_ms = int(time.time() * 1000)
+    monkeypatch.setattr(bapi_allorders.sym, "validate_symbols", lambda _s: None)
+    monkeypatch.setattr(bapi_allorders.sym, "validate_ordertype", lambda _t: None)
+    monkeypatch.setattr(
+        bapi_allorders,
+        "paginate_my_trades",
+        lambda *_a, **_k: [
+            {"orderId": 555.0, "price": "100", "qty": "1", "time": now_ms - 1000, "isBuyer": True},
+            {"orderId": 555, "price": "100", "qty": "2", "time": now_ms - 500, "isBuyer": True},
+            {"orderId": "nan", "price": "100", "qty": "1", "time": now_ms - 400, "isBuyer": True},
+            {"orderId": "null", "price": "100", "qty": "1", "time": now_ms - 300, "isBuyer": True},
+        ],
+    )
+    filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDC", now_ms - 5000)
+    by_oid = {row["orderId"]: row for row in filled}
+    assert 555 in by_oid
+    assert by_oid[555]["quantity"] == pytest.approx(3.0)
+    assert "nan" not in by_oid
+    assert "null" not in by_oid
+
+    # 4. bapi_placeorder._submit_binance_order replaces boolean/blank client_order_id and tolerates order dict without 'orderId' key
+    captured = {}
+
+    def _fake_limit_buy(**kw):
+        captured.update(kw)
+        return {"id": "ord-999"}
+
+    fake_api = SimpleNamespace(order_limit_buy=_fake_limit_buy)
+    monkeypatch.setattr(bapi_placeorder.sym, "validate_symbols", lambda _s: None)
+    monkeypatch.setattr(bapi_placeorder.cfg, "is_trade_enabled", lambda: True)
+    monkeypatch.setattr(bapi_placeorder, "require_account_cache_for_submit", lambda: None)
+    monkeypatch.setattr(bapi_placeorder.rc, "create_client_order_id", lambda: "AUTO_CID_1")
+    res = bapi_placeorder._submit_binance_order(
+        "BUY", "BTCUSDC", 1.0, price=100.0, client_order_id=True, api_client=fake_api
+    )
+    assert res == {"id": "ord-999"}
+    assert captured["newClientOrderId"] == "AUTO_CID_1"
+
+
 
 
 

@@ -174,11 +174,13 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
 
         for idx, t in enumerate(filtered):
             raw_oid = t['orderId']
+            if isinstance(raw_oid, float) and math.isfinite(raw_oid) and raw_oid.is_integer():
+                raw_oid = int(raw_oid)
             valid_oid = (
                 raw_oid is not None
-                and not isinstance(raw_oid, bool)
-                and not (isinstance(raw_oid, float) and not math.isfinite(raw_oid))
+                and not isinstance(raw_oid, (bool, float, dict, list, tuple, set, frozenset))
                 and bool(str(raw_oid).strip())
+                and str(raw_oid).strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
             )
             key = (
                 (raw_oid.strip() if isinstance(raw_oid, str) else raw_oid)

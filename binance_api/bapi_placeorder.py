@@ -18,6 +18,7 @@ from . import order_id_context as rc   # client_order_id and tag context moved i
 from . import bapi as api
 from .bapi_client import client
 from providers.base import (
+    extract_order_id,
     extract_order_price,
     extract_order_side,
     extract_timestamp_ms,
@@ -446,7 +447,12 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
             raise SubmissionRefused("account_cache_not_fresh")
 
     target_client = api_client or client
-    client_order_id = client_order_id or rc.create_client_order_id()
+    cleaned_cid = (
+        extract_order_id(client_order_id, default=None)
+        if not isinstance(client_order_id, (dict, list, tuple, set, frozenset))
+        else None
+    )
+    client_order_id = cleaned_cid or rc.create_client_order_id()
     if market:
         method = (
             target_client.order_market_buy
@@ -484,7 +490,10 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     try:
         order = method(**submit_kwargs, newClientOrderId=client_order_id)
         if order:
-            print(f"{side} order placed successfully: {order['orderId']} clientId {client_order_id}")
+            oid_label = extract_order_id(order, default=None) or (
+                order.get("orderId") if isinstance(order, dict) else order
+            )
+            print(f"{side} order placed successfully: {oid_label} clientId {client_order_id}")
         return order
     except BinanceAPIException as exc:
         print(f"Binance {side} submission failed: {exc}")
@@ -625,7 +634,12 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                 prefix=kwargs.get("prefix"),
                 client_order_id=kwargs.get("client_order_id"),
             )
-            profit_ref_mode = kwargs.get("reference_mode")
+            raw_ref_mode = kwargs.get("reference_mode")
+            profit_ref_mode = (
+                raw_ref_mode.strip()
+                if isinstance(raw_ref_mode, str) and raw_ref_mode.strip()
+                else None
+            )
             eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
                 "binance",
                 order_type,

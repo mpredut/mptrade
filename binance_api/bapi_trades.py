@@ -61,14 +61,20 @@ def _normalize_side(order_type):
 
 
 def _valid_fill_id(val):
-    if val is None or isinstance(val, bool):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
-    if isinstance(val, float) and not math.isfinite(val):
-        return None
+    if isinstance(val, float):
+        if not math.isfinite(val) or not val.is_integer():
+            return None
+        return int(val)
     if isinstance(val, str):
         s = val.strip()
-        return s if s else None
-    return val if str(val).strip() else None
+        if not s or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+            return None
+        return s
+    if isinstance(val, int):
+        return val
+    return None
 
 
 def aggregate_trades(trades):
@@ -102,13 +108,15 @@ def aggregate_trades(trades):
         is_buyer = raw_is_buyer if isinstance(raw_is_buyer, bool) else (side == 'BUY')
 
         # Aggregate fields belonging to the same order.
-        if aggregated_trades[orderId]['count'] == 0:
-            raw_tid = trade.get('id', 0)
-            aggregated_trades[orderId]['id'] = 0 if (raw_tid is None or isinstance(raw_tid, bool)) else raw_tid
+        raw_tid = _valid_fill_id(trade.get('id'))
+        if aggregated_trades[orderId]['count'] == 0 or not aggregated_trades[orderId]['id']:
+            aggregated_trades[orderId]['id'] = 0 if raw_tid is None else raw_tid
         aggregated_trades[orderId]['count'] += 1
         aggregated_trades[orderId]['orderId'] = orderId
         raw_sym = trade.get('symbol', '')
-        aggregated_trades[orderId]['symbol'] = raw_sym.strip() if isinstance(raw_sym, str) else ''
+        clean_sym = raw_sym.strip() if isinstance(raw_sym, str) else ''
+        if clean_sym or not aggregated_trades[orderId]['symbol']:
+            aggregated_trades[orderId]['symbol'] = clean_sym
         raw_px = trade.get('price')
         try:
             has_pos_raw_px = (
@@ -148,12 +156,13 @@ def aggregate_trades(trades):
             comm_val = fee_info['fee']
         raw_comm_asset = trade.get('commissionAsset')
         comm_asset = (
-            raw_comm_asset
-            if (raw_comm_asset and not isinstance(raw_comm_asset, bool))
+            raw_comm_asset.strip()
+            if (isinstance(raw_comm_asset, str) and raw_comm_asset.strip())
             else (fee_info['fee_asset'] if fee_info is not None else '')
         )
         aggregated_trades[orderId]['commission'] += comm_val
-        aggregated_trades[orderId]['commissionAsset'] = comm_asset
+        if comm_asset or not aggregated_trades[orderId]['commissionAsset']:
+            aggregated_trades[orderId]['commissionAsset'] = comm_asset
         aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], ts_ms)
         aggregated_trades[orderId]['isBuyer'] = is_buyer
         raw_maker = trade.get('isMaker')
@@ -576,11 +585,21 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             if px <= 0 or qty <= 0:
                 continue
             is_buyer = side == "BUY"
+            raw_sym = trade.get('symbol')
+            sym_out = (
+                raw_sym.strip().upper()
+                if isinstance(raw_sym, str) and raw_sym.strip()
+                else symbol
+            )
+            clean_tid = _valid_fill_id(trade.get('id'))
+            clean_oid = _valid_fill_id(trade.get('orderId'))
+            if clean_oid is None:
+                clean_oid = extract_order_id(trade)
             filtered_trades.append({
-                'symbol': trade.get('symbol', symbol),
-                'id': trade.get('id'),
-                'orderId': trade.get('orderId'),
-                'orderListId': trade.get('orderId'),
+                'symbol': sym_out,
+                'id': clean_tid,
+                'orderId': clean_oid,
+                'orderListId': clean_oid,
                 'price': px,
                 'qty': qty,
                 'quantity': qty,
