@@ -19,13 +19,30 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
 
 
+_INVALID_LOG_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
+
+
 def _sanitize_outcome_field(value):
     """Remove characters that would break the pipe-delimited record format."""
-    return (
-        str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
-        if value is not None
-        else ""
-    )
+    if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+        return ""
+    if isinstance(value, float) and not math.isfinite(value):
+        return ""
+    text = str(value).replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
+    return "" if text.lower() in _INVALID_LOG_STRINGS else text
+
+
+def _clean_numeric_field(value):
+    if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+        return ""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else ""
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if not s or s.lower() in _INVALID_LOG_STRINGS:
+        return ""
+    return s
 
 
 def log_order_outcome(
@@ -49,14 +66,14 @@ def log_order_outcome(
         os.makedirs(ORDER_OUTCOMES_LOG_DIR, exist_ok=True)
         path = os.path.join(ORDER_OUTCOMES_LOG_DIR,
                              f"order_outcomes_{datetime.now().strftime('%Y-%m-%d')}.log")
-        sym_val = "" if symbol is None or isinstance(symbol, bool) else symbol
-        side_val = "" if side is None or isinstance(side, bool) else side
-        price_val = "" if price is None or isinstance(price, bool) else price
-        qty_val = "" if qty is None or isinstance(qty, bool) else qty
-        out_val = "" if outcome is None or isinstance(outcome, bool) else outcome
-        ref_val = refuse_reason if isinstance(refuse_reason, str) else ("" if refuse_reason is None or isinstance(refuse_reason, bool) else str(refuse_reason))
-        cal_val = caller if isinstance(caller, str) else ("" if caller is None or isinstance(caller, bool) else str(caller))
-        mot_val = motivation if isinstance(motivation, str) else ("" if motivation is None or isinstance(motivation, bool) else str(motivation))
+        sym_val = _sanitize_outcome_field(symbol)
+        side_val = _sanitize_outcome_field(side)
+        price_val = _clean_numeric_field(price)
+        qty_val = _clean_numeric_field(qty)
+        out_val = _sanitize_outcome_field(outcome)
+        ref_val = _sanitize_outcome_field(refuse_reason)
+        cal_val = _sanitize_outcome_field(caller)
+        mot_val = _sanitize_outcome_field(motivation)
         cols = [time.time(), sym_val, side_val, price_val, qty_val, out_val,
                 ref_val, cal_val, mot_val]
         if regime_context is not None:
@@ -72,15 +89,22 @@ def log_order_outcome(
             reg_raw = getattr(regime_context, "regime", "")
             src_raw = getattr(regime_context, "source", "")
             rsn_raw = getattr(regime_context, "reason", "")
+            fresh_raw = getattr(regime_context, "fresh", None)
+            fb_raw = getattr(regime_context, "fallback_used", None)
             cols.extend([
                 reg_raw if isinstance(reg_raw, str) else "",
                 strength_str,
                 src_raw if isinstance(src_raw, str) else "",
-                str(getattr(regime_context, "fresh", "")),
-                str(getattr(regime_context, "fallback_used", "")),
+                "" if fresh_raw is None else str(fresh_raw),
+                "" if fb_raw is None else str(fb_raw),
                 rsn_raw if isinstance(rsn_raw, str) else "",
             ])
-        line = "|".join(_sanitize_outcome_field(c) for c in cols)
+        line = "|".join(
+            str(c).replace("|", "/").replace("\r", " ").replace("\n", " ")
+            if c is not None
+            else ""
+            for c in cols
+        )
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception as e:

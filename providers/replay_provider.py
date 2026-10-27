@@ -37,7 +37,7 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
     out: List[Tuple[float, float]] = []
     if not isinstance(path, str) or not path.strip() or not isinstance(symbol, str) or not symbol.strip():
         return out
-    if not os.path.exists(path):
+    if not os.path.isfile(path):
         return out
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -111,6 +111,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return "Replay"
 
     def supports_symbol(self, symbol: str) -> bool:
+        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
+            return False
         return symbol in self._series
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:

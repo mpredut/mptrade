@@ -91,6 +91,53 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         return None
 
 
+_INVALID_API_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+
+
+def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _parse_binance_order_id(order_id: Any, context: str) -> int:
+    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set)):
+        raise ProviderError(f"{context}: invalid order id")
+    if isinstance(order_id, float):
+        if not math.isfinite(order_id) or not order_id.is_integer() or order_id <= 0:
+            raise ProviderError(f"{context}: invalid order id")
+        return int(order_id)
+    if isinstance(order_id, int):
+        if order_id <= 0:
+            raise ProviderError(f"{context}: invalid order id")
+        return order_id
+    s = str(order_id).strip()
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    try:
+        oid = int(s)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ProviderError(f"{context}: invalid order id") from exc
+    if oid <= 0:
+        raise ProviderError(f"{context}: invalid order id")
+    return oid
+
+
 def _step_decimals(step: str) -> int:
     """Return significant decimals in a Binance stepSize/tickSize."""
     if step is None or isinstance(step, bool):
@@ -257,15 +304,25 @@ class BinanceProvider(MarketDataProvider):
             if not all(math.isfinite(v) and v >= 0.0 for v in (price_f, orig_f, exec_f)):
                 raise ProviderError(f"open_orders({symbol}): non-finite or negative field in order")
             raw_oid = order.get("orderId")
-            if raw_oid is None or isinstance(raw_oid, bool) or not str(raw_oid).strip():
-                raise ProviderError(f"open_orders({symbol}): missing or invalid orderId in order")
+            try:
+                oid_int = _parse_binance_order_id(raw_oid, f"open_orders({symbol})")
+            except ProviderError as exc:
+                raise ProviderError(f"open_orders({symbol}): missing or invalid orderId in order") from exc
             raw_side = order.get("side")
             raw_status = order.get("status")
             if isinstance(raw_side, bool) or isinstance(raw_status, bool):
                 raise ProviderError(f"open_orders({symbol}): boolean status/side field in order")
+            raw_coid = order.get("clientOrderId")
+            clean_coid = (
+                str(raw_coid).strip()
+                if raw_coid is not None
+                and not isinstance(raw_coid, (bool, dict, list, tuple, set))
+                and str(raw_coid).strip().lower() not in _INVALID_API_ID_STRINGS
+                else None
+            )
             normalized.append({
-                "orderId": str(raw_oid).strip(),
-                "clientOrderId": order.get("clientOrderId"),
+                "orderId": str(oid_int),
+                "clientOrderId": clean_coid,
                 "side": str(raw_side or "").upper(),
                 "price": price_f,
                 "origQty": orig_f,
@@ -290,7 +347,7 @@ class BinanceProvider(MarketDataProvider):
                         kind: Optional[str] = None) -> Any:
         from binance_api import bapi_placeorder as _po
         return _po.issue_account_cache_submit_permit(
-            symbol, side, qty, price, market=market, kind=kind,
+            symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind,
             api_client=_get_bapi().client)
 
     @staticmethod
@@ -323,10 +380,14 @@ class BinanceProvider(MarketDataProvider):
         # applies daily, profit, quantity, trend, cooldown, and logging policies via
         # provider-neutral hooks. force and market both specify market order execution.
         from binance_api import bapi_placeorder as _po
-        is_market = bool(force or kwargs.get("market", False) or kwargs.get("force", False))
+        is_market = (
+            _parse_bool_flag(force, False)
+            or _parse_bool_flag(kwargs.get("market", False), False)
+            or _parse_bool_flag(kwargs.get("force", False), False)
+        )
         mechanics_kwargs = {
             "force": is_market,
-            "enforce_business_minimum": enforce_business_minimum,
+            "enforce_business_minimum": _parse_bool_flag(enforce_business_minimum, True),
         }
         if "market" in kwargs:
             mechanics_kwargs["market"] = is_market
@@ -470,23 +531,25 @@ class BinanceProvider(MarketDataProvider):
                              ) -> Optional[str]:
         """Validate the candidate with the authoritative Binance filter parser."""
         from binance_api import bapi_placeorder as _po
+        is_market = _parse_bool_flag(market, False)
+        enforce_min = _parse_bool_flag(enforce_business_minimum, True)
         try:
             info = _get_bapi().client.get_symbol_info(symbol)
             rules = BinanceOrderRules.from_symbol_info(info)
-            current_price = price if market else _get_bapi().get_current_price(symbol)
+            current_price = price if is_market else _get_bapi().get_current_price(symbol)
             candidate_price = _po.order_candidate_price(
-                side, price, current_price, market=market)
+                side, price, current_price, market=is_market)
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"order rules unavailable for {symbol}: {exc}") from exc
         try:
             rules.normalize(
                 quantity=qty,
                 price=candidate_price,
-                market=market,
-                reference_price=price if market else None,
+                market=is_market,
+                reference_price=price if is_market else None,
                 business_min_notional=(
                     _po.PLACE_ORDER_MIN_NOTIONAL
-                    if enforce_business_minimum else 0),
+                    if enforce_min else 0),
             )
         except BinanceFilterError as exc:
             return binance_filter_refusal_reason(exc)
@@ -545,6 +608,7 @@ class BinanceProvider(MarketDataProvider):
             order_type = "SELL"
         else:
             raise SubmissionRefused(f"invalid_side:{side!r}")
+        is_market = _parse_bool_flag(market, False)
         permit_requested_price = price
         try:
             client = _get_bapi().client
@@ -553,7 +617,7 @@ class BinanceProvider(MarketDataProvider):
             try:
                 normalized_qty, normalized_price = rules.normalize(
                     quantity=qty, price=price,
-                    market=bool(market or price is None),
+                    market=bool(is_market or price is None),
                     reference_price=reference_price,
                 )
             except BinanceFilterError as exc:
@@ -562,7 +626,7 @@ class BinanceProvider(MarketDataProvider):
             qty = float(normalized_qty)
             price = None if normalized_price is None else float(normalized_price)
             from binance_api import bapi_placeorder as _po
-            if market or price is None:
+            if is_market or price is None:
                 res = _po._submit_binance_order(
                     order_type, symbol, qty, market=True,
                     client_order_id=client_order_id, api_client=client,
@@ -643,14 +707,7 @@ class BinanceProvider(MarketDataProvider):
         return total
 
     def order_status(self, symbol: str, order_id: str):
-        if isinstance(order_id, bool) or (isinstance(order_id, float) and (not math.isfinite(order_id) or not order_id.is_integer())):
-            raise ProviderError(f"order_status({order_id}): invalid order id")
-        try:
-            oid = int(order_id)
-        except (ValueError, TypeError, OverflowError) as exc:
-            raise ProviderError(f"order_status({order_id}): invalid order id") from exc
-        if oid <= 0:
-            raise ProviderError(f"order_status({order_id}): invalid order id")
+        oid = _parse_binance_order_id(order_id, f"order_status({order_id})")
 
         try:
             o = _get_bapi().client.get_order(symbol=symbol, orderId=oid)
@@ -708,12 +765,8 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        if isinstance(order_id, bool) or (isinstance(order_id, float) and (not math.isfinite(order_id) or not order_id.is_integer())):
-            raise ProviderError(f"cancel_order({order_id}): invalid order id")
+        oid = _parse_binance_order_id(order_id, f"cancel_order({order_id})")
         try:
-            oid = int(order_id)
-            if oid <= 0:
-                raise ValueError("order_id must be positive")
             canceled = _get_bapi().cancel_order(symbol, oid)
             if not canceled:
                 raise ProviderError(
@@ -936,8 +989,9 @@ class MarketApi:
             client_order_id is None
             or isinstance(client_order_id, bool)
             or not isinstance(client_order_id, (str, int))
+            or (isinstance(client_order_id, int) and client_order_id <= 0)
             or not str(client_order_id).strip()
-            or str(client_order_id).strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+            or str(client_order_id).strip().lower() in _INVALID_API_ID_STRINGS
         ):
             raise ProviderError(f"{provider.name}: invalid client_order_id")
         return method(symbol, str(client_order_id).strip())
@@ -950,10 +1004,18 @@ class MarketApi:
             if not math.isfinite(order_id) or not order_id.is_integer() or order_id <= 0:
                 raise ProviderError(f"{provider_name}: invalid order_id")
             return str(int(order_id))
-        if not isinstance(order_id, (str, int)):
+        if isinstance(order_id, int):
+            if order_id <= 0:
+                raise ProviderError(f"{provider_name}: invalid order_id")
+            return str(order_id)
+        if not isinstance(order_id, str):
             raise ProviderError(f"{provider_name}: invalid order_id")
-        text = str(order_id).strip()
-        if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+        text = order_id.strip()
+        if text.endswith(".0") and text[:-2].isdigit():
+            text = text[:-2]
+        if not text or text.lower() in _INVALID_API_ID_STRINGS:
+            raise ProviderError(f"{provider_name}: invalid order_id")
+        if text.lstrip("+-").isdigit() and int(text) <= 0:
             raise ProviderError(f"{provider_name}: invalid order_id")
         return text
 

@@ -193,15 +193,25 @@ def _normalize_cache_name(cache_name: object) -> str:
     return ""
 
 
+_INVALID_VERSION_STRINGS = {"", "nan", "null", "none", "inf", "-inf", "+inf"}
+
+
+def _clean_version_str(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    s = value.strip()
+    return "" if s.lower() in _INVALID_VERSION_STRINGS else s
+
+
 def record_successful_sync(cache_name: str, data_version: str, *,
                            now_ms: Optional[int] = None) -> bool:
     """Publish one complete, persisted Order or Trade reconciliation success."""
     norm_name = _normalize_cache_name(cache_name)
-    if not norm_name or not isinstance(data_version, str):
+    version = _clean_version_str(data_version)
+    if not norm_name or not version:
         return False
     fields = _SYNC_FIELDS.get(norm_name)
-    version = data_version.strip()
-    if fields is None or not version:
+    if fields is None:
         return False
     sync_timestamp = _clean_now_ms(now_ms)
     sync_field, version_field = fields
@@ -222,11 +232,11 @@ def record_persisted_version(cache_name: str, data_version: str, *,
                              now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
     norm_name = _normalize_cache_name(cache_name)
-    if not norm_name or not isinstance(data_version, str):
+    version = _clean_version_str(data_version)
+    if not norm_name or not version:
         return False
     fields = _SYNC_FIELDS.get(norm_name)
-    version = data_version.strip()
-    if fields is None or not version:
+    if fields is None:
         return False
     _sync_field, version_field = fields
     timestamp = _clean_now_ms(now_ms)
@@ -300,8 +310,8 @@ def inspect_health(*, path: str = HEALTH_PATH,
         trade_version = state.get("trade_cache_version")
         if not isinstance(order_version, str) or not isinstance(trade_version, str):
             raise ValueError("invalid cache version")
-        order_version = order_version.strip()
-        trade_version = trade_version.strip()
+        order_version = _clean_version_str(order_version)
+        trade_version = _clean_version_str(trade_version)
         initializing = (
             generation < 2 or not order_sync_ms or not trade_sync_ms
             or not order_version or not trade_version

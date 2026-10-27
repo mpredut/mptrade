@@ -14835,6 +14835,84 @@ def test_iteration150_walk_forward_compare_analyze_volatility_and_kraken_bt_para
         k_bt._bt_params({"entry": float("nan")})
 
 
+def test_iteration151_order_outcomes_log_binance_cache_health_and_providers_hygiene(tmp_path):
+    """Verify order_outcomes_log, binance_cache_health, execution_audit, market_api, and replay_provider hygiene."""
+    import glob
+    import pytest
+    import order_outcomes_log as ool
+    import binance_cache_health as bch
+    from providers.execution_audit import _parse_bool_flag as ea_parse_bool
+    from providers.market_api import MarketApi, _parse_binance_order_id, _parse_bool_flag as ma_parse_bool
+    from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+    from providers.strategy_executor import ProviderError
+
+    # 1. order_outcomes_log sanitizes NaN/Inf/containers and None regime_context.fresh/fallback_used
+    orig_dir = ool.ORDER_OUTCOMES_LOG_DIR
+    ool.ORDER_OUTCOMES_LOG_DIR = str(tmp_path / "outcomes")
+    try:
+        class DummyRegimeCtx:
+            regime = "UP"
+            strength = 0.75
+            source = "short"
+            fresh = None
+            fallback_used = None
+            reason = "ok"
+
+        ool.log_order_outcome(
+            "BTCUSDC",
+            "BUY",
+            float("nan"),
+            float("inf"),
+            "refused",
+            ["bad"],
+            "nan",
+            caller=None,
+            regime_context=DummyRegimeCtx(),
+        )
+        files = glob.glob(str(tmp_path / "outcomes" / "order_outcomes_*.log"))
+        assert len(files) == 1
+        content = open(files[0], encoding="utf-8").read().strip()
+        parts = content.split("|")
+        # price, qty, refuse_reason, caller, motivation, and fresh/fallback_used should be "" not "nan"/"inf"/"None"
+        assert parts[3] == ""
+        assert parts[4] == ""
+        assert parts[6] == ""
+        assert parts[7] == ""
+        assert parts[8] == ""
+        assert parts[12] == ""
+        assert parts[13] == ""
+    finally:
+        ool.ORDER_OUTCOMES_LOG_DIR = orig_dir
+
+    # 2. binance_cache_health._clean_version_str rejects sentinel strings
+    for bad_ver in ("", "   ", "nan", "null", "none", "inf", "-inf", "+inf", None, 123):
+        assert bch._clean_version_str(bad_ver) == ""
+    assert bch._clean_version_str(" v123 ") == "v123"
+
+    # 3. execution_audit & market_api _parse_bool_flag and _parse_binance_order_id / _clean_order_id_arg
+    assert ea_parse_bool("false", True) is False
+    assert ea_parse_bool(float("nan"), False) is False
+    assert ma_parse_bool("false", True) is False
+    assert ma_parse_bool("true", False) is True
+
+    assert _parse_binance_order_id("12345.0", "ctx") == 12345
+    assert _parse_binance_order_id(12345.0, "ctx") == 12345
+    for bad_oid in (0, -1, "0", "-5", "nan", "null", True, ["1"], None):
+        with pytest.raises(ProviderError):
+            _parse_binance_order_id(bad_oid, "ctx")
+        with pytest.raises(ProviderError):
+            MarketApi._clean_order_id_arg(bad_oid, "Binance")
+    assert MarketApi._clean_order_id_arg("98765.0", "Binance") == "98765"
+
+    # 4. replay_provider: load_price_series directory safety and supports_symbol unhashable safety
+    assert load_price_series(str(tmp_path), "BTCUSDC") == []
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1700000000.0, 60000.0)]})
+    assert rp.supports_symbol("BTCUSDC") is True
+    assert rp.supports_symbol(["BTCUSDC"]) is False  # type: ignore[arg-type]
+    assert rp.supports_symbol(True) is False  # type: ignore[arg-type]
+
+
+
 
 
 

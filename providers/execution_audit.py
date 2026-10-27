@@ -53,6 +53,27 @@ def _slug(value: object) -> str:
     return text.strip("-") or "unknown"
 
 
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _json_safe_value(val: Any) -> Any:
     if isinstance(val, float):
         return val if math.isfinite(val) else None
@@ -230,16 +251,17 @@ class AuditedStrategyExecutor:
             else None
         )
         client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
+        is_market = _parse_bool_flag(market, False)
         fields = {
             "side": str(side).lower(), "qty": qty, "price": price,
-            "market": bool(market), "kind": kind,
+            "market": is_market, "kind": kind,
             "reference_price": reference_price,
             "client_order_id": client_order_id,
         }
         self.audit.record("submit_requested", intent_id=intent_id, venue=self.name,
                           symbol=symbol, **fields)
         outcome = self.submit_outcome_with_intent(
-            intent_id, symbol, side, qty, price, market=market, kind=kind,
+            intent_id, symbol, side, qty, price, market=is_market, kind=kind,
             reference_price=reference_price, client_order_id=client_order_id,
             cache_permit=cache_permit, _requested_recorded=True,
         )
@@ -264,16 +286,17 @@ class AuditedStrategyExecutor:
             else None
         )
         client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
+        is_market = _parse_bool_flag(market, False)
         fields = {
             "side": str(side).lower(), "qty": qty, "price": price,
-            "market": bool(market), "kind": kind,
+            "market": is_market, "kind": kind,
             "reference_price": reference_price,
             "client_order_id": client_order_id,
         }
         if not _requested_recorded:
             self.audit.record("submit_requested", intent_id=intent_id, venue=self.name,
                               symbol=symbol, **fields)
-        submit_kwargs = {"market": market, "kind": kind}
+        submit_kwargs = {"market": is_market, "kind": kind}
         if client_order_id is not None:
             submit_kwargs["client_order_id"] = client_order_id
         if cache_permit is not None:
@@ -384,7 +407,7 @@ class AuditedStrategyExecutor:
     def execution_enabled(self) -> bool:
         """Preserve the wrapped adapter's live-order gate through decoration."""
         method = getattr(self._executor, "execution_enabled", None)
-        return True if not callable(method) else bool(method())
+        return True if not callable(method) else _parse_bool_flag(method(), False)
 
     def get_current_price(self, symbol: str):
         return self._executor.get_current_price(symbol)
@@ -402,7 +425,7 @@ class AuditedStrategyExecutor:
         preflight = getattr(self._executor, "preflight_order", None)
         if callable(preflight):
             return preflight(
-                symbol, side, qty, price, market=market, kind=kind,
+                symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind,
             )
         return None
 
