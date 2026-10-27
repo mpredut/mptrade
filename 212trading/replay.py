@@ -241,7 +241,8 @@ def _run_once(
         cycle0 = engine.s.get("cycle", 1)
         side_order = execution.side_order()
 
-        for bar_index, (open_, high, low, close) in enumerate(ohlc):
+        for bar_index, row in enumerate(ohlc):
+            open_, high, low, close = float(row[0]), float(row[1]), float(row[2]), float(row[3])
             rate = fx_rates[bar_index]
             clock.value = (
                 float(timestamps[bar_index]) if timestamps

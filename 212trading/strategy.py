@@ -489,6 +489,10 @@ def _sanitize_t212_state(st: dict) -> dict:
             o_copy["limit"] = o_limit
             o_copy["market"] = o_market
             o_copy["level"] = _clean_pos_float(o.get("level"))
+            if "amount" in o_copy and o_copy.get("amount") is not None:
+                o_copy["amount"] = _clean_pos_float(o_copy.get("amount"))
+            if "ts" in o_copy and o_copy.get("ts") is not None:
+                o_copy["ts"] = _clean_nonneg_float(o_copy.get("ts"), 0.0)
             if "intent_id" in o_copy:
                 o_copy["intent_id"] = T212Client._clean_order_id(o_copy.get("intent_id"))
             if "cancel_requested" in o_copy:
@@ -649,7 +653,7 @@ class Strategy:
         )
 
     def _load(self) -> dict:
-        return self._store().load()
+        return _sanitize_t212_state(self._store().load())
 
     def _save(self) -> None:
         self._state_write_failed = True

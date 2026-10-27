@@ -114,13 +114,20 @@ def run_compare(pairs, intervals):
 
 
 def run_wf(pair, interval, segments=4):
-    segments = max(1, int(segments))
+    if isinstance(segments, bool) or segments is None:
+        segments = 4
+    else:
+        try:
+            seg_f = float(segments)
+            segments = max(1, int(seg_f)) if (seg_f == seg_f and abs(seg_f) != float("inf")) else 4
+        except (TypeError, ValueError, OverflowError):
+            segments = 4
     P = {**base_params(), "interval": interval}
     try:
         ohlc = fetch_candles(pair, interval)
     except Exception as e:  # noqa: BLE001
         print(f"EROARE: {e}"); return
-    n = len(ohlc); seg = n // segments
+    n = len(ohlc); seg = max(1, n // segments)
     print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bare, {segments} segmente) ===")
     print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  castigator")
     fixw = trailw = 0
@@ -143,6 +150,14 @@ def run_intraday(pair, tz_offset=3):
     The sample is small (~30 days at 1h, or ~30 observations per hour), so the
     result should be treated skeptically.
     """
+    if isinstance(tz_offset, bool) or tz_offset is None:
+        tz_offset = 3
+    else:
+        try:
+            tz_f = float(tz_offset)
+            tz_offset = int(tz_f) if (tz_f == tz_f and abs(tz_f) != float("inf")) else 3
+        except (TypeError, ValueError, OverflowError):
+            tz_offset = 3
     try:
         rows = fetch_with_time(pair, 60)
     except Exception as e:  # noqa: BLE001

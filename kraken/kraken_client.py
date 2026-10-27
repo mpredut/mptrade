@@ -384,9 +384,17 @@ class KrakenClient:
             or not isinstance(txid, (str, int))
         ):
             raise ValueError(f"invalid Kraken txid: {txid!r}")
-        cleaned = str(txid).strip()
-        if not cleaned or cleaned.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+        if isinstance(txid, int) and txid <= 0:
             raise ValueError(f"invalid Kraken txid: {txid!r}")
+        cleaned = str(txid).strip()
+        if cleaned.endswith(".0") and cleaned[:-2].lstrip("+-").isdigit():
+            cleaned = cleaned[:-2]
+        if not cleaned or cleaned.lower() in {"0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "inf", "-inf", "+inf", "none", "null"}:
+            raise ValueError(f"invalid Kraken txid: {txid!r}")
+        if cleaned.lstrip("+-").isdigit() and int(cleaned) <= 0:
+            raise ValueError(f"invalid Kraken txid: {txid!r}")
+        if cleaned.startswith("+") and cleaned[1:].isdigit():
+            cleaned = cleaned[1:]
         return cleaned
 
     def cancel_order(self, txid: str) -> dict:

@@ -298,6 +298,19 @@ def _sanitize_state(raw: dict) -> dict:
             o_copy["oid"] = int(clean_oid) if (isinstance(raw_oid, (int, float)) and clean_oid.isdigit()) else clean_oid
             o_copy["px"] = px_f
             o_copy["sz"] = sz_f
+            raw_amt = o_copy.get("amount", 0.0)
+            try:
+                amt_f = 0.0 if (raw_amt is None or isinstance(raw_amt, bool)) else float(raw_amt)
+                o_copy["amount"] = amt_f if (math.isfinite(amt_f) and amt_f >= 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                o_copy["amount"] = 0.0
+            if "ts" in o_copy and o_copy.get("ts") is not None:
+                raw_ts = o_copy.get("ts")
+                try:
+                    ts_f = 0.0 if isinstance(raw_ts, bool) else float(raw_ts)
+                    o_copy["ts"] = ts_f if (math.isfinite(ts_f) and ts_f >= 0.0) else 0.0
+                except (TypeError, ValueError, OverflowError):
+                    o_copy["ts"] = 0.0
             if "dca_counted" in o_copy:
                 o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
             clean_orders.append(o_copy)

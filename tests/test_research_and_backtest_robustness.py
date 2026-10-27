@@ -5960,6 +5960,114 @@ def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
     spot_replay.prewarm_trend_series([(100, 101, 99, 100)] * 50, warmup=5, bar_minutes=True)  # type: ignore[arg-type]
 
 
+def test_batch40_kraken_hl_t212_client_strategy_replay_hardening():
+    import importlib
+    import importlib.util
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    from kraken.kraken_client import KrakenClient
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # 1. KrakenClient._clean_txid rejects 0, negative ints/strings, and strips '+123.0' -> '123'
+    assert KrakenClient._clean_txid(" +987.0 ") == "987"
+    with pytest.raises(ValueError):
+        KrakenClient._clean_txid(0)
+    with pytest.raises(ValueError):
+        KrakenClient._clean_txid(-5)
+    with pytest.raises(ValueError):
+        KrakenClient._clean_txid("-5")
+    with pytest.raises(ValueError):
+        KrakenClient._clean_txid("+0.0")
+
+    # 2. HLClient strips coin/pair/token whitespace and cancel accepts '12345.0'
+    spec_hl_c = importlib.util.spec_from_file_location(
+        "hl_client_b40", os.path.join(repo_root, "hyperliquid", "hl_client.py")
+    )
+    hl_c_mod = importlib.util.module_from_spec(spec_hl_c)
+    spec_hl_c.loader.exec_module(hl_c_mod)
+    hl_inst = object.__new__(hl_c_mod.HLClient)
+    hl_inst._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}}
+    hl_inst.address = "0x123"
+    hl_inst.info = SimpleNamespace(
+        all_mids=lambda: {"HYPE": "25.5", "@107": "25.4"},
+        open_orders=lambda addr: [{"coin": "HYPE", "oid": 111}],
+        spot_user_state=lambda addr: {"balances": [{"coin": "HYPE", "total": "12.5"}]},
+    )
+    assert hl_inst.sz_decimals(" HYPE ") == 2
+    assert hl_inst.max_leverage(" HYPE ") == 5
+    assert hl_inst.coin_listed(" HYPE ") is True
+    assert hl_inst.mid(" HYPE ") == pytest.approx(25.5)
+    assert hl_inst.spot_mid(" @107 ") == pytest.approx(25.4)
+    assert len(hl_inst.open_orders_strict(" HYPE ")) == 1
+    assert hl_inst.spot_balance_strict(" HYPE ") == pytest.approx(12.5)
+    hl_inst.exchange = SimpleNamespace(
+        cancel=lambda coin, oid: {"status": "ok", "response": {"data": {"statuses": ["success"]}}}
+        if (coin == "HYPE" and oid == 12345)
+        else {"status": "err"}
+    )
+    assert hl_inst.cancel(" HYPE ", "12345.0") is True  # type: ignore[arg-type]
+
+    # 3. hyperliquid/strategy.py _sanitize_state normalizes order amount and ts
+    spec_hl_s = importlib.util.spec_from_file_location(
+        "hl_strat_b40", os.path.join(repo_root, "hyperliquid", "strategy.py")
+    )
+    hl_s_mod = importlib.util.module_from_spec(spec_hl_s)
+    sys.modules[spec_hl_s.name] = hl_s_mod
+    spec_hl_s.loader.exec_module(hl_s_mod)
+    st_hl = hl_s_mod._sanitize_state({
+        "orders": [{"oid": 10, "role": "open", "px": "20.0", "sz": "1.5", "amount": "-50", "ts": "1000.5"}]
+    })
+    assert st_hl["orders"][0]["amount"] == 0.0
+    assert st_hl["orders"][0]["ts"] == pytest.approx(1000.5)
+
+    # 4. T212Client._clean_order_id rejects negative strings and normalizes '+789.0' -> '789'
+    t212_client_mod = importlib.import_module("212trading.t212_client")
+    assert t212_client_mod.T212Client._clean_order_id(" +789.0 ") == "789"
+    assert t212_client_mod.T212Client._clean_order_id("-5") is None
+    assert t212_client_mod.T212Client._clean_order_id("+0") is None
+    assert t212_client_mod.T212Client._clean_order_id("-12.0") is None
+
+    # 5. 212trading/strategy.py _sanitize_t212_state normalizes order amount/ts and replay handles string OHLC
+    t212_strat_mod = importlib.import_module("212trading.strategy")
+    st_t212 = t212_strat_mod._sanitize_t212_state({
+        "orders": [{"id": "101", "side": "buy", "qty": "2.0", "limit": "50.0", "amount": "100.0", "ts": "bad_ts"}]
+    })
+    assert st_t212["orders"][0]["amount"] == pytest.approx(100.0)
+    assert st_t212["orders"][0]["ts"] == 0.0
+
+    spec_t212_rp = importlib.util.spec_from_file_location(
+        "t212_rp_b40", os.path.join(repo_root, "212trading", "replay.py")
+    )
+    t212_rp_mod = importlib.util.module_from_spec(spec_t212_rp)
+    sys.modules[spec_t212_rp.name] = t212_rp_mod
+    spec_t212_rp.loader.exec_module(t212_rp_mod)
+    p_t212 = t212_rp_mod._strat.StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.5,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=5.0,
+        takeprofit_pct=2.0,
+        max_budget=500.0,
+        max_dca_buys=5,
+        validity="GOOD_TILL_CANCEL",
+        enable_takeprofit=True,
+        order_ttl_min=15.0,
+        stop_loss_pct=5.0,
+    )
+    res_t212 = t212_rp_mod.run_replay(
+        [("100.0", "101.0", "98.0", "99.0"), ("99.0", "103.0", "98.5", "102.0")],
+        p_t212,
+        bar_minutes=5.0,
+    )
+    assert res_t212["initial_capital"] == pytest.approx(500.0)
+
+
+
 
 
 

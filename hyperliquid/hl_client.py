@@ -154,6 +154,9 @@ class HLClient:
         return self._meta_cache
 
     def sz_decimals(self, coin: str) -> int:
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            raise HLError(f"Missing size precision metadata for {coin}")
+        coin = coin.strip()
         meta = self._meta().get(coin)
         raw_dec = meta.get("szDecimals") if isinstance(meta, dict) else None
         if raw_dec is not None and not isinstance(raw_dec, bool):
@@ -177,6 +180,9 @@ class HLClient:
         raise HLError(f"Missing size precision metadata for {coin}")
 
     def max_leverage(self, coin: str) -> int:
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            raise HLError(f"Missing leverage metadata for {coin}")
+        coin = coin.strip()
         meta = self._meta().get(coin)
         raw_lev = meta.get("maxLeverage") if isinstance(meta, dict) else None
         if raw_lev is not None and not isinstance(raw_lev, bool):
@@ -189,9 +195,14 @@ class HLClient:
         raise HLError(f"Missing leverage metadata for {coin}")
 
     def coin_listed(self, coin: str) -> bool:
-        return coin in self._meta()
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return False
+        return coin.strip() in self._meta()
 
     def mid(self, coin: str) -> float | None:
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return None
+        coin = coin.strip()
         try:
             mids = self.info.all_mids()
             if not isinstance(mids, dict):
@@ -218,6 +229,9 @@ class HLClient:
         """Return position data while propagating API errors.
         Use when code must distinguish no position (0) from unknown state, such as
         delta-neutral logic where a false zero could open a duplicate leg."""
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return 0.0, 0.0
+        coin = coin.strip()
         for ap in (self._user_state().get("assetPositions") or []):
             if not isinstance(ap, dict):
                 continue
@@ -262,10 +276,15 @@ class HLClient:
         """Return open orders while propagating API errors."""
         if not self.address:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
+        coin_norm = None
+        if coin is not None:
+            if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+                return []
+            coin_norm = coin.strip()
         oo = self.info.open_orders(self.address)
         if not isinstance(oo, list):
             raise HLError(f"Invalid open_orders payload: {type(oo).__name__}")
-        return [o for o in oo if isinstance(o, dict) and (coin is None or o.get("coin") == coin)]
+        return [o for o in oo if isinstance(o, dict) and (coin_norm is None or o.get("coin") == coin_norm)]
 
     def open_orders(self, coin: str | None = None) -> list[dict]:
         if not self.address:
@@ -280,6 +299,9 @@ class HLClient:
     def resolve_spot_pair(self, token: str) -> str | None:
         """Resolve a TOKEN/USDC spot pair (@index) from spotMeta for any token,
         such as HYPE -> @107, USOL -> @156, or PURR -> PURR/USDC."""
+        if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
+            return None
+        token = token.strip()
         try:
             m = self.info.spot_meta()
             if not isinstance(m, dict):
@@ -301,6 +323,9 @@ class HLClient:
 
     def spot_mid(self, pair: str) -> float | None:
         """Return the spot price for an @index pair, e.g. @107 = HYPE/USDC."""
+        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return None
+        pair = pair.strip()
         try:
             mids = self.info.all_mids()
             if not isinstance(mids, dict):
@@ -318,6 +343,9 @@ class HLClient:
         """Return spot balance while propagating API errors; see position_strict."""
         if not self.address:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
+        if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
+            return 0.0
+        token = token.strip()
         st = self.info.spot_user_state(self.address)
         if not isinstance(st, dict):
             raise HLError(f"Invalid spot_user_state payload: {type(st).__name__}")
@@ -576,7 +604,15 @@ class HLClient:
             return False
         coin = coin.strip()
         try:
-            oid_f = float(oid) if isinstance(oid, (int, float)) else float(int(str(oid).strip()))
+            if isinstance(oid, (int, float)):
+                oid_f = float(oid)
+            elif isinstance(oid, str):
+                s_oid = oid.strip()
+                if s_oid.endswith(".0") and s_oid[:-2].lstrip("+").isdigit():
+                    s_oid = s_oid[:-2]
+                oid_f = float(int(s_oid))
+            else:
+                return False
             if not math.isfinite(oid_f) or not oid_f.is_integer() or int(oid_f) <= 0:
                 return False
             oid_i = int(oid_f)

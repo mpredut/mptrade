@@ -305,8 +305,14 @@ class T212Client:
         if not isinstance(order_id, (str, int)):
             return None
         s = str(order_id).strip()
-        if not s or s.lower() in {"0", "0.0", "-0", "-0.0", "nan", "inf", "-inf", "+inf", "none", "null"}:
+        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+            s = s[:-2]
+        if not s or s.lower() in {"0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "inf", "-inf", "+inf", "none", "null"}:
             return None
+        if s.lstrip("+-").isdigit() and int(s) <= 0:
+            return None
+        if s.startswith("+") and s[1:].isdigit():
+            s = s[1:]
         return s
 
     def get_historical_order(self, order_id) -> dict | None:
