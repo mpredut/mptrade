@@ -3086,15 +3086,26 @@ class Cache365PriceManager(Cache24PriceManager):
                     with open(metaf, "r", encoding="utf-8") as handle:
                         meta_payload = json.load(handle)
                     if isinstance(meta_payload, dict):
+                        def _clean_ts_map(raw_map):
+                            if not isinstance(raw_map, dict):
+                                return {}
+                            out = {}
+                            for s, v in raw_map.items():
+                                if s not in self.symbols or v is None or isinstance(v, bool):
+                                    continue
+                                try:
+                                    vf = float(v)
+                                    if math.isfinite(vf) and vf >= 0:
+                                        out[s] = int(vf)
+                                except (TypeError, ValueError, OverflowError):
+                                    continue
+                            return out
+
                         raw_ft = meta_payload.get("fetchtime")
-                        self.fetchtime_per_symbol = (
-                            {s: v for s, v in raw_ft.items() if s in self.symbols}
-                            if isinstance(raw_ft, dict)
-                            else {}
-                        )
+                        self.fetchtime_per_symbol = _clean_ts_map(raw_ft)
                         rest_cursor = meta_payload.get("rest_sync_cursor")
                         self._rest_sync_cursor_per_symbol = (
-                            {s: v for s, v in rest_cursor.items() if s in self.symbols}
+                            _clean_ts_map(rest_cursor)
                             if isinstance(rest_cursor, dict)
                             else dict(self.fetchtime_per_symbol)
                         )

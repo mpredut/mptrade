@@ -496,15 +496,10 @@ class PriceWindow:
     @property
     def recent_n(self) -> int:
         """Return the sample count corresponding to the effective recent-gradient window."""
-        if (
-            not self.sample_rate_sec
-            or isinstance(self.sample_rate_sec, bool)
-            or not math.isfinite(self.sample_rate_sec)
-            or self.sample_rate_sec <= 0
-        ):
-            return 2
-        recent_sec = effective_recent_gradient_seconds(self.window_seconds)
-        return max(2, int(recent_sec / self.sample_rate_sec))
+        return _safe_recent_n(
+            effective_recent_gradient_seconds(self.window_seconds),
+            self.sample_rate_sec,
+        )
 
     def set_sample_rate(self, rate):
         """Update observed sampling rate and resize a duration-based window."""
@@ -851,9 +846,18 @@ class PriceWindow:
                     prices_snapshot, self.sample_rate_sec, window_seconds=self.window_seconds)
 
         if getattr(builtins.print, "__name__", "") != "_dummy_print":
+            raw_rate = self.sample_rate_sec
+            rate_val = 1.0
+            if raw_rate is not None and not isinstance(raw_rate, bool):
+                try:
+                    rf = float(raw_rate)
+                    if math.isfinite(rf) and rf > 0:
+                        rate_val = rf
+                except (TypeError, ValueError, OverflowError):
+                    rate_val = 1.0
             print(
                 f"[{self.symbol}] slope_full={slope_full:.4f} "
-                f"gradient_recent={gradient_recent:.4f} (recent_n={self.recent_n}, rate={self.sample_rate_sec:.2f}s)"
+                f"gradient_recent={gradient_recent:.4f} (recent_n={self.recent_n}, rate={rate_val:.2f}s)"
             )
 
         return final_trend, growth_coefficient, slope_full, gradient_recent
@@ -965,8 +969,11 @@ class WindowAnalyzer:
         w = self.window
         min_price, min_index = w.get_min_and_index()
         max_price, max_index = w.get_max_and_index()
-        min_position = min_index / w.window_size if min_index is not None else None
-        max_position = max_index / w.window_size if max_index is not None else None
+        win_size = getattr(w, "window_size", 0)
+        if isinstance(win_size, bool) or not isinstance(win_size, (int, float)) or not math.isfinite(win_size) or win_size <= 0:
+            return None, None
+        min_position = min_index / win_size if min_index is not None else None
+        max_position = max_index / win_size if max_index is not None else None
         return min_position, max_position
 
     def check_price_change(self, threshold):

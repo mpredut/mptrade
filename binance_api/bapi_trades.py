@@ -64,16 +64,16 @@ def _valid_fill_id(val):
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, float):
-        if not math.isfinite(val) or not val.is_integer():
+        if not math.isfinite(val) or not val.is_integer() or val < 0:
             return None
         return int(val)
     if isinstance(val, str):
         s = val.strip()
-        if not s or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+        if not s or s.startswith("-") or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
             return None
         return s
     if isinstance(val, int):
-        return val
+        return val if val >= 0 else None
     return None
 
 
@@ -89,6 +89,8 @@ def aggregate_trades(trades):
         if not isinstance(trade, dict):
             continue
         raw_oid = _valid_fill_id(trade.get('orderId'))
+        if raw_oid in (0, "0", "0.0", "-0", "+0"):
+            raw_oid = None
         orderId = raw_oid if raw_oid is not None else extract_order_id(trade)
         if orderId is None or isinstance(orderId, bool) or not str(orderId).strip():
             continue

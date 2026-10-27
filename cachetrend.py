@@ -401,19 +401,33 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         if isinstance(thresholds, dict):
             # Accept either per-symbol/per-window or direct per-window dictionaries.
+            def _parse_window_map(mapping):
+                out = {}
+                for k, v in (mapping or {}).items():
+                    if isinstance(k, bool) or isinstance(v, bool) or k is None or v is None:
+                        continue
+                    try:
+                        kf = round(float(k), 6)
+                        vf = float(v)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(kf) and kf > 0 and math.isfinite(vf):
+                        out[kf] = vf
+                return out
+
             per_symbol = (
                 all(isinstance(v, dict) for v in thresholds.values())
                 and len(thresholds) > 0
             )
             if per_symbol:
                 tbl = {
-                    sym: {round(float(k), 6): v for k, v in d.items()}
+                    sym: _parse_window_map(d)
                     for sym, d in thresholds.items()
                 }
                 return lambda sym, sec: tbl.get(sym, {}).get(
                     round(float(sec), 6), per_window_default(sec)
                 )
-            tbl = {round(float(k), 6): v for k, v in thresholds.items()}
+            tbl = _parse_window_map(thresholds)
             return lambda sym, sec: tbl.get(round(float(sec), 6), per_window_default(sec))
 
         return lambda sym, sec: per_window_default(sec)
@@ -611,16 +625,24 @@ class CacheShortTrendManager(CacheManagerInterface):
         published_cfg = _cm_attr(
             "CM_PUBLISHED_TREND_WINDOWS_SEC", CM_PUBLISHED_TREND_WINDOWS_SEC
         )
-        target_windows = list(
-            dict.fromkeys(
-                round(float(w), 6)
-                for w in (
-                    list(self.window_seconds)
-                    + list(published_cfg)
-                    + sorted(self._active_dynamic_windows)
-                )
-            )
+        with self._lock:
+            active_dyn = sorted(self._active_dynamic_windows)
+        raw_targets = (
+            list(self.window_seconds)
+            + list(published_cfg or ())
+            + active_dyn
         )
+        valid_targets = []
+        for w in raw_targets:
+            if w is None or isinstance(w, bool):
+                continue
+            try:
+                wf = float(w)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(wf) and wf > 0:
+                valid_targets.append(round(wf, 6))
+        target_windows = list(dict.fromkeys(valid_targets))
         for window in target_windows:
             dyn = self.get_short_trend_for_window(symbol, window, now=now)
             if dyn is not None:
@@ -925,7 +947,8 @@ class CacheShortTrendManager(CacheManagerInterface):
             return None
 
         now_val = now if now is not None else time.time()
-        self._active_dynamic_windows.add(clamped)
+        with self._lock:
+            self._active_dynamic_windows.add(clamped)
 
         # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
         if hasattr(c24, "cache") and hasattr(c24, "lock"):
@@ -939,14 +962,22 @@ class CacheShortTrendManager(CacheManagerInterface):
             n_samples = b - a + 1
             if n_samples < 3:
                 return None
-            if isinstance(all_entries[b][0], bool) or isinstance(all_entries[b][1], bool):
+            if (
+                not isinstance(all_entries[b], (list, tuple))
+                or len(all_entries[b]) < 2
+                or isinstance(all_entries[b][0], bool)
+                or isinstance(all_entries[b][1], bool)
+            ):
                 return None
-            newest_ts_ms = int(all_entries[b][0])
+            try:
+                newest_ts_ms = int(float(all_entries[b][0]))
+                latest_price = float(all_entries[b][1])
+            except (TypeError, ValueError, OverflowError):
+                return None
             newest_ts_sec = newest_ts_ms / 1000.0
             age_sec = now_val - newest_ts_sec
             if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
                 return None
-            latest_price = float(all_entries[b][1])
             if not (math.isfinite(latest_price) and latest_price > 0):
                 return None
             with self._lock:
@@ -992,13 +1023,22 @@ class CacheShortTrendManager(CacheManagerInterface):
         if len(entries) < 3:
             return None
 
-        if isinstance(entries[-1][0], bool) or isinstance(entries[-1][1], bool):
+        if (
+            not isinstance(entries[-1], (list, tuple))
+            or len(entries[-1]) < 2
+            or isinstance(entries[-1][0], bool)
+            or isinstance(entries[-1][1], bool)
+        ):
             return None
-        newest_ts_sec = entries[-1][0] / 1000.0
+        try:
+            newest_ts_ms = int(float(entries[-1][0]))
+            latest_price = float(entries[-1][1])
+        except (TypeError, ValueError, OverflowError):
+            return None
+        newest_ts_sec = newest_ts_ms / 1000.0
         age_sec = now_val - newest_ts_sec
         if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
             return None
-        latest_price = float(entries[-1][1])
         if not (math.isfinite(latest_price) and latest_price > 0):
             return None
 
@@ -1018,7 +1058,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             ts=now_val,
         )
         self._persist_live_window(
-            symbol, w_key, res, last_tick_ts_ms=int(entries[-1][0])
+            symbol, w_key, res, last_tick_ts_ms=newest_ts_ms
         )
         return res
 

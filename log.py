@@ -331,6 +331,7 @@ class _DailyFileHandler(logging.Handler):
         super().__init__()
         self._app_name      = app_name
         self._current_date: str | None = None
+        self._current_folder: str | None = None
         self._current_path  = ""
         self._stream        = None
         self._lock          = threading.Lock()
@@ -354,9 +355,10 @@ class _DailyFileHandler(logging.Handler):
 
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"{self._app_name}_{date_str}.log")
-        self._stream       = open(path, "a", encoding="utf-8")
-        self._current_path = path
-        self._current_date = date_str
+        self._stream         = open(path, "a", encoding="utf-8")
+        self._current_path   = path
+        self._current_folder = folder
+        self._current_date   = date_str
 
     def _file_deleted(self) -> bool:
         """Return True if the log file or its folder was removed externally."""
@@ -377,7 +379,12 @@ class _DailyFileHandler(logging.Handler):
                 with _config_lock:
                     folder = _log_folder
 
-                if today != self._current_date or self._stream is None or self._file_deleted():
+                if (
+                    today != self._current_date
+                    or folder != self._current_folder
+                    or self._stream is None
+                    or self._file_deleted()
+                ):
                     self._open_for_date(folder, today)
 
                 try:
@@ -434,7 +441,9 @@ def _patched_print(*args, **kwargs) -> None:
     if _bump_counter():
         _cleanup_event.set()
 
-    message      = " ".join(map(str, args))
+    sep_val      = kwargs.get("sep", " ")
+    sep_str      = " " if sep_val is None else str(sep_val)
+    message      = sep_str.join(map(str, args))
     current_time = datetime.datetime.now().strftime("%H:%M:%S")
     clean        = (_ANSI_RE.sub("", message) if "\x1b" in message else message)
 

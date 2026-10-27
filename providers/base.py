@@ -150,9 +150,12 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     if val is None or isinstance(val, (bool, dict, set, frozenset)):
         return None
     if isinstance(val, float):
-        if not math.isfinite(val) or not val.is_integer():
+        if not math.isfinite(val) or not val.is_integer() or val <= 0:
             return None
         val = int(val)
+    if isinstance(val, int):
+        if val <= 0:
+            return None
     if isinstance(val, (list, tuple)):
         for item in val:
             cleaned = _clean_single_order_id(item)
@@ -162,10 +165,16 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     if not isinstance(val, (str, int)):
         return None
     text = str(val).strip()
-    if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+    if (
+        not text
+        or text.startswith("-")
+        or text.lower() in {"0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+    ):
         return None
-    if text.endswith(".0") and text[:-2].isdigit():
+    if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
         text = text[:-2]
+    if text in {"0", "+0"}:
+        return None
     return text
 
 

@@ -5721,4 +5721,155 @@ def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(
 
 
 
+def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening(tmp_path, monkeypatch):
+    """Verify Batch 38 fixes across rtrade_pair_store, trailing_core, log, pricewindow, cachetrend, cacheManager, and bapi_trades."""
+    import json
+    import time
+    from types import SimpleNamespace
+    import rtrade_pair_store as rps
+    import trailing_core as tc
+    import log as log_mod
+    import pricewindow as pw
+    import cachetrend as ct
+    import cacheManager as cm
+    from binance_api import bapi_trades
+
+    # 1. RTradePairStore: intent normalizes price to float and strips pair_id; persist_intent strips symbol/pair_id
+    store = rps.RTradePairStore(str(tmp_path / "pairs.json"), terminal_retention=2)
+    store.intent(
+        " pair_1 ",
+        "buy",
+        "100.5",
+        "0.25",
+        "coid_1",
+        symbol=" BTCUSDC ",
+        start_side=" buy ",
+    )
+    loaded_pairs = store._read()["pairs"]
+    assert "pair_1" in loaded_pairs
+    assert loaded_pairs["pair_1"]["symbol"] == "BTCUSDC"
+    assert loaded_pairs["pair_1"]["intents"]["limit:BUY"]["price"] == 100.5
+    assert loaded_pairs["pair_1"]["intents"]["limit:BUY"]["qty"] == 0.25
+
+    store.persist_intent(
+        " pair_2 ",
+        "sell",
+        "limit",
+        {"requested_qty": "0.5", "requested_price": "200.0", "client_order_id": "coid_2"},
+        symbol=" ETHUSDC ",
+        start_side=" sell ",
+    )
+    loaded_pairs2 = store._read()["pairs"]
+    assert "pair_2" in loaded_pairs2
+    assert loaded_pairs2["pair_2"]["symbol"] == "ETHUSDC"
+    assert loaded_pairs2["pair_2"]["start_side"] == "SELL"
+
+    # 2. TrailingCore._finish_pending handles st['peak']=None or numeric string during partial SELL fill
+    logs = []
+    fake_adapter = SimpleNamespace(
+        assets=lambda: [("BTCUSDC", "BTC", "BTCUSDC", 3.0)],
+        free_qty=lambda a: 0.6,
+        total_qty=lambda a: 0.6,
+        rebuy_configured_for=lambda p: True,
+    )
+    core = tc.TrailingCore(
+        fake_adapter,
+        log=logs.append,
+        enabled=True,
+        state_file=str(tmp_path / "trailing_state.json"),
+        min_notional=5.0,
+        rebuy_enabled=True,
+        rebuy_bounce_pct=2.0,
+        rebuy_skip_if_trend_down=False,
+    )
+    st_entry = {
+        "peak": None,
+        "target_exit_qty": 1.0,
+        "exit_sold_qty": 0.0,
+        "exit_sold_cost": 0.0,
+    }
+    fake_res = SimpleNamespace(
+        outcome="terminal",
+        status=SimpleNamespace(status="canceled", filled_qty=0.4, cost=42.0),
+        intent={"action": "SELL", "asset": "BTC", "submitted_qty": 1.0},
+    )
+    core._finish_pending(st_entry, fake_res, 105.0, "BTCUSDC")
+    assert any("remaining position still protected under peak 105.0000" in m for m in logs)
+
+    # 3. log._DailyFileHandler switches immediately when configure(log_folder=...) changes folder on same day
+    old_folder = log_mod._log_folder
+    dir_a = tmp_path / "logs_a"
+    dir_b = tmp_path / "logs_b"
+    try:
+        log_mod.configure(log_folder=str(dir_a))
+        log_mod._patched_print("hello", "world", sep="::")
+        log_mod._handler._flush()
+        files_a = list(dir_a.glob("*.log"))
+        assert len(files_a) == 1
+        assert "hello::world" in files_a[0].read_text(encoding="utf-8")
+
+        log_mod.configure(log_folder=str(dir_b))
+        log_mod._patched_print("switched", "folder", sep="--")
+        log_mod._handler._flush()
+        files_b = list(dir_b.glob("*.log"))
+        assert len(files_b) == 1
+        assert "switched--folder" in files_b[0].read_text(encoding="utf-8")
+    finally:
+        log_mod.configure(log_folder=old_folder)
+
+    # 4. PriceWindow.get_short_trend with mutated sample_rate_sec=None and WindowAnalyzer.calculate_positions with window_size=0
+    pw_inst = pw.PriceWindow("BTCUSDC", 10, sample_rate_sec=1.0, window_seconds=10)
+    for p in (100.0, 101.0, 102.0):
+        pw_inst.process_price(p)
+    pw_inst.sample_rate_sec = None  # type: ignore[assignment]
+    ft, gc, sf, gr = pw_inst.get_short_trend()
+    assert ft == 1
+    wa = pw.WindowAnalyzer(pw_inst)
+    pw_inst.window_size = 0
+    assert wa.calculate_positions() == (None, None)
+
+    # 5. CacheShortTrendManager._build_threshold_fn ignores malformed threshold keys/values & get_short_trend_for_window handles string entries
+    stm = ct.CacheShortTrendManager(
+        ["BTCUSDC"],
+        filename=str(tmp_path / "cache_short_trend.json"),
+        thresholds={"bad_key": 1.0, "222": "invalid_val", "900": "2.5"},
+    )
+    assert stm.threshold_for("BTCUSDC", 900) == pytest.approx(2.5)
+    assert stm.threshold_for("BTCUSDC", 222) == pytest.approx(stm.PRICE_CHANGE_THRESHOLD_SMALL)
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+    stm._cache24_managers = {
+        "BTCUSDC": SimpleNamespace(
+            get_recent_entries=lambda sym, last_seconds: [
+                [str(now_ms - 2000), "100.0"],
+                [str(now_ms - 1000), "101.0"],
+                [str(now_ms), "102.0"],
+            ]
+        )
+    }
+    dyn_res = stm.get_short_trend_for_window("BTCUSDC", 60, now=now_s)
+    assert dyn_res is not None and dyn_res["current_price"] == pytest.approx(102.0)
+
+    # 6. Cache365PriceManager._load_jsonl ignores corrupt fetchtime values in .meta
+    c365_path = tmp_path / "cache_365_price_BTCUSDC.jsonl"
+    c365_path.write_text(json.dumps({"s": "BTCUSDC", "i": [1700000000000, 50000.0]}) + "\n", encoding="utf-8")
+    (tmp_path / "cache_365_price_BTCUSDC.jsonl.meta").write_text(
+        json.dumps({"fetchtime": {"BTCUSDC": "corrupt_ts"}, "rest_sync_cursor": {"BTCUSDC": True}}),
+        encoding="utf-8",
+    )
+    c365 = cm.Cache365PriceManager(30, ["BTCUSDC"], str(c365_path), read_only=True)
+    assert c365.fetchtime_per_symbol["BTCUSDC"] == 1700000000000
+
+    # 7. bapi_trades._valid_fill_id rejects negative numbers and aggregate_trades falls back when orderId is 0
+    assert bapi_trades._valid_fill_id(-5) is None
+    assert bapi_trades._valid_fill_id(-5.0) is None
+    assert bapi_trades._valid_fill_id("-5") is None
+    agg = bapi_trades.aggregate_trades([
+        {"orderId": 0, "id": 987, "symbol": "BTCUSDC", "price": "100.0", "qty": "1.0", "time": 1000, "isBuyer": True},
+    ])
+    assert len(agg) == 1 and agg[0]["orderId"] == "987"
+
+
+
+
 
