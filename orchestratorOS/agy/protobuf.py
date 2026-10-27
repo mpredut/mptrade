@@ -16,8 +16,10 @@ SUMMARY_STATUS_FIELD = 28         # TrajectorySummary.status (2 = RUNNING, 4 = I
 
 
 def enc_varint(v: int) -> bytes:
+    if isinstance(v, bool) or not isinstance(v, int):
+        v = int(v)
     if v < 0:
-        v += 1 << 64
+        v &= (1 << 64) - 1
     out = bytearray()
     while v > 0x7F:
         out.append((v & 0x7F) | 0x80)
@@ -27,6 +29,8 @@ def enc_varint(v: int) -> bytes:
 
 
 def dec_varint(buf: bytes, pos: int) -> Tuple[int, int]:
+    if not isinstance(buf, (bytes, bytearray, memoryview)) or pos < 0:
+        raise ValueError("invalid buffer or negative position")
     val = shift = 0
     while pos < len(buf):
         if shift >= 64:
@@ -41,6 +45,8 @@ def dec_varint(buf: bytes, pos: int) -> Tuple[int, int]:
 
 
 def parse_fields(buf: bytes) -> List[Field]:
+    if not isinstance(buf, (bytes, bytearray, memoryview)):
+        raise ValueError("buf must be bytes-like")
     pos, out = 0, []
     while pos < len(buf):
         key, pos = dec_varint(buf, pos)
@@ -107,8 +113,9 @@ def summary_ui_visible(raw: bytes, title: str = "", *, reset_running: bool = Fal
         if reset_running and tag == SUMMARY_STATUS_FIELD and wire == 0 and v == 2:
             v = 4
         keep.append((tag, wire, v))
-    if title:
-        annot_sub = [(1, 2, title.encode())] + [x for x in annot_sub if x[0] != 1]
+    clean_title = title if isinstance(title, str) else ""
+    if clean_title:
+        annot_sub = [(1, 2, clean_title.encode())] + [x for x in annot_sub if x[0] != 1]
     if annot_sub:
         keep.append((SUMMARY_ANNOTATIONS_FIELD, 2, enc_fields(annot_sub)))
     if reset_running:
@@ -161,13 +168,15 @@ def list_entry_cids(buf: bytes) -> Set[str]:
 
 def drop_entries(buf: bytes, cids: Set[str]) -> Tuple[bytes, int]:
     """Remove every top-level map entry (summaries and file mod times) keyed by one of ``cids``."""
+    safe_buf = bytes(buf) if isinstance(buf, (bytes, bytearray, memoryview)) else b""
     try:
-        top_fields = parse_fields(buf)
+        top_fields = parse_fields(safe_buf)
     except (ValueError, IndexError):
-        return bytes(buf or b""), 0
+        return safe_buf, 0
+    cid_set = set(cids) if isinstance(cids, (set, frozenset, list, tuple)) else set()
     kept, removed = [], 0
     for tag, wire, v in top_fields:
-        if wire == 2 and entry_cid(v) in cids:
+        if wire == 2 and entry_cid(v) in cid_set:
             removed += 1
             continue
         kept.append((tag, wire, v))
@@ -176,16 +185,19 @@ def drop_entries(buf: bytes, cids: Set[str]) -> Tuple[bytes, int]:
 
 def replace_summary_entry(buf: bytes, cid: str, raw_summary: bytes) -> Tuple[bytes, bool]:
     """Update the stored TrajectorySummary of ``cid`` in place if present; never adds new conversation IDs."""
+    safe_buf = bytes(buf) if isinstance(buf, (bytes, bytearray, memoryview)) else b""
+    if not isinstance(cid, str) or not cid or not isinstance(raw_summary, (bytes, bytearray, memoryview)):
+        return safe_buf, False
     try:
-        top_fields = parse_fields(buf)
+        top_fields = parse_fields(safe_buf)
     except (ValueError, IndexError):
-        return bytes(buf or b""), False
+        return safe_buf, False
     out, updated = [], False
     for tag, wire, v in top_fields:
         if tag == 1 and wire == 2 and entry_cid(v) == cid:
-            out.append((1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, raw_summary)])))
+            out.append((1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, bytes(raw_summary))])))
             updated = True
         else:
             out.append((tag, wire, v))
-    return (enc_fields(out), True) if updated else (buf, False)
+    return (enc_fields(out), True) if updated else (safe_buf, False)
 

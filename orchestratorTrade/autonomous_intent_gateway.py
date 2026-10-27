@@ -339,6 +339,8 @@ class AutonomousIntentGateway:
                     if not math.isfinite(ne_num):
                         raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
                     self.notify_enabled = bool(int(ne_num))
+            elif isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
+                raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
             else:
                 self.notify_enabled = bool(notify_enabled)
         else:
@@ -881,9 +883,15 @@ class AutonomousIntentGateway:
         )
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
 
-        thesis = intent.get("thesis", "Autonomous strategy thesis")
+        raw_thesis = intent.get("thesis")
+        thesis = (
+            "Autonomous strategy thesis"
+            if raw_thesis is None or isinstance(raw_thesis, bool) or not str(raw_thesis).strip()
+            else str(raw_thesis).strip()
+        )
         from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
-        src_topic = str(intent.get("created_by") or "").strip()
+        raw_src = intent.get("created_by")
+        src_topic = "" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip()
         if src_topic in TOPIC_SPECS:
             trade_tag = topic_spec(src_topic).bracket_tag
         elif venue == "t212":
@@ -1040,12 +1048,15 @@ class AutonomousIntentGateway:
         """
         if not isinstance(decision, dict):
             return None
-        side = str(decision.get("decision", "HOLD")).strip().upper()
+        raw_side = decision.get("decision", "HOLD")
+        side = "" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().upper()
         if side not in ("BUY", "SELL"):
             logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, side)
             return None
-        symbol = str(decision.get("symbol", "")).strip().upper()
-        venue = str(decision.get("venue", "")).strip().lower()
+        raw_sym = decision.get("symbol", "")
+        symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
+        raw_venue = decision.get("venue", "")
+        venue = "" if isinstance(raw_venue, bool) or raw_venue is None else str(raw_venue).strip().lower()
         if not symbol or not venue:
             logger.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
             return None
@@ -1066,6 +1077,14 @@ class AutonomousIntentGateway:
         while intent_id in existing_ids:
             intent_id = f"{base_id}_{suffix}"
             suffix += 1
+        raw_urg = decision.get("urgency", "NORMAL")
+        urgency = (
+            "NORMAL"
+            if isinstance(raw_urg, bool) or raw_urg is None or not str(raw_urg).strip()
+            else str(raw_urg).strip().upper()
+        )
+        raw_thesis = decision.get("thesis", "")
+        thesis = "" if isinstance(raw_thesis, bool) or raw_thesis is None else str(raw_thesis).strip()
         intent = asdict(TradeIntentRecord(
             intent_id=intent_id,
             timestamp=now,
@@ -1074,9 +1093,9 @@ class AutonomousIntentGateway:
             venue=venue,
             confidence=confidence,
             suggested_notional_usd=notional,
-            urgency=str(decision.get("urgency", "NORMAL")).strip().upper(),
-            thesis=str(decision.get("thesis", "")).strip(),
-            created_by=source,
+            urgency=urgency,
+            thesis=thesis,
+            created_by=str(source or "").strip(),
         ))
         intents.append(intent)
         self.save_all_intents(intents)

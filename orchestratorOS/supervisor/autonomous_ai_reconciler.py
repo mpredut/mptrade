@@ -287,6 +287,8 @@ class AutonomousAIReconciler:
                     if not math.isfinite(ne_num):
                         raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
                     self.notify_enabled = bool(int(ne_num))
+            elif isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
+                raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
             else:
                 self.notify_enabled = bool(notify_enabled)
         else:
@@ -1682,7 +1684,12 @@ class AutonomousAIReconciler:
                 context_items.append(f"  * Recent Autonomous Intents: {ps['recent_ai_intents']}")
 
         if focus_symbols:
-            clean_syms = [s.strip().upper() for s in focus_symbols if s.strip()]
+            raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
+            clean_syms = [
+                s.strip().upper()
+                for s in raw_focus
+                if isinstance(s, str) and s.strip()
+            ]
             if clean_syms:
                 context_items.append(
                     f"\n### 4. TACTICAL PRIORITY SYMBOLS: {', '.join(clean_syms)}\n"
@@ -1838,11 +1845,20 @@ class AutonomousAIReconciler:
 
     def _execute_venue_or_fleet_action(self, act: Dict[str, Any]) -> bool:
         """Executes a single repair action (CANCEL_ORDER, SYNC_POSITION, or RESTART_BOT) in enforce mode."""
-        action_type = str(act.get("action") or "NONE").strip().upper()
-        venue = str(act.get("venue") or "binance").strip().lower()
-        symbol = str(act.get("symbol") or act.get("bot") or act.get("target") or "").strip()
-        order_id = str(act.get("order_id") or "").strip()
-        reason = str(act.get("reason") or "")
+        if not isinstance(act, dict):
+            return False
+        raw_action = act.get("action")
+        action_type = "" if isinstance(raw_action, bool) or raw_action is None else str(raw_action).strip().upper()
+        if not action_type:
+            action_type = "NONE"
+        raw_venue = act.get("venue")
+        venue = "binance" if isinstance(raw_venue, bool) or raw_venue is None or not str(raw_venue).strip() else str(raw_venue).strip().lower()
+        raw_sym = act.get("symbol") or act.get("bot") or act.get("target")
+        symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip()
+        raw_oid = act.get("order_id")
+        order_id = "" if isinstance(raw_oid, bool) or raw_oid is None else str(raw_oid).strip()
+        raw_reason = act.get("reason")
+        reason = "" if isinstance(raw_reason, bool) or raw_reason is None else str(raw_reason)
 
         if action_type == "RESTART_BOT":
             if not symbol:

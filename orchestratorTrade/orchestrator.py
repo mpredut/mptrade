@@ -131,16 +131,25 @@ class BotManager:
 
             # 1. Write to dedicated log file (so tail -f logs/<bot>.log works cleanly)
             if log_file:
-                log_file.write(decoded)
-                log_file.flush()
+                try:
+                    log_file.write(decoded)
+                    log_file.flush()
+                except OSError:
+                    pass
 
             # 2. Analyze for notifications
-            self.server.process_line(decoded, bot_name)
+            try:
+                self.server.process_line(decoded, bot_name)
+            except Exception as exc:
+                logging.debug(f"Notification process_line error for {bot_name}: {exc}")
 
             # 3. Print to console / journalctl ONLY for warnings, errors, or if verbose
             if verbose_stdout or any(err in decoded.upper() for err in ("ERROR", "CRITICAL", "EXCEPTION", "TRACEBACK", "RECOVERY", "WARN")):
-                sys.stdout.write(f"[{bot_name}] {decoded}")
-                sys.stdout.flush()
+                try:
+                    sys.stdout.write(f"[{bot_name}] {decoded}")
+                    sys.stdout.flush()
+                except OSError:
+                    pass
 
     async def start_bot(self, bot: Dict[str, str]):
         if not self.running:

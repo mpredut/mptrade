@@ -76,9 +76,16 @@ class AutonomousOvernightMonitor:
         self.procs_conf = os.path.join(self.workspace_dir, "procs.conf")
         self.status_file = os.path.join(self.cachedb_dir, "overnight_monitor_status.json")
 
-        self.dev_host = dev_host
-        self.dev_port = dev_port
-        self.dev_user = dev_user
+        self.dev_host = str(dev_host or "192.168.0.138").strip() or "192.168.0.138"
+        if isinstance(dev_port, bool):
+            self.dev_port = 32238
+        else:
+            try:
+                p_int = int(dev_port)
+                self.dev_port = p_int if 1 <= p_int <= 65535 else 32238
+            except (TypeError, ValueError):
+                self.dev_port = 32238
+        self.dev_user = str(dev_user or "predut").strip() or "predut"
 
     def parse_process_manifest(self) -> List[Dict[str, Any]]:
         """Parses the single source of truth process definitions from procs.conf."""
@@ -353,7 +360,14 @@ class AutonomousOvernightMonitor:
             system_resources=resources,
         )
 
-        if persist:
+        if isinstance(persist, str):
+            do_persist = persist.strip().lower() in ("1", "true", "yes", "on")
+        elif isinstance(persist, float) and not math.isfinite(persist):
+            do_persist = False
+        else:
+            do_persist = bool(persist)
+
+        if do_persist:
             try:
                 os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
                 from state_io import atomic_write_json

@@ -4446,7 +4446,84 @@ def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
     assert ps._is_paper(1.0) is True
 
 
+def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(tmp_path, monkeypatch):
+    import asyncio
+    from collections import defaultdict, deque
+    from types import SimpleNamespace
+    import orchestratorOS.agy.protobuf as pb
+    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from orchestratorTrade.orchestrator import BotManager
 
+    # 1. protobuf helpers handle huge negative varints, non-bytes inputs, and non-str titles without crashing
+    assert len(pb.enc_varint(-1)) == 10
+    assert len(pb.enc_varint(-(1 << 65) - 1)) == 10
+    assert pb.enc_varint(-(1 << 65)) == b"\x00"
+    assert pb.summary_ui_visible(None, title=None) == b""  # type: ignore[arg-type]
+    assert pb.summary_annotation_title(None) == ""  # type: ignore[arg-type]
+    assert pb.entry_cid(None) == ""  # type: ignore[arg-type]
+    assert pb.list_entry_cids(None) == set()  # type: ignore[arg-type]
+    assert pb.drop_entries(123, {"abc"}) == (b"", 0)  # type: ignore[arg-type]
+    assert pb.replace_summary_entry(123, "abc", b"") == (b"", False)  # type: ignore[arg-type]
 
+    # 2. AutonomousOvernightMonitor sanitizes invalid dev_port and string/NaN persist flag
+    mon = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port=True)  # type: ignore[arg-type]
+    assert mon.dev_port == 32238
+    mon2 = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port=99999)
+    assert mon2.dev_port == 32238
+
+    # 3. AutonomousAIReconciler and AutonomousIntentGateway reject NaN notify_enabled and boolean symbols/venues
+    (tmp_path / "order_guard.conf").write_text(
+        "supervisor_mode=shadow\n"
+        "supervisor_notify=0\n"
+        "autonomous_trading_mode=shadow\n"
+        "autonomous_trading_min_notional_usd=10\n"
+        "autonomous_trading_max_notional_usd=100\n"
+        "autonomous_trading_min_confidence=0.8\n"
+        "autonomous_trading_notify=0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "config.env").write_text("NTFY_TOPIC_GUARD=test-guard\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="notify_enabled"):
+        AutonomousAIReconciler(workspace_dir=str(tmp_path), notify_enabled=float("nan"))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="notify_enabled"):
+        AutonomousIntentGateway(workspace_dir=str(tmp_path), notify_enabled=float("nan"))  # type: ignore[arg-type]
+
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path))
+    assert gw.submit({"decision": "BUY", "symbol": True, "venue": "binance", "confidence": 0.95}, source="test", max_mode="shadow") is None
+    assert gw.submit({"decision": "BUY", "symbol": "BTCUSDC", "venue": False, "confidence": 0.95}, source="test", max_mode="shadow") is None
+
+    rec = AutonomousAIReconciler(workspace_dir=str(tmp_path), intent_gateway=gw)
+    assert rec._execute_venue_or_fleet_action(None) is False  # type: ignore[arg-type]
+    assert rec._execute_venue_or_fleet_action({"action": "RESTART_BOT", "symbol": True}) is False
+
+    # 4. BotManager._read_stream continues draining stream even if log_file.write or server.process_line raises
+    mgr = object.__new__(BotManager)
+    mgr.verbose_stdout = False
+    mgr.recent_lines = defaultdict(lambda: deque(maxlen=20))
+
+    class _BadLog:
+        def write(self, _s):
+            raise OSError("disk full")
+
+        def flush(self):
+            raise OSError("disk full")
+
+    class _BadServer:
+        def process_line(self, _line, _bot):
+            raise RuntimeError("boom")
+
+    mgr.server = _BadServer()
+
+    async def _run_reader():
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"hello world\nsecond line\n")
+        reader.feed_eof()
+        await mgr._read_stream(reader, "test_bot", _BadLog())
+
+    asyncio.run(_run_reader())
+    assert list(mgr.recent_lines["test_bot"]) == ["hello world", "second line"]
 
 
