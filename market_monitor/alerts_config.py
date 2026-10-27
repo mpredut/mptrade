@@ -43,7 +43,12 @@ def _pair(val: str) -> dict:
 
 
 def load_config(path: str) -> dict:
-    if not path or not os.path.exists(path):
+    if (
+        isinstance(path, bool)
+        or not isinstance(path, (str, os.PathLike))
+        or not str(path).strip()
+        or not os.path.exists(path)
+    ):
         raise ValueError(f"Required alert configuration file is missing: {path}")
     cfg: dict = {"alert_config": {"per_coin": {}}}
     ac = cfg["alert_config"]
@@ -121,11 +126,14 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
         return per[base]
     if base and isinstance(per.get(base.upper()), dict):
         return per[base.upper()]
-    dyn_flag = (
-        str(is_dynamic).strip().lower() in {"1", "true", "yes", "on"}
-        if isinstance(is_dynamic, str)
-        else bool(is_dynamic)
-    )
+    if isinstance(is_dynamic, bool):
+        dyn_flag = is_dynamic
+    elif isinstance(is_dynamic, str):
+        dyn_flag = is_dynamic.strip().lower() in {"1", "true", "yes", "on"}
+    elif isinstance(is_dynamic, (int, float)):
+        dyn_flag = bool(is_dynamic) if math.isfinite(float(is_dynamic)) else False
+    else:
+        dyn_flag = False
     preferred = alert_config.get("dynamic") if dyn_flag else alert_config.get("default")
     if isinstance(preferred, dict):
         return preferred

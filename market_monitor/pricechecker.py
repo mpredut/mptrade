@@ -286,9 +286,18 @@ class PriceChecker:
 
     def _is_dynamic_symbol(self, symbol: str) -> bool:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
-        if not isinstance(symbol_added_time, dict):
+        if not isinstance(symbol_added_time, dict) or isinstance(symbol, bool) or symbol is None:
             return False
-        raw_ts = symbol_added_time.get(symbol)
+        sym_clean = str(symbol).strip()
+        raw_ts = (
+            symbol_added_time.get(symbol)
+            if symbol in symbol_added_time
+            else (
+                symbol_added_time.get(sym_clean)
+                if sym_clean in symbol_added_time
+                else symbol_added_time.get(sym_clean.upper())
+            )
+        )
         if raw_ts is None or isinstance(raw_ts, bool):
             return False
         try:
@@ -399,10 +408,10 @@ class PriceChecker:
     def check_all_symbols(self) -> List[PriceAlert]:
         """Check all symbols in the watchlist."""
         all_alerts = []
-        if hasattr(self.cachePriceAll, 'original_symbols'):
-            symbols = list(self.cachePriceAll.original_symbols)
-        else:
-            symbols = list(self.cachePriceAll.symbols)
+        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
+        if raw_symbols is None:
+            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
+        symbols = list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
 
         for symbol in dict.fromkeys(symbols):
             try:
@@ -467,10 +476,14 @@ class PriceChecker:
         print("[Checker] Monitoring stopped")
 
     def get_status(self) -> dict:
+        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
+        if raw_symbols is None:
+            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
+        sym_list = list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
         return {
             "running": self._running,
             "config": self.config,
-            "symbols_count": len(self.cachePriceAll.original_symbols if hasattr(self.cachePriceAll, 'original_symbols') else self.cachePriceAll.symbols),
+            "symbols_count": len(sym_list),
             "last_alerts": dict(self._last_alert_time)
         }
 

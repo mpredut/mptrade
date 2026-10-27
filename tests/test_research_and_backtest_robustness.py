@@ -4240,3 +4240,73 @@ def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
     assert len(rp.get_orders("ETHUSDC", "long", 60.0)) == 1
 
 
+def test_batch23_market_monitor_lock_and_notify_engine_hardening(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    import market_monitor.alerts_config as alerts_config
+    from market_monitor.pricechecker import PriceChecker
+    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
+    from lock.file_lock import FileLock
+    import lock.trade_cooldown as tc
+    from notify_engine.server import NotificationServer
+
+    # 1. alerts_config.load_config rejects boolean/non-path inputs (preventing os.path.exists(True) fd=1 bug)
+    with pytest.raises(ValueError):
+        alerts_config.load_config(True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        alerts_config.load_config("   ")
+
+    # alerts_config.resolve handles NaN is_dynamic as False
+    ac = {"default": {"up_percent": 4.0, "down_percent": 7.0}, "dynamic": {"up_percent": 12.0, "down_percent": 25.0}}
+    assert alerts_config.resolve(ac, "BTC", float("nan")) == {"up_percent": 4.0, "down_percent": 7.0}
+
+    # 2. PriceChecker handles None original_symbols/symbols and case-insensitive _is_dynamic_symbol
+    cache_stub = SimpleNamespace(original_symbols=None, symbols=None, symbol_added_time={"BTC": 1700000000.0})
+    pc = PriceChecker(cache_stub)
+    assert pc._is_dynamic_symbol(" btc ") is True
+    assert pc.check_all_symbols() == []
+    assert pc.get_status()["symbols_count"] == 0
+
+    # 3. CacheAllPriceFetcherManager strips symbols in remove_symbol/get_latest_price/get_price_history and accepts float/str integer limits
+    pf = object.__new__(CacheAllPriceFetcherManager)
+    pf.lock = threading.Lock()
+    pf.active_symbols = {"BTC"}
+    pf.symbols = ["BTC"]
+    pf.original_symbols = ["BTC"]
+    pf.symbol_added_time = {"BTC": 1700000000.0}
+    pf.symbol_preferred_source = {"BTC": "Binance"}
+    pf.cache = {"BTC": [[1700000000000, 62500.0]]}
+    assert pf.get_latest_price(" BTC ") == 62500.0
+    hist = pf.get_price_history(" BTC ", limit="10")  # type: ignore[arg-type]
+    assert len(hist) == 1 and hist[0]["price"] == 62500.0
+    assert pf.remove_symbol(" BTC ") is True
+    assert "BTC" not in pf.active_symbols
+
+    # 4. FileLock auto-creates parent directories and trade_cooldown normalizes shorthand sides ("b"/"BUY")
+    nested_lock = tmp_path / "nested" / "sub" / "test.lock"
+    with FileLock(nested_lock):
+        assert nested_lock.exists()
+
+    monkeypatch.setattr(tc, "STATE_FILE", str(tmp_path / "tc.json"))
+    monkeypatch.setattr(tc, "LOCK_FILE", str(tmp_path / "tc.lock"))
+    tc._cd = None
+    with tc.trade_slot("b", "BTCUSDC", cooldown_sec=60, pair_id="pair-1") as s1:
+        assert s1.allowed is True
+        with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=60, pair_id="pair-1") as s2:
+            assert s2.allowed is False
+        with tc.trade_slot("s", "BTCUSDC", cooldown_sec=60, pair_id="pair-1") as s3:
+            assert s3.allowed is True
+            s3.commit("999")
+        s1.commit("888")
+    assert tc.release_pair_leg("BTCUSDC", "pair-1", "buy") is True
+
+    # 5. NotificationServer.process_line tolerates non-str line and None/bool bot_name
+    srv = object.__new__(NotificationServer)
+    srv.traceback_buffers = {}
+    srv.rules = []
+    srv.cooldowns = {}
+    srv.process_line(None, None)  # type: ignore[arg-type]
+    srv.process_line(True, False)  # type: ignore[arg-type]
+
+
+

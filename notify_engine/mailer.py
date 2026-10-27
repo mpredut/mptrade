@@ -134,11 +134,18 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     subj_str = "" if isinstance(subject, bool) else str(subject or "")
     subject = subj_str.strip() or "Alert"
     body = "" if isinstance(body, bool) else str(body or "")
-    dedup_flag = (
-        dedup
-        if isinstance(dedup, bool)
-        else (str(dedup).strip().lower() in {"1", "true", "yes", "on"} if isinstance(dedup, str) else bool(dedup))
-    )
+    if isinstance(dedup, bool):
+        dedup_flag = dedup
+    elif dedup is None:
+        dedup_flag = True
+    elif isinstance(dedup, str):
+        s_dedup = dedup.strip().lower()
+        dedup_flag = False if s_dedup in {"0", "false", "no", "off", ""} else True
+    elif isinstance(dedup, (int, float)):
+        import math
+        dedup_flag = bool(dedup) if math.isfinite(float(dedup)) else True
+    else:
+        dedup_flag = True
     if dedup_flag:
         from notify_engine.alertnotifiers import pass_common_gate
         identity = [{"type": "email", "name": subject, "body": body, "source": "mailer"}]

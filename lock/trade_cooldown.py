@@ -91,15 +91,27 @@ def _clean_order_id_meta(val):
     return s
 
 
+def _norm_side(side):
+    if side is None or isinstance(side, bool):
+        return ""
+    s = str(side).strip().upper()
+    if s in ("B", "BUY", "BID", "LONG"):
+        return "BUY"
+    if s in ("A", "S", "SELL", "ASK", "SHORT"):
+        return "SELL"
+    return s
+
+
 def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
                   pair_id=None):
     """Atomically check and reserve placement rights for ``symbol``."""
     clean_cid = _clean_order_id_meta(client_order_id)
+    norm_side = _norm_side(side)
     if _valid_pair_id(pair_id):
         return _cooldown().reserve_group_member(
-            symbol, cooldown_sec, str(pair_id).strip(), side,
+            symbol, cooldown_sec, str(pair_id).strip(), norm_side,
             side="PAIR", symbol=symbol, client_order_id=clean_cid)
-    return _cooldown().reserve(symbol, cooldown_sec, side=side, symbol=symbol,
+    return _cooldown().reserve(symbol, cooldown_sec, side=norm_side, symbol=symbol,
                                client_order_id=clean_cid, binance_order_id=None)
 
 
@@ -113,7 +125,7 @@ def release_pair_leg(symbol, pair_id, side):
     if not _valid_pair_id(pair_id):
         return False
     return _cooldown().release_group_member(
-        symbol, str(pair_id).strip(), side, keep_group=True)
+        symbol, str(pair_id).strip(), _norm_side(side), keep_group=True)
 
 
 def update_binance_order_id(symbol, order_id):
@@ -144,13 +156,14 @@ def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=
                pair_id=None):
     """Provide RAII for an exclusive cooldown or one leg of a pair."""
     clean_cid = _clean_order_id_meta(client_order_id)
+    norm_side = _norm_side(side)
     if _valid_pair_id(pair_id):
         with _cooldown().group_slot(
-                symbol, cooldown_sec, str(pair_id).strip(), side,
+                symbol, cooldown_sec, str(pair_id).strip(), norm_side,
                 side="PAIR", symbol=symbol, client_order_id=clean_cid) as res:
             yield _TradeReservation(res)
     else:
-        with _cooldown().slot(symbol, cooldown_sec, side=side, symbol=symbol,
+        with _cooldown().slot(symbol, cooldown_sec, side=norm_side, symbol=symbol,
                               client_order_id=clean_cid, binance_order_id=None) as res:
             yield _TradeReservation(res)
 

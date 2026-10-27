@@ -835,6 +835,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         return True
     
     def remove_symbol(self, symbol: str, reason: str = ""):
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip()
         with self.lock:
             was_active = symbol in self.active_symbols
             had_meta = (
@@ -858,8 +861,13 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Get the latest saved price for a symbol."""
+        if not isinstance(symbol, str) or not symbol.strip():
+            return None
+        sym_clean = symbol.strip()
         with self.lock:
-            entries = self.cache.get(symbol, [])
+            entries = self.cache.get(symbol)
+            if entries is None:
+                entries = self.cache.get(sym_clean, [])
             if isinstance(entries, (list, tuple)) and entries:
                 for entry in reversed(entries):
                     if isinstance(entry, (list, tuple)) and len(entry) >= 2:
@@ -881,13 +889,25 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         return None
 
     def get_price_history(self, symbol: str, limit: int = 100) -> List[Dict]:
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        if isinstance(limit, bool) or limit is None:
             return []
+        try:
+            lim_f = float(limit)
+            if not math.isfinite(lim_f) or not lim_f.is_integer():
+                return []
+            limit_i = int(lim_f)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if limit_i <= 0 or not isinstance(symbol, str) or not symbol.strip():
+            return []
+        sym_clean = symbol.strip()
         # Copy only references under the lock. Convert and format afterward so datetime
         # work and allocations do not block price synchronization.
         with self.lock:
-            raw_entries = self.cache.get(symbol, ())
-            entries = raw_entries[-limit:] if isinstance(raw_entries, (list, tuple)) else ()
+            raw_entries = self.cache.get(symbol)
+            if raw_entries is None:
+                raw_entries = self.cache.get(sym_clean, ())
+            entries = raw_entries[-limit_i:] if isinstance(raw_entries, (list, tuple)) else ()
 
         history: List[Dict] = []
         for entry in entries:

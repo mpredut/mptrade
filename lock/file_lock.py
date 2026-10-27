@@ -10,6 +10,8 @@ On Windows, where fcntl is unavailable, this is a no-op; the bot runs on Linux.
 The lock is generic and can protect any operation, not just order placement.
 """
 
+import os
+
 try:
     import fcntl                            # Unix (Linux/WSL)
     _HAVE_FCNTL = True
@@ -25,6 +27,9 @@ class FileLock:
         self._fd = None
 
     def __enter__(self):
+        parent = os.path.dirname(os.fspath(self.path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self._fd = open(self.path, "a+")
         if _HAVE_FCNTL:
             try:

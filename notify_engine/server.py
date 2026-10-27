@@ -216,7 +216,10 @@ class NotificationServer:
         if batch:
             bulk_title, bulk_body, bulk_prio, bulk_topic = batch
             if not bulk_topic:
-                bulk_topic = self._resolve_topic("ERROR")
+                try:
+                    bulk_topic = self._resolve_topic("ERROR")
+                except Exception:
+                    bulk_topic = "ntfy-error-1978"
             prev = getattr(self, "_in_gated_dispatch", False)
             self._in_gated_dispatch = True
             try:
@@ -457,8 +460,8 @@ class NotificationServer:
         source = "" if isinstance(source, bool) else str(source or "")
 
         topic = None
-        if webhook_url:
-            topic = webhook_url.rstrip("/").rsplit("/", 1)[-1]
+        if isinstance(webhook_url, str) and webhook_url.strip():
+            topic = webhook_url.strip().rstrip("/").rsplit("/", 1)[-1]
         if not topic:
             topic = _topic_for_category(title, source)
 
@@ -524,6 +527,9 @@ class NotificationServer:
         )
 
     def process_line(self, line: str, bot_name: str):
+        if not isinstance(line, str) or isinstance(line, bool):
+            return
+        bot_name = "" if isinstance(bot_name, bool) or bot_name is None else str(bot_name)
         clean_stripped = line.strip()
 
         # Multi-line Python traceback buffering
