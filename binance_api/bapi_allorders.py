@@ -17,7 +17,7 @@ from providers.base import (
 )
 
 
-from . import bapi as _bapi
+from .bapi import _parse_bool_flag, _INVALID_BAPI_ID_STRINGS
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
@@ -27,7 +27,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     The first page uses ``startTime`` and later pages use the previous final fill ID
     plus one until a short page arrives.
     """
-    strict = _bapi._parse_bool_flag(strict, False)
+    strict = _parse_bool_flag(strict, False)
     if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         if strict:
             raise ValueError("symbol must be a non-empty string")
@@ -130,7 +130,7 @@ def _normalize_side(order_type):
 
 
 def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False):
-    strict = _bapi._parse_bool_flag(strict, False)
+    strict = _parse_bool_flag(strict, False)
     try:
         order_type = _normalize_side(order_type)
         sym.validate_symbols(symbol)
@@ -192,7 +192,7 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
                 and not isinstance(raw_oid, (bool, float, dict, list, tuple, set, frozenset))
                 and (not isinstance(raw_oid, int) or raw_oid > 0)
                 and bool(str(raw_oid).strip())
-                and str(raw_oid).strip().lower() not in _bapi._INVALID_BAPI_ID_STRINGS
+                and str(raw_oid).strip().lower() not in _INVALID_BAPI_ID_STRINGS
             )
             key = (
                 (raw_oid.strip() if isinstance(raw_oid, str) else raw_oid)
