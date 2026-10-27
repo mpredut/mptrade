@@ -212,8 +212,15 @@ class CacheManagerInterface(ABC):
         self.sync_ts = sync_ts
         if isinstance(symbols, str):
             self.symbols = [symbols.strip()] if symbols.strip() else []
-        elif symbols is not None:
-            self.symbols = list(symbols)
+        elif symbols is not None and not isinstance(symbols, (bool, bytes)):
+            try:
+                self.symbols = [
+                    str(s).strip()
+                    for s in symbols
+                    if s is not None and not isinstance(s, bool) and str(s).strip()
+                ]
+            except TypeError:
+                self.symbols = []
         else:
             self.symbols = []
         self.filename = u.cache_path(filename)   # Store cache data in the cachedb subdirectory.
@@ -503,20 +510,23 @@ class CacheManagerInterface(ABC):
 
 
     # ── Memory/disk resilience: freshness, overwrite guard, and resync ────────
+    @staticmethod
+    def _safe_pos_ts_ms(val) -> int:
+        if val is None or isinstance(val, bool):
+            return 0
+        try:
+            vf = float(val)
+            return int(vf) if (math.isfinite(vf) and vf > 0) else 0
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
     def _mem_max_ts(self):
         """Return memory freshness as the latest fetch time in milliseconds."""
         if not self.fetchtime_per_symbol:
             return 0
         try:
             return max(
-                (
-                    int(v)
-                    for v in self.fetchtime_per_symbol.values()
-                    if isinstance(v, (int, float))
-                    and not isinstance(v, bool)
-                    and math.isfinite(v)
-                    and v > 0
-                ),
+                (self._safe_pos_ts_ms(v) for v in self.fetchtime_per_symbol.values()),
                 default=0,
             )
         except Exception:
@@ -529,15 +539,7 @@ class CacheManagerInterface(ABC):
                 meta = json.load(mf)
             if not isinstance(meta, dict):
                 return 0
-            raw = meta.get("max_ts", 0)
-            if (
-                isinstance(raw, (int, float))
-                and not isinstance(raw, bool)
-                and math.isfinite(raw)
-                and raw > 0
-            ):
-                return int(raw)
-            return 0
+            return self._safe_pos_ts_ms(meta.get("max_ts", 0))
         except Exception:
             return 0
 
@@ -684,14 +686,7 @@ class CacheManagerInterface(ABC):
             fetchtime_map = payload.get("fetchtime")
             payload["max_ts"] = (
                 max(
-                    (
-                        int(v)
-                        for v in fetchtime_map.values()
-                        if isinstance(v, (int, float))
-                        and not isinstance(v, bool)
-                        and math.isfinite(v)
-                        and v > 0
-                    ),
+                    (self._safe_pos_ts_ms(v) for v in fetchtime_map.values()),
                     default=0,
                 )
                 if isinstance(fetchtime_map, dict)
@@ -2337,9 +2332,17 @@ class CacheManagerInterface(ABC):
     def shutdown(self, timeout=5.0):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""
         self._stop_event.set()
+        eff_timeout = 5.0
+        if timeout is not None and not isinstance(timeout, bool):
+            try:
+                tf = float(timeout)
+                if math.isfinite(tf) and tf >= 0.0:
+                    eff_timeout = tf
+            except (TypeError, ValueError, OverflowError):
+                pass
         thread = self.thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=timeout)
+            thread.join(timeout=eff_timeout)
         stopped = thread is None or not thread.is_alive()
         if stopped:
             self.thread = None
@@ -3442,7 +3445,14 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     @_ws_last_event_ts.setter
     def _ws_last_event_ts(self, value: float) -> None:
-        ts = float(value)
+        ts = 0.0
+        if value is not None and not isinstance(value, bool):
+            try:
+                vf = float(value)
+                if math.isfinite(vf) and vf >= 0.0:
+                    ts = vf
+            except (TypeError, ValueError, OverflowError):
+                ts = 0.0
         self._ws_last_event_ts_value = ts
         self._ws_default_event_ts = ts
         self._ws_last_event_ts_per_symbol.clear()
@@ -3646,21 +3656,39 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
         """Return the mean update interval, or ``fallback`` when samples are insufficient."""
+        fb = 1.0
+        if fallback is not None and not isinstance(fallback, bool):
+            try:
+                ff = float(fallback)
+                if math.isfinite(ff) and ff > 0.0:
+                    fb = ff
+            except (TypeError, ValueError, OverflowError):
+                pass
+        sym_u = str(symbol or "").strip().upper()
         with self.lock:
-            dq = self._update_timestamps.get(symbol)
+            dq = (
+                self._update_timestamps.get(symbol)
+                if symbol in self._update_timestamps
+                else self._update_timestamps.get(sym_u)
+            )
             samples = list(dq) if dq else []
         if len(samples) < 2:
-            return fallback
+            return fb
         span = samples[-1] - samples[0]
         if not math.isfinite(span) or span <= 0:
-            return fallback
+            return fb
         return span / (len(samples) - 1)
 
     def get_update_frequency(self, symbol: str) -> float:
         """Return updates per second over the latest frequency window."""
         cutoff = time.time() - self.FREQ_WINDOW_SEC
+        sym_u = str(symbol or "").strip().upper()
         with self.lock:
-            dq = self._update_timestamps.get(symbol)
+            dq = (
+                self._update_timestamps.get(symbol)
+                if symbol in self._update_timestamps
+                else self._update_timestamps.get(sym_u)
+            )
             if dq:
                 while dq and dq[0] < cutoff:
                     dq.popleft()

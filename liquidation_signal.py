@@ -173,10 +173,12 @@ class LiquidationSignal:
                 self._ingest(raw)
 
     async def _sleep(self, delay: float, step: float = 0.2) -> None:
+        eff_delay = _safe_pos_float(delay, 0.0)
+        eff_step = _safe_pos_float(step, 0.2)
         elapsed = 0.0
-        while elapsed < delay and not self._stop.is_set():
-            await asyncio.sleep(min(step, delay - elapsed))
-            elapsed += step
+        while elapsed < eff_delay and not self._stop.is_set():
+            await asyncio.sleep(min(eff_step, eff_delay - elapsed))
+            elapsed += eff_step
 
     # ── ingest / query ───────────────────────────────────────────────────────
     def _ingest(self, raw: str) -> None:
@@ -274,7 +276,7 @@ class LiquidationSignal:
         like >=3 is a reasonable "capitulation" trigger, but the strategy owns the
         final number. Returns 0.0 until there is enough baseline history."""
         eff_win = _safe_pos_float(window_sec, 120.0)
-        eff_base = _safe_pos_float(baseline_sec, 3600.0)
+        eff_base = max(_safe_pos_float(baseline_sec, 3600.0), eff_win)
         recent = self.get_signal(symbol, eff_win)["long_liq_usd"]
         base = self.get_signal(symbol, eff_base)["long_liq_usd"]
         recent_rate = recent / max(eff_win, 1.0)

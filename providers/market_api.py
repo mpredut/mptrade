@@ -1004,6 +1004,10 @@ class MarketApi:
             or (isinstance(client_order_id, int) and client_order_id <= 0)
             or not str(client_order_id).strip()
             or str(client_order_id).strip().lower() in _INVALID_API_ID_STRINGS
+            or (
+                str(client_order_id).strip().startswith("-")
+                and str(client_order_id).strip()[1:].replace(".", "", 1).isdigit()
+            )
         ):
             raise ProviderError(f"{provider.name}: invalid client_order_id")
         return method(symbol, str(client_order_id).strip())
@@ -1025,9 +1029,9 @@ class MarketApi:
         text = order_id.strip()
         if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
             text = text[:-2]
-        if not text or text.lower() in _INVALID_API_ID_STRINGS:
+        if not text or text.startswith("-") or text.lower() in _INVALID_API_ID_STRINGS:
             raise ProviderError(f"{provider_name}: invalid order_id")
-        if text.lstrip("+-").isdigit() and int(text) <= 0:
+        if text.lstrip("+").isdigit() and int(text) <= 0:
             raise ProviderError(f"{provider_name}: invalid order_id")
         if text.startswith("+") and text[1:].isdigit():
             text = text[1:]

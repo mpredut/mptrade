@@ -423,10 +423,14 @@ class HyperliquidProvider(MarketDataProvider):
                 oid_val = extract_order_id(o, default=None)
                 if not oid_val or oid_val == "0":
                     continue
+                from .base import _clean_single_order_id
                 side = extract_order_side(o) or "SELL"
                 out.append({
                     "orderId": oid_val,
-                    "clientOrderId": o.get("cloid") or o.get("clientOrderId"),
+                    "clientOrderId": (
+                        _clean_single_order_id(o.get("cloid"))
+                        or _clean_single_order_id(o.get("clientOrderId"))
+                    ),
                     "side": side,
                     "price": price,
                     "qty": sz,

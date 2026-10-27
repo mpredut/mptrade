@@ -14,15 +14,19 @@ def _clean_fill_id(val: object) -> str:
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return ""
     if isinstance(val, float):
-        if not math.isfinite(val):
+        if not math.isfinite(val) or not val.is_integer() or val <= 0:
             return ""
-        if val.is_integer():
-            val = int(val)
+        val = int(val)
+    if isinstance(val, int):
+        if val <= 0:
+            return ""
     s = str(val).strip()
-    if s.lower() in _INVALID_FILL_IDS:
+    if not s or s.startswith("-") or s.lower() in _INVALID_FILL_IDS or s in {"+0.0", "-0.0"}:
         return ""
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+    if s.endswith(".0") and s[:-2].lstrip("+").isdigit():
         s = s[:-2]
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
     return s if s and s.lower() not in _INVALID_FILL_IDS else ""
 
 

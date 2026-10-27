@@ -168,13 +168,15 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     if (
         not text
         or text.startswith("-")
-        or text.lower() in {"0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+        or text.lower() in {"0", "0.0", "-0", "+0", "+0.0", "-0.0", "nan", "inf", "-inf", "+inf", "none", "null"}
     ):
         return None
     if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
         text = text[:-2]
     if text in {"0", "+0"}:
         return None
+    if text.startswith("+") and text[1:].isdigit():
+        text = text[1:]
     return text
 
 

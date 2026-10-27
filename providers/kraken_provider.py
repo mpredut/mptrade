@@ -129,10 +129,10 @@ def _parse_bool_flag(val: object, default: bool = False) -> bool:
 
 
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:
-    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set)) or not isinstance(order_id, str):
+    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set, frozenset)) or not isinstance(order_id, str):
         raise ProviderError(f"{caller} {order_id}: invalid order id")
     s = order_id.strip()
-    if not s or s.lower() in _INVALID_KRAKEN_ID_STRINGS:
+    if not s or s.startswith("-") or s.lower() in _INVALID_KRAKEN_ID_STRINGS or s in {"+0.0", "-0.0"}:
         raise ProviderError(f"{caller} {order_id}: invalid order id")
     return s
 
@@ -407,9 +407,10 @@ class KrakenProvider(MarketDataProvider):
                     or executed_qty > original_qty):
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
+            from .base import _clean_single_order_id
             normalized.append({
                 "orderId": clean_oid,
-                "clientOrderId": raw.get("cl_ord_id"),
+                "clientOrderId": _clean_single_order_id(raw.get("cl_ord_id")),
                 "side": side,
                 "price": price,
                 "origQty": original_qty,

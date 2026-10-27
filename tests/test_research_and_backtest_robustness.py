@@ -6206,9 +6206,60 @@ def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_an
     assert canceled_ids == [("BTCUSDC", "555")]
 
 
+def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
+    import asyncio
+    import cacheManager as cm
+    import liquidation_signal as ls_mod
+    from providers import base as pbase
+    from providers import quantity as pqty
+    from providers import market_api as pmarket
+    from providers import kraken_provider as pkraken
+    from providers.strategy_executor import ProviderError
 
+    # 1. providers.base._clean_single_order_id normalizes '+12345.0' and rejects '+0.0'
+    assert pbase._clean_single_order_id("+12345.0") == "12345"
+    assert pbase._clean_single_order_id("+12345") == "12345"
+    assert pbase._clean_single_order_id("+0.0") is None
+    assert pbase._clean_single_order_id("-0.0") is None
 
+    # 2. providers.quantity._clean_fill_id rejects negative/non-integer floats and normalizes '+777.0'
+    assert pqty._clean_fill_id(-5) == ""
+    assert pqty._clean_fill_id(-5.0) == ""
+    assert pqty._clean_fill_id(12.5) == ""
+    assert pqty._clean_fill_id("-5.0") == ""
+    assert pqty._clean_fill_id("+0.0") == ""
+    assert pqty._clean_fill_id("+777.0") == "777"
 
+    # 3. MarketApi._clean_order_id_arg rejects '-12.5' and normalizes '+888.0'
+    for bad_oid in ("-12.5", "-5", "+0.0", "-0.0", 0, -1, True):
+        with pytest.raises(ProviderError):
+            pmarket.MarketApi._clean_order_id_arg(bad_oid, "Binance")
+    assert pmarket.MarketApi._clean_order_id_arg("+888.0", "Binance") == "888"
 
+    # 4. _clean_kraken_order_id rejects negative / '+0.0' / frozenset
+    for bad_koid in ("-5", "+0.0", "-0.0", frozenset({"a"})):
+        with pytest.raises(ProviderError):
+            pkraken._clean_kraken_order_id(bad_koid, "order_status")
 
+    # 5. CacheCurrentPriceManager robustness on symbols=True, _ws_last_event_ts=None/NaN, get_sample_rate fallback=None
+    cpm = cm.CacheCurrentPriceManager(
+        30,
+        [" BTCUSDC ", None, True, ""],
+        str(tmp_path / "cache_cp.json"),
+        read_only=True,
+    )
+    assert cpm.symbols == ["BTCUSDC"]
+    cpm._ws_last_event_ts = float("nan")
+    assert cpm._ws_last_event_ts == 0.0
+    assert cpm.get_sample_rate(" btcusdc ", fallback=None) == 1.0
+    assert cpm.get_sample_rate(" btcusdc ", fallback=True) == 1.0
+    assert cpm.shutdown(timeout=True) is True
+    assert cm.CacheManagerInterface._safe_pos_ts_ms("1700000000000.0") == 1700000000000
+    assert cm.CacheManagerInterface._safe_pos_ts_ms("-5") == 0
+
+    # 6. LiquidationSignal._sleep and capitulation_ratio with baseline_sec < window_sec
+    sig = ls_mod.LiquidationSignal(symbols=["BTCUSDT"])
+    asyncio.run(sig._sleep(0.01, step=float("nan")))
+    sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"1.0","p":"50000"}]}')
+    assert sig.capitulation_ratio("BTCUSDT", window_sec=300.0, baseline_sec=60.0) == pytest.approx(1.0)
 
