@@ -85,9 +85,10 @@ _CLOID_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
 
 def _cloid_for_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Hyperliquid's exact 128-bit CLOID form."""
-    if isinstance(client_order_id, bool):
+    if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
         raise ProviderError("Hyperliquid client_order_id must contain 1-128 characters")
-    raw = str(client_order_id or "").strip()
+    from .base import _clean_single_order_id
+    raw = _clean_single_order_id(client_order_id) or ""
     if not raw or len(raw) > 128:
         raise ProviderError("Hyperliquid client_order_id must contain 1-128 characters")
     try:
@@ -384,10 +385,12 @@ class HyperliquidProvider(MarketDataProvider):
                     exec_sz = max(0.0, exec_f)
                 except (TypeError, ValueError, OverflowError):
                     continue
-                oid_val = extract_order_id(o, default="")
+                oid_val = extract_order_id(o, default=None)
+                if not oid_val or oid_val == "0":
+                    continue
                 side = extract_order_side(o) or "SELL"
                 out.append({
-                    "orderId": oid_val if oid_val is not None else "",
+                    "orderId": oid_val,
                     "clientOrderId": o.get("cloid") or o.get("clientOrderId"),
                     "side": side,
                     "price": price,
@@ -523,8 +526,9 @@ class HyperliquidProvider(MarketDataProvider):
                 call_kwargs["tif"] = order_tif
             ok, oid, msg = signer.spot_order(
                 pair, is_buy, float(qty), float(submit_px), **call_kwargs)
+            clean_oid = extract_order_id({"oid": oid}, default=None)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
-            return {"orderId": oid, "ok": ok, "msg": msg} if ok else None
+            return {"orderId": clean_oid, "ok": ok, "msg": msg} if (ok and clean_oid and clean_oid != "0") else None
         except Exception as e:  # noqa: BLE001
             print(f"[HL] place_order({side} {symbol}) failed: {e}")
             return None
@@ -680,13 +684,14 @@ class HyperliquidProvider(MarketDataProvider):
             raise
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"submit_order({symbol}): {e}") from e
-        if not ok or oid is None:
+        clean_oid = extract_order_id({"oid": oid}, default=None)
+        if not ok or not clean_oid or clean_oid == "0":
             # ``spot_order`` returned a synchronous venue rejection, proving that
             # no order was accepted. Mark it definitive so durable lifecycle state
             # does not wait forever for a CLOID that cannot exist.
             from order_retry import OrderSubmissionRefused
             raise OrderSubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
-        return str(oid)
+        return clean_oid
 
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price: Optional[float] = None, *, market: bool = False,
@@ -771,11 +776,12 @@ class HyperliquidProvider(MarketDataProvider):
             if not isinstance(order, dict):
                 order = {}
             oid = order.get("oid", payload.get("oid"))
-            if oid is None or isinstance(oid, bool) or not str(oid).strip():
+            clean_oid = extract_order_id({"oid": oid}, default=None)
+            if not clean_oid or clean_oid == "0":
                 raise ProviderError(
                     f"order_by_client_id({symbol}): response without order ID")
             return {
-                "orderId": str(oid).strip(),
+                "orderId": clean_oid,
                 "status": payload.get("status"),
             }
         except ProviderError:

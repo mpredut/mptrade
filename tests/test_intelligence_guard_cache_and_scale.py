@@ -14042,3 +14042,159 @@ def test_iteration140_t212_strategy_state_boolean_and_order_rollback_hygiene():
         assert p_bad["kind"] == "TP"
 
 
+def test_iteration141_execution_audit_kraken_and_hyperliquid_provider_id_hygiene(tmp_path):
+    """Verify execution_audit intent/client_order_id hygiene, kraken_provider fill/client_order_id/order_status hygiene, and hyperliquid_provider cloid/oid hygiene."""
+    from types import SimpleNamespace
+    from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, intent_client_order_id
+    from providers.hyperliquid_provider import HyperliquidProvider, _cloid_for_client_order_id
+    from providers.kraken_provider import KrakenProvider, _kraken_client_order_id, _normalize_kraken_fill
+    from providers.strategy_executor import ProviderError
+
+    # 1. intent_client_order_id and AuditedStrategyExecutor reject sentinel strings and containers
+    for bad_intent in ("nan", "null", "none", "inf", ["abc"], {"id": 1}, True, None, ""):
+        assert intent_client_order_id("binance", bad_intent) is None  # type: ignore[arg-type]
+        assert intent_client_order_id("kraken", bad_intent) is None  # type: ignore[arg-type]
+        assert intent_client_order_id("hyperliquid", bad_intent) is None  # type: ignore[arg-type]
+
+    assert AuditedStrategyExecutor._norm_order_id_key("nan") == ""
+    assert AuditedStrategyExecutor._norm_order_id_key(["123"]) == ""
+    assert AuditedStrategyExecutor._norm_order_id_key(12345.0) == "12345"
+
+    seen_submits = []
+    fake_exec = SimpleNamespace(
+        name="Binance",
+        submit_order=lambda sym, side, qty, px, **kw: seen_submits.append(kw.get("client_order_id")) or "98765",
+    )
+    audited = AuditedStrategyExecutor(fake_exec, audit=ExecutionAudit(directory=str(tmp_path)))
+    oid = audited.submit_order_with_intent(
+        "binance-BTCUSDC-entry-0123456789abcdef0123456789abcdef",
+        "BTCUSDC",
+        "BUY",
+        1.0,
+        50000.0,
+        client_order_id="nan",
+    )
+    assert oid == "98765"
+    assert seen_submits == ["SD_0123456789abcdef0123456789abcdef"]
+
+    # 2. _kraken_client_order_id, _normalize_kraken_fill, and KrakenProvider.order_status whitespace handling
+    for bad_cid in ("nan", "null", "none", "inf", ["abc"], {"a": 1}, True, None, ""):
+        with pytest.raises(ProviderError):
+            _kraken_client_order_id(bad_cid)  # type: ignore[arg-type]
+        with pytest.raises(ProviderError):
+            _cloid_for_client_order_id(bad_cid)  # type: ignore[arg-type]
+
+    nf_bad = _normalize_kraken_fill({"ordertxid": "nan", "price": 20.0, "qty": 1.0, "side": "BUY", "timestamp": 1000})
+    assert "orderId" not in nf_bad
+    nf_good = _normalize_kraken_fill({"ordertxid": 444.0, "price": 20.0, "qty": 1.0, "side": "BUY", "timestamp": 1000})
+    assert nf_good["orderId"] == "444"
+
+    k_cli = SimpleNamespace(
+        query_orders=lambda txid: {txid.strip(): {"status": "closed", "vol_exec": "2.0", "cost": "40.0", "fee": "0.1", "vol": "2.0"}},
+    )
+    kp = KrakenProvider(client=k_cli)
+    st = kp.order_status("HYPEUSD", "  OUN337-ABC  ")
+    assert st.status == "closed"
+    assert st.filled_qty == pytest.approx(2.0)
+
+    # 3. HyperliquidProvider.open_orders skips entries with missing/zero/sentinel orderId
+    hl = HyperliquidProvider(token="HYPE", live_enabled=False)
+    hl._spot_pair = "@107"
+    hl._client = SimpleNamespace(
+        open_orders=lambda pair: [
+            {"oid": "nan", "side": "B", "limitPx": "25.0", "sz": "1.0", "origSz": "1.0"},
+            {"oid": 0, "side": "B", "limitPx": "25.0", "sz": "1.0", "origSz": "1.0"},
+            {"oid": 888.0, "side": "B", "limitPx": "25.0", "sz": "1.0", "origSz": "1.0"},
+        ]
+    )
+    hl_open = hl.open_orders("HYPEUSDC")
+    assert len(hl_open) == 1
+    assert hl_open[0]["orderId"] == "888"
+
+
+
+def test_iteration140_hybrid_reentry_replay_cache_key_and_runner_report_safety(tmp_path):
+    """Iteration 140:
+    1. offline.research.hybrid_reentry.harness (load_ohlc_csv & format_ablation_result) safely
+       handles missing/bool paths, float-string counts, and NaN/bool metrics.
+    2. offline.research.hybrid_reentry.report._fmt_pct formats NaN/bool/invalid values as 'N/A'
+       instead of raising TypeError or rendering 'nan%'.
+    3. offline.research.monitortrades_backtest.run_replay_backtest._series_cache_key and
+       prewarm_trend_series safely normalize None/bool/NaN trend_window_seconds.
+    4. offline.runners.financial_promotion_gate._fmt_calmar_pct and
+       offline.runners.kraken_financial_benchmark (strat_params_from_dict & markdown_report)
+       safely handle NaN/bool calmar and empty scenarios dicts.
+    """
+    import math
+    from offline.research.hybrid_reentry.harness import load_ohlc_csv, format_ablation_result
+    from offline.research.hybrid_reentry.report import _fmt_pct
+    from offline.research.monitortrades_backtest.run_replay_backtest import (
+        DEFAULT_WINDOW_SECONDS,
+        _series_cache_key,
+        prewarm_trend_series,
+    )
+    from offline.runners.financial_promotion_gate import _fmt_calmar_pct
+    from offline.runners.kraken_financial_benchmark import (
+        markdown_report as hype_md_report,
+        strat_params_from_dict,
+    )
+
+    # 1. load_ohlc_csv & format_ablation_result
+    assert load_ohlc_csv("") == []
+    assert load_ohlc_csv(True) == []
+    assert load_ohlc_csv(str(tmp_path / "missing.csv")) == []
+
+    row = format_ablation_result(
+        "BTCUSDC",
+        "Test 3",
+        "Hybrid",
+        {
+            "total": float("nan"),
+            "max_drawdown_pct": True,
+            "exposure_pct": "12.5",
+            "cycles": "4.0",
+            "wins": "3.0",
+            "win_rate_pct": float("nan"),
+            "profit_factor": "bad",
+            "fills": "8.0",
+        },
+        capital=3900.0,
+    )
+    assert row["net_profit_usd"] == 0.0
+    assert row["max_drawdown_pct"] == 0.0
+    assert row["exposure_pct"] == 12.5
+    assert row["cycles"] == 4
+    assert row["wins"] == 3
+    assert row["win_rate"] == 75.0
+    assert row["fills"] == 8
+
+    # 2. _fmt_pct
+    assert _fmt_pct(float("nan"), signed=True) == "N/A"
+    assert _fmt_pct(True, signed=True) == "N/A"
+    assert _fmt_pct("bad", signed=True) == "N/A"
+    assert _fmt_pct(4.5, decimals=2, signed=True, bold=True) == "**+4.50%**"
+
+    # 3. _series_cache_key & prewarm_trend_series with None/bool/NaN trend_window_seconds
+    sample_series = [(1000.0, 100.0), (1010.0, 101.0), (1020.0, 102.0)]
+    k_none = _series_cache_key("BTCUSDC", sample_series, None)
+    k_bool = _series_cache_key("BTCUSDC", sample_series, True)
+    k_nan = _series_cache_key("BTCUSDC", sample_series, float("nan"))
+    assert k_none[-1] == DEFAULT_WINDOW_SECONDS
+    assert k_bool[-1] == DEFAULT_WINDOW_SECONDS
+    assert k_nan[-1] == DEFAULT_WINDOW_SECONDS
+    tape = prewarm_trend_series("BTCUSDC", sample_series, trend_window_seconds=None)
+    assert len(tape) == 3
+
+    # 4. _fmt_calmar_pct, strat_params_from_dict, and hype_md_report
+    assert _fmt_calmar_pct(float("nan")) == "n/a"
+    assert _fmt_calmar_pct(True) == "n/a"
+    assert _fmt_calmar_pct(0.125) == "+12.5%"
+
+    sp = strat_params_from_dict(None)
+    assert sp.sl_mhdsl_enabled is False
+    md = hype_md_report({"candidate_name": "empty_test", "scenarios": {}, "walk_forward": {"interval_minutes": 240}})
+    assert "0 TEST bars" in md
+    assert "nan" not in md.lower()
+
+
+

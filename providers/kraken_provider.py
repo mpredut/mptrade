@@ -77,9 +77,12 @@ def _normalize_kraken_fill(raw: dict) -> dict:
     """Normalize a Kraken fill while preserving ordertxid/orderId for order-level aggregation."""
     norm = _normalize_order(raw)
     if isinstance(raw, dict):
-        order_id = raw.get("ordertxid") or raw.get("orderId")
-        if order_id is not None and not isinstance(order_id, bool) and str(order_id).strip():
-            norm["orderId"] = str(order_id).strip()
+        from .base import _clean_single_order_id
+        order_id = _clean_single_order_id(raw.get("ordertxid")) or _clean_single_order_id(raw.get("orderId"))
+        if order_id is not None:
+            norm["orderId"] = order_id
+        else:
+            norm.pop("orderId", None)
     return norm
 
 
@@ -88,9 +91,10 @@ _KRAKEN_CLIENT_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 def _kraken_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Kraken's 128-bit hexadecimal UUID form."""
-    if isinstance(client_order_id, bool):
+    if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
         raise ProviderError("Kraken client_order_id must contain 1-128 characters")
-    raw = str(client_order_id or "").strip()
+    from .base import _clean_single_order_id
+    raw = _clean_single_order_id(client_order_id) or ""
     if not raw or len(raw) > 128:
         raise ProviderError("Kraken client_order_id must contain 1-128 characters")
     try:
@@ -197,12 +201,15 @@ class KrakenProvider(MarketDataProvider):
         Do not cache zero from a failed lookup, because that would permanently
         disable minimum-volume protection and cause repeated dust rejections.
         """
-        cached = self._minqty.get(symbol)
+        norm_sym = str(symbol or "").strip().upper() if not isinstance(symbol, bool) else ""
+        if not norm_sym:
+            return 0.0
+        cached = self._minqty.get(norm_sym) or self._minqty.get(symbol)
         if cached:  # Only positive values are cached; zero or absent retries.
             return cached
         mn = 0.0
         try:
-            info = self._client().pair_info(symbol) or {}
+            info = self._client().pair_info(norm_sym) or {}
             raw_mn = info.get("ordermin", 0)
             if raw_mn is not None and not isinstance(raw_mn, bool):
                 cand_mn = float(raw_mn or 0.0)
@@ -211,7 +218,7 @@ class KrakenProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] ordermin {symbol}: {e}")
         if mn > 0:
-            self._minqty[symbol] = mn   # Cache only a successful lookup.
+            self._minqty[norm_sym] = mn   # Cache only a successful lookup.
         return mn
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
@@ -614,13 +621,14 @@ class KrakenProvider(MarketDataProvider):
             or order_id.strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
         ):
             raise ProviderError(f"order_status {order_id}: invalid order id")
+        clean_id = order_id.strip()
         try:
-            res = self._client().query_orders(order_id) or {}
+            res = self._client().query_orders(clean_id) or {}
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"order_status {order_id}: {e}") from e
         if not isinstance(res, dict):
             raise ProviderError(f"order_status {order_id}: invalid Kraken response")
-        info = res.get(order_id)
+        info = res.get(clean_id) if clean_id in res else res.get(order_id)
         if not isinstance(info, dict):
             raise ProviderError(f"order_status: the order {order_id} was not found")
         raw_status = str(info.get("status") or "").strip()

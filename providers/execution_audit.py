@@ -80,9 +80,10 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     Preserve the complete 128-bit UUID. Legacy/nonstandard intents use a
     deterministic hash so the same intent produces the same identifier after restart.
     """
-    if intent_id is None or isinstance(intent_id, bool):
+    if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)):
         return None
-    raw = str(intent_id).strip()
+    from .base import _clean_single_order_id
+    raw = _clean_single_order_id(intent_id)
     if not raw:
         return None
     match = _UUID_HEX_SUFFIX.search(raw)
@@ -179,13 +180,11 @@ class AuditedStrategyExecutor:
 
     @staticmethod
     def _norm_order_id_key(order_id: object) -> str:
+        if isinstance(order_id, (bool, list, tuple, dict, set, frozenset)):
+            return ""
         from .base import _clean_single_order_id
         cleaned = _clean_single_order_id(order_id)
-        if cleaned is not None:
-            return cleaned
-        if order_id is None or isinstance(order_id, bool):
-            return ""
-        return str(order_id).strip()
+        return cleaned if cleaned is not None else ""
 
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
         oid_key = self._norm_order_id_key(order_id)
@@ -200,9 +199,15 @@ class AuditedStrategyExecutor:
                 self._intent_by_order.popitem(last=False)
 
     def _intent(self, symbol: str, order_id: str, explicit: Optional[str] = None) -> str:
-        if explicit:
-            self._remember(symbol, order_id, explicit)
-            return explicit
+        from .base import _clean_single_order_id
+        clean_exp = (
+            _clean_single_order_id(explicit)
+            if not isinstance(explicit, (bool, list, tuple, dict, set, frozenset))
+            else None
+        )
+        if clean_exp:
+            self._remember(symbol, order_id, clean_exp)
+            return clean_exp
         oid_key = self._norm_order_id_key(order_id)
         if oid_key:
             sym_key = self._norm_symbol_key(symbol)
@@ -218,7 +223,13 @@ class AuditedStrategyExecutor:
                                  reference_price: Optional[float] = None,
                                  client_order_id: Optional[str] = None,
                                  cache_permit=None) -> str:
-        client_order_id = client_order_id or intent_client_order_id(self.name, intent_id)
+        from .base import _clean_single_order_id
+        clean_cid = (
+            _clean_single_order_id(client_order_id)
+            if not isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset))
+            else None
+        )
+        client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
         fields = {
             "side": str(side).lower(), "qty": qty, "price": price,
             "market": bool(market), "kind": kind,
@@ -246,7 +257,13 @@ class AuditedStrategyExecutor:
             cache_permit=None,
             _requested_recorded: bool = False) -> SubmissionOutcome:
         """Submit once and retain refusal versus response-loss ambiguity."""
-        client_order_id = client_order_id or intent_client_order_id(self.name, intent_id)
+        from .base import _clean_single_order_id
+        clean_cid = (
+            _clean_single_order_id(client_order_id)
+            if not isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset))
+            else None
+        )
+        client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
         fields = {
             "side": str(side).lower(), "qty": qty, "price": price,
             "market": bool(market), "kind": kind,
