@@ -1328,7 +1328,11 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         last_sell = snapshot.last_sell_price
-        last_kind = snapshot.last_exit_kind or "SELL"
+        last_kind = (
+            snapshot.last_exit_kind.strip().upper()
+            if isinstance(snapshot.last_exit_kind, str) and snapshot.last_exit_kind.strip()
+            else "SELL"
+        )
         now = _resolve_now_s(snapshot.current_time_s)
 
         if not snapshot.is_valid_price:
@@ -1413,13 +1417,14 @@ class PositionExitManager:
         cur_trough = _valid_px(state.get("trough"), default_trough)
         cur_peak = _valid_px(state.get("peak"), default_peak)
         cur_peak_bounce = _valid_px(state.get("peak_bounce"), current_price)
-        if current_price < cur_trough:
-            state["trough"] = current_price
+        eff_trough = min(cur_trough, default_trough, current_price)
+        if eff_trough < cur_trough or current_price < cur_trough:
+            state["trough"] = eff_trough
             state["peak_bounce"] = current_price
         else:
-            state["trough"] = min(cur_trough, current_price)
+            state["trough"] = eff_trough
             state["peak_bounce"] = max(cur_peak_bounce, current_price)
-        state["peak"] = max(cur_peak, current_price)
+        state["peak"] = max(cur_peak, default_peak, current_price)
         trough = state["trough"]
         peak = state["peak"]
 

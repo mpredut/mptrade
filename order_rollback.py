@@ -36,7 +36,11 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
 
     raw_amount = order.get("amount")
     raw_level = order.get("level")
-    level = None if isinstance(raw_level, bool) else raw_level
+    level = (
+        None
+        if (isinstance(raw_level, bool) or (isinstance(raw_level, float) and not math.isfinite(raw_level)))
+        else raw_level
+    )
     raw_kind = order.get("kind")
     kind = (
         str(raw_kind).strip()
@@ -116,7 +120,7 @@ class AtomicOrderRollbackGuard:
         log_fn: Callable[[str], None] = print,
         reason: str = "",
     ):
-        self.cancelled_orders = list(cancelled_orders or [])
+        self.cancelled_orders = list(cancelled_orders) if isinstance(cancelled_orders, (list, tuple)) else []
         self.restore_fn = restore_fn
         self.log_fn = log_fn
         self.reason = reason

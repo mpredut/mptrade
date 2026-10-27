@@ -12585,3 +12585,159 @@ def test_iteration120_binance_pagination_ws_trade_and_orchestrator_gateway_safet
     assert out["status"] == "OBSERVED_SHADOW"
 
 
+def test_iteration121_reentry_state_sync_market_regime_and_rollback_safety():
+    """Iteration 121: Verify PositionExitManager.evaluate_reentry external trough/peak sync and lowercase STOP kind, MarketRegimeService._age_limit/resolve_with_evidence validation, order_rollback NaN level and non-list cancelled_orders, and shadow_runtime.require_shadow_interval float/non-positive rejection."""
+    import pytest
+    import order_rollback as orb
+    import shadow_runtime as sr
+    from market_regime import MarketRegimeHorizon, MarketRegimeService
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentrySnapshot
+
+    # 1. PositionExitManager.evaluate_reentry honors lower external post_sell_trough and higher post_sell_peak across ticks, plus lowercase "stop"
+    pem = PositionExitManager(
+        PositionExitConfig(
+            reentry_sl_bounce_pct=0.02,
+            reentry_pullback_pct=0.02,
+            reentry_hybrid_enabled=True,
+            reentry_post_stop_cooldown_sec=0.0,
+            reentry_tolerance_pct=0.0,
+        )
+    )
+    # Tick 1 (post-STOP with lowercase " stop "): trough=98.0 -> needs 99.96
+    d1 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="SOLUSDC",
+            current_price=98.0,
+            last_sell_price=100.0,
+            last_exit_kind=" stop ",
+            post_sell_trough=98.0,
+            current_time_s=1000.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert not d1.should_enter and "post_stop_bounce_waiting" in d1.reason
+    # Tick 2: external post_sell_trough dropped to 94.0 while current_price recovered to 96.0 (+2.13% >= 2.0%)
+    d2 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="SOLUSDC",
+            current_price=96.0,
+            last_sell_price=100.0,
+            last_exit_kind=" stop ",
+            post_sell_trough=94.0,
+            current_time_s=1060.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert d2.should_enter and "post_stop_bounce_confirmed" in d2.reason
+
+    # Post-TP bull pullback: Tick 1 peak=105.0, Tick 2 external post_sell_peak=130.0 with current_price=127.0 (-2.31% >= 2.0%)
+    d3 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="ETHUSDC",
+            current_price=105.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            post_sell_peak=105.0,
+            trend_up=True,
+            current_time_s=1000.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert not d3.should_enter and "bull_reentry_pullback_waiting" in d3.reason
+    d4 = pem.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="ETHUSDC",
+            current_price=127.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            post_sell_peak=130.0,
+            trend_up=True,
+            current_time_s=1060.0,
+            last_sell_time_s=900.0,
+        )
+    )
+    assert d4.should_enter and "bull_reentry_pullback_confirmed" in d4.reason
+
+    # 2. MarketRegimeService._age_limit ignores boolean interval_min and resolve_with_evidence validates window_seconds
+    assert MarketRegimeService._age_limit({1: 180.0, "default": 300.0}, MarketRegimeHorizon.SHORT, interval_min=True) == 300.0
+    svc = MarketRegimeService()
+    with pytest.raises(ValueError, match="the regime interval and window must be positive"):
+        svc.resolve_with_evidence(object(), "BTCUSDC", window_seconds="invalid")
+    with pytest.raises(ValueError, match="the regime interval and window must be positive"):
+        svc.resolve_with_evidence(object(), "BTCUSDC", window_seconds=-10.0)
+
+    # 3. order_rollback sanitizes NaN level and non-list cancelled_orders in AtomicOrderRollbackGuard
+    p = orb.extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": float("nan")})
+    assert p["level"] is None
+    guard = orb.AtomicOrderRollbackGuard({"not": "a_list"}, restore_fn=lambda _x: True)
+    assert guard.cancelled_orders == []
+
+    # 4. shadow_runtime.require_shadow_interval rejects float or non-positive expected/interval
+    with pytest.raises(ValueError):
+        sr.require_shadow_interval(60.0, 60, "test")
+    with pytest.raises(ValueError):
+        sr.require_shadow_interval(0, 0, "test")
+
+
+def test_iteration121_intelligence_daemons_cli_and_market_monitor_safety(monkeypatch, tmp_path):
+    """Verify Iteration 121 string symbols splitting, bounded step timeout sanitization, PermissionError liveness in intelligence CLI, and StockYahoo/alerts_config safety."""
+    import json
+    import time
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence import cli as intel_cli
+    from market_monitor.pricefetcher import StockYahooPricePlatform
+    from market_monitor import alerts_config
+
+    # 1. Comma-separated string symbols are split cleanly instead of iterated character-by-character
+    itd = IntelligenceTelemetryDaemon(cache_dir=str(tmp_path), symbols=" btcusdc , taousdc ")
+    assert itd.symbols == ["BTCUSDC", "TAOUSDC"]
+    gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols="solusdc,ethusdc")
+    assert gtc.symbols == ["SOLUSDC", "ETHUSDC"]
+    ma = MacroAnalyzer(cache_dir=str(tmp_path), symbols="btcusdc, xrpUsdc")
+    assert ma.symbols == ["BTCUSDC", "XRPUSDC"]
+
+    # 2. GlobalTelemetryCollector._run_step_bounded sanitizes invalid timeout_sec
+    assert GlobalTelemetryCollector._run_step_bounded(lambda: True, timeout_sec=None, label="test_none") is True
+    assert GlobalTelemetryCollector._run_step_bounded(lambda: True, timeout_sec=False, label="test_bool") is True
+    assert GlobalTelemetryCollector._run_step_bounded(lambda: True, timeout_sec=float("nan"), label="test_nan") is True
+
+    # 3. intelligence.cli treats PermissionError from os.kill(pid, 0) as alive and rejects boolean symbol
+    hb_file = tmp_path / "globaltelemetry_collector.heartbeat"
+    hb_file.write_text(json.dumps({"pid": 99999, "ts": time.time(), "symbols": ["BTCUSDC"]}), encoding="utf-8")
+    monkeypatch.setattr("os.kill", lambda _pid, _sig: (_ for _ in ()).throw(PermissionError("not owner")))
+    st = intel_cli.get_daemon_status(cache_dir=str(tmp_path))
+    assert st["running"] is True and st["status"] == "alive"
+
+    inspected = intel_cli.inspect_symbol_intelligence(True, cache_dir=str(tmp_path))
+    assert inspected["symbol"] == ""
+
+    # 4. StockYahooPricePlatform splits string tickers, filters non-strings, and URL-encodes symbols
+    yahoo = StockYahooPricePlatform(tickers=" nvda_us_eq , spcx ")
+    assert yahoo.get_available_symbols() == {"NVDA_US_EQ", "SPCX"}
+    yahoo_mixed = StockYahooPricePlatform(tickers=["NVDA", None, True, "  "])
+    assert yahoo_mixed.get_available_symbols() == {"NVDA"}
+
+    seen_urls = []
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"chart": {"result": [{"indicators": {"quote": [{"close": [125.5]}]}}]}}
+
+    monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda url, **_kw: (seen_urls.append(url), _FakeResp())[1])
+    assert yahoo.get_price("BRK/B_US_EQ") == 125.5
+    assert "BRK%2FB" in seen_urls[0]
+
+    # 5. alerts_config.resolve rejects boolean symbol
+    ac = {
+        "per_coin": {"TRUE": {"up_percent": 99.0, "down_percent": 99.0}},
+        "default": {"up_percent": 4.0, "down_percent": 7.0},
+        "dynamic": {"up_percent": 10.0, "down_percent": 20.0},
+    }
+    assert alerts_config.resolve(ac, True, False) == {"up_percent": 4.0, "down_percent": 7.0}
+
+
+
+

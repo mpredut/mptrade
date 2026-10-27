@@ -624,7 +624,7 @@ class MarketRegimeService:
         if value is None or not isinstance(value, Mapping):
             return value
         keys = []
-        if interval_min is not None:
+        if interval_min is not None and not isinstance(interval_min, bool):
             keys.extend((int(interval_min), str(int(interval_min))))
         keys.extend((horizon, horizon.value, "default"))
         for key in keys:
@@ -780,6 +780,13 @@ class MarketRegimeService:
                 except (TypeError, ValueError, OverflowError) as exc:
                     raise ValueError("the regime interval and window must be positive") from exc
                 if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+                    raise ValueError("the regime interval and window must be positive")
+            if window_seconds is not None:
+                try:
+                    ws_f = float(window_seconds)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("the regime interval and window must be positive") from exc
+                if not math.isfinite(ws_f) or ws_f <= 0:
                     raise ValueError("the regime interval and window must be positive")
             primary = (
                 int(configured[0][0] if interval_min is None else float(interval_min)),
