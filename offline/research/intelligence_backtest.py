@@ -89,7 +89,10 @@ def _precompute_intelligence_tape(
     """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
     if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
         raise ValueError("step_seconds must be finite and > 0")
+    if isinstance(parabolic_surge_pct, bool) or not isinstance(parabolic_surge_pct, (int, float)) or not math.isfinite(parabolic_surge_pct) or parabolic_surge_pct <= 0:
+        raise ValueError("parabolic_surge_pct must be finite and > 0")
     step_seconds = max(1, int(round(float(step_seconds))))
+    parabolic_surge_pct = float(parabolic_surge_pct)
     kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
     mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
@@ -159,10 +162,13 @@ def run_intelligence_backtest(
         raise ValueError("step_seconds must be finite and > 0")
     if isinstance(initial_balance, bool) or not isinstance(initial_balance, (int, float)) or not math.isfinite(initial_balance) or initial_balance <= 0:
         raise ValueError("initial_balance must be finite and > 0")
+    if isinstance(parabolic_surge_pct, bool) or not isinstance(parabolic_surge_pct, (int, float)) or not math.isfinite(parabolic_surge_pct) or parabolic_surge_pct <= 0:
+        raise ValueError("parabolic_surge_pct must be finite and > 0")
     if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(fee_pct) or not (0.0 <= float(fee_pct) < 1.0):
         raise ValueError("fee_pct must be in [0, 1)")
     step_seconds = max(1, int(round(float(step_seconds))))
     initial_balance = float(initial_balance)
+    parabolic_surge_pct = float(parabolic_surge_pct)
     fee_pct = float(fee_pct)
     if cache_path is None:
         cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
@@ -185,9 +191,11 @@ def run_intelligence_backtest(
         raise ValueError(f"Insufficient sampled price bars for {symbol} after resampling at {step_seconds}s")
 
     # Pre-fetch survival metrics and mode-independent signal tape once per symbol
-    base_survival = get_trend_survival_metrics(symbol, 0.0)
-    p90_days = float(base_survival.get("p90_days") or 7.0)
-    median_days = float(base_survival.get("median_days") or 3.0)
+    base_survival = get_trend_survival_metrics(symbol, 0.0, allow_network=False)
+    raw_p90 = base_survival.get("p90_days") if isinstance(base_survival, dict) else None
+    raw_med = base_survival.get("median_days") if isinstance(base_survival, dict) else None
+    p90_days = float(raw_p90) if (raw_p90 is not None and not isinstance(raw_p90, bool) and math.isfinite(float(raw_p90)) and float(raw_p90) > 0) else 7.0
+    median_days = float(raw_med) if (raw_med is not None and not isinstance(raw_med, bool) and math.isfinite(float(raw_med)) and float(raw_med) > 0) else 3.0
     tape = _precompute_intelligence_tape(symbol, sampled, step_seconds, parabolic_surge_pct)
 
     # Run across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite (All 4 Pillars)

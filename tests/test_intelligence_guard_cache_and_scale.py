@@ -13917,3 +13917,55 @@ def test_iteration138_t212_client_provider_and_order_manager_id_hygiene(monkeypa
     placed = prov.place_order("NVDA_US_EQ", "BUY", 100.0, 1.0)
     assert placed["orderId"] == "777"
 
+
+def test_iteration139_research_backtest_ranges_intelligence_chop_and_sweep_safety(tmp_path):
+    """Verify backtest_ranges non-string path & semicolon comments, intelligence_backtest parabolic_surge_pct validation, chop_weight_backtest NaN bar filtering, comprehensive_strategy_sweep _summarize_replay, and slice_dense_archive tuple ts_of."""
+    import math
+    import numpy as np
+    from offline.research.backtest_ranges import scan_backtest_ranges
+    from offline.research.chop_weight_backtest import _precompute_chop_bar_tape, detect_regime_slope
+    from offline.research.comprehensive_strategy_sweep import _summarize_replay
+    from offline.research.intelligence_backtest import run_intelligence_backtest
+    from offline.research.slice_dense_archive import ts_of
+
+    # 1. scan_backtest_ranges rejects bool/int path and strips trailing semicolon comments
+    assert scan_backtest_ranges(True) == {}  # type: ignore[arg-type]
+    assert scan_backtest_ranges(1) == {}  # type: ignore[arg-type]
+    conf_file = tmp_path / "instruments.conf"
+    conf_file.write_text(
+        "[BINANCE_BTC]\n# BACKTEST: 5.0, 6.0, 7.0 ; inline INI comment\nmt.gain = 6.0\n",
+        encoding="utf-8",
+    )
+    assert scan_backtest_ranges(str(conf_file)) == {"BINANCE_BTC.mt.gain": ["5.0", "6.0", "7.0"]}
+
+    # 2. run_intelligence_backtest rejects invalid parabolic_surge_pct
+    for bad_surge in (0.0, -2.0, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="parabolic_surge_pct"):
+            run_intelligence_backtest(parabolic_surge_pct=bad_surge)  # type: ignore[arg-type]
+
+    # 3. chop_weight_backtest filters non-finite/bool bars and sanitizes mk_alpha
+    reg, slope = detect_regime_slope(np.linspace(100.0, 110.0, 30), mk_alpha=float("nan"))
+    assert reg in ("BULL", "CHOP")
+    assert math.isfinite(slope)
+    tape = _precompute_chop_bar_tape(
+        "BTCUSDC",
+        [(1000.0, float("nan")), (1900.0, -5.0), (2800.0, True), (3700.0, 50000.0)],  # type: ignore[list-item]
+        None,
+        step_seconds=900,
+    )
+    assert len(tape) == 1
+    assert tape[0]["p"] == pytest.approx(50000.0)
+
+    # 4. _summarize_replay handles NaN/bool metrics and float-string counts
+    sum_m = _summarize_replay(
+        {"net": float("nan"), "total": True, "max_drawdown_pct": "bad", "cycles": "4.0", "wins": "2.0", "fills": "8.0"},
+        1000.0,
+    )
+    assert sum_m["net_pct"] == pytest.approx(0.0)
+    assert sum_m["cycles"] == 4
+    assert sum_m["wins"] == 2
+    assert sum_m["fills"] == 8
+
+    # 5. slice_dense_archive.ts_of accepts tuple 'i' field
+    assert ts_of({"i": (1700000000000, 50000.0)}) == pytest.approx(1700000000000.0)
+

@@ -44,7 +44,7 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
     ("BINANCE_BTC.mt.gain"). [] if the file is missing or has no
     annotation of this kind."""
     out: Dict[str, List[str]] = {}
-    if not path or not os.path.isfile(path):
+    if not path or isinstance(path, (bool, int, float)) or not os.path.isfile(path):
         return out
     section: Optional[str] = None
     pending: Optional[List[str]] = None
@@ -58,7 +58,7 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
                 continue
             m = _BACKTEST_RE.match(line)
             if m:
-                raw_vals = m.group(1).split("#", 1)[0]
+                raw_vals = m.group(1).split("#", 1)[0].split(";", 1)[0]
                 vals = [v.strip() for v in raw_vals.split(",") if v.strip()]
                 pending = vals if vals else None
                 continue

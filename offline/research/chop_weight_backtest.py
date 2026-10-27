@@ -78,7 +78,15 @@ def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str
     norm_slope = float(slope) / float(p_arr[-1]) if p_arr[-1] > 0 else 0.0
 
     _, _, p_mk = calculate_mann_kendall(p_arr)
-    if p_mk > mk_alpha:
+    alpha = 0.05
+    if mk_alpha is not None and not isinstance(mk_alpha, bool):
+        try:
+            af = float(mk_alpha)
+            if math.isfinite(af) and 0.0 < af < 1.0:
+                alpha = af
+        except (TypeError, ValueError):
+            pass
+    if p_mk > alpha:
         return "CHOP", norm_slope
     if norm_slope > 1e-4:
         return "BULL", norm_slope
@@ -113,7 +121,15 @@ def _precompute_chop_bar_tape(
     last_regime_check_ts = 0.0
     tape: List[Dict[str, Any]] = []
 
-    for t, p in sampled:
+    for raw_t, raw_p in sampled:
+        if isinstance(raw_t, bool) or isinstance(raw_p, bool):
+            continue
+        try:
+            t, p = float(raw_t), float(raw_p)
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(t) and math.isfinite(p) and p > 0.0):
+            continue
         rolling_prices.append(p)
         if len(rolling_prices) > 96:  # 24 hours of 15m bars
             rolling_prices.pop(0)

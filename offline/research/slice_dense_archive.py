@@ -20,7 +20,7 @@ def ts_of(r) -> float:
     if not isinstance(r, dict):
         return 0.0
     i_val = r.get("i")
-    raw = i_val[0] if isinstance(i_val, list) and i_val else None
+    raw = i_val[0] if isinstance(i_val, (list, tuple)) and i_val else None
     if raw is None:
         raw = r.get("t")
     if isinstance(raw, bool) or raw is None:
