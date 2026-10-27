@@ -528,7 +528,14 @@ class HyperliquidProvider(MarketDataProvider):
                 pair, is_buy, float(qty), float(submit_px), **call_kwargs)
             clean_oid = extract_order_id({"oid": oid}, default=None)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
-            return {"orderId": clean_oid, "ok": ok, "msg": msg} if (ok and clean_oid and clean_oid != "0") else None
+            if not (ok and clean_oid and clean_oid != "0"):
+                return None
+            out_oid = (
+                int(clean_oid)
+                if (isinstance(oid, (int, float)) and not isinstance(oid, bool) and clean_oid.isdigit())
+                else clean_oid
+            )
+            return {"orderId": out_oid, "ok": ok, "msg": msg}
         except Exception as e:  # noqa: BLE001
             print(f"[HL] place_order({side} {symbol}) failed: {e}")
             return None
