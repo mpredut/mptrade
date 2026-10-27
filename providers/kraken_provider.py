@@ -111,24 +111,21 @@ _INVALID_KRAKEN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", 
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
+            return fb
+        return bool(val)
     s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "false", "no", "off"}:
+    if s in {"0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:
@@ -383,7 +380,11 @@ class KrakenProvider(MarketDataProvider):
                     f"open_orders({symbol}): order {order_id} without a pair")
             if not _kraken_pair_matches(symbol, pair):
                 continue
-            side = str(description.get("type") or raw.get("type") or "").upper()
+            side = str(description.get("type") or raw.get("type") or "").strip().upper()
+            if side in {"B", "BID", "LONG"}:
+                side = "BUY"
+            elif side in {"S", "A", "ASK", "SHORT"}:
+                side = "SELL"
             if side not in {"BUY", "SELL"}:
                 raise ProviderError(
                     f"open_orders({symbol}): an invalid side for {order_id}")
@@ -484,18 +485,20 @@ class KrakenProvider(MarketDataProvider):
         return rows
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
-    def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+    def place_order(self, symbol: str, side: str, price: float, qty: float,
+                    force: bool = False, **kwargs):
         live = self.execution_enabled()
         s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B"}:
+        if s_norm in {"BUY", "B", "BID", "LONG"}:
             s = "buy"
-        elif s_norm in {"SELL", "S"}:
+        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
             s = "sell"
         else:
             print(f"[Kraken] place_order {symbol}: refused invalid side={side!r}")
             return None
         market = (
-            _parse_bool_flag(kwargs.get("market", False), False)
+            _parse_bool_flag(force, False)
+            or _parse_bool_flag(kwargs.get("market", False), False)
             or _parse_bool_flag(kwargs.get("force", False), False)
         )
         ordertype = "market" if market else "limit"
@@ -571,9 +574,9 @@ class KrakenProvider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
         s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B"}:
+        if s_norm in {"BUY", "B", "BID", "LONG"}:
             s = "buy"
-        elif s_norm in {"SELL", "S"}:
+        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
             s = "sell"
         else:
             raise SubmissionRefused(f"submit_order {symbol}: invalid side={side!r}")
@@ -628,7 +631,8 @@ class KrakenProvider(MarketDataProvider):
         mutating strategy state. BUY funding remains venue-authoritative because its
         required fee/slippage reserve depends on order type and execution.
         """
-        if not isinstance(side, str) or not side.strip().lower().startswith("s"):
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm not in {"SELL", "S", "ASK", "A", "SHORT"}:
             return
         if qty is None:
             return

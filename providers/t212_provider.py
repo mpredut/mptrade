@@ -65,24 +65,21 @@ def _live() -> bool:
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
+            return fb
+        return bool(val)
     s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "false", "no", "off"}:
+    if s in {"0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 class T212Provider(MarketDataProvider):
@@ -290,7 +287,7 @@ class T212Provider(MarketDataProvider):
         if isinstance(side, bool):
             return []
         want = str(side or "").strip().upper()
-        if want and want not in {"BUY", "B"}:
+        if want and want not in {"BUY", "B", "BID", "LONG"}:
             return []                         # Historical sells are not modeled.
         # Financial guards must block on account errors rather than mistake them
         # for a legitimately empty portfolio.
@@ -331,9 +328,9 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"invalid T212 quantity: {qty!r}") from e
         if not math.isfinite(qty_f) or qty_f < _ORDER_MIN:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
-        if side_u in {"BUY", "B"}:
+        if side_u in {"BUY", "B", "BID", "LONG"}:
             return qty_f
-        if side_u in {"SELL", "S"}:
+        if side_u in {"SELL", "S", "ASK", "A", "SHORT"}:
             return -qty_f
         raise ProviderError(f"invalid T212 side: {side!r}")
 
@@ -367,7 +364,8 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"T212_ORDER_VALIDITY invalid: {validity!r}")
         return self._client().place_limit_order(symbol, signed, price_f, validity=validity)
 
-    def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+    def place_order(self, symbol: str, side: str, price: float, qty: float,
+                    force: bool = False, **kwargs):
         if not self._orders_live():
             print(
                 f"[T212][DRY] would place {side} {symbol} qty={qty} @ {price} "
@@ -376,7 +374,8 @@ class T212Provider(MarketDataProvider):
         try:
             print(f"[T212][LIVE] {side} {symbol} qty={qty} @ {price}")
             is_market = (
-                _parse_bool_flag(kwargs.get("market", False), False)
+                _parse_bool_flag(force, False)
+                or _parse_bool_flag(kwargs.get("market", False), False)
                 or _parse_bool_flag(kwargs.get("force", False), False)
             )
             qty = self.round_quantity(symbol, qty)
@@ -479,7 +478,7 @@ class T212Provider(MarketDataProvider):
         raw_fee_cur = raw.get("_feeCurrencies")
         fee_currencies = {
             currency.strip().upper()
-            for currency in (raw_fee_cur if isinstance(raw_fee_cur, (list, tuple, set)) else [])
+            for currency in (raw_fee_cur if isinstance(raw_fee_cur, (list, tuple, set, frozenset)) else [])
             if isinstance(currency, str) and currency.strip()
         }
         raw_order_cur = raw.get("currency")

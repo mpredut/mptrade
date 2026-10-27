@@ -55,24 +55,21 @@ _LIVE_ENV = "HL_LIVE_ORDERS"
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
+            return fb
+        return bool(val)
     s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "false", "no", "off"}:
+    if s in {"0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 def _mainnet_setting() -> bool:
@@ -98,6 +95,7 @@ def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
         f"{base}USDC",
         f"{base}/USDC",
         f"{base}-USDC",
+        f"{base}_USDC",
     }
 
 
@@ -471,10 +469,10 @@ class HyperliquidProvider(MarketDataProvider):
         """
         self.validate_symbol(symbol)
         s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B"}:
+        if s_norm in {"BUY", "B", "BID", "LONG"}:
             is_buy = True
             side = "BUY"
-        elif s_norm in {"SELL", "S"}:
+        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
             is_buy = False
             side = "SELL"
         else:
@@ -670,10 +668,12 @@ class HyperliquidProvider(MarketDataProvider):
                      client_order_id: Optional[str] = None) -> str:
         self.validate_symbol(symbol)
         s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B"}:
+        if s_norm in {"BUY", "B", "BID", "LONG"}:
             is_buy = True
-        elif s_norm in {"SELL", "S"}:
+            side = "BUY"
+        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
             is_buy = False
+            side = "SELL"
         else:
             raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.
@@ -745,7 +745,8 @@ class HyperliquidProvider(MarketDataProvider):
         repeats this check to close the race after engine preflight.
         """
         self.validate_symbol(symbol)
-        if not isinstance(side, str) or not side.strip().lower().startswith("b"):
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm not in {"BUY", "B", "BID", "LONG"}:
             return
         if qty is None:
             return

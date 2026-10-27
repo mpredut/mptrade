@@ -18,19 +18,20 @@ def _strip_env_value(raw_val: str) -> str:
 
 
 def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
+        return bool(val) if math.isfinite(float(val)) else fb
     if isinstance(val, str):
         s = _strip_env_value(val).strip().lower()
-        if s in ("1", "true", "yes", "on"):
+        if s in ("1", "true", "yes", "on", "y", "t"):
             return True
-        if s in ("0", "false", "no", "off", "none", ""):
+        if s in ("0", "false", "no", "off", "n", "f"):
             return False
-    return default
+    return fb
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -218,7 +219,7 @@ def extract_order_side(order: Any) -> str:
     if (
         raw_type is not None
         and not isinstance(raw_type, bool)
-        and str(raw_type).strip().upper() in ("BUY", "SELL", "B", "S", "BID", "ASK", "LONG", "SHORT")
+        and str(raw_type).strip().upper() in ("BUY", "SELL", "B", "S", "A", "BID", "ASK", "LONG", "SHORT")
     ):
         t_norm = str(raw_type).strip().upper()
         return "BUY" if t_norm in ("BUY", "B", "BID", "LONG") else "SELL"
@@ -231,9 +232,9 @@ def extract_order_side(order: Any) -> str:
                 return "BUY" if float(raw_buyer) != 0.0 else "SELL"
         elif isinstance(raw_buyer, str):
             b_norm = raw_buyer.strip().lower()
-            if b_norm in ("true", "1", "yes", "b", "buy"):
+            if b_norm in ("true", "1", "yes", "y", "t", "b", "buy"):
                 return "BUY"
-            if b_norm in ("false", "0", "no", "s", "sell"):
+            if b_norm in ("false", "0", "no", "n", "f", "s", "sell"):
                 return "SELL"
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
         signed_qty = order.get(sq_key)
@@ -690,7 +691,7 @@ class MarketDataProvider(ABC):
         """Require that policy checks still describe the prepared provider state."""
         return expected_state
 
-    def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+    def place_order(self, symbol: str, side: str, price: float, qty: float, force: bool = False, **kwargs):
         return None
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
