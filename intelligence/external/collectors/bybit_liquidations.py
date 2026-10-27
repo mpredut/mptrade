@@ -200,9 +200,9 @@ class BybitLiquidationCollector:
                 if not isinstance(raw_s, str):
                     continue
                 raw_side = raw_s.strip().upper()
-                if raw_side in ("BUY", "LONG", "B"):
+                if raw_side in ("BUY", "LONG", "B", "BID"):
                     side = "LONG"
-                elif raw_side in ("SELL", "SHORT", "S"):
+                elif raw_side in ("SELL", "SHORT", "S", "ASK", "A"):
                     side = "SHORT"
                 else:
                     continue
@@ -236,9 +236,9 @@ class BybitLiquidationCollector:
         if not sym_norm:
             return
         raw_side = side.strip().upper()
-        if raw_side in ("LONG", "BUY", "B"):
+        if raw_side in ("LONG", "BUY", "B", "BID"):
             side_norm = "LONG"
-        elif raw_side in ("SHORT", "SELL", "S"):
+        elif raw_side in ("SHORT", "SELL", "S", "ASK", "A"):
             side_norm = "SHORT"
         else:
             return

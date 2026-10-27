@@ -221,6 +221,7 @@ class CompositeMarketIntelligence:
                 dur_sec = 0.0
         if dur_sec > 0.0 and not _is_bypassed("G_QLIMIT2", "exhaustion_guard", "weibullexhaustionguard"):
             surv = get_trend_survival_metrics(symbol, dur_sec)
+            qlimit1_active = not _is_bypassed("G_QLIMIT1", "qlimit1", "gaussian_horizon")
             inferred_trend_dir = (
                 "bull" if (grad_finite is not None and grad_finite > 0)
                 else ("bear" if (grad_finite is not None and grad_finite < 0) else None)
@@ -229,7 +230,7 @@ class CompositeMarketIntelligence:
                 symbol, side, dur_sec,
                 p90_days=surv.get("p90_days"),
                 median_days=surv.get("median_days"),
-                gaussian_horizon_days=surv.get("gaussian_horizon_days"),
+                gaussian_horizon_days=surv.get("gaussian_horizon_days") if qlimit1_active else None,
                 trend_direction=inferred_trend_dir,
             )
             if not exh_dec.allowed:

@@ -69,6 +69,8 @@ class GuardDecision:
             scale_f = 0.0
         if not math.isfinite(scale_f):
             scale_f = 0.0
+        elif 1.0 < scale_f <= 100.0:
+            scale_f = scale_f / 100.0
         clamped_scale = max(0.0, min(1.0, scale_f))
         return cls(
             allowed=clamped_scale > 0.0,

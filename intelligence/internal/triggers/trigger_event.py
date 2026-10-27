@@ -55,9 +55,9 @@ class TriggerEvent:
             if isinstance(self.side, TriggerSide)
             else ("" if isinstance(self.side, bool) or self.side is None else str(self.side).strip().upper())
         )
-        if side_norm == "B":
+        if side_norm in ("B", "BUY", "BID", "LONG"):
             side_norm = "BUY"
-        elif side_norm == "S":
+        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
             side_norm = "SELL"
         action_norm = (
             self.action.value

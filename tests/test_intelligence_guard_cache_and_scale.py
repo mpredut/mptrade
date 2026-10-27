@@ -16749,4 +16749,54 @@ def test_iteration176_sentiment_cascade_guards_and_triggers_dict_and_side_alias_
     assert res.metrics["geopolitical_threat"] == "NORMAL"
 
 
+def test_iteration177_composite_qlimit1_bypass_separation_trigger_event_and_trend_significance_hygiene(monkeypatch):
+    import intelligence.composite as comp_mod
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.internal.guards.guard_decision import GuardDecision
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+
+    # 1. Theme 2: CompositeMarketIntelligence.evaluate_guards does not pass gaussian_horizon_days when G_QLIMIT1 is bypassed
+    monkeypatch.setattr(
+        comp_mod,
+        "get_trend_survival_metrics",
+        lambda sym, dur: {"p90_days": 5.0, "median_days": 2.5, "gaussian_horizon_days": 20.0},
+    )
+    cmi = CompositeMarketIntelligence(exhaustion_policy="downscale", exhaustion_scale=0.25)
+    # When G_QLIMIT1 is active, limit_p90 = max(5.0, 20.0) = 20.0 -> 10 days is NOT exhausted
+    dec_active = cmi.evaluate_guards("BTCUSDC", "BUY", 100.0, trend_duration_seconds=10 * 86400.0)
+    assert dec_active.suggested_scale == pytest.approx(1.0)
+    # When G_QLIMIT1 is bypassed, limit_p90 = 5.0 -> 10 days IS exhausted by G_QLIMIT2 Weibull
+    dec_bypassed = cmi.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        trend_duration_seconds=10 * 86400.0,
+        bypass_guards={"G_QLIMIT1"},
+    )
+    assert dec_bypassed.suggested_scale == pytest.approx(0.25)
+
+    # 2. TriggerEvent.is_executable accepts BID/ASK/LONG/SHORT side aliases
+    ev_bid = TriggerEvent(action=TriggerAction.ENTRY, side="BID", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    ev_ask = TriggerEvent(action=TriggerAction.EXIT, side="ASK", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)
+    assert ev_bid.is_executable() is True
+    assert ev_ask.is_executable() is True
+
+    # 3. GuardDecision.downscale normalizes percentage scale (1.0 < scale <= 100.0)
+    dec_pct = GuardDecision.downscale("TestGuard", scale=35.0, reason="pct_scale")
+    assert dec_pct.allowed is True and dec_pct.suggested_scale == pytest.approx(0.35)
+
+    # 4. TrendSignificanceGuard.evaluate accepts dict trigger and BID/SHORT side aliases
+    tsg = TrendSignificanceGuard(max_p_value=0.05)
+    dec_inv = tsg.evaluate({"action": "ENTRY", "side": "BID"}, [100.0 - i for i in range(12)])
+    assert dec_inv.allowed is False and "trend_direction_inverted" in dec_inv.reason
+
+    # 5. BybitLiquidationCollector.record_event accepts BID and ASK side aliases
+    col = BybitLiquidationCollector(symbols=["BTCUSDT"])
+    col.record_event("BTCUSDT", "BID", 150_000.0, ts=1000.0)
+    col.record_event("BTCUSDT", "ASK", 50_000.0, ts=1000.0)
+    s_liq = col.get_summary("BTCUSDT", window_sec=60.0, now=1005.0)
+    assert s_liq.long_liq_usd == pytest.approx(150_000.0)
+    assert s_liq.short_liq_usd == pytest.approx(50_000.0)
 

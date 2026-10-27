@@ -91,13 +91,13 @@ class LiquidationCapitulationTrigger:
         long_liq = _safe_float(_sum_attr("long_liq_usd", None), None)
         short_liq = _safe_float(_sum_attr("short_liq_usd", None), None)
         total_usd = _safe_float(_sum_attr("total_usd", None), None)
-        if total_usd is None and long_liq is not None and short_liq is not None:
+        if isinstance(summary, dict) and "total_usd" not in summary and long_liq is not None and short_liq is not None:
             total_usd = long_liq + short_liq
         cap_ratio = _safe_float(_sum_attr("capitulation_ratio", None), None)
-        if cap_ratio is None and total_usd is not None and total_usd > 0.0 and long_liq is not None:
+        if isinstance(summary, dict) and "capitulation_ratio" not in summary and total_usd is not None and total_usd > 0.0 and long_liq is not None:
             cap_ratio = long_liq / total_usd
         sq_ratio = _safe_float(_sum_attr("squeeze_ratio", None), None)
-        if sq_ratio is None and total_usd is not None and total_usd > 0.0 and short_liq is not None:
+        if isinstance(summary, dict) and "squeeze_ratio" not in summary and total_usd is not None and total_usd > 0.0 and short_liq is not None:
             sq_ratio = short_liq / total_usd
         win_sec = _safe_float(_sum_attr("window_sec", None), self.window_sec)
         if (
