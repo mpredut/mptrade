@@ -337,8 +337,8 @@ class Instrument:
                 client_order_id=kwargs.get("client_order_id"),
             )
         m = order_guard._load_margins()
-        venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
-        venue_bypass_raw = m.get(venue_key, m["default_bypass_guards"])
+        venue_key = f"{str(getattr(self._provider, 'name', '') or '').strip().lower()}_bypass_guards"
+        venue_bypass_raw = m.get(venue_key, m.get("default_bypass_guards"))
 
         bypassed_guards = (
             normalize_bypassed_guards(bypass_guards=bypass_guards_raw)

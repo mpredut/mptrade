@@ -143,19 +143,20 @@ def _safe_f(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
 
 
 def _parse_bool_flag(raw: Any, default: bool = False) -> bool:
-    if raw is None:
-        return default
+    fb = default if isinstance(default, bool) else False
     if isinstance(raw, bool):
         return raw
+    if raw is None or isinstance(raw, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(raw, (int, float)):
-        return bool(raw) if math.isfinite(float(raw)) else default
+        return bool(raw) if math.isfinite(float(raw)) else fb
     if isinstance(raw, str):
         s = raw.strip().lower()
-        if s in ("1", "1.0", "true", "yes", "on"):
+        if s in ("1", "1.0", "true", "yes", "on", "y", "t"):
             return True
-        if s in ("0", "0.0", "false", "no", "off", "none", "null", "nan", ""):
+        if s in ("0", "0.0", "false", "no", "off", "n", "f"):
             return False
-    return default
+    return fb
 
 
 def _extract_trade_uid(trade: Any) -> str:
@@ -635,17 +636,17 @@ def _load_mt_state(now_curr: float | None = None):
                             state = dict(state)
                             state["last_peak_time"] = now_curr
                     if 0 <= (now_curr - started) < 86400:
-                        target[str(sym).upper()] = state
+                        target[str(sym).strip().upper()] = state
         raw_reentry = data.get("reentry_state")
         if isinstance(raw_reentry, dict):
             for sym, state in raw_reentry.items():
                 if isinstance(state, dict):
-                    _REENTRY_STATE[str(sym).upper()] = state
+                    _REENTRY_STATE[str(sym).strip().upper()] = state
         raw_exit_kind = data.get("last_exit_kind")
         if isinstance(raw_exit_kind, dict):
             for sym, kind in raw_exit_kind.items():
                 if isinstance(kind, str):
-                    _LAST_EXIT_KIND[str(sym).upper()] = kind
+                    _LAST_EXIT_KIND[str(sym).strip().upper()] = kind
         raw_done_sell = data.get("reentry_done_sell_time")
         if isinstance(raw_done_sell, dict):
             for sym, s_ts in raw_done_sell.items():
@@ -654,7 +655,7 @@ def _load_mt_state(now_curr: float | None = None):
                         continue
                     s_ts_val = float(s_ts)
                     if math.isfinite(s_ts_val) and s_ts_val > 0 and 0 <= (now_curr - s_ts_val) < 7 * 86400:
-                        _REENTRY_DONE_SELL_TIME[str(sym).upper()] = s_ts_val
+                        _REENTRY_DONE_SELL_TIME[str(sym).strip().upper()] = s_ts_val
                 except (TypeError, ValueError):
                     pass
         raw_pending_stop = data.get("pending_stop_exit")
@@ -675,7 +676,7 @@ def _load_mt_state(now_curr: float | None = None):
                         state["time"] = now_curr
                         p_ts = now_curr
                     if 0 <= (now_curr - p_ts) < 300:
-                        _PENDING_STOP_EXIT[str(sym).upper()] = state
+                        _PENDING_STOP_EXIT[str(sym).strip().upper()] = state
         raw_hard_tp = data.get("hard_tp_last")
         if isinstance(raw_hard_tp, dict):
             for sym, h_ts in raw_hard_tp.items():
@@ -684,7 +685,7 @@ def _load_mt_state(now_curr: float | None = None):
                         continue
                     h_ts_val = float(h_ts)
                     if math.isfinite(h_ts_val) and h_ts_val > 0 and 0 <= (now_curr - h_ts_val) < 86400:
-                        _hard_tp_last[str(sym).upper()] = h_ts_val
+                        _hard_tp_last[str(sym).strip().upper()] = h_ts_val
                 except (TypeError, ValueError):
                     pass
     except Exception:
@@ -1632,7 +1633,7 @@ def _can_pass_buy_quantity_policy(
             or "binance"
         )
         m_cfg = order_guard._load_margins()
-        venue_bg = m_cfg.get(f"{str(venue_name).lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
+        venue_bg = m_cfg.get(f"{str(venue_name).strip().lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
         reentry_bg = {"G_PROF", "GLLM1"} | normalize_bypassed_guards(bypass_guards=venue_bg)
         if inst_bg:
             reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
@@ -1791,7 +1792,7 @@ def _apply_post_stop_ai_guard(
             or "binance"
         )
         m_cfg = order_guard._load_margins()
-        venue_bg = m_cfg.get(f"{str(venue_name).lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
+        venue_bg = m_cfg.get(f"{str(venue_name).strip().lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
         caller_bg = normalize_bypassed_guards(bypass_guards=venue_bg)
         if inst_bg:
             caller_bg = caller_bg | normalize_bypassed_guards(bypass_guards=inst_bg)

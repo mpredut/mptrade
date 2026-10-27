@@ -16466,6 +16466,83 @@ def test_iteration172_order_guard_qlimit_external_and_llm_side_and_bool_hygiene(
     assert llog._normalize_side("SHORT") == "SELL"
 
 
+def test_iteration173_position_exit_manager_spot_engine_and_monitortrades_hygiene():
+    from decimal import Decimal
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentrySnapshot,
+        _parse_bool_flag as pem_bool,
+    )
+    from strategies.spot_engine import StratParams, _parse_bool_flag as se_bool
+    import monitortrades as mt
+
+    # 1. _parse_bool_flag preserves default=True on empty/null strings across modules
+    assert pem_bool("", True) is True
+    assert pem_bool("none", True) is True
+    assert pem_bool("false", True) is False
+    assert se_bool("", True) is True
+    assert se_bool("null", True) is True
+    assert se_bool("0", True) is False
+    assert mt._parse_bool_flag("", True) is True
+    assert mt._parse_bool_flag("y", False) is True
+    assert mt._parse_bool_flag("n", True) is False
+
+    # 2. PositionExitConfig preserves default=True on empty string, and PositionSnapshot/ReentrySnapshot accept Decimal
+    cfg = PositionExitConfig(smart_sl_enabled="", sl_bounce_ratchet_enabled="")
+    assert cfg.smart_sl_enabled is True
+    assert cfg.sl_bounce_ratchet_enabled is True
+
+    ps = PositionSnapshot(symbol=None, current_price=Decimal("105.5"), avg_buy_price=Decimal("100.0"))
+    assert ps.symbol == ""
+    assert isinstance(ps.current_price, float) and ps.current_price == pytest.approx(105.5)
+    assert isinstance(ps.avg_buy_price, float) and ps.avg_buy_price == pytest.approx(100.0)
+
+    rs = ReentrySnapshot(
+        symbol=True,
+        current_price=Decimal("95.0"),
+        last_sell_price=Decimal("100.0"),
+        post_sell_peak=Decimal("101.0"),
+        post_sell_trough=Decimal("94.0"),
+    )
+    assert rs.symbol == ""
+    assert isinstance(rs.last_sell_price, float) and rs.last_sell_price == pytest.approx(100.0)
+
+    # 3. PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp
+    mgr = PositionExitManager()
+    mgr.reentry_state["BTCUSDC"] = {"trough": 90.0}
+    mgr._pop_reentry_state(" BTCUSDC ")
+    assert "BTCUSDC" not in mgr.reentry_state
+    mgr.restore_reentry_state(" BTCUSDC ")
+    assert mgr.reentry_state.get("BTCUSDC") == {"trough": 90.0}
+    mgr.record_hard_tp(" BTCUSDC ", 1234.0)
+    assert mgr.hard_tp_last.get("BTCUSDC") == pytest.approx(1234.0)
+
+    # 4. StratParams.__post_init__ normalizes string boolean flags
+    sp = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=1.0,
+        dca_amount=100.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=5.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit="",
+        order_ttl_min=60.0,
+        sl_mhdsl_enabled="false",
+        surge_guard="0",
+        tp_mdhtp_enabled="true",
+    )
+    assert sp.enable_takeprofit is True
+    assert sp.sl_mhdsl_enabled is False
+    assert sp.surge_guard is False
+    assert sp.tp_mdhtp_enabled is True
+
+
+
 
 
 

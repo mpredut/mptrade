@@ -64,17 +64,20 @@ class ExitDecision:
 
 
 def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
+        return bool(val) if math.isfinite(float(val)) else fb
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+        if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
             return False
-    return default
+    return fb
 
 
 class PriceGeometrySnapshot:
@@ -192,16 +195,15 @@ class PositionSnapshot(PriceGeometrySnapshot):
     window_move_pct: Optional[float] = None
 
     def __post_init__(self) -> None:
-        if self.symbol is not None and not isinstance(self.symbol, bool):
-            self.symbol = str(self.symbol).strip()
+        self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
         for attr in ("current_price", "avg_buy_price"):
             val = getattr(self, attr, None)
-            if isinstance(val, str):
+            if val is not None and not isinstance(val, bool):
                 try:
                     f = float(val)
                     if math.isfinite(f):
                         setattr(self, attr, f)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     pass
         for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
             val = getattr(self, attr, 0.0)
@@ -341,16 +343,15 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     vol_source: str = "default"
 
     def __post_init__(self) -> None:
-        if self.symbol is not None and not isinstance(self.symbol, bool):
-            self.symbol = str(self.symbol).strip()
+        self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
         for attr in ("current_price", "last_sell_price", "post_sell_peak", "post_sell_trough"):
             val = getattr(self, attr, None)
-            if isinstance(val, str):
+            if val is not None and not isinstance(val, bool):
                 try:
                     f = float(val)
                     if math.isfinite(f):
                         setattr(self, attr, f)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     pass
         for attr in ("current_time_s", "vol_1h"):
             val = getattr(self, attr, 0.0)
@@ -602,15 +603,17 @@ class PositionExitManager:
         self.hard_tp_last: Dict[str, float] = {}
 
     def _pop_reentry_state(self, symbol: str) -> None:
-        popped = self.reentry_state.pop(symbol, None)
+        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        popped = self.reentry_state.pop(sym_clean, None)
         if popped is not None:
-            self._last_popped_reentry_state[symbol] = dict(popped)
+            self._last_popped_reentry_state[sym_clean] = dict(popped)
 
     def restore_reentry_state(self, symbol: str) -> None:
         """Restore the most recently popped re-entry state if an approved entry was not placed."""
-        popped = self._last_popped_reentry_state.pop(symbol, None)
-        if popped is not None and symbol not in self.reentry_state:
-            self.reentry_state[symbol] = dict(popped)
+        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        popped = self._last_popped_reentry_state.pop(sym_clean, None)
+        if popped is not None and sym_clean not in self.reentry_state:
+            self.reentry_state[sym_clean] = dict(popped)
 
     def bind_state(self, store: Dict[str, Any]) -> None:
         """Bind durable lifecycle dicts to an external persisted state store."""
@@ -677,7 +680,8 @@ class PositionExitManager:
         Returns:
             (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
         """
-        episode = self.sl_episode_state.get(symbol)
+        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        episode = self.sl_episode_state.get(sym_clean)
         if not isinstance(episode, dict):
             episode = None
         same_buy = False
@@ -687,7 +691,7 @@ class PositionExitManager:
             except (TypeError, ValueError):
                 same_buy = False
         if episode is None or not same_buy:
-            self.sl_episode_state[symbol] = {
+            self.sl_episode_state[sym_clean] = {
                 "started_at": now,
                 "buy_price": buy_price,
                 "disaster_floor": candidate_floor,
@@ -706,7 +710,8 @@ class PositionExitManager:
 
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
-        self.hard_tp_last[symbol] = _resolve_now_s(timestamp)
+        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
 
     # -------------------------------------------------------------------------
     # Stop-Loss: Volatility-Scaled Disaster Buffer (Priority 1)

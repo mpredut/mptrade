@@ -77,17 +77,20 @@ def _clean_nonneg_float(val: object) -> float | None:
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
+        return bool(val) if math.isfinite(float(val)) else fb
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+        if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
             return False
-    return default
+    return fb
 
 
 def _clean_order_id(val: object) -> str | None:
@@ -267,7 +270,31 @@ class StratParams:
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
         self.takeprofit_pct = finite("STRAT_TAKEPROFIT_PCT", self.takeprofit_pct)
         self.stop_loss_pct = finite("STRAT_STOP_LOSS_PCT", self.stop_loss_pct)
-        self.enable_takeprofit = _parse_bool_flag(self.enable_takeprofit, True)
+        _bool_defaults = {
+            "enable_takeprofit": True,
+            "reentry_adaptive": False,
+            "tp_trend_hold": False,
+            "tp_regime_gate": False,
+            "trend_overlay": False,
+            "trend_exit_break": False,
+            "tp_trail_adaptive": False,
+            "dca_trend_brake": False,
+            "reentry_hybrid_enabled": False,
+            "reentry_peak_relative": False,
+            "reentry_pullback_adaptive": False,
+            "tp_dynamic_flat": False,
+            "trend_trail_dynamic": False,
+            "fast_profit_guard": False,
+            "surge_guard": False,
+            "surge_dynamic": False,
+            "slow_grind_guard": False,
+            "sl_mhdsl_enabled": True,
+            "sl_bounce_ratchet_enabled": True,
+            "sl_structural_break_enabled": True,
+            "tp_mdhtp_enabled": False,
+        }
+        for b_attr, b_def in _bool_defaults.items():
+            setattr(self, b_attr, _parse_bool_flag(getattr(self, b_attr, b_def), b_def))
         if isinstance(self.tp_tranches, str):
             self.tp_tranches = _parse_tranches(self.tp_tranches)
         elif self.tp_tranches is None:
@@ -939,16 +966,30 @@ class Strategy:
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
                market: bool = False) -> bool:
         market = _parse_bool_flag(market, False)
+        side_s = str(side or "").strip().lower() if not isinstance(side, bool) else ""
+        if side_s in ("b", "bid", "long"):
+            side = "buy"
+        elif side_s in ("s", "a", "ask", "short"):
+            side = "sell"
+        elif side_s in ("buy", "sell"):
+            side = side_s
         # A market trailing/stop exit executes immediately instead of risking a missed
         # sharp drop with a limit order. Backtests fill it at the next bar's open.
         if (
             isinstance(vol, bool)
             or isinstance(price, bool)
-            or not isinstance(vol, (int, float))
-            or not isinstance(price, (int, float))
-            or not math.isfinite(vol)
-            or not math.isfinite(price)
+            or vol is None
+            or price is None
         ):
+            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
+            return False
+        try:
+            vol = float(vol)
+            price = float(price)
+        except (TypeError, ValueError, OverflowError):
+            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
+            return False
+        if not (math.isfinite(vol) and math.isfinite(price)):
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
             return False
         vol = round(vol, self.vol_dec)
@@ -2407,19 +2448,13 @@ class Strategy:
         high: float | None = None,
         low: float | None = None,
     ) -> None:
-        if (
-            isinstance(price, bool)
-            or not isinstance(price, (int, float))
-            or not math.isfinite(price)
-            or price <= 0
-        ):
+        clean_price = _clean_pos_float(price)
+        if clean_price is None:
             log("  ! [STRAT] invalid price — deferring step")
             return
-        if (
-            high is not None
-            and (isinstance(high, bool) or not isinstance(high, (int, float)) or not math.isfinite(high) or high <= 0)
-        ):
-            high = None
+        price = clean_price
+        if high is not None:
+            high = _clean_pos_float(high)
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
@@ -2837,11 +2872,11 @@ class Strategy:
             except Exception as exc:
                 log(f"  [STRAT] DCA deferred: quote balance unavailable ({exc})")
                 return
-            if (not isinstance(free_quote, (int, float)) or isinstance(free_quote, bool)
-                    or not math.isfinite(free_quote) or free_quote < 0):
+            clean_quote = _clean_nonneg_float(free_quote)
+            if clean_quote is None:
                 log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
                 return
-            available = min(float(free_quote), self._effective_max_budget() - self.s["spent"])
+            available = min(clean_quote, self._effective_max_budget() - self.s["spent"])
             spend = min(effective_dca_amount, available)
             qty = self._qty_for(spend, entry_px)
             if spend < effective_dca_amount or qty * round(entry_px, self.price_dec) > available:
