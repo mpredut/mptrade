@@ -31,20 +31,34 @@ def resolve_credential_pair(
     values: Mapping[str, str] | None = None,
 ) -> CredentialPair:
     """Return the first complete profile, rejecting every partial profile."""
+    if values is not None and not isinstance(values, Mapping):
+        raise CredentialConfigurationError("Credential values must be a mapping")
+    if isinstance(profiles, (str, bytes)) or not isinstance(profiles, Sequence) or not profiles:
+        raise CredentialConfigurationError("Credential profiles must be a non-empty sequence")
     source = os.environ if values is None else values
-    for label, key_name, secret_name in profiles:
-        raw_k = source.get(key_name, "")
-        raw_s = source.get(secret_name, "")
+    labels_seen: list[str] = []
+    for item in profiles:
+        if isinstance(item, (str, bytes)) or not isinstance(item, Sequence) or len(item) != 3:
+            raise CredentialConfigurationError("Each credential profile must be a (label, key_name, secret_name) tuple")
+        label, key_name, secret_name = item
+        label_str = str(label or "").strip()
+        key_var = str(key_name or "").strip()
+        secret_var = str(secret_name or "").strip()
+        if not label_str or not key_var or not secret_var:
+            raise CredentialConfigurationError("Credential profile label, key_name, and secret_name must be non-empty")
+        labels_seen.append(label_str)
+        raw_k = source.get(key_var, "")
+        raw_s = source.get(secret_var, "")
         key = "" if (raw_k is None or isinstance(raw_k, bool)) else str(raw_k).strip()
         secret = "" if (raw_s is None or isinstance(raw_s, bool)) else str(raw_s).strip()
         if bool(key) != bool(secret):
-            missing = secret_name if key else key_name
+            missing = secret_var if key else key_var
             raise CredentialConfigurationError(
-                f"Incomplete {label} credentials: missing {missing}"
+                f"Incomplete {label_str} credentials: missing {missing}"
             )
         if key:
-            return CredentialPair(key=key, secret=secret, profile=label)
-    labels = ", ".join(label for label, _key, _secret in profiles)
+            return CredentialPair(key=key, secret=secret, profile=label_str)
+    labels = ", ".join(labels_seen)
     raise CredentialProfileMissingError(f"No complete credential profile: {labels}")
 
 

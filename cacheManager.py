@@ -59,6 +59,7 @@ from binance_api import bapi as api
 # through this singleton while trading remains on bapi.
 import providers.market_api as _market_api
 from providers.base import (
+    _parse_bool_flag,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -209,14 +210,19 @@ class CacheManagerInterface(ABC):
         #log.PRINT_CONTEXT = self
 
         self.sync_ts = sync_ts
-        self.symbols = symbols
+        if isinstance(symbols, str):
+            self.symbols = [symbols.strip()] if symbols.strip() else []
+        elif symbols is not None:
+            self.symbols = list(symbols)
+        else:
+            self.symbols = []
         self.filename = u.cache_path(filename)   # Store cache data in the cachedb subdirectory.
-        self.append_mode = append_mode
+        self.append_mode = _parse_bool_flag(append_mode, default=True)
         self.api_client = api_client
         # JSONL persistence for append-only Trade and AssetValue caches writes only
         # new lines rather than rewriting the entire file.
-        self.append_persist = append_persist
-        self.read_only = bool(read_only)
+        self.append_persist = _parse_bool_flag(append_persist, default=False)
+        self.read_only = _parse_bool_flag(read_only, default=False)
         self._persisted_counts = {}   # Number of items already persisted per symbol.
         self._persisted_data_version = ""
         self._persisted_stream_id = ""
@@ -2271,6 +2277,7 @@ class CacheManagerInterface(ABC):
             return persisted
 
     def periodic_sync(self, sync_ts=None, save_state=True):
+        save_state = _parse_bool_flag(save_state, default=True)
         thread = self.thread
         if (
             thread is not None
@@ -2499,9 +2506,13 @@ class CacheTradeManager(CacheManagerInterface):
         authoritative exchange time and immutable trade ID determine recency.
         """
         self.sync_account_reader_if_needed()
-        if not isinstance(order_type, str) or order_type.strip().upper() not in ("BUY", "SELL"):
+        if not isinstance(order_type, str):
             return None
-        want_buyer = (order_type.strip().upper() == "SELL")   # The opposite of SELL is BUY.
+        side_raw = order_type.strip().upper()
+        side_u = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
+        if side_u not in ("BUY", "SELL"):
+            return None
+        want_buyer = (side_u == "SELL")   # The opposite of SELL is BUY.
         sym_u = str(symbol or "").strip().upper()
         sym_clean = sym_u.replace("/", "")
         latest_key = None
@@ -3762,6 +3773,7 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
     Internal calls must pass None so they do not override main-process configuration.
     """
     global _current_price_instance
+    start_sync = _parse_bool_flag(start_sync, default=True)
     inst = _current_price_instance
     if (
         inst is not None
@@ -3793,6 +3805,8 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
             _syms, _, _default_providers = _default_price_tracking()
             if provider_names is None and _default_providers:
                 provider_names = _default_providers
+        elif isinstance(symbols, str):
+            _syms = [symbols.strip()] if symbols.strip() else []
         else:
             _syms = symbols
         instance = CacheCurrentPriceManager(
@@ -3802,7 +3816,7 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
             ws_manager  = ws_manager,
             provider_names = provider_names,
             api_client  = api,
-            read_only   = (not start_sync) if read_only is None else bool(read_only),
+            read_only   = (not start_sync) if read_only is None else _parse_bool_flag(read_only, default=False),
         )
         if start_sync:
             instance.periodic_sync(save_state=False)
@@ -3827,6 +3841,7 @@ def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", wri
     ``writer=True`` lets the process persist the file; calculators and readers use False.
     """
     global _short_trend_instance
+    writer = _parse_bool_flag(writer, default=False)
     inst = _short_trend_instance
     if inst is not None and not writer:
         return inst
@@ -3835,7 +3850,12 @@ def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", wri
             if writer:
                 _short_trend_instance.become_writer()
             return _short_trend_instance
-        _syms = symbols if symbols is not None else _default_price_tracking()[0]
+        if symbols is None:
+            _syms = _default_price_tracking()[0]
+        elif isinstance(symbols, str):
+            _syms = [symbols.strip()] if symbols.strip() else []
+        else:
+            _syms = symbols
         _short_trend_instance = CacheShortTrendManager(_syms, filename, writer=writer)
     return _short_trend_instance
 
@@ -3921,6 +3941,9 @@ class CacheFactory:
 
     @classmethod
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
+        start_sync = _parse_bool_flag(start_sync, default=True)
+        if isinstance(symbols, str):
+            symbols = [symbols.strip()] if symbols.strip() else []
         if name == "ShortTrend":
             return get_short_trend_manager(symbols=symbols)
         inst = cls._instances.get(name)

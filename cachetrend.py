@@ -41,7 +41,11 @@ from state_io import (
     restore_previous_generation,
     stage_previous_generation,
 )
-from providers.base import extract_timestamp_s, normalize_timestamp_ms
+from providers.base import (
+    _parse_bool_flag,
+    extract_timestamp_s,
+    normalize_timestamp_ms,
+)
 
 _cm = sys.modules.get("cacheManager")
 if _cm is None or not hasattr(_cm, "CacheManagerInterface"):
@@ -240,9 +244,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         api_client=None,
         read_only=None,
     ):
-        self.writer = bool(writer)   # Only the writer process persists the file.
+        self.writer = _parse_bool_flag(writer, default=False)   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
-        secs = list(window_seconds) if window_seconds else list(self.WINDOW_SECONDS)
+        if isinstance(window_seconds, (int, float, str)) and not isinstance(window_seconds, bool):
+            secs = [window_seconds]
+        else:
+            secs = list(window_seconds) if window_seconds else list(self.WINDOW_SECONDS)
         valid_secs = []
         for s in secs:
             if s is None or isinstance(s, bool):
@@ -286,11 +293,19 @@ class CacheShortTrendManager(CacheManagerInterface):
                 pass
         effective_api = api_client if api_client is not None else _cm_attr("api", None)
         effective_read_only = (
-            (not self.writer) if read_only is None else bool(read_only)
+            (not self.writer)
+            if read_only is None
+            else _parse_bool_flag(read_only, default=False)
         )
+        if isinstance(symbols, str):
+            norm_symbols = [symbols.strip()] if symbols.strip() else []
+        elif symbols is not None:
+            norm_symbols = list(symbols)
+        else:
+            norm_symbols = []
         super().__init__(
             effective_sync_ts,
-            list(symbols),
+            norm_symbols,
             filename,
             append_mode=False,
             api_client=effective_api,
@@ -420,6 +435,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         self, cache24_managers=None, current_price_mgr=None, run_full_eval=False
     ):
         """Build windows and the fast channel, optionally starting full evaluation."""
+        run_full_eval = _parse_bool_flag(run_full_eval, default=False)
         if self._computing:
             if run_full_eval:
                 self._start_full_eval_loop()
@@ -1511,10 +1527,14 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def prime_from_file(self, symbols=None, *, overwrite=True):
         """Prime memory from startup data so a reader can calculate fresh trends locally."""
+        overwrite = _parse_bool_flag(overwrite, default=True)
         data = self._read_file()
-        allowed = (
-            None if symbols is None else {str(symbol) for symbol in symbols}
-        )
+        if symbols is None:
+            allowed = None
+        elif isinstance(symbols, str):
+            allowed = {symbols.strip()} if symbols.strip() else set()
+        else:
+            allowed = {str(symbol) for symbol in symbols}
         with self._lock:
             for symbol, snap in data.items():
                 if (
@@ -1728,7 +1748,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         """
         if not isinstance(side, str):
             return False
-        side = side.upper()
+        side_raw = side.strip().upper()
+        side = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
+        if side not in ("BUY", "SELL"):
+            return False
+        fast = _parse_bool_flag(fast, default=False)
+        use_noise_gate = _parse_bool_flag(use_noise_gate, default=True)
 
         if window_seconds is not None:
             if isinstance(window_seconds, bool):
@@ -1841,7 +1866,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             side,
             symbol,
             window_seconds=window_seconds,
-            fast=(mode == "gradient"),
+            fast=(str(mode or "").strip().lower() == "gradient"),
         ):
             sleep_fn(poll_f)
             waited += poll_f

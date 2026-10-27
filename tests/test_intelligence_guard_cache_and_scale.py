@@ -15985,3 +15985,67 @@ def test_iteration164_providers_base_market_api_kraken_and_t212_hygiene(tmp_path
     tp = T212Provider(client=SimpleNamespace(get_portfolio=lambda: []))
     assert tp._position(None, strict="false") is None
 
+
+def test_iteration165_credentials_cache_manager_and_cachetrend_hygiene(tmp_path, monkeypatch):
+    import credentials
+    import cacheManager as cm
+    import cachetrend as ct
+
+    # 1. credentials.resolve_credential_pair validation for non-Mapping values and malformed profiles
+    with pytest.raises(credentials.CredentialConfigurationError):
+        credentials.resolve_credential_pair([("Bot", "K", "S")], values=["not_a_mapping"])
+    with pytest.raises(credentials.CredentialConfigurationError):
+        credentials.resolve_credential_pair("not_a_sequence_of_tuples", values={})
+    with pytest.raises(credentials.CredentialConfigurationError):
+        credentials.resolve_credential_pair([], values={})
+    with pytest.raises(credentials.CredentialConfigurationError):
+        credentials.resolve_credential_pair([("Bot", "", "S")], values={})
+    pair = credentials.resolve_credential_pair(
+        [(" Bot ", " K ", " S ")],
+        values={"K": " key_val ", "S": " sec_val "},
+    )
+    assert pair.key == "key_val" and pair.secret == "sec_val" and pair.profile == "Bot"
+
+    # 2. CacheTradeManager: string symbols normalization, read_only="true" flag, and "B"/"S" side aliases in get_last_opposite_fill_price
+    monkeypatch.setattr(cm.u, "cache_path", lambda fn: str(tmp_path / fn))
+    tm = cm.CacheTradeManager(60, "BTCUSDC", "test_trades.jsonl", read_only="true")
+    assert tm.symbols == ["BTCUSDC"]
+    assert tm.read_only is True
+    monkeypatch.setattr(tm, "sync_account_reader_if_needed", lambda: None)
+    tm.cache["BTCUSDC"] = [
+        {"symbol": "BTCUSDC", "id": 1, "orderId": 10, "price": "65000.0", "qty": "0.1", "time": 1700000000000, "isBuyer": True},
+        {"symbol": "BTCUSDC", "id": 2, "orderId": 11, "price": "66000.0", "qty": "0.1", "time": 1700000005000, "isBuyer": False},
+    ]
+    assert tm.get_last_opposite_fill_price("BTCUSDC", "b") == pytest.approx(66000.0)
+    assert tm.get_last_opposite_fill_price("BTCUSDC", "s") == pytest.approx(65000.0)
+
+    # 3. CacheShortTrendManager: string symbols, writer="false", window_seconds as scalar, and should_wait with " buy "/" sell "/"b"/"s" + use_noise_gate="false"
+    st_file = str(tmp_path / "test_short_trend.json")
+    stm = ct.CacheShortTrendManager(
+        "BTCUSDC",
+        filename=st_file,
+        writer="false",
+        window_seconds="120.0",
+        read_only="true",
+    )
+    assert stm.symbols == ["BTCUSDC"]
+    assert stm.writer is False
+    assert stm.read_only is True
+    assert stm.window_seconds == [120.0]
+
+    now_ts = 1700000100.0
+    stm._set_mem(
+        "BTCUSDC",
+        growth_coefficient=-0.5,
+        gradient_recent=-0.5,
+        gradient_recent_fast=-0.5,
+        epsilon=0.01,
+        current_price=65000.0,
+        ts=now_ts,
+    )
+    assert stm.should_wait(" buy ", "BTCUSDC", now=now_ts, use_noise_gate="false") is True
+    assert stm.should_wait("b", "BTCUSDC", now=now_ts, use_noise_gate="false") is True
+    assert stm.should_wait(" sell ", "BTCUSDC", now=now_ts, use_noise_gate="false") is False
+    assert stm.should_wait("s", "BTCUSDC", now=now_ts, use_noise_gate="false") is False
+
+
