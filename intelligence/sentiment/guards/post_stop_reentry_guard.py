@@ -65,12 +65,22 @@ class PostStopReentryGuard:
         return raw_m
 
     @staticmethod
-    def _as_bool_flag(val: Any) -> bool:
+    def _as_bool_flag(val: Any, default: bool = True) -> bool:
+        default_b = bool(default) if isinstance(default, bool) else True
+        if val is None:
+            return default_b
+        if isinstance(val, bool):
+            return val
         if isinstance(val, str):
-            return val.strip().lower() not in ("0", "0.0", "false", "no", "off", "disabled", "nan", "")
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            s = val.strip().lower()
+            if s in ("1", "1.0", "true", "yes", "on", "y", "t"):
+                return True
+            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", "", "n", "f"):
+                return False
+            return default_b
+        if isinstance(val, (int, float)):
             return math.isfinite(float(val)) and float(val) != 0.0
-        return bool(val)
+        return default_b
 
     def __init__(
         self,
@@ -363,7 +373,9 @@ def get_post_stop_reentry_guard(
         m = _load_margins()
     else:
         m = margins
-    raw_mode = m["post_stop_reentry_mode"]
+    if not isinstance(m, dict):
+        m = {}
+    raw_mode = m.get("post_stop_reentry_mode", "enforce")
     mode = PostStopReentryGuard._normalize_mode(raw_mode, default="enforce")
     intel_master = PostStopReentryGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
     llm_master = PostStopReentryGuard._normalize_mode(m.get("llm_guard_mode", "enforce"), default="enforce")
@@ -381,12 +393,13 @@ def get_post_stop_reentry_guard(
         except (TypeError, ValueError, OverflowError):
             return default
 
-    timeout = _safe_pos_f(m["post_stop_reentry_timeout_sec"], DEFAULT_TIMEOUT_SEC)
+    timeout = _safe_pos_f(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
     if timeout <= 0.0:
         timeout = DEFAULT_TIMEOUT_SEC
-    fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
-    notify_en = PostStopReentryGuard._as_bool_flag(m["post_stop_reentry_notify"])
-    cache_ttl = _safe_pos_f(m["post_stop_reentry_cache_ttl_sec"], DEFAULT_POST_STOP_CACHE_TTL_SEC)
+    raw_fb = m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)
+    fallback = str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK
+    notify_en = PostStopReentryGuard._as_bool_flag(m.get("post_stop_reentry_notify", True), default=True)
+    cache_ttl = _safe_pos_f(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
 
     if gemini_client is not None:
         return PostStopReentryGuard(

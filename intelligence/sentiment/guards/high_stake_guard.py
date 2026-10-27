@@ -110,11 +110,15 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         is_buyer = o.get("isBuyer")
         if isinstance(is_buyer, bool):
             return "BUY" if is_buyer else "SELL"
+        if isinstance(is_buyer, (int, float)):
+            if math.isfinite(float(is_buyer)):
+                return "BUY" if float(is_buyer) != 0.0 else "SELL"
+            return ""
         if isinstance(is_buyer, str):
             ib_low = is_buyer.strip().lower()
-            if ib_low in ("true", "1", "yes"):
+            if ib_low in ("true", "1", "1.0", "yes", "on"):
                 return "BUY"
-            if ib_low in ("false", "0", "no"):
+            if ib_low in ("false", "0", "0.0", "no", "off"):
                 return "SELL"
         return ""
 
@@ -627,7 +631,7 @@ class HighStakeGuard:
                     notional = nf
             except (TypeError, ValueError):
                 notional = 0.0
-        elif notional_eur is None:
+        if notional <= 0.0:
             if (
                 price is not None and not isinstance(price, bool)
                 and qty is not None and not isinstance(qty, bool)

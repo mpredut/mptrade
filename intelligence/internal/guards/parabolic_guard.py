@@ -76,8 +76,17 @@ class ParabolicSurgeGuard:
                     ts_now = nf
             except (TypeError, ValueError):
                 pass
-        if ts_now <= 0.0 and price_history:
-            for item in reversed(price_history):
+        history_seq = (
+            list(price_history)
+            if price_history is not None
+            and not isinstance(price_history, (str, bytes, bytearray, dict, set, frozenset, bool))
+            and hasattr(price_history, "__iter__")
+            else []
+        )
+        if ts_now <= 0.0 and history_seq:
+            for item in reversed(history_seq):
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    continue
                 try:
                     raw_last_ts = item[0]
                     if not isinstance(raw_last_ts, bool):
@@ -99,16 +108,37 @@ class ParabolicSurgeGuard:
 
         sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
         state_key = sym_norm if side_u == "BUY" else f"{sym_norm}:SELL"
-        st = self._states.setdefault(
-            state_key,
-            {
+        raw_st = self._states.get(state_key)
+        if not isinstance(raw_st, dict):
+            st = {
                 "peak": current_price,
                 "surge_active": False,
                 "surge_start_px": current_price,
                 "ts": ts_now,
                 "disarmed_peak_ts": 0.0,
-            },
-        )
+            }
+            self._states[state_key] = st
+        else:
+            st = raw_st
+            try:
+                pk_f = float(st.get("peak")) if not isinstance(st.get("peak"), bool) else 0.0
+                if not (math.isfinite(pk_f) and pk_f > 0):
+                    st["peak"] = current_price
+                else:
+                    st["peak"] = pk_f
+            except (TypeError, ValueError):
+                st["peak"] = current_price
+            try:
+                ts_f = float(st.get("ts")) if not isinstance(st.get("ts"), bool) else 0.0
+                st["ts"] = ts_f if (math.isfinite(ts_f) and ts_f >= 0.0) else 0.0
+            except (TypeError, ValueError):
+                st["ts"] = 0.0
+            try:
+                dp_f = float(st.get("disarmed_peak_ts")) if not isinstance(st.get("disarmed_peak_ts"), bool) else 0.0
+                st["disarmed_peak_ts"] = dp_f if (math.isfinite(dp_f) and dp_f >= 0.0) else 0.0
+            except (TypeError, ValueError):
+                st["disarmed_peak_ts"] = 0.0
+            st["surge_active"] = bool(st.get("surge_active", False))
 
         # Reset clock-skewed future timestamps
         if ts_now > 0 and float(st.get("disarmed_peak_ts", 0.0)) > ts_now + 5.0:
@@ -135,11 +165,13 @@ class ParabolicSurgeGuard:
             st["ts"] = ts_now
 
         # Check chronological directional move in rolling window if history provided
-        if price_history and len(price_history) >= 2:
+        if len(history_seq) >= 2:
             window_start_ts = max(ts_now - self.window_seconds, float(st.get("disarmed_peak_ts", 0.0)))
             max_allowed_ts = (ts_now + 5.0) if ts_now > 0 else float("inf")
             window_pts = []
-            for item in price_history:
+            for item in history_seq:
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    continue
                 try:
                     raw_t = item[0]
                     raw_p = item[1]

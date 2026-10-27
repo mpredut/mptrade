@@ -72,9 +72,7 @@ class MacroAnalyzer:
         self.macro_llm_interval_sec = _clean_pos_interval(macro_llm_interval_sec, default_macro_itv)
         self.advisor_interval_sec = _clean_pos_interval(advisor_interval_sec, default_adv_itv)
 
-        self.shadow_notify = str(conf_margins["shadow_notify"]).strip().lower() in (
-            "1", "1.0", "true", "yes", "on"
-        )
+        self.shadow_notify = _as_bool(conf_margins.get("shadow_notify", True))
         self.thread_prune_interval_sec = _clean_pos_interval(thread_prune_interval_sec, 10800.0)
         raw_syms = (
             symbols.split(",")
@@ -274,7 +272,7 @@ class MacroAnalyzer:
                         try:
                             t7_f = float(raw_t7d)
                             if math.isfinite(t7_f):
-                                fg_t7d = int(t7_f)
+                                fg_t7d = int(round(t7_f))
                         except (TypeError, ValueError, OverflowError):
                             fg_t7d = 0
                     hist_vals = []
@@ -284,7 +282,7 @@ class MacroAnalyzer:
                                 try:
                                     hv_f = float(v)
                                     if math.isfinite(hv_f):
-                                        hist_vals.append(int(hv_f))
+                                        hist_vals.append(max(0, min(100, int(round(hv_f)))))
                                 except (TypeError, ValueError, OverflowError):
                                     pass
                     def _fg_bool(val: Any, default: bool) -> bool:

@@ -318,7 +318,11 @@ class SmartStopLossGuard:
             - should_execute = False -> Defer stop-loss for this tick (grace period active).
         """
         now_ts = _resolve_now(now)
-        sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym_key = (
+            symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+            if isinstance(symbol, str)
+            else ""
+        )
         is_sim = _is_simulated_provider(provider)
         price_decrease = _safe_float(price_decrease, 0.0)
         lost_threshold = _safe_float(lost_threshold, 0.0)
@@ -330,6 +334,8 @@ class SmartStopLossGuard:
             "now": now_ts,
             "is_simulated": is_sim,
         }
+        if not sym_key:
+            return True, "invalid_symbol", meta
 
         # 0. Global Mode Switch
         if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
@@ -382,12 +388,15 @@ class SmartStopLossGuard:
             except TypeError:
                 ob_snap = ob_col.fetch(sym_key, allow_network=False)
 
-        top_long_pct = _safe_float(getattr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
-        taker_ratio = _safe_float(getattr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
-        raw_div_reg = getattr(w_snap, "divergence_regime", None) if w_snap else None
+        def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+        top_long_pct = _safe_float(_obj_attr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
+        taker_ratio = _safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
+        raw_div_reg = _obj_attr(w_snap, "divergence_regime", None) if w_snap else None
         divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
-        imbalance = _safe_float(getattr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
-        bid_wall = _safe_float(getattr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
+        imbalance = _safe_float(_obj_attr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
+        bid_wall = _safe_float(_obj_attr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
 
         meta.update({
             "top_long_pct": round(top_long_pct * 100.0, 1),
@@ -567,7 +576,13 @@ class SmartStopLossGuard:
         """Called when price decrease drops back below or equal to threshold."""
         if not _GRACE_TRACKER and (_LOADED_STATE_FILE_KEY is not None or _is_simulated_provider(provider)):
             return False
-        sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym_key = (
+            symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+            if isinstance(symbol, str)
+            else ""
+        )
+        if not sym_key:
+            return False
         is_sim_call = _is_simulated_provider(provider)
         tracker = _load_grace_state(is_sim=is_sim_call)
         if sym_key in tracker:
@@ -666,8 +681,10 @@ def evaluate_smart_stop_loss(
     """Convenience functional interface for monitortrades.py."""
     from order_guard import _load_margins
     m = _load_margins()
+    if not isinstance(m, dict):
+        m = {}
 
-    raw_mode = m["smart_sl_mode"]
+    raw_mode = m.get("smart_sl_mode", "enforce")
     mode = SmartStopLossGuard._normalize_mode(raw_mode, default="enforce")
     intel_master = SmartStopLossGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
     ext_master = SmartStopLossGuard._normalize_mode(m.get("external_guard_mode", "enforce"), default="enforce")
@@ -675,11 +692,11 @@ def evaluate_smart_stop_loss(
         mode = "off"
     elif ext_master == "shadow" and mode == "enforce":
         mode = "shadow"
-    max_thresh = _safe_float(m["smart_sl_max_threshold_pct"], 6.0)
-    grace_sec = _safe_float(m["smart_sl_grace_seconds"], 120.0)
-    default_disaster_buf = _safe_float(m["smart_sl_disaster_buffer_pct"], 0.85)
-    min_whale = _safe_float(m["smart_sl_min_whale_long_pct"], 0.60)
-    min_taker = _safe_float(m["smart_sl_min_taker_ratio"], 0.85)
+    max_thresh = _safe_float(m.get("smart_sl_max_threshold_pct"), 6.0)
+    grace_sec = _safe_float(m.get("smart_sl_grace_seconds"), 120.0)
+    default_disaster_buf = _safe_float(m.get("smart_sl_disaster_buffer_pct"), 0.85)
+    min_whale = _safe_float(m.get("smart_sl_min_whale_long_pct"), 0.60)
+    min_taker = _safe_float(m.get("smart_sl_min_taker_ratio"), 0.85)
 
     effective_disaster_buf = (
         default_disaster_buf
@@ -738,7 +755,13 @@ def clear_smart_stop_loss_if_recovered(
 
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
-    sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    sym_key = (
+        symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        if isinstance(symbol, str)
+        else ""
+    )
+    if not sym_key:
+        return
     is_sim_call = _is_simulated_provider(provider)
     tracker = _load_grace_state(is_sim=is_sim_call)
     if sym_key in tracker:

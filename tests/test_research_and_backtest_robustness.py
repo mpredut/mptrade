@@ -6334,3 +6334,91 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     assert ea_mod._parse_bool_flag("0.0", True) is False
 
 
+def test_batch45_intelligence_guards_and_triggers_hardening(tmp_path, monkeypatch):
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.external.guards.smart_stop_loss_guard import (
+        SmartStopLossGuard,
+        clear_smart_stop_loss,
+        evaluate_smart_stop_loss,
+    )
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, extract_symbol_recent_fills
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        get_post_stop_reentry_guard,
+    )
+
+    # 1. ParabolicSurgeGuard handles generator/invalid price_history and corrupted _states
+    pg = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
+    pg._states["BTCUSDC"] = {"peak": None, "ts": None, "disarmed_peak_ts": None}
+    gen_hist = ((t, p) for t, p in [(1000.0, 100.0), (1060.0, 105.0)])
+    dec_pg = pg.check("BTCUSDC", "BUY", 105.0, price_history=gen_hist)  # type: ignore[arg-type]
+    assert not dec_pg.allowed and "parabolic_surge_active" in dec_pg.reason
+    dec_pg_bad = pg.check("ETHUSDC", "BUY", 100.0, price_history="not_a_list")  # type: ignore[arg-type]
+    assert dec_pg_bad.allowed
+
+    # 2. SmartStopLossGuard supports dict snapshots, invalid symbols, and partial _load_margins
+    slg = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    ok_bad_sym, rsn_bad_sym, _ = slg.evaluate("", 0.04, 0.03, provider="sim")
+    assert ok_bad_sym is True and rsn_bad_sym == "invalid_symbol"
+    assert slg.on_recovered(True, 0.01, 0.03, provider="sim") is False  # type: ignore[arg-type]
+    clear_smart_stop_loss("", provider="sim")
+    ok_dict, rsn_dict, _ = slg.evaluate(
+        "BTCUSDC",
+        0.031,
+        0.030,
+        now=1700000000.0,
+        provider="sim",
+        whale_snapshot={"top_traders_long_pct": 0.68, "taker_buy_sell_ratio": 1.15, "divergence_regime": "accumulation"},
+        orderbook_snapshot={"imbalance_ratio": 0.72, "largest_bid_wall_usd": 600000.0},
+    )
+    assert ok_dict is False and "suspected_wick_hunt" in rsn_dict
+    clear_smart_stop_loss("BTCUSDC", provider="sim")
+
+    import order_guard
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: {"smart_sl_mode": "off"})
+    ok_eval, rsn_eval, _ = evaluate_smart_stop_loss("BTCUSDC", 0.035, 0.030, provider="sim")
+    assert ok_eval is True and rsn_eval == "smart_sl_disabled"
+
+    # 3. WhaleAccumulationTrigger supports dict snapshots
+    wat = WhaleAccumulationTrigger()
+    ev_buy = wat.evaluate(
+        "BTCUSDC",
+        50000.0,
+        snapshot={
+            "top_traders_long_pct": 0.65,
+            "taker_buy_sell_ratio": 1.35,
+            "open_interest_1h_change_pct": 1.2,
+            "divergence_regime": "accumulation",
+        },  # type: ignore[arg-type]
+        now=1700000000.0,
+    )
+    assert ev_buy is not None and ev_buy.side.value == "BUY"
+
+    # 4. HighStakeGuard falls back to price * qty when notional_eur is 0.0 or NaN, and extract_symbol_recent_fills handles numeric/float-str isBuyer
+    fills = extract_symbol_recent_fills([
+        {"price": "100.0", "qty": "2.0", "time": 1000, "isBuyer": 1},
+        {"price": "110.0", "qty": "1.0", "time": 2000, "isBuyer": "0.0"},
+    ])
+    assert fills is not None
+    assert fills["last_action_side"] == "SELL"
+    assert fills["last_buy"]["price"] == 100.0
+    assert fills["last_sell"]["price"] == 110.0
+
+    class _DummyGemini:
+        def query_json(self, *args, **kwargs):
+            return {"decision": "DOWNSCALE", "suggested_scale": 0.4, "reason": "test_downscale"}
+
+    hsg = HighStakeGuard(gemini_client=_DummyGemini(), min_notional_eur=500.0, cache_ttl_sec=0.0)  # type: ignore[arg-type]
+    dec_hsg = hsg.check("BTCUSDC", "BUY", price=100.0, qty=10.0, notional_eur=0.0, telemetry={"k": "v"})
+    assert dec_hsg.suggested_scale == 0.4
+
+    # 5. PostStopReentryGuard._as_bool_flag and get_post_stop_reentry_guard partial margins
+    assert PostStopReentryGuard._as_bool_flag("0.0", default=True) is False
+    assert PostStopReentryGuard._as_bool_flag("1.0", default=False) is True
+    assert PostStopReentryGuard._as_bool_flag("unknown_token", default=False) is False
+    ps_guard = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "off"}, gemini_client=_DummyGemini())  # type: ignore[arg-type]
+    assert ps_guard.mode == "off"
+
+
+

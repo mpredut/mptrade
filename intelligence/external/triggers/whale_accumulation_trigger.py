@@ -83,9 +83,14 @@ class WhaleAccumulationTrigger:
         if snapshot is None:
             return None
 
-        raw_long_pct = getattr(snapshot, "top_traders_long_pct", None)
-        raw_taker_ratio = getattr(snapshot, "taker_buy_sell_ratio", None)
-        raw_oi_chg = getattr(snapshot, "open_interest_1h_change_pct", None)
+        def _snap_attr(key: str, default=None):
+            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
+
+        raw_long_pct = _snap_attr("top_traders_long_pct", None)
+        raw_taker_ratio = _snap_attr("taker_buy_sell_ratio", None)
+        raw_oi_chg = _snap_attr("open_interest_1h_change_pct", None)
+        raw_regime = _snap_attr("divergence_regime", "neutral")
+        regime_str = raw_regime.strip() if isinstance(raw_regime, str) and raw_regime.strip() else "neutral"
         if (
             raw_long_pct is None
             or raw_taker_ratio is None
@@ -126,7 +131,7 @@ class WhaleAccumulationTrigger:
                     "top_long_pct": top_long_pct,
                     "taker_ratio": taker_ratio,
                     "oi_change_pct": oi_chg,
-                    "regime": getattr(snapshot, "divergence_regime", "neutral"),
+                    "regime": regime_str,
                 },
             )
 
@@ -152,7 +157,7 @@ class WhaleAccumulationTrigger:
                     "top_short_pct": top_short_pct,
                     "taker_ratio": taker_ratio,
                     "oi_change_pct": oi_chg,
-                    "regime": getattr(snapshot, "divergence_regime", "neutral"),
+                    "regime": regime_str,
                 },
             )
 
