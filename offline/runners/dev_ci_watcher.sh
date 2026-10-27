@@ -25,12 +25,17 @@ LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 
 if [ "$LOCAL" != "$REMOTE" ]; then
-    echo "[dev_ci_watcher $(date '+%F %T')] Remote update detected ($LOCAL -> $REMOTE). Pulling..."
-    git checkout -- offline/research/*_results.json 2>/dev/null || true
-    if git pull --ff-only origin "$BRANCH"; then
-        echo "[dev_ci_watcher $(date '+%F %T')] Git pull successful. Launching regression..."
-        nohup "$SCRIPT_DIR/run_dev_regression.sh" >/dev/null 2>&1 &
+    echo "[dev_ci_watcher $(date '+%F %T')] Remote update detected ($LOCAL -> $REMOTE)."
+    if flock -n /tmp/dev_regression.lock true 2>/dev/null; then
+        git checkout -- offline/research/*_results.json 2>/dev/null || true
+        if git pull --ff-only origin "$BRANCH"; then
+            echo "[dev_ci_watcher $(date '+%F %T')] Git pull successful. Launching regression..."
+            nohup "$SCRIPT_DIR/run_dev_regression.sh" </dev/null >/dev/null 2>&1 &
+        else
+            echo "[dev_ci_watcher $(date '+%F %T')] ERROR: git pull --ff-only failed" >&2
+        fi
     else
-        echo "[dev_ci_watcher $(date '+%F %T')] ERROR: git pull --ff-only failed" >&2
+        echo "[dev_ci_watcher $(date '+%F %T')] Regression currently in flight; queueing run_dev_regression.sh to pull after lock release..."
+        nohup "$SCRIPT_DIR/run_dev_regression.sh" </dev/null >/dev/null 2>&1 &
     fi
 fi

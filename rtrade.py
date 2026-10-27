@@ -167,6 +167,8 @@ def _validate_intent_recovery_config(
             or missing_confirmations < 2):
         raise ValueError(
             "RTRADE_INTENT_MISSING_CONFIRMATIONS must be an integer >= 2")
+    if isinstance(poll_sec, bool) or isinstance(horizon_sec, bool):
+        raise ValueError("rtrade intent recovery timing must be numeric")
     try:
         poll_sec = float(poll_sec)
         horizon_sec = float(horizon_sec)
@@ -280,10 +282,15 @@ class _LivePairVenue:
 
     @staticmethod
     def _limit_kind(revision):
+        if isinstance(revision, bool):
+            raise ValueError("limit revision must be an integer")
         try:
-            revision = int(revision)
+            rev_f = float(revision)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("limit revision must be an integer") from exc
+        if not math.isfinite(rev_f) or not rev_f.is_integer():
+            raise ValueError("limit revision must be an integer")
+        revision = int(rev_f)
         if not 0 <= revision <= 1_000_000:
             raise ValueError("limit revision must be between 0 and 1000000")
         return "limit" if revision == 0 else f"limit_{revision}"
@@ -761,7 +768,15 @@ class _LivePairVenue:
         fee-cap, precision, preflight, or client-order-ID auditing.
         """
         side = side.upper()
-        revision = int(revision)
+        if isinstance(revision, bool):
+            raise ValueError("hard-stop revision must be an integer")
+        try:
+            rev_f = float(revision)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("hard-stop revision must be an integer") from exc
+        if not math.isfinite(rev_f) or not rev_f.is_integer():
+            raise ValueError("hard-stop revision must be an integer")
+        revision = int(rev_f)
         if not 0 <= revision <= 1_000_000:
             raise ValueError("hard-stop revision must be between 0 and 1000000")
         store_kind = "hard_stop" if revision == 0 else f"hard_stop_{revision}"

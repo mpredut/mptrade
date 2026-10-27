@@ -2127,6 +2127,33 @@ class TestAtomicWrite(unittest.TestCase):
                 json.dump({"max_ts": 9999999999999}, fh)
             self.assertFalse(pf_mgr.save_state_to_file())
 
+        # CacheCurrentPriceManager._extract_price_and_ts selects newest entry from multi-entry list
+        cp_path = os.path.join(self.tmp, "cache_current_multi.json")
+        now_ms = int(time.time() * 1000)
+        with open(cp_path, "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTCUSDC": [[now_ms - 1000, 50000.0], [now_ms, 60000.0]]}, "fetchtime": {"BTCUSDC": now_ms}}, fh)
+        cp_mgr = cm.CacheCurrentPriceManager(60, ["BTCUSDC"], cp_path, read_only=True)
+        self.assertEqual(cp_mgr._extract_price_and_ts([[now_ms - 1000, 50000.0], [now_ms, 60000.0]]), (60000.0, now_ms))
+        self.assertEqual(cp_mgr.get_cached_price_observation("BTCUSDC", max_age_sec=60.0), (now_ms / 1000.0, 60000.0))
+
+        # CacheShortTrendManager.get_window and get_analyzer resolve symbol variants (e.g. BTC/USDC -> BTCUSDC)
+        st_path = os.path.join(self.tmp, "cache_short_variant.json")
+        st_mgr = cm.CacheShortTrendManager(["BTCUSDC"], filename=st_path, read_only=True)
+        self.assertIs(st_mgr.get_window("BTC/USDC"), st_mgr.get_window("BTCUSDC"))
+        self.assertIs(st_mgr.get_analyzer("BTC/USDC"), st_mgr.get_analyzer("BTCUSDC"))
+
+        # tradeall._sanitize_field and rtrade revision/config validation
+        import tradeall
+        import rtrade
+        self.assertEqual(tradeall._sanitize_field("a|b\rc\nd"), "a/b c d")
+        self.assertEqual(tradeall._sanitize_field(None), "")
+        with self.assertRaises(ValueError):
+            rtrade._LivePairVenue._limit_kind(True)
+        with self.assertRaises(ValueError):
+            rtrade._LivePairVenue._limit_kind(1.5)
+        with self.assertRaises(ValueError):
+            rtrade._validate_intent_recovery_config(poll_sec=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

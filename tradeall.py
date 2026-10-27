@@ -139,7 +139,11 @@ _validate_tradeall_config()
 
 def _sanitize_field(value):
     """Remove characters that would break the pipe-delimited format (A3)."""
-    return str(value).replace("|", "/").replace("\n", " ")
+    return (
+        str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+        if value is not None
+        else ""
+    )
 
 
 def log_decision(symbol, event, **fields):

@@ -673,7 +673,13 @@ class CacheShortTrendManager(CacheManagerInterface):
     # ── Calculation API ──────────────────────────────────────────────────────
     def get_window(self, symbol, seconds=None):
         """Return the requested window, or the smallest primary window for None."""
-        wins = self.windows.get(symbol) or {}
+        wins = self.windows.get(symbol)
+        if not wins:
+            for cand in _short_trend_symbol_variants(symbol):
+                wins = self.windows.get(cand)
+                if wins:
+                    break
+        wins = wins or {}
         if seconds is None:
             return wins.get(self.window_seconds[0])
         if isinstance(seconds, bool):
@@ -686,7 +692,13 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def get_analyzer(self, symbol, seconds=None):
         """Return the requested analyzer, or the smallest primary analyzer for None."""
-        ans = self.analyzers.get(symbol) or {}
+        ans = self.analyzers.get(symbol)
+        if not ans:
+            for cand in _short_trend_symbol_variants(symbol):
+                ans = self.analyzers.get(cand)
+                if ans:
+                    break
+        ans = ans or {}
         if seconds is None:
             return ans.get(self.window_seconds[0])
         if isinstance(seconds, bool):

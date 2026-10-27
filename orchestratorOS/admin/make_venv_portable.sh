@@ -25,14 +25,16 @@ ACT="$ROOT/$VENV_NAME/bin/activate"
 python3 - "$ACT" <<'PY'
 import re, sys
 path = sys.argv[1]
-src = open(path).read()
+with open(path, "r", encoding="utf-8") as f:
+    src = f.read()
 # Self-derive VIRTUAL_ENV from activate's own location (bash: BASH_SOURCE; fallback $0).
 derive = 'export VIRTUAL_ENV="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"'
 # Match the non-cygwin `export VIRTUAL_ENV=<literal path>` line only (leave the
 # cygpath Windows branch, which never runs on the Linux server, untouched).
 out = re.sub(r'(?m)^(\s*)export VIRTUAL_ENV=(?!\$\(cygpath)(?!")\S.*$', r'\1' + derive, src)
 if out != src:
-    open(path, "w").write(out)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(out)
     print(f"activate patched to self-derive VIRTUAL_ENV: {path}")
 else:
     print(f"activate already self-deriving (no change): {path}")

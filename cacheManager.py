@@ -335,7 +335,7 @@ class CacheManagerInterface(ABC):
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
                 def _read_json(candidate_path):
-                    with open(candidate_path, "r") as handle:
+                    with open(candidate_path, "r", encoding="utf-8") as handle:
                         payload = json.load(handle)
                     if not isinstance(payload, dict):
                         raise ValueError("cache payload root must be a dict")
@@ -519,7 +519,7 @@ class CacheManagerInterface(ABC):
     def _persisted_max_ts(self):
         """Read file freshness cheaply from the ``.meta`` sidecar."""
         try:
-            with open(self.filename + ".meta") as mf:
+            with open(meta_file_path(self.filename), "r", encoding="utf-8") as mf:
                 meta = json.load(mf)
             if not isinstance(meta, dict):
                 return 0
@@ -903,7 +903,7 @@ class CacheManagerInterface(ABC):
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
                 def _read_json(candidate_path):
-                    with open(candidate_path) as handle:
+                    with open(candidate_path, "r", encoding="utf-8") as handle:
                         payload = json.load(handle)
                     if not isinstance(payload, dict):
                         raise ValueError("cache payload root must be a dict")
@@ -3072,7 +3072,7 @@ class Cache365PriceManager(Cache24PriceManager):
             metaf = self.filename + ".meta"
             if os.path.exists(metaf):
                 try:
-                    with open(metaf) as handle:
+                    with open(metaf, "r", encoding="utf-8") as handle:
                         meta_payload = json.load(handle)
                     if isinstance(meta_payload, dict):
                         raw_ft = meta_payload.get("fetchtime")
@@ -3503,9 +3503,20 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             return None, None
         first = items[0]
         if isinstance(first, (list, tuple)):
-            if len(first) < 2 or first[0] is None or first[1] is None:
-                return None, None
-            raw_ts, raw_price = first[0], first[1]
+            for cand in reversed(items):
+                if not isinstance(cand, (list, tuple)) or len(cand) < 2:
+                    continue
+                raw_ts, raw_price = cand[0], cand[1]
+                if raw_ts is None or raw_price is None or isinstance(raw_ts, bool) or isinstance(raw_price, bool):
+                    continue
+                try:
+                    ts_ms = int(raw_ts)
+                    price = float(raw_price)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if ts_ms > 0 and math.isfinite(price) and price > 0:
+                    return price, ts_ms
+            return None, None
         elif len(items) >= 2 and items[0] is not None and items[1] is not None:
             raw_ts, raw_price = items[0], items[1]
         else:
@@ -3656,16 +3667,11 @@ class CacheCurrentPriceManager(CacheManagerInterface):
                 or self.cache.get(sym_u)
                 or self.cache.get(sym_clean)
             )
-            entry = list(entries[0]) if entries and isinstance(entries[0], (list, tuple)) else None
-        if not entry or len(entry) < 2:
+            cached_price, last_ts = self._extract_price_and_ts(entries)
+        if cached_price is None or last_ts is None:
             return None
-        try:
-            if isinstance(entry[0], bool) or isinstance(entry[1], bool):
-                return None
-            observed_at = float(entry[0]) / 1000.0
-            price = float(entry[1])
-        except (TypeError, ValueError, OverflowError):
-            return None
+        observed_at = float(last_ts) / 1000.0
+        price = float(cached_price)
         age = time.time() - observed_at
         if (
             not math.isfinite(observed_at)

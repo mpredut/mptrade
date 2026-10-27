@@ -46,12 +46,13 @@ if [ ! -f "$STATUS_FILE" ]; then
     exit 0
 fi
 
-python3 - <<EOF
+STATUS_FILE="$STATUS_FILE" IS_RUNNING="$IS_RUNNING" python3 - <<'EOF'
 import json
+import os
 import time
 
-status_file = "$STATUS_FILE"
-is_running = "$IS_RUNNING" == "true"
+status_file = os.environ["STATUS_FILE"]
+is_running = os.environ.get("IS_RUNNING") == "true"
 
 try:
     with open(status_file, "r") as f:
