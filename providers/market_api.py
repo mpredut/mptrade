@@ -95,28 +95,25 @@ _INVALID_API_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+i
 
 
 def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
+            return fb
+        return bool(val)
     s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "false", "no", "off"}:
+    if s in {"0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 def _parse_binance_order_id(order_id: Any, context: str) -> int:
-    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set)):
+    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set, frozenset)):
         raise ProviderError(f"{context}: invalid order id")
     if isinstance(order_id, float):
         if not math.isfinite(order_id) or not order_id.is_integer() or order_id <= 0:
@@ -127,7 +124,7 @@ def _parse_binance_order_id(order_id: Any, context: str) -> int:
             raise ProviderError(f"{context}: invalid order id")
         return order_id
     s = str(order_id).strip()
-    if s.endswith(".0") and s[:-2].isdigit():
+    if s.endswith(".0") and s[:-2].lstrip("+").isdigit():
         s = s[:-2]
     try:
         oid = int(s)
@@ -316,18 +313,23 @@ class BinanceProvider(MarketDataProvider):
             clean_coid = (
                 str(raw_coid).strip()
                 if raw_coid is not None
-                and not isinstance(raw_coid, (bool, dict, list, tuple, set))
+                and not isinstance(raw_coid, (bool, dict, list, tuple, set, frozenset))
                 and str(raw_coid).strip().lower() not in _INVALID_API_ID_STRINGS
                 else None
             )
+            side_norm = str(raw_side or "").strip().upper()
+            if side_norm in {"B", "BID", "LONG"}:
+                side_norm = "BUY"
+            elif side_norm in {"S", "A", "ASK", "SHORT"}:
+                side_norm = "SELL"
             normalized.append({
                 "orderId": str(oid_int),
                 "clientOrderId": clean_coid,
-                "side": str(raw_side or "").upper(),
+                "side": side_norm,
                 "price": price_f,
                 "origQty": orig_f,
                 "executedQty": exec_f,
-                "status": str(raw_status or "NEW"),
+                "status": str(raw_status or "NEW").strip().upper(),
             })
         return normalized
 
@@ -604,9 +606,9 @@ class BinanceProvider(MarketDataProvider):
                      client_order_id: Optional[str] = None,
                      cache_permit=None) -> str:
         s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B"}:
+        if s_norm in {"BUY", "B", "BID", "LONG"}:
             order_type = "BUY"
-        elif s_norm in {"SELL", "S"}:
+        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
             order_type = "SELL"
         else:
             raise SubmissionRefused(f"invalid_side:{side!r}")
@@ -892,9 +894,9 @@ class MarketApi:
         if isinstance(side, bool):
             raise ValueError("side must be BUY or SELL")
         side = str(side or "").strip().upper()
-        if side == "B":
+        if side in {"B", "BID", "LONG"}:
             side = "BUY"
-        elif side == "S":
+        elif side in {"S", "A", "ASK", "SHORT"}:
             side = "SELL"
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
@@ -1427,11 +1429,18 @@ class MarketApi:
         except (TypeError, ValueError, OverflowError):
             return 0.0
 
-    def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+    def place_order(self, symbol: str, side: str, price: float, qty: float,
+                    force: bool = False, **kwargs):
         # Mechanics-only provider dispatch without guards. Real placement must use
         # guarded .place(); this remains for internal and dry-run cases.
         provider_name = kwargs.pop("provider_name", None)
-        return self._provider_explicit_or_routed(symbol, provider_name).place_order(symbol, side, price, qty, **kwargs)
+        if force and "force" not in kwargs:
+            return self._provider_explicit_or_routed(symbol, provider_name).place_order(
+                symbol, side, price, qty, force=force, **kwargs
+            )
+        return self._provider_explicit_or_routed(symbol, provider_name).place_order(
+            symbol, side, price, qty, **kwargs
+        )
 
     def place(self, symbol: str, side: str, price: float, qty: Optional[float] = None,
               base: Optional[str] = None, quote: Optional[str] = None, **kwargs):

@@ -52,8 +52,10 @@ class SubmissionOutcome:
     native: object = None
 
     def __post_init__(self):
-        if self.state not in {"accepted", "refused", "unknown"}:
+        state_norm = str(self.state or "").strip().lower() if not isinstance(self.state, bool) else ""
+        if state_norm not in {"accepted", "refused", "unknown"}:
             raise ValueError(f"invalid submission outcome: {self.state!r}")
+        object.__setattr__(self, "state", state_norm)
         if isinstance(self.order_id, bool):
             raise ValueError(f"invalid order_id in SubmissionOutcome: {self.order_id!r}")
         if self.order_id is None or (isinstance(self.order_id, str) and not self.order_id.strip()):
@@ -122,20 +124,27 @@ class OrderStatus:
     orig_qty: Optional[float] = None  # Original quantity accepted by the venue.
 
     def __post_init__(self):
-        if self.status not in {"open", "closed", "canceled", "expired"}:
+        st_norm = str(self.status or "").strip().lower() if not isinstance(self.status, bool) else ""
+        if st_norm == "cancelled":
+            st_norm = "canceled"
+        if st_norm not in {"open", "closed", "canceled", "expired"}:
             raise ValueError(f"unnormalized order status: {self.status!r}")
+        object.__setattr__(self, "status", st_norm)
         for name, raw in (("filled_qty", self.filled_qty),
                           ("cost", self.cost), ("fee", self.fee)):
-            if isinstance(raw, bool):
+            if isinstance(raw, bool) or raw is None:
                 raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
-            value = float(raw)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid {name} in OrderStatus: {raw!r}") from exc
             # A negative fee is valid when the venue pays a maker rebate.
             if not math.isfinite(value) or (name != "fee" and value < 0):
                 raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
             object.__setattr__(self, name, value)
         if isinstance(self.venue_status, bool):
             raise ValueError(f"invalid venue_status in OrderStatus: {self.venue_status!r}")
-        object.__setattr__(self, "venue_status", str(self.venue_status or "").upper())
+        object.__setattr__(self, "venue_status", str(self.venue_status or "").strip().upper())
         if self.orig_qty is not None:
             raw_orig = self.orig_qty
             if isinstance(raw_orig, bool):

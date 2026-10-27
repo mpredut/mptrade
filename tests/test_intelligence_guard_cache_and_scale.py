@@ -16302,6 +16302,58 @@ def test_iteration169_providers_base_hyperliquid_kraken_and_t212_hygiene(monkeyp
     assert res_t212["orderId"] == "98765" and res_t212["quantity"] == pytest.approx(1.5)
 
 
+def test_iteration170_market_api_and_strategy_executor_hygiene(monkeypatch):
+    import time
+    from providers import market_api as mapi
+    from providers import strategy_executor as sexec
+
+    # 1. market_api._parse_bool_flag and _parse_binance_order_id
+    assert mapi._parse_bool_flag("y", False) is True
+    assert mapi._parse_bool_flag("n", True) is False
+    assert mapi._parse_bool_flag(2, False) is True
+    assert mapi._parse_binance_order_id("+12345.0", "ctx") == 12345
+    with pytest.raises(sexec.ProviderError):
+        mapi._parse_binance_order_id(frozenset({1}), "ctx")
+
+    # 2. MarketApi.latest_fill_price with BID/ASK aliases and MarketApi.place_order with positional force
+    captured = {}
+
+    class _DummyProvider(mapi.MarketDataProvider):
+        @property
+        def name(self):
+            return "Dummy"
+
+        def get_current_price(self, symbol):
+            return 100.0
+
+        def supports_symbol(self, symbol):
+            return True
+
+        def get_trades(self, symbol, since_s):
+            return [{"side": "BUY", "price": 105.0, "qty": 1.0, "timestamp": int(time.time() * 1000)}]
+
+        def place_order(self, symbol, side, price, qty, force=False, **kwargs):
+            captured["force"] = force
+            return {"orderId": "111", "force": force}
+
+    facade = mapi.MarketApi([_DummyProvider()])
+    assert facade.latest_fill_price("BTCUSDC", "BID", 3600) == pytest.approx(105.0)
+    res = facade.place_order("BTCUSDC", "BUY", 100.0, 1.0, True)
+    assert res["force"] is True and captured["force"] is True
+
+    # 3. SubmissionOutcome and OrderStatus normalization
+    so = sexec.SubmissionOutcome(" ACCEPTED ", order_id=42, reason=" ok ")
+    assert so.state == "accepted" and so.order_id == "42" and so.reason == "ok"
+
+    st = sexec.OrderStatus(" CANCELLED ", "1.5", "150.0", "0.15", venue_status=" user_canceled ")
+    assert st.status == "canceled"
+    assert st.filled_qty == pytest.approx(1.5)
+    assert st.venue_status == "USER_CANCELED"
+    with pytest.raises(ValueError):
+        sexec.OrderStatus("open", None, 0.0, 0.0)
+
+
+
 
 
 
