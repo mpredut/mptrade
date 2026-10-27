@@ -92,6 +92,8 @@ def per_bot(symbol):
         if cqq <= 0:
             op = _safe_float(o.get("price", 0), 0.0)
             cqq = eq * op if op > 0 else 0.0
+        if cqq <= 0:
+            continue
         a = g[_bot(o.get("clientOrderId", ""))]
         side = str(o.get("side") or "").upper()
         if side == "BUY":

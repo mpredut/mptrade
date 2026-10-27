@@ -71,6 +71,16 @@ def _f(x, default=0.0):
         return default
 
 
+def _is_paper(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(val, int):
+        return val != 0
+    return False
+
+
 def kraken_rows() -> list[dict]:
     rows = []
     for pair, label, paper in KRAKEN_PAIRS:
@@ -195,7 +205,7 @@ def run_alerts(kr: list[dict]) -> list[str]:
         if not isinstance(r, dict):
             continue
         engine = str(r.get("engine") or "").strip()
-        if not engine or str(r.get("paper") or "").strip().lower() in ("1", "true", "yes", "on") or _f(r.get("qty"), 0.0) <= 1e-9:
+        if not engine or _is_paper(r.get("paper")) or _f(r.get("qty"), 0.0) <= 1e-9:
             continue
         dd = _f(r.get("dd_pct"), 0.0)  # Negative means a loss.
         if dd > -threshold:
@@ -238,8 +248,8 @@ def main() -> int:
 
     kr = kraken_rows()
     hl = hl_row()
-    real_total = sum(r["realized_net"] for r in kr if not r["paper"])
-    upnl_total = sum(r["unrealized"] for r in kr if not r["paper"])
+    real_total = sum(_f(r.get("realized_net"), 0.0) for r in kr if isinstance(r, dict) and not _is_paper(r.get("paper")))
+    upnl_total = sum(_f(r.get("unrealized"), 0.0) for r in kr if isinstance(r, dict) and not _is_paper(r.get("paper")))
     snap = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "kraken": kr, "hl": hl,
             "kraken_real_realized_net": round(real_total, 2),

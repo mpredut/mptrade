@@ -3529,6 +3529,44 @@ def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
         orw.check_once(now=1000.0 + step * 60.0, total_ticks=1000 + step * 100, processes=procs, cpu_count=1)
 
 
+def test_batch12_verify_tools_pnl_and_facade_hardening(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from verify_tools import pnl_report, portfolio_snapshot, verify_account_facade
+
+    # 1. verify_account_facade.position_from ignores buy orders with zero/negative price or zero qty
+    avg, net = verify_account_facade.position_from(
+        [{"price": 100.0, "qty": 2.0}, {"price": 0.0, "qty": 5.0}, {"price": 50.0, "qty": 0.0}],
+        [{"qty": 0.5}, {"qty": 0.0}],
+    )
+    assert avg == 100.0
+    assert net == 1.5
+
+    # 2. portfolio_snapshot._is_paper handles boolean strings and ints consistently
+    assert portfolio_snapshot._is_paper("false") is False
+    assert portfolio_snapshot._is_paper("true") is True
+    assert portfolio_snapshot._is_paper(False) is False
+    assert portfolio_snapshot._is_paper(True) is True
+    assert portfolio_snapshot._is_paper(0) is False
+    assert portfolio_snapshot._is_paper(1) is True
+
+    # 3. pnl_report.per_bot skips orders where both cummulativeQuoteQty and price are zero
+    monkeypatch.setattr(
+        pnl_report.bapi,
+        "client",
+        SimpleNamespace(
+            get_all_orders=lambda **kw: [
+                {"clientOrderId": "TA_1", "side": "BUY", "executedQty": "2.0", "cummulativeQuoteQty": "200.0", "price": "100.0"},
+                {"clientOrderId": "TA_2", "side": "BUY", "executedQty": "8.0", "cummulativeQuoteQty": "0.0", "price": "0.0"},
+                {"clientOrderId": "TA_3", "side": "SELL", "executedQty": "2.0", "cummulativeQuoteQty": "240.0", "price": "120.0"},
+            ]
+        ),
+    )
+    pnl_report.per_bot("BTCUSDC")
+    out = capsys.readouterr().out
+    assert "+40.00" in out
+
+
+
 
 
 

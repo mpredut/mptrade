@@ -112,9 +112,17 @@ def main():
             print(f"    {o.get('side')} px={o.get('price')} qty={o.get('qty')} ts={o.get('timestamp')}")
 
     print("\n==== POZITIE (logica get_position_stats) ====")
-    tbq = sum(_f(o.get("qty"), 0.0) for o in buys if isinstance(o, dict))
-    tbv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in buys if isinstance(o, dict))
-    tsq = sum(_f(o.get("qty"), 0.0) for o in sells if isinstance(o, dict))
+    valid_buys = [
+        o for o in buys
+        if isinstance(o, dict) and _f(o.get("qty"), 0.0) > 0.0 and _f(o.get("price"), 0.0) > 0.0
+    ]
+    valid_sells = [
+        o for o in sells
+        if isinstance(o, dict) and _f(o.get("qty"), 0.0) > 0.0
+    ]
+    tbq = sum(_f(o.get("qty"), 0.0) for o in valid_buys)
+    tbv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in valid_buys)
+    tsq = sum(_f(o.get("qty"), 0.0) for o in valid_sells)
     avg_buy = tbv / tbq if tbq else 0.0
     net = tbq - tsq
     print(f"  buy_qty={tbq:.6f} sell_qty={tsq:.6f} net_qty={net:.6f} avg_buy={avg_buy:.4f}")
@@ -123,7 +131,6 @@ def main():
           f"avg_buy={avg_buy} price={price}")
 
     print("\n==== A simulated DECISION (like monitor_price_and_trade, WITHOUT placing) ====")
-    valid_buys = [o for o in buys if isinstance(o, dict)]
     if valid_buys and price_f > 0.0:
         last_buy = _f(sorted(valid_buys, key=lambda x: _f(x.get("timestamp"), 0.0), reverse=True)[0].get("price"), 0.0)
         if last_buy > 0:

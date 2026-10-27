@@ -58,8 +58,14 @@ def free_direct(base):
 
 def position_from(buy_orders, sell_orders):
     """The get_position_stats logic: avg_buy + net_qty derived from order lists."""
-    buys = [o for o in (buy_orders or []) if isinstance(o, dict)]
-    sells = [o for o in (sell_orders or []) if isinstance(o, dict)]
+    buys = [
+        o for o in (buy_orders or [])
+        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0.0 and _f(extract_order_price(o), 0.0) > 0.0
+    ]
+    sells = [
+        o for o in (sell_orders or [])
+        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0.0
+    ]
     tq = sum(_f(extract_order_qty(o), 0.0) for o in buys)
     tv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in buys)
     sq = sum(_f(extract_order_qty(o), 0.0) for o in sells)
