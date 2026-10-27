@@ -54,6 +54,27 @@ _HL_DIR = os.path.join(_REPO_ROOT, "hyperliquid")
 _LIVE_ENV = "HL_LIVE_ORDERS"
 
 
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _mainnet_setting() -> bool:
     try:
         from botcore import required_bool_env
@@ -125,9 +146,7 @@ class HyperliquidProvider(MarketDataProvider):
         """Return whether the generic pipeline may create a real spot order."""
         if self._live_enabled is None:
             return bool_env(_LIVE_ENV)
-        if isinstance(self._live_enabled, str):
-            return self._live_enabled.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(self._live_enabled)
+        return _parse_bool_flag(self._live_enabled, False)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -451,7 +470,11 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] place_order {symbol}: refused invalid side={side!r}")
             return None
         live = self.execution_enabled()
-        is_market = bool(force or kwargs.get("market", False) or kwargs.get("force", False))
+        is_market = (
+            _parse_bool_flag(force, False)
+            or _parse_bool_flag(kwargs.get("market", False), False)
+            or _parse_bool_flag(kwargs.get("force", False), False)
+        )
 
         if is_market:
             raw_curr = self.get_current_price(symbol)
@@ -649,8 +672,9 @@ class HyperliquidProvider(MarketDataProvider):
         if pair is None:
             raise ProviderError(
                 f"submit_order({symbol}): spot pair unavailable")
+        is_market = _parse_bool_flag(market, False)
         px = price
-        if market or px is None:
+        if is_market or px is None:
             mid = self.get_current_price(symbol)
             if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
                 raise ProviderError(f"submit_order({symbol}) market: price unavailable")
@@ -664,15 +688,15 @@ class HyperliquidProvider(MarketDataProvider):
         if qty <= 0:
             raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
         self.preflight_order(
-            symbol, side, qty, px, market=market, kind=kind,
+            symbol, side, qty, px, market=is_market, kind=kind,
         )
         try:
             signer = self._signer()
             szd = signer.sz_decimals(self._token)
             order_kwargs = {
                 "sz_decimals": szd,
-                "is_market": market,
-                "tif": "Ioc" if market else "Gtc",
+                "is_market": is_market,
+                "tif": "Ioc" if is_market else "Gtc",
             }
             if client_order_id is not None:
                 order_kwargs["cloid"] = _cloid_for_client_order_id(
@@ -726,7 +750,7 @@ class HyperliquidProvider(MarketDataProvider):
             mid = self.get_current_price(symbol)
             if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
                 raise ProviderError(f"preflight_order({symbol}): price unavailable")
-            price = float(mid) * (1.05 if market else 1.0)
+            price = float(mid) * (1.05 if _parse_bool_flag(market, False) else 1.0)
         elif isinstance(price, bool):
             raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
         try:

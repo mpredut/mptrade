@@ -107,6 +107,39 @@ def _kraken_client_order_id(client_order_id: str) -> str:
         b"assertguardian:kraken:cloid:v1\0" + encoded).hexdigest()[:32]
 
 
+_INVALID_KRAKEN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+
+
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _clean_kraken_order_id(order_id: object, caller: str) -> str:
+    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set)) or not isinstance(order_id, str):
+        raise ProviderError(f"{caller} {order_id}: invalid order id")
+    s = order_id.strip()
+    if not s or s.lower() in _INVALID_KRAKEN_ID_STRINGS:
+        raise ProviderError(f"{caller} {order_id}: invalid order id")
+    return s
+
+
 def _live() -> bool:
     # os.environ takes precedence, with kraken/.env as the API-key-style fallback.
     return bool_env("KRAKEN_LIVE_ORDERS", _KRAKEN_DIR)
@@ -114,7 +147,11 @@ def _live() -> bool:
 
 def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
     """Combine the strategy and provider gates for Kraken orchestration."""
-    return bool(force_paper or not strategy_execute or not _live())
+    return bool(
+        _parse_bool_flag(force_paper, True)
+        or not _parse_bool_flag(strategy_execute, False)
+        or not _live()
+    )
 
 
 class KrakenProvider(MarketDataProvider):
@@ -326,6 +363,7 @@ class KrakenProvider(MarketDataProvider):
 
         normalized = []
         for order_id, raw in raw_orders.items():
+            clean_oid = _clean_kraken_order_id(order_id, f"open_orders({symbol})")
             if not isinstance(raw, dict):
                 raise ProviderError(
                     f"open_orders({symbol}): order {order_id} is invalid")
@@ -364,7 +402,7 @@ class KrakenProvider(MarketDataProvider):
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
             normalized.append({
-                "orderId": str(order_id),
+                "orderId": clean_oid,
                 "clientOrderId": raw.get("cl_ord_id"),
                 "side": side,
                 "price": price,
@@ -449,7 +487,10 @@ class KrakenProvider(MarketDataProvider):
         else:
             print(f"[Kraken] place_order {symbol}: refused invalid side={side!r}")
             return None
-        market = bool(kwargs.get("market", False) or kwargs.get("force", False))
+        market = (
+            _parse_bool_flag(kwargs.get("market", False), False)
+            or _parse_bool_flag(kwargs.get("force", False), False)
+        )
         ordertype = "market" if market else "limit"
         submit_price = None if market else price
         if not market:
@@ -529,7 +570,8 @@ class KrakenProvider(MarketDataProvider):
             s = "sell"
         else:
             raise SubmissionRefused(f"submit_order {symbol}: invalid side={side!r}")
-        ordertype = "market" if (market or price is None) else "limit"
+        is_market = _parse_bool_flag(market, False)
+        ordertype = "market" if (is_market or price is None) else "limit"
         px_f = None
         if ordertype == "limit":
             if isinstance(price, bool):
@@ -614,14 +656,7 @@ class KrakenProvider(MarketDataProvider):
             )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        if (
-            isinstance(order_id, bool)
-            or not isinstance(order_id, str)
-            or not order_id.strip()
-            or order_id.strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
-            raise ProviderError(f"order_status {order_id}: invalid order id")
-        clean_id = order_id.strip()
+        clean_id = _clean_kraken_order_id(order_id, "order_status")
         try:
             res = self._client().query_orders(clean_id) or {}
         except Exception as e:  # noqa: BLE001
@@ -692,7 +727,8 @@ class KrakenProvider(MarketDataProvider):
                 pair = str(descr.get("pair") or raw.get("pair") or "")
                 if pair and not _kraken_pair_matches(symbol, pair):
                     continue
-                return {"orderId": str(order_id), "status": raw.get("status")}
+                clean_oid = _clean_kraken_order_id(order_id, f"order_by_client_id({symbol})")
+                return {"orderId": clean_oid, "status": raw.get("status")}
         return None
 
     def cancel_order_by_id(self, symbol: str, order_id: str) -> None:
@@ -701,15 +737,9 @@ class KrakenProvider(MarketDataProvider):
         The explicit method name avoids future ambiguity; cancel_order below is the
         StrategyExecutor contract alias.
         """
-        if (
-            isinstance(order_id, bool)
-            or not isinstance(order_id, str)
-            or not order_id.strip()
-            or order_id.strip().lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
-            raise ProviderError(f"cancel_order {order_id}: invalid order id")
+        clean_id = _clean_kraken_order_id(order_id, "cancel_order")
         try:
-            result = self._client().cancel_order(order_id) or {}
+            result = self._client().cancel_order(clean_id) or {}
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
             if "unknown order" in msg or "already" in msg:

@@ -14912,6 +14912,50 @@ def test_iteration151_order_outcomes_log_binance_cache_health_and_providers_hygi
     assert rp.supports_symbol(True) is False  # type: ignore[arg-type]
 
 
+def test_iteration152_hl_kraken_t212_providers_boolean_and_id_hygiene():
+    """Verify hyperliquid_provider, kraken_provider, and t212_provider boolean flag and order ID hygiene."""
+    import pytest
+    from providers.hyperliquid_provider import HyperliquidProvider, _parse_bool_flag as hl_bool
+    from providers.kraken_provider import (
+        KrakenProvider,
+        _clean_kraken_order_id,
+        _parse_bool_flag as krk_bool,
+        kraken_strategy_dry_run,
+    )
+    from providers.t212_provider import T212Provider, _parse_bool_flag as t212_bool
+    from providers.strategy_executor import ProviderError
+
+    # 1. HyperliquidProvider execution_enabled rejects NaN / "false" / containers
+    assert hl_bool("false", True) is False
+    assert hl_bool(float("nan"), False) is False
+    assert HyperliquidProvider(live_enabled="false").execution_enabled() is False  # type: ignore[arg-type]
+    assert HyperliquidProvider(live_enabled=float("nan")).execution_enabled() is False  # type: ignore[arg-type]
+    assert HyperliquidProvider(live_enabled="true").execution_enabled() is True  # type: ignore[arg-type]
+
+    # 2. KrakenProvider _clean_kraken_order_id & kraken_strategy_dry_run
+    assert krk_bool("false", True) is False
+    assert kraken_strategy_dry_run(False, "false") is True  # type: ignore[arg-type]
+    assert kraken_strategy_dry_run(False, float("nan")) is True  # type: ignore[arg-type]
+    for bad_oid in ("", "0", "0.0", "nan", "null", "none", "inf", True, 123, ["O-1"], None):
+        with pytest.raises(ProviderError):
+            _clean_kraken_order_id(bad_oid, "order_status")
+    assert _clean_kraken_order_id(" O-KRK-123 ", "order_status") == "O-KRK-123"
+
+    krk = KrakenProvider()
+    with pytest.raises(ProviderError):
+        krk.order_status("HYPEUSD", "0")
+    with pytest.raises(ProviderError):
+        krk.cancel_order_by_id("HYPEUSD", "0")
+
+    # 3. T212Provider _orders_live rejects NaN / "false" / containers
+    assert t212_bool("false", True) is False
+    assert t212_bool(float("nan"), False) is False
+    assert T212Provider(live_enabled="false").execution_enabled() is False  # type: ignore[arg-type]
+    assert T212Provider(live_enabled=float("nan")).execution_enabled() is False  # type: ignore[arg-type]
+    assert T212Provider(live_enabled="true").execution_enabled() is True  # type: ignore[arg-type]
+
+
+
 
 
 

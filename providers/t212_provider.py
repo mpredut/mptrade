@@ -64,6 +64,27 @@ def _live() -> bool:
     return bool_env("T212_LIVE_ORDERS")
 
 
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 class T212Provider(MarketDataProvider):
     def __init__(self, client=None, live_enabled: Optional[bool] = None,
                  order_validity: Optional[str] = None):
@@ -78,9 +99,7 @@ class T212Provider(MarketDataProvider):
     def _orders_live(self) -> bool:
         if self._live_enabled is None:
             return _live()
-        if isinstance(self._live_enabled, str):
-            return self._live_enabled.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(self._live_enabled)
+        return _parse_bool_flag(self._live_enabled, False)
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real T212 order."""
@@ -320,7 +339,7 @@ class T212Provider(MarketDataProvider):
     def _send_order(self, symbol: str, side: str, qty: float,
                     price: Optional[float], *, market: bool) -> tuple[int, dict]:
         signed = self._signed_qty(side, qty)
-        if market:
+        if _parse_bool_flag(market, False):
             return self._client().place_market_order(symbol, signed, extended_hours=False)
         if price is None:
             raise ProviderError("a T212 LIMIT order requires a price")
@@ -352,7 +371,10 @@ class T212Provider(MarketDataProvider):
             return None
         try:
             print(f"[T212][LIVE] {side} {symbol} qty={qty} @ {price}")
-            is_market = bool(kwargs.get("market", False) or kwargs.get("force", False))
+            is_market = (
+                _parse_bool_flag(kwargs.get("market", False), False)
+                or _parse_bool_flag(kwargs.get("force", False), False)
+            )
             qty = self.round_quantity(symbol, qty)
             if qty <= 0:
                 print(f"[T212] place_order {symbol}: refused non-positive qty={qty}")
@@ -386,9 +408,10 @@ class T212Provider(MarketDataProvider):
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order({symbol}): invalid quantity {qty}")
+        is_market = _parse_bool_flag(market, False) or price is None
         try:
             status, data = self._send_order(
-                symbol, side, qty, price, market=bool(market or price is None))
+                symbol, side, qty, price, market=is_market)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
