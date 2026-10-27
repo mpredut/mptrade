@@ -180,6 +180,12 @@ def atomic_text_writer(path: str, *, encoding: str = "utf-8") -> Iterator[Any]:
         raise
 
 
+def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8") -> None:
+    """Write text ``content`` to ``path`` atomically through ``atomic_text_writer``."""
+    with atomic_text_writer(path, encoding=encoding) as handle:
+        handle.write(str(content))
+
+
 def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
                       sort_keys: bool = False, separators=None,
                       ensure_ascii: bool = True) -> None:
