@@ -101,19 +101,23 @@ class BinancePricePlatform(PricePlatformInterface):
             for symbol_info in raw_symbols:
                 if not isinstance(symbol_info, dict):
                     continue
-                symbol = symbol_info.get("symbol")
-                base_asset = symbol_info.get("baseAsset")
-                quote_asset = symbol_info.get("quoteAsset")
-                status = symbol_info.get("status")
-                
-                if status != "TRADING":
+                raw_sym = symbol_info.get("symbol")
+                raw_base = symbol_info.get("baseAsset")
+                raw_quote = symbol_info.get("quoteAsset")
+                raw_status = symbol_info.get("status")
+                symbol = raw_sym.strip().upper() if isinstance(raw_sym, str) else ""
+                base_asset = raw_base.strip().upper() if isinstance(raw_base, str) else ""
+                quote_asset = raw_quote.strip().upper() if isinstance(raw_quote, str) else ""
+                status = raw_status.strip().upper() if isinstance(raw_status, str) else ""
+
+                if not symbol or status != "TRADING":
                     continue
-                
+
                 supported_symbols.add(symbol)
-                
+
                 if quote_asset == "USDC":
                     usdc_pairs.add(symbol)
-                    if base_asset not in symbol_mapping:
+                    if base_asset and base_asset not in symbol_mapping:
                         symbol_mapping[base_asset] = symbol
                     symbol_mapping[symbol] = symbol
             
@@ -314,8 +318,15 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
                 cached = json.load(f)
             if not isinstance(cached, dict) or not cached:
                 return False
-            self._all_listings = cached
-            self._supported_symbols = set(cached.keys())
+            cleaned = {
+                k.strip().upper(): v
+                for k, v in cached.items()
+                if isinstance(k, str) and k.strip() and isinstance(v, dict)
+            }
+            if not cleaned:
+                return False
+            self._all_listings = cleaned
+            self._supported_symbols = set(cleaned.keys())
             self._last_refresh = mtime
             return True
         except Exception:
@@ -341,7 +352,8 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             for crypto in data['data']:
                 if not isinstance(crypto, dict):
                     continue
-                symbol = crypto.get('symbol')
+                raw_symbol = crypto.get('symbol')
+                symbol = raw_symbol.strip().upper() if isinstance(raw_symbol, str) else ""
                 if symbol:
                     self._supported_symbols.add(symbol)
                     self._all_listings[symbol] = {
@@ -580,20 +592,25 @@ class PricePlatformFactory:
         self._capabilities = all_symbols
 
     def get_price(self, symbol: str) -> Dict:
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError(f"Symbol '{symbol}' is not supported by any platform")
+        sym_norm = symbol.strip().upper()
         cached_platform = None
         supported = False
-        if symbol in self._symbol_platform_cache:
-            platform_name = self._symbol_platform_cache[symbol]
+        platform_name = self._symbol_platform_cache.get(sym_norm) or self._symbol_platform_cache.get(symbol)
+        if platform_name:
             for platform in self._platforms:
                 if platform.platform_name == platform_name:
                     cached_platform = platform
                     supported = True
                     price = platform.get_price(symbol)
                     if price is not None:
+                        self._symbol_platform_cache[sym_norm] = platform.platform_name
                         return {
                             "symbol": symbol, "price": price,
                             "platform": platform.platform_name, "timestamp": int(time.time())
                         }
+                    self._symbol_platform_cache.pop(sym_norm, None)
                     self._symbol_platform_cache.pop(symbol, None)
                     break
         for platform in self._platforms:
@@ -603,7 +620,7 @@ class PricePlatformFactory:
                 supported = True
                 price = platform.get_price(symbol)
                 if price is not None:
-                    self._symbol_platform_cache[symbol] = platform.platform_name
+                    self._symbol_platform_cache[sym_norm] = platform.platform_name
                     return {
                         "symbol": symbol, "price": price,
                         "platform": platform.platform_name, "timestamp": int(time.time())

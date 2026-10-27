@@ -3645,11 +3645,103 @@ def test_batch14_notify_engine_server_alertnotifiers_and_mailer_hygiene(monkeypa
     assert mailer.send_email("Subj", "Body", dedup="false") is True  # type: ignore[arg-type]
 
 
+def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+    from lock.cooldown import Cooldown
+    from market_monitor import new_coins_discovery as ncd
+    from market_monitor import pricefetcher as pf
 
+    # 1. BinancePricePlatform._load_symbols ignores None/non-string symbol and baseAsset
+    class _FakeBinanceResp:
+        def raise_for_status(self):
+            pass
 
+        def json(self):
+            return {
+                "symbols": [
+                    {"symbol": None, "baseAsset": "BTC", "quoteAsset": "USDC", "status": "TRADING"},
+                    {"symbol": "   ", "baseAsset": "ETH", "quoteAsset": "USDC", "status": "TRADING"},
+                    {"symbol": " btcusdc ", "baseAsset": None, "quoteAsset": "usdc", "status": "trading"},
+                    {"symbol": "ETHUSDC", "baseAsset": " eth ", "quoteAsset": "USDC", "status": "TRADING"},
+                ]
+            }
 
+    monkeypatch.setattr(pf.requests, "get", lambda *a, **kw: _FakeBinanceResp())
+    bp = pf.BinancePricePlatform()
+    assert None not in bp._supported_symbols
+    assert "" not in bp._supported_symbols
+    assert None not in bp._symbol_mapping
+    assert bp._symbol_mapping.get("ETH") == "ETHUSDC"
+    assert "BTCUSDC" in bp._usdc_pairs
 
+    # 2. PricePlatformFactory.get_price normalizes symbol cache keys and rejects blank symbols
+    pf_fac = object.__new__(pf.PricePlatformFactory)
 
+    class _DummyPlat:
+        platform_name = "Dummy"
 
+        def supports_symbol(self, sym):
+            return sym.strip().upper() == "BTC"
 
+        def get_price(self, sym):
+            return 50000.0
+
+    pf_fac._platforms = [_DummyPlat()]
+    pf_fac._symbol_platform_cache = {}
+    res = pf_fac.get_price(" btc ")
+    assert res["price"] == 50000.0
+    assert pf_fac._symbol_platform_cache == {"BTC": "Dummy"}
+    with pytest.raises(ValueError):
+        pf_fac.get_price("   ")
+
+    # 3. new_coins_discovery handles aware/string datetimes, string bools, and empty alert lists
+    dex = object.__new__(ncd.DexScreenerSource)
+    dex._cache = [
+        {"symbol": "FOO", "added_at": datetime.now(timezone.utc)},
+        {"symbol": "BAR", "added_at": "invalid-date"},
+    ]
+    assert len(dex.get_new_coins(3)) == 1
+
+    cmc = object.__new__(ncd.CoinMarketCapSource)
+    cmc._cache = [
+        {"symbol": "BAZ", "added_at": datetime.now(timezone.utc).isoformat()},
+    ]
+    assert len(cmc.get_new_coins(3)) == 1
+
+    mon = object.__new__(ncd.NewCoinsMonitor)
+    mon.price_monitor = None
+    mon.all_new_coins = {}
+    mon.all_symbols = set()
+    cb_calls = []
+    mon.alert_callbacks = [lambda alerts: cb_calls.append(alerts)]
+    mon._trigger_alerts([{"symbol": "   "}, None], "coinmarketcap", auto_add="false")  # type: ignore[list-item,arg-type]
+    assert cb_calls == []
+
+    # 4. Cooldown group methods reject blank/bool group_id/member, handle keep_group="false", and survive non-list fields
+    cd = Cooldown(
+        "test_b15",
+        state_path=str(tmp_path / "cd.json"),
+        lock_path=str(tmp_path / "cd.lock"),
+    )
+    assert cd.reserve_group_member("BTCUSDC", 60, None, "BUY")[0] is False
+    assert cd.reserve_group_member("BTCUSDC", 60, True, "BUY")[0] is False
+    assert cd.reserve_group_member("BTCUSDC", 60, "grp1", "   ")[0] is False
+
+    ok, entry = cd.reserve_group_member("BTCUSDC", 60, "grp1", "BUY", group_members=["spoofed"], timestamp=0)
+    assert ok is True
+    assert entry["group_id"] == "grp1"
+    assert entry["group_members"] == ["BUY"]
+    assert entry["timestamp"] > 0
+
+    # Corrupt group fields on disk and verify commit & release recover cleanly
+    state = cd._read()
+    state["BTCUSDC"]["group_pending"] = 123
+    state["BTCUSDC"]["group_committed"] = 456
+    state["BTCUSDC"]["group_results"] = "not-a-dict"
+    cd._write(state)
+    cd.commit_group_member("BTCUSDC", "grp1", "BUY", order_id=99)
+    assert cd.get("BTCUSDC")["group_committed"] == ["BUY"]
+    assert cd.get("BTCUSDC")["group_results"] == {"BUY": {"order_id": 99}}
+    assert cd.release_group_member("BTCUSDC", "grp1", "BUY", keep_group="false") is True
+    assert cd.get("BTCUSDC") is None
 

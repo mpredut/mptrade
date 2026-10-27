@@ -41,6 +41,25 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 }
 
 
+def _as_bool_flag(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        if not math.isfinite(val):
+            return default
+        return bool(val)
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("1", "true", "yes", "on", "y", "t"):
+            return True
+        if norm in ("0", "false", "no", "off", "n", "f", ""):
+            return False
+        return default
+    return default
+
+
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
     if days_back is None or isinstance(days_back, bool):
         return float(default)
@@ -179,9 +198,18 @@ class CoinMarketCapSource(NewCoinsSource):
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=eff_days)
         new_coins = []
         for coin in self._cache:
+            if not isinstance(coin, dict):
+                continue
             added_at = coin.get('added_at')
             if added_at is None or pd.isna(added_at):
                 continue
+            if not hasattr(added_at, 'replace') or isinstance(added_at, str):
+                try:
+                    added_at = pd.to_datetime(added_at)
+                except Exception:
+                    continue
+                if added_at is None or pd.isna(added_at):
+                    continue
             if getattr(added_at, 'tzinfo', None) is None:
                 added_at = added_at.replace(tzinfo=timezone.utc)
             if added_at >= cutoff_date:
@@ -318,7 +346,17 @@ class BinanceNewListingsSource(NewCoinsSource):
             return []
         eff_days = _safe_days_back(days_back)
         cutoff_date = datetime.now() - timedelta(days=eff_days)
-        return [item for item in self._new_listings if item.get('added_at') and item['added_at'] >= cutoff_date]
+        out = []
+        for item in self._new_listings:
+            if not isinstance(item, dict):
+                continue
+            added_at = item.get('added_at')
+            if not isinstance(added_at, datetime):
+                continue
+            cmp_dt = added_at.replace(tzinfo=None) if getattr(added_at, 'tzinfo', None) is not None else added_at
+            if cmp_dt >= cutoff_date:
+                out.append(item)
+        return out
 
 # ============================================
 # Source 4: DexScreener
@@ -393,7 +431,17 @@ class DexScreenerSource(NewCoinsSource):
             return []
         eff_days = _safe_days_back(days_back)
         cutoff_date = datetime.now() - timedelta(days=eff_days)
-        return [token for token in self._cache if token.get('added_at') and token['added_at'] >= cutoff_date][:50]
+        out = []
+        for token in self._cache:
+            if not isinstance(token, dict):
+                continue
+            added_at = token.get('added_at')
+            if not isinstance(added_at, datetime):
+                continue
+            cmp_dt = added_at.replace(tzinfo=None) if getattr(added_at, 'tzinfo', None) is not None else added_at
+            if cmp_dt >= cutoff_date:
+                out.append(token)
+        return out[:50]
 
 # ============================================
 # Factory for new-coin data sources.
@@ -447,8 +495,8 @@ class NewCoinsFactory:
         for name, source in self.sources.items():
             try:
                 for coin in source.get_new_coins(days_back):
-                    if 'symbol' in coin:
-                        all_symbols.add(coin['symbol'])
+                    if isinstance(coin, dict) and isinstance(coin.get('symbol'), str) and coin['symbol'].strip():
+                        all_symbols.add(coin['symbol'].strip().upper())
             except Exception:
                 pass
         return all_symbols
@@ -482,7 +530,7 @@ class NewCoinsMonitor:
         return is_trackable_symbol(symbol, name=name, slug=slug)
 
     def refresh(self, refresh_sources: bool = False):
-        if refresh_sources:
+        if _as_bool_flag(refresh_sources, False):
             self.factory.refresh_all()
         self.all_new_coins = self.factory.get_all_new_coins(NEW_COINS_AGE_DAYS)
         self.all_symbols = set()
@@ -502,14 +550,17 @@ class NewCoinsMonitor:
     def _trigger_alerts(self, new_coins: List[Dict], source_name: str, auto_add: bool = True):
         if not new_coins:
             return
+        auto_add = _as_bool_flag(auto_add, True)
 
-        source_has_price = source_name.lower() == "coinmarketcap"
+        source_has_price = str(source_name or "").strip().lower() == "coinmarketcap"
         alerts = []
 
         for coin in new_coins:
             if not isinstance(coin, dict) or not coin.get("symbol"):
                 continue
-            sym = str(coin["symbol"])
+            sym = str(coin["symbol"]).strip()
+            if not sym:
+                continue
             if auto_add and source_has_price:
                 auto_added_status = self.add_new_coin_to_watchlist(coin)
             else:
@@ -532,6 +583,9 @@ class NewCoinsMonitor:
                 "has_price": source_has_price,
                 "url": coin.get("url", "")
             })
+
+        if not alerts:
+            return
 
         # Send all alerts through a single callback invocation.
         for callback in self.alert_callbacks:

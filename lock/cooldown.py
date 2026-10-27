@@ -61,6 +61,48 @@ def _sanitize_json_payload(value):
     return value
 
 
+def _as_bool_flag(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        if not math.isfinite(val):
+            return default
+        return bool(val)
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("1", "true", "yes", "on", "y", "t"):
+            return True
+        if norm in ("0", "false", "no", "off", "n", "f", ""):
+            return False
+        return default
+    return default
+
+
+def _safe_list(val) -> list:
+    if isinstance(val, (list, tuple, set, frozenset)):
+        return list(val)
+    return []
+
+
+def _safe_dict(val) -> dict:
+    if isinstance(val, dict):
+        return dict(val)
+    return {}
+
+
+_RESERVED_ENTRY_KEYS = frozenset({
+    "timestamp",
+    "key",
+    "group_id",
+    "group_members",
+    "group_pending",
+    "group_committed",
+    "group_results",
+})
+
+
 class Reservation:
     """Obiectul dat de `Cooldown.slot` (stil RAII / guard C++).
     ``allowed=False`` means cooldown rejected the operation. Commit only after success;
@@ -140,7 +182,9 @@ class Cooldown:
                 "process_name": multiprocessing.current_process().name,
                 "hostname": socket.gethostname(),
             }
-            entry.update(meta)
+            for mk, mv in meta.items():
+                if mk not in _RESERVED_ENTRY_KEYS:
+                    entry[mk] = mv
             state[key] = entry
             self._write(state)
             return True, entry
@@ -152,8 +196,12 @@ class Cooldown:
         Repeating a member or using another group is rejected. Legacy state remains
         compatible and exclusive, so a new group cannot bypass it.
         """
+        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
+            return False, {}
         group_id = str(group_id).strip()
         member = str(member).strip().upper()
+        if not group_id or not member:
+            return False, {}
         with FileLock(self.lock_path):
             state = self._read()
             last = state.get(key)
@@ -162,12 +210,12 @@ class Cooldown:
             if active:
                 if last.get("group_id") != group_id:
                     return False, last
-                members = list(last.get("group_members") or [])
+                members = _safe_list(last.get("group_members"))
                 if member in members:
                     return False, last
                 members.append(member)
                 last["group_members"] = members
-                pending = list(last.get("group_pending") or [])
+                pending = _safe_list(last.get("group_pending"))
                 pending.append(member)
                 last["group_pending"] = pending
                 state[key] = last
@@ -187,27 +235,33 @@ class Cooldown:
                 "group_committed": [],
                 "group_results": {},
             }
-            entry.update(meta)
+            for mk, mv in meta.items():
+                if mk not in _RESERVED_ENTRY_KEYS:
+                    entry[mk] = mv
             state[key] = entry
             self._write(state)
             return True, entry
 
     def commit_group_member(self, key, group_id, member, **fields):
         """Confirm the reserved member and keep its result separately."""
+        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
+            return
         group_id = str(group_id).strip()
         member = str(member).strip().upper()
+        if not group_id or not member:
+            return
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
             if not isinstance(entry, dict) or entry.get("group_id") != group_id:
                 return
-            pending = list(entry.get("group_pending") or [])
+            pending = _safe_list(entry.get("group_pending"))
             if member in pending:
                 pending.remove(member)
-            committed = list(entry.get("group_committed") or [])
+            committed = _safe_list(entry.get("group_committed"))
             if member not in committed:
                 committed.append(member)
-            results = dict(entry.get("group_results") or {})
+            results = _safe_dict(entry.get("group_results"))
             results[member] = dict(fields)
             entry.update({
                 "group_pending": pending,
@@ -220,17 +274,21 @@ class Cooldown:
 
     def rollback_group_member(self, key, group_id, member):
         """Withdraw only the uncommitted member without removing the other leg."""
+        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
+            return
         group_id = str(group_id).strip()
         member = str(member).strip().upper()
+        if not group_id or not member:
+            return
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
             if not isinstance(entry, dict) or entry.get("group_id") != group_id:
                 return
-            if member in (entry.get("group_committed") or []):
+            if member in _safe_list(entry.get("group_committed")):
                 return
-            members = [m for m in (entry.get("group_members") or []) if m != member]
-            pending = [m for m in (entry.get("group_pending") or []) if m != member]
+            members = [m for m in _safe_list(entry.get("group_members")) if m != member]
+            pending = [m for m in _safe_list(entry.get("group_pending")) if m != member]
             if not members:
                 del state[key]
             else:
@@ -246,20 +304,25 @@ class Cooldown:
         coordinator may replace the leg, but another process/group cannot exploit the
         short interval between cancellation and replacement.
         """
+        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
+            return False
         group_id = str(group_id).strip()
         member = str(member).strip().upper()
+        if not group_id or not member:
+            return False
+        keep_group = _as_bool_flag(keep_group, True)
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
             if not isinstance(entry, dict) or entry.get("group_id") != group_id:
                 return False
             entry["group_members"] = [
-                m for m in (entry.get("group_members") or []) if m != member]
+                m for m in _safe_list(entry.get("group_members")) if m != member]
             entry["group_pending"] = [
-                m for m in (entry.get("group_pending") or []) if m != member]
+                m for m in _safe_list(entry.get("group_pending")) if m != member]
             entry["group_committed"] = [
-                m for m in (entry.get("group_committed") or []) if m != member]
-            results = dict(entry.get("group_results") or {})
+                m for m in _safe_list(entry.get("group_committed")) if m != member]
+            results = _safe_dict(entry.get("group_results"))
             results.pop(member, None)
             entry["group_results"] = results
             if keep_group or entry["group_members"]:
