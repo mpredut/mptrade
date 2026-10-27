@@ -107,9 +107,18 @@ def _as_bool(val: object, default: bool = False) -> bool:
         return val
     if val is None:
         return default
+    if isinstance(val, (int, float)):
+        if not math.isfinite(val):
+            return default
+        return bool(val)
     if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    return bool(val)
+        norm = val.strip().lower()
+        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
+            return True
+        if norm in ("0", "0.0", "false", "no", "off", "n", "f", ""):
+            return False
+        return default
+    return default
 
 
 def prune_old_cli_threads(
@@ -148,11 +157,18 @@ def prune_old_cli_threads(
         protected.add(active_env_cid)
 
     protected_projects = resolve_project_ids(PROTECTED_PROJECT_NAMES, project_bases)
-    if project_id and project_id in protected_projects:
-        logger.warning("Project '%s' is a protected user workspace and cannot be pruned.", project_id)
-        return (0, 0)
+    norm_project_id = (
+        project_id.strip()
+        if isinstance(project_id, str) and project_id.strip()
+        else None
+    )
+    if norm_project_id:
+        resolved_req = resolve_project_ids([norm_project_id], project_bases)
+        if norm_project_id in protected_projects or bool(resolved_req & protected_projects):
+            logger.warning("Project '%s' is a protected user workspace and cannot be pruned.", norm_project_id)
+            return (0, 0)
     autonomous_projects = resolve_project_ids([required_env("AGY_PROJECT")], project_bases)
-    targets = (resolve_project_ids([project_id], project_bases) if project_id
+    targets = (resolve_project_ids([norm_project_id], project_bases) if norm_project_id
                else autonomous_projects | {AGY_DEFAULT_PROJECT}) - protected_projects
     if not targets:
         logger.info("No non-protected target projects found to prune.")
@@ -186,7 +202,11 @@ def prune_old_cli_threads(
             continue
         raw_steps = row["step_count"] if "step_count" in row.keys() else 0
         try:
-            steps = int(raw_steps) if raw_steps is not None and not isinstance(raw_steps, bool) else 0
+            if raw_steps is not None and not isinstance(raw_steps, bool):
+                sf = float(raw_steps)
+                steps = int(sf) if math.isfinite(sf) and sf >= 0 else 0
+            else:
+                steps = 0
         except (TypeError, ValueError, OverflowError):
             steps = 0
         automated = is_automated_thread(row["title"] or "", row["preview"] or "")
@@ -203,13 +223,15 @@ def prune_old_cli_threads(
 
     # Hard count cap so autonomous threads never approach agy's conversation eviction limit
     max_threads_i: Optional[int] = None
-    if max_threads is not None and not isinstance(max_threads, bool):
-        try:
-            mt_f = float(max_threads)
-            if math.isfinite(mt_f):
-                max_threads_i = int(mt_f)
-        except (TypeError, ValueError, OverflowError):
-            max_threads_i = None
+    if max_threads is not None:
+        if isinstance(max_threads, bool):
+            max_threads_i = DEFAULT_MAX_AUTONOMOUS_THREADS
+        else:
+            try:
+                mt_f = float(max_threads)
+                max_threads_i = int(mt_f) if math.isfinite(mt_f) and int(mt_f) >= 0 else DEFAULT_MAX_AUTONOMOUS_THREADS
+            except (TypeError, ValueError, OverflowError):
+                max_threads_i = DEFAULT_MAX_AUTONOMOUS_THREADS
     if max_threads_i is not None and 0 <= max_threads_i < len(kept):
         kept.sort(reverse=True)
         candidates.update(cid for _, cid in kept[max_threads_i:])

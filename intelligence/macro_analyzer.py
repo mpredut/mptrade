@@ -33,9 +33,13 @@ logger = logging.getLogger("intelligence.macro_analyzer")
 def _as_bool(val: Any) -> bool:
     if isinstance(val, bool):
         return val
+    if val is None:
+        return False
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else False
     if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    return bool(val)
+        return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
+    return False
 
 
 class MacroAnalyzer:
@@ -184,7 +188,7 @@ class MacroAnalyzer:
                 is_fresh = assessment.ts > last_notif or (eval_now < last_notif)
                 elapsed_since_notify = eval_now - last_notif
                 min_notify_interval = min(self.macro_llm_interval_sec, 3600.0)
-                if is_fresh and not getattr(assessment, "is_fallback", False) and (
+                if is_fresh and not _as_bool(getattr(assessment, "is_fallback", False)) and (
                     force or not (0.0 <= elapsed_since_notify < min_notify_interval)
                 ):
                     if self.shadow_notify:
@@ -513,7 +517,7 @@ class MacroAnalyzer:
             retry_ttl = 120.0
         geo_interval = (
             retry_ttl
-            if getattr(cached_geo, "is_fallback", False)
+            if _as_bool(getattr(cached_geo, "is_fallback", False))
             else self.macro_llm_interval_sec
         )
         if force or not (0.0 <= (current_ts - self._last_macro_llm_ts) < geo_interval):
@@ -552,16 +556,22 @@ class MacroAnalyzer:
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb/ with fallback."""
+        raw_status = status if isinstance(status, dict) else {}
+        hb_ts = self._resolve_now(raw_status.get("ts"))
+        safe_status = {
+            k: (hb_ts if k == "ts" else (None if isinstance(v, float) and not math.isfinite(v) else v))
+            for k, v in raw_status.items()
+        }
         payload = {
             "pid": os.getpid(),
             "status": "alive",
-            "ts": status.get("ts", time.time()),
+            "ts": hb_ts,
             "intervals": {
                 "geopolitical_llm": self.macro_llm_interval_sec,
                 "market_advisor": self.advisor_interval_sec,
                 "thread_prune": self.thread_prune_interval_sec,
             },
-            "last_run": status,
+            "last_run": safe_status,
         }
         try:
             from state_io import atomic_write_json

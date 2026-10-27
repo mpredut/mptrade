@@ -52,16 +52,24 @@ def save_state(state_file, state):
         print(f"[watchdog] cannot write state: {e}")
 
 
+def _valid_webhook_url(raw_url: str) -> str | None:
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return None
+    u = raw_url.strip()
+    if u.startswith(("http://", "https://")):
+        rest = u.split("://", 1)[1].rstrip("/")
+        return u if "/" in rest and rest.split("/", 1)[1].strip() else None
+    clean_topic = u.lstrip("/").strip()
+    return f"https://ntfy.sh/{clean_topic}" if clean_topic else None
+
+
 def send_ntfy(title, message):
     # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
     topic = (os.environ.get("NTFY_TOPIC_ERROR") or "").split("#", 1)[0].strip()
     phone_url = (os.environ.get("PHONE_ALERT_URL") or "").split("#", 1)[0].strip()
-    topic_url = (
-        (topic if topic.startswith(("http://", "https://")) else f"https://ntfy.sh/{topic.lstrip('/')}")
-        if topic
-        else None
-    )
-    url = topic_url or phone_url or None
+    topic_url = _valid_webhook_url(topic) if topic else None
+    fallback_url = _valid_webhook_url(phone_url) if phone_url else None
+    url = topic_url or fallback_url or None
     if not url:
         print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
         return False

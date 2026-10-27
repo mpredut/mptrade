@@ -42,9 +42,13 @@ def _safe_pos_interval(val: Any, default: float) -> float:
 def _as_bool(val: Any) -> bool:
     if isinstance(val, bool):
         return val
+    if val is None:
+        return False
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else False
     if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    return bool(val)
+        return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
+    return False
 
 
 class GlobalTelemetryCollector:
@@ -378,10 +382,16 @@ class GlobalTelemetryCollector:
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb, with fallback to direct touch/write."""
+        raw_status = status if isinstance(status, dict) else {}
+        hb_ts = _safe_pos_interval(raw_status.get("ts"), time.time())
+        safe_status = {
+            k: (hb_ts if k == "ts" else (None if isinstance(v, float) and not math.isfinite(v) else v))
+            for k, v in raw_status.items()
+        }
         payload = {
             "pid": os.getpid(),
             "status": "alive",
-            "ts": status.get("ts", time.time()),
+            "ts": hb_ts,
             "symbols": self.symbols,
             "intervals": {
                 "orderbook": self.orderbook_interval_sec,
@@ -391,7 +401,7 @@ class GlobalTelemetryCollector:
                 "fear_greed": self.fear_greed_interval_sec,
                 "breadth": self.breadth_interval_sec,
             },
-            "last_run": status,
+            "last_run": safe_status,
         }
         from state_io import atomic_write_json
         for hb_target in (self.heartbeat_path, self.legacy_heartbeat_path):

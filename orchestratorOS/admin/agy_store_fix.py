@@ -169,7 +169,24 @@ def webrtc_mesh_status() -> str:
 
 
 # ---------------------------------------------------------------- pre
+def _as_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("1", "true", "yes", "on", "y", "t"):
+            return True
+        if norm in ("0", "false", "no", "off", "n", "f", ""):
+            return False
+    return default
+
+
 def mode_pre(force: bool = False) -> int:
+    force = _as_bool_flag(force, False)
     if not force and os.environ.get("AGY_FIX_HOME") is None and unit_active():
         log.error("daemon is active; refusing to run 'pre' (use --force to override)")
         return 2
@@ -367,8 +384,12 @@ def newest_daemon_log_ready(since: float, pid: str = "") -> bool:
 
 
 def mode_post(timeout: int = 50) -> int:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+        timeout_s = 50.0
+    else:
+        timeout_s = float(timeout)
     start = time.time()
-    deadline = start + timeout
+    deadline = start + timeout_s
     ready = False
     while time.time() < deadline:
         pid = main_pid()
@@ -377,7 +398,7 @@ def mode_post(timeout: int = 50) -> int:
             break
         time.sleep(0.2)
     if not ready:
-        log.warning("post: daemon startup scan not confirmed within %ds; continuing after a fixed wait", timeout)
+        log.warning("post: daemon startup scan not confirmed within %ds; continuing after a fixed wait", int(timeout_s))
         time.sleep(5)
     time.sleep(0.5)   # link immediately after startup scan so reconnecting Web UI tabs find trajectories in D1
     linked = exists = bad = 0
@@ -647,7 +668,7 @@ def main(argv) -> int:
             if mode == "ui-sync-check":
                 if "--idle-sec" not in argv or argv.index("--idle-sec") + 1 >= len(argv):
                     raise ValueError("ui-sync-check requires --idle-sec <seconds>")
-                return mode_ui_sync_check(int(argv[argv.index("--idle-sec") + 1]))
+                return mode_ui_sync_check(float(argv[argv.index("--idle-sec") + 1]))
             print(__doc__)
             return 1
         except Exception:

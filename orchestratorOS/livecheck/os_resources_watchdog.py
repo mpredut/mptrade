@@ -93,6 +93,22 @@ def _safe_int(val, default=0):
         return default
 
 
+def _as_bool_flag(val, default=False):
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
+            return True
+        if norm in ("0", "0.0", "false", "no", "off", "n", "f", ""):
+            return False
+    return default
+
+
 def _restart_allowed(state, script, now):
     rh = state.get("restart_history")
     if not isinstance(rh, dict):
@@ -243,6 +259,8 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         item = tracked.get(key, {"high": 0, "normal": 0, "alerted": False, "last_alert": 0})
         if not isinstance(item, dict):
             item = {"high": 0, "normal": 0, "alerted": False, "last_alert": 0}
+        alerted = _as_bool_flag(item.get("alerted"), False)
+        item["alerted"] = alerted
         last_alert = _safe_float(item.get("last_alert", 0), 0.0)
         if last_alert > now or last_alert < 0.0:
             last_alert = 0.0
@@ -251,7 +269,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             item["high"] = max(0, _safe_int(item.get("high", 0), 0)) + 1
             item["normal"] = 0
             item["last_reasons"] = reasons
-            if item["high"] >= CONSECUTIVE and (not item.get("alerted") or
+            if item["high"] >= CONSECUTIVE and (not alerted or
                     now - last_alert >= COOLDOWN_MIN * 60):
                 offenders.append((proc, reasons, item["high"]))
                 item["alerted"] = True
@@ -259,7 +277,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         else:
             item["high"] = 0
             item["normal"] = max(0, _safe_int(item.get("normal", 0), 0)) + 1
-            if item.get("alerted") and item["normal"] >= RECOVERY_CHECKS:
+            if alerted and item["normal"] >= RECOVERY_CHECKS:
                 recovered.append(proc)
                 item["alerted"] = False
                 item["last_alert"] = now

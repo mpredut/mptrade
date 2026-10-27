@@ -3745,3 +3745,70 @@ def test_batch15_pricefetcher_new_coins_and_cooldown_hardening(monkeypatch, tmp_
     assert cd.release_group_member("BTCUSDC", "grp1", "BUY", keep_group="false") is True
     assert cd.get("BTCUSDC") is None
 
+
+def test_batch16_orchestrator_os_watchdogs_and_telemetry_daemons_hardening(monkeypatch, tmp_path):
+    import math
+    from intelligence import globaltelemetry_collector as gtc
+    from intelligence import macro_analyzer as ma
+    from orchestratorOS.admin import agy_store_fix as asf
+    from orchestratorOS.admin import prune_llm_threads as plt
+    from orchestratorOS.lib import watchdog_common as wc
+    from orchestratorOS.livecheck import os_resources_watchdog as orw
+
+    # 1. prune_llm_threads._as_bool rejects NaN and prune_old_cli_threads blocks whitespace-padded protected project_id
+    assert plt._as_bool(float("nan"), default=False) is False
+    assert plt._as_bool("garbage", default=True) is True
+
+    db_path = tmp_path / "conversation_summaries.db"
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE conversation_summaries (conversation_id TEXT, project_id TEXT, title TEXT, preview TEXT, step_count TEXT, last_modified_time TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO conversation_summaries VALUES ('c_human', 'default-cli-project', 'User Chat', 'Hello', '10.0', '2020-01-01T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    assert plt.prune_old_cli_threads(cli_base=str(tmp_path), project_id="  mptrade  ", dry_run=True) == (0, 0)
+    # Float-string step_count ("10.0" > 6) must be preserved as human interactive thread even with all_threads_in_project=True
+    assert plt.prune_old_cli_threads(cli_base=str(tmp_path), all_threads_in_project=True, dry_run=True) == (0, 0)
+
+    # 2. watchdog_common._valid_webhook_url rejects bare slash topic or root ntfy URL without topic
+    assert wc._valid_webhook_url("/") is None
+    assert wc._valid_webhook_url("///") is None
+    assert wc._valid_webhook_url("https://ntfy.sh/") is None
+    assert wc._valid_webhook_url("/my-topic") == "https://ntfy.sh/my-topic"
+    assert wc._valid_webhook_url("https://ntfy.sh/my-topic") == "https://ntfy.sh/my-topic"
+
+    # 3. os_resources_watchdog._as_bool_flag normalizes string "false" in persisted state
+    assert orw._as_bool_flag("false", default=True) is False
+    assert orw._as_bool_flag(float("nan"), default=False) is False
+
+    # 4. GlobalTelemetryCollector and MacroAnalyzer write_heartbeat sanitize non-dict status and NaN ts
+    col = object.__new__(gtc.GlobalTelemetryCollector)
+    col.symbols = ["BTCUSDC"]
+    col.orderbook_interval_sec = 15.0
+    col.derivatives_interval_sec = 30.0
+    col.whale_interval_sec = 60.0
+    col.news_interval_sec = 120.0
+    col.fear_greed_interval_sec = 1800.0
+    col.breadth_interval_sec = 900.0
+    col.heartbeat_path = str(tmp_path / "gtc.hb")
+    col.legacy_heartbeat_path = str(tmp_path / "gtc_legacy.hb")
+    col.write_heartbeat({"ts": float("nan")})
+    hb_data = json.loads((tmp_path / "gtc.hb").read_text(encoding="utf-8"))
+    assert math.isfinite(hb_data["ts"]) and hb_data["ts"] > 0
+
+    ana = object.__new__(ma.MacroAnalyzer)
+    ana.macro_llm_interval_sec = 3600.0
+    ana.advisor_interval_sec = 1800.0
+    ana.thread_prune_interval_sec = 10800.0
+    ana.heartbeat_path = str(tmp_path / "ma.hb")
+    ana.write_heartbeat(None)  # type: ignore[arg-type]
+    ma_hb = json.loads((tmp_path / "ma.hb").read_text(encoding="utf-8"))
+    assert math.isfinite(ma_hb["ts"]) and ma_hb["ts"] > 0
+    assert asf._as_bool_flag("false", True) is False
+
+
