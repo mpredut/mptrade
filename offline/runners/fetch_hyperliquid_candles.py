@@ -44,22 +44,24 @@ def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
     """Resolve the ``@index`` API name from ``spotMeta``, with no hardcoded index."""
     if not isinstance(spot_meta, dict):
         raise ValueError("spot_meta must be a dict")
+    if isinstance(token, bool) or isinstance(quote, bool) or not token or not quote:
+        raise ValueError(f"spot token not found: {token}/{quote}")
     raw_tokens = spot_meta.get("tokens")
     token_indices = {
-        str(item.get("name", "")).upper(): item.get("index")
+        str(item.get("name", "")).strip().upper(): item.get("index")
         for item in (raw_tokens if isinstance(raw_tokens, list) else [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and not isinstance(item.get("name"), bool) and not isinstance(item.get("index"), bool)
     }
-    base_index = token_indices.get(str(token or "").upper())
-    quote_index = token_indices.get(str(quote or "").upper())
+    base_index = token_indices.get(str(token).strip().upper())
+    quote_index = token_indices.get(str(quote).strip().upper())
     if base_index is None or quote_index is None:
         raise ValueError(f"spot token not found: {token}/{quote}")
     raw_universe = spot_meta.get("universe")
     for market in (raw_universe if isinstance(raw_universe, list) else []):
         if isinstance(market, dict) and market.get("tokens") == [base_index, quote_index]:
             name = market.get("name")
-            if name:
-                return str(name)
+            if name and not isinstance(name, bool):
+                return str(name).strip()
     raise ValueError(f"spot pair not found: {token}/{quote}")
 
 
@@ -67,9 +69,17 @@ def validate_continuity(records: list[dict], interval_minutes: int) -> None:
     """The replay assumes evenly spaced bars; it refuses datasets with gaps."""
     if isinstance(interval_minutes, bool) or not isinstance(interval_minutes, int) or interval_minutes <= 0:
         raise ValueError("interval_minutes must be a positive integer")
+    if not isinstance(records, (list, tuple)):
+        raise ValueError("records must be a sequence")
     expected_seconds = interval_minutes * 60
     for previous, current in zip(records, records[1:]):
-        actual_seconds = current["timestamp"] - previous["timestamp"]
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            raise ValueError("discontinuous dataset: invalid record")
+        prev_ts = previous.get("timestamp")
+        curr_ts = current.get("timestamp")
+        if isinstance(prev_ts, bool) or isinstance(curr_ts, bool) or prev_ts is None or curr_ts is None:
+            raise ValueError("discontinuous dataset: invalid timestamp")
+        actual_seconds = int(curr_ts) - int(prev_ts)
         if actual_seconds != expected_seconds:
             raise ValueError(
                 "discontinuous dataset: "

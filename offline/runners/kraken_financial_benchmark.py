@@ -179,9 +179,10 @@ def build_report(
         raise ValueError(
             f"hash dataset diferit: {digest} != {expected.get('sha256')}"
         )
+    raw_bars = expected.get("bars", -1)
     try:
-        expected_bars = int(expected.get("bars", -1))
-    except (TypeError, ValueError):
+        expected_bars = -1 if isinstance(raw_bars, bool) or raw_bars is None else int(float(raw_bars))
+    except (TypeError, ValueError, OverflowError):
         expected_bars = -1
     if len(records) != expected_bars:
         raise ValueError(f"different bar count: {len(records)} != {expected.get('bars')}")
@@ -305,8 +306,18 @@ def markdown_report(report: dict) -> str:
         verdict = f"PROMOTE {paths}" if paths else "DO NOT PROMOTE"
         lines.extend(["## Promotion gate", "", f"Verdict: **{verdict}**", ""])
     first_scen = next(iter((report.get("scenarios") or {}).values()), None)
-    total_bars = int(((first_scen or {}).get("aggregate") or {}).get("total_test_bars") or 0) if isinstance(first_scen, dict) else 0
-    wf_interval = float(((report.get("walk_forward") or {}).get("interval_minutes")) or 240.0)
+    raw_tb = ((first_scen or {}).get("aggregate") or {}).get("total_test_bars") if isinstance(first_scen, dict) and isinstance(first_scen.get("aggregate"), dict) else 0
+    try:
+        total_bars = 0 if isinstance(raw_tb, bool) or raw_tb is None else int(float(raw_tb))
+    except (TypeError, ValueError, OverflowError):
+        total_bars = 0
+    raw_wfi = (report.get("walk_forward") or {}).get("interval_minutes") if isinstance(report.get("walk_forward"), dict) else 240.0
+    try:
+        wf_interval = 240.0 if isinstance(raw_wfi, bool) or raw_wfi is None else float(raw_wfi)
+        if not math.isfinite(wf_interval) or wf_interval <= 0:
+            wf_interval = 240.0
+    except (TypeError, ValueError, OverflowError):
+        wf_interval = 240.0
     lines.extend([
         "## Interpretation", "",
         "- `Mean USD/fold` uses the same initial budget in every TEST window.",

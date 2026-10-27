@@ -174,7 +174,11 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
 
     if isinstance(report.get("intervals"), dict) and report["intervals"]:
         for interval_text, section in report["intervals"].items():
-            interval = int(interval_text)
+            try:
+                interval = int(str(interval_text).strip())
+            except ValueError:
+                from binance_api.market_data import parse_interval_minutes
+                interval = parse_interval_minutes(str(interval_text))
             if not isinstance(section, dict) or not isinstance(section.get("dataset"), dict):
                 raise ValueError(f"missing dataset metadata for {interval}m")
             path = _resolve_frozen_file(section["dataset"]["frozen_file"])
@@ -205,8 +209,8 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             except ValueError:
                 from binance_api.market_data import parse_interval_minutes
                 interval = parse_interval_minutes(str(interval_raw))
-        elif dataset_meta.get("median_step_seconds"):
-            step_min = int(round(float(dataset_meta["median_step_seconds"]) / 60.0))
+        elif _safe_f(dataset_meta.get("median_step_seconds"), 0.0) > 0:
+            step_min = int(round(_safe_f(dataset_meta["median_step_seconds"], 60.0) / 60.0))
             interval = 1440 if step_min >= 1440 else max(1, step_min)
         elif exec_meta.get("calendar_periods_per_year") == 252.0:
             interval = 1440
@@ -451,10 +455,14 @@ def _candidate_windows(
     eval_fn = segment_fn or _segment_result
     windows = []
     for interval, (records, sizes, warmup_bars) in sorted(datasets.items()):
+        train_sz = int(_safe_f(sizes.get("train", sizes.get("train_bars")), 0.0))
+        val_sz = int(_safe_f(sizes.get("validation", sizes.get("validation_bars")), 0.0))
+        test_sz = int(_safe_f(sizes.get("test", sizes.get("test_bars")), 0.0))
+        step_sz = int(_safe_f(sizes.get("step", sizes.get("step_bars", test_sz)), float(test_sz))) or test_sz
         folds = walk_forward_splits(
-            len(records), train_size=sizes["train"],
-            validation_size=sizes["validation"], test_size=sizes["test"],
-            step_size=sizes["step"],
+            len(records), train_size=train_sz,
+            validation_size=val_sz, test_size=test_sz,
+            step_size=step_sz,
         )
         for fold_index, fold in enumerate(folds, start=1):
             warmup = records[max(0, fold.test.start - warmup_bars):fold.test.start]

@@ -31,6 +31,7 @@ def _paths(inputs: list[Path]) -> list[Path]:
 
 def _load(paths: list[Path], venue: str | None) -> list[dict]:
     events = []
+    norm_venue = "" if isinstance(venue, bool) or venue is None else str(venue).strip().lower()
     for path in paths:
         with path.open(encoding="utf-8") as handle:
             for line_number, raw in enumerate(handle, start=1):
@@ -42,8 +43,11 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
                     raise ValueError(f"{path}:{line_number}: JSON invalid") from error
                 if not isinstance(event, dict):
                     raise ValueError(f"{path}:{line_number}: JSON invalid")
-                if venue and str(event.get("venue") or "").lower() != venue.lower():
-                    continue
+                if norm_venue:
+                    raw_ev_venue = event.get("venue")
+                    ev_venue = "" if isinstance(raw_ev_venue, bool) or raw_ev_venue is None else str(raw_ev_venue).strip().lower()
+                    if ev_venue != norm_venue:
+                        continue
                 events.append(event)
     return events
 

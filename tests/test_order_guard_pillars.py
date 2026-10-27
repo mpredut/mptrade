@@ -1094,4 +1094,68 @@ def test_batch42_mailer_server_pricechecker_and_execution_calibration_hardening(
     assert ord0["market_execution_shortfall_bps"] == pytest.approx(100.0)
 
 
+def test_batch43_offline_runners_hardening(tmp_path):
+    import json
+    import pytest
+    from offline.runners import (
+        fetch_hyperliquid_candles as fhc,
+        calibrate_execution_audit as cea,
+        kraken_financial_benchmark as kfb,
+    )
+
+    # 1. fetch_hyperliquid_candles.resolve_spot_pair strips whitespace and rejects bools
+    meta = {
+        "tokens": [{"name": " hype ", "index": 150}, {"name": " usdc ", "index": 0}],
+        "universe": [{"name": " @107 ", "tokens": [150, 0]}],
+    }
+    assert fhc.resolve_spot_pair(" HYPE ", " USDC ", meta) == "@107"
+    with pytest.raises(ValueError):
+        fhc.resolve_spot_pair(True, "USDC", meta)
+
+    # 2. fetch_hyperliquid_candles.validate_continuity rejects non-sequences and bool timestamps
+    with pytest.raises(ValueError):
+        fhc.validate_continuity(None, 60)
+    with pytest.raises(ValueError):
+        fhc.validate_continuity([{"timestamp": True}, {"timestamp": 3600}], 60)
+
+    # 3. calibrate_execution_audit._load normalizes venue whitespace and ignores bool venue
+    audit_file = tmp_path / "execution_audit_test.jsonl"
+    audit_file.write_text(
+        "\n".join([
+            json.dumps({"venue": " Kraken ", "intent_id": "i1"}),
+            json.dumps({"venue": True, "intent_id": "i2"}),
+        ]),
+        encoding="utf-8",
+    )
+    loaded = cea._load([audit_file], " kraken ")
+    assert len(loaded) == 1
+    assert loaded[0]["intent_id"] == "i1"
+
+    # 4. kraken_financial_benchmark.markdown_report handles malformed total_test_bars / interval_minutes
+    md = kfb.markdown_report({
+        "candidate_name": "test_cand",
+        "scenarios": {
+            "central": {
+                "aggregate": {
+                    "mean_return_pct": 1.2,
+                    "mean_net_pnl_usd_per_window": 12.0,
+                    "sum_reset_net_pnl_usd": 120.0,
+                    "worst_return_pct": -0.5,
+                    "worst_max_drawdown_pct": 2.0,
+                    "mean_buy_hold_return_pct": 0.8,
+                    "worst_cvar_95_pct": -1.1,
+                    "mean_exposure_pct": 40.0,
+                    "positive_windows": 8,
+                    "window_count": 10,
+                    "total_test_bars": "90.0",
+                    "regimes": {},
+                }
+            }
+        },
+        "walk_forward": {"interval_minutes": True},
+    })
+    assert "The 90 TEST bars mean 15 days" in md
+
+
+
 
