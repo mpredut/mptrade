@@ -61,6 +61,38 @@ class _Cmd:
     UNSUBSCRIBE = "UNSUBSCRIBE"
 
 
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
+        return bool(default)
+    if isinstance(value, (int, float)):
+        try:
+            f = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return bool(default)
+        if not math.isfinite(f):
+            return bool(default)
+        return f != 0.0
+    s = str(value).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off", ""}:
+        return False
+    return bool(default)
+
+
+def _sanitize_timeout(timeout, default: float = WS_STOP_TIMEOUT) -> float:
+    if timeout is not None and not isinstance(timeout, bool):
+        try:
+            t_f = float(timeout)
+            if math.isfinite(t_f) and t_f >= 0.0:
+                return t_f
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return float(default)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Shared base: thread, asyncio, reconnect backoff, and clean shutdown.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,26 +110,21 @@ class BinanceWSBase:
 
     # Thread lifecycle.
     def start(self, name: str = "BinanceWS", daemon: bool = True) -> "BinanceWSBase":
+        eff_name = str(name).strip() if isinstance(name, str) and name.strip() else "BinanceWS"
+        eff_daemon = _as_bool(daemon, default=True)
         with self._start_lock:          # [F2] concurrent start() calls are safe
             if self.is_running:
-                logger.info("%s already running", name)
+                logger.info("%s already running", eff_name)
                 return self
             self._stop_event.clear()
-            self._thread = threading.Thread(target=self._thread_worker, name=name, daemon=daemon)
+            self._thread = threading.Thread(target=self._thread_worker, name=eff_name, daemon=eff_daemon)
             self._thread.start()
-        logger.info("%s started", name)
+        logger.info("%s started", eff_name)
         return self
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         self._stop_event.set()
-        eff_timeout = WS_STOP_TIMEOUT
-        if timeout is not None and not isinstance(timeout, bool):
-            try:
-                t_f = float(timeout)
-                if math.isfinite(t_f) and t_f >= 0.0:
-                    eff_timeout = t_f
-            except (TypeError, ValueError, OverflowError):
-                pass
+        eff_timeout = _sanitize_timeout(timeout, default=WS_STOP_TIMEOUT)
         if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=eff_timeout)
             if self._thread.is_alive():
@@ -165,10 +192,26 @@ class BinanceWSBase:
 
     # ─── Shared helpers ──────────────────────────────────────────────────────
     async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
+        if delay is None or isinstance(delay, bool):
+            return
+        try:
+            delay_f = float(delay)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(delay_f) or delay_f <= 0.0:
+            return
+        step_f = 0.2
+        if step is not None and not isinstance(step, bool):
+            try:
+                cand_step = float(step)
+                if math.isfinite(cand_step) and cand_step > 0.0:
+                    step_f = cand_step
+            except (TypeError, ValueError, OverflowError):
+                pass
         elapsed = 0.0
-        while elapsed < delay and not self._stop_event.is_set():
-            await asyncio.sleep(min(step, delay - elapsed))
-            elapsed += step
+        while elapsed < delay_f and not self._stop_event.is_set():
+            await asyncio.sleep(min(step_f, delay_f - elapsed))
+            elapsed += step_f
 
     @staticmethod
     def _is_shutdown_error(exc: Exception) -> bool:
@@ -208,7 +251,7 @@ class BinancePriceStream(BinanceWSBase):
 
     def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
         # Preserve the original non-daemon market-manager thread behavior.
-        super().start(name=name, daemon=daemon)
+        super().start(name=name, daemon=_as_bool(daemon, default=False))
         return self
 
     # ─── Subscription management (observers) ─────────────────────────────────
@@ -459,9 +502,10 @@ class BinanceAccountStream(BinanceWSBase):
 
     # Local health state and callback propagation.
     def _mark_available(self, value: bool) -> None:
+        flag = _as_bool(value, default=False)
         with self._health_lock:
-            self._available = value
-        self.on_available(value)
+            self._available = flag
+        self.on_available(flag)
 
     def _mark_event(self) -> None:
         with self._health_lock:
@@ -475,7 +519,7 @@ class BinanceAccountStream(BinanceWSBase):
         self.on_unhealthy()
 
     def start(self, name: str = "WSUserData", daemon: bool = True) -> "BinanceAccountStream":
-        super().start(name=name, daemon=daemon)
+        super().start(name=name, daemon=_as_bool(daemon, default=True))
         with self._start_lock:
             if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
                 self._watchdog_thread = threading.Thread(
@@ -484,13 +528,14 @@ class BinanceAccountStream(BinanceWSBase):
         return self
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
-        ok = super().stop(timeout=timeout)              # Set stop event and join run thread.
+        eff_timeout = _sanitize_timeout(timeout, default=WS_STOP_TIMEOUT)
+        ok = super().stop(timeout=eff_timeout)          # Set stop event and join run thread.
         if (
             self._watchdog_thread
             and self._watchdog_thread.is_alive()
             and self._watchdog_thread is not threading.current_thread()
         ):
-            self._watchdog_thread.join(timeout=timeout)  # Stop the watchdog cleanly too.
+            self._watchdog_thread.join(timeout=eff_timeout)  # Stop the watchdog cleanly too.
         return ok
 
     # ─── logon semnat (login + keepalive) ─────────────────────────────────────

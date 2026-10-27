@@ -33,6 +33,7 @@ INTERVALS_MIN_TO_STR: dict[int, str] = {
     1440: "1d",
     4320: "3d",
     10080: "1w",
+    43200: "1M",
 }
 
 INTERVALS_STR_TO_MIN: dict[str, int] = {
@@ -43,6 +44,39 @@ INTERVALS_STR_TO_MIN["1d"] = 1440
 INTERVALS_STR_TO_MIN["1w"] = 10080
 INTERVALS_STR_TO_MIN["1M"] = 43200
 
+_CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
+    "1H": "1h",
+    "2H": "2h",
+    "4H": "4h",
+    "6H": "6h",
+    "8H": "8h",
+    "12H": "12h",
+    "1D": "1d",
+    "3D": "3d",
+    "1W": "1w",
+}
+
+
+def _parse_bool_flag(val: object, default: bool = True) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
 
 def parse_interval_minutes(interval: int | str) -> int:
     """Convert an interval in minutes or string notation (e.g. '1h', 60) into minutes."""
@@ -50,6 +84,7 @@ def parse_interval_minutes(interval: int | str) -> int:
         raise ValueError(f"interval must be positive integer or string, not bool: {interval}")
     if isinstance(interval, str):
         cleaned = interval.strip()
+        cleaned = _CASE_INSENSITIVE_INTERVAL_ALIASES.get(cleaned.upper(), cleaned)
         if cleaned in INTERVALS_STR_TO_MIN:
             return INTERVALS_STR_TO_MIN[cleaned]
         if cleaned.isascii() and cleaned.isdigit():
@@ -71,8 +106,11 @@ def parse_interval_minutes(interval: int | str) -> int:
 
 def interval_to_binance_str(interval: int | str) -> str:
     """Convert an interval in minutes or string notation into Binance interval format."""
-    if isinstance(interval, str) and interval in INTERVALS_STR_TO_MIN:
-        return interval
+    if isinstance(interval, str):
+        cleaned = interval.strip()
+        cleaned = _CASE_INSENSITIVE_INTERVAL_ALIASES.get(cleaned.upper(), cleaned)
+        if cleaned in INTERVALS_STR_TO_MIN:
+            return cleaned
     minutes = parse_interval_minutes(interval)
     if minutes in INTERVALS_MIN_TO_STR:
         return INTERVALS_MIN_TO_STR[minutes]
@@ -161,6 +199,7 @@ def fetch_ohlc_candles(
     seen_timestamps: set[int] = set()
     current_start = final_start
     batch_limit = min(1000, max(1, batch_limit_raw))
+    should_drop_incomplete = _parse_bool_flag(drop_incomplete, default=True)
 
     while current_start < final_end:
         params = {
@@ -224,7 +263,7 @@ def fetch_ohlc_candles(
             ts_sec = open_time_ms // 1000
 
             # If drop_incomplete is True and the candle has not closed yet, skip it
-            if drop_incomplete and close_time_ms > now_ms:
+            if should_drop_incomplete and close_time_ms > now_ms:
                 continue
 
             if ts_sec in seen_timestamps:

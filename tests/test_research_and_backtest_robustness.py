@@ -4156,3 +4156,87 @@ def test_batch21_monitortrades_position_exit_manager_active_intents_and_archiver
     archiver._shutdown([bad_cache, good_cache], cp_mgr, ws_mod)
     assert events == ["unsub", "unsub", "bad_flushed", "good_shutdown", "good_flushed", "cp_shutdown", "ws_stop"]
 
+
+def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():
+    import asyncio
+    from types import SimpleNamespace
+    import binance_api.bapi_ws as bapi_ws
+    import binance_api.bapi_ws_bridge as bapi_ws_bridge
+    import binance_api.market_data as b_md
+    from binance_api.trailing_stop import TrailingStop
+    from providers.base import MarketDataProvider, aggregate_fills_by_order_id, extract_order_side
+    from providers.quantity import balance_cap_quantity
+    from providers.replay_provider import ReplayMarketDataProvider
+
+    # 1. bapi_ws._as_bool, _sanitize_timeout, and _interruptible_sleep handle bool/NaN/negative/0 inputs safely
+    assert bapi_ws._as_bool("false", default=True) is False
+    assert bapi_ws._as_bool(float("nan"), default=False) is False
+    assert bapi_ws._sanitize_timeout(True, default=8.0) == 8.0
+    assert bapi_ws._sanitize_timeout(-5.0, default=8.0) == 8.0
+    assert bapi_ws._sanitize_timeout("2.5", default=8.0) == 2.5
+
+    ws_base = bapi_ws.BinanceWSBase()
+    asyncio.run(ws_base._interruptible_sleep(float("nan"), step=0.0))
+    asyncio.run(ws_base._interruptible_sleep(-1.0, step=-1.0))
+
+    # 2. bapi_ws_bridge.refresh_symbol_in_cache does not raise AttributeError when manager lacks cls_name
+    bapi_ws_bridge.refresh_symbol_in_cache(SimpleNamespace(), "BTCUSDC")
+
+    # 3. binance_api.market_data supports 43200 ("1M"), whitespace-padded and uppercase intervals (" 1M ", "1H", "1D", "1W")
+    assert b_md.interval_to_binance_str(43200) == "1M"
+    assert b_md.interval_to_binance_str(" 1M ") == "1M"
+    assert b_md.interval_to_binance_str(" 1H ") == "1h"
+    assert b_md.interval_to_binance_str("1D") == "1d"
+    assert b_md.interval_to_binance_str("1W") == "1w"
+    assert b_md.parse_interval_minutes(" 4H ") == 240
+    assert b_md._parse_bool_flag("false", default=True) is False
+    assert b_md._parse_bool_flag(float("nan"), default=True) is True
+
+    # 4. TrailingStop._safe_float and logging helpers tolerate string/None/bool prices and peaks
+    assert TrailingStop._safe_float("123.45", 0.0) == 123.45
+    assert TrailingStop._safe_float(True, 5.0) == 5.0
+    assert TrailingStop._safe_float(float("nan"), 5.0) == 5.0
+    dummy_ts = object.__new__(TrailingStop)
+    logged = []
+    dummy_ts.log = logged.append
+    dummy_ts.log_dry_sell("BTC", "BTC", "BTCUSDC", 0.1, "60000", None, 2.5)
+    dummy_ts.log_dry_rebuy("BTC", "BTC", "BTCUSDC", 0.1, "58000", {"low": "invalid"})
+    dummy_ts.log_hold("BTC", "BTC", "BTCUSDC", "60000", "61000", None, 2.5, 0.1)
+    assert len(logged) == 3
+
+    # 5. providers/base, quantity, and replay_provider normalize BID/ASK/LONG/SHORT sides and None ohlc_series
+    assert extract_order_side({"side": "bid"}) == "BUY"
+    assert extract_order_side({"side": "short"}) == "SELL"
+    assert extract_order_side({"type": "ask"}) == "SELL"
+    agg = aggregate_fills_by_order_id(
+        [{"orderId": "10", "side": "BID", "price": 100.0, "qty": 2.0, "timestamp": 1000}],
+        side="long",
+    )
+    assert len(agg) == 1 and agg[0]["side"] == "BUY"
+    cap, asset = balance_cap_quantity(lambda _a: 500.0, "BTCUSDC", "bid", 100.0)
+    assert cap == 5.0 and asset == "USDC"
+
+    class _DummyProvider(MarketDataProvider):
+        @property
+        def name(self):
+            return "Dummy"
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def ohlc_series(self, symbol: str, interval_min: int):
+            return None
+
+    dp = _DummyProvider()
+    assert dp.ohlc_closes("BTCUSDC", 60) == []
+
+    rp = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 50000.0)]})
+    rp._series["ETHUSDC"] = [(1000.0, 3000.0)]
+    assert rp.advance("ETHUSDC", 1) == 3000.0
+    assert rp.place_order("ETHUSDC", "bid", 3000.0, 1.0) is not None
+    assert len(rp.get_orders("ETHUSDC", "long", 60.0)) == 1
+
+

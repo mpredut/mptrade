@@ -147,8 +147,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
         series = self._series.get(symbol)
         if not series:
             return None
-        new_idx = min(self._cursor[symbol] + steps_int, len(series))
-        if new_idx == self._cursor[symbol] and new_idx >= len(series):
+        cur_idx = self._cursor.get(symbol, 0)
+        new_idx = min(cur_idx + steps_int, len(series))
+        if new_idx == cur_idx and new_idx >= len(series):
             return None   # Already at the end; nothing to advance.
         self._cursor[symbol] = new_idx
         if new_idx == 0:
@@ -247,9 +248,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if isinstance(side, bool):
             return []
         side_u = str(side or "").strip().upper() or None
-        if side_u == "B":
+        if side_u in ("B", "BID", "LONG"):
             side_u = "BUY"
-        elif side_u == "S":
+        elif side_u in ("A", "S", "ASK", "SHORT"):
             side_u = "SELL"
         elif side_u is not None and side_u not in ("BUY", "SELL"):
             return []
@@ -288,10 +289,12 @@ class ReplayMarketDataProvider(MarketDataProvider):
         Update position quantity/average cost and order history. See the module
         documentation for fidelity limitations.
         """
+        if isinstance(side, bool):
+            return None
         side = str(side or "").strip().upper()
-        if side == "B":
+        if side in ("B", "BID", "LONG"):
             side = "BUY"
-        elif side == "S":
+        elif side in ("A", "S", "ASK", "SHORT"):
             side = "SELL"
         if side not in ("BUY", "SELL") or isinstance(price, bool) or isinstance(qty, bool):
             return None

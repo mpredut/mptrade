@@ -6,6 +6,33 @@ from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
 
+def _strip_env_value(raw_val: str) -> str:
+    val = raw_val.strip()
+    if len(val) >= 2 and val[0] in ('"', "'"):
+        q = val[0]
+        end_idx = val.find(q, 1)
+        if end_idx != -1:
+            return val[1:end_idx]
+    val = val.split("#", 1)[0].strip()
+    return val.strip('"').strip("'")
+
+
+def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set)):
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    if isinstance(val, str):
+        s = _strip_env_value(val).strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off", "none", ""):
+            return False
+    return default
+
+
 def env_value(folder: str, key: str) -> Optional[str]:
     """Read one key from ``.env``/``config.env``/``runtime.env`` without mutating ``os.environ``."""
     if not isinstance(folder, str) or not folder.strip() or not isinstance(key, str) or not key.strip():
@@ -24,10 +51,8 @@ def env_value(folder: str, key: str) -> Optional[str]:
                         line = line[6:].strip()
                     name, _, value = line.partition("=")
                     if name.strip() == key:
-                        val = value.strip()
-                        if not (val.startswith('"') or val.startswith("'")):
-                            val = val.split("#", 1)[0].strip()
-                        return val.strip('"').strip("'") or None
+                        cleaned = _strip_env_value(value)
+                        return cleaned or None
         except OSError:
             continue
     return None
@@ -35,24 +60,15 @@ def env_value(folder: str, key: str) -> Optional[str]:
 
 def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> bool:
     """Resolve a boolean flag from os.environ or optional provider .env/config.env."""
+    def_flag = _parse_bool_flag(default, False)
     if not isinstance(key, str) or not key.strip():
-        return bool(default)
+        return def_flag
     v = os.environ.get(key)
     if v is None and folder is not None:
         v = env_value(folder, key)
     if v is None:
-        return bool(default)
-    if isinstance(v, bool):
-        return v
-    cleaned = str(v).strip()
-    if not (cleaned.startswith('"') or cleaned.startswith("'")):
-        cleaned = cleaned.split("#", 1)[0].strip()
-    cleaned = cleaned.strip('"').strip("'").strip().lower()
-    if cleaned in ("1", "true", "yes", "on"):
-        return True
-    if cleaned in ("0", "false", "no", "off"):
-        return False
-    return bool(default)
+        return def_flag
+    return _parse_bool_flag(v, def_flag)
 
 
 _TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts")
@@ -191,9 +207,9 @@ def extract_order_side(order: Any) -> str:
     )
     if raw_side is not None and str(raw_side).strip():
         s = str(raw_side).strip().upper()
-        if s in ("B", "BUY"):
+        if s in ("B", "BUY", "BID", "LONG"):
             return "BUY"
-        if s in ("A", "S", "SELL"):
+        if s in ("A", "S", "SELL", "ASK", "SHORT"):
             return "SELL"
         return s
     raw_type = order.get("type")
@@ -202,9 +218,10 @@ def extract_order_side(order: Any) -> str:
     if (
         raw_type is not None
         and not isinstance(raw_type, bool)
-        and str(raw_type).strip().upper() in ("BUY", "SELL")
+        and str(raw_type).strip().upper() in ("BUY", "SELL", "B", "S", "BID", "ASK", "LONG", "SHORT")
     ):
-        return str(raw_type).strip().upper()
+        t_norm = str(raw_type).strip().upper()
+        return "BUY" if t_norm in ("BUY", "B", "BID", "LONG") else "SELL"
     if "isBuyer" in order and order.get("isBuyer") is not None:
         raw_buyer = order["isBuyer"]
         if isinstance(raw_buyer, bool):
@@ -443,12 +460,13 @@ def extract_order_fee(
                 fee_asset = val.strip().upper()
             break
 
-    if require_explicit_asset and (not has_asset_key or (fee > 0.0 and not fee_asset)):
+    req_explicit = _parse_bool_flag(require_explicit_asset, False)
+    if req_explicit and (not has_asset_key or (fee > 0.0 and not fee_asset)):
         return None
 
     base_u = base_asset.strip().upper() if isinstance(base_asset, str) else ""
     quote_u = quote_asset.strip().upper() if isinstance(quote_asset, str) else ""
-    if not fee_asset and not require_explicit_asset and quote_u:
+    if not fee_asset and not req_explicit and quote_u:
         fee_asset = quote_u
 
     px = 0.0
@@ -470,7 +488,7 @@ def extract_order_fee(
             base_fee = fee
             if px > 0.0:
                 fee_in_quote = fee * px
-        elif (quote_u and fee_asset == quote_u) or (not fee_asset and not require_explicit_asset):
+        elif (quote_u and fee_asset == quote_u) or (not fee_asset and not req_explicit):
             quote_fee = fee
             fee_in_quote = fee
 
@@ -514,9 +532,9 @@ def aggregate_fills_by_order_id(
     if isinstance(side, bool):
         return []
     want = str(side or "").strip().upper()
-    if want == "B":
+    if want in ("B", "BID", "LONG"):
         want = "BUY"
-    elif want == "S":
+    elif want in ("A", "S", "ASK", "SHORT"):
         want = "SELL"
     elif want and want not in ("BUY", "SELL"):
         return []
@@ -847,13 +865,21 @@ class MarketDataProvider(ABC):
         if isinstance(order_type, bool):
             return None
         ot_norm = str(order_type or "").strip().upper()
-        if ot_norm in ("BUY", "B"):
+        if ot_norm in ("BUY", "B", "BID", "LONG"):
             opposite = "SELL"
-        elif ot_norm in ("SELL", "S"):
+        elif ot_norm in ("SELL", "S", "A", "ASK", "SHORT"):
             opposite = "BUY"
         else:
             return None
-        fills = self.get_orders(symbol, opposite, since_s)
+        eff_since_s = 90.0 * 24.0 * 3600.0
+        if since_s is not None and not isinstance(since_s, bool):
+            try:
+                cand_s = float(since_s)
+                if math.isfinite(cand_s) and cand_s >= 0.0:
+                    eff_since_s = cand_s
+            except (TypeError, ValueError, OverflowError):
+                pass
+        fills = self.get_orders(symbol, opposite, eff_since_s)
         if fills is None:
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")
         valid_fills = [
@@ -869,5 +895,7 @@ class MarketDataProvider(ABC):
     def ohlc_closes(self, symbol: str, interval_min: int) -> list:
         """Return completed-bar closing prices from closed interval series."""
         if hasattr(self, "ohlc_series"):
-            return list(self.ohlc_series(symbol, interval_min).closes)
+            series = self.ohlc_series(symbol, interval_min)
+            closes = getattr(series, "closes", None) if series is not None else None
+            return list(closes) if closes is not None else []
         return []

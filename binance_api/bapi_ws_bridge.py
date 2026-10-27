@@ -109,7 +109,8 @@ def refresh_symbol_in_cache(manager: Any, symbol: str) -> None:
         if items:
             manager._persist_items(symbol, items)
     except Exception as exc:
-        print(f"[cacheManager] _refresh_symbol_in_cache {manager.cls_name}/{symbol}: {exc}")
+        mgr_name = getattr(manager, "cls_name", None) or type(manager).__name__
+        print(f"[cacheManager] _refresh_symbol_in_cache {mgr_name}/{symbol}: {exc}")
 
 
 def handle_binance_ws_event(
@@ -132,7 +133,9 @@ def handle_binance_ws_event(
 
     _ws_event_stats[event_type] += 1
     should_log = (
-        ws_health.WS_EVENT_LOG_ENABLED if log_enabled is None else bool(log_enabled)
+        ws_health.WS_EVENT_LOG_ENABLED
+        if log_enabled is None
+        else ws_health._as_bool(log_enabled, default=ws_health.WS_EVENT_LOG_ENABLED)
     )
     getter = cache_getter or _default_cache_getter
 

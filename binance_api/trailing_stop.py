@@ -406,18 +406,25 @@ class TrailingStop:
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
 
+    @staticmethod
+    def _safe_float(val, default: float = 0.0) -> float:
+        if val is None or isinstance(val, bool):
+            return default
+        try:
+            f = float(val)
+            return f if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
         raw_attempt = self._retry_counts.get((pair, action), 0)
         attempt = (int(raw_attempt) if not isinstance(raw_attempt, bool) and isinstance(raw_attempt, (int, float)) and math.isfinite(float(raw_attempt)) else 0) + 1
-        raw_anchor = metadata.get("anchor", price)
-        try:
-            anchor_f = float(raw_anchor) if raw_anchor is not None and not isinstance(raw_anchor, bool) else float(price)
-            if not math.isfinite(anchor_f):
-                anchor_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            anchor_f = float(price)
+        qty_f = self._safe_float(qty, 0.0)
+        price_f = self._safe_float(price, 0.0)
+        raw_anchor = metadata.get("anchor", price_f)
+        anchor_f = self._safe_float(raw_anchor, price_f)
         intent_id = (
-            f"trailing:binance:{key}:{action}:{float(qty):.8f}:{float(price):.8f}:"
+            f"trailing:binance:{key}:{action}:{qty_f:.8f}:{price_f:.8f}:"
             f"{anchor_f:.8f}"
         )
         if attempt > 1:
@@ -551,14 +558,16 @@ class TrailingStop:
             "SELL", key, asset, pair, qty, price, anchor=peak, trail=trail)
         result = self._submit_lifecycle_order(
             intent, persist, pair, "SELL", price, qty, bypass_guards={"all"})
+        price_f = self._safe_float(price, 0.0)
+        peak_f = self._safe_float(peak, price_f)
         if result.outcome == "refused":
             self.log(
-                f"  🛑 [TRAIL] SELL REFUSED {pair} {qty} @ ~{price:.4f} "
+                f"  🛑 [TRAIL] SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
                 f"({result.intent.get('refusal_reason')})")
         else:
             self.log(
-                f"  🛑 [TRAIL] SELL PENDING {pair} {qty} @ ~{price:.4f} "
-                f"(peak {peak:.4f}, -{trail}%, "
+                f"  🛑 [TRAIL] SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
+                f"(peak {peak_f:.4f}, -{trail}%, "
                 f"orderId={result.intent.get('order_id')})")
         return result
 
@@ -567,18 +576,13 @@ class TrailingStop:
         # falling knife cascades (liquidation cascades, taker dumps) by bypassing only
         # the historical math reference while keeping microstructure/AI guards active.
         self._sync_retry_count_from_state(pair, "REBUY", persist)
+        price_f = self._safe_float(price, 0.0)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        try:
-            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
-            anchor_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
-        except (TypeError, ValueError, OverflowError):
-            anchor_val = float(price)
+        low_f = self._safe_float(raw_low, price_f)
+        anchor_val = low_f if low_f > 0 else price_f
         raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
-        try:
-            sp_f = float(raw_sp) if raw_sp is not None and not isinstance(raw_sp, bool) else 0.0
-            sell_price_val = sp_f if math.isfinite(sp_f) and sp_f >= 0 else 0.0
-        except (TypeError, ValueError, OverflowError):
-            sell_price_val = 0.0
+        sp_f = self._safe_float(raw_sp, 0.0)
+        sell_price_val = sp_f if sp_f >= 0 else 0.0
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
             anchor=anchor_val,
@@ -587,32 +591,35 @@ class TrailingStop:
             intent, persist, pair, "BUY", price, qty, bypass_guards={"math_reference"})
         if result.outcome == "refused":
             self.log(
-                f"  🟢 [TRAIL] RE-BUY REFUSED {pair} {qty} @ ~{price:.4f} "
+                f"  🟢 [TRAIL] RE-BUY REFUSED {pair} {qty} @ ~{price_f:.4f} "
                 f"({result.intent.get('refusal_reason')})")
         else:
             self.log(
-                f"  🟢 [TRAIL] RE-BUY PENDING {pair} {qty} @ ~{price:.4f} "
+                f"  🟢 [TRAIL] RE-BUY PENDING {pair} {qty} @ ~{price_f:.4f} "
                 f"(orderId={result.intent.get('order_id')})")
         return result
 
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
-        self.log(f"  🟡 [TRAIL][DRY] WOULD SELL {pair} {qty} @ ~{price:.4f} "
-                 f"(varf {peak:.4f}, scadere >= {trail}%)  "
+        price_f = self._safe_float(price, 0.0)
+        peak_f = self._safe_float(peak, price_f)
+        self.log(f"  🟡 [TRAIL][DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
+                 f"(varf {peak_f:.4f}, scadere >= {trail}%)  "
                  f"[set TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        price_f = self._safe_float(price, 0.0)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        try:
-            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
-            low_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
-        except (TypeError, ValueError, OverflowError):
-            low_val = float(price)
-        self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price:.4f}  "
+        low_f = self._safe_float(raw_low, price_f)
+        low_val = low_f if low_f > 0 else price_f
+        self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price_f:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [TRAILING_ENABLED=true for it to execute]")
 
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
-        self.log(f"  [TRAIL] {pair}: {price:.4f}  varf {peak:.4f}  "
-                 f"sells below {stop_at:.4f} (-{trail}%)")
+        price_f = self._safe_float(price, 0.0)
+        peak_f = self._safe_float(peak, price_f)
+        stop_f = self._safe_float(stop_at, 0.0)
+        self.log(f"  [TRAIL] {pair}: {price_f:.4f}  varf {peak_f:.4f}  "
+                 f"sells below {stop_f:.4f} (-{trail}%)")
 
     def log_skip_rebuy_trend(self, asset) -> None:
         self.log(f"  [TRAIL] re-buy {asset} deferred — the instant trend is CLEARLY down (not catching the knife)")

@@ -77,9 +77,9 @@ def remaining_average_cost(fills, held_qty):
             if raw_side is None or isinstance(raw_side, bool):
                 return None
             side = str(raw_side).strip().upper()
-            if side == "B":
+            if side in ("B", "BID", "LONG"):
                 side = "BUY"
-            elif side == "S":
+            elif side in ("A", "S", "ASK", "SHORT"):
                 side = "SELL"
             if (not identity or identity in seen or side not in {"BUY", "SELL"}
                     or not all(math.isfinite(v) for v in (ts, amount, price, base_fee, quote_fee))
@@ -150,9 +150,9 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
     if isinstance(side, bool):
         raise ValueError("side must be BUY or SELL")
     side = str(side or "").strip().upper()
-    if side == "B":
+    if side in ("B", "BID", "LONG"):
         side = "BUY"
-    elif side == "S":
+    elif side in ("A", "S", "ASK", "SHORT"):
         side = "SELL"
     asset = base if side == "SELL" else quote
     if side not in {"BUY", "SELL"}:
@@ -219,9 +219,9 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     if isinstance(side, bool):
         raise ValueError("side must be BUY or SELL")
     side_u = str(side or "").strip().upper()
-    if side_u == "B":
+    if side_u in ("B", "BID", "LONG"):
         side_u = "BUY"
-    elif side_u == "S":
+    elif side_u in ("A", "S", "ASK", "SHORT"):
         side_u = "SELL"
     if side_u not in {"BUY", "SELL"}:
         raise ValueError("side must be BUY or SELL")
