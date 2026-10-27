@@ -38,6 +38,8 @@ class ExtremeGreedGuard:
 
         self.downscale_threshold = _safe_thresh(downscale_threshold, 80)
         self.hard_veto_threshold = _safe_thresh(hard_veto_threshold, 90)
+        if self.downscale_threshold > self.hard_veto_threshold:
+            self.downscale_threshold = self.hard_veto_threshold
         if downscale_factor is None or isinstance(downscale_factor, bool):
             self.downscale_factor = 0.35
         else:

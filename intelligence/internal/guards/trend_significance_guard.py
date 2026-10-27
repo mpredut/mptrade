@@ -53,7 +53,16 @@ class TrendSignificanceGuard:
     ) -> GuardDecision:
         """Evaluate if the price series statistically supports the trigger action."""
         # Only evaluate entries (momentum / trend buying or selling)
-        if trigger is None or trigger.action != TriggerAction.ENTRY or trigger.side == TriggerSide.HOLD:
+        if trigger is None:
+            return GuardDecision.allow(
+                guard_name="TrendSignificanceGuard",
+                reason="not_an_entry_trigger",
+            )
+        raw_action = getattr(trigger, "action", None)
+        raw_side = getattr(trigger, "side", None)
+        action_u = str(raw_action).strip().upper() if isinstance(raw_action, str) else ""
+        side_u = str(raw_side).strip().upper() if isinstance(raw_side, str) else ""
+        if action_u != TriggerAction.ENTRY or side_u == TriggerSide.HOLD or side_u not in (TriggerSide.BUY, TriggerSide.SELL):
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",
                 reason="not_an_entry_trigger",
@@ -70,12 +79,12 @@ class TrendSignificanceGuard:
         s, z, p = calculate_mann_kendall(clean_prices)
 
         # If direction from trigger conflicts with statistical trend direction
-        if trigger.side == TriggerSide.BUY and z < 0:
+        if side_u == TriggerSide.BUY and z < 0:
             return GuardDecision.veto(
                 guard_name="TrendSignificanceGuard",
                 reason=f"trend_direction_inverted (Z={z:.2f} negative for BUY)",
             )
-        if trigger.side == TriggerSide.SELL and z > 0:
+        if side_u == TriggerSide.SELL and z > 0:
             return GuardDecision.veto(
                 guard_name="TrendSignificanceGuard",
                 reason=f"trend_direction_inverted (Z={z:.2f} positive for SELL)",

@@ -13013,6 +13013,86 @@ def test_iteration124_monitororder_ttl_owner_and_monitortrades_uid_safety():
     assert mt._extract_trade_uid({"id": "null", "tradeId": 12.5}) == ""
 
 
+def test_iteration125_guard_layer_mode_and_type_safety(monkeypatch):
+    """Verify Iteration 125 guard layer mode normalization, lowercase trigger evaluation, and boolean telemetry safety."""
+    from intelligence.external.guards.smart_stop_loss_guard import (
+        SmartStopLossGuard,
+        _is_simulated_provider,
+    )
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.triggers.trigger_event import TriggerEvent
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.high_stake_guard import evaluate_llm_guard_response
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        get_post_stop_reentry_guard,
+    )
+
+    # 1. TrendSignificanceGuard normalizes lowercase trigger action and side
+    ts_guard = TrendSignificanceGuard(max_p_value=0.05)
+    t_low = TriggerEvent(
+        symbol="BTCUSDC",
+        side="buy",
+        action="entry",
+        source="kalman",
+        price=100.0,
+        strength=0.8,
+        confidence=0.8,
+        reason="test",
+    )
+    dec_ts = ts_guard.evaluate(t_low, [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0])
+    assert dec_ts.allowed is False
+    assert "trend_direction_inverted" in dec_ts.reason
+
+    # 2. SmartStopLossGuard._is_simulated_provider handles uppercase REPLAY_MODE/BACKTEST_MODE and mode="true"
+    monkeypatch.setenv("REPLAY_MODE", "TRUE")
+    assert _is_simulated_provider("binance") is True
+    monkeypatch.delenv("REPLAY_MODE", raising=False)
+    sl_guard = SmartStopLossGuard(mode="true")
+    assert sl_guard.mode == "enforce"
+
+    # 3. ExtremeGreedGuard clamps downscale_threshold <= hard_veto_threshold
+    eg_guard = ExtremeGreedGuard(downscale_threshold=92, hard_veto_threshold=85)
+    assert eg_guard.downscale_threshold == 85
+    assert eg_guard.hard_veto_threshold == 85
+
+    # 4. GeopoliticalShockGuard ignores boolean summary/threat_level
+    geo_guard = GeopoliticalShockGuard()
+    fake_assess = type("A", (), {"threat_level": "CRITICAL_SHOCK", "recommended_brake": True, "summary": True, "risk_score": True})()
+    dec_geo = geo_guard.check("BTCUSDC", "BUY", fake_assess)
+    assert dec_geo.allowed is False
+    assert "geopolitical_shock" in dec_geo.reason
+
+    # 5. evaluate_llm_guard_response handles boolean decision/reason and DENY/REJECT synonyms
+    dec_llm = evaluate_llm_guard_response(
+        "HighStakeGuard",
+        "BUY",
+        {"decision": "DENIED", "reason": True, "suggested_scale": True},
+        fallback_action="allow",
+        notional_eur=1500.0,
+    )
+    assert dec_llm.allowed is False
+    assert "evaluated by LLM" in dec_llm.reason
+
+    # 6. PostStopReentryGuard(mode=False) sets mode="off" instead of "enforce"
+    psr_off = PostStopReentryGuard(mode=False)
+    assert psr_off.mode == "off"
+    assert psr_off.check("BTCUSDC", 102.0, 105.0, 100.0, 0.02).allowed is True
+    psr_fac = get_post_stop_reentry_guard(
+        margins={
+            "post_stop_reentry_mode": False,
+            "post_stop_reentry_timeout_sec": 10.0,
+            "post_stop_reentry_fallback": "allow",
+            "post_stop_reentry_notify": False,
+            "post_stop_reentry_cache_ttl_sec": 60.0,
+        },
+        gemini_client=type("G", (), {"_custom_runner": True})(),
+    )
+    assert psr_fac.mode == "off"
+
+
+
 
 
 

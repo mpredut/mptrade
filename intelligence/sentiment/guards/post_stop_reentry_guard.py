@@ -68,7 +68,13 @@ class PostStopReentryGuard:
                 pass
         self.timeout_sec = t_sec
         self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
-        self.mode = str(mode or "enforce").strip().lower()
+        if mode is False:
+            self.mode = "off"
+        elif mode is True:
+            self.mode = "enforce"
+        else:
+            raw_m = str(mode or "enforce").strip().lower()
+            self.mode = "enforce" if raw_m in ("1", "true", "yes", "on", "") else raw_m
         if isinstance(notify_enabled, str):
             self.notify_enabled = notify_enabled.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
         else:
@@ -99,7 +105,7 @@ class PostStopReentryGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a post-stop bounce is a genuine accumulation recovery or a trap."""
-        if self.mode in ("off", "0", "disabled"):
+        if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
             return GuardDecision.allow("PostStopReentryGuard", "post_stop_reentry_guard_disabled")
 
         if is_llm_guard_exempt(self._explicit_client):
@@ -339,10 +345,18 @@ def get_post_stop_reentry_guard(
         m = _load_margins()
     else:
         m = margins
-    mode = str(m["post_stop_reentry_mode"]).strip().lower()
+    raw_mode = m["post_stop_reentry_mode"]
+    if raw_mode is False:
+        mode = "off"
+    elif raw_mode is True:
+        mode = "enforce"
+    else:
+        mode = str(raw_mode or "enforce").strip().lower()
+        if mode in ("1", "true", "yes", "on"):
+            mode = "enforce"
     intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
     llm_master = str(m.get("llm_guard_mode", "enforce") or "enforce").strip().lower()
-    if intel_master == "off" or llm_master == "off":
+    if intel_master in ("off", "0", "false", "no", "disabled") or llm_master in ("off", "0", "false", "no", "disabled"):
         mode = "off"
     elif llm_master == "shadow" and mode == "enforce":
         mode = "shadow"

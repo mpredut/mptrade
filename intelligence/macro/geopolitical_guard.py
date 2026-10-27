@@ -48,9 +48,12 @@ class GeopoliticalShockGuard:
         if assessment is None:
             return GuardDecision.allow("GeopoliticalShockGuard", "no_geopolitical_data")
 
-        level = str(getattr(assessment, "threat_level", None) or "").strip().upper()
-        brake = str(getattr(assessment, "recommended_brake", None) or "").strip().upper()
-        summary = str(getattr(assessment, "summary", None) or "geopolitical_shock")
+        raw_level = getattr(assessment, "threat_level", None)
+        level = str(raw_level).strip().upper() if isinstance(raw_level, str) else ""
+        raw_brake = getattr(assessment, "recommended_brake", None)
+        brake = str(raw_brake).strip().upper() if isinstance(raw_brake, str) else ""
+        raw_summary = getattr(assessment, "summary", None)
+        summary = str(raw_summary).strip() if (isinstance(raw_summary, str) and raw_summary.strip()) else "geopolitical_shock"
         raw_risk = getattr(assessment, "risk_score", 0.0)
         risk_score = 0.0
         if raw_risk is not None and not isinstance(raw_risk, bool):

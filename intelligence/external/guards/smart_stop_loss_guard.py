@@ -163,11 +163,14 @@ def _save_grace_state() -> None:
 
 
 def _is_simulated_provider(provider: Optional[str]) -> bool:
-    if provider and str(provider).strip().lower() in (
+    if provider and not isinstance(provider, bool) and str(provider).strip().lower() in (
         "replay", "backtest", "sim", "mock", "paper_sim", "test",
     ):
         return True
-    if os.environ.get("REPLAY_MODE") in ("1", "true", "yes") or os.environ.get("BACKTEST_MODE") in ("1", "true", "yes"):
+    if (
+        os.environ.get("REPLAY_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        or os.environ.get("BACKTEST_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+    ):
         return True
     return False
 
@@ -177,7 +180,10 @@ def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
     b_upper = body.upper()
     if "(REPLAY)" in t_upper or "(REPLAY)" in b_upper or "(BACKTEST)" in t_upper or "(SIM)" in t_upper:
         return
-    if os.environ.get("REPLAY_MODE") in ("1", "true", "yes") or os.environ.get("BACKTEST_MODE") in ("1", "true", "yes"):
+    if (
+        os.environ.get("REPLAY_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        or os.environ.get("BACKTEST_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+    ):
         return
     try:
         from notify_engine.alertnotifiers import notify
@@ -266,7 +272,8 @@ class SmartStopLossGuard:
         elif mode is True:
             self.mode = "enforce"
         else:
-            self.mode = str(mode or "enforce").strip().lower()
+            raw_m = str(mode or "enforce").strip().lower()
+            self.mode = "enforce" if raw_m in ("1", "true", "yes", "on", "") else raw_m
         max_t = _safe_float(max_threshold_pct, 6.0)
         self.max_threshold_pct = max_t if max_t > 0.0 else 6.0
         grace_s = _safe_float(grace_seconds, 120.0)
@@ -642,10 +649,18 @@ def evaluate_smart_stop_loss(
     from order_guard import _load_margins
     m = _load_margins()
 
-    mode = str(m["smart_sl_mode"]).strip().lower()
+    raw_mode = m["smart_sl_mode"]
+    if raw_mode is False:
+        mode = "off"
+    elif raw_mode is True:
+        mode = "enforce"
+    else:
+        mode = str(raw_mode or "enforce").strip().lower()
+        if mode in ("1", "true", "yes", "on"):
+            mode = "enforce"
     intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
     ext_master = str(m.get("external_guard_mode", "enforce") or "enforce").strip().lower()
-    if intel_master == "off" or ext_master == "off":
+    if intel_master in ("off", "0", "false", "no", "disabled") or ext_master in ("off", "0", "false", "no", "disabled"):
         mode = "off"
     elif ext_master == "shadow" and mode == "enforce":
         mode = "shadow"

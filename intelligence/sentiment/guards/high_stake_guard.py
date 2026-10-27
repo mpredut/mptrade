@@ -430,8 +430,9 @@ def collect_pretrade_telemetry(
             if isinstance(fg_data, dict):
                 val = fg_data.get("value", "")
                 label = fg_data.get("classification", "")
-                if val is not None and val != "":
-                    telemetry["Fear & Greed Index"] = f"{val} ({label})"
+                if val is not None and not isinstance(val, bool) and str(val).strip() != "":
+                    lbl_str = str(label).strip() if (label is not None and not isinstance(label, bool)) else ""
+                    telemetry["Fear & Greed Index"] = f"{val} ({lbl_str})"
                     break
     except Exception:
         pass
@@ -443,8 +444,8 @@ def collect_pretrade_telemetry(
             g_data = read_recovering_previous(g_path, json.loads, default=None)
             if isinstance(g_data, dict):
                 level = g_data.get("threat_level", "")
-                if level is not None and level != "":
-                    telemetry["Geopolitical Threat Level"] = level
+                if level is not None and not isinstance(level, bool) and str(level).strip() != "":
+                    telemetry["Geopolitical Threat Level"] = str(level).strip()
                     break
     except Exception:
         pass
@@ -485,8 +486,10 @@ def evaluate_llm_guard_response(
             )
         return GuardDecision.allow(guard_name, "llm_query_timeout_fallback_allowed", notional_eur=notional_eur)
 
-    decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
-    reason = str(resp.get("reason") or "evaluated by LLM")
+    raw_dec = resp.get("decision")
+    decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
+    raw_reason = resp.get("reason")
+    reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
     raw_scale = resp.get("suggested_scale")
     default_scale = 0.5 if decision_str == "DOWNSCALE" else 1.0
     if raw_scale is None or isinstance(raw_scale, bool):
@@ -499,7 +502,7 @@ def evaluate_llm_guard_response(
         except (TypeError, ValueError):
             scale = default_scale
 
-    if decision_str in ("REJECTED", "VETO", "BLOCK"):
+    if decision_str in ("REJECTED", "REJECT", "VETO", "BLOCK", "DENIED", "DENY"):
         return GuardDecision.veto(
             guard_name,
             f"Gemini vetoed {action_label}: {reason}",
