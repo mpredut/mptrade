@@ -38,6 +38,35 @@ def _safe_pos_interval(val: Any, default: float) -> float:
     return f if (math.isfinite(f) and f > 0.0) else default
 
 
+def _safe_nonneg_ts(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if (math.isfinite(f) and f >= 0.0) else default
+
+
+def _field_val(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        val = obj.get(key, default)
+    else:
+        val = getattr(obj, key, default)
+    return default if val is None else val
+
+
+def _field_float(obj: Any, key: str, default: float = 0.0) -> float:
+    raw = _field_val(obj, key, None)
+    if raw is None or isinstance(raw, bool):
+        return default
+    try:
+        f = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def _as_bool(val: Any) -> bool:
     if isinstance(val, bool):
         return val
@@ -159,7 +188,11 @@ class IntelligenceTelemetryDaemon:
             if snap:
                 logger.debug(
                     "[%s] Orderbook updated: mid=%.2f, bid_depth=$%.0f, ask_depth=$%.0f, imbalance=%.2f",
-                    symbol, snap.mid_price, snap.bid_depth_usd, snap.ask_depth_usd, snap.imbalance_ratio,
+                    symbol,
+                    _field_float(snap, "mid_price"),
+                    _field_float(snap, "bid_depth_usd"),
+                    _field_float(snap, "ask_depth_usd"),
+                    _field_float(snap, "imbalance_ratio"),
                 )
                 return True
         except Exception as e:
@@ -173,7 +206,9 @@ class IntelligenceTelemetryDaemon:
             if tel:
                 logger.debug(
                     "[%s] Derivatives updated: funding=%.6f, OI=$%.0f",
-                    symbol, tel.funding_rate, tel.open_interest_usd,
+                    symbol,
+                    _field_float(tel, "funding_rate"),
+                    _field_float(tel, "open_interest_usd"),
                 )
                 return True
         except Exception as e:
@@ -187,7 +222,10 @@ class IntelligenceTelemetryDaemon:
             if snap:
                 logger.debug(
                     "[%s] Whale positioning updated: top_ratio=%.2f, taker_ratio=%.2f, regime=%s",
-                    symbol, snap.top_traders_long_ratio, snap.taker_buy_sell_ratio, snap.divergence_regime,
+                    symbol,
+                    _field_float(snap, "top_traders_long_ratio"),
+                    _field_float(snap, "taker_buy_sell_ratio"),
+                    _field_val(snap, "divergence_regime", "NEUTRAL"),
                 )
                 return True
         except Exception as e:
@@ -210,7 +248,9 @@ class IntelligenceTelemetryDaemon:
                 return False
             logger.info(
                 "Macro threat assessment: threat=%s, risk=%.2f, headlines=%d",
-                assessment.threat_level, assessment.risk_score, assessment.headlines_analyzed,
+                _field_val(assessment, "threat_level", "NORMAL"),
+                _field_float(assessment, "risk_score"),
+                int(_field_float(assessment, "headlines_analyzed")),
             )
             return True
         except Exception as e:
@@ -241,21 +281,21 @@ class IntelligenceTelemetryDaemon:
         if not self.skip_external:
             for sym in self.symbols:
                 # 1. Orderbook depth
-                last_ob = self._last_orderbook_ts.get(sym, 0.0)
+                last_ob = _safe_nonneg_ts(self._last_orderbook_ts.get(sym, 0.0))
                 if force or not (0.0 <= (current_ts - last_ob) < self.orderbook_interval_sec):
                     if self.update_orderbook(sym):
                         results["orderbook_updated"] += 1
                         self._last_orderbook_ts[sym] = current_ts
 
                 # 2. Derivatives telemetry
-                last_deriv = self._last_derivatives_ts.get(sym, 0.0)
+                last_deriv = _safe_nonneg_ts(self._last_derivatives_ts.get(sym, 0.0))
                 if force or not (0.0 <= (current_ts - last_deriv) < self.derivatives_interval_sec):
                     if self.update_derivatives(sym):
                         results["derivatives_updated"] += 1
                         self._last_derivatives_ts[sym] = current_ts
 
                 # 3. Whale positioning & OI
-                last_whale = self._last_whale_ts.get(sym, 0.0)
+                last_whale = _safe_nonneg_ts(self._last_whale_ts.get(sym, 0.0))
                 if force or not (0.0 <= (current_ts - last_whale) < self.whale_interval_sec):
                     if self.update_whale(sym):
                         results["whale_updated"] += 1
@@ -263,7 +303,8 @@ class IntelligenceTelemetryDaemon:
 
         # Pillar 4: Macro Geopolitical Shield update
         if not self.skip_macro:
-            if force or not (0.0 <= (current_ts - self._last_macro_ts) < self.macro_interval_sec):
+            last_macro = _safe_nonneg_ts(self._last_macro_ts)
+            if force or not (0.0 <= (current_ts - last_macro) < self.macro_interval_sec):
                 try:
                     macro_ok = self.update_macro(force=force, now=current_ts)
                 except TypeError:
@@ -273,7 +314,8 @@ class IntelligenceTelemetryDaemon:
                     self._last_macro_ts = current_ts
 
         # Periodic retention: automatically prune automated CLI threads older than 1 day (autonommptrade)
-        if force or not (0.0 <= (current_ts - self._last_thread_prune_ts) < self.thread_prune_interval_sec):
+        last_prune = _safe_nonneg_ts(self._last_thread_prune_ts)
+        if force or not (0.0 <= (current_ts - last_prune) < self.thread_prune_interval_sec):
             try:
                 from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
                 from orchestratorOS.agy.paths import resolve_bot_cli_base
@@ -295,7 +337,8 @@ class IntelligenceTelemetryDaemon:
                 logger.debug("Automatic CLI thread pruning error: %s", e)
 
         # Periodic stdout/log heartbeat so orchestrator sees continuous activity in log_file
-        if force or not (0.0 <= (current_ts - self._last_stdout_hb_ts) < 60.0):
+        last_hb = _safe_nonneg_ts(self._last_stdout_hb_ts)
+        if force or not (0.0 <= (current_ts - last_hb) < 60.0):
             logger.info(
                 "Telemetry cycle active: %d symbols monitored (PID=%d)",
                 len(self.symbols),

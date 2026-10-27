@@ -583,9 +583,9 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     symbol = symbol.strip()
     now = now if now is not None else time.time()
     side_u = str(side or "").strip().upper()
-    if side_u == "B":
+    if side_u in ("B", "BID", "LONG"):
         side_u = "BUY"
-    elif side_u == "S":
+    elif side_u in ("S", "ASK", "A", "SHORT"):
         side_u = "SELL"
     try:
         qty = float(qty)
@@ -1825,9 +1825,9 @@ def resolve(symbol, side):
         return 0
     target_sym = str(symbol or "").strip()
     side_u = str(side or "").strip().upper()
-    if side_u == "B":
+    if side_u in ("B", "BID", "LONG"):
         side_u = "BUY"
-    elif side_u == "S":
+    elif side_u in ("S", "ASK", "A", "SHORT"):
         side_u = "SELL"
     _ensure_dir()
     with FileLock(LOCK_FILE):
@@ -1978,9 +1978,9 @@ def price_gate_ok(rec, current_price, tol=None):
         return False
     raw_side = rec.get("side")
     side = str(raw_side or "").strip().upper() if not isinstance(raw_side, bool) else ""
-    if side in {"SELL", "S"}:
+    if side in {"SELL", "S", "ASK", "A", "SHORT"}:
         return current_price >= req * (1.0 - tol)
-    if side in {"BUY", "B"}:
+    if side in {"BUY", "B", "BID", "LONG"}:
         return current_price <= req * (1.0 + tol)
     return False
 
@@ -2245,9 +2245,9 @@ class TrackedOrderLifecycle:
         if not clean_sym:
             raise ValueError("tracked intent missing symbol")
         side_norm = str(side or "").strip().upper()
-        if side_norm == "B":
+        if side_norm in ("B", "BID", "LONG"):
             side_norm = "BUY"
-        elif side_norm == "S":
+        elif side_norm in ("S", "ASK", "A", "SHORT"):
             side_norm = "SELL"
         now = self._now()
         intent = {

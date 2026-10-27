@@ -103,8 +103,15 @@ class GeminiClient:
 
         if cache_ttl_sec > 0:
             cached = self._cache.get(prompt)
-            if cached and 0.0 <= (now - cached[0]) < cache_ttl_sec:
-                return cached[1]
+            if isinstance(cached, (tuple, list)) and len(cached) >= 2:
+                raw_ts = cached[0]
+                if raw_ts is not None and not isinstance(raw_ts, bool):
+                    try:
+                        c_ts = float(raw_ts)
+                        if math.isfinite(c_ts) and 0.0 <= (now - c_ts) < cache_ttl_sec:
+                            return cached[1]
+                    except (TypeError, ValueError, OverflowError):
+                        pass
 
         # 1. Custom runner (used for unit tests)
         if self._custom_runner is not None:

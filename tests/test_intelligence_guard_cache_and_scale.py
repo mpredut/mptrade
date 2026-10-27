@@ -16752,3 +16752,50 @@ def test_iteration178_external_collectors_dict_record_and_cache_ts_hygiene():
     assert wh_col.fetch("BTCUSDC", allow_network=False, now=1010.0) is None
 
 
+def test_iteration179_daemon_gemini_market_regime_and_order_retry_hygiene(tmp_path):
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from market_regime import MarketRegimeDecision, MarketRegimeContext
+    import order_retry
+
+    # 1. IntelligenceTelemetryDaemon handles dict snapshots & None/bool _last_*_ts without raising
+    daemon = IntelligenceTelemetryDaemon(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_macro=False, skip_external=False)
+    daemon.orderbook_collector.fetch = lambda sym, allow_network=True: {"mid_price": 95000.0}
+    daemon.derivatives_collector.fetch = lambda sym, allow_network=True: {"funding_rate": 0.0001}
+    daemon.whale_collector.fetch = lambda sym, allow_network=True: {"divergence_regime": "ACCUMULATION"}
+    daemon.news_collector.fetch = lambda **kw: {"headlines": []}
+    daemon.geopolitical_analyzer.assess = lambda snap, **kw: {"threat_level": "NORMAL", "risk_score": 0.1, "headlines_analyzed": 3}
+    daemon._last_orderbook_ts["BTCUSDC"] = None
+    daemon._last_derivatives_ts["BTCUSDC"] = True
+    daemon._last_whale_ts["BTCUSDC"] = float("nan")
+    daemon._last_macro_ts = None
+    daemon._last_thread_prune_ts = 1000.0
+    daemon._last_stdout_hb_ts = None
+    res = daemon.run_cycle(force=False, now=1005.0)
+    assert res["orderbook_updated"] == 1
+    assert res["derivatives_updated"] == 1
+    assert res["whale_updated"] == 1
+    assert res["macro_updated"] is True
+
+    # 2. GeminiClient.query_text tolerates malformed/None timestamp in _cache
+    client = GeminiClient(custom_runner=lambda p, m, t: "fresh_response")
+    client._cache["test_prompt"] = (None, "stale")
+    assert client.query_text("test_prompt", cache_ttl_sec=60.0) == "fresh_response"
+
+    # 3. MarketRegimeDecision.adverse_to supports BID/ASK/A and MarketRegimeContext.from_decision supports dict
+    bear_dec = MarketRegimeDecision(regime="bear", gradient="-0.01", epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples="11")
+    bull_dec = MarketRegimeDecision(regime="bull", gradient=0.01, epsilon=0.001, strength=10.0, fresh=True, reason="ok", n_samples=11)
+    assert bear_dec.adverse_to("BID") is True
+    assert bull_dec.adverse_to("ASK") is True
+    assert bull_dec.adverse_to("A") is True
+    assert bear_dec.fitted_move_pct == pytest.approx(-10.0)
+    ctx_from_dict = MarketRegimeContext.from_decision({"regime": "sideways", "fresh": True, "strength": 1.2}, evaluated_at=1000.0)
+    assert ctx_from_dict.resolved_trend == "flat"
+    assert ctx_from_dict.fresh is True
+
+    # 4. order_retry.price_gate_ok supports BID/LONG and ASK/A/SHORT
+    assert order_retry.price_gate_ok({"side": "BID", "requested_price": 100.0}, 99.0, tol=0.0) is True
+    assert order_retry.price_gate_ok({"side": "ASK", "requested_price": 100.0}, 101.0, tol=0.0) is True
+
+
+

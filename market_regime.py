@@ -38,14 +38,14 @@ def normalize_market_regime_snapshot(
 ) -> Optional[dict]:
     """Return a snapshot that uses the canonical market-regime field names.
 
-    ``growth_coefficient`` is retained as a compatibility input for older trend
-    publishers, but every classifier consumes ``gradient_recent``. Keeping this
-    translation here prevents strategy and guard modules from implementing their
-    own subtly different adapters.
+    ``growth_coefficient`` is the SSOT short-trend signal; ``gradient_recent``
+    is retained as a fallback when ``growth_coefficient`` is absent.
     """
     if not snapshot or not isinstance(snapshot, Mapping):
         return None
     normalized = dict(snapshot)
+    if "growth_coefficient" not in normalized and "gradient_recent" in normalized:
+        normalized["growth_coefficient"] = normalized["gradient_recent"]
     if "gradient_recent" not in normalized and "growth_coefficient" in normalized:
         normalized["gradient_recent"] = normalized["growth_coefficient"]
     return normalized
@@ -77,18 +77,24 @@ class MarketRegimeDecision:
             or isinstance(self.gradient, bool)
             or self.n_samples is None
             or isinstance(self.n_samples, bool)
-            or self.n_samples < 2
         ):
             return None
-        move = float(self.gradient) * (self.n_samples - 1) * 100.0
+        try:
+            grad_f = float(self.gradient)
+            samples_f = float(self.n_samples)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(grad_f) or not math.isfinite(samples_f) or samples_f < 2:
+            return None
+        move = grad_f * (samples_f - 1.0) * 100.0
         return move if math.isfinite(move) else None
 
     def adverse_to(self, exposure_side: str) -> bool:
         if isinstance(exposure_side, bool):
             return False
         side = str(exposure_side or "").strip().upper()
-        return ((side in {"LONG", "BUY", "B"} and self.regime == "bear") or
-                (side in {"SOLD", "SHORT", "SELL", "S"} and self.regime == "bull"))
+        return ((side in {"LONG", "BUY", "B", "BID"} and self.regime == "bear") or
+                (side in {"SOLD", "SHORT", "SELL", "S", "ASK", "A"} and self.regime == "bull"))
 
 
 @dataclass(frozen=True)
@@ -242,6 +248,34 @@ class MarketRegimeContext:
         benchmark_symbol: Optional[str] = None,
         benchmark_decision: Optional[MarketRegimeDecision] = None,
     ) -> "MarketRegimeContext":
+        if isinstance(decision, Mapping):
+            decision = MarketRegimeDecision(
+                regime=str(decision.get("regime", "unknown") or "unknown").strip().lower(),
+                gradient=decision.get("gradient"),
+                epsilon=decision.get("epsilon"),
+                strength=decision.get("strength"),
+                fresh=_parse_bool_flag(decision.get("fresh"), False),
+                reason=str(decision.get("reason", "dict_decision") or "dict_decision"),
+                n_samples=decision.get("n_samples"),
+                window_seconds=decision.get("window_seconds"),
+                horizon=str(decision.get("horizon", "unspecified") or "unspecified"),
+                source=str(decision.get("source", "unknown") or "unknown"),
+                fallback_used=_parse_bool_flag(decision.get("fallback_used"), False),
+            )
+        if isinstance(benchmark_decision, Mapping):
+            benchmark_decision = MarketRegimeDecision(
+                regime=str(benchmark_decision.get("regime", "unknown") or "unknown").strip().lower(),
+                gradient=benchmark_decision.get("gradient"),
+                epsilon=benchmark_decision.get("epsilon"),
+                strength=benchmark_decision.get("strength"),
+                fresh=_parse_bool_flag(benchmark_decision.get("fresh"), False),
+                reason=str(benchmark_decision.get("reason", "dict_decision") or "dict_decision"),
+                n_samples=benchmark_decision.get("n_samples"),
+                window_seconds=benchmark_decision.get("window_seconds"),
+                horizon=str(benchmark_decision.get("horizon", "unspecified") or "unspecified"),
+                source=str(benchmark_decision.get("source", "unknown") or "unknown"),
+                fallback_used=_parse_bool_flag(benchmark_decision.get("fallback_used"), False),
+            )
         trend = "flat" if decision.regime == "sideways" else decision.regime
         if evaluated_at is None or isinstance(evaluated_at, bool):
             eval_ts = time.time()
@@ -459,10 +493,26 @@ class MarketRegimeEvaluator:
         snapshot = normalize_market_regime_snapshot(snapshot)
         if not snapshot:
             return self.unknown()
-        if "gradient_recent" not in snapshot or "epsilon" not in snapshot:
+        if (
+            ("growth_coefficient" not in snapshot and "gradient_recent" not in snapshot)
+            or "epsilon" not in snapshot
+        ):
             return self.unknown("missing_signal_fields")
-        raw_grad = snapshot["gradient_recent"]
+        raw_gc = snapshot.get("growth_coefficient")
+        raw_gr = snapshot.get("gradient_recent")
+        raw_grad = raw_gc if raw_gc is not None else raw_gr
         raw_eps = snapshot["epsilon"]
+        for candidate in (raw_gc, raw_gr):
+            if candidate is None:
+                continue
+            if isinstance(candidate, bool):
+                return self.unknown("invalid_signal")
+            try:
+                cf = float(candidate)
+            except (TypeError, ValueError):
+                return self.unknown("invalid_signal")
+            if not math.isfinite(cf):
+                return self.unknown("non_finite_signal")
         if isinstance(raw_grad, bool) or isinstance(raw_eps, bool):
             return self.unknown("invalid_signal")
         try:
@@ -1185,15 +1235,23 @@ class MarketRegimeService:
         cache_now = self.clock()
         with self._lock:
             cached = self._cache.get(key)
-            if cached:
-                ttl = (
-                    self.cache_ttl_sec
-                    if cached[1].fresh
-                    else self.negative_cache_ttl_sec
-                )
-                if ttl > 0 and 0.0 <= cache_now - cached[0] <= ttl:
-                    self._cache.move_to_end(key)
-                    return cached[1:]
+            if isinstance(cached, (tuple, list)) and len(cached) >= 4:
+                raw_ts = cached[0]
+                cached_dec = cached[1]
+                if raw_ts is not None and not isinstance(raw_ts, bool) and cached_dec is not None:
+                    try:
+                        c_ts = float(raw_ts)
+                    except (TypeError, ValueError, OverflowError):
+                        c_ts = float("nan")
+                    if math.isfinite(c_ts):
+                        ttl = (
+                            self.cache_ttl_sec
+                            if getattr(cached_dec, "fresh", False)
+                            else self.negative_cache_ttl_sec
+                        )
+                        if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
+                            self._cache.move_to_end(key)
+                            return cached[1:]
         observed_at = None
         continuous = None
         try:
