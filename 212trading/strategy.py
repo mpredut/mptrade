@@ -97,6 +97,22 @@ def _clean_nonneg_float(val: object, default: float = 0.0) -> float:
     return f if (math.isfinite(f) and f >= 0.0) else default
 
 
+def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(val) else default
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("1", "true", "yes", "on", "y"):
+            return True
+        if norm in ("0", "false", "no", "off", "n", "", "none", "null", "nan"):
+            return False
+    return default
+
+
 def generate_tp_ladder(
     min_pct: float,
     max_pct: float,
@@ -414,6 +430,9 @@ def _sanitize_t212_state(st: dict) -> dict:
                 st[k] = max(min_i, int(if_val)) if math.isfinite(if_val) else min_i
             except (TypeError, ValueError, OverflowError):
                 st[k] = min_i
+    for k in ("tr_alerted", "tr_armed", "sl_alerted", "sl_pending"):
+        if k in st or k in defaults:
+            st[k] = _parse_bool_flag(st.get(k), False)
     for k in ("entry_price", "last_buy_price", "last_sell_price", "last_sell_ts", "post_sell_peak", "post_sell_trough"):
         st[k] = _clean_pos_float(st.get(k))
     for k in ("sl_bounce_state", "sl_episode_state", "tp_ride_state", "reentry_state"):
@@ -427,13 +446,12 @@ def _sanitize_t212_state(st: dict) -> dict:
         ps_side = str(ps.get("side") or "").strip().upper()
         ps_qty = _clean_pos_float(ps.get("qty"))
         ps_limit = _clean_pos_float(ps.get("limit"))
-        ps_intent = ps.get("intent_id")
+        ps_intent = T212Client._clean_order_id(ps.get("intent_id"))
         if (
             ps_side not in ("BUY", "SELL")
             or ps_qty is None
             or ps_limit is None
-            or not isinstance(ps_intent, str)
-            or not ps_intent.strip()
+            or ps_intent is None
         ):
             st["pending_submit"] = None
         else:
@@ -441,8 +459,11 @@ def _sanitize_t212_state(st: dict) -> dict:
             ps_copy["side"] = ps_side
             ps_copy["qty"] = ps_qty
             ps_copy["limit"] = ps_limit
-            ps_copy["intent_id"] = ps_intent.strip()
-            ps_copy["market"] = bool(ps.get("market"))
+            ps_copy["intent_id"] = ps_intent
+            ps_copy["market"] = _parse_bool_flag(ps.get("market"), False)
+            ps_copy["level"] = _clean_pos_float(ps.get("level"))
+            if "portfolio_fill_observed" in ps_copy:
+                ps_copy["portfolio_fill_observed"] = _parse_bool_flag(ps_copy.get("portfolio_fill_observed"), False)
             st["pending_submit"] = ps_copy
     raw_orders = st.get("orders")
     if isinstance(raw_orders, list):
@@ -450,23 +471,30 @@ def _sanitize_t212_state(st: dict) -> dict:
         for o in raw_orders:
             if not isinstance(o, dict):
                 continue
-            raw_oid = o.get("id")
-            if raw_oid is None or isinstance(raw_oid, bool) or not str(raw_oid).strip():
+            clean_oid = T212Client._clean_order_id(o.get("id"))
+            if clean_oid is None:
                 continue
             o_side = str(o.get("side") or "").strip().upper()
             if o_side not in ("BUY", "SELL"):
                 continue
             o_qty = _clean_pos_float(o.get("qty"))
-            o_market = bool(o.get("market"))
+            o_market = _parse_bool_flag(o.get("market"), False)
             o_limit = _clean_nonneg_float(o.get("limit"), -1.0) if o_market else _clean_pos_float(o.get("limit"))
             if o_qty is None or o_limit is None or o_limit < 0.0:
                 continue
             o_copy = dict(o)
-            o_copy["id"] = str(raw_oid).strip()
+            o_copy["id"] = clean_oid
             o_copy["side"] = o_side
             o_copy["qty"] = o_qty
             o_copy["limit"] = o_limit
             o_copy["market"] = o_market
+            o_copy["level"] = _clean_pos_float(o.get("level"))
+            if "intent_id" in o_copy:
+                o_copy["intent_id"] = T212Client._clean_order_id(o_copy.get("intent_id"))
+            if "cancel_requested" in o_copy:
+                o_copy["cancel_requested"] = _parse_bool_flag(o_copy.get("cancel_requested"), False)
+            if "dca_counted" in o_copy:
+                o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
             clean_orders.append(o_copy)
         st["orders"] = clean_orders
     else:
@@ -817,8 +845,9 @@ class Strategy:
             order for order in active_orders
             if isinstance(order, dict) and self._active_matches_pending(order, pending)
         ]
-        if len(matches) == 1 and extract_order_id(matches[0]) is not None:
-            order = self._adopt_pending_submit(extract_order_id(matches[0]))
+        matched_oid = T212Client._clean_order_id(extract_order_id(matches[0])) if len(matches) == 1 else None
+        if len(matches) == 1 and matched_oid is not None:
+            order = self._adopt_pending_submit(matched_oid)
             log(f"  [STRAT] T212 submit recovered from the active orders: {order['id']}")
             return "adopted"
         if len(matches) > 1:
@@ -986,6 +1015,7 @@ class Strategy:
         if qty <= 0:
             log("  ! [STRAT] SELL qty 0 after rounding — keeping the dust, sending no order")
             return False
+        level = _clean_pos_float(level)
         tag = f"+{level:g}%" if level is not None else ""
         if self.dry_run:
             self._paper_seq += 1
@@ -1283,10 +1313,14 @@ class Strategy:
             orders = self.client.list_active_orders()
         if orders is None:
             return None
-        return {
-            str(o.get("id")) for o in orders
-            if isinstance(o, dict) and o.get("id") is not None and self._active_order_identity(o)[0] == self.ticker.upper()
-        }
+        active_ids: set[str] = set()
+        for o in orders:
+            if not isinstance(o, dict) or self._active_order_identity(o)[0] != self.ticker.upper():
+                continue
+            oid = T212Client._clean_order_id(extract_order_id(o))
+            if oid is not None:
+                active_ids.add(oid)
+        return active_ids
 
     def _tracked_order_status(self, order: dict, cache: dict[str, object]):
         """Return strict order status, cached for one reconciliation pass."""

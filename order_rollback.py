@@ -36,15 +36,16 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
 
     raw_amount = order.get("amount")
     raw_level = order.get("level")
-    level = (
-        None
-        if (isinstance(raw_level, bool) or (isinstance(raw_level, float) and not math.isfinite(raw_level)))
-        else raw_level
-    )
+    level_f = _finite_pos_float(raw_level, default=0.0)
+    level = level_f if level_f > 0.0 else None
     raw_kind = order.get("kind")
     kind = (
-        str(raw_kind).strip()
-        if (raw_kind is not None and not isinstance(raw_kind, bool) and str(raw_kind).strip())
+        raw_kind.strip()
+        if (
+            isinstance(raw_kind, str)
+            and raw_kind.strip()
+            and raw_kind.strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        )
         else ("TP" if side == "SELL" else "ENTRY")
     )
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0

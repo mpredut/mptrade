@@ -13969,3 +13969,76 @@ def test_iteration139_research_backtest_ranges_intelligence_chop_and_sweep_safet
     # 5. slice_dense_archive.ts_of accepts tuple 'i' field
     assert ts_of({"i": (1700000000000, 50000.0)}) == pytest.approx(1700000000000.0)
 
+
+def test_iteration140_t212_strategy_state_boolean_and_order_rollback_hygiene():
+    """Verify 212trading.strategy._sanitize_t212_state boolean/order/level/intent hygiene and order_rollback level/kind normalization."""
+    import importlib
+    from order_rollback import extract_order_restore_params
+
+    strat_mod = importlib.import_module("212trading.strategy")
+    _sanitize_t212_state = strat_mod._sanitize_t212_state
+
+    # 1. _sanitize_t212_state parses string boolean flags ("false"/"0" -> False) and cleans order IDs & levels
+    raw_state = {
+        "tr_alerted": "false",
+        "tr_armed": "0",
+        "sl_alerted": "false",
+        "sl_pending": "0",
+        "pending_submit": {
+            "side": "BUY",
+            "qty": 1.0,
+            "limit": 100.0,
+            "intent_id": "intent-1",
+            "market": "false",
+            "level": "5.0",
+            "portfolio_fill_observed": "0",
+        },
+        "orders": [
+            {
+                "id": 12345.0,
+                "side": "SELL",
+                "qty": 2.0,
+                "limit": 110.0,
+                "market": "false",
+                "level": "7.5",
+                "cancel_requested": "false",
+                "dca_counted": "0",
+                "intent_id": "nan",
+            },
+            {"id": "nan", "side": "BUY", "qty": 1.0, "limit": 95.0},
+            {"id": ["bad"], "side": "BUY", "qty": 1.0, "limit": 95.0},
+        ],
+    }
+    clean = _sanitize_t212_state(raw_state)
+    assert clean["tr_alerted"] is False
+    assert clean["tr_armed"] is False
+    assert clean["sl_alerted"] is False
+    assert clean["sl_pending"] is False
+    assert clean["pending_submit"]["market"] is False
+    assert clean["pending_submit"]["level"] == pytest.approx(5.0)
+    assert clean["pending_submit"]["portfolio_fill_observed"] is False
+    assert len(clean["orders"]) == 1
+    ord0 = clean["orders"][0]
+    assert ord0["id"] == "12345"
+    assert ord0["market"] is False
+    assert ord0["level"] == pytest.approx(7.5)
+    assert ord0["cancel_requested"] is False
+    assert ord0["dca_counted"] is False
+    assert ord0["intent_id"] is None
+
+    # Sentinel intent_id in pending_submit invalidates the corrupted pending_submit
+    bad_ps = _sanitize_t212_state(
+        {"pending_submit": {"side": "BUY", "qty": 1.0, "limit": 100.0, "intent_id": "null"}}
+    )
+    assert bad_ps["pending_submit"] is None
+
+    # 2. extract_order_restore_params normalizes string level to float and rejects sentinel/container level & kind
+    p_valid = extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": "11.0", "kind": "TP"})
+    assert p_valid["level"] == pytest.approx(11.0)
+    assert isinstance(p_valid["level"], float)
+    for bad_lvl in ("nan", "null", -2.0, 0.0, [5.0], {"lvl": 5.0}, True):
+        p_bad = extract_order_restore_params({"side": "SELL", "price": 100.0, "qty": 1.0, "level": bad_lvl, "kind": bad_lvl})
+        assert p_bad["level"] is None
+        assert p_bad["kind"] == "TP"
+
+
