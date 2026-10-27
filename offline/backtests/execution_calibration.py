@@ -17,6 +17,21 @@ def _f(val: object, default: float = 0.0) -> float:
     return res if math.isfinite(res) else default
 
 
+def _as_bool(val: object, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes", "on", "y", "t"):
+        return True
+    if s in ("0", "false", "no", "off", "n", "f", "none", "null", ""):
+        return False
+    return default
+
+
 _CLIENT_ORDER_ID_PATTERNS = {
     "kraken": re.compile(r"[0-9a-f]{32}"),
     "binance": re.compile(r"SD_[0-9a-f]{32}"),
@@ -33,13 +48,32 @@ def _client_order_id_valid(venue: object, client_order_id: object) -> bool | Non
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
-    if not values:
+    if not values or isinstance(percentile, bool):
         return None
-    ordered = sorted(float(value) for value in values)
+    try:
+        pct = float(percentile)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(pct):
+        return None
+    pct = min(100.0, max(0.0, pct))
+    clean: list[float] = []
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            vf = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(vf):
+            clean.append(vf)
+    if not clean:
+        return None
+    ordered = sorted(clean)
     if len(ordered) == 1:
         return ordered[0]
-    position = (len(ordered) - 1) * percentile / 100.0
-    lower = int(position)
+    position = (len(ordered) - 1) * pct / 100.0
+    lower = max(0, min(int(position), len(ordered) - 1))
     upper = min(lower + 1, len(ordered) - 1)
     fraction = position - lower
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
@@ -122,10 +156,11 @@ def calibrate_execution_events(events: list[dict]) -> dict:
                 side = str(requested.get("side") or "").lower()
                 direction = 1.0 if side == "buy" else -1.0
                 deviation_bps = direction * (avg_fill / reference - 1.0) * 10_000
+        is_market = _as_bool(requested.get("market"), False)
         market_shortfall_bps = None
         reference_price = requested.get("reference_price")
         if (
-            bool(requested.get("market"))
+            is_market
             and reference_price is not None
             and avg_fill is not None
         ):
@@ -155,7 +190,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             "intent_id": intent_id,
             "venue": requested.get("venue"),
             "symbol": requested.get("symbol"),
-            "market": bool(requested.get("market")),
+            "market": is_market,
             "accepted": accepted is not None,
             "accepted_ts": accepted.get("ts") if accepted is not None else None,
             "order_id": accepted.get("order_id") if accepted is not None else None,

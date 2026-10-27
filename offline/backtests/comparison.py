@@ -24,6 +24,11 @@ def _finite_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _safe_tolerance(value: Any, default: float = 1e-10) -> float:
+    parsed = _finite_float(value)
+    return parsed if (parsed is not None and parsed >= 0.0) else default
+
+
 def relative_to_baseline(
     candidate: Sequence[Mapping[str, Any]],
     baseline: Sequence[Mapping[str, Any]],
@@ -33,6 +38,7 @@ def relative_to_baseline(
     tolerance: float = 1e-10,
 ) -> dict[str, Any]:
     """Compute relative win, loss, tie counts and mean return delta against baseline."""
+    tol = _safe_tolerance(tolerance)
     base_by_key = {
         window[key_field]: window
         for window in baseline
@@ -55,9 +61,9 @@ def relative_to_baseline(
         }
     return {
         "mean_return_delta_pct": sum(deltas) / len(deltas),
-        "wins_vs_live": sum(delta > tolerance for delta in deltas),
-        "ties_vs_live": sum(abs(delta) <= tolerance for delta in deltas),
-        "losses_vs_live": sum(delta < -tolerance for delta in deltas),
+        "wins_vs_live": sum(delta > tol for delta in deltas),
+        "ties_vs_live": sum(abs(delta) <= tol for delta in deltas),
+        "losses_vs_live": sum(delta < -tol for delta in deltas),
     }
 
 
@@ -82,6 +88,7 @@ def dominates(
 
     Strictly better in at least one dimension.
     """
+    tol = _safe_tolerance(tolerance)
     left_vals = _summary_metrics(left)
     right_vals = _summary_metrics(right)
     if left_vals is None or right_vals is None:
@@ -89,14 +96,14 @@ def dominates(
     l_mean, l_worst, l_dd = left_vals
     r_mean, r_worst, r_dd = right_vals
     no_worse = (
-        l_mean >= r_mean - tolerance
-        and l_worst >= r_worst - tolerance
-        and l_dd <= r_dd + tolerance
+        l_mean >= r_mean - tol
+        and l_worst >= r_worst - tol
+        and l_dd <= r_dd + tol
     )
     strictly_better = (
-        l_mean > r_mean + tolerance
-        or l_worst > r_worst + tolerance
-        or l_dd < r_dd - tolerance
+        l_mean > r_mean + tol
+        or l_worst > r_worst + tol
+        or l_dd < r_dd - tol
     )
     return no_worse and strictly_better
 
@@ -152,18 +159,20 @@ def format_comparison_markdown(
         "| Candidate | Mean % | Median % | Worst % | Worst DD % | Positive | W/T/L vs live | Cycles |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    candidates = report.get("candidates", {})
+    candidates_raw = report.get("candidates")
+    candidates = candidates_raw if isinstance(candidates_raw, Mapping) else {}
     ordered = sorted(
         candidates.items(),
         key=lambda item: (
             item[0] != "live",
-            -(_finite_float((item[1].get("summary") or {}).get("mean_return_pct")) or 0.0),
+            -(_finite_float(((item[1].get("summary") if isinstance(item[1], Mapping) else None) or {}).get("mean_return_pct") if isinstance((item[1].get("summary") if isinstance(item[1], Mapping) else None), Mapping) else None) or 0.0),
             item[0],
         ),
     )
     for name, item in ordered:
-        summary = item.get("summary", {})
-        relative = item.get("relative_to_live", {})
+        item_dict = item if isinstance(item, Mapping) else {}
+        summary = item_dict.get("summary") if isinstance(item_dict.get("summary"), Mapping) else {}
+        relative = item_dict.get("relative_to_live") if isinstance(item_dict.get("relative_to_live"), Mapping) else {}
         lines.append(
             f"| `{name}` | {format_number(summary.get('mean_return_pct'), True)} | "
             f"{format_number(summary.get('median_return_pct'), True)} | "
@@ -173,7 +182,8 @@ def format_comparison_markdown(
             f"{relative.get('wins_vs_live', 0)}/{relative.get('ties_vs_live', 0)}/"
             f"{relative.get('losses_vs_live', 0)} | {summary.get('total_cycles', 0)} |"
         )
-    pareto = report.get("pareto_frontier", [])
+    pareto_raw = report.get("pareto_frontier")
+    pareto = pareto_raw if isinstance(pareto_raw, (list, tuple)) else []
     pareto_str = ", ".join(f"`{name}`" for name in pareto) if pareto else "none"
     lines.extend([
         "",
@@ -181,7 +191,8 @@ def format_comparison_markdown(
         "",
     ])
 
-    fee_stress = report.get("fee_stress", {})
+    fee_stress_raw = report.get("fee_stress")
+    fee_stress = fee_stress_raw if isinstance(fee_stress_raw, Mapping) else {}
     if fee_stress:
         lines.extend([
             "## Fee stress — live configuration",
@@ -190,7 +201,8 @@ def format_comparison_markdown(
             "|---:|---:|---:|---:|---:|",
         ])
         for fee, item in fee_stress.items():
-            summary = item.get("summary", {})
+            item_dict = item if isinstance(item, Mapping) else {}
+            summary = item_dict.get("summary") if isinstance(item_dict.get("summary"), Mapping) else {}
             lines.append(
                 f"| {fee} | {format_number(summary.get('mean_return_pct'), True)} | "
                 f"{format_number(summary.get('worst_return_pct'), True)} | "

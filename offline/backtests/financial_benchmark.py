@@ -33,7 +33,8 @@ class BenchmarkScenario:
 
 def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, BenchmarkScenario]:
     """A provisional central case plus stress for a given venue (defaults to Kraken)."""
-    venue_norm = (venue or "kraken").lower().strip()
+    venue_raw = "" if isinstance(venue, bool) else str(getattr(venue, "name", venue) or "")
+    venue_norm = venue_raw.strip().lower() or "kraken"
     if venue_norm == "binance":
         return (
             BenchmarkScenario(
@@ -189,6 +190,26 @@ def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
     return "sideways"
 
 
+def _safe_f(val: object, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+    except (TypeError, ValueError):
+        return default
+    return vf if math.isfinite(vf) else default
+
+
+def _safe_int(val: object, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+    except (TypeError, ValueError):
+        return default
+    return int(vf) if math.isfinite(vf) else default
+
+
 def aggregate_financial_windows(
     windows: list[dict],
     *,
@@ -218,8 +239,8 @@ def aggregate_financial_windows(
             raise ValueError(f"incomplete financial window: {sorted(missing)}")
 
     summary = summarize_test_windows(windows)
-    metrics = [window["metrics"] for window in windows]
-    net_pnls = [float(item.get("net_pnl") or 0.0) for item in metrics]
+    metrics = [window["metrics"] if isinstance(window.get("metrics"), dict) else {} for window in windows]
+    net_pnls = [_safe_f(item.get("net_pnl"), 0.0) for item in metrics]
     regimes = {}
     for name in ("bull", "bear", "sideways"):
         selected = [
@@ -262,12 +283,12 @@ def aggregate_financial_windows(
         "worst_cvar_95_pct": _minimum(item.get("cvar_95_pct") for item in metrics),
         "mean_exposure_pct": _mean(item.get("exposure_pct") for item in metrics),
         "mean_turnover_pct": _mean(item.get("turnover_pct") for item in metrics),
-        "total_trade_count": sum(int(item.get("trade_count") or 0) for item in metrics),
+        "total_trade_count": sum(_safe_int(item.get("trade_count"), 0) for item in metrics),
         "worst_underwater_bars": int(max(
-            (int(item.get("max_underwater_periods") or 0) for item in metrics),
+            (_safe_int(item.get("max_underwater_periods"), 0) for item in metrics),
             default=0,
         )),
-        "total_test_bars": sum(int(window.get("bars") or 0) for window in windows),
+        "total_test_bars": sum(_safe_int(window.get("bars"), 0) for window in windows),
         "regime_threshold_pct": float(regime_threshold_pct),
         "regimes": regimes,
     }

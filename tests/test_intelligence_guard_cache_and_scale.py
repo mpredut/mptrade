@@ -13487,14 +13487,103 @@ def test_iteration131_trailing_core_is_flat_ws_normalize_and_ws_health_hygiene(t
     assert bapi_ws_health.should_poll_for_manager(" CacheOrderManager ", ws_only_mode=True) is False
 
 
+def test_iteration132_backtest_benchmark_calibration_and_comparison_safety():
+    """Verify financial_benchmark, execution_calibration, and comparison safety with malformed/non-finite inputs."""
+    from types import SimpleNamespace
+    from offline.backtests.comparison import dominates, format_comparison_markdown, relative_to_baseline
+    from offline.backtests.execution_calibration import _percentile, calibrate_execution_events
+    from offline.backtests.financial_benchmark import aggregate_financial_windows, default_scenarios
 
+    # 1. default_scenarios handles bool / provider objects / whitespace strings
+    s_bool = default_scenarios(True)  # type: ignore[arg-type]
+    assert s_bool[0].fees.limit_fee_pct == pytest.approx(0.16)
+    s_obj = default_scenarios(SimpleNamespace(name=" BINANCE "))  # type: ignore[arg-type]
+    assert s_obj[0].fees.limit_fee_pct == pytest.approx(0.075)
 
+    # 2. aggregate_financial_windows sanitizes NaN/bool net_pnl and float-string trade_count/bars
+    agg = aggregate_financial_windows(
+        [
+            {
+                "key": "w1",
+                "return_pct": 2.0,
+                "max_drawdown_pct": 1.0,
+                "buy_hold_return_pct": 4.0,
+                "cycles": 1,
+                "fills": 2,
+                "bars": "120.0",
+                "metrics": {
+                    "net_pnl": float("nan"),
+                    "trade_count": "3.0",
+                    "max_underwater_periods": "15.0",
+                },
+            }
+        ],
+        initial_capital=1000.0,
+    )
+    assert agg["mean_net_pnl_usd_per_window"] == pytest.approx(0.0)
+    assert agg["total_trade_count"] == 3
+    assert agg["worst_underwater_bars"] == 15
+    assert agg["total_test_bars"] == 120
 
+    # 3. _percentile clamps out-of-bounds percentiles and filters non-finite/bool values
+    assert _percentile([10.0, 20.0, 30.0], -10.0) == pytest.approx(10.0)
+    assert _percentile([10.0, 20.0, 30.0], 150.0) == pytest.approx(30.0)
+    assert _percentile([10.0, float("nan"), True, 30.0], 50.0) == pytest.approx(20.0)  # type: ignore[list-item]
+    assert _percentile([10.0, 20.0], True) is None  # type: ignore[arg-type]
 
+    # 4. calibrate_execution_events normalizes string "false" for market flag
+    cal = calibrate_execution_events(
+        [
+            {
+                "intent_id": "int-1",
+                "event": "submit_requested",
+                "ts": 100.0,
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 1.0,
+                "price": 50000.0,
+                "reference_price": 50000.0,
+                "market": "false",
+            },
+            {
+                "intent_id": "int-1",
+                "event": "order_terminal",
+                "ts": 101.0,
+                "filled_qty": 1.0,
+                "cost": 50050.0,
+                "fee": 0.5,
+            },
+        ]
+    )
+    assert len(cal["orders"]) == 1
+    assert cal["orders"][0]["market"] is False
+    assert cal["orders"][0]["market_execution_shortfall_bps"] is None
+    assert cal["summary"]["limit"]["orders"] == 1
+    assert cal["summary"]["market"]["orders"] == 0
 
-
-
-
-
+    # 5. comparison tolerance sanitization and format_comparison_markdown non-Mapping candidate resilience
+    rel = relative_to_baseline(
+        [{"key": "w1", "return_pct": 1.0}],
+        [{"key": "w1", "return_pct": 1.0}],
+        tolerance=-5.0,
+    )
+    assert rel["ties_vs_live"] == 1
+    assert (
+        dominates(
+            {"mean_return_pct": 2.0, "worst_return_pct": 1.0, "worst_max_drawdown_pct": 1.0},
+            {"mean_return_pct": 1.0, "worst_return_pct": 1.0, "worst_max_drawdown_pct": 1.0},
+            tolerance=float("nan"),
+        )
+        is True
+    )
+    md = format_comparison_markdown(
+        {
+            "candidates": {"live": None, "cand1": {"summary": None, "relative_to_live": None}},
+            "fee_stress": {"0.10": None},
+        }
+    )
+    assert "| `live` | n/a |" in md
+    assert "| `cand1` | n/a |" in md
 
 
