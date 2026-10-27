@@ -141,9 +141,15 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     role_norm = str(role or "").strip().casefold() if (role is not None and not isinstance(role, bool)) else None
     if role is not None and (isinstance(role, bool) or role_norm not in ROLES):
         raise ValueError(f"Unknown instrument role: {role!r}")
+    if isinstance(only_enabled, str):
+        only_enabled_b = _boolean(only_enabled, "only_enabled", "select_instruments")
+    elif isinstance(only_enabled, float) and not math.isfinite(only_enabled):
+        only_enabled_b = True
+    else:
+        only_enabled_b = bool(only_enabled)
     return {
         name: spec for name, spec in load_registry(path).items()
-        if (not only_enabled or spec.enabled)
+        if (not only_enabled_b or spec.enabled)
         and (prov_norm is None or spec.provider == prov_norm)
         and (role_norm is None or spec.has_role(role_norm))
     }

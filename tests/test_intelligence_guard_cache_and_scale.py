@@ -15285,3 +15285,86 @@ def test_iteration155_strategies_state_store_spot_engine_replay_and_rtrade_pair_
             },
         )
 
+
+def test_iteration156_instrument_bool_cast_and_order_retry_hygiene(tmp_path, monkeypatch):
+    """Verify Instrument.param(cast=bool), Instrument.place boolean flags, and order_retry ID hygiene."""
+    from types import SimpleNamespace
+    import order_retry as oq
+    from instrument import Instrument, _parse_bool_flag
+
+    # 1. Instrument.param with cast=bool and Instrument.enabled boolean parsing
+    dummy_prov = SimpleNamespace(name="dummy", validate_symbol=lambda s: None)
+    dummy_api = SimpleNamespace(provider_by_name=lambda p: dummy_prov)
+    inst = Instrument(
+        "BTCUSDC",
+        "BTCUSDC",
+        "dummy",
+        enabled="false",  # type: ignore[arg-type]
+        params={"mt.smart_sl": "false", "mt.enabled": "1", "mt.bad": "nan"},
+        api=dummy_api,
+    )
+    assert inst.enabled is False
+    assert inst.param("mt", "smart_sl", True, cast=bool) is False
+    assert inst.param("mt", "enabled", False, cast=bool) is True
+    assert inst.param("mt", "bad", True, cast=bool) is False
+    assert _parse_bool_flag("false", True) is False
+    assert _parse_bool_flag(float("nan"), True) is True
+
+    # 2. order_retry valid_record & enqueue sentinel order_id / replaces_order_id rejection
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(l_file))
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+
+    assert oq.valid_record({
+        "id": "r1",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 1.0,
+        "created_ts": 1000.0,
+        "revision": 0,
+        "lifecycle": "accepted",
+        "order_id": "0",
+    }) is False
+    assert oq.valid_record({
+        "id": "r2",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 1.0,
+        "created_ts": 1000.0,
+        "revision": 0,
+        "lifecycle": "awaiting_cancel",
+        "replaces_order_id": "nan",
+        "replaces_original_qty": 1.0,
+    }) is False
+    assert oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        1.0,
+        lifecycle="awaiting_cancel",
+        replaces_order_id="0",
+        replaces_original_qty=1.0,
+    ) is None
+    rec_id = oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        1.0,
+        lifecycle="awaiting_cancel",
+        replaces_order_id="777.0",
+        replaces_original_qty=1.0,
+    )
+    assert rec_id is not None
+    loaded = oq.get(rec_id)
+    assert loaded is not None and loaded["replaces_order_id"] == "777"
+    # Deduplicates against integer 777
+    rec_id_dup = oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        1.0,
+        lifecycle="awaiting_cancel",
+        replaces_order_id=777,
+        replaces_original_qty=1.0,
+    )
+    assert rec_id_dup == rec_id
+

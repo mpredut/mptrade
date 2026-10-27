@@ -286,6 +286,13 @@ order_id_from_response = extract_order_id
 order_qty_from_response = extract_orig_qty
 
 
+def _clean_retry_order_id(val) -> Optional[str]:
+    cleaned = extract_order_id(val, default=None)
+    if cleaned is None or cleaned in {"0", "0.0", "-0", "+0"}:
+        return None
+    return cleaned
+
+
 def _clean_opt_finite_float(val):
     if val is None or isinstance(val, bool):
         return None
@@ -332,11 +339,10 @@ def valid_record(rec):
     lifecycle_ok = lifecycle in {
         "awaiting_cancel", "submit_pending", "accepted"}
     raw_oid = rec.get("order_id")
-    if lifecycle == "accepted" and (isinstance(raw_oid, bool) or not str(raw_oid or "").strip()):
+    if lifecycle == "accepted" and _clean_retry_order_id(raw_oid) is None:
         lifecycle_ok = False
     raw_rep_oid = rec.get("replaces_order_id")
-    if (lifecycle == "awaiting_cancel"
-            and (isinstance(raw_rep_oid, bool) or not str(raw_rep_oid or "").strip())):
+    if lifecycle == "awaiting_cancel" and _clean_retry_order_id(raw_rep_oid) is None:
         lifecycle_ok = False
     if lifecycle == "awaiting_cancel":
         raw_rep_qty = rec.get("replaces_original_qty")
@@ -512,8 +518,8 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     lifecycle = str(lifecycle or "").lower()
     if lifecycle not in {"submit_pending", "awaiting_cancel"}:
         return None
-    if (lifecycle == "awaiting_cancel"
-            and (isinstance(replaces_order_id, bool) or not str(replaces_order_id or "").strip())):
+    clean_rep_oid = _clean_retry_order_id(replaces_order_id) if lifecycle == "awaiting_cancel" else None
+    if lifecycle == "awaiting_cancel" and clean_rep_oid is None:
         return None
     if lifecycle == "awaiting_cancel":
         if isinstance(replaces_original_qty, bool):
@@ -673,7 +679,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         rec["ttl_sec"] = custom_ttl
         rec["expires_at_ts"] = cts + custom_ttl
     if lifecycle == "awaiting_cancel":
-        rec["replaces_order_id"] = str(replaces_order_id)
+        rec["replaces_order_id"] = clean_rep_oid
         rec["replaces_original_qty"] = replaces_original_qty
     _set_safe_to_discard(
         rec, lifecycle == "submit_pending"
@@ -699,7 +705,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         existing = _read_nolock()
         if lifecycle == "awaiting_cancel":
             provider_key = str(provider_name or "").casefold()
-            replaced_key = str(replaces_order_id)
+            replaced_key = clean_rep_oid
             for item in existing:
                 if (
                     str(item.get("lifecycle") or "").lower()
@@ -708,7 +714,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                     == provider_key
                     and item.get("symbol") == symbol
                     and str(item.get("side") or "").upper() == side_u
-                    and str(item.get("replaces_order_id") or "")
+                    and (_clean_retry_order_id(item.get("replaces_order_id")) or str(item.get("replaces_order_id") or ""))
                     == replaced_key
                 ):
                     # Recovery re-observations are idempotent, including while
@@ -1020,12 +1026,12 @@ def get_accepted_order_ttl_map() -> dict:
             try:
                 ttl_val = float(ttl)
                 if math.isfinite(ttl_val) and ttl_val > 0:
-                    oid = extract_order_id(r.get("order_id"), default=None)
+                    oid = _clean_retry_order_id(r.get("order_id"))
                     if oid:
                         res[oid] = ttl_val
                     place_kw = r.get("place_kwargs")
                     cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
-                    cid = extract_order_id(cid_raw, default=None)
+                    cid = _clean_retry_order_id(cid_raw)
                     if cid:
                         res[cid] = ttl_val
             except (TypeError, ValueError):
@@ -1102,12 +1108,12 @@ def get_accepted_order_owner_map() -> dict:
         inferred = infer_record_owner(r)
         if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
             continue
-        oid = extract_order_id(r.get("order_id"), default=None)
+        oid = _clean_retry_order_id(r.get("order_id"))
         if oid:
             res[oid] = inferred
         place_kw = r.get("place_kwargs")
         cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
-        cid = extract_order_id(cid_raw, default=None)
+        cid = _clean_retry_order_id(cid_raw)
         if cid:
             res[cid] = inferred
     return res
@@ -1131,7 +1137,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
             continue
         if str(r.get("symbol") or "").strip().upper() != target_sym:
             continue
-        oid_str = extract_order_id(r.get("order_id"), default=None)
+        oid_str = _clean_retry_order_id(r.get("order_id"))
         if not oid_str:
             continue
         if infer_record_owner(r) == target_owner:
@@ -1585,7 +1591,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
             current_qty = float(rec.get("qty") or 0.0)
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
                 break
-            replaced_order_id = str(rec.get("replaces_order_id") or "").strip()
+            replaced_order_id = _clean_retry_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
             replaced_symbol = str(rec.get("symbol") or "").strip().upper()
             if qty <= max(1e-12, current_qty * 1e-9):
                 existing.pop(index)
@@ -1608,7 +1614,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                     if not (
                         str(item.get("lifecycle") or "").lower() == "accepted"
                         and str(item.get("symbol") or "").strip().upper() == replaced_symbol
-                        and str(item.get("order_id") or "").strip() == replaced_order_id
+                        and (_clean_retry_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
                     )
                 ]
             _write_nolock(existing)
@@ -1620,7 +1626,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     if isinstance(symbol, bool) or isinstance(order_id, bool):
         return False
     target_sym = str(symbol or "").strip().upper()
-    target_oid = extract_order_id(order_id, default=None)
+    target_oid = _clean_retry_order_id(order_id)
     if not target_sym or not target_oid:
         return False
     removed = False
@@ -1629,7 +1635,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
         existing = _read_nolock()
         remaining = []
         for rec in existing:
-            rec_oid = extract_order_id(rec.get("order_id"), default=None)
+            rec_oid = _clean_retry_order_id(rec.get("order_id"))
             if (
                 str(rec.get("lifecycle") or "").lower() == "accepted"
                 and str(rec.get("symbol") or "").strip().upper() == target_sym

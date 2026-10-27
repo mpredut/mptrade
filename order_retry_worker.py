@@ -692,7 +692,7 @@ def process_once(mkt, now=None):
         else:
             is_stop_expired_timer = (
                 str(r.get("kind") or kwargs.get("kind") or "").strip().upper() == "STOP"
-                and kwargs.get("wait_for_trend") is False
+                and kwargs.get("wait_for_trend") in (False, 0, "0", "false", "False", "no", "off")
             )
             kwargs["wait_for_trend"] = False if is_stop_expired_timer else True
             cur_pm = kwargs.get("profit_margin")

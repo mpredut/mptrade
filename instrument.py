@@ -29,6 +29,27 @@ import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibi
 _EXECUTION_AUDIT = ExecutionAudit()
 
 
+def _parse_bool_flag(val: Any, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return default
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return default
+    s = str(val).strip().lower()
+    if s in {"1", "true", "yes", "on", "y", "t"}:
+        return True
+    if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+        return False
+    return default
+
+
 def _accepted_order_payload(payload):
     """Return whether a provider payload proves venue acceptance, never fill."""
     if not isinstance(payload, dict):
@@ -75,7 +96,7 @@ class Instrument:
         self.provider_name = provider
         self.base = base
         self.quote = quote
-        self.enabled = enabled
+        self.enabled = _parse_bool_flag(enabled, True)
         self.isolation = isolation          # 'dedicated' | 'own_ledger' (see design)
         self.market_hours = market_hours    # '24x7' | 'rth' | ...
         self.params = dict(params or {})
@@ -257,7 +278,7 @@ class Instrument:
         # balance, fee, profit, daily-cap, cooldown, and trend guards stay active.
         # A caller such as rtrade or the outbox worker may own its lifecycle and
         # retry; in that case this pipeline does not touch the global queue.
-        caller_owns_retry = bool(kwargs.pop("caller_owns_retry", False))
+        caller_owns_retry = _parse_bool_flag(kwargs.pop("caller_owns_retry", False), False)
         # Internal mutable result channel used by the outbox worker.  It keeps the
         # public return type backward compatible while exposing the exact refusal
         # reason (notably trend deferral) without parsing logs or blocking.
@@ -278,7 +299,7 @@ class Instrument:
         caller_profit_margin = kwargs.pop("profit_margin", None)
         profit_reference_mode = kwargs.pop("reference_mode", None)
         caller_module = kwargs.pop("module", None)
-        allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
+        allow_math_reference_sell = _parse_bool_flag(kwargs.pop("allow_math_reference_sell", False), False)
         order_kind = kwargs.get("kind") or kwargs.get("motivation")
         if order_kind is not None:
             kwargs["kind"] = order_kind
@@ -334,7 +355,7 @@ class Instrument:
         # GT_S (short_trend) ignores bypass_guards ("all" or "GT_S"); it is controlled
         # strictly by wait_for_trend (which defaults to True across all modules, and is
         # only set to False by the Stop-Loss module after its own timer expires).
-        wait_for_trend = bool(kwargs.pop("wait_for_trend", True))
+        wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
         kwargs.pop("cooldown_pair_id", None)
         abort_if = kwargs.pop("abort_if", None)
         # This narrow escape hatch exists only for drawdown BUY flows or
@@ -429,7 +450,7 @@ class Instrument:
         # opposing orders and nudges price before guards, while place_safe_order
         # does neither. Default true for the main path; former safe-order callers
         # explicitly pass false.
-        smart = bool(kwargs.pop("smart", True))
+        smart = _parse_bool_flag(kwargs.pop("smart", True), True)
         regime_context = kwargs.pop("regime_context", None)
         raw_applied_scale = kwargs.pop("applied_scale", None)
         caller_applied_scale = 1.0
@@ -473,10 +494,13 @@ class Instrument:
         # before submission at the current executable price. This prevents a
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
-        is_market = bool(kwargs.get("market", False) or kwargs.get("force", False))
+        is_market = (
+            _parse_bool_flag(kwargs.get("market", False), False)
+            or _parse_bool_flag(kwargs.get("force", False), False)
+        )
         caller_enforce_biz_min = kwargs.pop("enforce_business_minimum", None)
         if caller_enforce_biz_min is not None:
-            enforce_business_minimum = bool(caller_enforce_biz_min)
+            enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
             retry_kwargs["enforce_business_minimum"] = enforce_business_minimum
         else:
             enforce_business_minimum = not (
@@ -1265,6 +1289,8 @@ class Instrument:
             return default
         if cast is None:
             return v
+        if cast is bool:
+            return _parse_bool_flag(v, default=bool(default))
         if cast in (float, int) and isinstance(v, bool):
             return default
         try:
