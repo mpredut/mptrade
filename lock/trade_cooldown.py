@@ -60,19 +60,47 @@ def _cooldown():
     return _cd
 
 
+_INVALID_COOLDOWN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "none", "null", "nan", "inf", "-inf", "+inf"}
+
+
 def _valid_pair_id(pair_id) -> bool:
-    return pair_id is not None and not isinstance(pair_id, bool) and bool(str(pair_id).strip())
+    if pair_id is None or isinstance(pair_id, (bool, dict, list, tuple, set, frozenset)):
+        return False
+    if isinstance(pair_id, float) and not math.isfinite(pair_id):
+        return False
+    s = str(pair_id).strip()
+    return s.lower() not in _INVALID_COOLDOWN_ID_STRINGS
+
+
+def _clean_order_id_meta(val):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    if isinstance(val, int):
+        return val if val != 0 else None
+    if isinstance(val, float):
+        if not math.isfinite(val) or val == 0.0:
+            return None
+        return int(val) if val.is_integer() else str(val)
+    s = str(val).strip()
+    if s.lower() in _INVALID_COOLDOWN_ID_STRINGS:
+        return None
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+        if s in _INVALID_COOLDOWN_ID_STRINGS:
+            return None
+    return s
 
 
 def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
                   pair_id=None):
     """Atomically check and reserve placement rights for ``symbol``."""
+    clean_cid = _clean_order_id_meta(client_order_id)
     if _valid_pair_id(pair_id):
         return _cooldown().reserve_group_member(
             symbol, cooldown_sec, str(pair_id).strip(), side,
-            side="PAIR", symbol=symbol, client_order_id=client_order_id)
+            side="PAIR", symbol=symbol, client_order_id=clean_cid)
     return _cooldown().reserve(symbol, cooldown_sec, side=side, symbol=symbol,
-                               client_order_id=client_order_id, binance_order_id=None)
+                               client_order_id=clean_cid, binance_order_id=None)
 
 
 def release_trade(symbol):
@@ -90,7 +118,7 @@ def release_pair_leg(symbol, pair_id, side):
 
 def update_binance_order_id(symbol, order_id):
     """Attach the Binance order ID after successful placement."""
-    _cooldown().update(symbol, binance_order_id=order_id)
+    _cooldown().update(symbol, binance_order_id=_clean_order_id_meta(order_id))
 
 
 class _TradeReservation:
@@ -108,21 +136,22 @@ class _TradeReservation:
         return self._res.info
 
     def commit(self, binance_order_id=None):
-        self._res.commit(binance_order_id=binance_order_id)
+        self._res.commit(binance_order_id=_clean_order_id_meta(binance_order_id))
 
 
 @contextlib.contextmanager
 def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
                pair_id=None):
     """Provide RAII for an exclusive cooldown or one leg of a pair."""
+    clean_cid = _clean_order_id_meta(client_order_id)
     if _valid_pair_id(pair_id):
         with _cooldown().group_slot(
                 symbol, cooldown_sec, str(pair_id).strip(), side,
-                side="PAIR", symbol=symbol, client_order_id=client_order_id) as res:
+                side="PAIR", symbol=symbol, client_order_id=clean_cid) as res:
             yield _TradeReservation(res)
     else:
         with _cooldown().slot(symbol, cooldown_sec, side=side, symbol=symbol,
-                              client_order_id=client_order_id, binance_order_id=None) as res:
+                              client_order_id=clean_cid, binance_order_id=None) as res:
             yield _TradeReservation(res)
 
 

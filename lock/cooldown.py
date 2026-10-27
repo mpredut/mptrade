@@ -92,6 +92,15 @@ def _safe_dict(val) -> dict:
     return {}
 
 
+def _clean_cooldown_key(key) -> str:
+    if key is None or isinstance(key, (bool, dict, list, tuple, set, frozenset)):
+        return ""
+    s = str(key).strip()
+    if s.lower() in {"", "none", "null", "nan", "inf", "-inf", "+inf"}:
+        return ""
+    return s
+
+
 _RESERVED_ENTRY_KEYS = frozenset({
     "timestamp",
     "key",
@@ -168,6 +177,9 @@ class Cooldown:
         ``(True, entry)`` means newly reserved; ``(False, last)`` means blocked
         because the prior reservation is younger than the TTL.
         """
+        key = _clean_cooldown_key(key)
+        if not key:
+            return False, {}
         with FileLock(self.lock_path):
             state = self._read()
             last = state.get(key)
@@ -196,11 +208,10 @@ class Cooldown:
         Repeating a member or using another group is rejected. Legacy state remains
         compatible and exclusive, so a new group cannot bypass it.
         """
-        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
-            return False, {}
-        group_id = str(group_id).strip()
-        member = str(member).strip().upper()
-        if not group_id or not member:
+        key = _clean_cooldown_key(key)
+        group_id = _clean_cooldown_key(group_id)
+        member = _clean_cooldown_key(member).upper()
+        if not key or not group_id or not member:
             return False, {}
         with FileLock(self.lock_path):
             state = self._read()
@@ -244,11 +255,10 @@ class Cooldown:
 
     def commit_group_member(self, key, group_id, member, **fields):
         """Confirm the reserved member and keep its result separately."""
-        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
-            return
-        group_id = str(group_id).strip()
-        member = str(member).strip().upper()
-        if not group_id or not member:
+        key = _clean_cooldown_key(key)
+        group_id = _clean_cooldown_key(group_id)
+        member = _clean_cooldown_key(member).upper()
+        if not key or not group_id or not member:
             return
         with FileLock(self.lock_path):
             state = self._read()
@@ -274,11 +284,10 @@ class Cooldown:
 
     def rollback_group_member(self, key, group_id, member):
         """Withdraw only the uncommitted member without removing the other leg."""
-        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
-            return
-        group_id = str(group_id).strip()
-        member = str(member).strip().upper()
-        if not group_id or not member:
+        key = _clean_cooldown_key(key)
+        group_id = _clean_cooldown_key(group_id)
+        member = _clean_cooldown_key(member).upper()
+        if not key or not group_id or not member:
             return
         with FileLock(self.lock_path):
             state = self._read()
@@ -304,11 +313,10 @@ class Cooldown:
         coordinator may replace the leg, but another process/group cannot exploit the
         short interval between cancellation and replacement.
         """
-        if group_id is None or isinstance(group_id, bool) or member is None or isinstance(member, bool):
-            return False
-        group_id = str(group_id).strip()
-        member = str(member).strip().upper()
-        if not group_id or not member:
+        key = _clean_cooldown_key(key)
+        group_id = _clean_cooldown_key(group_id)
+        member = _clean_cooldown_key(member).upper()
+        if not key or not group_id or not member:
             return False
         keep_group = _as_bool_flag(keep_group, True)
         with FileLock(self.lock_path):
@@ -334,6 +342,9 @@ class Cooldown:
 
     def release(self, key, *, expected_timestamp=None):
         """Release a failed reservation so it no longer blocks the TTL."""
+        key = _clean_cooldown_key(key)
+        if not key:
+            return
         with FileLock(self.lock_path):
             state = self._read()
             if key in state:
@@ -346,17 +357,29 @@ class Cooldown:
 
     def update(self, key, **fields):
         """Add fields, such as a resulting ID, to an existing reservation."""
+        key = _clean_cooldown_key(key)
+        if not key:
+            return
+        safe_fields = {k: v for k, v in fields.items() if k not in _RESERVED_ENTRY_KEYS}
+        if not safe_fields:
+            return
         with FileLock(self.lock_path):
             state = self._read()
             if isinstance(state.get(key), dict):
-                state[key].update(fields)
+                state[key].update(safe_fields)
                 self._write(state)
 
     def get(self, key):
+        key = _clean_cooldown_key(key)
+        if not key:
+            return None
         return self._read().get(key)
 
     def last_age(self, key):
         """Return the latest reservation age in seconds, or None."""
+        key = _clean_cooldown_key(key)
+        if not key:
+            return None
         last = self._read().get(key)
         if not isinstance(last, dict):
             return None

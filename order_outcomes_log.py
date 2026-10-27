@@ -42,7 +42,29 @@ def _clean_numeric_field(value):
     s = str(value).strip()
     if not s or s.lower() in _INVALID_LOG_STRINGS:
         return ""
-    return s
+    try:
+        f = float(s)
+        return s if math.isfinite(f) else ""
+    except (TypeError, ValueError, OverflowError):
+        return ""
+
+
+def _clean_bool_field(value) -> str:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return ""
+        return str(value != 0)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"1", "true", "yes", "on", "y", "t"}:
+            return "True"
+        if s in {"0", "false", "no", "off", "n", "f"}:
+            return "False"
+    return ""
 
 
 def log_order_outcome(
@@ -92,12 +114,12 @@ def log_order_outcome(
             fresh_raw = getattr(regime_context, "fresh", None)
             fb_raw = getattr(regime_context, "fallback_used", None)
             cols.extend([
-                reg_raw if isinstance(reg_raw, str) else "",
+                _sanitize_outcome_field(reg_raw) if isinstance(reg_raw, str) else "",
                 strength_str,
-                src_raw if isinstance(src_raw, str) else "",
-                "" if fresh_raw is None else str(fresh_raw),
-                "" if fb_raw is None else str(fb_raw),
-                rsn_raw if isinstance(rsn_raw, str) else "",
+                _sanitize_outcome_field(src_raw) if isinstance(src_raw, str) else "",
+                _clean_bool_field(fresh_raw),
+                _clean_bool_field(fb_raw),
+                _sanitize_outcome_field(rsn_raw) if isinstance(rsn_raw, str) else "",
             ])
         line = "|".join(
             str(c).replace("|", "/").replace("\r", " ").replace("\n", " ")

@@ -15697,5 +15697,78 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
     assert len(filled) == 2
 
 
+def test_iteration160_cooldown_outcomes_log_and_cache_health_hygiene(tmp_path, monkeypatch):
+    from lock.cooldown import Cooldown
+    import lock.trade_cooldown as tc
+    import order_outcomes_log as olog
+    import binance_cache_health as bch
+
+    # 1. Cooldown: rejects invalid keys and protects _RESERVED_ENTRY_KEYS during update/commit
+    cd = Cooldown("test_cd", state_path=str(tmp_path / "cd.json"), lock_path=str(tmp_path / "cd.lock"))
+    assert cd.reserve(None, 60)[0] is False
+    assert cd.reserve(True, 60)[0] is False
+    assert cd.reserve("None", 60)[0] is False
+    ok, entry = cd.reserve("BTCUSDC", 60, side="BUY")
+    assert ok is True
+    orig_ts = entry["timestamp"]
+    cd.update("BTCUSDC", timestamp=0.0, group_id="hacked", binance_order_id="123")
+    stored = cd.get("BTCUSDC")
+    assert stored["timestamp"] == orig_ts
+    assert "group_id" not in stored
+    assert stored["binance_order_id"] == "123"
+
+    # 2. trade_cooldown: rejects "None"/"0" pair_id and cleans ".0"/"0" order_id metadata
+    assert tc._valid_pair_id("None") is False
+    assert tc._valid_pair_id("0") is False
+    assert tc._valid_pair_id("0.0") is False
+    assert tc._valid_pair_id(float("nan")) is False
+    assert tc._clean_order_id_meta("999.0") == "999"
+    assert tc._clean_order_id_meta("0") is None
+    assert tc._clean_order_id_meta("None") is None
+
+    # 3. order_outcomes_log: sanitizes regime_context fields and non-numeric price/qty strings
+    monkeypatch.setattr(olog, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    assert olog._clean_numeric_field("not-a-number") == ""
+    assert olog._clean_numeric_field("60000.5") == "60000.5"
+
+    class _RegCtx:
+        regime = "BULL|STRONG"
+        strength = 0.75
+        source = "None"
+        fresh = "false"
+        fallback_used = 1
+        reason = "nan"
+
+    olog.log_order_outcome(
+        "BTCUSDC",
+        "BUY",
+        "not-a-number",
+        0.01,
+        "refused",
+        "short_trend",
+        "test",
+        caller="unit",
+        regime_context=_RegCtx(),
+    )
+    log_files = list(tmp_path.glob("order_outcomes_*.log"))
+    assert len(log_files) == 1
+    row = log_files[0].read_text(encoding="utf-8").strip().split("|")
+    assert row[3] == ""  # non-numeric price cleaned to empty
+    assert row[9] == "BULL/STRONG"
+    assert row[11] == ""  # "None" source cleaned to empty
+    assert row[12] == "False"  # "false" string parsed as False
+    assert row[13] == "True"  # 1 parsed as True
+    assert row[14] == ""  # "nan" reason cleaned to empty
+
+    # 4. binance_cache_health: _positive_int and _nonnegative_int accept integer strings/floats and reject bool/negative
+    assert bch._positive_int("123.0", "pid") == 123
+    assert bch._nonnegative_int("0.0", "gen") == 0
+    with pytest.raises(ValueError):
+        bch._positive_int("123.5", "pid")
+    with pytest.raises(ValueError):
+        bch._positive_int(True, "pid")
+
+
+
 
 

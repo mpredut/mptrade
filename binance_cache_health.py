@@ -130,8 +130,12 @@ def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
             writer_pid = os.getpid()
         else:
             try:
-                cand_pid = int(pid)
-                writer_pid = cand_pid if cand_pid > 0 else os.getpid()
+                cand_f = float(pid)
+                writer_pid = (
+                    int(cand_f)
+                    if math.isfinite(cand_f) and cand_f.is_integer() and int(cand_f) > 0
+                    else os.getpid()
+                )
             except (TypeError, ValueError, OverflowError):
                 writer_pid = os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
@@ -251,17 +255,31 @@ def record_persisted_version(cache_name: str, data_version: str, *,
 
 
 def _positive_int(value, field: str) -> int:
-    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
-        value = int(value)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"invalid {field}")
+    if isinstance(value, (float, str)):
+        try:
+            f = float(value)
+            if math.isfinite(f) and f.is_integer():
+                value = int(f)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not isinstance(value, int) or value <= 0:
         raise ValueError(f"invalid {field}")
     return value
 
 
 def _nonnegative_int(value, field: str) -> int:
-    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
-        value = int(value)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"invalid {field}")
+    if isinstance(value, (float, str)):
+        try:
+            f = float(value)
+            if math.isfinite(f) and f.is_integer():
+                value = int(f)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not isinstance(value, int) or value < 0:
         raise ValueError(f"invalid {field}")
     return value
 
