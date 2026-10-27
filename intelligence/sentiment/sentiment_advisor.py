@@ -96,7 +96,11 @@ class SentimentAdvisor:
                 except (TypeError, ValueError):
                     ts_val = 0.0
                 raw_risks = data.get("key_risks")
-                risks_list = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, (list, tuple)) else []
+                risks_list = (
+                    [str(r).strip() for r in raw_risks if r is not None and not isinstance(r, bool) and str(r).strip()]
+                    if isinstance(raw_risks, (list, tuple))
+                    else []
+                )
                 mb_norm = str(data.get("market_bias") or "NEUTRAL").strip().upper()
                 if mb_norm not in ("BULLISH", "BEARISH", "NEUTRAL", "CAUTION"):
                     mb_norm = "NEUTRAL"
@@ -106,11 +110,13 @@ class SentimentAdvisor:
                 ra_norm = str(data.get("recommended_action") or "HOLD").strip().upper()
                 if ra_norm not in ("ACCUMULATE", "HOLD", "TRIM_PROFITS", "DEFENSIVE"):
                     ra_norm = "HOLD"
+                raw_sum = data.get("summary")
+                sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
                 self._cached_assessment = SentimentAdvisorAssessment(
                     market_bias=mb_norm,
                     risk_level=rl_norm,
                     confidence=conf_val,
-                    summary=str(data.get("summary") or ""),
+                    summary=sum_str,
                     key_risks=risks_list,
                     recommended_action=ra_norm,
                     ts=ts_val,
@@ -147,6 +153,10 @@ class SentimentAdvisor:
         now_ts: Optional[float] = None,
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
+        if isinstance(force_refresh, str):
+            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            force_refresh = bool(force_refresh)
         now = time.time()
         if now_ts is not None and not isinstance(now_ts, bool):
             try:
@@ -225,7 +235,11 @@ class SentimentAdvisor:
                 except (TypeError, ValueError):
                     conf = 0.5
             raw_risks = resp.get("key_risks")
-            key_risks = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, (list, tuple)) else []
+            key_risks = (
+                [str(r).strip() for r in raw_risks if r is not None and not isinstance(r, bool) and str(r).strip()]
+                if isinstance(raw_risks, (list, tuple))
+                else []
+            )
             mb_norm = str(resp.get("market_bias") or "NEUTRAL").strip().upper()
             if mb_norm not in ("BULLISH", "BEARISH", "NEUTRAL", "CAUTION"):
                 mb_norm = "NEUTRAL"
@@ -235,11 +249,13 @@ class SentimentAdvisor:
             ra_norm = str(resp.get("recommended_action") or "HOLD").strip().upper()
             if ra_norm not in ("ACCUMULATE", "HOLD", "TRIM_PROFITS", "DEFENSIVE"):
                 ra_norm = "HOLD"
+            raw_sum = resp.get("summary")
+            sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
             assessment = SentimentAdvisorAssessment(
                 market_bias=mb_norm,
                 risk_level=rl_norm,
                 confidence=conf,
-                summary=str(resp.get("summary") or ""),
+                summary=sum_str,
                 key_risks=key_risks,
                 recommended_action=ra_norm,
                 ts=now,

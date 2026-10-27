@@ -164,6 +164,10 @@ class MarketBreadthCollector:
 
     def fetch(self, force_refresh: bool = False) -> Optional[MarketBreadthSnapshot]:
         """Fetch latest 24hr tickers from public Binance API and return market breadth snapshot."""
+        if isinstance(force_refresh, str):
+            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            force_refresh = bool(force_refresh)
         now = time.time()
         if not force_refresh and self._cached_snapshot and 0.0 <= (now - self._last_fetch_ts) < self.cache_ttl_sec:
             return self._cached_snapshot

@@ -63,9 +63,14 @@ class BybitLiquidationCollector:
         symbols: Optional[List[str]] = None,
         retention_sec: float = MAX_RETENTION_SEC,
     ) -> None:
+        raw_syms = (
+            symbols.split(",")
+            if isinstance(symbols, str)
+            else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else DEFAULT_SYMBOLS)
+        )
         cleaned_syms = [
             str(s).strip().upper()
-            for s in (symbols or DEFAULT_SYMBOLS)
+            for s in raw_syms
             if isinstance(s, str) and s.strip()
         ]
         self._symbols = cleaned_syms or list(DEFAULT_SYMBOLS)

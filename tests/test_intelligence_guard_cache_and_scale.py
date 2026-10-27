@@ -12841,6 +12841,74 @@ def test_iteration122_provider_order_id_precision_and_status_safety():
             tp.cancel_order("AAPL_US_EQ", bad_str)
 
 
+def test_iteration123_bybit_liq_news_fear_greed_advisor_and_gemini_cid_safety(tmp_path):
+    """Verify Iteration 123 BybitLiquidationCollector string symbols, NewsFeedCollector string is_high_severity, FearGreed ms timestamp, SentimentAdvisor key_risks/summary sanitization, and GeminiClient cid traversal guard."""
+    import json
+    import time
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    # 1. BybitLiquidationCollector splits comma-separated string symbols
+    blc = BybitLiquidationCollector(symbols=" btcusdt , solusdt ")
+    assert blc._symbols == ["BTCUSDT", "SOLUSDT"]
+
+    # 2. NewsFeedCollector._load_history parses string "false" for is_high_severity as False
+    nf_path = tmp_path / "news_feed_collect.json"
+    nf_path.write_text(
+        json.dumps([
+            {
+                "title": "Routine market update",
+                "source": "Test",
+                "pub_date": "",
+                "url": "",
+                "matched_keywords": [],
+                "is_high_severity": "false",
+                "first_seen_ts": time.time(),
+            }
+        ]),
+        encoding="utf-8",
+    )
+    nfc = NewsFeedCollector(history_file=str(nf_path))
+    snap = nfc.get_pool_snapshot()
+    assert snap.total_fetched == 1 and snap.high_severity_count == 0
+
+    # 3. FearGreedCollector.parse_payload normalizes millisecond timestamps (> 1e11) to seconds
+    fg_snap = FearGreedCollector.parse_payload({"data": [{"value": "42", "value_classification": "Fear", "timestamp": "1760000000000"}]})
+    assert fg_snap is not None and fg_snap.timestamp == 1760000000.0
+
+    # 4. SentimentAdvisor filters boolean/blank key_risks and boolean summary from disk
+    adv_path = tmp_path / "sentiment_advisor_eval.json"
+    adv_path.write_text(
+        json.dumps({
+            "market_bias": "BULLISH",
+            "risk_level": "LOW",
+            "confidence": 0.8,
+            "summary": True,
+            "key_risks": ["Valid risk", True, "   ", None],
+            "recommended_action": "ACCUMULATE",
+            "ts": time.time(),
+        }),
+        encoding="utf-8",
+    )
+    adv = SentimentAdvisor(cache_file=str(adv_path))
+    assert adv._cached_assessment is not None
+    assert adv._cached_assessment.summary == ""
+    assert adv._cached_assessment.key_risks == ["Valid risk"]
+
+    # 5. GeminiClient._remove_detached_thread blocks path traversal cids
+    brain_dir = tmp_path / "brain" / "keep_me"
+    brain_dir.mkdir(parents=True)
+    GeminiClient._remove_detached_thread(str(tmp_path), "../brain")
+    GeminiClient._remove_detached_thread(str(tmp_path), "keep_me/..")
+    assert brain_dir.exists()
+    GeminiClient._remove_detached_thread(str(tmp_path), "keep_me")
+    assert not brain_dir.exists()
+
+
+
 
 
 

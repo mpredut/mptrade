@@ -80,8 +80,8 @@ class FearGreedCollector:
             try:
                 ts_f = float(raw_ts)
                 if math.isfinite(ts_f) and ts_f > 0:
-                    ts = ts_f
-            except (ValueError, TypeError):
+                    ts = ts_f / 1000.0 if ts_f > 1e11 else ts_f
+            except (ValueError, TypeError, OverflowError):
                 pass
 
         history: list[int] = []
@@ -117,6 +117,10 @@ class FearGreedCollector:
 
     def fetch(self, force_refresh: bool = False) -> Optional[FearGreedSnapshot]:
         """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
+        if isinstance(force_refresh, str):
+            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            force_refresh = bool(force_refresh)
         now = time.time()
         if not force_refresh and self._cached_snapshot and 0.0 <= (now - self._last_fetch_ts) < self.cache_ttl_sec:
             return self._cached_snapshot

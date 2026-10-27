@@ -132,13 +132,19 @@ class NewsFeedCollector:
                         raw_src = item.get("source")
                         raw_pub = item.get("pub_date")
                         raw_url = item.get("url")
+                        raw_sev = item.get("is_high_severity", False)
+                        is_sev = (
+                            raw_sev.strip().lower() in ("1", "true", "yes", "on")
+                            if isinstance(raw_sev, str)
+                            else bool(raw_sev)
+                        )
                         h = NewsHeadline(
                             title=raw_title.strip(),
                             source=raw_src.strip() if isinstance(raw_src, str) else "",
                             pub_date=raw_pub.strip() if isinstance(raw_pub, str) else "",
                             url=raw_url.strip() if isinstance(raw_url, str) else "",
                             matched_keywords=matched_kws,
-                            is_high_severity=bool(item.get("is_high_severity", False)),
+                            is_high_severity=is_sev,
                         )
                         norm = self._normalize_title(h.title)
                         if norm:
@@ -338,6 +344,10 @@ class NewsFeedCollector:
 
     def fetch(self, force_refresh: bool = False) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines with caching, aggregation, and error handling."""
+        if isinstance(force_refresh, str):
+            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            force_refresh = bool(force_refresh)
         now = time.time()
         if not force_refresh and self._cached_snapshot and 0.0 <= (now - self._last_fetch_ts) < self.cache_ttl_sec:
             return self._cached_snapshot

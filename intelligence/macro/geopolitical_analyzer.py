@@ -183,6 +183,10 @@ class GeopoliticalThreatAnalyzer:
         now_ts: Optional[float] = None,
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
+        if isinstance(force_refresh, str):
+            force_refresh = force_refresh.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            force_refresh = bool(force_refresh)
         now = time.time()
         if now_ts is not None and not isinstance(now_ts, bool):
             try:

@@ -308,7 +308,10 @@ class GeminiClient:
         """Delete a one-off fallback conversation from the isolated bot store so orphans never accumulate."""
         import sqlite3
 
-        if not bot_cli_base or not cid:
+        if not bot_cli_base or not isinstance(cid, str):
+            return
+        cid = cid.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", cid):
             return
         conv_db = os.path.join(bot_cli_base, "conversations", f"{cid}.db")
         for sfx in ("", "-wal", "-shm"):
