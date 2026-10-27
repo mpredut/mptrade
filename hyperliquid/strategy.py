@@ -625,12 +625,15 @@ class Strategy:
             self.s["cost"] = 0.0
             self.s["spent"] = 0.0
             self.s["cycles_completed"] = self.s.get("cycles_completed", 0) + 1
+            remaining_orders = []
             for o in list(self.s.get("orders", [])):
                 if not self.dry_run and not self.replay_mode and self.client and not str(o.get("oid", "")).startswith("PAPER"):
                     try:
-                        self.client.cancel(self.coin, o["oid"])
+                        if not self.client.cancel(self.coin, o["oid"]):
+                            remaining_orders.append(o)
                     except Exception as e:
                         log(f"  ! [STRAT] failed to cancel leftover order {o.get('oid')}: {e}")
+                        remaining_orders.append(o)
             keep = (
                 self.s["realized_gross"],
                 self.s["realized_net"],
@@ -640,6 +643,7 @@ class Strategy:
                 self.s.get("wins", 0),
             )
             self.s = _new_state()
+            self.s["orders"] = remaining_orders
             (
                 self.s["realized_gross"],
                 self.s["realized_net"],

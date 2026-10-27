@@ -518,6 +518,21 @@ class TestHighStakeGuard:
         assert dec.brake_action == BrakeAction.DOWNSCALE_QTY
         assert dec.suggested_scale == 0.35
 
+    def test_high_stake_downscaled_percentage_scale(self):
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def downscale_pct_runner(prompt, model, timeout):
+            return json.dumps({"decision": "DOWNSCALE", "suggested_scale": 25, "reason": "Scale to 25%"})
+
+        client = GeminiClient(custom_runner=downscale_pct_runner)
+        guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+
+        dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.02, notional_eur=1200.0)
+        assert dec.allowed is True
+        assert dec.brake_action == BrakeAction.DOWNSCALE_QTY
+        assert dec.suggested_scale == 0.25
+
 
 class TestOrderGuardWithGemini:
     """Integration test for order_guard.check_intelligence_guards with Gemini mode."""

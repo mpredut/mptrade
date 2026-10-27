@@ -87,7 +87,12 @@ def _save_state(st: dict) -> None:
 
 # -- underlying price (Yahoo) until the pair appears on the API ---------------
 def yahoo_last(sym: str) -> float | None:
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=1d&interval=5m"
+    if not sym or isinstance(sym, bool):
+        return None
+    sym_clean = str(sym).strip()
+    if not sym_clean:
+        return None
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym_clean, safe='')}?range=1d&interval=5m"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (watch)"})
         with urllib.request.urlopen(req, timeout=20) as r:

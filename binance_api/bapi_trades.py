@@ -417,14 +417,14 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
 
     # Load existing data when the file exists.
     if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            try:
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)  # The on-disk structure is a list.
                 all_trades_list = loaded if isinstance(loaded, list) else []
                 print(f"Loaded {len(all_trades_list)} total trades from {filename}.")
-            except json.JSONDecodeError:
-                print(f"Warning: Failed to decode JSON from {filename}. Starting with an empty list.")
-                all_trades_list = []
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            print(f"Warning: Failed to decode JSON from {filename}. Starting with an empty list.")
+            all_trades_list = []
 
     # Select existing fills for the current symbol.
     existing_trades = [trade for trade in all_trades_list if isinstance(trade, dict) and trade.get('symbol') == symbol]
@@ -508,14 +508,14 @@ def load_trades_from_file(filename):
     global trade_cache
 
     if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            try:
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
                 trade_cache = loaded if isinstance(loaded, list) else []
                 print(f"Cache loaded with {len(trade_cache)} trades.")
-            except json.JSONDecodeError:
-                print("Error reading file.")
-                trade_cache = []
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            print("Error reading file.")
+            trade_cache = []
     else:
         print(f"File {filename} not found.")
         trade_cache = []

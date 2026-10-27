@@ -284,6 +284,49 @@ class TestCycleCompletionAndDust(unittest.TestCase):
         # Strategy.run should exit immediately without hanging
         self.strat.run(stop=stop_event)
 
+    def test_cycle_closure_cancels_leftover_open_dca_order(self):
+        self.strat.s["qty"] = 2.0
+        self.strat.s["cost_usd"] = 300.0
+        self.strat.s["spent_cash"] = 300.0
+        self.strat.s["entry_price"] = 150.0
+        self.strat.s["tp_sold_levels"] = [11.0, 20.0]
+
+        dca_buy = {
+            "id": "DCA-BUY-1",
+            "intent_id": "intent-dca-1",
+            "side": "BUY",
+            "qty": 1.0,
+            "limit": 140.0,
+            "kind": "DCA",
+        }
+        order_30 = {
+            "id": "ORD-30",
+            "side": "SELL",
+            "qty": 2.0,
+            "limit": 195.0,
+            "level": 30.0,
+            "kind": "TP",
+        }
+        self.strat.s["orders"] = [dca_buy, order_30]
+        self.client.portfolio = []
+        self.client.active = [{"id": "DCA-BUY-1", "ticker": TICK, "quantity": 1.0, "limit": 140.0}]
+
+        mock_status = MagicMock()
+        mock_status.status = "closed"
+        mock_status.filled_qty = 2.0
+        mock_status.cost = 2.0 * 195.0
+        mock_status.fee = 0.0
+        self.strat._tracked_order_status = lambda o, c: mock_status if o["id"] == "ORD-30" else None
+
+        cancelled_ids = []
+        self.strat.executor.cancel_order_with_intent = lambda iid, tkr, oid: cancelled_ids.append(oid)
+
+        self.strat._reconcile_real(195.0)
+        self.assertEqual(self.strat.s["cycle"], 2)
+        self.assertIn("DCA-BUY-1", cancelled_ids)
+        self.assertEqual(len(self.strat.s["orders"]), 1)
+        self.assertTrue(self.strat.s["orders"][0].get("cancel_requested"))
+
 
 if __name__ == "__main__":
     unittest.main()

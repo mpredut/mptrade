@@ -907,11 +907,14 @@ class Strategy:
                 and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
             )
             if is_flat or is_dust_exit:
+                self._cancel_all_orders()
+                saved_orders = list(self.s.get("orders") or [])
                 was_sl = bool(self.s.get("sl_pending"))
                 pnl, net_tot, fees = (self.s["realized_pnl_usd"],
                                       self.s["realized_net_usd"], self.s["fees_usd"])
                 nxt = self.s.get("cycle", 1) + 1
                 self.s = _new_state()
+                self.s["orders"] = saved_orders
                 self.s["realized_pnl_usd"] = pnl
                 self.s["realized_net_usd"] = net_tot
                 self.s["fees_usd"] = fees
@@ -1022,10 +1025,10 @@ class Strategy:
                 return False
             if _owned <= 1e-6:
                 log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
+                self._cancel_all_orders()
                 self.s["qty"] = 0.0
                 self.s["cost_usd"] = 0.0
                 self.s["spent_cash"] = 0.0
-                self.s["orders"] = []
                 self.s["locked_zero_until"] = self._now() + 300  # ignora adoptie stala 5 min
                 self._save()
             else:
@@ -1533,6 +1536,8 @@ class Strategy:
             prev_qty > 1e-9 and is_dust and not has_open_sells and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
         )
         if cycle_closed:
+            self._cancel_all_orders()
+            saved_orders = list(self.s.get("orders") or [])
             pnl, net_tot, fees = (self.s["realized_pnl_usd"],
                                   self.s["realized_net_usd"], self.s["fees_usd"])
             was_sl = bool(self.s.get("sl_pending"))   # Was this a catastrophic stop-loss exit?
@@ -1540,6 +1545,7 @@ class Strategy:
             nxt = self.s.get("cycle", 1) + 1
             saved_pending_submit = self.s.get("pending_submit")
             self.s = _new_state()
+            self.s["orders"] = saved_orders
             self.s["pending_submit"] = saved_pending_submit
             self.s["realized_pnl_usd"] = pnl
             self.s["realized_net_usd"] = net_tot

@@ -497,7 +497,9 @@ def evaluate_llm_guard_response(
     else:
         try:
             scale = float(raw_scale)
-            if not math.isfinite(scale) or not (0.0 <= scale <= 10.0):
+            if math.isfinite(scale) and 1.0 < scale <= 100.0:
+                scale = scale / 100.0
+            if not math.isfinite(scale) or not (0.0 <= scale <= 1.0):
                 scale = default_scale
         except (TypeError, ValueError):
             scale = default_scale
