@@ -25,9 +25,14 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _HL_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
 _ROOT_DIR = os.path.dirname(_HL_DIR)
-for _p in (_HERE, _HL_DIR, _ROOT_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+for _p in (_ROOT_DIR, _HL_DIR, _HERE):
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+for _mod_name in ("common", "hl_client", "market_data", "notify", "strategy"):
+    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
+    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HL_DIR:
+        sys.modules.pop(_mod_name, None)
 
 from common import (
     load_env_stack, log, now_str, required_env, required_int_env,
