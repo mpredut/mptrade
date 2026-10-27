@@ -15881,8 +15881,59 @@ def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp
         ir.select_instruments("   ")
 
 
+def test_iteration163_utils_price_analysis_alertnotifiers_and_log_hygiene(tmp_path, monkeypatch):
+    import utils as u
+    import priceAnalysis as pa
+    from notify_engine import alertnotifiers as an
+    import log
 
+    # 1. utils: beep, get_interval_time, are_difference_equal_with_aprox_proc, are_close_random
+    u.beep(None)
+    u.beep(False)
+    u.beep(0)
+    u.beep("bad")
+    iv = u.get_interval_time("100.0", "5.0")
+    assert 95.0 <= iv <= 105.0
+    iv_nan = u.get_interval_time(float("nan"), True)
+    assert iv_nan > 7000.0
+    ok, _, tol = u.are_difference_equal_with_aprox_proc(100.0, 110.0, target_percent="10.0")
+    assert ok is True and tol == pytest.approx(2.5)
+    assert isinstance(u.are_close_random(100.0, 100.5, target_tolerance_percent="1.0"), bool)
 
+    # 2. priceAnalysis: detect_long_term_trend with .0 int strings, mk_alpha string/bool/NaN, and lindy_plateau="false"
+    ts = [float(i * 3600) for i in range(1, 100)]
+    px = [100.0 + i * 0.5 for i in range(1, 100)]
+    assert pa.detect_long_term_trend(ts, px, min_consecutive_blocks=3.5) is None
+    assert pa.detect_long_term_trend(ts, px, mk_alpha=True) is None
+    assert pa.detect_long_term_trend(ts, px, mk_alpha=float("nan")) is None
+    assert pa.detect_long_term_trend(ts, px, mk_alpha=1.5) is None
+    res_trend = pa.detect_long_term_trend(
+        ts,
+        px,
+        min_consecutive_blocks="3.0",
+        noise_tolerance="2.0",
+        min_points_per_window="4.0",
+        mk_alpha="0.05",
+    )
+    assert res_trend is not None and res_trend["direction"] == "up"
+    _, w_plateau = pa.get_trade_weight(14, 10, "up", "BUY", lindy_plateau="true")
+    _, w_decay = pa.get_trade_weight(14, 10, "up", "BUY", lindy_plateau="false")
+    assert w_plateau[0] > w_decay[0]
 
+    # 3. alertnotifiers: _as_bool_flag default preservation, check_alert(nan), and save_to_file empty filename fallback
+    assert an._as_bool_flag("invalid_token", default=True) is True
+    assert an._as_bool_flag("false", default=True) is False
+    called_notify = []
+    monkeypatch.setattr(an, "notify", lambda *a, **kw: called_notify.append((a, kw)))
+    an.check_alert(float("nan"), "should not fire")
+    an.check_alert("false", "should not fire")
+    assert called_notify == []
 
+    # 4. log: configure rejects empty/boolean log_folder
+    with pytest.raises(ValueError):
+        log.configure(log_folder="")
+    with pytest.raises(ValueError):
+        log.configure(log_folder="   ")
+    with pytest.raises(ValueError):
+        log.configure(log_folder=True)
 

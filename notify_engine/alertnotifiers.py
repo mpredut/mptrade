@@ -102,7 +102,12 @@ def _as_bool_flag(val: Any, default: bool = False) -> bool:
     if val is None:
         return default
     if isinstance(val, str):
-        return val.strip().lower() in {"1", "true", "yes", "on"}
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        if s in {"0", "false", "no", "off", "none", ""}:
+            return False
+        return default
     if isinstance(val, (int, float)):
         return bool(val) if math.isfinite(float(val)) else default
     return default
@@ -783,7 +788,14 @@ class AlertNotifier:
 
     @staticmethod
     def save_to_file(alert, filename="alerts.log"):
-        alert_file = Path(filename)
+        if (
+            filename is None
+            or isinstance(filename, bool)
+            or not isinstance(filename, (str, os.PathLike))
+            or not str(filename).strip()
+        ):
+            filename = "alerts.log"
+        alert_file = Path(str(filename).strip())
         if not alert_file.is_absolute():
             alert_file = BASE_DIR / alert_file
         try:
@@ -955,11 +967,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     else:
         from notify_engine.server import NotificationServer
         NotificationServer().dispatch_alerts([alert])
-    email_flag = (
-        email
-        if isinstance(email, bool)
-        else (str(email).strip().lower() in {"1", "true", "yes", "on"} if isinstance(email, str) else bool(email))
-    )
+    email_flag = _as_bool_flag(email, False)
     if email_flag:
         from notify_engine.mailer import is_email_mirrored
         from notify_engine.server import _topic_for_category
@@ -969,11 +977,7 @@ def notify(title: str, body: str, source: str, symbol: str,
  
 def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:
     """Dispatches a trade alert notification if condition is met."""
-    cond_flag = (
-        condition
-        if isinstance(condition, bool)
-        else (str(condition).strip().lower() in {"1", "true", "yes", "on"} if isinstance(condition, str) else bool(condition))
-    )
+    cond_flag = _as_bool_flag(condition, False)
     if cond_flag:
         try:
             notify("Trade Alert", str(message), "tradeall", symbol)

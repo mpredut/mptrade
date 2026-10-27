@@ -19,8 +19,17 @@ def base_asset(symbol: str) -> str:
     return resolve_assets(symbol)[0]
 
 
-def beep(n):
-    for _ in range(n):
+def beep(n=1):
+    if n is None or isinstance(n, bool):
+        return
+    try:
+        nf = float(n)
+        if not math.isfinite(nf) or nf <= 0:
+            return
+        count = min(10, int(nf))
+    except (TypeError, ValueError, OverflowError):
+        return
+    for _ in range(count):
         if platform.system() == 'Windows':
             import winsound
             winsound.Beep(440, 500)  # 440 Hz frequency for 500 milliseconds
@@ -32,9 +41,25 @@ def beep(n):
 
 
 def get_interval_time(valoare_prestabilita=97 * 79, marja_aleatoare=10):
+    base_val = float(97 * 79)
+    if valoare_prestabilita is not None and not isinstance(valoare_prestabilita, bool):
+        try:
+            vf = float(valoare_prestabilita)
+            if math.isfinite(vf):
+                base_val = vf
+        except (TypeError, ValueError, OverflowError):
+            pass
+    margin_val = 10.0
+    if marja_aleatoare is not None and not isinstance(marja_aleatoare, bool):
+        try:
+            mf = float(marja_aleatoare)
+            if math.isfinite(mf):
+                margin_val = abs(mf)
+        except (TypeError, ValueError, OverflowError):
+            pass
     # Generate a random value in ``[-random_margin, random_margin]``.
-    valoare_aleatoare = random.uniform(-marja_aleatoare, marja_aleatoare)
-    interval = abs(valoare_prestabilita + valoare_aleatoare)
+    valoare_aleatoare = random.uniform(-margin_val, margin_val)
+    interval = abs(base_val + valoare_aleatoare)
     
     return interval
  
@@ -81,8 +106,16 @@ def are_difference_equal_with_aprox_proc(value1, value2, target_percent = 10.0):
     close. The old randomized tolerance was removed. Retain the (bool, iteration,
     tolerance) tuple for signature compatibility. target/4 deterministically approximates
     the midpoint of the old random target*0.01 to target*0.5 band."""
-    tolerance = target_percent * 0.25
-    ok = botcore.diff_equals_percent(value1, value2, target_percent, tolerance)
+    tp = 10.0
+    if target_percent is not None and not isinstance(target_percent, bool):
+        try:
+            tpf = float(target_percent)
+            if math.isfinite(tpf) and tpf >= 0.0:
+                tp = tpf
+        except (TypeError, ValueError, OverflowError):
+            pass
+    tolerance = tp * 0.25
+    ok = botcore.diff_equals_percent(value1, value2, tp, tolerance)
     return ok, 0, tolerance
 
 
@@ -91,7 +124,15 @@ def are_close_random(value1, value2, target_tolerance_percent=1.0):
     The acceptance band varies randomly in [tol*1.01, tol*1.5], so identical input can
     return either result. Never use for trading decisions; retain only for intentional
     fuzz/jitter. Use botcore.are_close for predictable behavior."""
-    upper = target_tolerance_percent * (1.0 + 0.01 + random.random() * 0.49)
+    tol = 1.0
+    if target_tolerance_percent is not None and not isinstance(target_tolerance_percent, bool):
+        try:
+            tf = float(target_tolerance_percent)
+            if math.isfinite(tf) and tf >= 0.0:
+                tol = tf
+        except (TypeError, ValueError, OverflowError):
+            pass
+    upper = tol * (1.0 + 0.01 + random.random() * 0.49)
     return botcore.diff_percent(value1, value2) <= upper
    
 

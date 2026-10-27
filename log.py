@@ -120,7 +120,13 @@ def configure(
 
     with _config_lock:
         if log_folder is not None:
-            resolved = os.path.normpath(os.path.abspath(log_folder))
+            if (
+                isinstance(log_folder, bool)
+                or not isinstance(log_folder, (str, os.PathLike))
+                or not str(os.fspath(log_folder)).strip()
+            ):
+                raise ValueError("log_folder must be a non-empty path")
+            resolved = os.path.normpath(os.path.abspath(str(os.fspath(log_folder)).strip()))
             os.makedirs(resolved, exist_ok=True)
             _log_folder = resolved
         if max_size is not None:
@@ -421,7 +427,8 @@ def _patched_print(*args, **kwargs) -> None:
     Per-thread suppression : set PRINT_CONTEXT.enable_print = False
     Global suppression     : call disable_print()
     """
-    if getattr(PRINT_CONTEXT, "enable_print", True) is False:
+    _en = getattr(PRINT_CONTEXT, "enable_print", True)
+    if _en is False or _en == 0 or (isinstance(_en, str) and _en.strip().lower() in {"0", "false", "no", "off"}):
         return
 
     if _bump_counter():

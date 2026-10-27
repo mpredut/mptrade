@@ -453,6 +453,33 @@ _TREND_MEMO_MAX_ENTRIES = 128
 _TREND_MEMO_NONE = object()
 
 
+def _parse_bool_flag(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        if s in {"0", "false", "no", "off", "none", ""}:
+            return False
+    return default
+
+
+def _parse_strict_int(val):
+    if val is None or isinstance(val, bool):
+        raise ValueError("bool or None")
+    if isinstance(val, int):
+        return val
+    f = float(val)
+    if not math.isfinite(f) or not f.is_integer():
+        raise ValueError("not integral")
+    return int(f)
+
+
 def _store_trend_memo(cache_key: tuple, value):
     if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
         _trend_memo_cache.clear()
@@ -498,12 +525,24 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         )
     ):
         return None
+    if mk_alpha is True:
+        return None
+    if mk_alpha is False or (isinstance(mk_alpha, str) and mk_alpha.strip().lower() in {"", "none", "false", "0", "off", "no"}):
+        mk_alpha = None
+    elif mk_alpha is not None:
+        try:
+            mk_f = float(mk_alpha)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(mk_f) or mk_f < 0.0 or mk_f > 1.0:
+            return None
+        mk_alpha = None if mk_f == 0.0 else mk_f
     try:
         wh_f = float(window_hours)
         sh_f = float(step_hours)
-        mcb_i = int(min_consecutive_blocks)
-        nt_i = int(noise_tolerance)
-        mpw_i = int(min_points_per_window)
+        mcb_i = _parse_strict_int(min_consecutive_blocks)
+        nt_i = _parse_strict_int(noise_tolerance)
+        mpw_i = _parse_strict_int(min_points_per_window)
         lag_f = float(detection_lag_hours)
     except (TypeError, ValueError, OverflowError):
         return None
@@ -725,7 +764,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
           f"Duration: {format_duration(dur)} ({dur/86400:.1f} days)")
     print(f"{'='*60}\n")
 
-    if draw:
+    if _parse_bool_flag(draw, True):
         drawPriceLst(timestamps, prices, res['blocks'], symbol, direction, dur / 3600.0)
 
     return {
@@ -908,9 +947,18 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     print(f"   Start trend:     {format_timestamp(start_ts_val)}")
     print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
     timestamp = trend.get("timestamp")
+    if isinstance(timestamp, bool) or (
+        isinstance(timestamp, (int, float))
+        and (not math.isfinite(float(timestamp)) or float(timestamp) <= 0.0)
+    ):
+        timestamp = None
     # Include order type, T, and direction in the memo key because their weights differ
     # and automatic T or direction may change after re-estimation.
-    memo_key = (symbol, side_u, t_quanta_f, direction)
+    memo_key = (
+        (symbol, side_u, t_quanta_f, direction)
+        if quant_sec_f == 86400.0
+        else (symbol, side_u, t_quanta_f, direction, quant_sec_f)
+    )
     curr_now = time.time()
     cache_age = curr_now - last_calc_time.get(memo_key, 0.0)
     dur_drift = abs(dur_sec - last_duration.get(memo_key, 0.0))
@@ -952,7 +1000,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     print(f"[{symbol}] primele 5 ponderi: {w[:5]}")
     print(f"Suma tuturor {len(w)} ponderi = {w.sum():.4f}")
 
-    if draw:
+    if _parse_bool_flag(draw, False):
         plt.plot(t, w, label=symbol)
         plt.legend()
         plt.show()
@@ -1049,7 +1097,7 @@ def get_trade_weight(T, trend_len, trend, order_type,
     # utils normalizes a probability distribution. Rescale its peak to one for
     # trading weights, avoiding the former 8-40x zone-scale mismatch.
     w01_full = w_full / w_full.max()                  # 0..1 with a peak of one.
-    if lindy_plateau:
+    if _parse_bool_flag(lindy_plateau, True):
         # Empirical BTC and TAO survival data supports a Lindy plateau: conditional
         # one-day survival remains roughly 0.65-0.75 after the midpoint. Hold the
         # curve at its peak rather than following the Gaussian's declining tail.
