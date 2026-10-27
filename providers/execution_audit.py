@@ -15,6 +15,7 @@ import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Callable, Optional
 
 from .strategy_executor import (
@@ -54,27 +55,36 @@ def _slug(value: object) -> str:
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
+            return fb
         if val == 1:
             return True
         if val == 0:
             return False
-        return default
+        return fb
     s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
         return True
-    if s in {"0", "false", "no", "off"}:
+    if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
         return False
-    return default
+    return fb
 
 
 def _json_safe_value(val: Any) -> Any:
+    if isinstance(val, Decimal):
+        if not val.is_finite():
+            return None
+        try:
+            f = float(val)
+            return f if math.isfinite(f) else None
+        except (ValueError, OverflowError):
+            return None
     if isinstance(val, float):
         return val if math.isfinite(val) else None
     if isinstance(val, dict):

@@ -226,6 +226,10 @@ class PositionSnapshot(PriceGeometrySnapshot):
                     setattr(self, attr, None)
             elif isinstance(val, bool):
                 setattr(self, attr, None)
+        if self.shadow_prices is None or isinstance(self.shadow_prices, (bool, str, bytes, dict)) or not hasattr(self.shadow_prices, "__iter__"):
+            self.shadow_prices = []
+        elif not isinstance(self.shadow_prices, list):
+            self.shadow_prices = list(self.shadow_prices)
         self.trend_up = _parse_bool_flag(self.trend_up, False)
 
     @property
@@ -382,6 +386,12 @@ class ReentrySnapshot(PriceGeometrySnapshot):
                     self.last_sell_time_s = f if (math.isfinite(f) and f > 0.0) else None
                 except (TypeError, ValueError, OverflowError):
                     self.last_sell_time_s = None
+        if self.last_exit_kind is not None:
+            if isinstance(self.last_exit_kind, (bool, dict, list, tuple, set, frozenset)):
+                self.last_exit_kind = None
+            else:
+                lek = str(self.last_exit_kind).strip().upper()
+                self.last_exit_kind = lek if lek else None
         self.trend_up = _parse_bool_flag(self.trend_up, False)
         self.trend_down = _parse_bool_flag(self.trend_down, False)
 
@@ -614,6 +624,8 @@ class PositionExitManager:
 
     def _pop_reentry_state(self, symbol: str) -> None:
         sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        if not sym_clean:
+            return
         popped = self.reentry_state.pop(sym_clean, None)
         if popped is not None:
             self._last_popped_reentry_state[sym_clean] = dict(popped)
@@ -621,6 +633,8 @@ class PositionExitManager:
     def restore_reentry_state(self, symbol: str) -> None:
         """Restore the most recently popped re-entry state if an approved entry was not placed."""
         sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        if not sym_clean:
+            return
         popped = self._last_popped_reentry_state.pop(sym_clean, None)
         if popped is not None and sym_clean not in self.reentry_state:
             self.reentry_state[sym_clean] = dict(popped)
@@ -671,6 +685,8 @@ class PositionExitManager:
     def reset_sl_episode(self, symbol: str) -> None:
         """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
         sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        if not sym_clean:
+            return
         self.sl_episode_state.pop(sym_clean, None)
 
     def _lock_episode_disaster_floor(
@@ -721,6 +737,8 @@ class PositionExitManager:
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
         sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        if not sym_clean:
+            return
         self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
 
     # -------------------------------------------------------------------------

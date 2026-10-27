@@ -6263,3 +6263,74 @@ def test_batch43_cachemanager_liquidation_and_providers_hardening(tmp_path):
     sig._ingest('{"topic":"allLiquidation.BTCUSDT","data":[{"s":"BTCUSDT","S":"Buy","v":"1.0","p":"50000"}]}')
     assert sig.capitulation_ratio("BTCUSDT", window_sec=300.0, baseline_sec=60.0) == pytest.approx(1.0)
 
+
+def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
+    from decimal import Decimal
+    from strategies import spot_engine as se
+    from strategies import spot_rules as sr
+    from strategies import position_exit_manager as pem
+    from strategies import rtrade_pair as rp
+    from lock import cooldown as cd_mod
+    from lock import trade_cooldown as tcd_mod
+    from providers import execution_audit as ea_mod
+
+    # 1. spot_engine._clean_order_id and _sanitize_spot_state
+    assert se._clean_order_id(frozenset({"a"})) is None
+    assert se._clean_order_id(12.5) is None
+    assert se._clean_order_id("-abc") is None
+    assert se._clean_order_id("+0.0") is None
+    assert se._clean_order_id("+123.0") == "123"
+    assert se._clean_order_id("+123") == "123"
+    san = se.Strategy._sanitize_spot_state(
+        {
+            "orders": [
+                {"txid": "+456.0", "side": " BUY ", "vol": "1.5", "price": "100.0", "ts": None},
+            ]
+        }
+    )
+    assert san["orders"][0]["txid"] == "456"
+    assert san["orders"][0]["side"] == "buy"
+    assert san["orders"][0]["ts"] == 0.0
+
+    # 2. spot_rules._bool_flag and non-iterable shadow_prices
+    assert sr._bool_flag("1.0") is True
+    assert sr.check_fast_profit_reversal(120.0, 100.0, 5.0, 2.0, True, 60.0, 1.0) == (False, 20.0, 0.0)  # type: ignore[arg-type]
+    assert sr.check_slow_grind_exhaustion(
+        120.0, 100.0, 0.0, 864000.0, 7.0, 15.0, 120.0, "not_a_list", 900.0, 1.5, 2.5, sma_value=0.0  # type: ignore[arg-type]
+    ) == (False, "")
+
+    # 3. PositionSnapshot / ReentrySnapshot / PositionExitManager empty symbol guards
+    ps = pem.PositionSnapshot(symbol="BTCUSDC", current_price=100.0, avg_buy_price=95.0, shadow_prices="bad")  # type: ignore[arg-type]
+    assert ps.shadow_prices == []
+    rs = pem.ReentrySnapshot(symbol="BTCUSDC", current_price=100.0, last_exit_kind=True)  # type: ignore[arg-type]
+    assert rs.last_exit_kind is None
+    mgr = pem.PositionExitManager()
+    mgr.record_hard_tp("", 1000.0)
+    mgr.record_hard_tp(True, 1000.0)  # type: ignore[arg-type]
+    assert mgr.hard_tp_last == {}
+
+    # 4. rtrade_pair._clean_pair_id and _clean_ticket_order_id
+    for bad in (frozenset({"x"}), -5, -5.0, 12.5, "-5", "-abc", "+0.0", "-0.0"):
+        assert rp._clean_pair_id(bad) is None
+        assert rp._clean_ticket_order_id(bad) is None
+    assert rp._clean_pair_id("+789.0") == "789"
+    assert rp._clean_ticket_order_id("+789.0") == "789"
+    assert rp._parse_bool_flag("1.0") is True
+
+    # 5. lock.cooldown and lock.trade_cooldown hardening
+    assert cd_mod._as_bool_flag("0.0", True) is False
+    assert cd_mod._as_bool_flag("1.0", False) is True
+    assert tcd_mod._clean_pair_id("-5") is None
+    assert tcd_mod._clean_pair_id("+0.0") is None
+    assert tcd_mod._clean_pair_id("+321.0") == "321"
+    assert tcd_mod._clean_order_id_meta(-5) is None
+    assert tcd_mod._clean_order_id_meta(12.5) is None
+    assert tcd_mod._clean_order_id_meta("-5.0") is None
+    assert tcd_mod._clean_order_id_meta("+654.0") == "654"
+
+    # 6. execution_audit._json_safe_value with Decimal and _parse_bool_flag
+    assert ea_mod._json_safe_value({"d": Decimal("12.34"), "nan_d": Decimal("NaN")}) == {"d": 12.34}
+    assert ea_mod._parse_bool_flag("1.0", False) is True
+    assert ea_mod._parse_bool_flag("0.0", True) is False
+
+

@@ -105,23 +105,31 @@ def _parse_bool_flag(val: object, default: bool = False) -> bool:
 
 
 def _clean_order_id(val: object) -> str | None:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, int):
         return str(val) if val > 0 else None
     if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0:
+        if not math.isfinite(val) or val <= 0 or not val.is_integer():
             return None
-        return str(int(val)) if val == int(val) else str(val)
+        return str(int(val))
     text = str(val).strip()
-    if not text or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}:
+    if (
+        not text
+        or text.startswith("-")
+        or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf", "0", "0.0", "-0", "+0", "-0.0", "+0.0"}
+    ):
         return None
+    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
+        text = text[:-2]
+    if text.startswith("+") and text[1:].isdigit():
+        text = text[1:]
+    if text.isdigit():
+        return str(int(text)) if int(text) > 0 else None
     try:
         f = float(text)
         if not math.isfinite(f) or f <= 0:
             return None
-        if text.endswith(".0") and f == int(f):
-            return str(int(f))
     except (TypeError, ValueError, OverflowError):
         pass
     return text
@@ -731,6 +739,12 @@ class Strategy:
                     continue
                 if "txid" in o and o.get("txid") is not None:
                     o["txid"] = _clean_order_id(o.get("txid"))
+                if "side" in o and not isinstance(o.get("side"), bool):
+                    s_norm = str(o.get("side") or "").strip().lower()
+                    if s_norm in ("b", "buy", "bid", "long"):
+                        o["side"] = "buy"
+                    elif s_norm in ("s", "a", "sell", "ask", "short"):
+                        o["side"] = "sell"
                 if "intent_id" in o:
                     o["intent_id"] = _clean_order_id(o.get("intent_id"))
                 if "vol" in o:
@@ -739,7 +753,7 @@ class Strategy:
                     o["price"] = _clean_pos_float(o.get("price")) or 0.0
                 if "amount" in o:
                     o["amount"] = _clean_nonneg_float(o.get("amount")) or 0.0
-                if "ts" in o and o.get("ts") is not None:
+                if "ts" in o:
                     o["ts"] = _clean_nonneg_float(o.get("ts")) or 0.0
                 if "market" in o:
                     o["market"] = _parse_bool_flag(o.get("market"), False)
@@ -1236,6 +1250,7 @@ class Strategy:
         reconcile/step resumes this request, even after restart or a rebound.
         """
         pending = self.s.get("pending_exit")
+        soft_floor = _parse_bool_flag(soft_floor, False)
         if not isinstance(pending, dict) or (kind == "STOP" and pending.get("kind") != "STOP"):
             self.s["pending_exit"] = {"kind": kind, "soft_floor": soft_floor}
             if min_profit_pct is not None and kind != "STOP":
@@ -1277,7 +1292,7 @@ class Strategy:
                     or min_profit_pct < 0 or avg <= 0 or reference < floor):
                 log("  [STRAT] profit exit pending: current reference does not satisfy the stored floor")
                 return False
-        if pending.get("soft_floor") and kind != "STOP":
+        if _parse_bool_flag(pending.get("soft_floor"), False) and kind != "STOP":
             floor = self._trail_profit_floor_price(self._avg() or 0.0)
             if floor is not None and reference < floor:
                 log("  [STRAT] soft exit pending: current reference is below the configured floor")
@@ -1320,7 +1335,7 @@ class Strategy:
                           or (side == "sell" and price >= o["price"])):
                         fill_price = o["price"]
                     else:
-                        age = (self._now() - o.get("ts", 0)) / 60
+                        age = (self._now() - (_clean_nonneg_float(o.get("ts")) or 0.0)) / 60
                         if (side == "buy" and not o.get("cancel_requested")
                                 and age > self.p.order_ttl_min and price > o["price"] * 1.003):
                             log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
@@ -1418,7 +1433,7 @@ class Strategy:
                         self._finalize_cycle_if_flat(o, reported_price)
                     log(f"  [STRAT] {o['txid']} {st} (executed {total_vol}/{o['vol']})")
                 else:
-                    age = (self._now() - o.get("ts", 0)) / 60
+                    age = (self._now() - (_clean_nonneg_float(o.get("ts")) or 0.0)) / 60
                     if (side == "buy" and not o.get("cancel_requested")
                             and age > self.p.order_ttl_min and price > o["price"] * 1.003):
                         log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")

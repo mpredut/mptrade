@@ -62,22 +62,23 @@ def _sanitize_json_payload(value):
 
 
 def _as_bool_flag(val, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
-    if val is None:
-        return default
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
         if not math.isfinite(val):
-            return default
+            return fb
         return bool(val)
     if isinstance(val, str):
         norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y", "t"):
+        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
             return True
-        if norm in ("0", "false", "no", "off", "n", "f", ""):
+        if norm in ("0", "0.0", "false", "no", "off", "n", "f", ""):
             return False
-        return default
-    return default
+        return fb
+    return fb
 
 
 def _safe_list(val) -> list:
@@ -348,9 +349,9 @@ class Cooldown:
         with FileLock(self.lock_path):
             state = self._read()
             if key in state:
-                if expected_timestamp is not None and isinstance(state[key], dict):
-                    cur_ts = state[key].get("timestamp")
-                    if cur_ts is not None and cur_ts != expected_timestamp:
+                if expected_timestamp is not None:
+                    cur_ts = state[key].get("timestamp") if isinstance(state[key], dict) else None
+                    if cur_ts != expected_timestamp:
                         return
                 del state[key]
                 self._write(state)

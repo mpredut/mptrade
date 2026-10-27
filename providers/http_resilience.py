@@ -32,9 +32,9 @@ def _as_bool(value, default: bool = False) -> bool:
         return bool(value)
     if isinstance(value, str):
         s = value.strip().lower()
-        if s in ("1", "true", "yes", "on", "y", "t"):
+        if s in ("1", "1.0", "true", "yes", "on", "y", "t"):
             return True
-        if s in ("0", "false", "no", "off", "n", "f"):
+        if s in ("0", "0.0", "false", "no", "off", "n", "f"):
             return False
     return fb
 

@@ -31,7 +31,7 @@ def _bool_flag(val: object) -> bool:
     if isinstance(val, (int, float)):
         return bool(val) if math.isfinite(val) else False
     if isinstance(val, str):
-        return val.strip().lower() in {"1", "true", "yes", "on", "y", "t"}
+        return val.strip().lower() in {"1", "1.0", "true", "yes", "on", "y", "t"}
     return False
 
 
@@ -347,7 +347,12 @@ def check_fast_profit_reversal(
     if not (current_gain_pct >= required_gain):
         return False, current_gain_pct, 0.0
     valid_shadows = []
-    for item in (shadow_prices or ()):
+    shadow_iter = (
+        shadow_prices
+        if shadow_prices is not None and not isinstance(shadow_prices, (bool, str, bytes, dict)) and hasattr(shadow_prices, "__iter__")
+        else ()
+    )
+    for item in shadow_iter:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
         tf = _finite_float(item[0])
@@ -507,7 +512,12 @@ def check_slow_grind_exhaustion(
     win_s = _finite_float(flash_window_sec, 0.0)
     cutoff = cur_t_f - max(0.0, win_s)
     recent = []
-    for item in (shadow_prices or ()):
+    shadow_iter = (
+        shadow_prices
+        if shadow_prices is not None and not isinstance(shadow_prices, (bool, str, bytes, dict)) and hasattr(shadow_prices, "__iter__")
+        else ()
+    )
+    for item in shadow_iter:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
         tf = _finite_float(item[0])
@@ -530,7 +540,7 @@ def check_slow_grind_exhaustion(
             return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{sd_f:.2f}%"
     # Check SMA break
     sma_f = _finite_float(sma_value)
-    if sma_f is not None and px_f < sma_f:
+    if sma_f is not None and sma_f > 0 and px_f < sma_f:
         return True, f"slow_grind_sma_break_{px_f:.4f}_lt_{sma_f:.4f}"
     return False, ""
 

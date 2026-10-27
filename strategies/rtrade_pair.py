@@ -15,60 +15,78 @@ from typing import Callable, Optional, Protocol
 
 
 _MAX_LIMIT_REVISION = 1_000_000
-_INVALID_PAIR_IDS = {"", "0", "0.0", "-0", "+0", "nan", "none", "null", "inf", "-inf", "+inf"}
+_INVALID_PAIR_IDS = {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "none", "null", "inf", "-inf", "+inf"}
 
 
 def _clean_pair_id(val: object) -> Optional[str]:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
-        return None
-    if isinstance(val, float):
-        if not math.isfinite(val):
-            return None
-        if val.is_integer():
-            val = int(val)
-    text = str(val).strip()
-    if text.lower() in _INVALID_PAIR_IDS:
-        return None
-    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
-        text = text[:-2]
-    return text if text and text.lower() not in _INVALID_PAIR_IDS else None
-
-
-def _clean_ticket_order_id(val: object) -> Optional[str]:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, int):
         return str(val) if val > 0 else None
     if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0:
+        if not math.isfinite(val) or val <= 0 or not val.is_integer():
             return None
-        return str(int(val)) if val == int(val) else str(val)
+        return str(int(val))
     text = str(val).strip()
-    if not text or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}:
+    if text.lower() in _INVALID_PAIR_IDS or text.startswith("-"):
         return None
+    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
+        text = text[:-2]
+    if text.startswith("+") and text[1:].isdigit():
+        text = text[1:]
+    if text.isdigit():
+        return str(int(text)) if int(text) > 0 else None
     try:
         f = float(text)
         if not math.isfinite(f) or f <= 0:
             return None
-        if text.endswith(".0") and f == int(f):
-            return str(int(f))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return text if text and text.lower() not in _INVALID_PAIR_IDS else None
+
+
+def _clean_ticket_order_id(val: object) -> Optional[str]:
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    if isinstance(val, int):
+        return str(val) if val > 0 else None
+    if isinstance(val, float):
+        if not math.isfinite(val) or val <= 0 or not val.is_integer():
+            return None
+        return str(int(val))
+    text = str(val).strip()
+    if not text or text.startswith("-") or text.lower() in _INVALID_PAIR_IDS:
+        return None
+    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
+        text = text[:-2]
+    if text.startswith("+") and text[1:].isdigit():
+        text = text[1:]
+    if text.isdigit():
+        return str(int(text)) if int(text) > 0 else None
+    try:
+        f = float(text)
+        if not math.isfinite(f) or f <= 0:
+            return None
     except (TypeError, ValueError, OverflowError):
         pass
     return text
 
 
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
+    fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
         return val
+    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+        return fb
     if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else False
+        return bool(val) if math.isfinite(val) else fb
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
             return False
-    return default
+    return fb
 
 
 @dataclass
@@ -549,7 +567,7 @@ class PairCoordinator:
         raw_phase = state.get("phase")
         if (
             raw_phase is None
-            or isinstance(raw_phase, (bool, dict, list, tuple, set))
+            or isinstance(raw_phase, (bool, dict, list, tuple, set, frozenset))
             or not str(raw_phase).strip()
             or str(raw_phase).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
         ):

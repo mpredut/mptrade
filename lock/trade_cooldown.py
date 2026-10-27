@@ -60,35 +60,65 @@ def _cooldown():
     return _cd
 
 
-_INVALID_COOLDOWN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "none", "null", "nan", "inf", "-inf", "+inf"}
+_INVALID_COOLDOWN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0", "none", "null", "nan", "inf", "-inf", "+inf"}
+
+
+def _clean_pair_id(pair_id):
+    if pair_id is None or isinstance(pair_id, (bool, dict, list, tuple, set, frozenset)):
+        return None
+    if isinstance(pair_id, int):
+        return str(pair_id) if pair_id > 0 else None
+    if isinstance(pair_id, float):
+        if not math.isfinite(pair_id) or pair_id <= 0 or not pair_id.is_integer():
+            return None
+        return str(int(pair_id))
+    s = str(pair_id).strip()
+    if s.lower() in _INVALID_COOLDOWN_ID_STRINGS or s.startswith("-"):
+        return None
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
+    if s.isdigit():
+        return str(int(s)) if int(s) > 0 else None
+    try:
+        f = float(s)
+        if not math.isfinite(f) or f <= 0:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return s if s and s.lower() not in _INVALID_COOLDOWN_ID_STRINGS else None
 
 
 def _valid_pair_id(pair_id) -> bool:
-    if pair_id is None or isinstance(pair_id, (bool, dict, list, tuple, set, frozenset)):
-        return False
-    if isinstance(pair_id, float) and not math.isfinite(pair_id):
-        return False
-    s = str(pair_id).strip()
-    return s.lower() not in _INVALID_COOLDOWN_ID_STRINGS
+    return _clean_pair_id(pair_id) is not None
 
 
 def _clean_order_id_meta(val):
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, int):
-        return val if val != 0 else None
+        return val if val > 0 else None
     if isinstance(val, float):
-        if not math.isfinite(val) or val == 0.0:
+        if not math.isfinite(val) or val <= 0.0 or not val.is_integer():
             return None
-        return int(val) if val.is_integer() else str(val)
+        return int(val)
     s = str(val).strip()
-    if s.lower() in _INVALID_COOLDOWN_ID_STRINGS:
+    if s.lower() in _INVALID_COOLDOWN_ID_STRINGS or s.startswith("-"):
         return None
-    if s.endswith(".0") and s[:-2].isdigit():
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
         s = s[:-2]
-        if s in _INVALID_COOLDOWN_ID_STRINGS:
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
+    if s.isdigit():
+        return str(int(s)) if int(s) > 0 else None
+    try:
+        f = float(s)
+        if not math.isfinite(f) or f <= 0:
             return None
-    return s
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return s if s and s.lower() not in _INVALID_COOLDOWN_ID_STRINGS else None
 
 
 def _norm_side(side):
@@ -107,9 +137,10 @@ def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_
     """Atomically check and reserve placement rights for ``symbol``."""
     clean_cid = _clean_order_id_meta(client_order_id)
     norm_side = _norm_side(side)
-    if _valid_pair_id(pair_id):
+    clean_pid = _clean_pair_id(pair_id)
+    if clean_pid is not None:
         return _cooldown().reserve_group_member(
-            symbol, cooldown_sec, str(pair_id).strip(), norm_side,
+            symbol, cooldown_sec, clean_pid, norm_side,
             side="PAIR", symbol=symbol, client_order_id=clean_cid)
     return _cooldown().reserve(symbol, cooldown_sec, side=norm_side, symbol=symbol,
                                client_order_id=clean_cid, binance_order_id=None)
@@ -122,10 +153,11 @@ def release_trade(symbol):
 
 def release_pair_leg(symbol, pair_id, side):
     """Release a committed leg only after it is canceled successfully."""
-    if not _valid_pair_id(pair_id):
+    clean_pid = _clean_pair_id(pair_id)
+    if clean_pid is None:
         return False
     return _cooldown().release_group_member(
-        symbol, str(pair_id).strip(), _norm_side(side), keep_group=True)
+        symbol, clean_pid, _norm_side(side), keep_group=True)
 
 
 def update_binance_order_id(symbol, order_id):
@@ -157,9 +189,10 @@ def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=
     """Provide RAII for an exclusive cooldown or one leg of a pair."""
     clean_cid = _clean_order_id_meta(client_order_id)
     norm_side = _norm_side(side)
-    if _valid_pair_id(pair_id):
+    clean_pid = _clean_pair_id(pair_id)
+    if clean_pid is not None:
         with _cooldown().group_slot(
-                symbol, cooldown_sec, str(pair_id).strip(), norm_side,
+                symbol, cooldown_sec, clean_pid, norm_side,
                 side="PAIR", symbol=symbol, client_order_id=clean_cid) as res:
             yield _TradeReservation(res)
     else:
