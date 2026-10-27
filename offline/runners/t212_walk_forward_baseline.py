@@ -72,20 +72,30 @@ from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
 def periods_per_year(interval_minutes: int) -> float:
-    if isinstance(interval_minutes, bool) or interval_minutes <= 0:
+    if isinstance(interval_minutes, bool):
+        raise ValueError("interval_minutes must be positive")
+    try:
+        im = float(interval_minutes)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("interval_minutes must be positive") from exc
+    if not math.isfinite(im) or im <= 0:
         raise ValueError("interval_minutes must be positive")
     # Regular US session: 6.5h and roughly 252 trading days per year.
-    if interval_minutes >= 1440:
-        return 252.0 * 1440.0 / interval_minutes
-    return 252.0 * 390.0 / interval_minutes
+    if im >= 1440:
+        return 252.0 * 1440.0 / im
+    return 252.0 * 390.0 / im
 
 
 def fx_quote(currency: str) -> tuple[str, bool]:
     """Return the Yahoo symbol and whether the value must be inverted to USD per unit."""
-    currency = currency.upper()
-    if currency == "RON":
+    if currency is None or isinstance(currency, bool):
+        raise ValueError("currency must be a non-empty string")
+    norm_ccy = str(currency).strip().upper()
+    if not norm_ccy:
+        raise ValueError("currency must be a non-empty string")
+    if norm_ccy == "RON":
         return "USDRON=X", True
-    return f"{currency}USD=X", False
+    return f"{norm_ccy}USD=X", False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -219,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             "yahoo_symbol": symbol,
             "interval": args.interval,
             "interval_minutes": interval_minutes,
-            "execute_live": config.get("STRAT_EXECUTE", "false").lower() == "true",
+            "execute_live": str(config.get("STRAT_EXECUTE", "false") or "").strip().lower() in ("1", "true", "yes", "on"),
         },
         "strategy_params": dataclasses.asdict(params),
         "fx_model": fx_metadata,

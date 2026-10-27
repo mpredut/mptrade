@@ -13745,3 +13745,69 @@ def test_iteration135_kraken_client_txid_and_cachemanager_id_hygiene(tmp_path):
     )
     assert [f["id"] for f in fills] == ["REF-OK"]
 
+
+def test_iteration136_t212_baseline_kraken_compare_and_portfolio_snapshot_safety(tmp_path, monkeypatch):
+    """Verify t212_walk_forward_baseline periods_per_year/fx_quote, kraken_financial_compare markdown NaN calmar formatting, and portfolio_snapshot run_alerts string 'false' paper flag."""
+    from offline.runners.kraken_financial_compare import markdown_report
+    from offline.runners.t212_walk_forward_baseline import fx_quote, periods_per_year
+    from verify_tools import portfolio_snapshot as ps
+
+    # 1. periods_per_year rejects NaN, inf, bool, and non-positive values
+    for bad_im in (float("nan"), float("inf"), -10, 0, True, "bad"):
+        with pytest.raises(ValueError, match="interval_minutes must be positive"):
+            periods_per_year(bad_im)  # type: ignore[arg-type]
+    assert periods_per_year(1440) == pytest.approx(252.0)
+
+    # 2. fx_quote normalizes whitespace/casing and rejects empty/boolean currency
+    assert fx_quote(" ron ") == ("USDRON=X", True)
+    assert fx_quote(" eur ") == ("EURUSD=X", False)
+    for bad_ccy in ("", "   ", None, True):
+        with pytest.raises(ValueError, match="currency must be a non-empty string"):
+            fx_quote(bad_ccy)  # type: ignore[arg-type]
+
+    # 3. kraken_financial_compare.markdown_report renders NaN calmar_delta as 'n/a' instead of 'n/a%'
+    md = markdown_report(
+        {
+            "candidates": {
+                "live": {
+                    "scenarios": {
+                        "central": {"mean_return_pct": 1.0, "worst_return_pct": -1.0},
+                    },
+                    "promotion_gate": {
+                        "return_gate": {
+                            "scenarios": {
+                                "central": {
+                                    "mean_return_delta_pp": 0.0,
+                                    "worst_return_delta_pp": 0.0,
+                                    "worst_drawdown_delta_pp": 0.0,
+                                    "wins_ties_losses": {"wins": 0, "ties": 1, "losses": 0},
+                                    "passed": False,
+                                }
+                            }
+                        },
+                        "defensive_gate": {
+                            "scenarios": {
+                                "central": {
+                                    "drawdown_wins_ties_losses": {"wins": 0, "ties": 1, "losses": 0},
+                                    "median_calmar_improvement_ratio": float("nan"),
+                                    "passed": False,
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+            "promotable": [],
+        }
+    )
+    assert "n/a%" not in md
+    assert "| n/a |" in md
+
+    # 4. portfolio_snapshot.run_alerts treats string "false" paper flag as a live position
+    alert_file = tmp_path / "alert_state.json"
+    monkeypatch.setattr(ps, "ALERT_STATE", str(alert_file))
+    monkeypatch.setattr(ps, "_ntfy", lambda *_a, **_k: None)
+    monkeypatch.setattr(ps, "_policy_float", lambda k: 10.0 if k == "RISK_DD_ALERT_PCT" else 2.0)
+    fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": "false", "qty": 10.0, "dd_pct": -15.0, "unrealized": -150.0, "cost": 1000.0}])
+    assert len(fired) == 1
+

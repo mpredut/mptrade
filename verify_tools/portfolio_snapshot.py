@@ -195,7 +195,7 @@ def run_alerts(kr: list[dict]) -> list[str]:
         if not isinstance(r, dict):
             continue
         engine = str(r.get("engine") or "").strip()
-        if not engine or bool(r.get("paper")) or _f(r.get("qty"), 0.0) <= 1e-9:
+        if not engine or str(r.get("paper") or "").strip().lower() in ("1", "true", "yes", "on") or _f(r.get("qty"), 0.0) <= 1e-9:
             continue
         dd = _f(r.get("dd_pct"), 0.0)  # Negative means a loss.
         if dd > -threshold:

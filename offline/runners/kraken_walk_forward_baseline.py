@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime": {
             "pair": pair,
             "strategy_mode": cfg.get("STRATEGY_MODE", "avg_tp"),
-            "execute_live": cfg.get("STRAT_EXECUTE", "false").lower() == "true",
+            "execute_live": str(cfg.get("STRAT_EXECUTE", "false") or "").strip().lower() in ("1", "true", "yes", "on"),
         },
         "strategy_params": dataclasses.asdict(params),
         "fee_pct_per_leg": args.fee,

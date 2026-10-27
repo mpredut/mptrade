@@ -135,6 +135,12 @@ def markdown_report(report: dict) -> str:
             wtl = gate["wins_ties_losses"]
             dd_wtl = risk["drawdown_wins_ties_losses"]
             calmar_delta = risk["median_calmar_improvement_ratio"]
+            calmar_fmt = (
+                _fmt(float(calmar_delta) * 100.0, signed=True)
+                if (calmar_delta is not None and not isinstance(calmar_delta, bool))
+                else "n/a"
+            )
+            calmar_cell = f"{calmar_fmt}%" if calmar_fmt != "n/a" else "n/a"
             lines.append(
                 f"| `{name}` | `{scenario_name}` | "
                 f"{_fmt(aggregate['mean_return_pct'], signed=True)} | "
@@ -143,7 +149,7 @@ def markdown_report(report: dict) -> str:
                 f"{_fmt(gate['worst_return_delta_pp'], signed=True)} | "
                 f"{_fmt(gate['worst_drawdown_delta_pp'], signed=True)} | "
                 f"{wtl['wins']}/{wtl['ties']}/{wtl['losses']} | "
-                f"{_fmt(calmar_delta * 100.0, signed=True) + '%' if calmar_delta is not None else 'n/a'} | "
+                f"{calmar_cell} | "
                 f"{dd_wtl['wins']}/{dd_wtl['ties']}/{dd_wtl['losses']} | "
                 f"{'PASS' if gate['passed'] else 'FAIL'}/"
                 f"{'PASS' if risk['passed'] else 'FAIL'} |"

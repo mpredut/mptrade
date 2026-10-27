@@ -93,7 +93,7 @@ def fetch_all_trades(cli):
             break
         all_trades.update(batch)
         pages += 1; ofs += len(batch)
-        if len(all_trades) >= total or len(batch) < 50:
+        if (total and total > 0 and len(all_trades) >= total) or len(batch) < 50:
             break
         time.sleep(2.0)                            # Gentle on the rate limit (a cost of 20 per call).
     return all_trades, total or 0
