@@ -77,14 +77,15 @@ class ParabolicSurgeGuard:
             except (TypeError, ValueError):
                 pass
         if ts_now <= 0.0 and price_history:
-            try:
-                raw_last_ts = price_history[-1][0]
-                if not isinstance(raw_last_ts, bool):
-                    hf = float(raw_last_ts)
-                    if math.isfinite(hf) and hf > 0:
-                        ts_now = hf
-            except (TypeError, ValueError, IndexError):
-                pass
+            for item in reversed(price_history):
+                try:
+                    raw_last_ts = item[0]
+                    if not isinstance(raw_last_ts, bool):
+                        hf = float(raw_last_ts)
+                        if math.isfinite(hf) and hf > 0:
+                            ts_now = max(ts_now, hf)
+                except (TypeError, ValueError, IndexError):
+                    continue
 
         # Dynamic threshold based on volatility if available
         threshold = self.surge_threshold_pct
@@ -150,6 +151,8 @@ class ParabolicSurgeGuard:
                         window_pts.append((t_f, p_f))
                 except (TypeError, ValueError, IndexError):
                     continue
+            if len(window_pts) > 1:
+                window_pts.sort(key=lambda x: x[0])
             if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):
                 window_pts.append((float(ts_now), float(current_price)))
             if window_pts:

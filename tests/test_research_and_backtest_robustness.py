@@ -4778,4 +4778,97 @@ def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_harden
         sp._current_value("BINANCE_BTC", "mt.missing_key")
 
 
+def test_batch31_intelligence_macro_gemini_parabolic_and_verify_tools_hardening(tmp_path, monkeypatch):
+    import io
+    import urllib.request
+    from types import SimpleNamespace
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    import verify_tools.check_cache_coherence as ccc
+    import verify_tools.watch_trade_decisions as wtd
+
+    # 1. MacroAnalyzer.assess_market_advisor _fg_bool rejects NaN in is_extreme_fear / is_extreme_greed
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "fear_greed_collect.json").write_text(
+        '{"value": 50, "classification": "Neutral", "timestamp": 1700000000, '
+        '"is_extreme_fear": NaN, "is_extreme_greed": NaN}',
+        encoding="utf-8",
+    )
+    captured_fg = {}
+
+    class _FakeAdvisor:
+        def review(self, *, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
+            captured_fg["snap"] = fear_greed
+            return SimpleNamespace(
+                market_bias="NEUTRAL",
+                risk_level="MODERATE",
+                recommended_action="HOLD",
+                summary="ok",
+                ts=1700000100.0,
+            )
+
+    ma = MacroAnalyzer(cache_dir=str(cache_dir))
+    ma.shadow_notify = False
+    ma.gemini_advisor = _FakeAdvisor()  # type: ignore[assignment]
+    assert ma.assess_market_advisor(force=True, now=1700000100.0) is True
+    assert captured_fg["snap"] is not None
+    assert captured_fg["snap"].is_extreme_fear is False
+    assert captured_fg["snap"].is_extreme_greed is False
+
+    # 2. GeminiClient REST fallback handles empty candidates/parts/text without raising or caching empty strings
+    monkeypatch.setenv("DISABLE_GEMINI_LLM", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    gc = GeminiClient(api_key="fake-key", cli_path="/nonexistent/agy")
+
+    def _fake_urlopen_empty(_req, timeout=None):
+        return io.BytesIO(b'{"candidates": []}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen_empty)
+    assert gc.query_text("prompt1", cache_ttl_sec=60.0) is None
+    assert "prompt1" not in gc._cache
+
+    # 3. ParabolicSurgeGuard.check sorts unsorted price_history chronologically and resolves ts_now when trailing item is malformed
+    pg = ParabolicSurgeGuard(surge_threshold_pct=5.0, pullback_required_pct=1.5, window_seconds=7200.0)
+    # Chronologically price dropped from 110 (at t=1000) to 100 (at t=1100), not surged!
+    # Unsorted input has (1100, 100) before (1000, 110) and a trailing malformed tuple.
+    unsorted_hist = [(1100.0, 100.0), (1000.0, 110.0), ("bad_ts", 100.0)]
+    dec = pg.check("BTCUSDC", "BUY", 100.0, price_history=unsorted_hist, now=None)
+    assert dec.allowed is True
+
+    # 4. verify_tools/check_cache_coherence supports {"items": ...} in cache_short_trend.json and seconds timestamps in cache_current_price.json
+    now_s = 1700000500.0
+    monkeypatch.setattr(ccc, "CACHEDB", str(cache_dir))
+    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["BTCUSDC"])
+    monkeypatch.setattr(ccc.time, "time", lambda: now_s)
+    (cache_dir / "cache_short_trend.json").write_text(
+        json.dumps({"items": {"BTCUSDC": {"ts": now_s - 10.0, "current_price": 65000.0, "gradient_recent": 0.01}}}),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[now_s - 5.0, 65000.0]]}}),
+        encoding="utf-8",
+    )
+    assert ccc.main() == 0
+
+    # 5. verify_tools/watch_trade_decisions.position handles orders with missing/None qty or price safely
+    monkeypatch.setattr(
+        wtd.apiorders,
+        "get_trade_orders",
+        lambda side, _sym, _maxage: (
+            [{"price": None, "qty": None}, {"price": "100.0", "qty": "2.0", "timestamp": 1000}]
+            if side == "BUY"
+            else [{"qty": None}, {"qty": "0.5"}]
+        ),
+    )
+    avg_px, net_q, n_sells, last_buy_px = wtd.position("BTCUSDC")
+    assert avg_px == pytest.approx(100.0)
+    assert net_q == pytest.approx(1.5)
+    assert n_sells == 1
+    assert last_buy_px == pytest.approx(100.0)
+
+
+
 

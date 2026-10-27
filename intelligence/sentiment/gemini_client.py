@@ -118,7 +118,7 @@ class GeminiClient:
                 return None
 
         if any(
-            os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+            os.environ.get(k, "").strip().lower() in ("1", "1.0", "true", "yes", "on")
             for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
         ):
             logger.debug("Gemini LLM query suppressed in backtest/replay mode.")
@@ -305,7 +305,17 @@ class GeminiClient:
                 )
                 with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
-                    text = resp_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
+                    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                        return None
+                    content_obj = candidates[0].get("content")
+                    parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
+                    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+                        return None
+                    raw_text = parts[0].get("text")
+                    text = raw_text.strip() if isinstance(raw_text, str) else ""
+                    if not text:
+                        return None
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, text)
                     return text

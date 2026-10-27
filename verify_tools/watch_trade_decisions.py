@@ -54,17 +54,17 @@ def free_qty(symbol):
 def position(symbol, maxage=17 * 24 * 3600):
     buys = [
         o for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or [])
-        if isinstance(o, dict) and extract_order_qty(o) > 0 and extract_order_price(o) > 0
+        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0 and _f(extract_order_price(o), 0.0) > 0
     ]
     sells = [
         o for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or [])
-        if isinstance(o, dict) and extract_order_qty(o) > 0
+        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0
     ]
-    tq = sum(extract_order_qty(o) for o in buys)
-    tv = sum(extract_order_price(o) * extract_order_qty(o) for o in buys)
-    sq = sum(extract_order_qty(o) for o in sells)
+    tq = sum(_f(extract_order_qty(o), 0.0) for o in buys)
+    tv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in buys)
+    sq = sum(_f(extract_order_qty(o), 0.0) for o in sells)
     last_buy = (
-        extract_order_price(max(buys, key=lambda o: extract_timestamp_ms(o, default=0) or 0))
+        _f(extract_order_price(max(buys, key=lambda o: _f(extract_timestamp_ms(o, default=0), 0.0))), 0.0)
         if buys else 0.0
     )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells), last_buy

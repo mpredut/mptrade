@@ -57,7 +57,8 @@ def main() -> int:
     print(f"simboluri asteptate: {exp}")
 
     # 1. short trend
-    it = load("cache_short_trend.json") or {}
+    raw_st = load("cache_short_trend.json") or {}
+    it = raw_st.get("items") if isinstance(raw_st.get("items"), dict) else raw_st
     print(f"-- cache_short_trend.json: {sorted(it.keys())}")
     for s in exp:
         e = it.get(s)
@@ -110,7 +111,8 @@ def main() -> int:
                 px_val = 0.0
         except (TypeError, ValueError):
             ts_ms_val, px_val = 0.0, 0.0
-        age = (now - ts_ms_val / 1000.0) if ts_ms_val > 0 else 1e9
+        ts_sec_val = (ts_ms_val / 1000.0 if ts_ms_val > 1e11 else ts_ms_val) if ts_ms_val > 0 else 0.0
+        age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
         ok = -5.0 <= age < STALE_S and px_val > 0
         if not ok:
             problems.append(f"currentprice {s} age={age:.0f}s")

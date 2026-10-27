@@ -292,14 +292,16 @@ class MacroAnalyzer:
                             return default
                         if isinstance(val, bool):
                             return val
+                        if isinstance(val, (int, float)):
+                            return bool(val) if math.isfinite(float(val)) else default
                         if isinstance(val, str):
                             s = val.strip().lower()
                             if s in ("1", "1.0", "true", "yes", "on"):
                                 return True
-                            if s in ("0", "0.0", "false", "no", "off", ""):
+                            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", ""):
                                 return False
                             return default
-                        return bool(val)
+                        return default
 
                     fg_snap = FearGreedSnapshot(
                         value=fg_val,
