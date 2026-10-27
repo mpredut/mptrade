@@ -13,6 +13,9 @@ class BrakeAction(str, Enum):
     DEFER_WAIT = "DEFER_WAIT"         # Yellow light: defer/retry later (wait for better conditions)
     DOWNSCALE_QTY = "DOWNSCALE_QTY"   # Yellow light: reduce quantity/weight (e.g. exhausted trend)
 
+    def __str__(self) -> str:
+        return str(self.value)
+
 
 @dataclass(frozen=True)
 class GuardDecision:

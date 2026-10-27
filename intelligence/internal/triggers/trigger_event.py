@@ -13,11 +13,17 @@ class TriggerAction(str, Enum):
     EXIT = "EXIT"
     NEUTRAL = "NEUTRAL"
 
+    def __str__(self) -> str:
+        return str(self.value)
+
 
 class TriggerSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+
+    def __str__(self) -> str:
+        return str(self.value)
 
 
 @dataclass(frozen=True)

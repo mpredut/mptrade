@@ -296,9 +296,12 @@ _load_margins()
 
 
 def _provider_name(provider):
+    if provider is None or isinstance(provider, bool):
+        return ""
     if isinstance(provider, str):
         return provider
-    return getattr(provider, "name", "") or ""
+    raw_name = getattr(provider, "name", "")
+    return str(raw_name) if raw_name and not isinstance(raw_name, bool) else ""
 
 
 _PROCESS_TO_MODULE = {
@@ -317,7 +320,7 @@ def resolve_caller_module(
     client_order_id: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve canonical module identity from explicit module, order lineage prefix, or process name."""
-    if module:
+    if module and not isinstance(module, bool):
         m_raw = str(module).strip()
         if m_raw:
             m_up = m_raw.upper()
@@ -327,11 +330,11 @@ def resolve_caller_module(
             if m_low == "asset_guardian":
                 return "assetguardian"
             return m_low
-    if client_order_id or prefix:
+    if (client_order_id and not isinstance(client_order_id, bool)) or (prefix and not isinstance(prefix, bool)):
         try:
             from binance_api.order_id_context import resolve_order_owner
             for candidate in (client_order_id, prefix):
-                if not candidate:
+                if not candidate or isinstance(candidate, bool):
                     continue
                 owner = resolve_order_owner(candidate)
                 if owner in _KNOWN_GUARD_MODULES:

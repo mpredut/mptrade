@@ -48,6 +48,9 @@ class ExitAction(str, Enum):
     SELL = "SELL"                  # Execute complete position exit (market or limit)
     PARTIAL_SELL = "PARTIAL_SELL"  # Execute partial position exit (e.g. spike Hard-TP)
 
+    def __str__(self) -> str:
+        return str(self.value)
+
 
 @dataclass
 class ExitDecision:
@@ -249,6 +252,9 @@ class ReentryAction(str, Enum):
     """Action recommended by PositionExitManager for market re-entry."""
     WAIT = "WAIT"    # Do not re-enter yet (blocked by drop, bounce, or trend gate)
     ENTER = "ENTER"  # Conditions met to execute re-entry buy
+
+    def __str__(self) -> str:
+        return str(self.value)
 
 
 @dataclass

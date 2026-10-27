@@ -496,6 +496,9 @@ class MarketRegimeHorizon(str, Enum):
     SHORT = "short"
     LONG = "long"
 
+    def __str__(self) -> str:
+        return str(self.value)
+
     @classmethod
     def parse(cls, value) -> "MarketRegimeHorizon":
         if isinstance(value, cls):
