@@ -1973,7 +1973,7 @@ class TrackedOrderResult:
 
     @property
     def order_known(self) -> bool:
-        return bool(self.intent.get("order_id"))
+        return _clean_retry_order_id(self.intent.get("order_id")) is not None
 
 
 class StrategyExecutorLifecycleApi:
@@ -2003,21 +2003,21 @@ class StrategyExecutorLifecycleApi:
             raise RuntimeError(
                 f"{provider_name or type(self.executor).__name__}: "
                 "order_by_client_id is unsupported")
-        clean_cid = extract_order_id(client_order_id, default=None)
+        clean_cid = _clean_retry_order_id(client_order_id)
         if not clean_cid:
             raise ProviderError("invalid client_order_id")
         return method(symbol, clean_cid)
 
     def order_status(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("status_by_order_id", "order_status")
-        clean_oid = extract_order_id(order_id, default=None)
+        clean_oid = _clean_retry_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")
         return self.executor.order_status(symbol, clean_oid)
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
         self._require("cancel_by_order_id", "cancel_order")
-        clean_oid = extract_order_id(order_id, default=None)
+        clean_oid = _clean_retry_order_id(order_id)
         if not clean_oid:
             raise ProviderError("invalid order_id")
         return self.executor.cancel_order(symbol, clean_oid)
@@ -2122,7 +2122,19 @@ class TrackedOrderLifecycle:
         self.provider_name = provider_name.strip()
         self.venue = venue.strip() if venue is not None else self.provider_name
         self.missing_confirmations = mc_int
-        self.retry_on_lookup_error = bool(retry_on_lookup_error)
+        if isinstance(retry_on_lookup_error, bool):
+            self.retry_on_lookup_error = retry_on_lookup_error
+        elif isinstance(retry_on_lookup_error, (int, float)):
+            self.retry_on_lookup_error = (
+                bool(retry_on_lookup_error)
+                if math.isfinite(float(retry_on_lookup_error))
+                else False
+            )
+        elif isinstance(retry_on_lookup_error, str):
+            s_retry = retry_on_lookup_error.strip().lower()
+            self.retry_on_lookup_error = s_retry in ("1", "1.0", "true", "yes", "on")
+        else:
+            self.retry_on_lookup_error = False
         self.max_age_seconds = max_age_seconds
         self.audit = audit
         self.clock = clock
@@ -2152,10 +2164,12 @@ class TrackedOrderLifecycle:
     def _validate_identity(intent: dict) -> None:
         if not isinstance(intent, dict):
             raise ValueError("tracked intent must be a dict")
-        for key in ("intent_id", "client_order_id", "symbol", "side"):
-            val = intent.get(key)
-            if isinstance(val, bool) or not str(val or "").strip():
+        for key in ("intent_id", "client_order_id", "symbol"):
+            if _clean_retry_order_id(intent.get(key)) is None:
                 raise ValueError(f"tracked intent missing {key}")
+        side_val = intent.get("side")
+        if isinstance(side_val, bool) or not str(side_val or "").strip():
+            raise ValueError("tracked intent missing side")
         if str(intent["side"]).strip().upper() not in {"BUY", "SELL"}:
             raise ValueError("tracked intent side must be BUY or SELL")
         if _lifecycle_finite(intent.get("requested_qty"), positive=True) is None:
@@ -2184,6 +2198,15 @@ class TrackedOrderLifecycle:
             att_int = int(att_f)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("tracked intent attempt must be positive") from exc
+        clean_iid = _clean_retry_order_id(intent_id)
+        clean_cid = _clean_retry_order_id(client_order_id)
+        clean_sym = _clean_retry_order_id(symbol)
+        if not clean_iid:
+            raise ValueError("tracked intent missing intent_id")
+        if not clean_cid:
+            raise ValueError("tracked intent missing client_order_id")
+        if not clean_sym:
+            raise ValueError("tracked intent missing symbol")
         side_norm = str(side or "").strip().upper()
         if side_norm == "B":
             side_norm = "BUY"
@@ -2191,9 +2214,9 @@ class TrackedOrderLifecycle:
             side_norm = "SELL"
         now = self._now()
         intent = {
-            "intent_id": str(intent_id).strip(),
-            "client_order_id": str(client_order_id).strip(),
-            "symbol": str(symbol).strip(),
+            "intent_id": clean_iid,
+            "client_order_id": clean_cid,
+            "symbol": clean_sym,
             "side": side_norm,
             "kind": None if kind is None else str(kind),
             "requested_qty": float(requested_qty),
@@ -2221,8 +2244,9 @@ class TrackedOrderLifecycle:
     def _order_fields(response) -> dict:
         if isinstance(response, SubmissionOutcome):
             fields = {"submission_outcome": response.state}
-            if response.order_id:
-                fields["order_id"] = response.order_id
+            clean_oid = _clean_retry_order_id(response.order_id)
+            if clean_oid is not None:
+                fields["order_id"] = clean_oid
             if response.reason:
                 fields["submission_reason"] = response.reason
             response = response.native
@@ -2232,7 +2256,7 @@ class TrackedOrderLifecycle:
             fields.update(native_fields)
             return fields
         if isinstance(response, dict):
-            order_id = extract_order_id(response)
+            order_id = _clean_retry_order_id(extract_order_id(response))
             fields = {}
             if order_id is not None:
                 fields["order_id"] = str(order_id)
@@ -2250,7 +2274,7 @@ class TrackedOrderLifecycle:
             if submitted_price is not None:
                 fields["submitted_price"] = submitted_price
             return fields
-        order_id = extract_order_id(response)
+        order_id = _clean_retry_order_id(extract_order_id(response))
         if order_id is not None:
             return {"order_id": str(order_id)}
         return {}
@@ -2287,7 +2311,7 @@ class TrackedOrderLifecycle:
         fields = self._order_fields(outcome)
         pending.update(fields)
         persist(dict(pending))
-        if pending.get("order_id"):
+        if _clean_retry_order_id(pending.get("order_id")):
             self._audit(
                 "submit_accepted", pending,
                 qty=pending["requested_qty"],
@@ -2325,7 +2349,7 @@ class TrackedOrderLifecycle:
         symbol = pending["symbol"]
         client_order_id = pending["client_order_id"]
         raw_order_id = pending.get("order_id")
-        order_id = extract_order_id(raw_order_id, default=None)
+        order_id = _clean_retry_order_id(raw_order_id)
         if not order_id:
             try:
                 native = self.market_api.order_by_client_id(

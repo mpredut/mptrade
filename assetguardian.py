@@ -156,12 +156,28 @@ from state_io import atomic_write_json, load_json_state, save_json_state
 from lock import FileLock
 
 
+def _parse_bool_flag(raw, default=False):
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw) if math.isfinite(float(raw)) else default
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("1", "1.0", "true", "yes", "on"):
+            return True
+        if s in ("0", "0.0", "false", "no", "off", "none", "null", "nan", ""):
+            return False
+    return default
+
+
 class AssetGuardianState:
     def __init__(self, path=None, *, fail_closed=True):
         root = os.path.dirname(os.path.abspath(__file__))
         self.path = path or os.path.join(root, "cachedb", "assetguardian_state.json")
         self.lock_path = self.path + ".lock"
-        self.fail_closed = fail_closed
+        self.fail_closed = _parse_bool_flag(fail_closed, default=True)
 
     def load(self):
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
@@ -697,10 +713,11 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
         # respect_guard=True keeps the historical-price anti-chasing guard active,
         # so a shallow-dip tier will not buy far above the recent sell reference.
         # Deeper tiers pass respect_guard=False and bypass G_PROF.
+        respect_guard_flag = _parse_bool_flag(respect_guard, default=False)
         order = mkt.place(
             buy_symbol, "BUY", current_price, qty,
             force=False, smart=False, caller_owns_retry=True,
-            bypass_guards=None if respect_guard else {"G_PROF"},
+            bypass_guards=None if respect_guard_flag else {"G_PROF"},
             module="assetguardian",
             wait_for_trend=True,
             client_order_id=client_order_id,
@@ -952,7 +969,8 @@ def _record_terminal_buy(symbol, state, status):
         return state
 
     key = _tier_key(threshold)
-    spent_by_tier = dict(state.get("spent_quote_by_tier") or {})
+    raw_spent_by_tier = state.get("spent_quote_by_tier")
+    spent_by_tier = dict(raw_spent_by_tier) if isinstance(raw_spent_by_tier, dict) else {}
     prior_spent = max(0.0, _finite_float(spent_by_tier.get(key)) or 0.0)
     filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
     cost_val = max(0.0, _finite_float(status.cost) or 0.0)
@@ -982,7 +1000,8 @@ def _record_terminal_buy(symbol, state, status):
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
 
-    terminal = list(state.get("terminal_orders") or [])[-19:]
+    raw_terminal = state.get("terminal_orders")
+    terminal = list(raw_terminal)[-19:] if isinstance(raw_terminal, (list, tuple)) else []
     terminal.append({
         "order_id": pending.get("order_id"),
         "client_order_id": pending.get("client_order_id"),
@@ -1013,7 +1032,8 @@ def _record_terminal_sell(symbol, state, status):
         return state
 
     key = _tier_key(threshold)
-    filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
+    raw_filled_by_tier = state.get("filled_qty_by_tier")
+    filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
     prior_filled = max(0.0, _finite_float(filled_by_tier.get(key)) or 0.0)
     filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
     filled_by_tier[key] = prior_filled + filled_qty
@@ -1052,7 +1072,8 @@ def _record_terminal_sell(symbol, state, status):
 
     cost_val = max(0.0, _finite_float(status.cost) or 0.0)
     fee_val = max(0.0, _finite_float(status.fee) or 0.0)
-    terminal = list(state.get("terminal_orders") or [])[-19:]
+    raw_terminal = state.get("terminal_orders")
+    terminal = list(raw_terminal)[-19:] if isinstance(raw_terminal, (list, tuple)) else []
     terminal.append({
         "order_id": pending.get("order_id"),
         "client_order_id": pending.get("client_order_id"),
@@ -1100,15 +1121,21 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     submit semantics while retaining venue-side idempotency where supported.
     """
     threshold = _finite_float(pending.get("threshold"), positive=True)
-    try:
-        attempt = int(pending.get("attempt"))
-    except (TypeError, ValueError, OverflowError):
-        attempt = 0
+    raw_attempt = pending.get("attempt")
+    attempt = 0
+    if raw_attempt is not None and not isinstance(raw_attempt, bool):
+        try:
+            att_f = float(raw_attempt)
+            if math.isfinite(att_f) and att_f.is_integer():
+                attempt = int(att_f)
+        except (TypeError, ValueError, OverflowError):
+            attempt = 0
     if threshold is None or attempt <= 0:
         print(f"[{symbol}] Cannot reuse corrupt {kind.upper()} attempt; preserve counters.")
         return state
     key = _tier_key(threshold)
-    attempts = dict(state.get("attempts_by_tier") or {})
+    raw_attempts = state.get("attempts_by_tier")
+    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
     attempts[key] = max(0, attempt - 1)
     state = dict(state)
     state["attempts_by_tier"] = attempts
@@ -1258,7 +1285,10 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
         return open_sells
     remaining = []
     for order in open_sells:
-        oid = extract_order_id(order)
+        oid = extract_order_id(order, default=None)
+        if not oid or str(oid) == "0":
+            remaining.append(order)
+            continue
         try:
             mkt.cancel_order(symbol, str(oid), provider_name="binance")
             print(
@@ -1373,7 +1403,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
 
     completed = _completed_tier_values(state)
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
-    filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
+    raw_filled_by_tier = state.get("filled_qty_by_tier")
+    filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
     for threshold, allocation in active_tiers:
         trigger_thr = _trigger_threshold_for_sell_tier(
             threshold, sell_mult, portfolio_growth_pct
@@ -1397,7 +1428,10 @@ def _safe_tier_attempt(attempts_map, key):
     if raw_val is None or isinstance(raw_val, bool):
         return 1
     try:
-        val = int(raw_val)
+        val_f = float(raw_val)
+        if not math.isfinite(val_f) or not val_f.is_integer():
+            return 1
+        val = int(val_f)
     except (TypeError, ValueError, OverflowError):
         return 1
     return max(0, val) + 1

@@ -15368,3 +15368,141 @@ def test_iteration156_instrument_bool_cast_and_order_retry_hygiene(tmp_path, mon
     )
     assert rec_id_dup == rec_id
 
+
+def test_iteration157_tracked_order_lifecycle_and_assetguardian_hygiene(monkeypatch, tmp_path):
+    """Verify TrackedOrderLifecycle, StrategyExecutorLifecycleApi, TrackedOrderResult,
+    and assetguardian.py handle sentinel IDs, .0 IDs, boolean flags, and attempt counters."""
+    import order_retry as oq
+    import assetguardian as ag
+    from providers.base import ProviderError
+    from providers.strategy_executor import OrderStatus, SubmissionOutcome
+
+    # 1. TrackedOrderResult.order_known rejects "0", "nan", "None"
+    assert oq.TrackedOrderResult("active", {"order_id": "0"}).order_known is False
+    assert oq.TrackedOrderResult("active", {"order_id": "nan"}).order_known is False
+    assert oq.TrackedOrderResult("active", {"order_id": "555.0"}).order_known is True
+
+    # 2. StrategyExecutorLifecycleApi rejects "0" and normalizes .0
+    from providers.strategy_executor import OrderReconciliationCapabilities
+
+    class _DummyExec:
+        name = "binance"
+
+        def reconciliation_capabilities(self):
+            return OrderReconciliationCapabilities(
+                lookup_by_client_order_id=True,
+                status_by_order_id=True,
+                cancel_by_order_id=True,
+            )
+
+        def order_by_client_id(self, symbol, cid):
+            return {"symbol": symbol, "cid": cid}
+
+        def order_status(self, symbol, oid):
+            return {"symbol": symbol, "oid": oid}
+
+        def cancel_order(self, symbol, oid):
+            return {"symbol": symbol, "oid": oid}
+
+    adapter = oq.StrategyExecutorLifecycleApi(_DummyExec())
+    with pytest.raises(ProviderError):
+        adapter.order_by_client_id("BTCUSDC", "0")
+    with pytest.raises(ProviderError):
+        adapter.order_status("BTCUSDC", "0")
+    with pytest.raises(ProviderError):
+        adapter.cancel_order("BTCUSDC", "nan")
+    assert adapter.order_by_client_id("BTCUSDC", "888.0")["cid"] == "888"
+    assert adapter.order_status("BTCUSDC", "999.0")["oid"] == "999"
+
+    # 3. TrackedOrderLifecycle retry_on_lookup_error and identity/order_fields normalization
+    lc_false = oq.TrackedOrderLifecycle(
+        object(),
+        provider_name="binance",
+        retry_on_lookup_error="false",
+        clock=lambda: 1000.0,
+    )
+    assert lc_false.retry_on_lookup_error is False
+    lc_nan = oq.TrackedOrderLifecycle(
+        object(),
+        provider_name="binance",
+        retry_on_lookup_error=float("nan"),
+        clock=lambda: 1000.0,
+    )
+    assert lc_nan.retry_on_lookup_error is False
+
+    for bad_kw in (
+        {"intent_id": "0"},
+        {"client_order_id": "nan"},
+        {"symbol": "null"},
+    ):
+        kw = {
+            "intent_id": "101.0",
+            "client_order_id": "202.0",
+            "symbol": "BTCUSDC",
+            "side": "B",
+            "requested_qty": 1.0,
+        }
+        kw.update(bad_kw)
+        with pytest.raises(ValueError):
+            lc_false.new_intent(**kw)
+
+    intent = lc_false.new_intent(
+        intent_id="101.0",
+        client_order_id="202.0",
+        symbol="BTCUSDC",
+        side="B",
+        requested_qty=1.0,
+    )
+    assert intent["intent_id"] == "101"
+    assert intent["client_order_id"] == "202"
+    assert intent["side"] == "BUY"
+
+    assert oq.TrackedOrderLifecycle._order_fields({"orderId": "0"}) == {}
+    assert oq.TrackedOrderLifecycle._order_fields({"orderId": "333.0"}) == {"order_id": "333"}
+    assert oq.TrackedOrderLifecycle._order_fields(
+        SubmissionOutcome("accepted", order_id="0")
+    ) == {"submission_outcome": "accepted"}
+
+    # 4. assetguardian boolean flags, _safe_tier_attempt, and _reuse_unaccepted_attempt
+    st = ag.AssetGuardianState(path=str(tmp_path / "ag.json"), fail_closed="false")
+    assert st.fail_closed is False
+    st_nan = ag.AssetGuardianState(path=str(tmp_path / "ag2.json"), fail_closed=float("nan"))
+    assert st_nan.fail_closed is True
+
+    assert ag._safe_tier_attempt({"3": "2.0"}, "3") == 3
+    assert ag._safe_tier_attempt({"3": True}, "3") == 1
+
+    saved_states = []
+    monkeypatch.setattr(ag, "_save_symbol_campaign", lambda sym, kind, s: saved_states.append(dict(s)))
+    res_bool = ag._reuse_unaccepted_attempt(
+        "BTCUSDC",
+        "buy",
+        {"attempts_by_tier": {"3": 2}},
+        {"threshold": 3.0, "attempt": True},
+    )
+    assert res_bool["attempts_by_tier"]["3"] == 2
+    assert saved_states == []
+
+    res_float_str = ag._reuse_unaccepted_attempt(
+        "BTCUSDC",
+        "buy",
+        {"attempts_by_tier": "corrupt"},
+        {"threshold": 3.0, "attempt": "2.0"},
+    )
+    assert res_float_str["attempts_by_tier"] == {"3": 1}
+
+    # _record_terminal_buy tolerates corrupted non-dict spent_quote_by_tier / non-list terminal_orders
+    term_state = ag._record_terminal_buy(
+        "BTCUSDC",
+        {
+            "pending": {"threshold": 3.0, "allocation": 0.25, "order_id": "11", "client_order_id": "cid-11"},
+            "spent_quote_by_tier": "corrupt",
+            "terminal_orders": "corrupt",
+            "initial_cash": 1000.0,
+        },
+        OrderStatus("closed", 0.01, 50.0, 0.05),
+    )
+    assert term_state["spent_quote_by_tier"] == {"3": 50.05}
+    assert isinstance(term_state["terminal_orders"], list) and len(term_state["terminal_orders"]) == 1
+
+
