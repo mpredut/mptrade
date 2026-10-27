@@ -139,11 +139,13 @@ def markdown_report(report: dict) -> str:
             wtl = gate["wins_ties_losses"]
             dd_wtl = risk["drawdown_wins_ties_losses"]
             calmar_delta = risk["median_calmar_improvement_ratio"]
-            calmar_fmt = (
-                _fmt(float(calmar_delta) * 100.0, signed=True)
-                if (calmar_delta is not None and not isinstance(calmar_delta, bool))
-                else "n/a"
-            )
+            calmar_pct_val = None
+            if calmar_delta is not None and not isinstance(calmar_delta, bool):
+                try:
+                    calmar_pct_val = float(calmar_delta) * 100.0
+                except (TypeError, ValueError, OverflowError):
+                    calmar_pct_val = None
+            calmar_fmt = _fmt(calmar_pct_val, signed=True)
             calmar_cell = f"{calmar_fmt}%" if calmar_fmt != "n/a" else "n/a"
             lines.append(
                 f"| `{name}` | `{scenario_name}` | "

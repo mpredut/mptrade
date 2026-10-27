@@ -86,8 +86,18 @@ def dispatch(argv: list[str] | None = None) -> int:
 
     # Pre-parse --venue and --mode while leaving all other flags intact
     pre_parser = argparse.ArgumentParser(add_help=False)
-    pre_parser.add_argument("--venue", choices=SUPPORTED_VENUES, default=None)
-    pre_parser.add_argument("--mode", choices=SUPPORTED_MODES, default="baseline")
+    pre_parser.add_argument(
+        "--venue",
+        type=lambda s: str(s).strip().lower(),
+        choices=SUPPORTED_VENUES,
+        default=None,
+    )
+    pre_parser.add_argument(
+        "--mode",
+        type=lambda s: str(s).strip().lower(),
+        choices=SUPPORTED_MODES,
+        default="baseline",
+    )
 
     # If top-level help is requested without venue/mode, display dispatcher help
     if any(h in raw_args for h in ("-h", "--help")):

@@ -1211,6 +1211,85 @@ def test_batch44_verify_tools_and_order_outcomes_log_hardening(tmp_path, monkeyp
     assert row[14] == ""
 
 
+def test_batch45_offline_backtests_and_runners_hardening(monkeypatch):
+    import pytest
+    import offline.backtests.datasets as ds
+    import offline.backtests.evaluation as ev
+    import offline.runners.kraken_financial_compare as kfc
+    import offline.runners.walk_forward as wf
+
+    # 1. align_previous_values rejects inf timestamp with ValueError instead of OverflowError
+    with pytest.raises(ValueError, match="non-finite"):
+        ds.align_previous_values([1700000000], [{"timestamp": float("inf"), "close": 1.0}])
+    assert ds.align_previous_values(["1700000060.0"], [{"timestamp": "1700000000.0", "close": 1.25}]) == [1.25]
+
+    # 2. evaluate_walk_forward handles float-string / bool ambiguous_bars safely
+    records = [
+        {"timestamp": 1700000000 + i * 60, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5}
+        for i in range(6)
+    ]
+    res = ev.evaluate_walk_forward(
+        records,
+        lambda ohlc, warm, ctx: {
+            "return_pct": 1.0,
+            "max_drawdown_pct": 0.5,
+            "cycles": 1,
+            "fills": 2,
+            "ambiguous_bars": "2.0",
+        },
+        train_size=2,
+        validation_size=2,
+        test_size=2,
+        step_size=2,
+    )
+    assert res["aggregate_test"]["total_ambiguous_bars"] == 2
+
+    # 3. kraken_financial_compare.markdown_report handles non-numeric median_calmar_improvement_ratio
+    md = kfc.markdown_report({
+        "candidates": {
+            "live": {
+                "scenarios": {
+                    "central": {
+                        "mean_return_pct": 1.0,
+                        "worst_return_pct": -0.5,
+                    }
+                },
+                "promotion_gate": {
+                    "return_gate": {
+                        "scenarios": {
+                            "central": {
+                                "passed": False,
+                                "mean_return_delta_pp": 0.0,
+                                "worst_return_delta_pp": 0.0,
+                                "worst_drawdown_delta_pp": 0.0,
+                                "wins_ties_losses": {"wins": 0, "ties": 10, "losses": 0},
+                            }
+                        }
+                    },
+                    "defensive_gate": {
+                        "scenarios": {
+                            "central": {
+                                "passed": False,
+                                "median_calmar_improvement_ratio": "n/a",
+                                "drawdown_wins_ties_losses": {"wins": 0, "ties": 10, "losses": 0},
+                            }
+                        }
+                    },
+                },
+            }
+        },
+        "promotable": [],
+    })
+    assert "| n/a |" in md
+
+    # 4. walk_forward.dispatch accepts uppercase/whitespace --venue and --mode
+    captured = {}
+    monkeypatch.setattr(wf, "run_baseline", lambda v, a: captured.update(venue=v, args=a) or 0)
+    assert wf.dispatch(["--venue", " KRAKEN ", "--mode", " BASELINE ", "--intervals", "240"]) == 0
+    assert captured["venue"] == "kraken"
+
+
+
 
 
 

@@ -195,8 +195,14 @@ def align_previous_values(
         raw_val = record[value_field]
         if isinstance(raw_ts, bool) or isinstance(raw_val, bool) or raw_ts is None or raw_val is None:
             raise ValueError("source_records cannot contain None or boolean timestamp/value")
-        ts_i = int(float(raw_ts))
-        val_f = float(raw_val)
+        try:
+            ts_f = float(raw_ts)
+            val_f = float(raw_val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid timestamp or value in source_records") from exc
+        if not math.isfinite(ts_f):
+            raise ValueError(f"non-finite source timestamp: {raw_ts!r}")
+        ts_i = int(ts_f)
         if not math.isfinite(val_f):
             raise ValueError(f"non-finite source value at timestamp {ts_i}")
         by_ts[ts_i] = val_f
@@ -210,7 +216,13 @@ def align_previous_values(
     for timestamp in target_timestamps:
         if isinstance(timestamp, bool) or timestamp is None:
             raise ValueError("target_timestamps cannot contain None or boolean")
-        target = int(timestamp)
+        try:
+            tf = float(timestamp)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid target timestamp: {timestamp!r}") from exc
+        if not math.isfinite(tf):
+            raise ValueError(f"non-finite target timestamp: {timestamp!r}")
+        target = int(tf)
         while source_index < len(source) and source[source_index][0] <= target:
             current = convert(source[source_index][1])
             source_index += 1

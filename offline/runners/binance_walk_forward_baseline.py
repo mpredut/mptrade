@@ -83,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
             if raw is None or isinstance(raw, bool):
                 return default
             try:
-                val = float(raw)
+                s = str(raw).split("#", 1)[0].split(";", 1)[0].strip() if isinstance(raw, str) else raw
+                val = float(s)
                 return val if math.isfinite(val) else default
             except (TypeError, ValueError):
                 return default
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             dca_drop_pct=_cf("STRAT_DCA_DROP_PCT", 2.0),
             takeprofit_pct=_cf("STRAT_TAKEPROFIT_PCT", 2.0),
             max_budget=_cf("STRAT_MAX_BUDGET", 500.0),
-            max_dca_buys=int(_cf("STRAT_MAX_DCA_BUYS", 5.0)),
+            max_dca_buys=max(0, int(_cf("STRAT_MAX_DCA_BUYS", 5.0))),
             stop_loss_pct=_cf("STRAT_STOP_LOSS_PCT", 0.0),
             check_minutes=1.0,
             enable_takeprofit=True,

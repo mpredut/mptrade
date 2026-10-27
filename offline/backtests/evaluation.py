@@ -241,6 +241,27 @@ def evaluate_walk_forward(
     compounded = 100.0
     for window in test_windows:
         compounded *= 1.0 + float(window["return_pct"]) / 100.0
+    bh_values: list[float] = []
+    for window in test_windows:
+        bh_raw = window.get("buy_hold_return_pct")
+        if bh_raw is None or isinstance(bh_raw, bool):
+            continue
+        try:
+            bh_f = float(bh_raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(bh_f):
+            bh_values.append(bh_f)
+
+    def _ambig_int(val: Any) -> int:
+        if val is None or isinstance(val, bool):
+            return 0
+        try:
+            vf = float(val)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, int(vf)) if math.isfinite(vf) else 0
+
     return {
         "folds": fold_results,
         "aggregate_test": {
@@ -254,18 +275,12 @@ def evaluate_walk_forward(
                 [fold["test"]["metrics"].get("sortino") for fold in fold_results]
             ),
             "mean_buy_hold_return_pct": (
-                sum(
-                    float(window["buy_hold_return_pct"])
-                    for window in test_windows
-                    if window.get("buy_hold_return_pct") is not None
-                ) / sum(1 for window in test_windows if window.get("buy_hold_return_pct") is not None)
-                if any(window.get("buy_hold_return_pct") is not None for window in test_windows)
-                else None
+                sum(bh_values) / len(bh_values) if bh_values else None
             ),
             "total_cycles": summary["total_cycles"],
             "total_fills": summary["total_fills"],
             "total_ambiguous_bars": sum(
-                int(window.get("ambiguous_bars") or 0) for window in test_windows
+                _ambig_int(window.get("ambiguous_bars")) for window in test_windows
             ),
             "intrabar_policy_selected_counts": dict(Counter(
                 window["intrabar_policy_selected"] for window in test_windows
