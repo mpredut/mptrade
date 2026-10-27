@@ -387,16 +387,23 @@ class MacroAnalyzer:
                     logger.debug("Failed loading market breadth from %s: %s", mb_path, mb_err)
 
             # 3. Read cached whale telemetry (e.g. for BTCUSDC)
+            from intelligence.external.collectors.orderbook_depth import _symbol_variants
             whale_data = None
             for sym in self.symbols:
-                w_path = os.path.join(self.cache_dir, f"whale_snapshot_{sym}.json")
-                try:
-                    cand_w = read_recovering_previous(w_path, json.loads, default=None)
-                    if isinstance(cand_w, dict):
-                        whale_data = cand_w
-                        break
-                except Exception as w_err:
-                    logger.debug("Failed loading whale telemetry from %s: %s", w_path, w_err)
+                for cand_sym in ([sym] + [v for v in _symbol_variants(sym) if v != sym]):
+                    safe_sym = cand_sym.upper().strip().replace("/", "").replace("-", "").replace("_", "")
+                    if not safe_sym:
+                        continue
+                    w_path = os.path.join(self.cache_dir, f"whale_snapshot_{safe_sym}.json")
+                    try:
+                        cand_w = read_recovering_previous(w_path, json.loads, default=None)
+                        if isinstance(cand_w, dict):
+                            whale_data = cand_w
+                            break
+                    except Exception as w_err:
+                        logger.debug("Failed loading whale telemetry from %s: %s", w_path, w_err)
+                if whale_data is not None:
+                    break
 
             try:
                 assessment = (

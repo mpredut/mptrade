@@ -5438,3 +5438,91 @@ def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch)
     assert parsed_tr[1]["orderId"] == "12345"
     assert parsed_tr[1]["id"] == "67890"
 
+
+def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(tmp_path, monkeypatch):
+    """Verify watchdog_common.save_state, agy_store_fix.mode_ui_sync_check, AutonomousOvernightMonitor default log hb, MacroAnalyzer whale variant lookup, and NewsFeedCollector._effective_history_file."""
+    from types import SimpleNamespace
+    from orchestratorOS.lib import watchdog_common
+    from orchestratorOS.admin import agy_store_fix
+    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+    # 1. watchdog_common.save_state uses save_json_state and load_state recovers from .previous
+    st_path = tmp_path / "watchdog_state.json"
+    watchdog_common.save_state(str(st_path), {"a": 1})
+    assert watchdog_common.load_state(str(st_path)) == {"a": 1}
+
+    # 2. agy_store_fix.mode_ui_sync_check recovers UI_SYNC_STATE from .previous and cleans up .previous when empty
+    pb_file = tmp_path / "state.vscdb"
+    db_file = tmp_path / "summaries.db"
+    sync_state = tmp_path / "ui_sync_state.json"
+    pb_file.write_text("pb", encoding="utf-8")
+    db_file.write_text("db", encoding="utf-8")
+    monkeypatch.setattr(agy_store_fix, "PB", str(pb_file))
+    monkeypatch.setattr(agy_store_fix, "DB", str(db_file))
+    monkeypatch.setattr(agy_store_fix, "UI_SYNC_STATE", str(sync_state))
+    monkeypatch.setattr(agy_store_fix, "pending_ui_sync", lambda: ["cid-1"])
+    monkeypatch.setattr(agy_store_fix, "last_store_activity", lambda: 0.0)
+    rc1 = agy_store_fix.mode_ui_sync_check(10)
+    assert rc1 == agy_store_fix.UI_SYNC_READY
+    assert sync_state.exists()
+
+    # Corrupt primary and put valid state in .previous -> should still detect UI_SYNC_STUCK
+    prev_sync = tmp_path / "ui_sync_state.json.previous"
+    prev_sync.write_text(sync_state.read_text(encoding="utf-8"), encoding="utf-8")
+    sync_state.write_text("{corrupt", encoding="utf-8")
+    rc2 = agy_store_fix.mode_ui_sync_check(10)
+    assert rc2 == agy_store_fix.UI_SYNC_STUCK
+
+    monkeypatch.setattr(agy_store_fix, "pending_ui_sync", lambda: [])
+    rc3 = agy_store_fix.mode_ui_sync_check(10)
+    assert rc3 == agy_store_fix.UI_SYNC_NOTHING
+    assert not sync_state.exists() and not prev_sync.exists()
+
+    # 3. AutonomousOvernightMonitor.check_processes checks default logs/<name>.log when hb_log is empty and stale_threshold > 0
+    ws_dir = tmp_path / "ws"
+    (ws_dir / "logs").mkdir(parents=True)
+    (ws_dir / "procs.conf").write_text("tradeall.py|$ROOT|python tradeall.py|tradeall||300|bot\n", encoding="utf-8")
+    mon = AutonomousOvernightMonitor(workspace_dir=str(ws_dir))
+    monkeypatch.setattr(mon, "_is_process_running", lambda pat: True)
+    # Missing default log -> heartbeat_fresh is False
+    ph_missing = mon.check_processes(now=1000.0)
+    assert len(ph_missing) == 1 and ph_missing[0].heartbeat_fresh is False
+
+    log_f = ws_dir / "logs" / "tradeall.log"
+    log_f.write_text("active\n", encoding="utf-8")
+    import os
+    os.utime(str(log_f), (950.0, 950.0))
+    ph_fresh = mon.check_processes(now=1000.0)
+    assert len(ph_fresh) == 1 and ph_fresh[0].heartbeat_fresh is True
+
+    # 4. MacroAnalyzer.assess_market_advisor resolves whale_snapshot symbol variants (e.g. BTC/USDC -> BTCUSDC)
+    ma = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["BTC/USDC"])
+    (tmp_path / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({"symbol": "BTCUSDC", "top_traders_long_ratio": 1.42, "ts": 1000.0}),
+        encoding="utf-8",
+    )
+    captured_whale = {}
+
+    def _fake_review(*, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
+        captured_whale["whale"] = whale_telemetry
+        return SimpleNamespace(
+            market_bias="BULLISH",
+            risk_level="LOW",
+            recommended_action="ACCUMULATE",
+            summary="ok",
+            ts=1000.0,
+        )
+
+    monkeypatch.setattr(ma.gemini_advisor, "review", _fake_review)
+    assert ma.assess_market_advisor(force=True, now=1000.0) is True
+    assert isinstance(captured_whale.get("whale"), dict)
+    assert captured_whale["whale"]["symbol"] == "BTCUSDC"
+
+    # 5. NewsFeedCollector._effective_history_file resolves via MPTRADE_CACHEDB_DIR when default path is used
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+    nfc = NewsFeedCollector()
+    assert nfc._effective_history_file() == str(tmp_path / "news_feed_collect.json")
+
+

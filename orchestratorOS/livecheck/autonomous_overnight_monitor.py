@@ -150,6 +150,7 @@ class AutonomousOvernightMonitor:
             age_sec = 0.0
             fresh = True
 
+            hb_paths: List[str] = []
             if hb_log:
                 hb_paths = [
                     (
@@ -163,6 +164,12 @@ class AutonomousOvernightMonitor:
                     )
                     for f in hb_log.split(",") if f.strip()
                 ]
+            elif stale_threshold > 0:
+                raw_stem = os.path.basename(p["name"]).replace(".py", "")
+                clean_stem = "".join(c if (c.isalnum() or c in "-_") else "_" for c in raw_stem)
+                hb_paths = [os.path.join(self.workspace_dir, "logs", f"{clean_stem}.log")]
+
+            if hb_paths:
                 mtimes = []
                 missing_any = False
                 for hbp in hb_paths:
@@ -370,7 +377,7 @@ class AutonomousOvernightMonitor:
         if do_persist:
             try:
                 os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
-                from state_io import atomic_write_json
+                from state_io import save_json_state
 
                 def _clean_json(val: Any) -> Any:
                     if isinstance(val, float) and not math.isfinite(val):
@@ -381,7 +388,7 @@ class AutonomousOvernightMonitor:
                         return [_clean_json(v) for v in val]
                     return val
 
-                atomic_write_json(self.status_file, _clean_json(asdict(report)), indent=2)
+                save_json_state(self.status_file, _clean_json(asdict(report)), indent=2)
             except Exception as e:
                 logger.warning("Could not persist overnight status: %s", e)
 

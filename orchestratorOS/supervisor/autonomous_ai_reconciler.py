@@ -2230,7 +2230,7 @@ class AutonomousAIReconciler:
         """Persists the full audit report and heartbeat to disk in cachedb/."""
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
-            from state_io import atomic_write_json
+            from state_io import save_json_state
 
             def _clean_json(val: Any) -> Any:
                 if isinstance(val, float) and not math.isfinite(val):
@@ -2242,7 +2242,7 @@ class AutonomousAIReconciler:
                 return val
 
             report_dict = _clean_json(asdict(report))
-            atomic_write_json(self.state_file, report_dict, indent=2)
+            save_json_state(self.state_file, report_dict, indent=2)
 
             hb = _clean_json({
                 "status": "alive",
@@ -2254,10 +2254,10 @@ class AutonomousAIReconciler:
                 "market_trading_decision": report.market_trading_decision,
                 "market_trading_decisions": report.market_trading_decisions,
             })
-            atomic_write_json(self.heartbeat_file, hb, indent=2)
+            save_json_state(self.heartbeat_file, hb, indent=2)
             if os.path.basename(self.state_file) == "auto_cryptotrade_executor_eval.json":
-                atomic_write_json(os.path.join(self.cache_dir, "auto_trade_executor_eval.json"), report_dict, indent=2)
-                atomic_write_json(os.path.join(self.cache_dir, "auto_trade_executor.heartbeat"), hb, indent=2)
+                save_json_state(os.path.join(self.cache_dir, "auto_trade_executor_eval.json"), report_dict, indent=2)
+                save_json_state(os.path.join(self.cache_dir, "auto_trade_executor.heartbeat"), hb, indent=2)
         except Exception as e:
             logger.warning("Could not persist audit artifact: %s", e)
 

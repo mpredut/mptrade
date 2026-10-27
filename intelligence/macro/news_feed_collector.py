@@ -50,6 +50,9 @@ class NewsFeedSnapshot:
     ts: float
 
 
+DEFAULT_HISTORY_FILE = "cachedb/news_feed_collect.json"
+
+
 class NewsFeedCollector:
     """Collects and aggregates macro news headlines from free public RSS feeds across rolling windows."""
 
@@ -57,7 +60,7 @@ class NewsFeedCollector:
         self,
         rss_url: str = DEFAULT_RSS_URL,
         cache_ttl_sec: float = 60.0,  # 1 minute cache for RSS fetches
-        history_file: str = "cachedb/news_feed_collect.json",
+        history_file: str = DEFAULT_HISTORY_FILE,
         rolling_window_sec: float = 14400.0,  # 4 hours aggregation horizon
     ) -> None:
         self.rss_url = rss_url
@@ -86,6 +89,15 @@ class NewsFeedCollector:
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
         self._load_history()
 
+    def _effective_history_file(self) -> str:
+        if self.history_file == DEFAULT_HISTORY_FILE:
+            try:
+                from cachepaths import cache_path
+                return cache_path("news_feed_collect.json")
+            except Exception:
+                return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "news_feed_collect.json")
+        return self.history_file
+
     @property
     def _history(self) -> Dict[str, Tuple[float, NewsHeadline]]:
         """Backward-compatible alias for _aggregated_pool."""
@@ -98,9 +110,10 @@ class NewsFeedCollector:
 
     def _load_history(self) -> None:
         from state_io import read_recovering_previous
-        candidates = [self.history_file]
-        if "_collect.json" in self.history_file:
-            candidates.append(self.history_file.replace("_collect.json", "_history.json"))
+        hist_file = self._effective_history_file()
+        candidates = [hist_file]
+        if "_collect.json" in hist_file:
+            candidates.append(hist_file.replace("_collect.json", "_history.json"))
         now = time.time()
         for load_path in candidates:
             try:
@@ -150,6 +163,7 @@ class NewsFeedCollector:
                 logger.debug("Could not load news history from %s: %s", load_path, e)
 
     def _save_history(self) -> None:
+        hist_file = self._effective_history_file()
         try:
             from state_io import save_json_state
             payload = []
@@ -163,13 +177,13 @@ class NewsFeedCollector:
                     "is_high_severity": h.is_high_severity,
                     "first_seen_ts": ts,
                 })
-            save_json_state(self.history_file, payload, indent=2)
+            save_json_state(hist_file, payload, indent=2)
             # Dual-write legacy filename if using standardized collect naming
-            if "_collect.json" in self.history_file:
-                legacy = self.history_file.replace("_collect.json", "_history.json")
+            if "_collect.json" in hist_file:
+                legacy = hist_file.replace("_collect.json", "_history.json")
                 save_json_state(legacy, payload, indent=2)
         except Exception as e:
-            logger.debug("Could not save news history to %s: %s", self.history_file, e)
+            logger.debug("Could not save news history to %s: %s", hist_file, e)
 
     @staticmethod
     def _as_bool_flag(val: Any) -> bool:

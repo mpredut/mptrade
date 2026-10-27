@@ -21,7 +21,7 @@ from notify_engine.alertnotifiers import AlertNotifier  # noqa: E402
 from botcore import (  # noqa: E402
     load_env_stack, required_bool_env, required_float_env, required_int_env,
 )
-from state_io import atomic_write_json, read_recovering_previous  # noqa: E402
+from state_io import atomic_write_json, read_recovering_previous, save_json_state  # noqa: E402
 
 
 def _watchdog_event(title, message):
@@ -47,7 +47,7 @@ def load_state(state_file):
 def save_state(state_file, state):
     try:
         Path(state_file).parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(state_file, state)
+        save_json_state(state_file, state)
     except Exception as e:
         print(f"[watchdog] cannot write state: {e}")
 

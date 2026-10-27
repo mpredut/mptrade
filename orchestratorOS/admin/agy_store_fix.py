@@ -615,13 +615,15 @@ def mode_ui_sync_check(idle_sec: int) -> int:
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
         return UI_SYNC_NOTHING
+    from state_io import previous_generation_path, read_recovering_previous, save_json_state
     entries = pending_ui_sync()
     if not entries:
-        if os.path.exists(UI_SYNC_STATE):
-            try:
-                os.remove(UI_SYNC_STATE)
-            except OSError:
-                pass
+        for st_path in (UI_SYNC_STATE, previous_generation_path(UI_SYNC_STATE)):
+            if os.path.exists(st_path):
+                try:
+                    os.remove(st_path)
+                except OSError:
+                    pass
         return UI_SYNC_NOTHING
     idle_for = time.time() - last_store_activity()
     if idle_for < idle_sec:
@@ -629,20 +631,16 @@ def mode_ui_sync_check(idle_sec: int) -> int:
         return UI_SYNC_BUSY
     fingerprint = hashlib.sha1("\n".join(entries).encode()).hexdigest()
     state = {}
-    if os.path.exists(UI_SYNC_STATE):
-        try:
-            with open(UI_SYNC_STATE, encoding="utf-8") as f:
-                loaded = json.load(f)
-            state = loaded if isinstance(loaded, dict) else {}
-        except (OSError, ValueError):
-            state = {}
+    try:
+        loaded = read_recovering_previous(UI_SYNC_STATE, json.loads, default=None)
+        state = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError, TypeError):
+        state = {}
     if state.get("fingerprint") == fingerprint:
         log.warning("ui-sync-check: same %d pending entries persisted after the last restart; not restarting again: %s",
                     len(entries), entries[:5])
         return UI_SYNC_STUCK
-    with open(UI_SYNC_STATE + ".tmp", "w", encoding="utf-8") as f:
-        json.dump({"fingerprint": fingerprint, "ts": time.time(), "entries": entries}, f, indent=1)
-    os.replace(UI_SYNC_STATE + ".tmp", UI_SYNC_STATE)
+    save_json_state(UI_SYNC_STATE, {"fingerprint": fingerprint, "ts": time.time(), "entries": entries}, indent=1)
     log.info("ui-sync-check: restart due (%d pending, idle %.0fs): %s", len(entries), idle_for, entries[:10])
     return UI_SYNC_READY
 
