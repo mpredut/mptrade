@@ -20,9 +20,16 @@ import uuid
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
-for _p in (_HERE, _ROOT_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+if sys.path[:1] != [_HERE]:
+    if _HERE in sys.path:
+        sys.path.remove(_HERE)
+    sys.path.insert(0, _HERE)
+for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
+    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
+    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
+        sys.modules.pop(_mod_name, None)
 
 from state_io import atomic_write_json
 
@@ -34,7 +41,18 @@ try:
 except ImportError:
     from ipo_common import log, now_str
     from ipo_notify import notify
-    from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
+    try:
+        from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
+    except ImportError:
+        import importlib.util as _ilu
+        _md_spec = _ilu.spec_from_file_location(
+            "t212_order_manager_md", os.path.join(_HERE, "market_data.py")
+        )
+        _md_mod = _ilu.module_from_spec(_md_spec)
+        _md_spec.loader.exec_module(_md_mod)
+        get_usd_ron = _md_mod.get_usd_ron
+        get_price_usd = _md_mod.get_price_usd
+        t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
 
 # Legacy marker retained only for conservative migration of pre-v2 SPCX intents.

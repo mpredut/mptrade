@@ -35,8 +35,15 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_ROOT_DIR = os.path.dirname(_HERE)
+for _p in (_ROOT_DIR, _HERE):
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client", "order_manager", "strategy"):
+    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
+    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
+        sys.modules.pop(_mod_name, None)
 
 try:
     from .ipo_common import (
@@ -53,7 +60,17 @@ except ImportError:
         load_t212_environment, log, now_str, float_env, ET, required_env,
         required_float_env, required_bool_env,
     )
-    from market_data import check_market, t212_to_yahoo
+    try:
+        from market_data import check_market, t212_to_yahoo
+    except ImportError:
+        import importlib.util as _ilu
+        _md_spec = _ilu.spec_from_file_location(
+            "t212_ipo_md", os.path.join(_HERE, "market_data.py")
+        )
+        _md_mod = _ilu.module_from_spec(_md_spec)
+        _md_spec.loader.exec_module(_md_mod)
+        check_market = _md_mod.check_market
+        t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
     from ipo_notify import notify
     from order_manager import resolve_quantity, place_order_with_retry
