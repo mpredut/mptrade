@@ -4058,6 +4058,101 @@ def test_batch20_visuals_summary_store_and_composite_hardening(tmp_path):
     assert ev2.price == 0.0 and ev2.can_execute is False
 
 
+def test_batch21_monitortrades_position_exit_manager_active_intents_and_archiver_hardening():
+    from types import SimpleNamespace
+    import active_intents
+    import monitortrades as mt
+    import tradeall_price_archiver as archiver
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentrySnapshot,
+    )
 
+    # 1. monitortrades._FifoTradeIdTracker sanitizes maxsize and refreshes FIFO order
+    tracker = mt._FifoTradeIdTracker(maxsize=True)  # type: ignore[arg-type]
+    assert tracker._maxsize == 10000
+    small_tracker = mt._FifoTradeIdTracker(maxsize=4)
+    for k in ("t1", "t2", "t3", "t4"):
+        small_tracker.add(k)
+    small_tracker.add("t1")  # refresh t1 to most recent
+    small_tracker.add("t5")  # prune oldest 50% (t2, t3, t4) -> keeps t1, t5
+    assert "t1" in small_tracker and "t5" in small_tracker
 
+    # 2. monitortrades.get_relevant_trade handles tuples and get_position_stats handles None from api.get_orders
+    orders_tuple = (
+        {"price": 60000.0, "qty": 0.1, "time": 1700000000000},
+        {"price": 62000.0, "qty": 0.1, "time": 1700000060000},
+    )
+    px, ts_s, ok = mt.get_relevant_trade(orders_tuple, "BUY", symbol="BTCUSDC")
+    assert ok is True and px == 62000.0 and ts_s == 1700000060.0
+    none_api = SimpleNamespace(name="none_api", get_orders=lambda sym, side, maxage: None)
+    stats = mt.get_position_stats("BTC-USDC", 3600, api=none_api, force_refresh=True)
+    assert stats["buy_count"] == 0 and stats["sell_count"] == 0 and stats["net_qty"] == 0.0
+
+    # 3. PositionSnapshot and ReentrySnapshot normalize string/bool/NaN numeric fields, and scalar vol_resolver works
+    ps = PositionSnapshot(
+        symbol="BTCUSDC",
+        current_price="60000",  # type: ignore[arg-type]
+        avg_buy_price="64000",  # type: ignore[arg-type]
+        net_qty="1.5",  # type: ignore[arg-type]
+        sellable_qty=True,  # type: ignore[arg-type]
+        current_time_s="1700000000",  # type: ignore[arg-type]
+        vol_1h=float("nan"),
+        sma_value="61000.5",  # type: ignore[arg-type]
+    )
+    assert ps.net_qty == 1.5 and ps.sellable_qty == 0.0 and ps.current_time_s == 1700000000.0 and ps.vol_1h == 0.0
+    assert ps.sma_value == 61000.5
+    rs = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price="60000",  # type: ignore[arg-type]
+        last_sell_price="62000",  # type: ignore[arg-type]
+        current_time_s=True,  # type: ignore[arg-type]
+        last_sell_time_s="1699999000",  # type: ignore[arg-type]
+        vol_1h="0.025",  # type: ignore[arg-type]
+    )
+    assert rs.current_time_s == 0.0 and rs.last_sell_time_s == 1699999000.0 and rs.vol_1h == 0.025
+
+    mgr = PositionExitManager(config=PositionExitConfig(allow_external_cache=False), vol_resolver=lambda _s: 0.03)  # type: ignore[arg-type]
+    buf, meta = mgr.compute_disaster_buffer("BTCUSDC", None)  # type: ignore[arg-type]
+    assert buf > 0.0 and meta["vol_1h"] == 0.03
+    pb, pb_meta = mgr.compute_tp_anomaly_pullback("BTCUSDC", None, "0.25")  # type: ignore[arg-type]
+    assert pb > 0.0 and pb_meta["vol_1h"] == 0.03
+
+    # 4. active_intents._intent_row normalizes shorthand sides ("B"/"S") and string terminal_status
+    row_b = active_intents._intent_row(
+        {"intent_id": "id-b", "side": "b", "qty": 1.0, "symbol": "BTCUSDC"},
+        owner="kraken",
+        source="s",
+        location="$",
+        inherited={},
+    )
+    assert row_b is not None and row_b["side"] == "BUY"
+    row_term = active_intents._intent_row(
+        {"intent_id": "id-term", "side": "SELL", "qty": 1.0, "status": "accepted", "terminal_status": "filled"},
+        owner="kraken",
+        source="s",
+        location="$",
+        inherited={},
+    )
+    assert row_term is None
+
+    # 5. tradeall_price_archiver._shutdown isolates component failures so remaining caches flush and ws stops
+    events = []
+    bad_cache = SimpleNamespace(
+        shutdown=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        save_state_to_file=lambda: events.append("bad_flushed"),
+    )
+    good_cache = SimpleNamespace(
+        shutdown=lambda: events.append("good_shutdown"),
+        save_state_to_file=lambda: events.append("good_flushed"),
+    )
+    cp_mgr = SimpleNamespace(
+        unsubscribe_price=lambda c: events.append("unsub"),
+        shutdown=lambda: events.append("cp_shutdown"),
+    )
+    ws_mod = SimpleNamespace(bapi_ws_manager=SimpleNamespace(stop=lambda: events.append("ws_stop")))
+    archiver._shutdown([bad_cache, good_cache], cp_mgr, ws_mod)
+    assert events == ["unsub", "unsub", "bad_flushed", "good_shutdown", "good_flushed", "cp_shutdown", "ws_stop"]
 

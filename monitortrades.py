@@ -88,13 +88,24 @@ class _FifoTradeIdTracker:
     """Memory-bounded trade ID tracker preserving FIFO insertion order."""
     def __init__(self, maxsize: int = 10000):
         self._data: dict[str, None] = {}
-        self._maxsize = maxsize
+        if isinstance(maxsize, bool) or maxsize is None:
+            ms = 10000
+        else:
+            try:
+                mf = float(maxsize)
+                ms = int(mf) if (math.isfinite(mf) and int(mf) >= 2) else 10000
+            except (TypeError, ValueError, OverflowError):
+                ms = 10000
+        self._maxsize = ms
 
     def add(self, item: str) -> None:
-        self._data[str(item)] = None
+        key = str(item)
+        if key in self._data:
+            self._data.pop(key, None)
+        self._data[key] = None
         if len(self._data) > self._maxsize:
             # Prune oldest 50% in FIFO insertion order
-            excess = len(self._data) - (self._maxsize // 2)
+            excess = len(self._data) - max(1, self._maxsize // 2)
             for _ in range(excess):
                 self._data.pop(next(iter(self._data)), None)
 
@@ -265,6 +276,8 @@ def is_trend_up(symbol, window_seconds=None, now=None):
 
 def _order_timestamp_ms(order: dict) -> float:
     """Extract normalized millisecond timestamp from an order or fill record."""
+    if not isinstance(order, dict):
+        return 0.0
     return float(extract_timestamp_ms(order, default=0) or 0)
 
 
@@ -276,7 +289,10 @@ def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now
         return None, 0, True
 
     if len(trade_orders) > 1:
-        trade_orders.sort(key=_order_timestamp_ms, reverse=True)
+        if isinstance(trade_orders, list):
+            trade_orders.sort(key=_order_timestamp_ms, reverse=True)
+        else:
+            trade_orders = sorted(trade_orders, key=_order_timestamp_ms, reverse=True)
     first = trade_orders[0]
     trade_price = extract_order_price(first)
     trade_time = _order_timestamp_ms(first) / 1000.0  # Seconds.
@@ -439,6 +455,8 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         buy_orders = api.get_orders(symbol, "BUY", maxage_trade_s)
     if sell_orders is None:
         sell_orders = api.get_orders(symbol, "SELL", maxage_trade_s)
+    buy_orders = buy_orders if isinstance(buy_orders, list) else list(buy_orders or ())
+    sell_orders = sell_orders if isinstance(sell_orders, list) else list(sell_orders or ())
 
     now_val = time.time()
     if now_ts is not None and not isinstance(now_ts, bool):
@@ -449,7 +467,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         except (TypeError, ValueError):
             pass
     now_ts = now_val
-    sym_key = str(symbol or "").strip().upper().replace("/", "")
+    sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
     maxage_f = _safe_f(maxage_trade_s, 0.0) or 0.0
     cache_key = (_api_cache_identity(api), sym_key, maxage_f)
     total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
@@ -1994,8 +2012,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     current_time_s = int(now_fn())
 
     # 1. Fetch recent BUY and SELL orders through the facade in normalized form.
-    trade_orders_buy = inst.orders("BUY", maxage_trade_s)
-    trade_orders_sell = inst.orders("SELL", maxage_trade_s)
+    raw_buy_orders = inst.orders("BUY", maxage_trade_s)
+    raw_sell_orders = inst.orders("SELL", maxage_trade_s)
+    trade_orders_buy = raw_buy_orders if isinstance(raw_buy_orders, list) else list(raw_buy_orders or ())
+    trade_orders_sell = raw_sell_orders if isinstance(raw_sell_orders, list) else list(raw_sell_orders or ())
     if not (trade_orders_buy or trade_orders_sell):
         if _verbose:
             print(f"No trade orders found for {symbol} in the last {maxage_trade_s} seconds.")

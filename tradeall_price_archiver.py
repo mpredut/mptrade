@@ -77,14 +77,35 @@ def _symbols(raw):
 def _shutdown(caches, current_price_mgr, ws_module=bapi_ws, nb_poller=None):
     """Stop producers, flush every pending tick, then close shared resources."""
     if nb_poller is not None:
-        nb_poller.stop()
-    for cache in caches:
-        current_price_mgr.unsubscribe_price(cache)
-    for cache in caches:
-        cache.shutdown()
-        cache.save_state_to_file()
-    current_price_mgr.shutdown()
-    ws_module.bapi_ws_manager.stop()
+        try:
+            nb_poller.stop()
+        except Exception:
+            pass
+    for cache in (caches or ()):
+        if current_price_mgr is not None:
+            try:
+                current_price_mgr.unsubscribe_price(cache)
+            except Exception:
+                pass
+    for cache in (caches or ()):
+        try:
+            cache.shutdown()
+        except Exception:
+            pass
+        try:
+            cache.save_state_to_file()
+        except Exception:
+            pass
+    if current_price_mgr is not None:
+        try:
+            current_price_mgr.shutdown()
+        except Exception:
+            pass
+    if ws_module is not None and getattr(ws_module, "bapi_ws_manager", None) is not None:
+        try:
+            ws_module.bapi_ws_manager.stop()
+        except Exception:
+            pass
 
 
 def main():

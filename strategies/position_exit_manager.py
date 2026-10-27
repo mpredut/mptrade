@@ -201,6 +201,26 @@ class PositionSnapshot(PriceGeometrySnapshot):
                         setattr(self, attr, f)
                 except (TypeError, ValueError):
                     pass
+        for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
+            val = getattr(self, attr, 0.0)
+            if val is None or isinstance(val, bool):
+                setattr(self, attr, 0.0)
+            else:
+                try:
+                    f = float(val)
+                    setattr(self, attr, f if (math.isfinite(f) and f >= 0.0) else 0.0)
+                except (TypeError, ValueError, OverflowError):
+                    setattr(self, attr, 0.0)
+        for attr in ("sma_value", "window_move_pct"):
+            val = getattr(self, attr, None)
+            if val is not None and not isinstance(val, bool):
+                try:
+                    f = float(val)
+                    setattr(self, attr, f if math.isfinite(f) else None)
+                except (TypeError, ValueError, OverflowError):
+                    setattr(self, attr, None)
+            elif isinstance(val, bool):
+                setattr(self, attr, None)
         self.trend_up = _parse_bool_flag(self.trend_up, False)
 
     @property
@@ -328,6 +348,25 @@ class ReentrySnapshot(PriceGeometrySnapshot):
                         setattr(self, attr, f)
                 except (TypeError, ValueError):
                     pass
+        for attr in ("current_time_s", "vol_1h"):
+            val = getattr(self, attr, 0.0)
+            if val is None or isinstance(val, bool):
+                setattr(self, attr, 0.0)
+            else:
+                try:
+                    f = float(val)
+                    setattr(self, attr, f if (math.isfinite(f) and f >= 0.0) else 0.0)
+                except (TypeError, ValueError, OverflowError):
+                    setattr(self, attr, 0.0)
+        if self.last_sell_time_s is not None:
+            if isinstance(self.last_sell_time_s, bool):
+                self.last_sell_time_s = None
+            else:
+                try:
+                    f = float(self.last_sell_time_s)
+                    self.last_sell_time_s = f if (math.isfinite(f) and f > 0.0) else None
+                except (TypeError, ValueError, OverflowError):
+                    self.last_sell_time_s = None
         self.trend_up = _parse_bool_flag(self.trend_up, False)
         self.trend_down = _parse_bool_flag(self.trend_down, False)
 
@@ -605,6 +644,7 @@ class PositionExitManager:
         Variant B (Dynamic Volatility): buffer_b = vol_1h * sl_disaster_vol_multiplier
         Effective: max(buffer_a, buffer_b, sl_disaster_buffer_min_pct)
         """
+        lost_threshold = _resolve_positive_threshold(lost_threshold, self.config.lost_threshold)
         buf_a = lost_threshold * self.config.sl_disaster_buffer_ratio
 
         eff_vol = 0.0
@@ -618,7 +658,16 @@ class PositionExitManager:
         eff_src = vol_source
         if eff_vol <= 0:
             if self.vol_resolver is not None:
-                res_vol, eff_src = self.vol_resolver(symbol)
+                try:
+                    resolved = self.vol_resolver(symbol)
+                    if isinstance(resolved, (tuple, list)):
+                        res_vol = resolved[0] if len(resolved) > 0 else 0.0
+                        if len(resolved) > 1 and isinstance(resolved[1], str) and resolved[1].strip():
+                            eff_src = resolved[1].strip()
+                    else:
+                        res_vol = resolved
+                except Exception:
+                    res_vol = 0.0
                 if res_vol is not None and not isinstance(res_vol, bool):
                     try:
                         rvf = float(res_vol)
@@ -1022,6 +1071,8 @@ class PositionExitManager:
         When peak_gain exceeds the anomaly threshold, allowed pullback tightens from
         tp_pullback_pct down toward tp_ratchet_min_trail without selling against the trend.
         """
+        gain_threshold = _resolve_positive_threshold(gain_threshold, self.config.gain_threshold)
+        peak_gain = _resolve_nonneg_threshold(peak_gain, 0.0)
         eff_vol = 0.0
         if vol_1h is not None and not isinstance(vol_1h, bool):
             try:
@@ -1032,7 +1083,11 @@ class PositionExitManager:
                 eff_vol = 0.0
         if eff_vol <= 0:
             if self.vol_resolver is not None:
-                res_vol, _ = self.vol_resolver(symbol)
+                try:
+                    resolved = self.vol_resolver(symbol)
+                    res_vol = resolved[0] if isinstance(resolved, (tuple, list)) and len(resolved) > 0 else resolved
+                except Exception:
+                    res_vol = 0.0
                 if res_vol is not None and not isinstance(res_vol, bool):
                     try:
                         rvf = float(res_vol)

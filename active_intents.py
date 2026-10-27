@@ -119,6 +119,10 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     ):
         return None
     side_str = str(side).strip().upper()
+    if side_str in {"B", "BID", "LONG"}:
+        side_str = "BUY"
+    elif side_str in {"S", "ASK", "SHORT"}:
+        side_str = "SELL"
     if side_str not in {"BUY", "SELL"}:
         return None
     status = str(_first(
@@ -127,6 +131,10 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     terminal_payload = row.get("terminal_status")
     if isinstance(terminal_payload, dict):
         status = str(_first(terminal_payload, "status") or status).strip().lower()
+    elif isinstance(terminal_payload, str):
+        ts_val = _first(row, "terminal_status")
+        if ts_val:
+            status = str(ts_val).strip().lower()
     if status in _TERMINAL:
         return None
     symbol = (_first(row, "symbol", "ticker", "pair")
