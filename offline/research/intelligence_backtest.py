@@ -110,10 +110,20 @@ def _precompute_intelligence_tape(
     rolling_prices: List[float] = []
     rolling_history: List[Tuple[float, float]] = []
     current_trend = "FLAT"
-    trend_start_ts = 0.0
+    trend_start_ts: Optional[float] = None
     tape: List[dict] = []
 
-    for t, p in sampled:
+    for raw_t, raw_p in sampled:
+        if isinstance(raw_t, bool) or isinstance(raw_p, bool):
+            continue
+        try:
+            t, p = float(raw_t), float(raw_p)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(t) and math.isfinite(p) and p > 0.0):
+            continue
+        if trend_start_ts is None:
+            trend_start_ts = t
         rolling_prices.append(p)
         rolling_history.append((t, p))
         if len(rolling_prices) > 300:

@@ -357,7 +357,7 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         return {}
 
     # Load anchor ts
-    anchor_path = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.anchor"
+    anchor_path = SHADOW_OHLC_JSON.parent / "HYPEUSD_240m.anchor"
     anchor_ts = 0
     if anchor_path.exists():
         try:
@@ -367,15 +367,27 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         except (OSError, ValueError, OverflowError):
             anchor_ts = 0
 
-    valid_bars = [
-        b for b in full_bars
-        if isinstance(b, (list, tuple)) and len(b) >= 5
-        and all(isinstance(b[i], (int, float)) and not isinstance(b[i], bool) and math.isfinite(float(b[i])) for i in range(5))
-        and all(float(b[i]) > 0 for i in range(1, 5))
-    ]
-    fwd_bars = [b for b in valid_bars if float(b[0]) >= anchor_ts]
-    full_ohlc = [(float(b[1]), float(b[2]), float(b[3]), float(b[4])) for b in valid_bars]
-    fwd_ohlc = [(float(b[1]), float(b[2]), float(b[3]), float(b[4])) for b in fwd_bars]
+    valid_bars = []
+    for b in full_bars:
+        if not isinstance(b, (list, tuple)) or len(b) < 5:
+            continue
+        if any(isinstance(b[i], bool) or b[i] is None for i in range(5)):
+            continue
+        try:
+            ts_f = float(b[0])
+            o_f, h_f, l_f, c_f = float(b[1]), float(b[2]), float(b[3]), float(b[4])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            math.isfinite(ts_f)
+            and all(math.isfinite(x) and x > 0 for x in (o_f, h_f, l_f, c_f))
+            and h_f >= max(o_f, l_f, c_f)
+            and l_f <= min(o_f, h_f, c_f)
+        ):
+            valid_bars.append((ts_f, o_f, h_f, l_f, c_f))
+    fwd_bars = [b for b in valid_bars if b[0] >= anchor_ts]
+    full_ohlc = [(b[1], b[2], b[3], b[4]) for b in valid_bars]
+    fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
 
     if len(fwd_ohlc) < 2 or len(full_ohlc) < 2:
         print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")

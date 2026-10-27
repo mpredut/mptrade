@@ -110,14 +110,24 @@ def _precompute_chop_bar_tape(
 
     kalman = KalmanTrendTrigger(gap_reset_sec=max(1800.0, step_seconds * 3.0))
     mean_rev = MeanReversionTrigger(rsi_period=14, bb_period=20)
-    btc_dict = {int(t // step_seconds): p for t, p in btc_sampled} if btc_sampled else {}
+    btc_dict: Dict[int, float] = {}
+    if btc_sampled:
+        for raw_bt, raw_bp in btc_sampled:
+            if isinstance(raw_bt, bool) or isinstance(raw_bp, bool):
+                continue
+            try:
+                bt_f, bp_f = float(raw_bt), float(raw_bp)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(bt_f) and math.isfinite(bp_f) and bp_f > 0.0:
+                btc_dict[int(bt_f // step_seconds)] = bp_f
 
     rolling_prices: List[float] = []
     btc_rolling: List[float] = []
     current_trend = "CHOP"
-    trend_start_ts = sampled[0][0]
+    trend_start_ts: Optional[float] = None
     btc_regime = "CHOP"
-    btc_trend_start_ts = sampled[0][0]
+    btc_trend_start_ts: Optional[float] = None
     last_regime_check_ts = 0.0
     tape: List[Dict[str, Any]] = []
 
@@ -130,6 +140,10 @@ def _precompute_chop_bar_tape(
             continue
         if not (math.isfinite(t) and math.isfinite(p) and p > 0.0):
             continue
+        if trend_start_ts is None:
+            trend_start_ts = t
+        if btc_trend_start_ts is None:
+            btc_trend_start_ts = t
         rolling_prices.append(p)
         if len(rolling_prices) > 96:  # 24 hours of 15m bars
             rolling_prices.pop(0)

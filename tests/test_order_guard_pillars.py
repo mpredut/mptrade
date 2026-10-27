@@ -1289,6 +1289,57 @@ def test_batch45_offline_backtests_and_runners_hardening(monkeypatch):
     assert captured["venue"] == "kraken"
 
 
+def test_batch46_offline_research_tapes_and_ranges_hardening(tmp_path, monkeypatch):
+    import json
+    import offline.research.backtest_ranges as br
+    import offline.research.chop_weight_backtest as cwb
+    import offline.research.comprehensive_strategy_sweep as css
+    import offline.research.intelligence_backtest as ib
+
+    # 1. intelligence_backtest._precompute_intelligence_tape initializes trend_start_ts to first valid t
+    tape = ib._precompute_intelligence_tape(
+        "BTCUSDC",
+        [(True, 100.0), ("1700000000", "50000.0"), (1700000300.0, 50100.0)],
+        step_seconds=300,
+        parabolic_surge_pct=3.5,
+    )
+    assert len(tape) == 2
+    assert tape[0]["trend_duration_sec"] == 0.0
+    assert tape[1]["trend_duration_sec"] == 300.0
+
+    # 2. chop_weight_backtest._precompute_chop_bar_tape sanitizes btc_sampled and first bar ts
+    chop_tape = cwb._precompute_chop_bar_tape(
+        "TAOUSDC",
+        [(None, 100.0), ("1700000000", "350.0"), (1700000900.0, 352.0)],
+        btc_sampled=[(True, 50000.0), ("1700000000", "60000.0")],
+        step_seconds=900,
+    )
+    assert len(chop_tape) == 2
+    assert chop_tape[0]["trend_start_ts"] == 1700000000.0
+    assert chop_tape[0]["btc_trend_start_ts"] == 1700000000.0
+
+    # 3. comprehensive_strategy_sweep.run_live_forward_shadow accepts string OHLC values
+    shadow_json = tmp_path / "shadow.ohlc.json"
+    shadow_json.write_text(
+        json.dumps([
+            [2000000000, "25.0", "25.5", "24.8", "25.2"],
+            [2000014400, "25.2", "26.0", "25.0", "25.8"],
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(css, "SHADOW_OHLC_JSON", shadow_json)
+    res_shadow = css.run_live_forward_shadow({"00_LIVE_CURRENT": {}})
+    assert "00_LIVE_CURRENT" in res_shadow
+
+    # 4. backtest_ranges.scan_all skips non-path items and normalizes Path objects
+    conf_file = tmp_path / "sample.conf"
+    conf_file.write_text("# BACKTEST: 1.0, 2.0\nmt.gain = 1.5\n", encoding="utf-8")
+    scanned = br.scan_all([conf_file, {"unhashable": 1}, None])
+    assert str(conf_file) in scanned
+    assert scanned[str(conf_file)] == {"mt.gain": ["1.0", "2.0"]}
+
+
+
 
 
 

@@ -78,13 +78,19 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
 
 def scan_all(paths: List[str]) -> Dict[str, Dict[str, List[str]]]:
     """{path: {key: [values]}} for a list of config files."""
-    if paths is None or isinstance(paths, (bool, int, float)):
+    if paths is None or isinstance(paths, (bool, int, float, dict)):
         return {}
     if isinstance(paths, (str, bytes, os.PathLike)):
-        p_str = os.fspath(paths).decode("utf-8", errors="replace") if isinstance(paths, bytes) else str(paths)
+        p_str = os.fspath(paths).decode("utf-8", errors="replace") if isinstance(paths, bytes) else str(os.fspath(paths))
         return {p_str: scan_backtest_ranges(p_str)}
     try:
         items = list(paths)
     except TypeError:
         return {}
-    return {p: scan_backtest_ranges(p) for p in items}
+    out: Dict[str, Dict[str, List[str]]] = {}
+    for p in items:
+        if not isinstance(p, (str, bytes, os.PathLike)):
+            continue
+        p_str = os.fspath(p).decode("utf-8", errors="replace") if isinstance(p, bytes) else str(os.fspath(p))
+        out[p_str] = scan_backtest_ranges(p_str)
+    return out
