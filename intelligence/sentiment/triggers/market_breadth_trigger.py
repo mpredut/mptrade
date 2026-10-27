@@ -42,6 +42,16 @@ class MarketBreadthTrigger:
         bat = _safe_float(blowoff_advance_threshold, 0.88)
         self.blowoff_advance_threshold = bat if (0.0 <= bat <= 1.0) else 0.88
         self.blowoff_median_threshold = _safe_float(blowoff_median_threshold, 6.0)
+        if self.washout_advance_threshold > self.blowoff_advance_threshold:
+            self.washout_advance_threshold, self.blowoff_advance_threshold = (
+                self.blowoff_advance_threshold,
+                self.washout_advance_threshold,
+            )
+        if self.washout_median_threshold > self.blowoff_median_threshold:
+            self.washout_median_threshold, self.blowoff_median_threshold = (
+                self.blowoff_median_threshold,
+                self.washout_median_threshold,
+            )
 
     def evaluate(
         self,
@@ -57,7 +67,8 @@ class MarketBreadthTrigger:
             return None, None
         raw_adv = getattr(snapshot, "advance_ratio", None)
         raw_med = getattr(snapshot, "median_change_pct", None)
-        regime = str(getattr(snapshot, "regime", None) or "NEUTRAL")
+        raw_regime = getattr(snapshot, "regime", None)
+        regime = str(raw_regime).strip() if (isinstance(raw_regime, str) and raw_regime.strip()) else "NEUTRAL"
         if raw_adv is None or raw_med is None or isinstance(raw_adv, bool) or isinstance(raw_med, bool):
             return None, None
         try:

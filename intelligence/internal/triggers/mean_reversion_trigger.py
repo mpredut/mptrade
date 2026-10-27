@@ -60,11 +60,15 @@ class MeanReversionTrigger:
         self.rsi_period = _safe_pos_int(rsi_period, 14)
         self.rsi_low = _safe_float(rsi_low, 30.0)
         self.rsi_high = _safe_float(rsi_high, 70.0)
+        if self.rsi_low > self.rsi_high:
+            self.rsi_low, self.rsi_high = self.rsi_high, self.rsi_low
         self.bb_period = _safe_pos_int(bb_period, 20)
         bb_k_f = _safe_float(bb_k, 2.0)
         self.bb_k = bb_k_f if bb_k_f > 0.0 else 2.0
         self.pb_low = _safe_float(pb_low, 0.0)
         self.pb_high = _safe_float(pb_high, 1.0)
+        if self.pb_low > self.pb_high:
+            self.pb_low, self.pb_high = self.pb_high, self.pb_low
 
         self.prev_price: float | None = None
         self.avg_gain: float | None = None

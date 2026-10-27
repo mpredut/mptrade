@@ -37,6 +37,8 @@ class SentimentContrarianTrigger:
 
         self.extreme_fear_entry = _safe_thresh(extreme_fear_entry, 22)
         self.extreme_greed_exit = _safe_thresh(extreme_greed_exit, 85)
+        if self.extreme_fear_entry > self.extreme_greed_exit:
+            self.extreme_fear_entry, self.extreme_greed_exit = self.extreme_greed_exit, self.extreme_fear_entry
 
     def evaluate(
         self,
@@ -78,7 +80,8 @@ class SentimentContrarianTrigger:
         if not math.isfinite(val_f):
             return None, None
         val = int(round(val_f)) if float(val_f).is_integer() else val_f
-        cls_label = getattr(snapshot, "classification", None) or "Unknown"
+        raw_cls = getattr(snapshot, "classification", None)
+        cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
         trend_7d = getattr(snapshot, "trend_7d_change", None)
 
         # 1. Contrarian ENTRY BUY during Extreme Fear

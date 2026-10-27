@@ -13013,6 +13013,29 @@ def test_iteration124_monitororder_ttl_owner_and_monitortrades_uid_safety():
     assert mt._extract_trade_uid({"id": "null", "tradeId": 12.5}) == ""
 
 
+def test_iteration125_enum_str_and_order_guard_caller_module_safety():
+    """Verify Iteration 125 (str, Enum) __str__ value formatting in Python 3.12+ and order_guard.resolve_caller_module boolean immunity."""
+    import order_guard as og
+    from intelligence.internal.guards.guard_decision import BrakeAction
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
+    from market_regime import MarketRegimeHorizon
+    from strategies.position_exit_manager import ExitAction, ReentryAction
+
+    # 1. All (str, Enum) classes return raw value on str() in Python 3.12+
+    assert str(TriggerAction.ENTRY) == "ENTRY"
+    assert str(TriggerSide.BUY) == "BUY"
+    assert str(BrakeAction.HARD_VETO) == "HARD_VETO"
+    assert str(ExitAction.SELL) == "SELL"
+    assert str(ReentryAction.ENTER) == "ENTER"
+    assert str(MarketRegimeHorizon.SHORT) == "short"
+
+    # 2. resolve_caller_module ignores boolean module/prefix/client_order_id and resolves valid lineage
+    assert og.resolve_caller_module(True, client_order_id="TA_main_123") == "tradeall"
+    assert og.resolve_caller_module(None, prefix=True, client_order_id="MT_stop_1") == "monitortrades"
+    assert og._provider_name(True) == ""
+
+
+
 def test_iteration125_guard_layer_mode_and_type_safety(monkeypatch):
     """Verify Iteration 125 guard layer mode normalization, lowercase trigger evaluation, and boolean telemetry safety."""
     from intelligence.external.guards.smart_stop_loss_guard import (
@@ -13090,6 +13113,75 @@ def test_iteration125_guard_layer_mode_and_type_safety(monkeypatch):
         gemini_client=type("G", (), {"_custom_runner": True})(),
     )
     assert psr_fac.mode == "off"
+
+
+def test_iteration126_composite_bypass_trigger_bounds_and_survival_allow_network(monkeypatch):
+    """Verify Iteration 126 CompositeMarketIntelligence bypass_guards support, trigger threshold ordering, and survival allow_network string parsing."""
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.state import survival as surv_mod
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+
+    # 1. TrendSignificanceGuard handles both Enum members and lowercase strings
+    ts_guard = TrendSignificanceGuard(max_p_value=0.05)
+    t_enum = TriggerEvent(
+        symbol="BTCUSDC",
+        side=TriggerSide.BUY,
+        action=TriggerAction.ENTRY,
+        source="kalman",
+        price=100.0,
+        strength=0.8,
+        confidence=0.8,
+        reason="test",
+    )
+    dec_enum = ts_guard.evaluate(t_enum, [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0])
+    assert dec_enum.allowed is False
+    assert "trend_direction_inverted" in dec_enum.reason
+
+    # 2. CompositeMarketIntelligence.evaluate_guards honours both G_QLIMIT2 and legacy component names
+    comp = CompositeMarketIntelligence(parabolic_surge_pct=2.0)
+    hist_surge = [(1000.0, 100.0), (1600.0, 110.0)]
+    dec_blocked = comp.evaluate_guards("BTCUSDC", "BUY", 110.0, price_history=hist_surge, now=1600.0)
+    assert dec_blocked.allowed is False
+    dec_byp_code = comp.evaluate_guards(
+        "BTCUSDC", "BUY", 110.0, price_history=hist_surge, now=1600.0, bypass_guards="G_QLIMIT2"
+    )
+    assert dec_byp_code.allowed is True
+    dec_byp_legacy = comp.evaluate_guards(
+        "BTCUSDC", "BUY", 110.0, price_history=hist_surge, now=1600.0, bypass_guards="parabolic_guard"
+    )
+    assert dec_byp_legacy.allowed is True
+
+    # 3. MeanReversionTrigger, SentimentContrarianTrigger, and MarketBreadthTrigger normalize inverted thresholds
+    mrt = MeanReversionTrigger(rsi_low=75.0, rsi_high=25.0, pb_low=0.9, pb_high=0.1)
+    assert mrt.rsi_low == 25.0 and mrt.rsi_high == 75.0
+    assert mrt.pb_low == 0.1 and mrt.pb_high == 0.9
+
+    sct = SentimentContrarianTrigger(extreme_fear_entry=85, extreme_greed_exit=20)
+    assert sct.extreme_fear_entry == 20 and sct.extreme_greed_exit == 85
+    sig_sc, ev_sc = sct.evaluate("BTCUSDC", 100.0, type("FG", (), {"value": 15, "classification": True, "trend_7d_change": -5, "historical_values": []})())
+    assert sig_sc == "CONTRARIAN_BUY" and "Unknown" in ev_sc.reason
+
+    mbt = MarketBreadthTrigger(
+        washout_advance_threshold=0.90,
+        blowoff_advance_threshold=0.10,
+        washout_median_threshold=6.0,
+        blowoff_median_threshold=-4.0,
+    )
+    assert mbt.washout_advance_threshold == 0.10 and mbt.blowoff_advance_threshold == 0.90
+    assert mbt.washout_median_threshold == -4.0 and mbt.blowoff_median_threshold == 6.0
+
+    # 4. get_trend_survival_metrics does not call estimate_T when allow_network="false"
+    called_est = []
+    monkeypatch.setattr(surv_mod, "_lookup_t_cache_entry", lambda d, s: None)
+    monkeypatch.setattr(surv_mod, "estimate_T", lambda s: called_est.append(s) or {})
+    res_surv = surv_mod.get_trend_survival_metrics("BTCUSDC", 3600.0, allow_network="false")
+    assert called_est == []
+    assert res_surv["symbol"] == "BTCUSDC"
+
 
 
 

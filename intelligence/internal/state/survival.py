@@ -503,6 +503,11 @@ def get_trend_survival_metrics(
     except Exception:
         cached_entry = None
 
+    allow_net = (
+        allow_network.strip().lower() in ("1", "true", "yes", "on")
+        if isinstance(allow_network, str)
+        else bool(allow_network)
+    )
     if cached_entry:
         median_d = _pos_float(cached_entry.get("median_d"), median_d)
         p90_d = _pos_float(cached_entry.get("p90_d"), p90_d)
@@ -510,7 +515,7 @@ def get_trend_survival_metrics(
         if t_cand > 0.0:
             T_val = t_cand
             cached_t = T_val
-    elif allow_network:
+    elif allow_net:
         try:
             est = estimate_T(symbol)
             if est:

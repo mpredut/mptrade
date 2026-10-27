@@ -60,9 +60,17 @@ class TrendSignificanceGuard:
             )
         raw_action = getattr(trigger, "action", None)
         raw_side = getattr(trigger, "side", None)
-        action_u = str(raw_action).strip().upper() if isinstance(raw_action, str) else ""
-        side_u = str(raw_side).strip().upper() if isinstance(raw_side, str) else ""
-        if action_u != TriggerAction.ENTRY or side_u == TriggerSide.HOLD or side_u not in (TriggerSide.BUY, TriggerSide.SELL):
+        action_u = (
+            raw_action.value
+            if isinstance(raw_action, TriggerAction)
+            else ("" if isinstance(raw_action, bool) or raw_action is None else str(raw_action).strip().upper())
+        )
+        side_u = (
+            raw_side.value
+            if isinstance(raw_side, TriggerSide)
+            else ("" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().upper())
+        )
+        if action_u != TriggerAction.ENTRY.value or side_u == TriggerSide.HOLD.value or side_u not in (TriggerSide.BUY.value, TriggerSide.SELL.value):
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",
                 reason="not_an_entry_trigger",

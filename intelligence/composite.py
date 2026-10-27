@@ -6,7 +6,7 @@ import math
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from guard_hierarchy import BaseGuard, GUARD_REGISTRY, _ALL_GUARD_ALIASES, normalize_bypassed_guards
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
@@ -131,7 +131,9 @@ class CompositeMarketIntelligence:
         """
         effective_scale = 1.0
         downscale_dec: Optional[GuardDecision] = None
-        bypassed = normalize_bypassed_guards(bypass_guards)
+        raw_bypass_tokens = BaseGuard._coerce_bypass_set(bypass_guards)
+        recognized_tokens = [t for t in raw_bypass_tokens if t in _ALL_GUARD_ALIASES]
+        bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
         side = side.strip().upper() if isinstance(side, str) else ""
         if side == "B":
             side = "BUY"
@@ -198,7 +200,7 @@ class CompositeMarketIntelligence:
                 return noise_dec
 
         # 2. Parabolic Surge Guard (Anti-FOMO)
-        if not _is_bypassed(None, "parabolic_guard", "parabolicsurgeguard"):
+        if not _is_bypassed("G_QLIMIT2", "parabolic_guard", "parabolicsurgeguard"):
             parabolic_dec = self.parabolic_guard.check(
                 symbol, side, price, price_history=price_history,
                 volatility_1h_pct=volatility_1h_pct, now=now,
