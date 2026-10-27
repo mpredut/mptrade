@@ -1286,11 +1286,20 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
     remaining = []
     for order in open_sells:
         oid = extract_order_id(order, default=None)
-        if not oid or str(oid) == "0":
+        oid_s = str(oid).strip() if oid is not None else ""
+        if oid_s.endswith(".0") and oid_s[:-2].lstrip("+-").isdigit():
+            oid_s = oid_s[:-2]
+        if oid_s.startswith("+") and oid_s[1:].isdigit():
+            oid_s = oid_s[1:]
+        if (
+            not oid_s
+            or oid_s in {"0", "0.0", "-0", "+0"}
+            or (oid_s.startswith("-") and oid_s[1:].replace(".", "", 1).isdigit())
+        ):
             remaining.append(order)
             continue
         try:
-            mkt.cancel_order(symbol, str(oid), provider_name="binance")
+            mkt.cancel_order(symbol, oid_s, provider_name="binance")
             print(
                 f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
                 f"(cid={order.get('clientOrderId')}) after {elapsed:.1f}s."
@@ -1676,7 +1685,10 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         f"(conf={p3b_conf:.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"
         if isinstance(p3b_assessment, dict) else "none(1.0x)"
     )
-    minutes_back_val = _finite_float(minutes_back, positive=True) or float(ROLLING_WINDOW_MINUTES)
+    minutes_back_val = (
+        _finite_float(minutes_back, positive=True)
+        or float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
+    )
     print(
         f"[{symbol}] price={current_price:.8f}, window_min/max="
         f"{minimum_price:.8f}/{maximum_price:.8f}, minutes_back={minutes_back_val:.1f}, "

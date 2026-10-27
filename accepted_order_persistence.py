@@ -31,18 +31,22 @@ _INVALID_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf",
 
 
 def _clean_id(val) -> str | None:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
-    if isinstance(val, float):
-        if not math.isfinite(val):
+    if isinstance(val, (int, float)):
+        if not math.isfinite(val) or val <= 0:
             return None
-        if val.is_integer():
+        if isinstance(val, float) and val.is_integer():
             val = int(val)
     s = str(val).strip()
     if s.lower() in _INVALID_ID_STRINGS:
         return None
     if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
         s = s[:-2]
+    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
+        return None
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
     return s if s and s.lower() not in _INVALID_ID_STRINGS else None
 
 

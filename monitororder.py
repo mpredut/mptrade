@@ -54,9 +54,16 @@ def _clean_monitor_id(val) -> str:
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return ""
     cleaned = extract_order_id(val, default="") or ""
-    if cleaned.strip().lower() in _INVALID_MONITOR_ID_STRINGS:
+    s = cleaned.strip()
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
         return ""
-    return cleaned.strip()
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
+    if s.lower() in _INVALID_MONITOR_ID_STRINGS:
+        return ""
+    return s
 
 
 def _safe_pos_float(val, default: float = 0.0) -> float:

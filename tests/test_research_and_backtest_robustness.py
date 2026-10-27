@@ -3160,7 +3160,8 @@ def test_root_modules_batch4_hardening():
     assert pta.prices == [100.0, 102.0, 104.0]
     tl, slp, rv = pta.linear_regression_trend()
     assert slp == 2.0
-    assert len(pta.exponential_moving_average(span=3)) == 3
+    grad_lst, avg_grad = pta.calculate_gradient()
+    assert len(grad_lst) == 3 and avg_grad == 2.0
     assert pricewindow.PriceWindow._sample_rate_from_entries([None, "bad", [True, 100.0], [1000, 100.0], [3000, 101.0]]) == 2.0
 
     # assetguardian threshold helpers
@@ -5817,7 +5818,7 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
     finally:
         log_mod.configure(log_folder=old_folder)
 
-    # 4. PriceWindow.get_short_trend with mutated sample_rate_sec=None and WindowAnalyzer.calculate_positions with window_size=0
+    # 4. PriceWindow.get_short_trend with mutated sample_rate_sec=None and WindowAnalyzer.check_price_change with invalid threshold
     pw_inst = pw.PriceWindow("BTCUSDC", 10, sample_rate_sec=1.0, window_seconds=10)
     for p in (100.0, 101.0, 102.0):
         pw_inst.process_price(p)
@@ -5825,8 +5826,7 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
     ft, gc, sf, gr = pw_inst.get_short_trend()
     assert ft == 1
     wa = pw.WindowAnalyzer(pw_inst)
-    pw_inst.window_size = 0
-    assert wa.calculate_positions() == (None, None)
+    assert wa.check_price_change(None) == (0, 0)
 
     # 5. CacheShortTrendManager._build_threshold_fn ignores malformed threshold keys/values & get_short_trend_for_window handles string entries
     stm = ct.CacheShortTrendManager(
@@ -6138,6 +6138,73 @@ def test_batch41_bapi_allorders_ws_trades_cacheintegrity_priceanalysis_hardening
     )
     assert out_pa.exists()
     assert "BTCUSDC" in written
+
+
+def test_batch42_order_retry_active_intents_accepted_persistence_rtrade_store_and_monitors_hardening(tmp_path, monkeypatch):
+    import accepted_order_persistence as aop
+    import active_intents as ai
+    import assetguardian as ag
+    import monitororder as mo
+    import monitortrades as mt
+    import order_retry as oret
+    from rtrade_pair_store import RTradePairStore
+
+    # 1. accepted_order_persistence._clean_id and active_intents._clean_id reject negative/zero and normalize '+123.0'
+    for fn in (aop._clean_id, ai._clean_id):
+        assert fn(-5) is None
+        assert fn("-5") is None
+        assert fn("-5.0") is None
+        assert fn("+0.0") is None
+        assert fn("+123.0") == "123"
+        assert fn("RT_abc") == "RT_abc"
+
+    # 2. RTradePairStore._clean_store_id rejects negative numeric values and normalizes '+456.0'
+    assert RTradePairStore._clean_store_id(-5) == ""
+    assert RTradePairStore._clean_store_id("-5.0") == ""
+    assert RTradePairStore._clean_store_id("+0.0") == ""
+    assert RTradePairStore._clean_store_id("+456.0") == "456"
+
+    # 3. order_retry._clean_retry_order_id and float-string revision/attempts handling in claim/complete_claim/discard_expired
+    assert oret._clean_retry_order_id(-5) is None
+    assert oret._clean_retry_order_id("-5.0") is None
+    assert oret._clean_retry_order_id("+0.0") is None
+    assert oret._clean_retry_order_id("+789.0") == "789"
+
+    monkeypatch.setattr(oret, "QUEUE_FILE", str(tmp_path / "outbox.json"))
+    monkeypatch.setattr(oret, "LOCK_FILE", str(tmp_path / "outbox.json.lock"))
+    rec_id = oret.enqueue("BTCUSDC", "BUY", 0.01, {"smart": False}, requested_price=60000.0, ref_price=60000.0)
+    assert rec_id is not None
+    records = oret._read_nolock()
+    records[0]["revision"] = "2.0"
+    records[0]["attempts"] = "1.0"
+    oret._write_nolock(records)
+    claimed = oret.claim([rec_id], now=1000.0)
+    assert len(claimed) == 1 and claimed[0]["revision"] == 2
+    assert oret.complete_claim(claimed[0], "failure", now=1005.0, failure_reason="net_err", submission_state="refused") is True
+    after = oret._read_nolock()
+    assert after[0]["attempts"] == 2
+
+    # 4. monitororder._clean_monitor_id and monitortrades._extract_trade_uid
+    assert mo._clean_monitor_id("-5.0") == ""
+    assert mo._clean_monitor_id("+0.0") == ""
+    assert mo._clean_monitor_id("+321.0") == "321"
+    assert mt._extract_trade_uid({"id": "-5.0", "tradeId": "+999.0"}) == "999"
+
+    # 5. assetguardian._resolve_blocking_sell_orders skips invalid/negative order IDs and normalizes '+555.0'
+    canceled_ids = []
+    monkeypatch.setattr(ag.mkt, "cancel_order", lambda sym, oid, **_kw: canceled_ids.append((sym, oid)))
+    ag._rtrade_sell_block_since["BTCUSDC"] = 1.0
+    rem = ag._resolve_blocking_sell_orders(
+        "BTCUSDC",
+        [
+            {"orderId": "-5", "clientOrderId": "RT_1"},
+            {"orderId": "+0.0", "clientOrderId": "RT_2"},
+            {"orderId": "+555.0", "clientOrderId": "RT_3"},
+        ],
+    )
+    assert len(rem) == 2
+    assert canceled_ids == [("BTCUSDC", "555")]
+
 
 
 

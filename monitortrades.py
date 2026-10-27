@@ -164,8 +164,15 @@ def _extract_trade_uid(trade: Any) -> str:
         return ""
     for key in ("id", "tradeId", "a"):
         val = extract_order_id(trade.get(key), default="") or ""
-        if val not in ("", "0", "0.0", "-0", "+0"):
-            return val
+        s = val.strip()
+        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+            s = s[:-2]
+        if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
+            continue
+        if s.startswith("+") and s[1:].isdigit():
+            s = s[1:]
+        if s not in ("", "0", "0.0", "-0", "+0"):
+            return s
     return ""
 
 

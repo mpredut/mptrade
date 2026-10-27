@@ -287,10 +287,21 @@ order_qty_from_response = extract_orig_qty
 
 
 def _clean_retry_order_id(val) -> Optional[str]:
-    cleaned = extract_order_id(val, default=None)
-    if cleaned is None or cleaned in {"0", "0.0", "-0", "+0"}:
+    if isinstance(val, (int, float)) and not isinstance(val, bool) and val <= 0:
         return None
-    return cleaned
+    cleaned = extract_order_id(val, default=None)
+    if cleaned is None:
+        return None
+    s = str(cleaned).strip()
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
+        return None
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
+    if s in {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0"}:
+        return None
+    return s
 
 
 def _clean_opt_finite_float(val):
@@ -1389,7 +1400,7 @@ def claim(ids, now=None, lease_sec=None):
                 continue
             if float(rec.get("claim_until", 0) or 0) > now:
                 continue
-            revision = int(rec.get("revision", 0))
+            revision = max(0, _rev_int(rec.get("revision"), 0))
             placement = dict(rec.get("place_kwargs") or {})
             pfx = rec.get("prefix") or placement.get("prefix") or "OR"
             placement.setdefault(
@@ -1476,8 +1487,10 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 if not _apply_accepted(
                         rec, order, now, provider_name=provider_name):
                     rec["last_failure_reason"] = "response_without_order_id"
-                    rec["attempts"] = max(int(rec.get("attempts", 0)),
-                                          int(claimed.get("attempts", 0))) + 1
+                    rec["attempts"] = max(
+                        max(0, _rev_int(rec.get("attempts"), 0)),
+                        max(0, _rev_int(claimed.get("attempts"), 0)),
+                    ) + 1
                     rec["last_attempt_ts"] = now
             elif outcome == "observed" and same_revision:
                 rec["last_status_ts"] = now
@@ -1512,7 +1525,7 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                     current_qty, filled_qty)
                 if remaining_qty <= max(1e-12, current_qty * 1e-9):
                     continue
-                revision = int(rec.get("revision", 0)) + 1
+                revision = max(0, _rev_int(rec.get("revision"), 0)) + 1
                 rec["revision"] = revision
                 rec["qty"] = remaining_qty
                 rec["attempts"] = 0
@@ -1537,8 +1550,10 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                     rec.get("id", ""), revision, prefix=pfx)
                 rec["place_kwargs"] = placement
             elif outcome == "failure" and same_revision:
-                rec["attempts"] = max(int(rec.get("attempts", 0)),
-                                      int(claimed.get("attempts", 0))) + 1
+                rec["attempts"] = max(
+                    max(0, _rev_int(rec.get("attempts"), 0)),
+                    max(0, _rev_int(claimed.get("attempts"), 0)),
+                ) + 1
                 rec["last_attempt_ts"] = now
                 next_reason = (str(failure_reason)
                                if failure_reason is not None else None)
@@ -1591,8 +1606,8 @@ def activate_claimed_replacement(claimed, qty, now=None):
             matches = (
                 rec.get("id") == claimed.get("id")
                 and rec.get("claim_token") == claimed.get("claim_token")
-                and int(rec.get("revision", 0))
-                == int(claimed.get("claim_revision", -1))
+                and _rev_int(rec.get("revision"), 0)
+                == _rev_int(claimed.get("claim_revision"), -1)
             )
             if not matches:
                 continue
@@ -1748,15 +1763,17 @@ def discard_expired(snapshots, now=None):
         return []
     exact = set()
     for snapshot in snapshots:
-        try:
-            key = (
-                snapshot.get("id"),
-                int(snapshot.get("revision", 0)),
-                dict(snapshot.get("place_kwargs") or {}).get(
-                    "client_order_id"),
-            )
-        except (TypeError, ValueError, OverflowError):
+        if not isinstance(snapshot, dict):
             continue
+        rev = _rev_int(snapshot.get("revision"), -1)
+        if rev < 0:
+            continue
+        key = (
+            snapshot.get("id"),
+            rev,
+            dict(snapshot.get("place_kwargs") or {}).get(
+                "client_order_id"),
+        )
         if key[0] and key[2]:
             exact.add(key)
     if not exact:
@@ -1769,7 +1786,7 @@ def discard_expired(snapshots, now=None):
         for record in existing:
             key = (
                 record.get("id"),
-                int(record.get("revision", 0)),
+                _rev_int(record.get("revision"), 0),
                 dict(record.get("place_kwargs") or {}).get(
                     "client_order_id"),
             )

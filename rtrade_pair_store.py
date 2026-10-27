@@ -39,18 +39,22 @@ class RTradePairStore:
 
     @staticmethod
     def _clean_store_id(value) -> str:
-        if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+        if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
             return ""
-        if isinstance(value, float):
-            if not math.isfinite(value):
+        if isinstance(value, (int, float)):
+            if not math.isfinite(value) or value <= 0:
                 return ""
-            if value.is_integer():
+            if isinstance(value, float) and value.is_integer():
                 value = int(value)
         s = str(value).strip()
         if s.lower() in _INVALID_STORE_STRINGS:
             return ""
         if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
             s = s[:-2]
+        if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
+            return ""
+        if s.startswith("+") and s[1:].isdigit():
+            s = s[1:]
         return s if s and s.lower() not in _INVALID_STORE_STRINGS else ""
 
     @staticmethod
