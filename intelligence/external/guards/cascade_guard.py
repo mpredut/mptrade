@@ -59,9 +59,9 @@ class LiquidationCascadeGuard:
     ) -> GuardDecision:
         """Evaluate whether an active cascade prevents order execution."""
         side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm == "B":
+        if side_norm in ("B", "BUY", "BID", "LONG"):
             side_norm = "BUY"
-        elif side_norm == "S":
+        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
             side_norm = "SELL"
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
@@ -85,8 +85,10 @@ class LiquidationCascadeGuard:
                 reason="no_liquidation_data",
             )
 
-        long_liq = _safe_float(getattr(summary, "long_liq_usd", None), 0.0)
-        short_liq = _safe_float(getattr(summary, "short_liq_usd", None), 0.0)
+        raw_long = summary.get("long_liq_usd") if isinstance(summary, dict) else getattr(summary, "long_liq_usd", None)
+        raw_short = summary.get("short_liq_usd") if isinstance(summary, dict) else getattr(summary, "short_liq_usd", None)
+        long_liq = _safe_float(raw_long, 0.0)
+        short_liq = _safe_float(raw_short, 0.0)
 
         # 1. BUY: If long liquidations in the short window exceed the cascade threshold, it's an active knife
         if side_norm == "BUY" and long_liq >= self.max_active_cascade_usd:

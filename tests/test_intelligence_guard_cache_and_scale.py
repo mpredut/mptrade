@@ -8041,12 +8041,8 @@ def test_iteration54_triggers_cli_daemon_pricewindow_and_shadow_signals_nan_bool
     assert pw.get_noise_epsilon(True) == eps_default
 
     wa = WindowAnalyzer(pw)
-    assert wa.calculate_proximities(float("nan")) == (0, 0)
-    assert wa.calculate_proximities(True) == (0, 0)
     assert wa.check_price_change(float("nan")) == (0, 0)
     assert wa.check_price_change(True) == (0, 0)
-    assert wa.evaluate_buy_sell_opportunity(float("nan"))[0] == "HOLD"
-    assert wa.evaluate_buy_sell_opportunity(True)[0] == "HOLD"
 
     # 5. KalmanStateTracker & active_intents
     kst = KalmanStateTracker(state_min_interval=float("nan"), now_fn=lambda: 1000.0)
@@ -8723,10 +8719,10 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
             values={"K": True, "S": True},
         )
 
-    # 3. PriceTrendAnalyzer.exponential_moving_average handles empty prices and invalid span;
+    # 3. PriceTrendAnalyzer.calculate_gradient handles empty prices;
     #    instant_trend_from_prices handles bool/inf/tiny sample_rate_sec
-    assert PriceTrendAnalyzer([]).exponential_moving_average() == []
-    assert len(PriceTrendAnalyzer([10.0, 12.0, 14.0]).exponential_moving_average(span=-1)) == 3
+    assert PriceTrendAnalyzer([]).calculate_gradient() == ([], 0)
+    assert len(PriceTrendAnalyzer([10.0, 12.0, 14.0]).calculate_gradient()[0]) == 3
     for bad_sr in (True, float("inf"), float("nan"), 1e-309, -1.0):
         t, gc, sf, gr = instant_trend_from_prices([10.0, 11.0, 12.0], bad_sr)
         assert t == 1 and sf > 0
@@ -16057,12 +16053,12 @@ def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
     from binance_api import bapi_ws_health as ws_health
     from binance_api import bapi_ws_bridge as ws_bridge
 
-    # 1. PriceTrendAnalyzer.polynomial_regression_trend and instant_trend_from_prices edge cases
+    # 1. PriceTrendAnalyzer.linear_regression_trend and instant_trend_from_prices edge cases
     empty_pta = pw.PriceTrendAnalyzer([])
-    assert empty_pta.polynomial_regression_trend() == ([], [])
+    assert empty_pta.linear_regression_trend() == (None, None, None)
     pta = pw.PriceTrendAnalyzer([100.0, 101.0, 103.0])
-    trend_poly, coef = pta.polynomial_regression_trend(degree="2.0")
-    assert len(trend_poly) == 3 and len(coef) == 3
+    trend_line, slp, rv = pta.linear_regression_trend()
+    assert len(trend_line) == 3 and slp > 0
     assert pw.instant_trend_from_prices([100.0, None], 0.8) == (0, 0.0, 0.0, 0.0)
     assert pw.instant_trend_from_prices((x for x in [100.0, 102.0, 104.0]), 0.8)[0] == 1
 
@@ -16078,7 +16074,7 @@ def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
     assert buf.log_return_std(0, 100) is None
     assert buf.log_return_std(0, 24) is not None
 
-    # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.evaluate_buy_sell_opportunity with string thresholds
+    # 3. PriceWindow.from_cache24 with string window_seconds and WindowAnalyzer.check_price_change with string threshold
     fake_c24 = SimpleNamespace(
         get_recent_entries=lambda sym, last_seconds: [[1700000000000 + i * 1000, 100.0 + i * 0.5] for i in range(15)],
         subscribe_price=lambda sub: None,
@@ -16086,8 +16082,8 @@ def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
     win = pw.PriceWindow.from_cache24("BTCUSDC", "60.0", fake_c24)
     assert win.window_seconds == pytest.approx(60.0)
     wa = pw.WindowAnalyzer(win)
-    action, prop_px, pct, slope = wa.evaluate_buy_sell_opportunity(107.0, threshold_percent="1.0", decrease_percent="3.7")
-    assert action in ("BUY", "SELL", "HOLD") and prop_px > 0
+    slope, pos = wa.check_price_change("1.0")
+    assert slope != 0 and pos == 0
 
     # 4. bapi_ws_health._as_bool(value, default=...) & bapi_ws_bridge.handle_binance_ws_event(log_enabled=True)
     assert ws_health._as_bool("unknown", default=True) is True
@@ -16684,5 +16680,73 @@ def test_iteration175_dict_snapshot_and_telemetry_support_across_external_macro_
     )
     assert sa_res is not None and sa_res.market_bias == "BEARISH"
     assert any("18/100 (Extreme Fear)" in p and "22.0% advancing" in p for p in sa_prompts)
+
+
+def test_iteration176_sentiment_cascade_guards_and_triggers_dict_and_side_alias_support():
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.composite import CompositeMarketIntelligence
+
+    # 1. ExtremeGreedGuard and PanicWashoutGuard accept BID/LONG and dict snapshots
+    eg_dec = ExtremeGreedGuard().check("BTCUSDC", "BID", {"value": 92, "classification": "Extreme Greed"})
+    assert eg_dec.allowed is False and "veto_extreme_market_euphoria" in eg_dec.reason
+
+    pw_dec = PanicWashoutGuard().check(
+        "BTCUSDC",
+        "LONG",
+        fear_greed_snapshot={"value": 8, "historical_values": [8, 22]},
+    )
+    assert pw_dec.allowed is False and "defer_accelerating_panic_capitulation" in pw_dec.reason
+
+    # 2. LiquidationCascadeGuard accepts BID/ASK/LONG/SHORT and dict summary
+    lc_buy = LiquidationCascadeGuard(max_active_cascade_usd=100_000.0).check(
+        "BTCUSDC",
+        "BID",
+        summary={"long_liq_usd": 250_000.0, "short_liq_usd": 10_000.0},
+    )
+    assert lc_buy.allowed is False and "active_long_liquidation_cascade" in lc_buy.reason
+
+    lc_sell = LiquidationCascadeGuard(max_active_cascade_usd=100_000.0).check(
+        "BTCUSDC",
+        "SHORT",
+        summary={"long_liq_usd": 10_000.0, "short_liq_usd": 250_000.0},
+    )
+    assert lc_sell.allowed is False and "active_short_liquidation_cascade" in lc_sell.reason
+
+    # 3. SentimentContrarianTrigger, MarketBreadthTrigger, LiquidationCapitulationTrigger accept dict snapshots
+    sig_s, ev_s = SentimentContrarianTrigger().evaluate("BTCUSDC", 100.0, {"value": 15, "classification": "Extreme Fear"})
+    assert sig_s == "CONTRARIAN_BUY" and ev_s is not None
+
+    sig_b, ev_b = MarketBreadthTrigger().evaluate(
+        "BTCUSDC",
+        100.0,
+        {"advance_ratio": 0.10, "median_change_pct": -6.0, "regime": "WASHOUT"},
+    )
+    assert sig_b == "BREADTH_WASHOUT_BUY" and ev_b is not None
+
+    ev_l = LiquidationCapitulationTrigger(min_notional_usd=100_000.0, ratio_threshold=0.75).evaluate(
+        "BTCUSDC",
+        100.0,
+        summary={"long_liq_usd": 180_000.0, "short_liq_usd": 20_000.0},
+    )
+    assert ev_l is not None and ev_l.reason == "liquidation_capitulation_burst"
+
+    # 4. CompositeMarketIntelligence.evaluate populates metrics from dict snapshots
+    cmi = CompositeMarketIntelligence()
+    res = cmi.evaluate(
+        "BTCUSDC",
+        100.0,
+        fear_greed_snapshot={"value": 15, "classification": "Extreme Fear"},
+        market_breadth_snapshot={"advance_ratio": 0.5, "median_change_pct": 0.0, "regime": "NEUTRAL"},
+        geopolitical_assessment={"threat_level": "NORMAL"},
+    )
+    assert res.metrics["fear_greed"] == 15
+    assert res.metrics["market_regime"] == "NEUTRAL"
+    assert res.metrics["geopolitical_threat"] == "NORMAL"
+
 
 

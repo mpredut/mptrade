@@ -70,7 +70,10 @@ class SentimentContrarianTrigger:
                     now = tf
             except (TypeError, ValueError):
                 pass
-        raw_val = getattr(snapshot, "value", None)
+        def _snap_attr(key: str, default=None):
+            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
+
+        raw_val = _snap_attr("value", None)
         if raw_val is None or isinstance(raw_val, bool):
             return None, None
         try:
@@ -80,14 +83,14 @@ class SentimentContrarianTrigger:
         if not math.isfinite(val_f):
             return None, None
         val = int(round(val_f)) if float(val_f).is_integer() else val_f
-        raw_cls = getattr(snapshot, "classification", None)
+        raw_cls = _snap_attr("classification", None)
         cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
-        trend_7d = getattr(snapshot, "trend_7d_change", None)
+        trend_7d = _snap_attr("trend_7d_change", None)
 
         # 1. Contrarian ENTRY BUY during Extreme Fear
         if val <= self.extreme_fear_entry:
             # Check for stabilization if history exists: avoid buying if sentiment is in free-fall (>10 pt drop today)
-            history = getattr(snapshot, "historical_values", None)
+            history = _snap_attr("historical_values", None)
             if isinstance(history, (list, tuple)) and len(history) >= 2:
                 h0, h1 = history[0], history[1]
                 if (

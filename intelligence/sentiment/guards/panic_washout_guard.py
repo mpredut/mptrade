@@ -54,13 +54,16 @@ class PanicWashoutGuard:
     ) -> GuardDecision:
         """Evaluate order against macro panic and market-wide capitulation."""
         # Only guard BUY orders; stop-losses or exits are never impeded
-        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B"):
+        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B", "BID", "LONG"):
             return GuardDecision.allow("PanicWashoutGuard", "sell_permitted_in_panic")
+
+        def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
         # 1. Check severe accelerating Fear & Greed free-fall
         if fear_greed_snapshot is not None:
-            val_f = _safe_float(getattr(fear_greed_snapshot, "value", None), None)
-            raw_history = getattr(fear_greed_snapshot, "historical_values", None) or ()
+            val_f = _safe_float(_obj_attr(fear_greed_snapshot, "value", None), None)
+            raw_history = _obj_attr(fear_greed_snapshot, "historical_values", None) or ()
             if val_f is not None and val_f <= self.severe_panic_fng_threshold:
                 val = int(round(val_f))
                 if isinstance(raw_history, (list, tuple)) and len(raw_history) >= 2:
@@ -76,8 +79,8 @@ class PanicWashoutGuard:
 
         # 2. Check Market Breadth Washout
         if breadth_snapshot is not None:
-            adv_ratio = _safe_float(getattr(breadth_snapshot, "advance_ratio", None), None)
-            med_chg = _safe_float(getattr(breadth_snapshot, "median_change_pct", None), None)
+            adv_ratio = _safe_float(_obj_attr(breadth_snapshot, "advance_ratio", None), None)
+            med_chg = _safe_float(_obj_attr(breadth_snapshot, "median_change_pct", None), None)
             if (
                 adv_ratio is not None
                 and med_chg is not None

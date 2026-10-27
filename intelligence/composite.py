@@ -309,8 +309,16 @@ class CompositeMarketIntelligence:
             and not _is_bypassed("GLLM1", "gemini_guard", "highstakeguard")
         ):
             telemetry_ctx = {
-                "fear_greed": getattr(fear_greed_snapshot, "value", None) if fear_greed_snapshot else None,
-                "breadth_regime": getattr(market_breadth_snapshot, "regime", None) if market_breadth_snapshot else None,
+                "fear_greed": (
+                    fear_greed_snapshot.get("value")
+                    if isinstance(fear_greed_snapshot, dict)
+                    else getattr(fear_greed_snapshot, "value", None)
+                ) if fear_greed_snapshot else None,
+                "breadth_regime": (
+                    market_breadth_snapshot.get("regime")
+                    if isinstance(market_breadth_snapshot, dict)
+                    else getattr(market_breadth_snapshot, "regime", None)
+                ) if market_breadth_snapshot else None,
             }
             eff_price = price_finite if price_finite is not None else price
             eff_qty = qty_finite if qty_finite is not None else 1.0
@@ -524,8 +532,20 @@ class CompositeMarketIntelligence:
                 "volatility_1h": vol1h,
                 "gradient": gradient,
                 "epsilon": epsilon,
-                "fear_greed": getattr(fear_greed_snapshot, "value", None) if fear_greed_snapshot else None,
-                "market_regime": getattr(market_breadth_snapshot, "regime", None) if market_breadth_snapshot else None,
-                "geopolitical_threat": getattr(geopolitical_assessment, "threat_level", None) if geopolitical_assessment else None,
+                "fear_greed": (
+                    fear_greed_snapshot.get("value")
+                    if isinstance(fear_greed_snapshot, dict)
+                    else getattr(fear_greed_snapshot, "value", None)
+                ) if fear_greed_snapshot else None,
+                "market_regime": (
+                    market_breadth_snapshot.get("regime")
+                    if isinstance(market_breadth_snapshot, dict)
+                    else getattr(market_breadth_snapshot, "regime", None)
+                ) if market_breadth_snapshot else None,
+                "geopolitical_threat": (
+                    geopolitical_assessment.get("threat_level")
+                    if isinstance(geopolitical_assessment, dict)
+                    else getattr(geopolitical_assessment, "threat_level", None)
+                ) if geopolitical_assessment else None,
             },
         )

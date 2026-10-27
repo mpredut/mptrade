@@ -60,10 +60,10 @@ class ExtremeGreedGuard:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
 
         # Greed guard only restricts BUY orders; SELL orders in greed are approved
-        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B"):
+        if not isinstance(side, str) or side.strip().upper() not in ("BUY", "B", "BID", "LONG"):
             return GuardDecision.allow("ExtremeGreedGuard", "sell_permitted_in_greed")
 
-        raw_val = getattr(snapshot, "value", None)
+        raw_val = snapshot.get("value") if isinstance(snapshot, dict) else getattr(snapshot, "value", None)
         if raw_val is None or isinstance(raw_val, bool):
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
         try:
@@ -73,7 +73,8 @@ class ExtremeGreedGuard:
             val = int(round(val_f))
         except (TypeError, ValueError):
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
-        cls_label = str(getattr(snapshot, "classification", None) or "Unknown")
+        raw_cls = snapshot.get("classification") if isinstance(snapshot, dict) else getattr(snapshot, "classification", None)
+        cls_label = str(raw_cls or "Unknown")
 
         if val >= self.hard_veto_threshold:
             return GuardDecision.veto(

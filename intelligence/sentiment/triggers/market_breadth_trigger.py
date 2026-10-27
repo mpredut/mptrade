@@ -65,9 +65,12 @@ class MarketBreadthTrigger:
         """Evaluate market breadth snapshot and generate actionable triggers."""
         if snapshot is None or price is None or isinstance(price, bool):
             return None, None
-        raw_adv = getattr(snapshot, "advance_ratio", None)
-        raw_med = getattr(snapshot, "median_change_pct", None)
-        raw_regime = getattr(snapshot, "regime", None)
+        def _snap_attr(key: str, default=None):
+            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
+
+        raw_adv = _snap_attr("advance_ratio", None)
+        raw_med = _snap_attr("median_change_pct", None)
+        raw_regime = _snap_attr("regime", None)
         regime = str(raw_regime).strip() if (isinstance(raw_regime, str) and raw_regime.strip()) else "NEUTRAL"
         if raw_adv is None or raw_med is None or isinstance(raw_adv, bool) or isinstance(raw_med, bool):
             return None, None
