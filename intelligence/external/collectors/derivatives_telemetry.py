@@ -103,6 +103,22 @@ class DerivativesTelemetryCollector:
         safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
         return os.path.join(cache_dir, f"derivatives_telemetry_{safe_sym}.json")
 
+    @staticmethod
+    def _as_bool_flag(val: Any, default: bool = False) -> bool:
+        import math
+        if val is None:
+            return default
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if s in ("1", "1.0", "true", "yes", "on"):
+                return True
+            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", ""):
+                return False
+            return default
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return math.isfinite(float(val)) and float(val) != 0.0
+        return bool(val)
+
     def _load_from_disk(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
         from state_io import read_recovering_previous
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
@@ -116,7 +132,7 @@ class DerivativesTelemetryCollector:
                     continue
                 telemetry = DerivativesTelemetry.from_dict(data)
                 if telemetry.ts > 0.0 and 0.0 <= (now - telemetry.ts) < max_age:
-                    self._cache[symbol.upper()] = (telemetry.ts, telemetry)
+                    self._cache[symbol.strip().upper()] = (telemetry.ts, telemetry)
                     return telemetry
             except Exception as e:
                 logger.debug("Failed loading derivatives telemetry from %s: %s", p, e)
@@ -167,7 +183,7 @@ class DerivativesTelemetryCollector:
         if disk_snap is not None:
             return disk_snap
 
-        if not allow_network:
+        if not self._as_bool_flag(allow_network, default=True):
             return None
 
         # Use USDT-perp pair as proxy for non-USDT quotes
@@ -236,6 +252,8 @@ class DerivativesTelemetryCollector:
 
     def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:
         """Inject telemetry directly (useful for tests and synthetic feeds)."""
-        self._cache[telemetry.symbol.upper()] = (telemetry.ts, telemetry)
-        if save_to_disk:
+        if telemetry is None or not isinstance(getattr(telemetry, "symbol", None), str) or not telemetry.symbol.strip():
+            return
+        self._cache[telemetry.symbol.strip().upper()] = (telemetry.ts, telemetry)
+        if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(telemetry)

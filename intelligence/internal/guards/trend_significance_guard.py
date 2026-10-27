@@ -70,6 +70,10 @@ class TrendSignificanceGuard:
             if isinstance(raw_side, TriggerSide)
             else ("" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().upper())
         )
+        if side_u == "B":
+            side_u = TriggerSide.BUY.value
+        elif side_u == "S":
+            side_u = TriggerSide.SELL.value
         if action_u != TriggerAction.ENTRY.value or side_u == TriggerSide.HOLD.value or side_u not in (TriggerSide.BUY.value, TriggerSide.SELL.value):
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",

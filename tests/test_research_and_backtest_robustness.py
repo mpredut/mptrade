@@ -3941,4 +3941,77 @@ def test_batch18_geopolitical_news_and_sentiment_collectors_guards_hardening(tmp
     assert is_llm_guard_exempt("true") is False
 
 
+def test_batch19_external_and_internal_collectors_guards_triggers_hardening(tmp_path):
+    from types import SimpleNamespace
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.state.survival import get_trend_survival_metrics
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent
+
+    # 1. External collectors reject allow_network="false" / NaN without network calls and ignore None in record_*
+    dt_col = DerivativesTelemetryCollector(cache_dir=str(tmp_path))
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path))
+    wh_col = WhalePositioningCollector(cache_dir=str(tmp_path))
+    assert dt_col.fetch("BTCUSDC", allow_network="false") is None  # type: ignore[arg-type]
+    assert ob_col.fetch("BTCUSDC", allow_network=float("nan")) is None  # type: ignore[arg-type]
+    assert wh_col.fetch("BTCUSDC", allow_network="0") is None  # type: ignore[arg-type]
+    dt_col.record_telemetry(None)  # type: ignore[arg-type]
+    ob_col.record_snapshot(None)  # type: ignore[arg-type]
+    wh_col.record_snapshot(None)  # type: ignore[arg-type]
+
+    # 2. WhalePositioningCollector.classify_regime normalizes prev_regime casing/whitespace
+    assert (
+        WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=0.5,
+            oi_change_pct=0.5,
+            taker_ratio=1.20,
+            prev_regime="  AGGRESSIVE_SHORTING  ",
+        )
+        == "short_squeeze_primed"
+    )
+
+    # 3. SmartStopLossGuard normalizes numeric/bool modes, symbol separators, and uppercase divergence_regime
+    ssl_off = SmartStopLossGuard(mode=0)  # type: ignore[arg-type]
+    assert ssl_off.mode == "off"
+    ssl_enf = SmartStopLossGuard(mode="enforce")
+    should_exec, reason, meta = ssl_enf.evaluate(
+        "BTC-USDC",
+        0.035,
+        0.03,
+        provider="sim",
+        whale_snapshot=SimpleNamespace(
+            top_traders_long_pct=0.30,
+            taker_buy_sell_ratio=0.60,
+            divergence_regime="  AGGRESSIVE_SHORTING  ",
+        ),
+    )
+    assert should_exec is True
+    assert "active_crash_cascade" in reason
+    assert meta["symbol"] == "BTCUSDC"
+
+    # 4. WhaleAccumulationTrigger handles snapshot without divergence_regime attribute
+    wat = WhaleAccumulationTrigger()
+    ev = wat.evaluate(
+        "BTCUSDC",
+        60000.0,
+        snapshot=SimpleNamespace(top_traders_long_pct=0.70, taker_buy_sell_ratio=1.50, open_interest_1h_change_pct=2.0),  # type: ignore[arg-type]
+        now=1000.0,
+    )
+    assert ev is not None and ev.metadata["regime"] == "neutral"
+
+    # 5. TriggerEvent.is_executable and TrendSignificanceGuard normalize short side "B"/"S", and survival rejects NaN allow_network
+    te = TriggerEvent(action=TriggerAction.ENTRY, side="B", source="test", symbol="BTCUSDC", price=100.0, strength=1.0)  # type: ignore[arg-type]
+    assert te.is_executable() is True
+    tsg = TrendSignificanceGuard()
+    dec = tsg.evaluate(te, [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0, 92.0, 91.0])
+    assert dec.allowed is False and "trend_direction_inverted" in dec.reason
+    surv = get_trend_survival_metrics("NONEXISTENT_SYM_XYZ", 3600.0, allow_network=float("nan"))  # type: ignore[arg-type]
+    assert surv["symbol"] == "NONEXISTENT_SYM_XYZ"
+
+
+
 

@@ -126,7 +126,7 @@ class WhaleAccumulationTrigger:
                     "top_long_pct": top_long_pct,
                     "taker_ratio": taker_ratio,
                     "oi_change_pct": oi_chg,
-                    "regime": snapshot.divergence_regime,
+                    "regime": getattr(snapshot, "divergence_regime", "neutral"),
                 },
             )
 
@@ -152,7 +152,7 @@ class WhaleAccumulationTrigger:
                     "top_short_pct": top_short_pct,
                     "taker_ratio": taker_ratio,
                     "oi_change_pct": oi_chg,
-                    "regime": snapshot.divergence_regime,
+                    "regime": getattr(snapshot, "divergence_regime", "neutral"),
                 },
             )
 

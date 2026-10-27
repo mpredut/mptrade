@@ -465,7 +465,7 @@ def estimate_T(
     res["p_cont"] = p_cont
     res["source_symbol"] = used
     res["ts"] = time.time()
-    cache_key = sym_u.replace("/", "") if sym_u else str(symbol or "")
+    cache_key = sym_u.replace("/", "").replace("-", "").replace("_", "") if sym_u else str(symbol or "")
     cache[cache_key] = res
     try:
         save_json_state(T_CACHE_FILE, cache, indent=2)
@@ -503,11 +503,12 @@ def get_trend_survival_metrics(
     except Exception:
         cached_entry = None
 
-    allow_net = (
-        allow_network.strip().lower() in ("1", "true", "yes", "on")
-        if isinstance(allow_network, str)
-        else bool(allow_network)
-    )
+    if isinstance(allow_network, str):
+        allow_net = allow_network.strip().lower() in ("1", "1.0", "true", "yes", "on")
+    elif isinstance(allow_network, (int, float)) and not isinstance(allow_network, bool):
+        allow_net = math.isfinite(float(allow_network)) and float(allow_network) != 0.0
+    else:
+        allow_net = bool(allow_network)
     if cached_entry:
         median_d = _pos_float(cached_entry.get("median_d"), median_d)
         p90_d = _pos_float(cached_entry.get("p90_d"), p90_d)

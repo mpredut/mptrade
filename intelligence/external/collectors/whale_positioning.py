@@ -132,8 +132,25 @@ class WhalePositioningCollector:
         safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
         return os.path.join(cache_dir, f"whale_snapshot_{safe_sym}.json")
 
+    @staticmethod
+    def _as_bool_flag(val: Any, default: bool = False) -> bool:
+        import math
+        if val is None:
+            return default
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if s in ("1", "1.0", "true", "yes", "on"):
+                return True
+            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", ""):
+                return False
+            return default
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return math.isfinite(float(val)) and float(val) != 0.0
+        return bool(val)
+
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[WhalePositioningSnapshot]:
         from state_io import read_recovering_previous
+        ignore_ttl_b = self._as_bool_flag(ignore_ttl, default=False)
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
         for cand in _symbol_variants(symbol):
             p = self._disk_path(cand)
@@ -145,9 +162,9 @@ class WhalePositioningCollector:
                     continue
                 snapshot = WhalePositioningSnapshot.from_dict(data)
                 if snapshot.ts > 0.0 and 0.0 <= (now - snapshot.ts) < max_age:
-                    self._cache[symbol.upper()] = (snapshot.ts, snapshot)
+                    self._cache[symbol.strip().upper()] = (snapshot.ts, snapshot)
                     return snapshot
-                if ignore_ttl:
+                if ignore_ttl_b:
                     return snapshot
             except Exception as e:
                 logger.debug("Failed loading whale snapshot from %s: %s", p, e)
@@ -321,6 +338,7 @@ class WhalePositioningCollector:
                     top_long_pct = tl_f if math.isfinite(tl_f) else None
                 except (TypeError, ValueError, OverflowError):
                     top_long_pct = None
+        prev_reg_norm = prev_regime.strip().lower() if isinstance(prev_regime, str) else ""
         # 1. Price rising (> +0.2%)
         if price_1h_change_pct > 0.2:
             if oi_change_pct > 0.3:
@@ -329,7 +347,7 @@ class WhalePositioningCollector:
                     taker_ratio >= 1.15
                     and (
                         (funding_rate is not None and funding_rate < -0.00005)
-                        or prev_regime in ("aggressive_shorting", "short_squeeze_primed")
+                        or prev_reg_norm in ("aggressive_shorting", "short_squeeze_primed")
                         or (top_long_pct is not None and top_long_pct < 0.45)
                     )
                 )
@@ -342,7 +360,7 @@ class WhalePositioningCollector:
             else:
                 # Flat OI with rising price: check for trapped shorts pressure
                 if taker_ratio >= 1.20 and (
-                    prev_regime in ("aggressive_shorting", "short_squeeze_primed")
+                    prev_reg_norm in ("aggressive_shorting", "short_squeeze_primed")
                     or (funding_rate is not None and funding_rate < 0.0)
                 ):
                     return "short_squeeze_primed"
@@ -413,7 +431,7 @@ class WhalePositioningCollector:
         if disk_snap is not None:
             return disk_snap
 
-        if not allow_network:
+        if not self._as_bool_flag(allow_network, default=True):
             return None
 
         p1h_f = 0.0
@@ -532,6 +550,8 @@ class WhalePositioningCollector:
 
     def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for testing and deterministic replays)."""
-        self._cache[snapshot.symbol.upper()] = (snapshot.ts, snapshot)
-        if save_to_disk:
+        if snapshot is None or not isinstance(getattr(snapshot, "symbol", None), str) or not snapshot.symbol.strip():
+            return
+        self._cache[snapshot.symbol.strip().upper()] = (snapshot.ts, snapshot)
+        if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(snapshot)

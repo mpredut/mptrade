@@ -135,7 +135,7 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
                         and sts > 1_000_000_000
                         and -5.0 <= (now_curr - sts) < 3600.0
                     ):
-                        norm_k = str(k or "").strip().upper().replace("/", "")
+                        norm_k = str(k or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
                         if norm_k:
                             clean_data[norm_k] = v
             _GRACE_TRACKER.clear()
@@ -258,6 +258,23 @@ def flush_smart_stop_loss_alerts() -> int:
 class SmartStopLossGuard:
     """Evaluates whether a triggered stop-loss is an artificial wick hunt absorbed by whales."""
 
+    @staticmethod
+    def _normalize_mode(val: Any, default: str = "enforce") -> str:
+        if val is False:
+            return "off"
+        if val is True:
+            return "enforce"
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if not math.isfinite(float(val)):
+                return default
+            return "off" if float(val) == 0.0 else "enforce"
+        raw_m = str(val if val is not None else default).strip().lower()
+        if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
+            return "off"
+        if raw_m in ("1", "1.0", "true", "yes", "on", ""):
+            return "enforce"
+        return raw_m
+
     def __init__(
         self,
         mode: str = "enforce",
@@ -267,13 +284,7 @@ class SmartStopLossGuard:
         min_whale_long_pct: float = 0.60,
         min_taker_ratio: float = 0.85,
     ) -> None:
-        if mode is False:
-            self.mode = "off"
-        elif mode is True:
-            self.mode = "enforce"
-        else:
-            raw_m = str(mode or "enforce").strip().lower()
-            self.mode = "enforce" if raw_m in ("1", "true", "yes", "on", "") else raw_m
+        self.mode = self._normalize_mode(mode, default="enforce")
         max_t = _safe_float(max_threshold_pct, 6.0)
         self.max_threshold_pct = max_t if max_t > 0.0 else 6.0
         grace_s = _safe_float(grace_seconds, 120.0)
@@ -307,7 +318,7 @@ class SmartStopLossGuard:
             - should_execute = False -> Defer stop-loss for this tick (grace period active).
         """
         now_ts = _resolve_now(now)
-        sym_key = str(symbol or "").strip().upper().replace("/", "")
+        sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
         is_sim = _is_simulated_provider(provider)
         price_decrease = _safe_float(price_decrease, 0.0)
         lost_threshold = _safe_float(lost_threshold, 0.0)
@@ -373,7 +384,8 @@ class SmartStopLossGuard:
 
         top_long_pct = _safe_float(getattr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
         taker_ratio = _safe_float(getattr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
-        divergence_regime = str(getattr(w_snap, "divergence_regime", None) or "neutral") if w_snap else "neutral"
+        raw_div_reg = getattr(w_snap, "divergence_regime", None) if w_snap else None
+        divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
         imbalance = _safe_float(getattr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
         bid_wall = _safe_float(getattr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
 
@@ -555,7 +567,7 @@ class SmartStopLossGuard:
         """Called when price decrease drops back below or equal to threshold."""
         if not _GRACE_TRACKER and (_LOADED_STATE_FILE_KEY is not None or _is_simulated_provider(provider)):
             return False
-        sym_key = str(symbol or "").strip().upper().replace("/", "")
+        sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
         is_sim_call = _is_simulated_provider(provider)
         tracker = _load_grace_state(is_sim=is_sim_call)
         if sym_key in tracker:
@@ -624,7 +636,13 @@ class SmartStopLossGuard:
                 "ts": now_ts,
             }
 
-            if batch:
+            if isinstance(batch, str):
+                batch_b = batch.strip().lower() not in ("0", "0.0", "false", "no", "off", "disabled", "nan", "")
+            elif isinstance(batch, (int, float)) and not isinstance(batch, bool):
+                batch_b = math.isfinite(float(batch)) and float(batch) != 0.0
+            else:
+                batch_b = bool(batch)
+            if batch_b:
                 _PENDING_RECOVERIES.append(rec_event)
             else:
                 _dispatch_recovery_alerts([rec_event])
@@ -650,17 +668,10 @@ def evaluate_smart_stop_loss(
     m = _load_margins()
 
     raw_mode = m["smart_sl_mode"]
-    if raw_mode is False:
-        mode = "off"
-    elif raw_mode is True:
-        mode = "enforce"
-    else:
-        mode = str(raw_mode or "enforce").strip().lower()
-        if mode in ("1", "true", "yes", "on"):
-            mode = "enforce"
-    intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
-    ext_master = str(m.get("external_guard_mode", "enforce") or "enforce").strip().lower()
-    if intel_master in ("off", "0", "false", "no", "disabled") or ext_master in ("off", "0", "false", "no", "disabled"):
+    mode = SmartStopLossGuard._normalize_mode(raw_mode, default="enforce")
+    intel_master = SmartStopLossGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
+    ext_master = SmartStopLossGuard._normalize_mode(m.get("external_guard_mode", "enforce"), default="enforce")
+    if intel_master == "off" or ext_master == "off":
         mode = "off"
     elif ext_master == "shadow" and mode == "enforce":
         mode = "shadow"
@@ -727,7 +738,7 @@ def clear_smart_stop_loss_if_recovered(
 
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
-    sym_key = str(symbol or "").strip().upper().replace("/", "")
+    sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
     is_sim_call = _is_simulated_provider(provider)
     tracker = _load_grace_state(is_sim=is_sim_call)
     if sym_key in tracker:
