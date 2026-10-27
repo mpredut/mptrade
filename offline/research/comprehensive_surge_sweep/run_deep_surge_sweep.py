@@ -286,11 +286,15 @@ def _run_slice_replay(
         _safe_f(res.get("max_drawdown_pct"), 0.0),
         max(0, _safe_int(res.get("cycles"), 0)),
     )
-    diag = _spot_replay._LAST_REPLAY_DIAG
+    diag = _spot_replay._LAST_REPLAY_DIAG if isinstance(_spot_replay._LAST_REPLAY_DIAG, dict) else {}
+    raw_max_vol = diag.get("max_active_surge_vol")
+    max_vol = _safe_f(raw_max_vol, float("inf")) if raw_max_vol is not None else float("inf")
+    raw_ts = diag.get("surge_win_check_ts", ())
+    win_ts = tuple(raw_ts) if isinstance(raw_ts, (list, tuple)) else ()
     return (
         metrics,
-        float(diag.get("max_active_surge_vol", float("inf"))),
-        tuple(diag.get("surge_win_check_ts", ())),
+        max_vol,
+        win_ts,
     )
 
 
@@ -300,10 +304,17 @@ def _win_move_at_ts(
     ts: float,
     w_hours: float,
 ) -> float | None:
-    if not (math.isfinite(ts) and ts >= 0 and math.isfinite(w_hours) and w_hours > 0):
+    if ts is None or w_hours is None or isinstance(ts, bool) or isinstance(w_hours, bool):
         return None
-    bar_idx = int(round(ts / (240.0 * 60.0)))
-    nb = max(1, round(w_hours / 4.0))
+    try:
+        ts_f = float(ts)
+        wh_f = float(w_hours)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (math.isfinite(ts_f) and ts_f >= 0 and math.isfinite(wh_f) and wh_f > 0):
+        return None
+    bar_idx = int(round(ts_f / (240.0 * 60.0)))
+    nb = max(1, round(wh_f / 4.0))
     idx = warmup_n + bar_idx
     if idx < nb or idx >= len(all_closes):
         return None

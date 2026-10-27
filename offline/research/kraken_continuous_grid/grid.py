@@ -46,9 +46,12 @@ _orig_step = strat.Strategy.step
 
 def _step(self, price, *args, **kwargs):
     s = self.s
-    if s["qty"] <= 1e-12:
+    if _safe_f(s.get("qty"), 0.0) <= 1e-12:
         if FLAGS["peak"] and s.get("last_exit_kind") == "TP" and s.get("last_sell_price"):
-            s["last_sell_price"] = max(s["last_sell_price"], price)
+            p_f = _safe_f(price, 0.0)
+            lsp_f = _safe_f(s.get("last_sell_price"), 0.0)
+            if p_f > 0.0 and lsp_f > 0.0:
+                s["last_sell_price"] = max(lsp_f, p_f)
     return _orig_step(self, price, *args, **kwargs)
 
 

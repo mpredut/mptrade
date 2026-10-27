@@ -508,7 +508,7 @@ def main():
                      help="where to write the proposals in --propose mode (default backtest_proposals.json)")
     args = ap.parse_args()
 
-    if os.environ.get("PILOT_DISABLED", "").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get("PILOT_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
         print("[scheduled_pilot] PILOT_DISABLED=true -- leaving without doing anything")
         return
 

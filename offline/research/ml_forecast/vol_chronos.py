@@ -32,7 +32,21 @@ BATCH = 8                               # test windows batched per call
 
 def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
     """Return trailing [i-win, i] log-return standard deviation, with NaN before history."""
-    px_arr = np.asarray(px, dtype=float).reshape(-1)
+    if isinstance(px, np.ndarray) and px.dtype.kind in ("f", "i", "u"):
+        px_arr = px.astype(float, copy=False).reshape(-1)
+    elif px is None or isinstance(px, (str, bytes, bool)):
+        px_arr = np.empty(0, dtype=float)
+    else:
+        cleaned: list[float] = []
+        for item in px:
+            if item is None or isinstance(item, bool):
+                cleaned.append(np.nan)
+            else:
+                try:
+                    cleaned.append(float(item))
+                except (TypeError, ValueError, OverflowError):
+                    cleaned.append(np.nan)
+        px_arr = np.asarray(cleaned, dtype=float).reshape(-1)
     if isinstance(win, bool) or not isinstance(win, (int, float)) or not np.isfinite(win):
         win = 24
     win = max(1, int(win))

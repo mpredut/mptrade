@@ -1339,6 +1339,33 @@ def test_batch46_offline_research_tapes_and_ranges_hardening(tmp_path, monkeypat
     assert scanned[str(conf_file)] == {"mt.gain": ["1.0", "2.0"]}
 
 
+def test_batch47_surge_sweep_grids_and_ml_forecast_hardening():
+    import numpy as np
+    import offline.research.comprehensive_surge_sweep.run_deep_surge_sweep as dss
+    import offline.research.ml_forecast.forecast as mlf
+    import offline.research.ml_forecast.vol_chronos as vc
+
+    # 1. _win_move_at_ts safely handles None, bool, and string timestamps/windows
+    assert dss._win_move_at_ts([100.0, 110.0], 0, None, 4.0) is None
+    assert dss._win_move_at_ts([100.0, 110.0], 0, True, 4.0) is None
+    assert dss._win_move_at_ts([100.0, 110.0], 0, "14400.0", "4.0") == 10.0
+
+    # 2. forecast._to_price_array replaces bool/None/invalid entries with NaN
+    arr = mlf._to_price_array([100.0, True, None, "bad", "105.5"])
+    assert len(arr) == 5
+    assert arr[0] == 100.0
+    assert np.isnan(arr[1])
+    assert np.isnan(arr[2])
+    assert np.isnan(arr[3])
+    assert arr[4] == 105.5
+
+    # 3. vol_chronos.realized_vol_series sanitizes bool/None/string entries
+    rv = vc.realized_vol_series([100.0, True, 102.0, 104.0], win=2)
+    assert len(rv) == 4
+    assert np.isnan(rv[2])  # because index 1 (True) was sanitized to NaN
+
+
+
 
 
 

@@ -67,8 +67,29 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     return [r1, r4, r8, r24, r72, vol24, vol72, mk_z, h, rsi, snr24]
 
 
+def _to_price_array(px) -> np.ndarray:
+    if isinstance(px, np.ndarray) and px.dtype.kind in ("f", "i", "u"):
+        return px.astype(float, copy=False).reshape(-1)
+    if px is None or isinstance(px, (str, bytes, bool)):
+        return np.empty(0, dtype=float)
+    try:
+        items = list(px)
+    except TypeError:
+        return np.empty(0, dtype=float)
+    cleaned: list[float] = []
+    for item in items:
+        if item is None or isinstance(item, bool):
+            cleaned.append(np.nan)
+            continue
+        try:
+            cleaned.append(float(item))
+        except (TypeError, ValueError, OverflowError):
+            cleaned.append(np.nan)
+    return np.asarray(cleaned, dtype=float).reshape(-1)
+
+
 def build_dataset(px: np.ndarray):
-    px_arr = np.asarray(px, dtype=float).reshape(-1)
+    px_arr = _to_price_array(px)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     X, y_dir, y_mag = [], [], []
@@ -147,7 +168,7 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     logit_acc = _safe_f(rep.get("logit"), None) if isinstance(rep, dict) else None
     lindy_acc = _safe_f(rep.get("lindy"), None) if isinstance(rep, dict) else None
     use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
-    px_arr = np.asarray(px, dtype=float).reshape(-1)
+    px_arr = _to_price_array(px)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     raw_row = _feat_row(len(px_arr) - 1, logp, px_arr) if len(px_arr) > WARMUP else [0.0] * len(FEATURES)

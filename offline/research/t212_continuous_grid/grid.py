@@ -38,9 +38,12 @@ _orig_step = strat.Strategy.step
 
 def _step(self, price, *args, **kwargs):
     s = self.s
-    if (FLAGS["peak"] and s["qty"] <= 1e-9 and s.get("last_sell_price")
+    if (FLAGS["peak"] and _safe_f(s.get("qty"), 0.0) <= 1e-9 and s.get("last_sell_price")
             and not s.get("sl_rebuy")):
-        s["last_sell_price"] = max(s["last_sell_price"], price)
+        p_f = _safe_f(price, 0.0)
+        lsp_f = _safe_f(s.get("last_sell_price"), 0.0)
+        if p_f > 0.0 and lsp_f > 0.0:
+            s["last_sell_price"] = max(lsp_f, p_f)
     return _orig_step(self, price, *args, **kwargs)
 
 
@@ -153,8 +156,8 @@ def params_for(profile, variant):
     cfg = dict(PROFILES[profile])
     over, peak = VARIANTS[variant]
     cfg.update(over)
-    if peak and float(cfg.get("STRAT_REENTRY_DROP_PCT") or 0) <= 0:
-        pb = float(cfg.get("STRAT_REENTRY_PULLBACK_PCT") or 0)
+    if peak and _safe_f(cfg.get("STRAT_REENTRY_DROP_PCT"), 0.0) <= 0:
+        pb = _safe_f(cfg.get("STRAT_REENTRY_PULLBACK_PCT"), 0.0)
         cfg["STRAT_REENTRY_DROP_PCT"] = str(pb if pb > 0 else 2.0)
     cfg["STRAT_DCA_TREND_GATE_PCT"] = "0"   # the gate needs 5m bars; neutral on 1h/1d
     return strat.StratParams.from_env(cfg), peak
