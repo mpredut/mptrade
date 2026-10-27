@@ -39,6 +39,7 @@ cachedb/
 priceanalysis.json
 kraken_trades_full.json
 last_watch_config.json
+backtest_proposals.json
 index.html
 tradeall_live/
 !notify_engine/rules.json
