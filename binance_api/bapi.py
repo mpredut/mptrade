@@ -73,9 +73,9 @@ def _parse_bool_flag(val, default: bool = False) -> bool:
         return val != 0
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
-        if s in {"0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
+        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
             return False
     return default
 

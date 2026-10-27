@@ -70,7 +70,7 @@ def _parse_bool_flag(val: object, default: bool = False) -> bool:
         return bool(val) if math.isfinite(val) else default
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
             return False
@@ -286,9 +286,14 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
             pass
     if price is None and yahoo_sym:
         price = yahoo_last(yahoo_sym)
-    if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
+    if not price or isinstance(price, bool):
         return
-    price = float(price)
+    try:
+        price = float(price)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(price) or price <= 0:
+        return
     chg = (price - alloc_price) / alloc_price * 100
     log(f"  price {price} vs allocation {alloc_price} ({chg:+.1f}%)")
     raw_qty = allocated.get("qty", 0)

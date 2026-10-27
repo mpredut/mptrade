@@ -140,10 +140,14 @@ class TrailingStop:
         self.log = log
         if enabled is None:
             self.enabled = TRAILING_ENABLED
+        elif isinstance(enabled, bool):
+            self.enabled = enabled
+        elif isinstance(enabled, (int, float)):
+            self.enabled = bool(math.isfinite(float(enabled)) and float(enabled) != 0.0)
         elif isinstance(enabled, str):
-            self.enabled = enabled.strip().lower() in ("1", "true", "yes", "on")
+            self.enabled = enabled.strip().lower() in ("1", "1.0", "true", "yes", "on")
         else:
-            self.enabled = bool(enabled)
+            self.enabled = False
         self.sell_fraction = _finite(
             sell_fraction, name="TRAILING_SELL_FRACTION", minimum=0.0, maximum=1.0)
         min_profit_pct = _finite(
@@ -418,7 +422,7 @@ class TrailingStop:
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
         raw_attempt = self._retry_counts.get((pair, action), 0)
-        attempt = (int(raw_attempt) if not isinstance(raw_attempt, bool) and isinstance(raw_attempt, (int, float)) and math.isfinite(float(raw_attempt)) else 0) + 1
+        attempt = max(0, int(self._safe_float(raw_attempt, 0.0))) + 1
         qty_f = self._safe_float(qty, 0.0)
         price_f = self._safe_float(price, 0.0)
         raw_anchor = metadata.get("anchor", price_f)
@@ -433,7 +437,7 @@ class TrailingStop:
             intent_id=intent_id,
             client_order_id=intent_client_order_id("Binance", intent_id),
             symbol=pair, side="SELL" if action == "SELL" else "BUY",
-            requested_qty=qty, requested_price=price, kind=f"TRAIL_{action}",
+            requested_qty=qty_f, requested_price=price_f, kind=f"TRAIL_{action}",
             attempt=attempt,
             metadata={"action": action, "asset": asset, **metadata},
         )
@@ -445,17 +449,10 @@ class TrailingStop:
         rc = st.get("retry_counts")
         if isinstance(rc, dict) and action in rc:
             raw_rc = rc[action]
-            if raw_rc is None or isinstance(raw_rc, bool):
-                persisted = 0
-            else:
-                try:
-                    persisted_f = float(raw_rc)
-                    persisted = int(persisted_f) if math.isfinite(persisted_f) and persisted_f >= 0 else 0
-                except (TypeError, ValueError, OverflowError):
-                    persisted = 0
+            persisted = max(0, int(self._safe_float(raw_rc, 0.0)))
             retry_key = (pair, action)
             cur_rc = self._retry_counts.get(retry_key, 0)
-            cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+            cur_rc_i = max(0, int(self._safe_float(cur_rc, 0.0)))
             if persisted > cur_rc_i:
                 self._retry_counts[retry_key] = persisted
 
@@ -474,18 +471,10 @@ class TrailingStop:
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
         raw_rc_act = rc.get(action, 0)
         raw_att = pending.get("attempt")
-        try:
-            rc_act_f = float(raw_rc_act or 0)
-            rc_act = 0 if isinstance(raw_rc_act, bool) or not math.isfinite(rc_act_f) else max(0, int(rc_act_f))
-        except (TypeError, ValueError, OverflowError):
-            rc_act = 0
-        try:
-            att_f = float(raw_att or 1)
-            att_val = 1 if isinstance(raw_att, bool) or not math.isfinite(att_f) else max(1, int(att_f))
-        except (TypeError, ValueError, OverflowError):
-            att_val = 1
+        rc_act = max(0, int(self._safe_float(raw_rc_act, 0.0)))
+        att_val = max(1, int(self._safe_float(raw_att, 1.0)))
         cur_rc = self._retry_counts.get(retry_key, 0)
-        cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+        cur_rc_i = max(0, int(self._safe_float(cur_rc, 0.0)))
         attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
         if result.outcome in ("absent", "retryable"):
             new_count = attempt_base + 1

@@ -109,16 +109,25 @@ class KrakenTrailing:
         self.log = log
         if enabled is None:
             self.enabled = required_bool_env("KRAKEN_TRAILING_ENABLED")
+        elif isinstance(enabled, bool):
+            self.enabled = enabled
+        elif isinstance(enabled, (int, float)):
+            self.enabled = bool(math.isfinite(float(enabled)) and float(enabled) != 0.0)
         elif isinstance(enabled, str):
-            self.enabled = enabled.strip().lower() in ("1", "true", "yes", "on")
+            self.enabled = enabled.strip().lower() in ("1", "1.0", "true", "yes", "on")
         else:
-            self.enabled = bool(enabled)
+            self.enabled = False
         if trailing_market is None:
             self.trailing_market = TRAILING_MARKET
+        elif isinstance(trailing_market, bool):
+            self.trailing_market = trailing_market
+        elif isinstance(trailing_market, (int, float)):
+            self.trailing_market = bool(math.isfinite(float(trailing_market)) and float(trailing_market) != 0.0)
         elif isinstance(trailing_market, str):
-            self.trailing_market = trailing_market.strip().lower() in ("1", "true", "yes", "on")
+            self.trailing_market = trailing_market.strip().lower() in ("1", "1.0", "true", "yes", "on")
         else:
-            self.trailing_market = bool(trailing_market)
+            self.trailing_market = False
+        min_profit_pct = max(0.0, self._safe_float(min_profit_pct, float(MIN_PROFIT_PCT)))
         self.state_file = state_file
         self._tick_balances: dict | None = None
         self._retry_counts: dict[tuple[str, str], int] = {}
@@ -301,6 +310,16 @@ class KrakenTrailing:
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
 
+    @staticmethod
+    def _safe_float(val, default: float = 0.0) -> float:
+        if val is None or isinstance(val, bool):
+            return default
+        try:
+            f = float(val)
+            return f if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
     def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
         st = getattr(persist, "st", None)
         if not isinstance(st, dict):
@@ -308,32 +327,22 @@ class KrakenTrailing:
         rc = st.get("retry_counts")
         if isinstance(rc, dict) and action in rc:
             raw_rc = rc[action]
-            if raw_rc is None or isinstance(raw_rc, bool):
-                persisted = 0
-            else:
-                try:
-                    persisted_f = float(raw_rc)
-                    persisted = int(persisted_f) if math.isfinite(persisted_f) and persisted_f >= 0 else 0
-                except (TypeError, ValueError, OverflowError):
-                    persisted = 0
+            persisted = max(0, int(self._safe_float(raw_rc, 0.0)))
             retry_key = (pair, action)
             cur_rc = self._retry_counts.get(retry_key, 0)
-            cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+            cur_rc_i = max(0, int(self._safe_float(cur_rc, 0.0)))
             if persisted > cur_rc_i:
                 self._retry_counts[retry_key] = persisted
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
         raw_attempt = self._retry_counts.get((pair, action), 0)
-        attempt = (int(raw_attempt) if not isinstance(raw_attempt, bool) and isinstance(raw_attempt, (int, float)) and math.isfinite(float(raw_attempt)) else 0) + 1
-        raw_anchor = metadata.get("anchor", price)
-        try:
-            anchor_f = float(raw_anchor) if raw_anchor is not None and not isinstance(raw_anchor, bool) else float(price)
-            if not math.isfinite(anchor_f):
-                anchor_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            anchor_f = float(price)
+        attempt = max(0, int(self._safe_float(raw_attempt, 0.0))) + 1
+        qty_f = self._safe_float(qty, 0.0)
+        price_f = self._safe_float(price, 0.0)
+        raw_anchor = metadata.get("anchor", price_f)
+        anchor_f = self._safe_float(raw_anchor, price_f)
         intent_id = (
-            f"trailing:kraken:{key}:{action}:{float(qty):.8f}:{float(price):.8f}:"
+            f"trailing:kraken:{key}:{action}:{qty_f:.8f}:{price_f:.8f}:"
             f"{anchor_f:.8f}"
         )
         if attempt > 1:
@@ -342,7 +351,7 @@ class KrakenTrailing:
             intent_id=intent_id,
             client_order_id=intent_client_order_id("Kraken", intent_id),
             symbol=pair, side="SELL" if action == "SELL" else "BUY",
-            requested_qty=qty, requested_price=price,
+            requested_qty=qty_f, requested_price=price_f,
             kind=f"TRAIL_{action}",
             attempt=attempt,
             metadata={"action": action, "asset": asset, **metadata},
@@ -363,18 +372,10 @@ class KrakenTrailing:
         rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
         raw_rc_act = rc.get(action, 0)
         raw_att = pending.get("attempt") if isinstance(pending, dict) else None
-        try:
-            rc_act_f = float(raw_rc_act or 0)
-            rc_act = 0 if isinstance(raw_rc_act, bool) or not math.isfinite(rc_act_f) else max(0, int(rc_act_f))
-        except (TypeError, ValueError, OverflowError):
-            rc_act = 0
-        try:
-            att_f = float(raw_att or 1)
-            att_val = 1 if isinstance(raw_att, bool) or not math.isfinite(att_f) else max(1, int(att_f))
-        except (TypeError, ValueError, OverflowError):
-            att_val = 1
+        rc_act = max(0, int(self._safe_float(raw_rc_act, 0.0)))
+        att_val = max(1, int(self._safe_float(raw_att, 1.0)))
         cur_rc = self._retry_counts.get(retry_key, 0)
-        cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+        cur_rc_i = max(0, int(self._safe_float(cur_rc, 0.0)))
         attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
         if result.outcome in ("absent", "retryable"):
             new_count = attempt_base + 1
@@ -558,22 +559,26 @@ class KrakenTrailing:
         return result
 
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
-        self.log(f"  🟡 [TRAIL-K][DRY] WOULD SELL {qty} {asset} @ ~{price:.4f} "
-                 f"(peak {peak:.4f}, -{trail}%)  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
+        px_f = self._safe_float(price, 0.0)
+        pk_f = self._safe_float(peak, 0.0)
+        self.log(f"  🟡 [TRAIL-K][DRY] WOULD SELL {qty} {asset} @ ~{px_f:.4f} "
+                 f"(peak {pk_f:.4f}, -{trail}%)  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        px_f = self._safe_float(price, 0.0)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        try:
-            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
-            low_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
-        except (TypeError, ValueError, OverflowError):
-            low_val = float(price)
-        self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{price:.4f}  "
+        low_f = self._safe_float(raw_low, px_f)
+        low_val = low_f if low_f > 0 else px_f
+        self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{px_f:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 
     def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
-        self.log(f"  [TRAIL-K] {asset}: {price:.4f}  varf {peak:.4f}  "
-                 f"sells below {stop_at:.4f} (-{trail}%)  (free {free:.4f})")
+        px_f = self._safe_float(price, 0.0)
+        pk_f = self._safe_float(peak, 0.0)
+        st_f = self._safe_float(stop_at, 0.0)
+        fr_f = self._safe_float(free, 0.0)
+        self.log(f"  [TRAIL-K] {asset}: {px_f:.4f}  varf {pk_f:.4f}  "
+                 f"sells below {st_f:.4f} (-{trail}%)  (free {fr_f:.4f})")
 
     def log_skip_rebuy_trend(self, asset) -> None:
         self.log(f"  [TRAIL-K] re-buy {asset} deferred — the instant trend is CLEARLY down (not catching the knife)")

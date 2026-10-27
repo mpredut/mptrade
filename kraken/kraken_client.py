@@ -363,15 +363,14 @@ class KrakenClient:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
             data["cl_ord_id"] = str(cl_ord_id).strip().lower()
-        val_flag = (
-            validate
-            if isinstance(validate, bool)
-            else (
-                str(validate).strip().lower() in {"1", "true", "yes", "on"}
-                if isinstance(validate, str)
-                else bool(validate)
-            )
-        )
+        if isinstance(validate, bool):
+            val_flag = validate
+        elif isinstance(validate, (int, float)):
+            val_flag = bool(math.isfinite(float(validate)) and float(validate) != 0.0)
+        elif isinstance(validate, str):
+            val_flag = validate.strip().lower() in {"1", "1.0", "true", "yes", "on"}
+        else:
+            val_flag = False
         if val_flag:
             data["validate"] = "true"
         return self._private("AddOrder", data)

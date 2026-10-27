@@ -164,10 +164,23 @@ def run_intraday(pair, tz_offset=3):
         print(f"EROARE: {e}"); return
     import collections
     by_hour = collections.defaultdict(list)
-    for (ts, o, h, l, c) in rows:
-        hr = (ts // 3600 + tz_offset) % 24
-        if o > 0:
-            by_hour[hr].append((c-o)/o*100)
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 5:
+            continue
+        ts, o, h, l, c = row[:5]
+        if isinstance(ts, bool) or isinstance(o, bool) or isinstance(c, bool):
+            continue
+        try:
+            ts_i = int(float(ts))
+            o_f = float(o)
+            c_f = float(c)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (o_f == o_f and c_f == c_f and abs(o_f) != float("inf") and abs(c_f) != float("inf")):
+            continue
+        hr = (ts_i // 3600 + tz_offset) % 24
+        if o_f > 0:
+            by_hour[hr].append((c_f - o_f) / o_f * 100)
     print(f"=== INTRADAY {pair} (ora LOCALA UTC+{tz_offset}, {len(rows)} bare orare) ===")
     print(f"{'hour':<5} {'n':<5} {'avg.return/hour':>14} {'% positive bars':>16}")
     cum = 0.0

@@ -203,7 +203,7 @@ def _load_initial_cache(path):
                 row_copy["time"] = int(t_f)
                 if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
                     s_ib = row_copy["isBuyer"].strip().lower()
-                    if s_ib in {"1", "true", "yes", "on"}:
+                    if s_ib in {"1", "1.0", "true", "yes", "on"}:
                         row_copy["isBuyer"] = True
                     elif s_ib in {"0", "0.0", "false", "no", "off", "", "none", "null", "nan"}:
                         row_copy["isBuyer"] = False

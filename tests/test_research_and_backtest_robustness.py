@@ -6225,5 +6225,76 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     assert intents_list[0]["status"] == "EXECUTED"
 
 
+def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from binance_api import bapi, bapi_placeorder, bapi_ws, bapi_ws_health
+    from binance_api import market_data as b_mdata
+    from binance_api.trailing_stop import TrailingStop
+    from kraken import backtest_trail, kraken_xstock_watch
+    from kraken.trailing_stop import KrakenTrailing
+
+    # 1. Binance boolean flag helpers accept "1.0" and "0.0"
+    assert bapi._parse_bool_flag("1.0") is True
+    assert bapi._parse_bool_flag("0.0", default=True) is False
+    assert bapi_placeorder._parse_bool_flag("1.0") is True
+    assert bapi_placeorder._parse_bool_flag("0.0", default=True) is False
+    assert bapi_ws._as_bool("1.0") is True
+    assert bapi_ws._as_bool("0.0", default=True) is False
+    assert bapi_ws_health._as_bool("1.0") is True
+    assert bapi_ws_health._as_bool("0.0", default=True) is False
+    assert b_mdata._parse_bool_flag("1.0", default=False) is True
+    assert b_mdata._parse_bool_flag("0.0", default=True) is False
+    assert kraken_xstock_watch._parse_bool_flag("1.0") is True
+    assert kraken_xstock_watch._parse_bool_flag("0.0", default=True) is False
+
+    # 2. TrailingStop (Binance) enabled flag and string retry_counts
+    ts_nan = TrailingStop(api=MagicMock(), po=MagicMock(), sym=MagicMock(), enabled=float("nan"), state_file=str(tmp_path / "ts1.json"))
+    assert ts_nan.enabled is False
+    ts_one = TrailingStop(api=MagicMock(), po=MagicMock(), sym=MagicMock(), enabled="1.0", state_file=str(tmp_path / "ts2.json"))
+    assert ts_one.enabled is True
+    ts_one._retry_counts[("BTCUSDC", "SELL")] = "2"  # type: ignore[assignment]
+    intent_b = ts_one._order_intent("SELL", "BTC", "BTC", "BTCUSDC", "1.5", "50000.0")
+    assert intent_b["attempt"] == 3
+    assert intent_b["intent_id"].endswith(":a3")
+
+    # 3. KrakenTrailing enabled/trailing_market flags, string retry_counts, and log formatting
+    kt_nan = KrakenTrailing(client=MagicMock(), enabled=float("nan"), trailing_market=float("nan"), state_file=str(tmp_path / "kt1.json"))
+    assert kt_nan.enabled is False
+    assert kt_nan.trailing_market is False
+    kt_one = KrakenTrailing(client=MagicMock(), enabled="1.0", trailing_market="1.0", state_file=str(tmp_path / "kt2.json"))
+    assert kt_one.enabled is True
+    assert kt_one.trailing_market is True
+    kt_one._retry_counts[("SOLUSD", "SELL")] = "3"  # type: ignore[assignment]
+    intent_k = kt_one._order_intent("SELL", "SOL", "SOL", "SOLUSD", "2.0", "150.0")
+    assert intent_k["attempt"] == 4
+    assert intent_k["intent_id"].endswith(":a4")
+    # log_dry_sell / log_dry_rebuy / log_hold must not raise TypeError on string/None inputs
+    logged = []
+    kt_one.log = logged.append
+    kt_one.log_dry_sell("SOL", "SOL", "SOLUSD", "2.0", "150.0", None, 5.0)
+    kt_one.log_dry_rebuy("SOL", "SOL", "SOLUSD", "2.0", "140.0", {"low": "135.0"})
+    kt_one.log_hold("SOL", "SOL", "SOLUSD", "150.0", "160.0", None, 5.0, "2.0")
+    assert len(logged) == 3
+
+    # 4. kraken_xstock_watch.check_levels ignores non-numeric price strings without ValueError
+    mock_client = MagicMock()
+    mock_client.last_price.return_value = "invalid_price"
+    st_watch = {"allocated": {"asset": "SPACEX", "qty": "10"}, "pair": "SPACEXUSD"}
+    kraken_xstock_watch.check_levels(mock_client, st_watch, 100.0, 10.0, 10.0, "", False)
+
+    # 5. backtest_trail.run_intraday tolerates malformed rows
+    monkeypatch.setattr(
+        backtest_trail,
+        "fetch_with_time",
+        lambda pair, iv: [
+            (1700000000, 100.0, 105.0, 99.0, 102.0),
+            ("bad_ts", 100.0, 105.0, 99.0, 102.0),
+            (1700003600, True, 105.0, 99.0, 102.0),
+            (1700007200,),
+        ],
+    )
+    backtest_trail.run_intraday("BTCUSD", tz_offset=0)
+
+
 
 

@@ -75,9 +75,9 @@ def _as_bool(value, default: bool = False) -> bool:
             return bool(default)
         return f != 0.0
     s = str(value).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
+    if s in {"1", "1.0", "true", "yes", "on"}:
         return True
-    if s in {"0", "false", "no", "off", ""}:
+    if s in {"0", "0.0", "false", "no", "off", ""}:
         return False
     return bool(default)
 
