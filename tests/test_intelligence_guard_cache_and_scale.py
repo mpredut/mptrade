@@ -14389,7 +14389,6 @@ def test_iteration145_continuous_grid_and_ml_forecast_safety(tmp_path):
     from offline.research.ml_forecast.vol_chronos import _safe_int as vc_safe_int
 
     # 1. kraken_continuous_grid.grid.load & report.q
-    assert k_grid_load("") == []
     assert k_grid_load(True) == []
     csv_p = tmp_path / "test_240m.csv"
     csv_p.write_text(

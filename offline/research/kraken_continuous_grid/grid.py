@@ -139,14 +139,12 @@ def _safe_int(val, default: int = 0) -> int:
 
 def load(path):
     import math
-    if not path or isinstance(path, (bool, int, float)):
+    if isinstance(path, (bool, int, float)):
         return []
     cached = _LOAD_CACHE.get(path)
     if cached is not None:
         return cached
     rows = []
-    if not os.path.isfile(str(path)):
-        return rows
     with open(path, encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
             try:
