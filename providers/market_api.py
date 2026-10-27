@@ -232,7 +232,12 @@ class BinanceProvider(MarketDataProvider):
         cm.ensure_account_cache_readers(status)
         manager = cm.get_cache_manager("Trade", start_sync=False)
         with manager.lock:
-            rows = [dict(row) for row in manager.cache.get(symbol, [])]
+            raw_rows = list(manager.cache.get(symbol, []))
+        rows = []
+        for r in raw_rows:
+            if not isinstance(r, dict):
+                return None
+            rows.append(dict(r))
         now_ms = time.time() * 1000
         cutoff = now_ms - since_s * 1000
         normalized = []
@@ -817,15 +822,18 @@ class MarketApi:
         return provider
 
     def _provider_for(self, symbol: str) -> MarketDataProvider:
-        if not isinstance(symbol, str):
+        if isinstance(symbol, bool) or not isinstance(symbol, str):
             return self._providers[0]
-        provider = self._route.get(symbol)
+        sym_clean = symbol.strip()
+        provider = self._route.get(symbol) or (self._route.get(sym_clean) if sym_clean else None)
         if provider is not None:
             return provider
         for candidate in self._providers:
             try:
-                if candidate.supports_symbol(symbol):
+                if candidate.supports_symbol(sym_clean or symbol):
                     self._route[symbol] = candidate
+                    if sym_clean:
+                        self._route[sym_clean] = candidate
                     return candidate
             except Exception:
                 continue
@@ -1015,12 +1023,14 @@ class MarketApi:
         if not isinstance(order_id, str):
             raise ProviderError(f"{provider_name}: invalid order_id")
         text = order_id.strip()
-        if text.endswith(".0") and text[:-2].isdigit():
+        if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
             text = text[:-2]
         if not text or text.lower() in _INVALID_API_ID_STRINGS:
             raise ProviderError(f"{provider_name}: invalid order_id")
         if text.lstrip("+-").isdigit() and int(text) <= 0:
             raise ProviderError(f"{provider_name}: invalid order_id")
+        if text.startswith("+") and text[1:].isdigit():
+            text = text[1:]
         return text
 
     def order_status(self, symbol: str, order_id: str, *,

@@ -491,6 +491,10 @@ def check_slow_grind_exhaustion(
         or mg_f is None
         or avg_f <= 0
         or px_f <= 0
+        or ent_f < 0
+        or cur_t_f < 0
+        or md_f <= 0
+        or mg_f <= 0
     ):
         return False, ""
     elapsed_days = (cur_t_f - ent_f) / 86400.0

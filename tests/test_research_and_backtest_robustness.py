@@ -5870,6 +5870,97 @@ def test_batch38_pair_store_trailing_log_pricewindow_cache_bapi_trades_hardening
     assert len(agg) == 1 and agg[0]["orderId"] == "987"
 
 
+def test_batch39_providers_pem_spot_engine_rules_replay_hardening():
+    import pytest
+    from providers.base import extract_order_fee, extract_order_price
+    from providers.market_api import MarketApi, ProviderError
+    from strategies import spot_engine, spot_replay, spot_rules
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionSnapshot,
+        ReentrySnapshot,
+    )
+
+    # 1. extract_order_fee skips invalid first fee/asset key and falls back to valid alternate key
+    fee_info = extract_order_fee(
+        {"commission": "", "fee": "0.25", "commissionAsset": None, "feeAsset": " usdc "},
+        base_asset="BTC",
+        quote_asset="USDC",
+        require_explicit_asset=True,
+    )
+    assert fee_info is not None
+    assert fee_info["fee"] == pytest.approx(0.25)
+    assert fee_info["fee_asset"] == "USDC"
+    assert fee_info["quote_fee"] == pytest.approx(0.25)
+
+    # 2. extract_order_price guards against overflow to inf in cost/qty division
+    assert extract_order_price({"cost": 1e308, "vol": 1e-10}, default=0.0) == 0.0
+
+    # 3. MarketApi._clean_order_id_arg strips leading '+' and rejects '+0.0' / '-5.0'
+    assert MarketApi._clean_order_id_arg(" +456.0 ", "binance") == "456"
+    with pytest.raises(ProviderError):
+        MarketApi._clean_order_id_arg("+0.0", "binance")
+    with pytest.raises(ProviderError):
+        MarketApi._clean_order_id_arg("-5.0", "binance")
+
+    # 4. PositionSnapshot, ReentrySnapshot, and PositionExitConfig sanitize invalid/negative fields
+    ps = PositionSnapshot(symbol="BTCUSDC", current_price=True, avg_buy_price=float("nan"))  # type: ignore[arg-type]
+    assert ps.current_price == 0.0
+    assert ps.avg_buy_price == 0.0
+    assert ps.is_valid_price is False
+
+    rs = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price="bad",  # type: ignore[arg-type]
+        last_sell_price=True,  # type: ignore[arg-type]
+        post_sell_peak=-10.0,
+        post_sell_trough=float("inf"),
+    )
+    assert rs.current_price == 0.0
+    assert rs.last_sell_price is None
+    assert rs.post_sell_peak is None
+    assert rs.post_sell_trough is None
+
+    cfg = PositionExitConfig(lost_threshold=-0.05, gain_threshold=-0.1, tp_stagnation_max_sec=-100.0)
+    assert cfg.lost_threshold == pytest.approx(0.05)
+    assert cfg.gain_threshold == pytest.approx(0.07)
+    assert cfg.tp_stagnation_max_sec == pytest.approx(1080.0)
+
+    # 5. Strategy._sanitize_spot_state normalizes corrupted numeric fields and order entries
+    st = spot_engine.Strategy._sanitize_spot_state({
+        "cycle": "-3",
+        "qty": None,
+        "cost": "150.5",
+        "realized_net": "-12.25",
+        "dca_buys": "2",
+        "entry_price": "-10.0",
+        "orders": [{"txid": 123, "side": "buy", "vol": "1.5", "price": "100.0", "amount": None, "ts": "1000"}],
+    })
+    assert st["cycle"] == 1
+    assert st["qty"] == 0.0
+    assert st["cost"] == pytest.approx(150.5)
+    assert st["realized_net"] == pytest.approx(-12.25)
+    assert st["dca_buys"] == 2
+    assert st["entry_price"] is None
+    assert st["orders"][0]["vol"] == pytest.approx(1.5)
+    assert st["orders"][0]["price"] == pytest.approx(100.0)
+    assert st["orders"][0]["amount"] == 0.0
+    assert st["orders"][0]["ts"] == pytest.approx(1000.0)
+
+    # 6. spot_rules.check_slow_grind_exhaustion rejects non-positive min_days/min_gain_pct
+    assert spot_rules.check_slow_grind_exhaustion(
+        120.0, 100.0, 1000.0, 1000.0 + 10 * 86400.0, 0.0, 15.0, 125.0, [], 900.0, 1.5, 2.5
+    ) == (False, "")
+    assert spot_rules.check_slow_grind_exhaustion(
+        120.0, 100.0, 1000.0, 1000.0 + 10 * 86400.0, 7.0, 0.0, 125.0, [], 900.0, 1.5, 2.5
+    ) == (False, "")
+
+    # 7. spot_replay.prewarm_trend_series ignores invalid bar_minutes without raising
+    spot_replay.prewarm_trend_series([(100, 101, 99, 100)] * 50, warmup=5, bar_minutes=-10.0)
+    spot_replay.prewarm_trend_series([(100, 101, 99, 100)] * 50, warmup=5, bar_minutes=True)  # type: ignore[arg-type]
+
+
+
 
 
 

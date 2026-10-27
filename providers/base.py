@@ -304,7 +304,9 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
                 cost_val = abs(float(order[cost_key] or 0.0))
                 exec_val = abs(float(order[exec_key] or 0.0))
                 if math.isfinite(cost_val) and math.isfinite(exec_val) and cost_val > 0 and exec_val > 0:
-                    return cost_val / exec_val
+                    res = cost_val / exec_val
+                    if math.isfinite(res) and res > 0:
+                        return res
             except (TypeError, ValueError, OverflowError):
                 continue
     fills = order.get("fills")
@@ -327,7 +329,9 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
             except (TypeError, ValueError, OverflowError):
                 continue
         if total_qty > 0:
-            return total_quote / total_qty
+            res = total_quote / total_qty
+            if math.isfinite(res) and res > 0:
+                return res
     return default
 
 
@@ -444,20 +448,20 @@ def extract_order_fee(
     """
     if not isinstance(order, dict):
         return None
-    raw_fee = None
-    has_fee_key = False
+    fee: Optional[float] = None
     for key in _FEE_KEYS:
         if key in order and order[key] is not None:
-            raw_fee = order[key]
-            has_fee_key = True
-            break
-    if not has_fee_key or isinstance(raw_fee, bool):
-        return None
-    try:
-        fee = float(raw_fee)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(fee) or fee < 0.0:
+            cand_raw = order[key]
+            if isinstance(cand_raw, bool):
+                continue
+            try:
+                cand_f = float(cand_raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(cand_f) and cand_f >= 0.0:
+                fee = cand_f
+                break
+    if fee is None:
         return None
 
     fee_asset = ""
@@ -468,7 +472,7 @@ def extract_order_fee(
             val = order[key]
             if isinstance(val, str) and val.strip():
                 fee_asset = val.strip().upper()
-            break
+                break
 
     req_explicit = _parse_bool_flag(require_explicit_asset, False)
     if req_explicit and (not has_asset_key or (fee > 0.0 and not fee_asset)):

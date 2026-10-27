@@ -198,13 +198,14 @@ class PositionSnapshot(PriceGeometrySnapshot):
         self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
         for attr in ("current_price", "avg_buy_price"):
             val = getattr(self, attr, None)
-            if val is not None and not isinstance(val, bool):
+            if val is None or isinstance(val, bool):
+                setattr(self, attr, 0.0)
+            else:
                 try:
                     f = float(val)
-                    if math.isfinite(f):
-                        setattr(self, attr, f)
+                    setattr(self, attr, f if (math.isfinite(f) and f > 0.0) else 0.0)
                 except (TypeError, ValueError, OverflowError):
-                    pass
+                    setattr(self, attr, 0.0)
         for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
             val = getattr(self, attr, 0.0)
             if val is None or isinstance(val, bool):
@@ -344,15 +345,24 @@ class ReentrySnapshot(PriceGeometrySnapshot):
 
     def __post_init__(self) -> None:
         self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
-        for attr in ("current_price", "last_sell_price", "post_sell_peak", "post_sell_trough"):
+        if self.current_price is None or isinstance(self.current_price, bool):
+            self.current_price = 0.0
+        else:
+            try:
+                cp_f = float(self.current_price)
+                self.current_price = cp_f if (math.isfinite(cp_f) and cp_f > 0.0) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                self.current_price = 0.0
+        for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough"):
             val = getattr(self, attr, None)
-            if val is not None and not isinstance(val, bool):
+            if val is None or isinstance(val, bool):
+                setattr(self, attr, None)
+            else:
                 try:
                     f = float(val)
-                    if math.isfinite(f):
-                        setattr(self, attr, f)
+                    setattr(self, attr, f if (math.isfinite(f) and f > 0.0) else None)
                 except (TypeError, ValueError, OverflowError):
-                    pass
+                    setattr(self, attr, None)
         for attr in ("current_time_s", "vol_1h"):
             val = getattr(self, attr, 0.0)
             if val is None or isinstance(val, bool):
@@ -526,7 +536,7 @@ class PositionExitConfig:
             else:
                 try:
                     vf = float(raw)
-                    setattr(self, f_attr, vf if math.isfinite(vf) else f_def)
+                    setattr(self, f_attr, vf if (math.isfinite(vf) and vf >= 0.0) else f_def)
                 except (TypeError, ValueError, OverflowError):
                     setattr(self, f_attr, f_def)
 

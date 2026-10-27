@@ -532,6 +532,14 @@ def prewarm_trend_series(
     """Prewarm process-level replay regime and volatility caches for an OHLC series."""
     if not ohlc or warmup is None or isinstance(warmup, bool):
         return
+    if bar_minutes is None or isinstance(bar_minutes, bool):
+        return
+    try:
+        bm_f = float(bar_minutes)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(bm_f) or bm_f <= 0:
+        return
     try:
         warmup_i = max(0, int(float(warmup))) if math.isfinite(float(warmup)) else 40
     except (TypeError, ValueError, OverflowError):
@@ -540,12 +548,12 @@ def prewarm_trend_series(
         return
     p = align_spot_interval_params(
         _strat.StratParams.from_env() if params is None else params,
-        bar_minutes,
+        bm_f,
     )
     run_replay(
         ohlc[warmup_i:],
         p,
         fee_pct=0.26,
-        bar_minutes=bar_minutes,
+        bar_minutes=bm_f,
         warmup_ohlc=ohlc[:warmup_i],
     )

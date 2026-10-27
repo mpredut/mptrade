@@ -76,6 +76,16 @@ def _clean_nonneg_float(val: object) -> float | None:
     return f if math.isfinite(f) and f >= 0.0 else None
 
 
+def _clean_finite_float(val: object) -> float | None:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 def _parse_bool_flag(val: object, default: bool = False) -> bool:
     fb = default if isinstance(default, bool) else False
     if isinstance(val, bool):
@@ -680,6 +690,30 @@ class Strategy:
             state = _new_state()
         for k, v in _new_state().items():
             state.setdefault(k, v)
+        state["cycle"] = max(1, int(_clean_pos_float(state.get("cycle")) or 1))
+        for nkey in ("qty", "cost", "spent", "cycle_fees", "fees_total"):
+            state[nkey] = _clean_nonneg_float(state.get(nkey)) or 0.0
+        for fkey in ("realized_gross", "realized_net"):
+            state[fkey] = _clean_finite_float(state.get(fkey)) or 0.0
+        for ikey in ("dca_buys", "trend_confirm_count"):
+            state[ikey] = max(0, int(_clean_nonneg_float(state.get(ikey)) or 0))
+        for pkey in (
+            "entry_price",
+            "last_buy_price",
+            "last_sell_price",
+            "sl_low",
+            "post_sell_peak",
+            "post_sell_trough",
+            "last_sell_ts",
+            "trail_peak",
+            "trail_stop",
+            "trend_peak",
+            "surge_peak",
+            "slow_grind_peak",
+            "entry_ts",
+        ):
+            if pkey in state and state.get(pkey) is not None:
+                state[pkey] = _clean_pos_float(state.get(pkey))
         for bkey in (
             "trend_mode",
             "ledger_reconcile_required",
@@ -698,6 +732,14 @@ class Strategy:
                     o["txid"] = _clean_order_id(o.get("txid"))
                 if "intent_id" in o:
                     o["intent_id"] = _clean_order_id(o.get("intent_id"))
+                if "vol" in o:
+                    o["vol"] = _clean_pos_float(o.get("vol")) or 0.0
+                if "price" in o:
+                    o["price"] = _clean_pos_float(o.get("price")) or 0.0
+                if "amount" in o:
+                    o["amount"] = _clean_nonneg_float(o.get("amount")) or 0.0
+                if "ts" in o and o.get("ts") is not None:
+                    o["ts"] = _clean_nonneg_float(o.get("ts")) or 0.0
                 if "market" in o:
                     o["market"] = _parse_bool_flag(o.get("market"), False)
                 if "cancel_requested" in o:
