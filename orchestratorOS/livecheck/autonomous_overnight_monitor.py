@@ -85,7 +85,8 @@ class AutonomousOvernightMonitor:
         self.cachedb_dir = os.path.join(self.workspace_dir, cachedb_dir)
         self.logs_dir = os.path.join(self.workspace_dir, logs_dir)
         self.procs_conf = os.path.join(self.workspace_dir, "procs.conf")
-        self.status_file = os.path.join(self.cachedb_dir, "overnight_monitor_status.json")
+        from cachepaths import resolve_cachedb_filepath
+        self.status_file = str(resolve_cachedb_filepath(os.path.join(self.cachedb_dir, "overnight_monitor_status.json")))
 
         self.dev_host = str(dev_host or "192.168.0.138").strip() or "192.168.0.138"
         if isinstance(dev_port, bool) or dev_port is None:

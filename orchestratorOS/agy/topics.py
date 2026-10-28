@@ -97,11 +97,11 @@ def topic_spec(topic_key: str) -> TopicSpec:
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
     """Registry JSON path: explicit, LLM_TOPIC_REGISTRY_PATH (tests/ops override), or cachedb/llm_topic_threads.json."""
+    from cachepaths import cache_path, resolve_cachedb_filepath
     raw = registry_path or os.environ.get("LLM_TOPIC_REGISTRY_PATH", "").strip()
     if raw:
-        return expand_config_path(raw)
+        return str(resolve_cachedb_filepath(expand_config_path(raw)))
     try:
-        from cachepaths import cache_path
         return cache_path("llm_topic_threads.json")
     except Exception:
         return os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")

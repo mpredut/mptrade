@@ -1179,10 +1179,12 @@ def _resolve_cachedb_dir() -> str:
 
 
 def _read_json_recovering(path: str) -> Optional[dict]:
+    from cachepaths import resolve_cachedb_filepath
     from state_io import previous_generation_path, read_recovering_previous
 
-    backup_path = previous_generation_path(path)
-    if not os.path.exists(path) and not os.path.exists(backup_path):
+    resolved = str(resolve_cachedb_filepath(path))
+    backup_path = previous_generation_path(resolved)
+    if not os.path.exists(resolved) and not os.path.exists(backup_path):
         return None
 
     def _loader(candidate: str) -> dict:
@@ -1192,7 +1194,7 @@ def _read_json_recovering(path: str) -> Optional[dict]:
             raise ValueError("cache payload must be a dict")
         return payload
 
-    return read_recovering_previous(path, _loader, backup_path=backup_path)
+    return read_recovering_previous(resolved, _loader, backup_path=backup_path)
 
 
 def _read_cached_trend_duration(symbol: str) -> float:

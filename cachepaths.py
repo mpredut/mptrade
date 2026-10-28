@@ -239,12 +239,17 @@ def resolve_cachedb_filepath(path: object) -> object:
     flat_path = os.path.join(base_dir, rel_item)
     sub_dir = os.path.join(base_dir, sub)
     sub_path = os.path.join(sub_dir, rel_item)
+    if os.path.isdir(sub_dir):
+        if os.path.isfile(flat_path) and not os.path.exists(sub_path):
+            try:
+                os.replace(flat_path, sub_path)
+            except OSError:
+                pass
+        return sub_path
     if os.path.exists(sub_path) or os.path.exists(sub_path + ".previous"):
         return sub_path
     if os.path.exists(flat_path) or os.path.exists(flat_path + ".previous"):
         return flat_path
-    if os.path.isdir(sub_dir):
-        return sub_path
     return raw
 
 
@@ -257,6 +262,28 @@ def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]
         os.makedirs(sub_path, exist_ok=True)
         created.append(sub_path)
     return tuple(created)
+
+
+def _clean_stale_staging_in_dir(target_dir: str) -> None:
+    """Remove transient ``.<name>.previous.<rand>`` directories and stale ``.tmp`` files in ``target_dir``."""
+    import shutil
+
+    if not os.path.isdir(target_dir):
+        return
+    for item in os.listdir(target_dir):
+        item_path = os.path.join(target_dir, item)
+        if (
+            (item.startswith(".") and ".previous." in item)
+            or (item.startswith(".") and item.endswith(".tmp"))
+            or item == "test-artifacts"
+        ):
+            try:
+                if os.path.isdir(item_path) and not os.path.islink(item_path):
+                    shutil.rmtree(item_path, ignore_errors=True)
+                else:
+                    os.unlink(item_path)
+            except OSError:
+                pass
 
 
 def organize_cachedb_subdomains(
@@ -272,33 +299,55 @@ def organize_cachedb_subdomains(
     moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}
     if not os.path.isdir(base):
         return moved
+    if remove_stale_staging:
+        _clean_stale_staging_in_dir(base)
+        for sub in CACHEDB_SUBDOMAINS:
+            sub_dir_p = os.path.join(base, sub)
+            _clean_stale_staging_in_dir(sub_dir_p)
+            trend24_p = os.path.join(sub_dir_p, "24trend")
+            if os.path.isdir(trend24_p):
+                _clean_stale_staging_in_dir(trend24_p)
     for entry in sorted(os.listdir(base)):
         if entry in CACHEDB_SUBDOMAINS:
             continue
         src = os.path.join(base, entry)
-        if remove_stale_staging and (
-            (entry.startswith(".") and ".previous." in entry)
-            or (entry.startswith(".") and entry.endswith(".tmp"))
-            or entry == "test-artifacts"
-        ):
-            try:
-                if os.path.isdir(src) and not os.path.islink(src):
-                    shutil.rmtree(src, ignore_errors=True)
-                else:
-                    os.unlink(src)
-            except OSError:
-                pass
-            continue
         sub = resolve_cache_subdomain(entry)
         if not sub:
             continue
         dst_dir = os.path.join(base, sub)
         dst = os.path.join(dst_dir, entry)
         try:
-            if os.path.isdir(src) and not os.path.islink(src) and os.path.isdir(dst):
+            if os.path.isdir(src) and not os.path.islink(src):
+                if remove_stale_staging:
+                    _clean_stale_staging_in_dir(src)
+                os.makedirs(dst, exist_ok=True)
                 for child in os.listdir(src):
-                    os.replace(os.path.join(src, child), os.path.join(dst, child))
-                os.rmdir(src)
+                    c_src = os.path.join(src, child)
+                    c_dst = os.path.join(dst, child)
+                    if os.path.isdir(c_src) and not os.path.islink(c_src):
+                        shutil.rmtree(c_src, ignore_errors=True)
+                        continue
+                    if not os.path.exists(c_dst) or (
+                        os.path.getsize(c_src) > 0
+                        and os.path.getmtime(c_src) >= os.path.getmtime(c_dst)
+                    ):
+                        os.replace(c_src, c_dst)
+                    else:
+                        os.unlink(c_src)
+                shutil.rmtree(src, ignore_errors=True)
+            elif os.path.exists(dst):
+                src_size = os.path.getsize(src)
+                dst_size = os.path.getsize(dst)
+                if entry.endswith(".jsonl") or ".jsonl." in entry:
+                    # Never overwrite a larger JSONL archive with a smaller stray file
+                    if src_size > dst_size:
+                        os.replace(src, dst)
+                    else:
+                        os.unlink(src)
+                elif src_size > 0 and os.path.getmtime(src) >= os.path.getmtime(dst):
+                    os.replace(src, dst)
+                else:
+                    os.unlink(src)
             else:
                 os.replace(src, dst)
             moved[sub].append(entry)

@@ -239,16 +239,20 @@ class RTradePairStore:
         return data
 
     def _read(self):
+        from cachepaths import resolve_cachedb_filepath
+        eff_path = str(resolve_cachedb_filepath(self.path))
         try:
-            with open(self.path, encoding="utf-8") as handle:
+            with open(eff_path, encoding="utf-8") as handle:
                 data = json.load(handle)
             return self._validate(data)
         except FileNotFoundError:
             return {"version": 1, "pairs": {}}
 
     def _write(self, data):
+        from cachepaths import resolve_cachedb_filepath
+        eff_path = str(resolve_cachedb_filepath(self.path))
         atomic_write_json(
-            self.path, data, sort_keys=True, separators=(",", ":"),
+            eff_path, data, sort_keys=True, separators=(",", ":"),
         )
 
     def mutate(self, fn):
