@@ -257,7 +257,9 @@ class TestCachepaths(unittest.TestCase):
             "smart_stop_loss_state.json": "bots",
             "autonomous_trade_intents.json": "bots",
             "shadow_state_BTC.json": "bots",
-            "rtrade_BTCUSDC.heartbeat": "system",
+            "rtrade_BTCUSDC.heartbeat": "system/heartbeat",
+            "auto_technical_repair.heartbeat": "system/heartbeat",
+            "auto_technical_repair.heartbeat.previous": "system/heartbeat",
             "auto_repair_eval.json": "system",
             "overnight_monitor_status.json": "system",
             "dev_regression_status.json": "system",
@@ -281,6 +283,8 @@ class TestCachepaths(unittest.TestCase):
             (root / "cache_short_trend.json").write_text("{}", encoding="utf-8")
             (root / "fear_greed_index.json").write_text("{}", encoding="utf-8")
             (root / "rtrade_BTCUSDC.heartbeat").write_text("123", encoding="utf-8")
+            (root / "system").mkdir(exist_ok=True)
+            (root / "system" / "macro_analyzer.heartbeat").write_text("456", encoding="utf-8")
             stale_dir = root / ".cache_24_price_BTCUSDC.json.previous.abcd123"
             stale_dir.mkdir()
             (stale_dir / "staged.tmp").write_text("old", encoding="utf-8")
@@ -292,12 +296,17 @@ class TestCachepaths(unittest.TestCase):
             )
             self.assertEqual(moved["trends"], ["cache_short_trend.json"])
             self.assertEqual(moved["macro"], ["fear_greed_index.json"])
-            self.assertEqual(moved["system"], ["rtrade_BTCUSDC.heartbeat"])
+            self.assertEqual(
+                sorted(moved["system/heartbeat"]),
+                ["macro_analyzer.heartbeat", "rtrade_BTCUSDC.heartbeat"],
+            )
             self.assertFalse(stale_dir.exists())
             self.assertTrue((root / "prices" / "cache_current_price.json").exists())
             self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
             self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
-            self.assertTrue((root / "system" / "rtrade_BTCUSDC.heartbeat").exists())
+            self.assertTrue((root / "system" / "heartbeat" / "rtrade_BTCUSDC.heartbeat").exists())
+            self.assertTrue((root / "system" / "heartbeat" / "macro_analyzer.heartbeat").exists())
+            self.assertFalse((root / "system" / "macro_analyzer.heartbeat").exists())
 
             resolved = resolve_cachedb_filepath(os.path.join(tmpdir, "cache_current_price.json"))
             self.assertEqual(

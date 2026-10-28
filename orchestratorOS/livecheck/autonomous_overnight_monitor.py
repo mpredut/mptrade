@@ -31,6 +31,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from botcore import _parse_bool_flag, parse_dotenv
+from cachepaths import resolve_cachedb_filepath
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
     gather_basic_os_resources,
@@ -143,7 +144,8 @@ class AutonomousOvernightMonitor:
             if hb_paths:
                 mtimes = []
                 missing_any = False
-                for hbp in hb_paths:
+                for raw_hbp in hb_paths:
+                    hbp = str(resolve_cachedb_filepath(raw_hbp))
                     if os.path.exists(hbp):
                         try:
                             mtimes.append(os.path.getmtime(hbp))

@@ -74,10 +74,12 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
         if not force_flag and now - _rtrade_heartbeat_last < _RTRADE_HEARTBEAT_INTERVAL_SEC:
             return
         try:
-            os.makedirs(os.path.dirname(_RTRADE_HEARTBEAT_PATH), exist_ok=True)
-            with open(_RTRADE_HEARTBEAT_PATH, "a", encoding="utf-8"):
+            from cachepaths import resolve_cachedb_filepath
+            hb_path = str(resolve_cachedb_filepath(_RTRADE_HEARTBEAT_PATH))
+            os.makedirs(os.path.dirname(hb_path), exist_ok=True)
+            with open(hb_path, "a", encoding="utf-8"):
                 pass
-            os.utime(_RTRADE_HEARTBEAT_PATH, None)
+            os.utime(hb_path, None)
         except OSError:
             # Trading must not stop because an observational heartbeat cannot be
             # written. The healthcheck will surface the stale/missing file.

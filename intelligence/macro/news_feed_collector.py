@@ -13,7 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from botcore import _parse_bool_flag
-from cachepaths import cache_path
+from cachepaths import cache_path, resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
     ACUTE_SHOCK_PHRASES,
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
@@ -98,7 +98,7 @@ class NewsFeedCollector:
     def _effective_history_file(self) -> str:
         if self.history_file == DEFAULT_HISTORY_FILE:
             return cache_path(_NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json")
-        return self.history_file
+        return str(resolve_cachedb_filepath(self.history_file))
 
     @property
     def _history(self) -> Dict[str, Tuple[float, NewsHeadline]]:

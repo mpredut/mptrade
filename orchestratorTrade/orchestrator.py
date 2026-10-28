@@ -175,7 +175,8 @@ class BotManager:
 
         # Refresh mtime on existing dedicated heartbeat files on launch so a newly
         # started process is not immediately blamed for a predecessor's stale file.
-        for hbf in (bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])):
+        for raw_hbf in (bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])):
+            hbf = str(resolve_cachedb_filepath(raw_hbf)) if raw_hbf else ""
             if hbf and os.path.exists(hbf):
                 try:
                     os.utime(hbf, None)

@@ -350,14 +350,15 @@ def write_daemon_heartbeat_files(
     if use_save_json_state:
         try:
             from state_io import save_json_state
-            for hb_target in paths:
-                save_json_state(hb_target, payload, indent=2)
+            for raw_target in paths:
+                save_json_state(str(resolve_cachedb_filepath(raw_target)), payload, indent=2)
         except Exception as exc:
             log.debug("Failed writing daemon heartbeat: %s", exc)
         return
 
     from state_io import atomic_write_json
-    for hb_target in paths:
+    for raw_target in paths:
+        hb_target = str(resolve_cachedb_filepath(raw_target))
         try:
             atomic_write_json(hb_target, payload, indent=2)
         except Exception as exc:

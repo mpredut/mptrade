@@ -20,6 +20,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, load_dotenv
+from cachepaths import resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_GEOPOLITICAL_INTERVAL_SEC,
     DEFAULT_SENTIMENT_INTERVAL_SEC,
@@ -119,7 +120,7 @@ class MacroAnalyzer:
 
         news_snap = None
         for fname in ("news_feed_collect.json", "news_feed_history.json"):
-            cand_path = os.path.join(self.cache_dir, fname)
+            cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, fname)))
             if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
                 nc = NewsFeedCollector(history_file=cand_path)
                 if getattr(nc, "_aggregated_pool", None) or getattr(nc, "_history", None):
@@ -127,7 +128,8 @@ class MacroAnalyzer:
                 if news_snap is None:
                     news_snap = _snap(nc)
         if news_snap is None:
-            news_snap = _snap(NewsFeedCollector(history_file=os.path.join(self.cache_dir, "news_feed_collect.json")))
+            default_news_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
+            news_snap = _snap(NewsFeedCollector(history_file=default_news_path))
         return news_snap
 
     def _maybe_notify_assessment(
@@ -285,7 +287,7 @@ class MacroAnalyzer:
 
         news_snap = None
         for fname in ("news_feed_collect.json", "news_feed_history.json"):
-            cand_path = os.path.join(self.cache_dir, fname)
+            cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, fname)))
             if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
                 news_snap = self._load_news_snapshot(current_ts, explicit_now=now)
                 break

@@ -124,6 +124,11 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "suffixes": (),
     },
+    "system/heartbeat": {
+        "exact": (),
+        "prefixes": (),
+        "suffixes": (".heartbeat",),
+    },
     "system": {
         "exact": (
             "overnight_monitor_status.json",
@@ -140,7 +145,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "notification_queue.",
             "procs.conf.reload.",
         ),
-        "suffixes": (".heartbeat", "_eval.json"),
+        "suffixes": ("_eval.json",),
     },
 }
 
@@ -159,9 +164,10 @@ def _strip_sidecar_filename(name: str) -> str:
     while s.startswith("./"):
         s = s[2:]
     if "/" in s:
-        first, rest = s.split("/", 1)
-        if first in CACHEDB_SUBDOMAINS:
-            s = rest
+        for sub in sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True):
+            if s.startswith(sub + "/"):
+                s = s[len(sub) + 1:]
+                break
     if s.startswith(".") and not s.startswith(".."):
         s = s[1:]
     changed = True
@@ -190,18 +196,21 @@ def resolve_cache_subdomain(name: object) -> str | None:
     if not raw or raw in CACHEDB_SUBDOMAINS:
         return None
     if "/" in raw:
-        first, rest = raw.split("/", 1)
-        if first in CACHEDB_SUBDOMAINS and rest:
-            return first
-        if first == "24trend":
+        for sub in sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True):
+            if raw.startswith(sub + "/") and raw[len(sub) + 1:]:
+                if sub == "system":
+                    inner = resolve_cache_subdomain(os.path.basename(raw))
+                    return inner or sub
+                return sub
+        if raw.startswith("24trend/"):
             return "trends"
         raw = os.path.basename(raw)
     cleaned = _strip_sidecar_filename(raw)
-    for cand in (raw, cleaned):
+    for cand in (cleaned, raw):
         for sub, rules in CACHEDB_SUBDOMAINS.items():
             if cand in rules["exact"]:
                 return sub
-    for cand in (raw, cleaned):
+    for cand in (cleaned, raw):
         for sub, rules in CACHEDB_SUBDOMAINS.items():
             if any(cand.startswith(pfx) for pfx in rules["prefixes"]):
                 return sub
@@ -221,11 +230,17 @@ def resolve_cachedb_filepath(path: object) -> object:
     parts = [p for p in norm.split("/") if p and p != "."]
     if not parts:
         return raw
+    if len(parts) >= 3 and f"{parts[-3]}/{parts[-2]}" in CACHEDB_SUBDOMAINS:
+        return raw
     if len(parts) >= 2 and parts[-2] in CACHEDB_SUBDOMAINS:
+        if parts[-2] == "system" and resolve_cache_subdomain(parts[-1]) == "system/heartbeat":
+            rel_item = parts[-1]
+            base_dir = os.path.dirname(os.path.dirname(raw))
+        else:
+            return raw
+    elif len(parts) >= 3 and parts[-2] == "24trend" and parts[-3] in CACHEDB_SUBDOMAINS:
         return raw
-    if len(parts) >= 3 and parts[-2] == "24trend" and parts[-3] in CACHEDB_SUBDOMAINS:
-        return raw
-    if len(parts) >= 2 and parts[-2] == "24trend":
+    elif len(parts) >= 2 and parts[-2] == "24trend":
         rel_item = os.path.join("24trend", parts[-1])
         base_dir = os.path.dirname(os.path.dirname(raw))
     else:
@@ -237,17 +252,21 @@ def resolve_cachedb_filepath(path: object) -> object:
     if not sub:
         return raw
     flat_path = os.path.join(base_dir, rel_item)
-    sub_dir = os.path.join(base_dir, sub)
+    sub_dir = os.path.join(base_dir, *sub.split("/"))
     sub_path = os.path.join(sub_dir, rel_item)
+    legacy_sys_path = os.path.join(base_dir, "system", rel_item) if sub == "system/heartbeat" else ""
     if os.path.isdir(sub_dir):
-        if os.path.isfile(flat_path) and not os.path.exists(sub_path):
-            try:
-                os.replace(flat_path, sub_path)
-            except OSError:
-                pass
+        for old_p in (flat_path, legacy_sys_path):
+            if old_p and os.path.isfile(old_p) and not os.path.exists(sub_path):
+                try:
+                    os.replace(old_p, sub_path)
+                except OSError:
+                    pass
         return sub_path
     if os.path.exists(sub_path) or os.path.exists(sub_path + ".previous"):
         return sub_path
+    if legacy_sys_path and (os.path.exists(legacy_sys_path) or os.path.exists(legacy_sys_path + ".previous")):
+        return legacy_sys_path
     if os.path.exists(flat_path) or os.path.exists(flat_path + ".previous"):
         return flat_path
     return raw
@@ -258,7 +277,7 @@ def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]
     base = cachedb_dir or get_cachedb_dir()
     created: list[str] = []
     for sub in CACHEDB_SUBDOMAINS:
-        sub_path = os.path.join(base, sub)
+        sub_path = os.path.join(base, *sub.split("/"))
         os.makedirs(sub_path, exist_ok=True)
         created.append(sub_path)
     return tuple(created)
@@ -299,60 +318,68 @@ def organize_cachedb_subdomains(
     moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}
     if not os.path.isdir(base):
         return moved
+    top_level_subs = {sub.split("/", 1)[0] for sub in CACHEDB_SUBDOMAINS}
     if remove_stale_staging:
         _clean_stale_staging_in_dir(base)
         for sub in CACHEDB_SUBDOMAINS:
-            sub_dir_p = os.path.join(base, sub)
+            sub_dir_p = os.path.join(base, *sub.split("/"))
             _clean_stale_staging_in_dir(sub_dir_p)
             trend24_p = os.path.join(sub_dir_p, "24trend")
             if os.path.isdir(trend24_p):
                 _clean_stale_staging_in_dir(trend24_p)
-    for entry in sorted(os.listdir(base)):
-        if entry in CACHEDB_SUBDOMAINS:
-            continue
-        src = os.path.join(base, entry)
-        sub = resolve_cache_subdomain(entry)
-        if not sub:
-            continue
-        dst_dir = os.path.join(base, sub)
-        dst = os.path.join(dst_dir, entry)
-        try:
-            if os.path.isdir(src) and not os.path.islink(src):
-                if remove_stale_staging:
-                    _clean_stale_staging_in_dir(src)
-                os.makedirs(dst, exist_ok=True)
-                for child in os.listdir(src):
-                    c_src = os.path.join(src, child)
-                    c_dst = os.path.join(dst, child)
-                    if os.path.isdir(c_src) and not os.path.islink(c_src):
-                        shutil.rmtree(c_src, ignore_errors=True)
-                        continue
-                    if not os.path.exists(c_dst) or (
-                        os.path.getsize(c_src) > 0
-                        and os.path.getmtime(c_src) >= os.path.getmtime(c_dst)
-                    ):
-                        os.replace(c_src, c_dst)
-                    else:
-                        os.unlink(c_src)
-                shutil.rmtree(src, ignore_errors=True)
-            elif os.path.exists(dst):
-                src_size = os.path.getsize(src)
-                dst_size = os.path.getsize(dst)
-                if entry.endswith(".jsonl") or ".jsonl." in entry:
-                    # Never overwrite a larger JSONL archive with a smaller stray file
-                    if src_size > dst_size:
+    scan_dirs: list[tuple[str, set[str]]] = [(base, top_level_subs)]
+    sys_dir = os.path.join(base, "system")
+    if os.path.isdir(sys_dir):
+        scan_dirs.append((sys_dir, {"heartbeat"}))
+    for scan_dir, skip_names in scan_dirs:
+        for entry in sorted(os.listdir(scan_dir)):
+            if entry in skip_names:
+                continue
+            src = os.path.join(scan_dir, entry)
+            sub = resolve_cache_subdomain(entry)
+            if not sub:
+                continue
+            dst_dir = os.path.join(base, *sub.split("/"))
+            if os.path.abspath(scan_dir) == os.path.abspath(dst_dir):
+                continue
+            dst = os.path.join(dst_dir, entry)
+            try:
+                if os.path.isdir(src) and not os.path.islink(src):
+                    if remove_stale_staging:
+                        _clean_stale_staging_in_dir(src)
+                    os.makedirs(dst, exist_ok=True)
+                    for child in os.listdir(src):
+                        c_src = os.path.join(src, child)
+                        c_dst = os.path.join(dst, child)
+                        if os.path.isdir(c_src) and not os.path.islink(c_src):
+                            shutil.rmtree(c_src, ignore_errors=True)
+                            continue
+                        if not os.path.exists(c_dst) or (
+                            os.path.getsize(c_src) > 0
+                            and os.path.getmtime(c_src) >= os.path.getmtime(c_dst)
+                        ):
+                            os.replace(c_src, c_dst)
+                        else:
+                            os.unlink(c_src)
+                    shutil.rmtree(src, ignore_errors=True)
+                elif os.path.exists(dst):
+                    src_size = os.path.getsize(src)
+                    dst_size = os.path.getsize(dst)
+                    if entry.endswith(".jsonl") or ".jsonl." in entry:
+                        # Never overwrite a larger JSONL archive with a smaller stray file
+                        if src_size > dst_size:
+                            os.replace(src, dst)
+                        else:
+                            os.unlink(src)
+                    elif src_size > 0 and os.path.getmtime(src) >= os.path.getmtime(dst):
                         os.replace(src, dst)
                     else:
                         os.unlink(src)
-                elif src_size > 0 and os.path.getmtime(src) >= os.path.getmtime(dst):
-                    os.replace(src, dst)
                 else:
-                    os.unlink(src)
-            else:
-                os.replace(src, dst)
-            moved[sub].append(entry)
-        except OSError:
-            pass
+                    os.replace(src, dst)
+                moved[sub].append(entry)
+            except OSError:
+                pass
     return moved
 
 
@@ -369,13 +396,22 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
                 candidates = tuple(old_prefix + suffix for old_prefix in old_prefixes)
                 break
     dirs = [dirname]
-    if os.path.basename(dirname) in CACHEDB_SUBDOMAINS:
-        parent_dir = os.path.dirname(dirname)
-        if parent_dir and parent_dir not in dirs:
-            dirs.append(parent_dir)
+    norm_dir = dirname.replace("\\", "/")
+    for sub in sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True):
+        if norm_dir.endswith("/" + sub) or norm_dir == sub:
+            parent_dir = norm_dir[: -len(sub)].rstrip("/") or "."
+            if parent_dir and parent_dir not in dirs:
+                dirs.append(parent_dir)
+            if "/" in sub:
+                mid_dir = os.path.join(parent_dir, sub.split("/", 1)[0])
+                if mid_dir not in dirs:
+                    dirs.append(mid_dir)
+            break
     out: list[str] = []
-    if len(dirs) > 1:
-        out.append(os.path.join(dirs[1], basename))
+    for d in dirs[1:]:
+        cand_same = os.path.join(d, basename)
+        if cand_same not in out:
+            out.append(cand_same)
     for d in dirs:
         for c in candidates or ():
             cand_p = os.path.join(d, c)
@@ -677,4 +713,9 @@ def cache_symbol_variants(
                 if xst_cand not in variants:
                     variants.append(xst_cand)
     return variants
+
+
+if __name__ == "__main__":
+    organize_cachedb_subdomains()
+
 
