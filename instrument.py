@@ -18,7 +18,7 @@ from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
 from providers.base import extract_order_id, normalize_side
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.strategy_executor import SubmissionRefused
@@ -161,37 +161,23 @@ class Instrument:
         """Scale down quantity if intelligence guards recommended risk reduction after initial calculation."""
         if regime_context is None or isinstance(qty, bool) or side_u != "BUY":
             return qty, applied_scale, None
-        try:
-            qty_f = float(qty)
-        except (TypeError, ValueError, OverflowError):
-            return qty, applied_scale, None
-        if not math.isfinite(qty_f) or qty_f <= 0.0:
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             return qty, applied_scale, None
         scale_raw = getattr(regime_context, "suggested_scale", None)
-        if scale_raw is None or isinstance(scale_raw, bool):
-            return qty, applied_scale, None
-        try:
-            scale_f = float(scale_raw)
-            app_f = 1.0 if isinstance(applied_scale, bool) else float(applied_scale)
-        except (TypeError, ValueError, OverflowError):
-            return qty, applied_scale, None
-        if not math.isfinite(scale_f) or not math.isfinite(app_f) or app_f <= 0.0:
+        scale_f = safe_pos_float(scale_raw, default=None)
+        app_f = safe_pos_float(applied_scale, default=1.0) or 1.0
+        if scale_f is None or app_f <= 0.0:
             return qty, applied_scale, None
         if 0.0 < scale_f < app_f:
             ratio = scale_f / app_f
             scaled_qty = qty_f * ratio
-            round_fn = getattr(self._provider, "round_amount", None)
-            if round_fn is None:
-                round_fn = getattr(self._provider, "round_quantity", None)
+            round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
             if callable(round_fn):
                 res = round_fn(self.symbol, scaled_qty)
-                if not isinstance(res, bool):
-                    try:
-                        res_f = float(res)
-                        if math.isfinite(res_f):
-                            scaled_qty = res_f
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+                res_f = safe_float(res, default=None)
+                if res_f is not None:
+                    scaled_qty = res_f
             filter_check = getattr(self._provider, "order_filter_refusal", None)
             refusal = (
                 filter_check(
@@ -475,18 +461,13 @@ class Instrument:
         retry_price_tolerance = None
         try:
             if retry_constraint_supplied:
-                if isinstance(retry_requested_price_raw, bool) or isinstance(retry_price_tolerance_raw, bool):
-                    raise SubmissionRefused("invalid_retry_price_constraint")
-                try:
-                    retry_requested_price = float(retry_requested_price_raw)
-                    retry_price_tolerance = float(retry_price_tolerance_raw)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise SubmissionRefused(
-                        "invalid_retry_price_constraint") from exc
-                if (not math.isfinite(retry_requested_price)
-                        or retry_requested_price <= 0
-                        or not math.isfinite(retry_price_tolerance)
-                        or not 0 <= retry_price_tolerance < 1):
+                retry_requested_price = safe_pos_float(retry_requested_price_raw, default=None)
+                retry_price_tolerance = safe_nonneg_float(retry_price_tolerance_raw, default=None)
+                if (
+                    retry_requested_price is None
+                    or retry_price_tolerance is None
+                    or retry_price_tolerance >= 1.0
+                ):
                     raise SubmissionRefused("invalid_retry_price_constraint")
             preflight_order = getattr(self._provider, "preflight_order", None)
             if requires_permit and smart and caller_supplied_cache_permit:
@@ -519,14 +500,10 @@ class Instrument:
             if not is_market and price is not None and not isinstance(price, bool):
                 round_px = getattr(self._provider, "round_price", None)
                 if callable(round_px):
-                    try:
-                        res_px = round_px(self.symbol, price)
-                        if not isinstance(res_px, bool):
-                            px_f = float(res_px)
-                            if math.isfinite(px_f) and px_f > 0:
-                                price = px_f
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+                    res_px = round_px(self.symbol, price)
+                    px_f = safe_pos_float(res_px, default=None)
+                    if px_f is not None:
+                        price = px_f
 
             # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
             if not GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards):
@@ -540,15 +517,12 @@ class Instrument:
             # Resolve target asset (quote for BUY, base for SELL) and query free balance exactly once
             # as the Single Source of Truth for this order placement across all providers.
             if isinstance(price, bool) or (price is not None and (side_u == "BUY" or not is_market)):
-                price_ok = False
-                if not isinstance(price, bool):
-                    try:
-                        price_f = float(price)
-                        if math.isfinite(price_f) and price_f > 0:
-                            price = price_f
-                            price_ok = True
-                    except (TypeError, ValueError, OverflowError):
-                        price_ok = False
+                price_f = safe_pos_float(price, default=None)
+                if price_f is not None:
+                    price = price_f
+                    price_ok = True
+                else:
+                    price_ok = False
                 if not price_ok:
                     print(f"[{self.symbol}] {side_u} preflight refused: price invalid {price!r}")
                     reason = "invalid_price"
@@ -581,11 +555,8 @@ class Instrument:
             quantity_price = price
             if is_market:
                 raw_q_px = self._provider.get_current_price(self.symbol)
-                try:
-                    quantity_price = float("nan") if isinstance(raw_q_px, bool) else float(raw_q_px)
-                except (TypeError, ValueError, OverflowError):
-                    quantity_price = float("nan")
-                if not math.isfinite(quantity_price) or quantity_price <= 0:
+                quantity_price = safe_pos_float(raw_q_px, default=None)
+                if quantity_price is None:
                     print(f"[{self.symbol}] {side_u} MARKET BLOCKED: current price unavailable")
                     reason = "market_price_unavailable"
                     return None
@@ -928,14 +899,9 @@ class Instrument:
             final_profit_check = (not bypass_profit_guard and is_market)
             if is_market and (final_profit_check
                               or retry_constraint_supplied):
-                raw_fm_px = self._provider.get_current_price(
-                    self.symbol)
-                try:
-                    final_market_price = float("nan") if isinstance(raw_fm_px, bool) else float(raw_fm_px)
-                except (TypeError, ValueError, OverflowError):
-                    final_market_price = float("nan")
-                if (not math.isfinite(final_market_price) or
-                        final_market_price <= 0):
+                raw_fm_px = self._provider.get_current_price(self.symbol)
+                final_market_price = safe_pos_float(raw_fm_px, default=None)
+                if final_market_price is None:
                     reason = "market_price_unavailable"
                     print(
                         f"[{self.symbol}] {side_u} MARKET BLOCKED at dispatch: "
@@ -1168,29 +1134,15 @@ class Instrument:
                         else:
                             # Capture best-effort market price only when enqueueing,
                             # for retry price guarding and deduplication.
-                            queue_qty = orig_qty
-                            use_resolved_qty = False
-                            try:
-                                if (
-                                    queue_qty is None
-                                    or isinstance(queue_qty, bool)
-                                    or not math.isfinite(float(queue_qty))
-                                    or float(queue_qty) <= 0
-                                ):
-                                    use_resolved_qty = True
-                            except (TypeError, ValueError, OverflowError):
-                                use_resolved_qty = True
-                            if use_resolved_qty:
+                            q_orig = safe_pos_float(orig_qty, default=None)
+                            if q_orig is None:
                                 queue_qty = qty
-                                if 0.0 < float(applied_scale) < 1.0:
-                                    retry_kwargs["applied_scale"] = float(applied_scale)
-                            can_enqueue = False
-                            try:
-                                if queue_qty is not None and not isinstance(queue_qty, bool):
-                                    q_f = float(queue_qty)
-                                    can_enqueue = math.isfinite(q_f) and q_f > 0
-                            except (TypeError, ValueError, OverflowError):
-                                can_enqueue = False
+                                app_sc = safe_pos_float(applied_scale, default=1.0) or 1.0
+                                if 0.0 < app_sc < 1.0:
+                                    retry_kwargs["applied_scale"] = app_sc
+                            else:
+                                queue_qty = q_orig
+                            can_enqueue = (safe_pos_float(queue_qty, default=None) is not None)
                             if can_enqueue:
                                 ref_price = None
                                 try:
