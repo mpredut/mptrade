@@ -108,10 +108,10 @@ do_run() {
     commit_msg="$(git log -1 --pretty=%s 2>/dev/null || echo "unknown")"
 
     if [ "$was_queued" = true ] && [ -f "$STATUS_JSON" ]; then
-        local last_cs
-        last_cs="$("$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("commit","")+":"+d.get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
-        if [ "$last_cs" = "${commit_hash}:PASSED" ]; then
-            echo "[dev_regression $(date '+%F %T')] Commit $commit_short already tested and PASSED while queued — skipping duplicate run"
+        local last_cm
+        last_cm="$("$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("commit",""))' "$STATUS_JSON" 2>/dev/null || true)"
+        if [ -n "$last_cm" ] && [ "$last_cm" = "$commit_hash" ]; then
+            echo "[dev_regression $(date '+%F %T')] Commit $commit_short already tested while queued — skipping duplicate run"
             exit 0
         fi
     fi

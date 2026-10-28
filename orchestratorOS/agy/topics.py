@@ -13,7 +13,12 @@ import logging
 import math
 import os
 import re
+import sys
 from typing import Any, Dict, NamedTuple, Optional, Set
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 
 from botcore import _parse_bool_flag, required_int_env, safe_float
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base

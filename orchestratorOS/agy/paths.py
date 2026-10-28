@@ -6,7 +6,12 @@ another store (a fallback to the Web UI store would break bot isolation).
 from __future__ import annotations
 
 import os
+import sys
 from typing import Optional
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 
 from botcore import load_dotenv, required_env
 

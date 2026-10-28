@@ -13,7 +13,12 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 from typing import Any, Iterable, Optional, Set, Tuple
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
 from botcore import _parse_bool_flag

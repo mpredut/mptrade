@@ -95,6 +95,9 @@ dev_local_git_sync() {  # [$1=branch]
     if [ -n "$after" ] && [ "$before" != "$after" ]; then
         echo "Updating ${before:0:8}..${after:0:8}"
         git -C "$ROOT" reset --hard "origin/$branch"
+        git -C "$ROOT" ls-files --stage 2>/dev/null | awk '$1 == "100755" {print $4}' | while IFS= read -r _f; do
+            [ -f "$ROOT/$_f" ] && [ ! -x "$ROOT/$_f" ] && chmod +x "$ROOT/$_f" 2>/dev/null || true
+        done
     else
         echo "Already up to date."
     fi

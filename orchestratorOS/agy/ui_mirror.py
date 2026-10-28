@@ -13,7 +13,12 @@ import math
 import os
 import shutil
 import sqlite3
+import sys
 from typing import Any, Optional
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 
 from orchestratorOS.agy.paths import (
     resolve_bot_cli_base,

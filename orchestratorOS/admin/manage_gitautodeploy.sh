@@ -89,6 +89,9 @@ if [ "$local_sha" != "$remote_sha" ]; then
         alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted."
         exit 0
     fi
+    g ls-files --stage 2>/dev/null | awk '$1 == "100755" {print $4}' | while IFS= read -r _f; do
+        [ -f "$ROOT/$_f" ] && [ ! -x "$ROOT/$_f" ] && chmod +x "$ROOT/$_f" 2>/dev/null || true
+    done
 fi
 
 [ "$AUTODEPLOY_MODE" = shadow ] && shadow_report_and_exit "restart python_orchestrator.service"
