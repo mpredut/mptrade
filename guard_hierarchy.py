@@ -28,34 +28,38 @@ class BaseGuard(ABC):
     description: str
 
     @staticmethod
-    def _coerce_bypass_set(bypassed_guards: Any) -> set[str]:
+    def _extract_raw_bypass_tokens(bypassed_guards: Any) -> list[str]:
         if not bypassed_guards:
-            return set()
-        if bypassed_guards is True:
-            return {"all"}
+            return []
+        if bypassed_guards is True or bypassed_guards == "all" or bypassed_guards == "*":
+            return ["all"]
         if isinstance(bypassed_guards, BaseGuard):
-            return {bypassed_guards.code.lower()}
+            return [bypassed_guards.code.lower()]
         _falsy = {"none", "off", "false", "no", "0", "n", "f", "null", "nan"}
         if isinstance(bypassed_guards, str):
-            return {
+            return [
                 p.strip().lower()
                 for p in bypassed_guards.replace(";", ",").split(",")
                 if p.strip() and p.strip().lower() not in _falsy
-            }
+            ]
         if isinstance(bypassed_guards, (set, frozenset, list, tuple)):
-            out: set[str] = set()
+            out: list[str] = []
             for x in bypassed_guards:
                 if x is True:
-                    out.add("all")
+                    out.append("all")
                 elif isinstance(x, BaseGuard):
-                    out.add(x.code.lower())
+                    out.append(x.code.lower())
                 elif x and not isinstance(x, bool):
                     for p in str(x).replace(";", ",").split(","):
                         ps = p.strip().lower()
                         if ps and ps not in _falsy:
-                            out.add(ps)
+                            out.append(ps)
             return out
-        return set()
+        return []
+
+    @staticmethod
+    def _coerce_bypass_set(bypassed_guards: Any) -> set[str]:
+        return set(BaseGuard._extract_raw_bypass_tokens(bypassed_guards))
 
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
         """Return whether this guard is bypassed by the given set of active bypass keys."""
@@ -331,30 +335,7 @@ def normalize_bypassed_guards(
       - Master bypass: 'all' or '*' (bypasses all guards for emergency exits)
     """
     bypassed: set[str] = set()
-
-    raw_tokens: list[str] = []
-    _falsy = ("none", "off", "false", "no", "0", "n", "f", "null", "nan")
-    if bypass_guards is not None:
-        if bypass_guards is True or bypass_guards == "all" or bypass_guards == "*":
-            raw_tokens.append("all")
-        elif isinstance(bypass_guards, BaseGuard):
-            raw_tokens.append(bypass_guards.code.lower())
-        elif isinstance(bypass_guards, str):
-            for part in bypass_guards.replace(";", ",").split(","):
-                p = part.strip().lower()
-                if p and p not in _falsy:
-                    raw_tokens.append(p)
-        elif isinstance(bypass_guards, (set, frozenset, list, tuple)):
-            for item in bypass_guards:
-                if item is True:
-                    raw_tokens.append("all")
-                elif isinstance(item, BaseGuard):
-                    raw_tokens.append(item.code.lower())
-                elif item and not isinstance(item, bool):
-                    for part in str(item).replace(";", ",").split(","):
-                        p = part.strip().lower()
-                        if p and p not in _falsy:
-                            raw_tokens.append(p)
+    raw_tokens = BaseGuard._extract_raw_bypass_tokens(bypass_guards)
 
     for token in raw_tokens:
         if token in _ALL_GUARD_ALIASES:

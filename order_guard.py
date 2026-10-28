@@ -1157,8 +1157,19 @@ def get_derivatives_collector():
 
 
 def _normalize_base_asset(sym: str) -> str:
-    from cachepaths import normalize_cache_base_asset
-    return normalize_cache_base_asset(sym)
+    from cachepaths import canonical_base_asset
+    return canonical_base_asset(sym)
+
+
+def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
+    if not isinstance(raw_dir, str):
+        return None
+    d = raw_dir.strip().lower()
+    if d in ("up", "bull", "uptrend", "bullish"):
+        return "bull" if d in ("uptrend", "bullish") else d
+    if d in ("down", "bear", "downtrend", "bearish"):
+        return "bear" if d in ("downtrend", "bearish") else d
+    return None
 
 
 def _resolve_cachedb_dir() -> str:
@@ -1253,12 +1264,10 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
             for entry in reversed(items):
                 if entry is None:
                     break
-                if isinstance(entry, dict) and isinstance(entry.get("direction"), str):
-                    d = entry.get("direction").strip().lower()
-                    if d in ("up", "bull", "uptrend", "bullish"):
-                        return "bull" if d in ("uptrend", "bullish") else d
-                    if d in ("down", "bear", "downtrend", "bearish"):
-                        return "bear" if d in ("downtrend", "bearish") else d
+                if isinstance(entry, dict):
+                    norm_d = _normalize_trend_dir_token(entry.get("direction"))
+                    if norm_d is not None:
+                        return norm_d
     except Exception:
         pass
     return None
@@ -1271,23 +1280,18 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
             rt = regime_context.get("resolved_trend") or regime_context.get("regime")
         else:
             rt = getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None)
-        if isinstance(rt, str):
-            rtl = rt.strip().lower()
-            if rtl in ("up", "bull", "uptrend", "bullish"):
-                return "bull" if rtl in ("uptrend", "bullish") else rtl
-            if rtl in ("down", "bear", "downtrend", "bearish"):
-                return "bear" if rtl in ("downtrend", "bearish") else rtl
+        norm_rt = _normalize_trend_dir_token(rt)
+        if norm_rt is not None:
+            return norm_rt
     if not symbol:
         return None
     try:
         import cacheManager as cm
         trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
         if trend_meta and trend_meta.get("direction"):
-            d = str(trend_meta["direction"]).strip().lower()
-            if d in ("up", "bull", "uptrend", "bullish"):
-                return "bull" if d in ("uptrend", "bullish") else d
-            if d in ("down", "bear", "downtrend", "bearish"):
-                return "bear" if d in ("downtrend", "bearish") else d
+            norm_m = _normalize_trend_dir_token(trend_meta["direction"])
+            if norm_m is not None:
+                return norm_m
     except Exception:
         pass
     return _read_cached_trend_direction(symbol)

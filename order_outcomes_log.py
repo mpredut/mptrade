@@ -15,6 +15,9 @@ import os
 import time
 from datetime import datetime
 
+from botcore import _parse_bool_flag
+from intelligence.macro_sentiment_ssot import obj_attr as _regime_attr
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
 
@@ -52,25 +55,8 @@ def _clean_numeric_field(value):
 def _clean_bool_field(value) -> str:
     if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
         return ""
-    if isinstance(value, bool):
-        return str(value)
-    if isinstance(value, (int, float)):
-        if isinstance(value, float) and not math.isfinite(value):
-            return ""
-        return str(value != 0)
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
-            return "True"
-        if s in {"0", "false", "no", "off", "n", "f"}:
-            return "False"
-    return ""
-
-
-def _regime_attr(ctx, key: str, default=None):
-    if isinstance(ctx, dict):
-        return ctx.get(key, default)
-    return getattr(ctx, key, default)
+    parsed = _parse_bool_flag(value, default=None)
+    return str(parsed) if parsed is not None else ""
 
 
 def log_order_outcome(

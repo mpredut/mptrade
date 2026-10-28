@@ -174,3 +174,28 @@ def test_excludes_inactive_tickets_in_rtrade_pairs(tmp_path):
     assert ids == {"102"}
 
 
+def test_normalizes_px_sz_filled_sz_side_and_venue_aliases(tmp_path):
+    hl_state = tmp_path / "hyperliquid/.state_HYPE.json"
+    _write(hl_state, {
+        "venue": "HL",
+        "orders": [{
+            "id": 9001.0,
+            "side": "OPEN LONG",
+            "sz": 10.0,
+            "filled_sz": 2.0,
+            "px": 25.0,
+        }],
+    })
+    result = build_active_intent_index(str(tmp_path))
+    assert len(result["intents"]) == 1
+    it = result["intents"][0]
+    assert it["intent_id"] == "9001"
+    assert it["venue"] == "hyperliquid"
+    assert it["side"] == "BUY"
+    assert it["requested_qty"] == 10.0
+    assert it["executed_qty"] == 2.0
+    assert it["requested_price"] == 25.0
+    assert result["summary"]["pending_notional"]["total_buy"] == 200.0
+
+
+

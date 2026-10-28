@@ -8,21 +8,12 @@ from __future__ import annotations
 import math
 from typing import Any, Callable
 
+from intelligence.macro_sentiment_ssot import safe_pos_float as _finite_pos_float
 from providers.base import (
     extract_order_price,
     extract_order_side,
     extract_remaining_qty,
 )
-
-
-def _finite_pos_float(val: Any, default: float = 0.0) -> float:
-    if isinstance(val, bool) or val is None:
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if math.isfinite(f) and f > 0.0 else default
 
 
 def extract_order_restore_params(order: dict) -> dict[str, Any]:

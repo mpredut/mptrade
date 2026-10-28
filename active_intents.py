@@ -13,8 +13,9 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
-from botcore import _parse_bool_flag
-from providers.base import _clean_single_order_id
+from botcore import _parse_bool_flag, safe_float as _finite_float
+from cachepaths import normalize_venue_name
+from providers.base import _clean_single_order_id, normalize_side
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,7 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     order_id = _clean_id(_first(row, "order_id", "id", "txid"))
     intent_id = _clean_id(_first(row, "intent_id", "client_order_id", "order_id", "id", "txid")) or client_order_id or order_id
     side = _first(row, "side", "start_side")
-    quantity = _first(row, "requested_qty", "qty", "quantity", "vol")
+    quantity = _first(row, "requested_qty", "qty", "quantity", "vol", "sz", "size")
     qty_f = _finite_float(quantity, default=None)
     if (
         not intent_id
@@ -86,11 +87,7 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
         or qty_f <= 0
     ):
         return None
-    side_str = str(side).strip().upper()
-    if side_str in {"B", "BID", "LONG"}:
-        side_str = "BUY"
-    elif side_str in {"S", "ASK", "SHORT"}:
-        side_str = "SELL"
+    side_str = normalize_side(side)
     if side_str not in {"BUY", "SELL"}:
         return None
     status = str(_first(
@@ -107,8 +104,9 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
         return None
     symbol = (_first(row, "symbol", "ticker", "pair")
               or _first(inherited, "symbol", "ticker", "pair"))
-    venue = (_first(row, "provider_name", "venue") or _first(inherited, "venue")
-             or owner.split("_", 1)[0])
+    raw_venue = (_first(row, "provider_name", "venue") or _first(inherited, "venue")
+                 or owner.split("_", 1)[0])
+    venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
     return {
         "intent_id": str(intent_id),
         "owner": owner,
@@ -120,8 +118,8 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
         "order_id": order_id,
         "client_order_id": client_order_id,
         "requested_qty": quantity,
-        "executed_qty": _first(row, "filled_qty", "executed_qty", "delivered_qty", "exec_vol", "applied_fill_qty"),
-        "requested_price": _first(row, "requested_price", "price", "limit", "limit_price", "ref_price"),
+        "executed_qty": _first(row, "filled_qty", "executed_qty", "delivered_qty", "exec_vol", "applied_fill_qty", "filled_sz"),
+        "requested_price": _first(row, "requested_price", "price", "limit", "limit_price", "ref_price", "px"),
         "source": source,
         "location": location,
     }
@@ -172,17 +170,6 @@ def _path_context(path: str) -> dict:
     return {}
 
 
-def _finite_float(val, default: float | None = 0.0) -> float | None:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        import math
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (ValueError, TypeError, OverflowError):
-        return default
-
-
 def _extract_exposure(payload: dict, *, owner: str, source: str,
                       inherited: dict) -> dict | None:
     if not isinstance(payload, dict):
@@ -198,8 +185,9 @@ def _extract_exposure(payload: dict, *, owner: str, source: str,
         entry_price_val = None
     symbol = (_first(payload, "symbol", "ticker", "pair")
               or _first(inherited, "symbol", "ticker", "pair"))
-    venue = (_first(payload, "provider_name", "venue") or inherited.get("venue")
-             or owner.split("_", 1)[0])
+    raw_venue = (_first(payload, "provider_name", "venue") or inherited.get("venue")
+                 or owner.split("_", 1)[0])
+    venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
     return {
         "owner": owner,
         "venue": str(venue),
