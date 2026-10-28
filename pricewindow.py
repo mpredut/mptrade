@@ -1200,3 +1200,66 @@ class WindowAnalyzer:
                       f'min_index={min_index}, max_index={max_index}')
             return -price_diff_newest if price_diff_max > price_diff_min else price_diff_newest, 0
         return 0, 0
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # [HISTORICAL EXPERIMENTS & DRAFT METRICS — PRESERVE FOR REFERENCE — DO NOT DELETE]
+    # Păstrate pentru analiză și potențială reutilizare/recalibrare în strategii.
+    # ══════════════════════════════════════════════════════════════════════════════
+    # def calculate_slope_max_min(self):
+    #     """Calculează panta directă între extremele ferestrei (min și max)."""
+    #     w = self.window
+    #     if len(w.sorted_prices) < 2:
+    #         return 0
+    #     min_price, min_index = w.get_min_and_index()
+    #     max_price, max_index = w.get_max_and_index()
+    #     if min_price is None or max_price is None or max_index == min_index:
+    #         return 0
+    #     return (max_price - min_price) / (max_index - min_index)
+    #
+    # def calculate_proximities(self, current_price):
+    #     """Proximitatea prețului curent față de min (0..1) și max (0..1) din fereastră."""
+    #     if current_price is None or isinstance(current_price, bool):
+    #         return 0, 0
+    #     try:
+    #         cp = float(current_price)
+    #     except (TypeError, ValueError, OverflowError):
+    #         return 0, 0
+    #     if not math.isfinite(cp):
+    #         return 0, 0
+    #     w = self.window
+    #     min_price, _ = w.get_min_and_index()
+    #     max_price, _ = w.get_max_and_index()
+    #     if min_price is None or max_price is None or max_price == min_price:
+    #         return 0, 0
+    #     min_proximity = (cp - min_price) / (max_price - min_price)
+    #     max_proximity = (max_price - cp) / (max_price - min_price)
+    #     if not (math.isfinite(min_proximity) and math.isfinite(max_proximity)):
+    #         return 0, 0
+    #     return max(min_proximity, 0), max(max_proximity, 0)
+    #
+    # def calculate_positions(self):
+    #     """Poziția temporală normalizată (index / window_size) a minimului și maximului."""
+    #     w = self.window
+    #     min_price, min_index = w.get_min_and_index()
+    #     max_price, max_index = w.get_max_and_index()
+    #     win_size = getattr(w, "window_size", 0)
+    #     if isinstance(win_size, bool) or not isinstance(win_size, (int, float)) or not math.isfinite(win_size) or win_size <= 0:
+    #         return None, None
+    #     min_position = min_index / win_size if min_index is not None else None
+    #     max_position = max_index / win_size if max_index is not None else None
+    #     return min_position, max_position
+    #
+    # def _analyze_price_movement(self, min_price, min_index, max_price, max_index,
+    #                             newest_price, newest_index, price_diff):
+    #     """Analiză asimetrică a pantei dintre noul preț și cele două extreme (min/max)."""
+    #     price_diff_min = u.calculate_difference_percent(min_price, newest_price)
+    #     price_diff_max = u.calculate_difference_percent(max_price, newest_price)
+    #     grow = price_diff_max < price_diff_min
+    #     slope_min = u.slope(min_price, min_index, newest_price, newest_index)
+    #     slope_max = u.slope(max_price, max_index, newest_price, newest_index)
+    #     slope_max_min = slope_max if abs(slope_max) > abs(slope_min) else slope_min
+    #     return slope_max_min, price_diff
+    #
+    # def evaluate_buy_sell_opportunity(self, current_price, threshold_percent=1, decrease_percent=3.7):
+    #     """Stub inițial pentru detectarea oportunităților pe bază de scădere/creștere procentuală."""
+    #     pass
