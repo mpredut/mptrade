@@ -20,8 +20,8 @@ if [ "$LOCAL" != "$REMOTE" ]; then
     echo "[dev_ci_watcher $(date '+%F %T')] Remote update detected ($LOCAL -> $REMOTE)."
     if flock -n /tmp/dev_regression.lock true 2>/dev/null; then
         git checkout -- offline/research/*_results.json 2>/dev/null || true
-        git pull --ff-only origin "$BRANCH" || { echo "[dev_ci_watcher $(date '+%F %T')] ERROR: git pull --ff-only failed" >&2; exit 1; }
-        echo "[dev_ci_watcher $(date '+%F %T')] Git pull successful. Launching regression..."
+        git reset --hard "origin/$BRANCH" || { echo "[dev_ci_watcher $(date '+%F %T')] ERROR: git reset --hard failed" >&2; exit 1; }
+        echo "[dev_ci_watcher $(date '+%F %T')] Git reset to origin/$BRANCH successful. Launching regression..."
     else
         echo "[dev_ci_watcher $(date '+%F %T')] Regression currently in flight; queueing run_dev_regression.sh..."
     fi

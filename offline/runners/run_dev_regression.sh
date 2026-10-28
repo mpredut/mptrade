@@ -22,7 +22,7 @@ LOG_FILE="$ROOT/logs/dev_regression.log"
 STATUS_JSON="$ROOT/cachedb/system/dev_regression_status.json"
 
 git checkout -- offline/research/*_results.json 2>/dev/null || true
-flock -w 45 /tmp/dev_ci_watcher.lock git pull --ff-only origin "${DEV_CODE_BRANCH:-main}" >/dev/null 2>&1 || true
+flock -w 45 /tmp/dev_ci_watcher.lock bash -c "git fetch -q origin '${DEV_CODE_BRANCH:-main}' && git reset --hard 'origin/${DEV_CODE_BRANCH:-main}'" >/dev/null 2>&1 || true
 
 COMMIT_HASH="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 COMMIT_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
