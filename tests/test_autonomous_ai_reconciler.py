@@ -1454,30 +1454,51 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
         TelemetrySensorSnapshot,
     )
     from orchestratorOS.agy.topics import topic_spec
-    from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
+    from intelligence.sentiment.guards.high_stake_guard import (
+        compute_24h_price_metrics,
+        compute_cross_btc_metrics,
+    )
 
-    # 1. compute_24h_price_metrics computes chg_24h_pct when series spans >= 6h
+    # 1. compute_24h_price_metrics computes 6h/12h/24h changes and 24h range geometry
     now_ms = 1_700_000_000_000.0
     series_24h = [
         [now_ms - 24 * 3600 * 1000, 100.0],
+        [now_ms - 12 * 3600 * 1000, 102.0],
+        [now_ms - 6 * 3600 * 1000, 104.0],
         [now_ms - 3 * 3600 * 1000, 105.0],
         [now_ms - 1 * 3600 * 1000, 108.0],
-        [now_ms - 15 * 60 * 1000, 109.0],
+        [now_ms - 15 * 60 * 1000, 112.0],
         [now_ms, 110.0],
     ]
     m24 = compute_24h_price_metrics(series_24h)
     assert m24.get("chg_24h_pct") == 10.0
+    assert m24.get("chg_12h_pct") == 7.84
+    assert m24.get("chg_6h_pct") == 5.77
     assert m24.get("chg_1h_pct") == 1.85
+    assert m24.get("dd_24h_high_pct") == -1.79
+    assert m24.get("bounce_24h_low_pct") == 10.0
+    assert m24.get("span_24h_pct") == 12.0
+    assert m24.get("pos_24h_pct") == 83.3
 
-    # Series shorter than 6h omits chg_24h_pct
+    # Series shorter than 4h omits 6h/12h/24h
     series_short = [
         [now_ms - 3 * 3600 * 1000, 100.0],
         [now_ms, 105.0],
     ]
     m_short = compute_24h_price_metrics(series_short)
     assert "chg_24h_pct" not in m_short
+    assert "chg_12h_pct" not in m_short
+    assert "chg_6h_pct" not in m_short
 
-    # 2. Test synthesize_and_diagnose prompt generation with vs_btc and capital rotation guidance
+    # 1B. compute_cross_btc_metrics computes ALT/BTC 24h range position, beta, and correlation
+    btc_pts = [[now_ms - (10 - i) * 300_000, 80000.0 * (1.0 + 0.002 * i)] for i in range(11)]
+    alt_pts = [[now_ms - (10 - i) * 300_000, 250.0 * (1.0 + 0.004 * i)] for i in range(11)]
+    cross = compute_cross_btc_metrics(alt_pts, btc_pts)
+    assert cross.get("alt_btc_pos_24h_pct") == 100.0
+    assert cross.get("beta_btc_24h") is not None and cross["beta_btc_24h"] > 1.5
+    assert cross.get("corr_btc_24h") is not None and cross["corr_btc_24h"] > 0.95
+
+    # 2. Test synthesize_and_diagnose prompt generation with multi-horizon vs_btc, alt_btc_24h, and zero prescriptive rules
     captured_prompts = []
 
     def mock_query(prompt, **kwargs):
@@ -1508,9 +1529,14 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
                 "chg_30m_pct": 0.8,
                 "chg_1h_pct": 2.0,
                 "chg_3h_pct": 3.0,
+                "chg_6h_pct": 3.5,
+                "chg_12h_pct": 4.2,
                 "chg_24h_pct": 5.0,
+                "chg_7d_pct": 6.0,
                 "low_24h": 80000.0,
                 "high_24h": 86000.0,
+                "low_7d": 78000.0,
+                "high_7d": 86000.0,
             },
             "TAOUSDC": {
                 "price": 260.0,
@@ -1520,9 +1546,19 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
                 "chg_30m_pct": 0.4,
                 "chg_1h_pct": 1.0,
                 "chg_3h_pct": 2.5,
+                "chg_6h_pct": 4.5,
+                "chg_12h_pct": 6.2,
                 "chg_24h_pct": 8.0,
+                "chg_7d_pct": 18.0,
                 "low_24h": 240.0,
                 "high_24h": 270.0,
+                "low_7d": 215.0,
+                "high_7d": 270.0,
+                "alt_btc_pos_24h_pct": 74.5,
+                "alt_btc_dd_24h_high_pct": -1.2,
+                "alt_btc_bounce_24h_low_pct": 3.4,
+                "beta_btc_24h": 1.42,
+                "corr_btc_24h": 0.65,
             },
             "AAPL_US_EQ": {
                 "price": 230.0,
@@ -1552,9 +1588,11 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     assert len(captured_prompts) == 1
     prompt = captured_prompts[0]
 
-    # Verify vs_btc on TAOUSDC: 1h delta = 1.0 - 2.0 = -1.00%, 24h delta = 8.0 - 5.0 = +3.00%
-    assert "vs_btc(1h=-1.00%, 24h=+3.00%)" in prompt
-    # Verify BTC does not have vs_btc
+    # Verify full multi-horizon vs_btc and alt_btc_24h on TAOUSDC
+    assert "vs_btc(15m=-0.30%, 1h=-1.00%, 3h=-0.50%, 6h=+1.00%, 12h=+2.00%, 24h=+3.00%, 7d=+12.00%)" in prompt
+    assert "alt_btc_24h(pos=74.5%, dd_high=-1.20%, bounce_low=+3.40%, beta=1.42, corr=0.65)" in prompt
+    assert "dd_high=-3.70%, bounce_low=+8.33%, span=12.5%" in prompt
+    # Verify BTC and XBT do not have vs_btc
     btc_line = [ln for ln in prompt.splitlines() if "BTCUSDC" in ln][0]
     assert "vs_btc" not in btc_line
     xbt_line = [ln for ln in prompt.splitlines() if "XBTUSD" in ln][0]
@@ -1562,19 +1600,9 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     # Verify equities do not have vs_btc
     eq_line = [ln for ln in prompt.splitlines() if "AAPL_US_EQ" in ln][0]
     assert "vs_btc" not in eq_line
-    # Verify capital rotation principles in prompt
-    assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE (BTC DOMINANCE & ROTATION DYNAMICS)" in prompt
-    assert "Phase 1 (BTC Breakout & Dominance Expansion)" in prompt
-    assert "Phase 2 (BTC Consolidation at Plateau)" in prompt
-    assert "Phase 3 (Altcoin Expansion / Altseason)" in prompt
-    assert "Structural BTC Breakdown Rule" in prompt
-
-    # Verify equities topic does NOT include crypto rotation principles
-    eq_spec = topic_spec("auto_sharetrade_executor")
-    reconciler.synthesize_and_diagnose(sensors, eq_spec, topic_key="auto_sharetrade_executor")
-    assert len(captured_prompts) == 2
-    eq_prompt = captured_prompts[1]
-    assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE" not in eq_prompt
+    # Verify prescriptive rotation clichés were removed so the AI exercises 100% independent judgment
+    assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE" not in prompt
+    assert "Phase 1 (BTC Breakout" not in prompt
 
 
 

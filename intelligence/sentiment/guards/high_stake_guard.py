@@ -63,13 +63,22 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             return clean_series[0][1]
 
         p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
-        p1440 = _px_ago(1440)
+        p360, p720, p1440 = _px_ago(360), _px_ago(720), _px_ago(1440)
         span_ms = now_ms - clean_series[0][0]
         sample_prices = [x[1] for x in clean_series[::max(1, len(clean_series) // 500)]]
+        l24 = min(sample_prices) if sample_prices else cur_px
+        h24 = max(sample_prices) if sample_prices else cur_px
         out: Dict[str, Any] = {
-            "low_24h": min(sample_prices) if sample_prices else cur_px,
-            "high_24h": max(sample_prices) if sample_prices else cur_px,
+            "low_24h": l24,
+            "high_24h": h24,
         }
+        if h24 > 0:
+            out["dd_24h_high_pct"] = round((cur_px / h24 - 1.0) * 100.0, 2)
+        if l24 > 0:
+            out["bounce_24h_low_pct"] = round((cur_px / l24 - 1.0) * 100.0, 2)
+            out["span_24h_pct"] = round((h24 / l24 - 1.0) * 100.0, 2)
+        if h24 > l24 > 0:
+            out["pos_24h_pct"] = round(((cur_px - l24) / (h24 - l24)) * 100.0, 1)
         if p15 > 0:
             out["chg_15m_pct"] = round((cur_px / p15 - 1.0) * 100.0, 2)
         if p30 > 0:
@@ -78,8 +87,93 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             out["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
         if p180 > 0:
             out["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
+        if p360 > 0 and span_ms >= 3600000.0 * 4:
+            out["chg_6h_pct"] = round((cur_px / p360 - 1.0) * 100.0, 2)
+        if p720 > 0 and span_ms >= 3600000.0 * 9:
+            out["chg_12h_pct"] = round((cur_px / p720 - 1.0) * 100.0, 2)
         if p1440 > 0 and span_ms >= 3600000.0 * 18:
             out["chg_24h_pct"] = round((cur_px / p1440 - 1.0) * 100.0, 2)
+        return out
+    except Exception:
+        return {}
+
+
+def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any]:
+    """Compute 24h ALT/BTC ratio range position, drawdown/bounce, and realized beta/correlation vs BTC."""
+    if not isinstance(alt_series, list) or not isinstance(btc_series, list):
+        return {}
+    if len(alt_series) < 4 or len(btc_series) < 4:
+        return {}
+    try:
+        def _clean_buckets(series: list) -> Dict[int, float]:
+            buckets: Dict[int, float] = {}
+            for row in series:
+                if not isinstance(row, (list, tuple)) or len(row) < 2:
+                    continue
+                raw_t, raw_p = row[0], row[1]
+                if raw_t is None or isinstance(raw_t, bool) or raw_p is None or isinstance(raw_p, bool):
+                    continue
+                try:
+                    tf = float(raw_t)
+                    pf = float(raw_p)
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(tf) and tf > 0 and math.isfinite(pf) and pf > 0):
+                    continue
+                tms = tf * 1000.0 if tf < 1e11 else tf
+                buckets[int(tms // 300000.0)] = pf
+            return buckets
+
+        a_map = _clean_buckets(alt_series)
+        b_map = _clean_buckets(btc_series)
+        if len(a_map) < 4 or len(b_map) < 4:
+            return {}
+
+        aligned = []
+        for bk in sorted(a_map.keys()):
+            b_px = b_map.get(bk)
+            if b_px is None:
+                b_px = b_map.get(bk - 1) or b_map.get(bk + 1)
+            if b_px is not None and b_px > 0:
+                aligned.append((bk, a_map[bk], b_px))
+        if len(aligned) < 4:
+            return {}
+
+        ratios = [a_px / b_px for _, a_px, b_px in aligned if b_px > 0]
+        if len(ratios) < 4:
+            return {}
+
+        r_cur = ratios[-1]
+        r_low = min(ratios)
+        r_high = max(ratios)
+        out: Dict[str, Any] = {}
+        if r_high > 0:
+            out["alt_btc_dd_24h_high_pct"] = round((r_cur / r_high - 1.0) * 100.0, 2)
+        if r_low > 0:
+            out["alt_btc_bounce_24h_low_pct"] = round((r_cur / r_low - 1.0) * 100.0, 2)
+        if r_high > r_low > 0:
+            out["alt_btc_pos_24h_pct"] = round(((r_cur - r_low) / (r_high - r_low)) * 100.0, 1)
+
+        rets_a = []
+        rets_b = []
+        for idx in range(1, len(aligned)):
+            bk0, a0, b0 = aligned[idx - 1]
+            bk1, a1, b1 = aligned[idx]
+            if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
+                rets_a.append(a1 / a0 - 1.0)
+                rets_b.append(b1 / b0 - 1.0)
+        n_r = len(rets_b)
+        if n_r >= 6:
+            mean_a = sum(rets_a) / n_r
+            mean_b = sum(rets_b) / n_r
+            cov = sum((ra - mean_a) * (rb - mean_b) for ra, rb in zip(rets_a, rets_b)) / n_r
+            var_a = sum((ra - mean_a) ** 2 for ra in rets_a) / n_r
+            var_b = sum((rb - mean_b) ** 2 for rb in rets_b) / n_r
+            if var_b > 1e-12:
+                out["beta_btc_24h"] = round(cov / var_b, 2)
+                if var_a > 1e-12:
+                    corr = cov / math.sqrt(var_a * var_b)
+                    out["corr_btc_24h"] = round(max(-1.0, min(1.0, corr)), 2)
         return out
     except Exception:
         return {}
@@ -333,6 +427,7 @@ def collect_pretrade_telemetry(
     sym_variants = _symbol_variants(symbol)
     try:
         m24: Dict[str, Any] = {}
+        alt_series_24h: list = []
         for cand in sym_variants:
             if "/" in cand:
                 continue
@@ -353,13 +448,82 @@ def collect_pretrade_telemetry(
                 series = raw_items
             m24 = compute_24h_price_metrics(series)
             if m24:
+                alt_series_24h = series if isinstance(series, list) else []
                 break
         if m24:
-            telemetry["24h Multi-Horizon Price Evolution"] = (
-                f"15m={m24.get('chg_15m_pct', 0):+.2f}%, 30m={m24.get('chg_30m_pct', 0):+.2f}%, "
-                f"1h={m24.get('chg_1h_pct', 0):+.2f}%, 3h={m24.get('chg_3h_pct', 0):+.2f}%, "
-                f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
-            )
+            h_parts = [
+                f"15m={m24.get('chg_15m_pct', 0):+.2f}%",
+                f"30m={m24.get('chg_30m_pct', 0):+.2f}%",
+                f"1h={m24.get('chg_1h_pct', 0):+.2f}%",
+                f"3h={m24.get('chg_3h_pct', 0):+.2f}%",
+            ]
+            for opt_lbl, opt_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct")):
+                if opt_k in m24 and m24.get(opt_k) is not None:
+                    h_parts.append(f"{opt_lbl}={float(m24[opt_k]):+.2f}%")
+            rng_str = f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
+            geom_parts = []
+            if m24.get("pos_24h_pct") is not None:
+                geom_parts.append(f"pos={m24['pos_24h_pct']}%")
+            if m24.get("dd_24h_high_pct") is not None:
+                geom_parts.append(f"dd_high={float(m24['dd_24h_high_pct']):+.2f}%")
+            if m24.get("bounce_24h_low_pct") is not None:
+                geom_parts.append(f"bounce_low={float(m24['bounce_24h_low_pct']):+.2f}%")
+            if m24.get("span_24h_pct") is not None:
+                geom_parts.append(f"span={m24['span_24h_pct']}%")
+            if geom_parts:
+                rng_str += f" ({', '.join(geom_parts)})"
+            telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
+
+            from cachepaths import normalize_cache_base_asset
+            base_asset = normalize_cache_base_asset(symbol)
+            if base_asset not in ("BTC", "XBT") and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
+                btc_m24: Dict[str, Any] = {}
+                btc_series_24h: list = []
+                for btc_cand in ("BTCUSDC", "BTCUSDT", "XBTUSD", "BTCUSD"):
+                    b_path = os.path.join(cachedb_dir, f"cache_24_price_{btc_cand}.json")
+                    b_data = read_recovering_previous(b_path, json.loads, default=None)
+                    if not isinstance(b_data, dict):
+                        continue
+                    b_items = b_data.get("items", {})
+                    if isinstance(b_items, dict):
+                        b_ser = b_items.get(btc_cand) or (next(iter(b_items.values()), []) if b_items else [])
+                    elif isinstance(b_items, list):
+                        b_ser = b_items
+                    else:
+                        b_ser = []
+                    btc_m24 = compute_24h_price_metrics(b_ser)
+                    if btc_m24:
+                        btc_series_24h = b_ser if isinstance(b_ser, list) else []
+                        break
+                if btc_m24:
+                    vs_parts = []
+                    for h_lbl, h_k in (
+                        ("15m", "chg_15m_pct"),
+                        ("1h", "chg_1h_pct"),
+                        ("3h", "chg_3h_pct"),
+                        ("6h", "chg_6h_pct"),
+                        ("12h", "chg_12h_pct"),
+                        ("24h", "chg_24h_pct"),
+                    ):
+                        if h_k in m24 and h_k in btc_m24:
+                            vs_parts.append(f"{h_lbl}={float(m24[h_k]) - float(btc_m24[h_k]):+.2f}%")
+                    cross_btc = compute_cross_btc_metrics(alt_series_24h, btc_series_24h)
+                    cross_parts = []
+                    if cross_btc.get("alt_btc_pos_24h_pct") is not None:
+                        cross_parts.append(f"alt_btc_pos_24h={cross_btc['alt_btc_pos_24h_pct']}%")
+                    if cross_btc.get("alt_btc_dd_24h_high_pct") is not None:
+                        cross_parts.append(f"alt_btc_dd_high={float(cross_btc['alt_btc_dd_24h_high_pct']):+.2f}%")
+                    if cross_btc.get("alt_btc_bounce_24h_low_pct") is not None:
+                        cross_parts.append(f"alt_btc_bounce_low={float(cross_btc['alt_btc_bounce_24h_low_pct']):+.2f}%")
+                    if cross_btc.get("beta_btc_24h") is not None:
+                        cross_parts.append(f"beta_24h={cross_btc['beta_btc_24h']}")
+                    if cross_btc.get("corr_btc_24h") is not None:
+                        cross_parts.append(f"corr_24h={cross_btc['corr_btc_24h']}")
+                    if vs_parts or cross_parts:
+                        rel_str = f"vs_btc({', '.join(vs_parts)})" if vs_parts else ""
+                        if cross_parts:
+                            rel_str = f"{rel_str} | {', '.join(cross_parts)}" if rel_str else ", ".join(cross_parts)
+                        telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
     except Exception:
         pass
 

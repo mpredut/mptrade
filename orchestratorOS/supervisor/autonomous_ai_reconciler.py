@@ -33,7 +33,11 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from botcore import load_dotenv
 from cachepaths import cache_symbol_variants, normalize_cache_base_asset
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
+from intelligence.sentiment.guards.high_stake_guard import (
+    compute_24h_price_metrics,
+    compute_cross_btc_metrics,
+    extract_symbol_recent_fills,
+)
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
@@ -770,15 +774,25 @@ class AutonomousAIReconciler:
                         if isinstance(pt, list) and len(pt) > 1 and _parse_finite_float(pt[1], 0.0) > 0
                     ]
                     if len(vals) >= 2:
-                        entry["chg_7d_pct"] = round(((vals[-1] - vals[0]) / vals[0]) * 100.0, 2)
-                        entry["low_7d"] = min(vals)
-                        entry["high_7d"] = max(vals)
+                        l7_v, h7_v, cur7_v = min(vals), max(vals), vals[-1]
+                        entry["chg_7d_pct"] = round(((cur7_v - vals[0]) / vals[0]) * 100.0, 2)
+                        entry["low_7d"] = l7_v
+                        entry["high_7d"] = h7_v
+                        if h7_v > 0:
+                            entry["dd_7d_high_pct"] = round((cur7_v / h7_v - 1.0) * 100.0, 2)
+                        if l7_v > 0:
+                            entry["bounce_7d_low_pct"] = round((cur7_v / l7_v - 1.0) * 100.0, 2)
+                            entry["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
+                        if h7_v > l7_v > 0:
+                            entry["pos_7d_pct"] = round(((cur7_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
+        series_24h_by_sym: Dict[str, list] = {}
         for sym in list(snapshot.prices_and_trends.keys()):
             base_sym = normalize_cache_base_asset(sym)
             p24_cands = cache_symbol_variants(sym, include_original=True)
             m24: Dict[str, Any] = {}
+            matched_series_24h: list = []
             for p24_key in p24_cands:
                 p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{p24_key}.json"))
                 if not isinstance(p24_data, dict):
@@ -796,6 +810,8 @@ class AutonomousAIReconciler:
                     series = raw_items
                 m24 = compute_24h_price_metrics(series) or {}
                 if m24:
+                    if isinstance(series, list):
+                        matched_series_24h = series
                     break
             if not m24 and sym in inst_by_sym:
                 # Fallback for standalone Kraken/Hyperliquid/T212 pairs without a cachedb/cache_24_price_* file
@@ -811,6 +827,8 @@ class AutonomousAIReconciler:
                             if ts >= cutoff_24h and float(px) > 0
                         ]
                         m24 = compute_24h_price_metrics(pts_24h) or {}
+                        if m24:
+                            matched_series_24h = pts_24h
                         if "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
                             s60 = ohlc_fn(sym, 60)
                             cutoff_7d = now_ts - 7 * 86400.0
@@ -820,11 +838,19 @@ class AutonomousAIReconciler:
                                 if ts >= cutoff_7d and float(px) > 0
                             ]
                             if len(vals_7d) >= 2:
+                                l7_v, h7_v, cur7_v = min(vals_7d), max(vals_7d), vals_7d[-1]
                                 snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
-                                    ((vals_7d[-1] - vals_7d[0]) / vals_7d[0]) * 100.0, 2
+                                    ((cur7_v - vals_7d[0]) / vals_7d[0]) * 100.0, 2
                                 )
-                                snapshot.prices_and_trends[sym]["low_7d"] = min(vals_7d)
-                                snapshot.prices_and_trends[sym]["high_7d"] = max(vals_7d)
+                                snapshot.prices_and_trends[sym]["low_7d"] = l7_v
+                                snapshot.prices_and_trends[sym]["high_7d"] = h7_v
+                                if h7_v > 0:
+                                    snapshot.prices_and_trends[sym]["dd_7d_high_pct"] = round((cur7_v / h7_v - 1.0) * 100.0, 2)
+                                if l7_v > 0:
+                                    snapshot.prices_and_trends[sym]["bounce_7d_low_pct"] = round((cur7_v / l7_v - 1.0) * 100.0, 2)
+                                    snapshot.prices_and_trends[sym]["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
+                                if h7_v > l7_v > 0:
+                                    snapshot.prices_and_trends[sym]["pos_7d_pct"] = round(((cur7_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
                     except Exception:
                         pass
                 elif str(getattr(inst_by_sym[sym], "provider_name", "")).lower() == "t212":
@@ -848,17 +874,29 @@ class AutonomousAIReconciler:
                             if len(pts_24h) < 10:
                                 pts_24h = pts_5d[-78:]
                             m24 = compute_24h_price_metrics(pts_24h) or {}
+                            if m24:
+                                matched_series_24h = pts_24h
                             vals_5d = [pt[1] for pt in pts_5d]
                             if len(vals_5d) >= 2 and "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
+                                l5_v, h5_v, cur5_v = round(min(vals_5d), 4), round(max(vals_5d), 4), vals_5d[-1]
                                 snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
-                                    ((vals_5d[-1] - vals_5d[0]) / vals_5d[0]) * 100.0, 2
+                                    ((cur5_v - vals_5d[0]) / vals_5d[0]) * 100.0, 2
                                 )
-                                snapshot.prices_and_trends[sym]["low_7d"] = round(min(vals_5d), 4)
-                                snapshot.prices_and_trends[sym]["high_7d"] = round(max(vals_5d), 4)
+                                snapshot.prices_and_trends[sym]["low_7d"] = l5_v
+                                snapshot.prices_and_trends[sym]["high_7d"] = h5_v
+                                if h5_v > 0:
+                                    snapshot.prices_and_trends[sym]["dd_7d_high_pct"] = round((cur5_v / h5_v - 1.0) * 100.0, 2)
+                                if l5_v > 0:
+                                    snapshot.prices_and_trends[sym]["bounce_7d_low_pct"] = round((cur5_v / l5_v - 1.0) * 100.0, 2)
+                                    snapshot.prices_and_trends[sym]["span_7d_pct"] = round((h5_v / l5_v - 1.0) * 100.0, 2)
+                                if h5_v > l5_v > 0:
+                                    snapshot.prices_and_trends[sym]["pos_7d_pct"] = round(((cur5_v - l5_v) / (h5_v - l5_v)) * 100.0, 1)
                     except Exception:
                         pass
             if m24:
                 snapshot.prices_and_trends[sym].update(m24)
+                if matched_series_24h:
+                    series_24h_by_sym[sym] = matched_series_24h
                 if snapshot.prices_and_trends[sym].get("trend", 0) == 0 and "chg_1h_pct" in m24:
                     c1h = _parse_finite_float(m24.get("chg_1h_pct"), 0.0)
                     if c1h >= 0.25:
@@ -911,6 +949,23 @@ class AutonomousAIReconciler:
                     m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
                     m_info["divergence_regime"] = whale.get("divergence_regime")
                 snapshot.microstructure[sym] = m_info
+
+        # 8B. Cross-market 24h ALT/BTC ratio geometry, realized beta, and correlation vs BTC
+        btc_series_24h = next(
+            (
+                ser
+                for s_key, ser in series_24h_by_sym.items()
+                if normalize_cache_base_asset(s_key) in ("BTC", "XBT") and ser
+            ),
+            None,
+        )
+        if btc_series_24h:
+            for sym, alt_ser in series_24h_by_sym.items():
+                if sym.endswith(("_EQ", "_US_EQ")) or normalize_cache_base_asset(sym) in ("BTC", "XBT"):
+                    continue
+                cross_m = compute_cross_btc_metrics(alt_ser, btc_series_24h)
+                if cross_m and sym in snapshot.prices_and_trends:
+                    snapshot.prices_and_trends[sym].update(cross_m)
 
         # 9. Portfolio value, Kraken cycle states, cross-venue snapshot, recent orders/fills & autonomous intents
         asset_val_path = os.path.join(self.cache_dir, "cache_asset_value.jsonl")
@@ -1497,8 +1552,6 @@ class AutonomousAIReconciler:
                 ),
                 None,
             )
-            btc_1h = _parse_finite_float(btc_entry.get("chg_1h_pct"), None) if btc_entry else None
-            btc_24h = _parse_finite_float(btc_entry.get("chg_24h_pct"), None) if btc_entry else None
 
             for sym, pinfo in sorted(sensors.prices_and_trends.items()):
                 if not isinstance(pinfo, dict):
@@ -1520,42 +1573,106 @@ class AutonomousAIReconciler:
                     h24_f = _parse_finite_float(h24, 0.0)
                     pos24_sfx = ""
                     if px_f > 0 and l24_f > 0 and h24_f > l24_f:
-                        pos24 = round(((px_f - l24_f) / (h24_f - l24_f)) * 100.0, 1)
-                        pos24_sfx = f" pos_24h={pos24}%"
-                    c24_part = ""
-                    if "chg_24h_pct" in pinfo:
-                        c24_val = _parse_finite_float(pinfo.get("chg_24h_pct"), 0.0)
-                        c24_part = f"24h={c24_val:+.2f}% "
+                        pos24 = (
+                            pinfo.get("pos_24h_pct")
+                            if pinfo.get("pos_24h_pct") is not None
+                            else round(((px_f - l24_f) / (h24_f - l24_f)) * 100.0, 1)
+                        )
+                        dd24 = (
+                            pinfo.get("dd_24h_high_pct")
+                            if pinfo.get("dd_24h_high_pct") is not None
+                            else round((px_f / h24_f - 1.0) * 100.0, 2)
+                        )
+                        bnc24 = (
+                            pinfo.get("bounce_24h_low_pct")
+                            if pinfo.get("bounce_24h_low_pct") is not None
+                            else round((px_f / l24_f - 1.0) * 100.0, 2)
+                        )
+                        spn24 = (
+                            pinfo.get("span_24h_pct")
+                            if pinfo.get("span_24h_pct") is not None
+                            else round((h24_f / l24_f - 1.0) * 100.0, 2)
+                        )
+                        pos24_sfx = (
+                            f" pos_24h={pos24}% (dd_high={float(dd24):+.2f}%, "
+                            f"bounce_low={float(bnc24):+.2f}%, span={spn24}%)"
+                        )
+                    opt_horizons = ""
+                    for h_lbl, h_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct")):
+                        if h_k in pinfo and pinfo.get(h_k) is not None:
+                            opt_horizons += f"{h_lbl}={_parse_finite_float(pinfo.get(h_k), 0.0):+.2f}% "
                     extras.append(
                         f"15m={_parse_finite_float(pinfo.get('chg_15m_pct'), 0.0):+.2f}% "
                         f"30m={_parse_finite_float(pinfo.get('chg_30m_pct'), 0.0):+.2f}% "
                         f"1h={_parse_finite_float(pinfo.get('chg_1h_pct'), 0.0):+.2f}% "
                         f"3h={_parse_finite_float(pinfo.get('chg_3h_pct'), 0.0):+.2f}% "
-                        f"{c24_part}"
+                        f"{opt_horizons}"
                         f"24h_range=[{l24}, {h24}]{pos24_sfx}"
                     )
                 base_asset = normalize_cache_base_asset(sym)
                 is_crypto = not sym.endswith(("_EQ", "_US_EQ"))
                 if is_crypto and base_asset not in ("BTC", "XBT"):
                     vs_btc_parts: List[str] = []
-                    if btc_1h is not None and "chg_1h_pct" in pinfo:
-                        alt_1h = _parse_finite_float(pinfo.get("chg_1h_pct"), None)
-                        if alt_1h is not None:
-                            vs_btc_parts.append(f"1h={alt_1h - btc_1h:+.2f}%")
-                    if btc_24h is not None and "chg_24h_pct" in pinfo:
-                        alt_24h = _parse_finite_float(pinfo.get("chg_24h_pct"), None)
-                        if alt_24h is not None:
-                            vs_btc_parts.append(f"24h={alt_24h - btc_24h:+.2f}%")
+                    if btc_entry:
+                        for h_lbl, h_k in (
+                            ("15m", "chg_15m_pct"),
+                            ("1h", "chg_1h_pct"),
+                            ("3h", "chg_3h_pct"),
+                            ("6h", "chg_6h_pct"),
+                            ("12h", "chg_12h_pct"),
+                            ("24h", "chg_24h_pct"),
+                            ("7d", "chg_7d_pct"),
+                        ):
+                            if h_k in pinfo and h_k in btc_entry:
+                                a_v = _parse_finite_float(pinfo.get(h_k), None)
+                                b_v = _parse_finite_float(btc_entry.get(h_k), None)
+                                if a_v is not None and b_v is not None:
+                                    vs_btc_parts.append(f"{h_lbl}={a_v - b_v:+.2f}%")
                     if vs_btc_parts:
                         extras.append(f"vs_btc({', '.join(vs_btc_parts)})")
+                    cross_parts: List[str] = []
+                    if pinfo.get("alt_btc_pos_24h_pct") is not None:
+                        cross_parts.append(f"pos={pinfo.get('alt_btc_pos_24h_pct')}%")
+                    if pinfo.get("alt_btc_dd_24h_high_pct") is not None:
+                        cross_parts.append(f"dd_high={_parse_finite_float(pinfo.get('alt_btc_dd_24h_high_pct'), 0.0):+.2f}%")
+                    if pinfo.get("alt_btc_bounce_24h_low_pct") is not None:
+                        cross_parts.append(f"bounce_low={_parse_finite_float(pinfo.get('alt_btc_bounce_24h_low_pct'), 0.0):+.2f}%")
+                    if pinfo.get("beta_btc_24h") is not None:
+                        cross_parts.append(f"beta={pinfo.get('beta_btc_24h')}")
+                    if pinfo.get("corr_btc_24h") is not None:
+                        cross_parts.append(f"corr={pinfo.get('corr_btc_24h')}")
+                    if cross_parts:
+                        extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
                 if "chg_7d_pct" in pinfo:
                     l7, h7 = pinfo.get("low_7d"), pinfo.get("high_7d")
                     l7_f = _parse_finite_float(l7, 0.0)
                     h7_f = _parse_finite_float(h7, 0.0)
                     pos7_sfx = ""
                     if px_f > 0 and l7_f > 0 and h7_f > l7_f:
-                        pos7 = round(((px_f - l7_f) / (h7_f - l7_f)) * 100.0, 1)
-                        pos7_sfx = f" pos_7d={pos7}%"
+                        pos7 = (
+                            pinfo.get("pos_7d_pct")
+                            if pinfo.get("pos_7d_pct") is not None
+                            else round(((px_f - l7_f) / (h7_f - l7_f)) * 100.0, 1)
+                        )
+                        dd7 = (
+                            pinfo.get("dd_7d_high_pct")
+                            if pinfo.get("dd_7d_high_pct") is not None
+                            else round((px_f / h7_f - 1.0) * 100.0, 2)
+                        )
+                        bnc7 = (
+                            pinfo.get("bounce_7d_low_pct")
+                            if pinfo.get("bounce_7d_low_pct") is not None
+                            else round((px_f / l7_f - 1.0) * 100.0, 2)
+                        )
+                        spn7 = (
+                            pinfo.get("span_7d_pct")
+                            if pinfo.get("span_7d_pct") is not None
+                            else round((h7_f / l7_f - 1.0) * 100.0, 2)
+                        )
+                        pos7_sfx = (
+                            f" pos_7d={pos7}% (dd_high={float(dd7):+.2f}%, "
+                            f"bounce_low={float(bnc7):+.2f}%, span={spn7}%)"
+                        )
                     extras.append(
                         f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
                     )
@@ -1775,28 +1892,11 @@ class AutonomousAIReconciler:
             )
             venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
             ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
-            rotation_guidance = (
-                ""
-                if is_equities
-                else (
-                    "     * INTER-MARKET CAPITAL ROTATION PRINCIPLE (BTC DOMINANCE & ROTATION DYNAMICS): Crypto capital flows "
-                    "follow a multi-phase liquidity cycle across market expansions:\n"
-                    "       - Phase 1 (BTC Breakout & Dominance Expansion): Institutional capital leads first into Bitcoin. "
-                    "Altcoin returns relative to BTC (`vs_btc`) may temporarily lag or show negative short-term deltas (1h/24h). "
-                    "Do NOT panic-sell high-conviction altcoins on shallow lag while BTC's macro structure remains firmly bullish.\n"
-                    "       - Phase 2 (BTC Consolidation at Plateau): Once BTC breaks major resistance and enters a stable, low-volatility "
-                    "consolidation range at high levels, capital rotates from BTC into major and high-beta altcoins. This is the prime "
-                    "accumulation and holding window for altcoins.\n"
-                    "       - Phase 3 (Altcoin Expansion / Altseason): Altcoins experience explosive multi-day upside momentum and outpace "
-                    "BTC (`vs_btc` turns sharply positive). Exploit this expansion to harvest profits in tranches at major resistance/ask walls.\n"
-                    "       - Structural BTC Breakdown Rule: If BTC breaks major structural support downwards with high volume or macro shock, "
-                    "defensive de-risking across altcoins takes priority due to altcoins' high downside beta (2x-3x magnification of BTC drawdowns).\n"
-                )
-            )
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} using the complete "
                 "macro sentiment, geopolitical risk, live breaking news, multi-horizon price evolution "
-                "(15m/30m/1h/3h/24h/7d), dynamic slopes, volatility, and real wallet/account balances + "
+                "(15m/30m/1h/3h/6h/12h/24h/7d, range geometry, relative vs_btc deltas, and alt_btc_24h beta/correlation), "
+                "dynamic slopes, volatility, and real wallet/account balances + "
                 "cycle entry anchors above.\n"
                 "   - FULL AI AUTHORITY & QUANTITATIVE GUIDANCE (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "
                 "is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
@@ -1816,7 +1916,6 @@ class AutonomousAIReconciler:
                 "recovery/inflection after a prior exit, or confirmed momentum breakouts (scaling in across cycles while "
                 "avoiding immediate whipsaw buybacks at the same price right after a take-profit SELL unless a structural "
                 "breakout is confirmed).\n"
-                f"{rotation_guidance}"
                 f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
                 "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
