@@ -235,15 +235,18 @@ class RetryQueueCorruptionError(RuntimeError):
 
 
 def _ensure_dir():
-    os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
+    from cachepaths import resolve_cachedb_filepath
+    os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
 
 
 def _read_nolock(*, validate=False):
     """Read the complete queue or fail closed while the caller holds the lock."""
-    if not os.path.exists(QUEUE_FILE):
+    from cachepaths import resolve_cachedb_filepath
+    q_path = str(resolve_cachedb_filepath(QUEUE_FILE))
+    if not os.path.exists(q_path):
         return []
     items = []
-    with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+    with open(q_path, "r", encoding="utf-8") as f:
         for line_number, raw_line in enumerate(f, start=1):
             line = raw_line.strip()
             if not line:

@@ -45,7 +45,7 @@ try:
     from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
     from intelligence import get_kalman_state_path
-from cachepaths import cache_path, get_cachedb_dir
+from cachepaths import cache_path, get_cachedb_dir, resolve_cachedb_filepath
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = cache_path("cache_short_trend.json")
 
@@ -253,7 +253,7 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     weekly caller reads only their ``max_bytes`` tail. The legacy JSON format
     used by the live 24-hour cache remains supported unchanged.
     """
-    path = os.path.join(_cachedb_dir(), filename)
+    path = str(resolve_cachedb_filepath(os.path.join(_cachedb_dir(), filename)))
     if not os.path.exists(path):
         return []
     if filename.endswith(".jsonl"):
@@ -292,7 +292,7 @@ def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
     The approximately 40 MB file covers about eleven months. Its final
     ``max_bytes`` span weeks, avoiding a full scan on every cycle.
     """
-    path = os.path.join(_cachedb_dir(), f"cache_sparse_price_{symbol}.jsonl")
+    path = str(resolve_cachedb_filepath(os.path.join(_cachedb_dir(), f"cache_sparse_price_{symbol}.jsonl")))
     if not os.path.exists(path):
         return []
     entries = []

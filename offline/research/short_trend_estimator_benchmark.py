@@ -30,7 +30,6 @@ import sys
 from multiprocessing import Pool
 
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 from scipy.ndimage import maximum_filter1d, minimum_filter1d, median_filter
 from scipy.signal import fftconvolve
 
@@ -38,8 +37,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import _parse_bool_flag, int_env
-from cachepaths import get_cachedb_dir
+from botcore import int_env
+from cachepaths import get_cachedb_dir, resolve_cachedb_filepath
 
 D = get_cachedb_dir()
 N_WIN = 222
@@ -54,14 +53,14 @@ def _set_data_dir(path):
 
 def load_series(sym):
     """Return (ts_sec, px) from <D>/<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
-    npz = os.path.join(D, f"{sym}.npz")
+    npz = str(resolve_cachedb_filepath(os.path.join(D, f"{sym}.npz")))
     if os.path.exists(npz):
         z = np.load(npz)
         return z["ts"], z["px"]
     ts, px = [], []
-    jsonl_path = os.path.join(D, f"cache_365_price_{sym}.jsonl")
+    jsonl_path = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.jsonl")))
     if not os.path.exists(jsonl_path):
-        jsonl_path = os.path.join(D, f"cache_sparse_price_{sym}.jsonl")
+        jsonl_path = str(resolve_cachedb_filepath(os.path.join(D, f"cache_sparse_price_{sym}.jsonl")))
     if not os.path.exists(jsonl_path):
         return np.empty(0), np.empty(0)
     with open(jsonl_path, encoding="utf-8") as f:
@@ -87,16 +86,6 @@ def load_series(sym):
     ts, px = ts[keep], px[keep]
     np.savez(npz, ts=ts, px=px)
     return ts, px
-
-
-def causal_median(px, k):
-    if k <= 1:
-        return px
-    out = np.empty_like(px)
-    for i in range(k - 1):
-        out[i] = np.median(px[: i + 1])
-    out[k - 1:] = np.median(sliding_window_view(px, k), axis=-1)
-    return out
 
 
 def conv_steps(series, w):
@@ -137,15 +126,6 @@ def exp_steps(series, half_life):
     return conv_steps(series, kernel_newest_first(np.exp(lam * (k - (N_WIN - 1)))))
 
 
-def kaufman_er(px, win=N_WIN):
-    """Fractal Efficiency Ratio = |Net Change| / Path Length."""
-    dy = np.abs(np.diff(px, prepend=px[0]))
-    kernel = np.ones(win, dtype=np.float64)
-    path = fftconvolve(dy, kernel, mode="full")[:len(px)]
-    net = np.abs(px - np.pad(px[:-win], (win, 0), mode="edge"))
-    return net / np.maximum(path, 1e-12)
-
-
 def rolling_eps(px, win=N_WIN):
     dy = np.diff(px, prepend=px[0])
     kernel = np.ones(win, dtype=np.float64) / win
@@ -176,39 +156,16 @@ def build_candidates(px):
     only = set(filter(None, os.environ.get("BENCH_ONLY", "").split(",")))
     want = (lambda n: (not only) or n in only)
     yield "LEGACY (sf+gr)/2", legacy(px)
-    k_list = (1, 3, 5, 7, 9) if _parse_bool_flag(os.environ.get("BENCH_ALL_MEDIANS")) else (1, 5)
-    for k in k_list:
-        need_k = (
-            (k in (3, 5) and want(f"LEGACY med{k}"))
-            or any(want(f"SW p{p} med{k}") for p in (1, 2, 3, 4, 6, 8))
-            or any(want(f"EXP hl{hl} med{k}") for hl in (15, 30, 60))
-        )
-        if not need_k:
-            continue
-        med_k = causal_median(px, k)
-        if k in (3, 5) and want(f"LEGACY med{k}"):
-            yield f"LEGACY med{k}", legacy(med_k)
-        for p in (1, 2, 3, 4, 6, 8):
-            if want(f"SW p{p} med{k}"):
-                yield f"SW p{p} med{k}", step_wols(med_k, p)
-        for hl in (15, 30, 60):
-            if want(f"EXP hl{hl} med{k}"):
-                yield f"EXP hl{hl} med{k}", exp_steps(med_k, hl)
-        del med_k
+    for p in (1, 2, 3, 4, 6, 8):
+        if want(f"SW p{p}"):
+            yield f"SW p{p}", step_wols(px, p)
+    for hl in (15, 30, 60):
+        if want(f"EXP hl{hl}"):
+            yield f"EXP hl{hl}", exp_steps(px, hl)
 
-    # New quantitative architectures: Kaufman ER, Noise Gating, Platt Scaling, and Tiered Hybrid
-    er_val = None
     eps_val = None
     for p in (2, 3):
         base_sig = None
-        for er_thr in (0.03, 0.05, 0.10, 0.15):
-            cname = f"SW p{p} + ER{er_thr}"
-            if want(cname):
-                if base_sig is None:
-                    base_sig = step_wols(px, p)
-                if er_val is None:
-                    er_val = kaufman_er(px)
-                yield cname, np.where(er_val >= er_thr, base_sig, 0.0)
         for k_eps in (0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.10, 0.25):
             cname = f"SW p{p} + NoiseGate{k_eps}"
             if want(cname):
@@ -223,17 +180,6 @@ def build_candidates(px):
                 if base_sig is None:
                     base_sig = step_wols(px, p)
                 yield cname, platt_scale(base_sig, thr=p_thr)
-        for er_thr, k_eps in ((0.03, 0.025), (0.05, 0.025), (0.05, 0.05)):
-            cname = f"HYBRID p{p} ER{er_thr}+NG{k_eps}"
-            if want(cname):
-                if base_sig is None:
-                    base_sig = step_wols(px, p)
-                if er_val is None:
-                    er_val = kaufman_er(px)
-                if eps_val is None:
-                    eps_val = rolling_eps(px)
-                ng_sig = noise_gate(base_sig, px, k=k_eps, eps=eps_val)
-                yield cname, np.where(er_val >= er_thr, ng_sig, 0.0)
 
 
 def fwd_index(ts, h):
@@ -386,15 +332,10 @@ def main():
     base = "LEGACY (sf+gr)/2"
     rng = np.random.default_rng(0)
     boot_cands = list(results[0][2].keys()) if os.environ.get("BENCH_ONLY") else [
-        "SW p1 med1", "SW p2 med1", "SW p3 med1",
-        "SW p2 med5", "SW p3 med5", "EXP hl30 med1",
-        "SW p2 + ER0.05", "SW p3 + ER0.05",
-        "SW p2 + NoiseGate0.02", "SW p2 + NoiseGate0.025", "SW p2 + NoiseGate0.03", "SW p2 + NoiseGate0.05", "SW p2 + NoiseGate0.25",
-        "SW p3 + NoiseGate0.02", "SW p3 + NoiseGate0.025", "SW p3 + NoiseGate0.03", "SW p3 + NoiseGate0.05", "SW p3 + NoiseGate0.25",
+        "SW p1", "SW p2", "SW p3", "EXP hl30",
+        "SW p2 + NoiseGate0.02", "SW p2 + NoiseGate0.025", "SW p2 + NoiseGate0.03", "SW p2 + NoiseGate0.04", "SW p2 + NoiseGate0.05",
+        "SW p3 + NoiseGate0.02", "SW p3 + NoiseGate0.025", "SW p3 + NoiseGate0.03", "SW p3 + NoiseGate0.04", "SW p3 + NoiseGate0.05",
         "SW p3 + Platt0.6", "SW p3 + Platt0.65",
-        "HYBRID p2 ER0.03+NG0.025", "HYBRID p3 ER0.03+NG0.025",
-        "HYBRID p2 ER0.05+NG0.025", "HYBRID p3 ER0.05+NG0.025",
-        "HYBRID p2 ER0.05+NG0.05", "HYBRID p3 ER0.05+NG0.05",
     ]
     print("\n>>> PAIRED BOOTSTRAP vs LEGACY: edge diff (bps/decision), 95% CI, per symbol & period <<<")
     for sym, N, res in results:
@@ -429,8 +370,8 @@ def main():
               f"{o['sp60']:>+6.2f}{o['sp180']:>+7.2f}{o['hit']:>6.1f}|{o['flips']:>7.2f}{o['lag_med']:>7.0f}{o['lag_mean']:>7.0f}")
     sys.stdout.flush()
     # per-symbol OOS for top candidates
-    top = [c for _, c, _ in sorted(rows, reverse=True)[:8]] + ["LEGACY (sf+gr)/2", "SW p3 med5"]
-    print("\n>>> PER-SYMBOL OOS edge (bps) for top-8 + legacy + current SW p3 med5 <<<")
+    top = [c for _, c, _ in sorted(rows, reverse=True)[:8]] + ["LEGACY (sf+gr)/2"]
+    print("\n>>> PER-SYMBOL OOS edge (bps) for top-8 + legacy <<<")
     for sym, N, res in results:
         print(sym, " | ".join(f"{c}: {res[c]['OOS']['edge']:+.2f}" for c in dict.fromkeys(top) if c in res))
 

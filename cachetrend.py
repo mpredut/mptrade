@@ -30,7 +30,9 @@ from typing import Optional
 
 import utils as u
 from cachepaths import (
+    CACHEDB_SUBDOMAINS,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
+    resolve_cachedb_filepath,
 )
 from state_io import (
     atomic_write_json,
@@ -592,6 +594,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             slopes={f"{int(s)}": v for s, v in slopes.items()},
             pos=primary_pos,
             epsilon=eps_primary,
+            n_samples=len(pwin.prices),
             vol_1h_pct=v1h,
             current_price=current_price,
             ts=observed_at,
@@ -748,6 +751,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                     sample_rate_sec=sample_rate,
                     eps_k=self.EPSILON_K,
                     window_seconds=window_seconds,
+                    symbol=symbol,
                 )
                 return ft, gc, sf, gr, eps, sample_rate
         # Fallback if entries were non-monotonic or ad-hoc:
@@ -759,18 +763,21 @@ class CacheShortTrendManager(CacheManagerInterface):
             sample_rate_sec=sample_rate,
             eps_k=self.EPSILON_K,
             window_seconds=window_seconds,
+            symbol=symbol,
         )
         return ft, gc, sf, gr, eps, sample_rate
 
     def _load_disk_cache24_entries(self, symbol):
         """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
         base_dir = os.path.dirname(self.filename)
+        if os.path.basename(base_dir) in CACHEDB_SUBDOMAINS:
+            base_dir = os.path.dirname(base_dir)
         c24_file = None
         matched_sym = symbol
         for cand in _short_trend_symbol_variants(symbol):
             if not isinstance(cand, str) or not cand:
                 continue
-            cand_file = os.path.join(base_dir, f"cache_24_price_{cand}.json")
+            cand_file = str(resolve_cachedb_filepath(os.path.join(base_dir, f"cache_24_price_{cand}.json")))
             _migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)
@@ -1317,7 +1324,16 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         raw_eps = data.get("epsilon")
         eps = float(raw_eps) if raw_eps is not None and float(raw_eps) > 0.0 else 0.0
-        noise_floor = eps * CacheShortTrendManager.UPWARD_EPSILON_K
+        scale = 1.0
+        raw_n = data.get("n_samples")
+        if raw_n is not None and not isinstance(raw_n, bool):
+            try:
+                m_steps = float(raw_n) - 1.0
+                if math.isfinite(m_steps) and m_steps > 10.0:
+                    scale = math.sqrt(10.0 / m_steps)
+            except (TypeError, ValueError, OverflowError):
+                scale = 1.0
+        noise_floor = eps * CacheShortTrendManager.UPWARD_EPSILON_K * scale
 
         raw_gc = data.get("growth_coefficient")
         if raw_gc is not None:

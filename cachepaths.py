@@ -18,9 +18,297 @@ PREFIX_LEGACY_FILENAMES = (
     ("cache_365_price_", ("cache_365price_", "cache_24price_long_")),
 )
 
+CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
+    "trends": {
+        "exact": (
+            "cache_short_trend.json",
+            "cache_instant_trend.json",
+            "cache_long_trend.json",
+            "cache_price_long_trend.json",
+            "cache_T_trend.json",
+            "kalman_state.json",
+            "24trend",
+        ),
+        "prefixes": (
+            "24trend/",
+            "cache_short_trend.",
+            "cache_instant_trend.",
+            "cache_long_trend.",
+            "cache_price_long_trend.",
+            "cache_T_trend.",
+            "kalman_state.",
+        ),
+        "suffixes": (),
+    },
+    "prices": {
+        "exact": (
+            "cache_current_price.json",
+            "cache_currentprice.json",
+            "cache_prices_multi.json",
+        ),
+        "prefixes": (
+            "cache_current_price.",
+            "cache_currentprice.",
+            "cache_prices_multi.",
+            "cache_24_price_",
+            "cache_24price_",
+            "cache_365_price_",
+            "cache_365price_",
+            "cache_sparse_price_",
+            "cache_price_",
+        ),
+        "suffixes": (".npz",),
+    },
+    "telemetry": {
+        "exact": (),
+        "prefixes": (
+            "orderbook_depth_",
+            "derivatives_telemetry_",
+            "whale_snapshot_",
+        ),
+        "suffixes": (),
+    },
+    "macro": {
+        "exact": (
+            "macro_dynamic_lexicon.json",
+            "sentiment_advisor_eval.json",
+            "macro_advisor_eval.json",
+            "gemini_macro_advisor.json",
+        ),
+        "prefixes": (
+            "fear_greed_",
+            "market_breadth_",
+            "news_feed_",
+            "geopolitical_threat_",
+            "macro_dynamic_lexicon.",
+            "sentiment_advisor_eval.",
+            "macro_advisor_eval.",
+            "gemini_macro_advisor.",
+        ),
+        "suffixes": (),
+    },
+    "orders": {
+        "exact": (
+            "binance_account_cache_health.json",
+            "orders.db",
+            "trades.db",
+            "cache.db",
+        ),
+        "prefixes": (
+            "cache_order",
+            "cache_trade",
+            "cache_asset_value",
+            "order_retry_",
+            "binance_account_cache_health.",
+            "orders.db.",
+            "trades.db.",
+            "cache.db.",
+        ),
+        "suffixes": (),
+    },
+    "bots": {
+        "exact": (
+            "mt_state.json",
+            "trailing_state.json",
+            "smart_stop_loss_state.json",
+            "autonomous_trade_intents.json",
+        ),
+        "prefixes": (
+            "assetguardian_state",
+            "rtrade_pairs",
+            "shadow_state",
+            "mt_state.",
+            "trailing_state.",
+            "smart_stop_loss_state.",
+            "autonomous_trade_intents.",
+        ),
+        "suffixes": (),
+    },
+    "system": {
+        "exact": (
+            "overnight_monitor_status.json",
+            "dev_regression_status.json",
+            "llm_topic_threads.json",
+            "notification_queue.jsonl",
+            "procs.conf.reload",
+        ),
+        "prefixes": (
+            "auto_",
+            "overnight_monitor_status.",
+            "dev_regression_status.",
+            "llm_topic_threads.",
+            "notification_queue.",
+            "procs.conf.reload.",
+        ),
+        "suffixes": (".heartbeat",),
+    },
+}
+
+_SIDECAR_SUFFIXES: tuple[str, ...] = (
+    ".generation.lock",
+    ".previous",
+    ".meta",
+    ".lock",
+    ".tmp",
+)
+
+
+def _strip_sidecar_filename(name: str) -> str:
+    """Normalize a cache filename by stripping leading staging dots and trailing sidecar suffixes."""
+    s = name.strip().replace("\\", "/")
+    while s.startswith("./"):
+        s = s[2:]
+    if "/" in s:
+        first, rest = s.split("/", 1)
+        if first in CACHEDB_SUBDOMAINS:
+            s = rest
+    if s.startswith(".") and not s.startswith(".."):
+        s = s[1:]
+    changed = True
+    while changed:
+        changed = False
+        for sfx in _SIDECAR_SUFFIXES:
+            if s.endswith(sfx) and len(s) > len(sfx):
+                s = s[: -len(sfx)]
+                changed = True
+                break
+        if not changed and ".previous." in s:
+            s = s.split(".previous.", 1)[0]
+            changed = True
+    return s
+
+
+def resolve_cache_subdomain(name: object) -> str | None:
+    """Return the canonical thematic cachedb subdomain for ``name``, or ``None`` if unclassified."""
+    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
+        return None
+    raw = str(os.fspath(name)).strip().replace("\\", "/")
+    while raw.startswith("./"):
+        raw = raw[2:]
+    if raw.startswith("cachedb/"):
+        raw = raw[len("cachedb/"):]
+    if not raw or raw in CACHEDB_SUBDOMAINS:
+        return None
+    if "/" in raw:
+        first, rest = raw.split("/", 1)
+        if first in CACHEDB_SUBDOMAINS and rest:
+            return first
+        if first == "24trend":
+            return "trends"
+        raw = os.path.basename(raw)
+    cleaned = _strip_sidecar_filename(raw)
+    for cand in (raw, cleaned):
+        for sub, rules in CACHEDB_SUBDOMAINS.items():
+            if cand in rules["exact"]:
+                return sub
+    for cand in (raw, cleaned):
+        for sub, rules in CACHEDB_SUBDOMAINS.items():
+            if any(cand.startswith(pfx) for pfx in rules["prefixes"]):
+                return sub
+            if any(cand.endswith(sfx) for sfx in rules["suffixes"]):
+                return sub
+    return None
+
+
+def resolve_cachedb_filepath(path: object) -> object:
+    """Resolve ``path`` to its thematic ``cachedb/<subdomain>/`` location when active on disk."""
+    if not path or isinstance(path, bool) or not isinstance(path, (str, os.PathLike)):
+        return path
+    raw = str(os.fspath(path))
+    if not raw.strip():
+        return path
+    norm = raw.replace("\\", "/")
+    parts = [p for p in norm.split("/") if p and p != "."]
+    if not parts:
+        return raw
+    if len(parts) >= 2 and parts[-2] in CACHEDB_SUBDOMAINS:
+        return raw
+    if len(parts) >= 3 and parts[-2] == "24trend" and parts[-3] in CACHEDB_SUBDOMAINS:
+        return raw
+    if len(parts) >= 2 and parts[-2] == "24trend":
+        rel_item = os.path.join("24trend", parts[-1])
+        base_dir = os.path.dirname(os.path.dirname(raw))
+    else:
+        rel_item = parts[-1]
+        base_dir = os.path.dirname(raw)
+    if not base_dir:
+        base_dir = "."
+    sub = resolve_cache_subdomain(rel_item)
+    if not sub:
+        return raw
+    flat_path = os.path.join(base_dir, rel_item)
+    sub_dir = os.path.join(base_dir, sub)
+    sub_path = os.path.join(sub_dir, rel_item)
+    if os.path.exists(sub_path) or os.path.exists(sub_path + ".previous"):
+        return sub_path
+    if os.path.exists(flat_path) or os.path.exists(flat_path + ".previous"):
+        return flat_path
+    if os.path.isdir(sub_dir):
+        return sub_path
+    return raw
+
+
+def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]:
+    """Create all canonical thematic subdomain directories under ``cachedb_dir``."""
+    base = cachedb_dir or get_cachedb_dir()
+    created: list[str] = []
+    for sub in CACHEDB_SUBDOMAINS:
+        sub_path = os.path.join(base, sub)
+        os.makedirs(sub_path, exist_ok=True)
+        created.append(sub_path)
+    return tuple(created)
+
+
+def organize_cachedb_subdomains(
+    cachedb_dir: str | None = None,
+    *,
+    remove_stale_staging: bool = True,
+) -> dict[str, list[str]]:
+    """Partition flat files in ``cachedb_dir`` into thematic subdomain subdirectories."""
+    import shutil
+
+    base = cachedb_dir or get_cachedb_dir()
+    ensure_cachedb_subdomains(base)
+    moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}
+    if not os.path.isdir(base):
+        return moved
+    for entry in sorted(os.listdir(base)):
+        if entry in CACHEDB_SUBDOMAINS:
+            continue
+        src = os.path.join(base, entry)
+        if remove_stale_staging and (
+            (entry.startswith(".") and ".previous." in entry)
+            or (entry.startswith(".") and entry.endswith(".tmp"))
+            or entry == "test-artifacts"
+        ):
+            try:
+                if os.path.isdir(src) and not os.path.islink(src):
+                    shutil.rmtree(src, ignore_errors=True)
+                else:
+                    os.unlink(src)
+            except OSError:
+                pass
+            continue
+        sub = resolve_cache_subdomain(entry)
+        if not sub:
+            continue
+        dst_dir = os.path.join(base, sub)
+        dst = os.path.join(dst_dir, entry)
+        try:
+            if os.path.isdir(src) and not os.path.islink(src) and os.path.isdir(dst):
+                for child in os.listdir(src):
+                    os.replace(os.path.join(src, child), os.path.join(dst, child))
+                os.rmdir(src)
+            else:
+                os.replace(src, dst)
+            moved[sub].append(entry)
+        except OSError:
+            pass
+    return moved
+
 
 def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
-    """Return legacy pre-symmetry candidate paths for ``filepath``."""
+    """Return legacy pre-symmetry and pre-subdomain candidate paths for ``filepath``."""
     if not filepath or isinstance(filepath, bool) or not isinstance(filepath, (str, os.PathLike)):
         return ()
     dirname, basename = os.path.split(os.fspath(filepath))
@@ -31,9 +319,20 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
                 suffix = basename[len(new_prefix):]
                 candidates = tuple(old_prefix + suffix for old_prefix in old_prefixes)
                 break
-    if not candidates:
-        return ()
-    return tuple(os.path.join(dirname, c) for c in candidates)
+    dirs = [dirname]
+    if os.path.basename(dirname) in CACHEDB_SUBDOMAINS:
+        parent_dir = os.path.dirname(dirname)
+        if parent_dir and parent_dir not in dirs:
+            dirs.append(parent_dir)
+    out: list[str] = []
+    if len(dirs) > 1:
+        out.append(os.path.join(dirs[1], basename))
+    for d in dirs:
+        for c in candidates or ():
+            cand_p = os.path.join(d, c)
+            if cand_p not in out:
+                out.append(cand_p)
+    return tuple(out)
 
 
 def migrate_legacy_filename_if_needed(filepath: str) -> None:
@@ -89,7 +388,8 @@ def get_cachedb_dir() -> str:
 def cache_path(name: str) -> str:
     """Return the path to a cache file inside the canonical cachedb directory.
 
-    Preserves name when it is already absolute or None/empty.
+    Preserves name when it is already absolute or None/empty, while resolving
+    thematic cachedb subdomains when active on disk.
     """
     if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
         return name
@@ -97,7 +397,7 @@ def cache_path(name: str) -> str:
     if not name_str.strip():
         return name
     if os.path.isabs(name_str):
-        return name_str
+        return str(resolve_cachedb_filepath(name_str))
     norm = name_str.replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
@@ -110,7 +410,7 @@ def cache_path(name: str) -> str:
         os.makedirs(d, exist_ok=True)
     except Exception:
         pass
-    return os.path.join(d, name)
+    return str(resolve_cachedb_filepath(os.path.join(d, name)))
 
 
 CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (
@@ -281,7 +581,7 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
     if not safe_sym:
         return None
-    return os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")
+    return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
 
 
 def cache_symbol_variants(

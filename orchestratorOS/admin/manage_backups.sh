@@ -62,7 +62,7 @@ backup_price_data_only() {
     local PRICE_TAR="${1:-$HOME/mptrade-price-data.tar.gz}"
     cd "$ROOT"
     local PRICE_FILES
-    PRICE_FILES="$(find cachedb -maxdepth 1 -type f \( \
+    PRICE_FILES="$(find cachedb -maxdepth 2 -type f \( \
         -name 'cache_365_price_*.jsonl*' -o \
         -name 'cache_24_price_*.json*' -o \
         -name 'cache_sparse_price_*.jsonl*' -o \
@@ -153,7 +153,7 @@ restore_backup() {
     [ -f "$SECRETS/.rclone_backup/rclone.conf" ] && copy_if_exists "$SECRETS/.rclone_backup" "$HOME/.config/rclone" rclone.conf && chmod 600 "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true
     [ -f "$SECRETS/.host_secrets/piatoken.txt" ] && copy_if_exists "$SECRETS/.host_secrets" "$HOME" piatoken.txt && chmod 600 "$HOME/piatoken.txt" 2>/dev/null || true
 
-    if ! ls "$ROOT"/cachedb/cache_365_price_*.jsonl >/dev/null 2>&1; then
+    if ! ls "$ROOT"/cachedb/prices/cache_365_price_*.jsonl "$ROOT"/cachedb/cache_365_price_*.jsonl >/dev/null 2>&1; then
         echo "    ! 365d price archives missing locally; attempting pull from Storj..."
         pull_remote_price_data || echo "    ! Storj price pull skipped or unavailable"
     fi

@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 from botcore import _parse_bool_flag, parse_dotenv
-from cachepaths import cache_path
+from cachepaths import cache_path, resolve_cachedb_filepath
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +302,7 @@ def inspect_daemon_heartbeat(
 
     data = None
     for fname in filenames:
-        cand = os.path.join(cache_dir, fname)
+        cand = str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
         if os.path.exists(cand) or os.path.exists(f"{cand}.previous"):
             try:
                 cand_data = read_recovering_previous(cand, json.loads, default=None)
@@ -719,7 +719,7 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
     fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_dynamic_lexicon.json"
-    return os.path.join(cache_dir, fname) if cache_dir else cache_path(fname)
+    return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname))) if cache_dir else cache_path(fname)
 
 
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:

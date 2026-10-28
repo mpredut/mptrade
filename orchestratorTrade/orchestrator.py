@@ -15,6 +15,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 import botcore
 botcore.load_dotenv(os.path.join(ROOT_DIR, "config.env"))
+from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
 from notify_engine.server import NotificationServer
 from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
 
@@ -324,6 +325,10 @@ class BotManager:
                 await self.restart_bot(name)
 
     async def supervise(self):
+        try:
+            organize_cachedb_subdomains(os.path.join(ROOT_DIR, "cachedb"))
+        except Exception as exc:
+            logging.warning(f"Could not organize cachedb subdomains on startup: {exc}")
         self.bots = self.parse_procs_conf()
         if not self.bots:
             logging.error("No bots found to start.")
@@ -340,7 +345,8 @@ class BotManager:
                 for b in self.bots:
                     hb_files = b.get("hb_files") or ([b["hb_file"]] if b.get("hb_file") else [])
                     if b.get("hb_stale_s", 0) > 0 and hb_files:
-                        for hbf in hb_files:
+                        for raw_hbf in hb_files:
+                            hbf = resolve_cachedb_filepath(raw_hbf)
                             if os.path.exists(hbf):
                                 try:
                                     age = max(0.0, now - os.path.getmtime(hbf))
@@ -380,7 +386,8 @@ class BotManager:
                             max_stale_duration = 0.0
 
                             # Every heartbeat file must indicate life (ALL must be fresh)
-                            for hbf in hb_files:
+                            for raw_hbf in hb_files:
+                                hbf = resolve_cachedb_filepath(raw_hbf)
                                 if os.path.exists(hbf):
                                     try:
                                         mtime = os.path.getmtime(hbf)

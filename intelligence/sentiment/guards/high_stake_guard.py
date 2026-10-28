@@ -144,7 +144,7 @@ def load_symbol_price_series(
     current_price_items: Optional[Dict[str, Any]] = None,
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
-    from cachepaths import cache_symbol_variants, legacy_filenames_for
+    from cachepaths import cache_symbol_variants, legacy_filenames_for, resolve_cachedb_filepath
 
     cands = [c for c in cache_symbol_variants(symbol, include_original=True) if isinstance(c, str) and "/" not in c]
     series_24h: list = []
@@ -152,7 +152,7 @@ def load_symbol_price_series(
 
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
     for cand in cands:
-        primary_24 = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
+        primary_24 = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")))
         for p24_path in (primary_24, *legacy_filenames_for(primary_24)):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
@@ -182,7 +182,7 @@ def load_symbol_price_series(
         )
         candidate_paths: list = []
         for bn in base_names:
-            full_p = os.path.join(cachedb_dir, bn)
+            full_p = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn)))
             candidate_paths.append(full_p)
             candidate_paths.extend(legacy_filenames_for(full_p))
         for arch_path in candidate_paths:

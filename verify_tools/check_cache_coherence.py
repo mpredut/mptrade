@@ -11,6 +11,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from cachepaths import resolve_cachedb_filepath  # noqa: E402
 from state_io import previous_generation_path, read_recovering_previous  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
@@ -18,7 +19,7 @@ STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant tren
 
 
 def load(name):
-    p = os.path.join(CACHEDB, name)
+    p = str(resolve_cachedb_filepath(os.path.join(CACHEDB, name)))
     if not os.path.exists(p) and not os.path.exists(previous_generation_path(p)):
         return None
     try:

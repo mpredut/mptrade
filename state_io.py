@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
 from botcore import _parse_bool_flag
+from cachepaths import resolve_cachedb_filepath
 
 T = TypeVar("T")
 
@@ -108,6 +109,7 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
         target_path = os.fspath(path)
         if isinstance(target_path, str) and not target_path.strip():
             raise ValueError("path must not be empty")
+        target_path = str(resolve_cachedb_filepath(target_path))
     except (TypeError, ValueError) as exc:
         if fail_closed:
             raise StateReadError(f"invalid {label} state in {path}: {exc}") from exc
@@ -141,7 +143,7 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 @contextlib.contextmanager
 def atomic_text_writer(path: str, *, encoding: str = "utf-8") -> Iterator[Any]:
     """Yield a text handle and atomically publish it only after a successful write."""
-    destination = os.path.abspath(os.fspath(path))
+    destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
@@ -196,7 +198,7 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     sort_keys: bool = False, separators=None,
                     ensure_ascii: bool = True) -> None:
     """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
-    target_path = os.fspath(path)
+    target_path = str(resolve_cachedb_filepath(os.fspath(path)))
     backup_path = None
     had_prior = os.path.exists(target_path)
     if had_prior:
@@ -225,7 +227,7 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
 @contextlib.contextmanager
 def atomic_binary_writer(path: str) -> Iterator[Any]:
     """Yield a binary handle and atomically publish it only after a durable write."""
-    destination = os.path.abspath(os.fspath(path))
+    destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
@@ -262,7 +264,7 @@ def atomic_file_path(
     suffix: str = ".tmp",
 ) -> Iterator[str]:
     """Yield a temporary sibling path and durably publish it onto ``path`` on exit."""
-    destination = os.path.abspath(os.fspath(path))
+    destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
@@ -478,7 +480,7 @@ def commit_file_and_meta(
     replaced, ``<path>.previous`` is durably restored (or the newly created
     uncertified ``path`` is removed when no prior generation existed).
     """
-    target_path = os.fspath(path)
+    target_path = str(resolve_cachedb_filepath(os.fspath(path)))
     if had_prior_file is None:
         had_prior_file = os.path.exists(target_path)
         if had_prior_file and backup_path is None:
@@ -534,8 +536,8 @@ def read_recovering_previous(
     ``.previous`` is validated with ``read_fn(backup_path)``, durably promoted
     onto ``path``, and re-read from ``path``.
     """
-    target_path = os.fspath(path)
-    target_backup = backup_path or previous_generation_path(target_path)
+    target_path = str(resolve_cachedb_filepath(os.fspath(path)))
+    target_backup = str(resolve_cachedb_filepath(backup_path)) if backup_path else previous_generation_path(target_path)
     if read_fn is json.loads:
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:

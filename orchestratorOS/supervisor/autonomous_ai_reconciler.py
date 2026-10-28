@@ -36,6 +36,7 @@ from cachepaths import (
     canonical_base_asset,
     normalize_cache_base_asset,
     normalize_venue_name,
+    resolve_cachedb_filepath,
     split_symbol_assets,
 )
 from providers.base import (
@@ -251,6 +252,7 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _read_last_jsonl_dict(fpath: str, tail_bytes: int = 4096) -> Optional[Dict[str, Any]]:
     """Read and parse the last JSON object from a JSONL file using a bounded tail seek."""
+    fpath = str(resolve_cachedb_filepath(fpath))
     if not os.path.exists(fpath):
         return None
     try:
@@ -738,11 +740,12 @@ class AutonomousAIReconciler:
             raw_ts = enriched.get("ts")
             ref_ts: Optional[float] = None
             ts_f = _parse_finite_float(raw_ts, 0.0)
+            eff_path = str(resolve_cachedb_filepath(fpath))
             if ts_f > 0:
                 ref_ts = ts_f / 1000.0 if ts_f > 1e12 else ts_f
-            elif os.path.exists(fpath):
+            elif os.path.exists(eff_path):
                 try:
-                    ref_ts = os.path.getmtime(fpath)
+                    ref_ts = os.path.getmtime(eff_path)
                 except OSError:
                     ref_ts = None
             if ref_ts is not None:
@@ -890,7 +893,7 @@ class AutonomousAIReconciler:
                 snapshot.prices_and_trends[sym] = {"price": px, "trend": 0, "growth_coefficient": 0.0}
 
         # Overlay fresh 1-second sampled dynamic windows from cachedb/24trend/live_<SYM>.json
-        live_24trend_dir = os.path.join(self.cache_dir, "24trend")
+        live_24trend_dir = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "24trend")))
         if os.path.isdir(live_24trend_dir):
             for lt_path in sorted(glob.glob(os.path.join(live_24trend_dir, "live_*.json"))):
                 fname = os.path.basename(lt_path)
@@ -1281,15 +1284,16 @@ class AutonomousAIReconciler:
             covered_micro_bases = {canonical_base_asset(k) for k in snapshot.microstructure}
             ref_micro_syms: List[str] = []
             for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
-                for mpath in sorted(glob.glob(os.path.join(self.cache_dir, f"{pfx}*.json"))):
-                    mfname = os.path.basename(mpath)
-                    msym = mfname[len(pfx) : -len(".json")].upper()
-                    if not msym or not msym.isalnum() or msym in snapshot.microstructure or msym in ref_micro_syms:
-                        continue
-                    mbase = canonical_base_asset(msym)
-                    if mbase not in covered_micro_bases:
-                        ref_micro_syms.append(msym)
-                        covered_micro_bases.add(mbase)
+                for search_dir in (self.cache_dir, os.path.join(self.cache_dir, "telemetry")):
+                    for mpath in sorted(glob.glob(os.path.join(search_dir, f"{pfx}*.json"))):
+                        mfname = os.path.basename(mpath)
+                        msym = mfname[len(pfx) : -len(".json")].upper()
+                        if not msym or not msym.isalnum() or msym in snapshot.microstructure or msym in ref_micro_syms:
+                            continue
+                        mbase = canonical_base_asset(msym)
+                        if mbase not in covered_micro_bases:
+                            ref_micro_syms.append(msym)
+                            covered_micro_bases.add(mbase)
             for msym in ref_micro_syms:
                 m_info_ref = _load_symbol_microstructure(self.cache_dir, msym, _read_json)
                 if m_info_ref:
@@ -1592,7 +1596,7 @@ class AutonomousAIReconciler:
             ]
 
         # 9E. Active queued retry orders (cachedb/order_retry_queue.jsonl) & monitortrades active states (mt_state.json)
-        retry_q_path = os.path.join(self.cache_dir, "order_retry_queue.jsonl")
+        retry_q_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "order_retry_queue.jsonl")))
         if os.path.exists(retry_q_path):
             active_retries: List[Dict[str, Any]] = []
             try:

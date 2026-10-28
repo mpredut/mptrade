@@ -344,13 +344,19 @@ def format_summary(result: dict) -> str:
 
 def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     """Return normalized active intents and read errors without mutating sources."""
+    from cachepaths import resolve_cachedb_filepath
+
     root = os.path.abspath(root)
     intents = []
     exposures = []
     errors = []
     files = []
     for spec in sources:
-        for path in sorted(glob.glob(os.path.join(glob.escape(root), spec.pattern))):
+        matched_paths = sorted(glob.glob(os.path.join(glob.escape(root), spec.pattern)))
+        if not matched_paths and spec.pattern.startswith("cachedb/"):
+            resolved_pat = str(resolve_cachedb_filepath(os.path.join(root, spec.pattern)))
+            matched_paths = sorted(glob.glob(resolved_pat))
+        for path in matched_paths:
             if _is_backup(path):
                 continue
             relative = os.path.relpath(path, root).replace(os.sep, "/")

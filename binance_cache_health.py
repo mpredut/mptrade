@@ -304,8 +304,11 @@ def inspect_health(*, path: str = HEALTH_PATH,
                        [int], Optional[int]] = _pid_started_at_ms,
                    future_tolerance_sec: float = 5.0) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
+    from cachepaths import resolve_cachedb_filepath
+
+    eff_path = str(resolve_cachedb_filepath(path))
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(eff_path, "r", encoding="utf-8") as handle:
             state = json.load(handle)
         if not isinstance(state, dict):
             raise ValueError("root is not an object")

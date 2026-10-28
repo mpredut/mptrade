@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # backup_sync_common.sh — Shared SSOT primitives for backup creation, restoration,
-# Storj rclone transport, and cachedb rsync across PROD, DEV, and WSL.
+# Storj rclone transport, cachedb rsync, and DEV SSH orchestration across PROD, DEV, and WSL.
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=orchestratorOS/lib/env_common.sh
@@ -12,6 +12,7 @@ CACHEDB_RSYNC_EXCLUDES=(
     --exclude '*.tmp'
     --exclude '*.tmp.*'
     --exclude '*.previous'
+    --exclude '*.previous.*'
     --exclude '*.lock'
 )
 
@@ -78,4 +79,26 @@ unpack_repo_payload() {  # $1=src_dir $2=dst_root [extra_tar_excludes...]
     local src="$1" dst="$2"
     shift 2
     tar cf - -C "$src" "${BACKUP_META_EXCLUDES[@]}" "$@" . | tar xf - -C "$dst"
+}
+
+dev_ssh() {
+    ssh -o BatchMode=yes -o ConnectTimeout="${DEV_SSH_TIMEOUT:-5}" -p "$DEV_PORT" "$DEV_USER@$DEV_HOST" "$@"
+}
+
+dev_remote_git_pull() {
+    dev_ssh "cd ~/$DEV_PATH && if flock -n /tmp/dev_regression.lock flock -w 45 /tmp/dev_ci_watcher.lock env GIT_SSH_COMMAND='ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2' timeout 45 git pull --ff-only origin $DEV_CODE_BRANCH; then :; else echo 'Regression currently in flight; deferred git pull until lock is released.'; fi"
+}
+
+dev_launch_regression_bg() {
+    dev_ssh "nohup bash -c 'cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh' </dev/null >/dev/null 2>&1 &" || true
+}
+
+dev_sync_regression_status() {
+    mkdir -p "$ROOT/cachedb/system"
+    scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
+        "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/system/dev_regression_status.json" \
+        "$ROOT/cachedb/system/dev_regression_status.json" >/dev/null 2>&1 \
+    || scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
+        "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" \
+        "$ROOT/cachedb/system/dev_regression_status.json" >/dev/null 2>&1 || true
 }

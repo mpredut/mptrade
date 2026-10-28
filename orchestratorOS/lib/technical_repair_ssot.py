@@ -203,8 +203,11 @@ def clean_json_value(val: Any) -> Any:
 
 
 def read_json_recovering(fpath: str) -> Optional[Any]:
-    """Read JSON from ``fpath`` with automatic fallback to ``fpath.previous``."""
-    for cand in (fpath, f"{fpath}.previous"):
+    """Read JSON from ``fpath`` with automatic fallback to ``fpath.previous`` and thematic cachedb subdomains."""
+    from cachepaths import resolve_cachedb_filepath
+
+    resolved = str(resolve_cachedb_filepath(fpath))
+    for cand in (resolved, f"{resolved}.previous", fpath, f"{fpath}.previous"):
         if os.path.exists(cand):
             try:
                 with open(cand, "r", encoding="utf-8", errors="replace") as f:
@@ -265,7 +268,10 @@ def resolve_heartbeat_paths(
                 continue
             if os.path.isabs(part):
                 hb_paths.append(part)
-            elif part.startswith(("logs/", "cachedb/")):
+            elif part.startswith("cachedb/"):
+                from cachepaths import resolve_cachedb_filepath
+                hb_paths.append(str(resolve_cachedb_filepath(os.path.join(workspace_dir, part))))
+            elif part.startswith("logs/"):
                 hb_paths.append(os.path.join(workspace_dir, part))
             else:
                 hb_paths.append(os.path.join(proc_dir, part))

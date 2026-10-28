@@ -1,38 +1,25 @@
 #!/usr/bin/env bash
-# check_dev_regression.sh — inspects DEV CI regression status from PROD.
-# Fetches the latest cachedb/dev_regression_status.json from DEV (if reachable)
-# and formats a clean one-line or multi-line summary.
+# check_dev_regression.sh — inspects DEV CI regression status from PROD/WSL.
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RUNNER_DIR/load_dev_backtest_env.sh"
+# shellcheck source=orchestratorOS/lib/backup_sync_common.sh
+source "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh"
 
-REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=3 -p $DEV_PORT"
+mkdir -p "$ROOT/cachedb/system"
+STATUS_FILE="$ROOT/cachedb/system/dev_regression_status.json"
+[ ! -f "$STATUS_FILE" ] && [ -f "$ROOT/cachedb/dev_regression_status.json" ] && STATUS_FILE="$ROOT/cachedb/dev_regression_status.json"
 
-mkdir -p "$REPO_ROOT/cachedb"
-STATUS_FILE="$REPO_ROOT/cachedb/dev_regression_status.json"
-
-# Check if DEV host is reachable
-DEV_REACHABLE=true
-if ! $SSH "$DEV_USER@$DEV_HOST" "true" >/dev/null 2>&1; then
-    DEV_REACHABLE=false
-fi
-
+DEV_REACHABLE=false
 IS_RUNNING=false
-if [ "$DEV_REACHABLE" = true ]; then
-    # Try to sync latest status from dev
-    scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
-        "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" \
-        "$STATUS_FILE" >/dev/null 2>&1 || true
-    if ! $SSH "$DEV_USER@$DEV_HOST" "flock -n /tmp/dev_regression.lock true 2>/dev/null"; then
-        IS_RUNNING=true
-    fi
+if DEV_SSH_TIMEOUT=3 dev_ssh "true" >/dev/null 2>&1; then
+    DEV_REACHABLE=true
+    dev_sync_regression_status
+    [ -f "$ROOT/cachedb/system/dev_regression_status.json" ] && STATUS_FILE="$ROOT/cachedb/system/dev_regression_status.json"
+    DEV_SSH_TIMEOUT=3 dev_ssh "flock -n /tmp/dev_regression.lock true 2>/dev/null" || IS_RUNNING=true
 else
-    # DEV unreachable: check if running locally
-    if ! flock -n /tmp/dev_regression.lock true 2>/dev/null; then
-        IS_RUNNING=true
-    fi
+    flock -n /tmp/dev_regression.lock true 2>/dev/null || IS_RUNNING=true
 fi
 
 if [ ! -f "$STATUS_FILE" ]; then
@@ -46,34 +33,19 @@ if [ ! -f "$STATUS_FILE" ]; then
     exit 0
 fi
 
-STATUS_FILE="$STATUS_FILE" IS_RUNNING="$IS_RUNNING" python3 - <<'EOF'
-import json
-import os
-import time
-
-status_file = os.environ["STATUS_FILE"]
-is_running = os.environ.get("IS_RUNNING") == "true"
-
+STATUS_FILE="$STATUS_FILE" IS_RUNNING="$IS_RUNNING" "$PYTHON_BIN" - <<'EOF'
+import json, os, time
 try:
-    with open(status_file, "r") as f:
-        data = json.load(f)
-        
-    status = data.get("status", "UNKNOWN")
-    passed = data.get("passed", 0)
-    failed = data.get("failed", 0)
-    errors = data.get("errors", 0)
-    duration = data.get("duration_sec", 0)
-    commit = data.get("commit_short", "unknown")
-    commit_msg = data.get("commit_msg", "")
-    ts = data.get("ts", 0)
-    age_s = int(time.time() - ts) if ts else 0
-    age_m = age_s // 60
-    
-    if is_running:
+    with open(os.environ["STATUS_FILE"], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    status = d.get("status", "UNKNOWN")
+    commit = d.get("commit_short", "unknown")
+    age_m = int(time.time() - d.get("ts", 0)) // 60 if d.get("ts") else 0
+    if os.environ.get("IS_RUNNING") == "true":
         print(f"[DEV CI] ⏳ RUNNING: A new regression is currently in progress on DEV (last finished: {status} on {commit} {age_m}m ago).")
     else:
         icon = "✅" if status == "PASSED" else "❌"
-        print(f"[DEV CI] {icon} {status} on [{commit}] (\"{commit_msg}\") | Passed: {passed} | Failed: {failed} | Time: {duration}s | Completed {age_m}m ago")
+        print(f'[DEV CI] {icon} {status} on [{commit}] ("{d.get("commit_msg", "")}") | Passed: {d.get("passed", 0)} | Failed: {d.get("failed", 0)} | Time: {d.get("duration_sec", 0)}s | Completed {age_m}m ago')
 except Exception as e:
     print(f"[DEV CI] Error reading status: {e}")
 EOF

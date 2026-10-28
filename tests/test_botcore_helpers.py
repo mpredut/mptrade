@@ -13,7 +13,15 @@ import pytest
 import alertnotifiers
 import botcore
 from botcore import load_env_stack, parse_dotenv
-from cachepaths import cache_path, get_cachedb_dir
+from cachepaths import (
+    CACHEDB_SUBDOMAINS,
+    cache_path,
+    ensure_cachedb_subdomains,
+    get_cachedb_dir,
+    organize_cachedb_subdomains,
+    resolve_cache_subdomain,
+    resolve_cachedb_filepath,
+)
 from credentials import (
     CredentialConfigurationError,
     kraken_credentials,
@@ -214,6 +222,93 @@ class TestCachepaths(unittest.TestCase):
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/tmp/custom_cache"}, clear=False):
             p = utils.cache_path("my_cache.json")
             self.assertEqual(p.replace("\\", "/"), "/tmp/custom_cache/my_cache.json")
+
+    def test_resolve_cache_subdomain_covers_all_thematic_domains_and_sidecars(self):
+        cases = {
+            "cache_current_price.json": "prices",
+            "cache_24_price_BTCUSDC.json.meta": "prices",
+            "cache_365_price_SOLUSDC.json.previous": "prices",
+            "cache_sparse_price_TAOUSD.json": "prices",
+            "btc_1s.npz": "prices",
+            "cache_short_trend.json": "trends",
+            "cache_long_trend.json.lock": "trends",
+            "kalman_state.json": "trends",
+            "24trend": "trends",
+            "orderbook_depth_BTCUSDC.json": "telemetry",
+            "derivatives_telemetry_BTCUSDC.json": "telemetry",
+            "whale_snapshot_ETHUSDC.json": "telemetry",
+            "fear_greed_index.json": "macro",
+            "market_breadth_metrics.json": "macro",
+            "news_feed_snapshot.json": "macro",
+            "macro_dynamic_lexicon.json": "macro",
+            "sentiment_advisor_eval.json": "macro",
+            "geopolitical_threat_eval.json": "macro",
+            "cache_order.json": "orders",
+            "cache_orders_kraken.json": "orders",
+            "cache_trades_hyperliquid.json": "orders",
+            "cache_asset_value_t212.json": "orders",
+            "binance_account_cache_health.json": "orders",
+            "order_retry_queue.json": "orders",
+            "orders.db": "orders",
+            "assetguardian_state_BTCUSDC.json": "bots",
+            "mt_state.json": "bots",
+            "rtrade_pairs_state.json": "bots",
+            "trailing_state.json": "bots",
+            "smart_stop_loss_state.json": "bots",
+            "autonomous_trade_intents.json": "bots",
+            "shadow_state_BTC.json": "bots",
+            "rtrade_BTCUSDC.heartbeat": "system",
+            "auto_repair_eval.json": "system",
+            "overnight_monitor_status.json": "system",
+            "dev_regression_status.json": "system",
+            "llm_topic_threads.json": "system",
+            "notification_queue.jsonl": "system",
+            "procs.conf.reload": "system",
+        }
+        for filename, expected_domain in cases.items():
+            self.assertEqual(
+                resolve_cache_subdomain(filename),
+                expected_domain,
+                f"Expected {filename} -> {expected_domain}",
+            )
+        self.assertIsNone(resolve_cache_subdomain("unclassified_custom_file.json"))
+
+    def test_organize_cachedb_subdomains_moves_files_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "cache_current_price.json").write_text('{"BTC": 100}', encoding="utf-8")
+            (root / "cache_current_price.json.meta").write_text("{}", encoding="utf-8")
+            (root / "cache_short_trend.json").write_text("{}", encoding="utf-8")
+            (root / "fear_greed_index.json").write_text("{}", encoding="utf-8")
+            (root / "rtrade_BTCUSDC.heartbeat").write_text("123", encoding="utf-8")
+            stale_dir = root / ".cache_24_price_BTCUSDC.json.previous.abcd123"
+            stale_dir.mkdir()
+            (stale_dir / "staged.tmp").write_text("old", encoding="utf-8")
+
+            moved = organize_cachedb_subdomains(tmpdir, remove_stale_staging=True)
+            self.assertEqual(
+                sorted(moved["prices"]),
+                ["cache_current_price.json", "cache_current_price.json.meta"],
+            )
+            self.assertEqual(moved["trends"], ["cache_short_trend.json"])
+            self.assertEqual(moved["macro"], ["fear_greed_index.json"])
+            self.assertEqual(moved["system"], ["rtrade_BTCUSDC.heartbeat"])
+            self.assertFalse(stale_dir.exists())
+            self.assertTrue((root / "prices" / "cache_current_price.json").exists())
+            self.assertTrue((root / "trends" / "cache_short_trend.json").exists())
+            self.assertTrue((root / "macro" / "fear_greed_index.json").exists())
+            self.assertTrue((root / "system" / "rtrade_BTCUSDC.heartbeat").exists())
+
+            resolved = resolve_cachedb_filepath(os.path.join(tmpdir, "cache_current_price.json"))
+            self.assertEqual(
+                Path(resolved),
+                root / "prices" / "cache_current_price.json",
+            )
+            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmpdir}, clear=False):
+                self.assertEqual(
+                    Path(cache_path("orderbook_depth_BTCUSDC.json")),
+                    root / "telemetry" / "orderbook_depth_BTCUSDC.json",
+                )
 
 
 def test_env_stack_preserves_process_secret_and_versioned_precedence(tmp_path, monkeypatch):
