@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
+from botcore import _parse_bool_flag, float_env
+
 from .strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
     capture_submission, reconciliation_capabilities_of,
@@ -34,13 +36,9 @@ _UUID_HEX_SUFFIX = re.compile(r"([0-9a-fA-F]{32})$")
 
 
 def _parse_cache_max() -> int:
-    raw = str(os.environ.get("EXECUTION_AUDIT_CACHE_MAX", "10000") or "").split("#", 1)[0].strip()
-    try:
-        f = float(raw)
-        if math.isfinite(f):
-            return max(100, int(f))
-    except (ValueError, OverflowError):
-        pass
+    f = float_env("EXECUTION_AUDIT_CACHE_MAX")
+    if f is not None and math.isfinite(f):
+        return max(100, int(f))
     return 10000
 
 

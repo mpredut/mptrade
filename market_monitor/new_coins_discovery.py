@@ -13,6 +13,7 @@ from collections import defaultdict
 # Repository integrations.
 import log
 import utils as u
+from botcore import _parse_bool_flag
 
 # ============================================
 # Global configuration
@@ -41,23 +42,7 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 }
 
 
-def _as_bool_flag(val, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        if not math.isfinite(val):
-            return default
-        return bool(val)
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y", "t"):
-            return True
-        if norm in ("0", "false", "no", "off", "n", "f", ""):
-            return False
-        return default
-    return default
+_as_bool_flag = _parse_bool_flag
 
 
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:

@@ -16,6 +16,8 @@ import sys
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from botcore import _parse_bool_flag
+
 logger = logging.getLogger("external_order_guard")
 
 _whale_collector = None
@@ -132,7 +134,7 @@ def check_external_order_guards(
                 now_ts = nf
         except (TypeError, ValueError):
             pass
-    shadow_notify_enabled = str(m.get("shadow_notify", False)).strip().lower() in ("1", "1.0", "true", "yes", "on")
+    shadow_notify_enabled = _parse_bool_flag(m.get("shadow_notify"), False)
 
     def _clean_scale(val: Any) -> float:
         if val is None or isinstance(val, bool):

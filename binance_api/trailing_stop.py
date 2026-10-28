@@ -51,7 +51,7 @@ from order_retry import (
 )
 
 from trailing_core import TrailingCore, should_sell  # noqa: E402  (re-export should_sell for tests/compatibility)
-from botcore import (load_dotenv, log, required_bool_env, required_float_env,
+from botcore import (_parse_bool_flag, load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, single_instance)  # noqa: E402
 from cachepaths import cache_path  # noqa: E402
 
@@ -138,16 +138,7 @@ class TrailingStop:
         self.po = po
         self.sym = sym
         self.log = log
-        if enabled is None:
-            self.enabled = TRAILING_ENABLED
-        elif isinstance(enabled, bool):
-            self.enabled = enabled
-        elif isinstance(enabled, (int, float)):
-            self.enabled = bool(math.isfinite(float(enabled)) and float(enabled) != 0.0)
-        elif isinstance(enabled, str):
-            self.enabled = enabled.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        else:
-            self.enabled = False
+        self.enabled = _parse_bool_flag(enabled, TRAILING_ENABLED)
         self.sell_fraction = _finite(
             sell_fraction, name="TRAILING_SELL_FRACTION", minimum=0.0, maximum=1.0)
         min_profit_pct = _finite(

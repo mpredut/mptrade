@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from botcore import float_env
 if HERE not in sys.path:
     sys.path.append(HERE)
 
@@ -172,7 +173,7 @@ if __name__ == "__main__":
                 canon_groups[k] = []
                 canon_todo.append(item)
             canon_groups[k].append(c)
-    workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
+    workers = int(float_env("WORKERS") or (os.cpu_count() or 4))
     print(f"[grid2] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0

@@ -69,7 +69,6 @@ def _safe_f(val, default: float | None = 0.0) -> float | None:
         return res if math.isfinite(res) else default
     except (TypeError, ValueError, OverflowError):
         return default
-        return default
 
 
 INSTRUMENTS_CONF = os.path.join(ROOT, "instruments.conf")

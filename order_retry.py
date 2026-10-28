@@ -36,6 +36,8 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from botcore import _parse_bool_flag
+
 from lock import FileLock
 from providers.base import (
     extract_order_id,
@@ -2159,19 +2161,7 @@ class TrackedOrderLifecycle:
         self.provider_name = provider_name.strip()
         self.venue = venue.strip() if venue is not None else self.provider_name
         self.missing_confirmations = mc_int
-        if isinstance(retry_on_lookup_error, bool):
-            self.retry_on_lookup_error = retry_on_lookup_error
-        elif isinstance(retry_on_lookup_error, (int, float)):
-            self.retry_on_lookup_error = (
-                bool(retry_on_lookup_error)
-                if math.isfinite(float(retry_on_lookup_error))
-                else False
-            )
-        elif isinstance(retry_on_lookup_error, str):
-            s_retry = retry_on_lookup_error.strip().lower()
-            self.retry_on_lookup_error = s_retry in ("1", "1.0", "true", "yes", "on")
-        else:
-            self.retry_on_lookup_error = False
+        self.retry_on_lookup_error = _parse_bool_flag(retry_on_lookup_error, False)
         self.max_age_seconds = max_age_seconds
         self.audit = audit
         self.clock = clock

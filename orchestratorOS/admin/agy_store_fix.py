@@ -45,6 +45,8 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
+from botcore import _parse_bool_flag
+
 from orchestratorOS.agy.paths import resolve_store_lock_path, visible_conversations_dir  # noqa: E402
 from orchestratorOS.agy.protobuf import (  # noqa: E402
     enc_fields,
@@ -169,20 +171,7 @@ def webrtc_mesh_status() -> str:
 
 
 # ---------------------------------------------------------------- pre
-def _as_bool_flag(val: object, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y", "t", "1.0"):
-            return True
-        if norm in ("0", "false", "no", "off", "n", "f", "0.0", ""):
-            return False
-    return default
+_as_bool_flag = _parse_bool_flag
 
 
 def mode_pre(force: bool = False) -> int:

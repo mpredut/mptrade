@@ -43,6 +43,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 import pricewindow as pw
+from botcore import float_env
 
 # The default "instant" window — identical today to WINDOW_SECONDS[0] in
 # cacheManager.CacheShortTrendManager (the window is_trend_up() relies on).
@@ -147,10 +148,10 @@ UPWARD_EPSILON_K = 0.25
 def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float], eps: float = 0.0) -> bool:
     """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
     final_trend, gc, _slope_full, _gradient_recent = trend_tuple
-    k_env = os.environ.get("MPTRADE_UPWARD_EPSILON_K", os.environ.get("MPTRADE_TREND_NOISE_GATE_K"))
-    try:
-        k_val = float(k_env) if k_env is not None else UPWARD_EPSILON_K
-    except (TypeError, ValueError):
+    k_val = float_env("MPTRADE_UPWARD_EPSILON_K")
+    if k_val is None:
+        k_val = float_env("MPTRADE_TREND_NOISE_GATE_K")
+    if k_val is None:
         k_val = UPWARD_EPSILON_K
     if isinstance(eps, (int, float)) and not isinstance(eps, bool) and math.isfinite(eps) and eps > 0.0 and k_val > 0.0:
         return gc > k_val * eps

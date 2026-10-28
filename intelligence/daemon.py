@@ -20,7 +20,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from botcore import load_dotenv, required_float_env
+from botcore import _parse_bool_flag, load_dotenv, required_float_env
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -68,15 +68,7 @@ def _field_float(obj: Any, key: str, default: float = 0.0) -> float:
 
 
 def _as_bool(val: Any) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return False
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else False
-    if isinstance(val, str):
-        return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
-    return False
+    return _parse_bool_flag(val, False)
 
 
 class IntelligenceTelemetryDaemon:

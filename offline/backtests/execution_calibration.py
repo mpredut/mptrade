@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import statistics
+from botcore import _parse_bool_flag
 
 
 def _f(val: object, default: float = 0.0) -> float:
@@ -22,19 +23,7 @@ def _ts_sec(val: object, default: float = 0.0) -> float:
     return res / 1000.0 if res > 1e11 else res
 
 
-def _as_bool(val: object, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    s = str(val).strip().lower()
-    if s in ("1", "true", "yes", "on", "y", "t"):
-        return True
-    if s in ("0", "false", "no", "off", "n", "f", "none", "null", ""):
-        return False
-    return default
+_as_bool = _parse_bool_flag
 
 
 _CLIENT_ORDER_ID_PATTERNS = {

@@ -5,6 +5,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
+from botcore import _parse_bool_flag
+
 
 def _strip_env_value(raw_val: str) -> str:
     val = raw_val.strip()
@@ -17,21 +19,7 @@ def _strip_env_value(raw_val: str) -> str:
     return val.strip('"').strip("'")
 
 
-def _parse_bool_flag(val: Any, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else fb
-    if isinstance(val, str):
-        s = _strip_env_value(val).strip().lower()
-        if s in ("1", "true", "yes", "on", "y", "t"):
-            return True
-        if s in ("0", "false", "no", "off", "n", "f"):
-            return False
-    return fb
+# _parse_bool_flag imported from botcore (SSOT)
 
 
 def env_value(folder: str, key: str) -> Optional[str]:

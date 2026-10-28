@@ -10,6 +10,7 @@ _LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
+from technical_repair_ssot import fleet_script_basenames, parse_finite_float
 
 ROOT = wc.ROOT
 STATE_FILE = ROOT / ".resource_watchdog_state.json"
@@ -38,20 +39,7 @@ if not all(
 
 
 def _fleet_scripts():
-    scripts = set()
-    try:
-        for line in (ROOT / "procs.conf").read_text().splitlines():
-            if not line or line.startswith("#"):
-                continue
-            fields = line.split("|")
-            if len(fields) >= 7 and fields[6].strip() == "fleet":
-                raw_pat = fields[0].strip().rstrip("$")
-                token = raw_pat.split()[0] if raw_pat else ""
-                if token:
-                    scripts.add(os.path.basename(token))
-    except OSError:
-        pass
-    return scripts
+    return fleet_script_basenames(str(ROOT))
 
 
 def _managed_script(proc):
@@ -73,14 +61,7 @@ def _managed_script(proc):
     return None
 
 
-def _safe_float(val, default=0.0):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
+_safe_float = parse_finite_float
 
 
 def _safe_int(val, default=0):
@@ -93,20 +74,7 @@ def _safe_int(val, default=0):
         return default
 
 
-def _as_bool_flag(val, default=False):
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
-            return True
-        if norm in ("0", "0.0", "false", "no", "off", "n", "f", ""):
-            return False
-    return default
+_as_bool_flag = wc._parse_bool_flag
 
 
 def _restart_allowed(state, script, now):

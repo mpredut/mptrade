@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from botcore import _parse_bool_flag
+
 logger = logging.getLogger("llm_order_guard")
 
 _LLM_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
@@ -303,19 +305,7 @@ def check_geopolitical_order_guards(
     if geo_mode == "off":
         return True, "geopolitical_guard_off", 1.0
 
-    raw_shadow_notify = m.get("shadow_notify", False)
-    if isinstance(raw_shadow_notify, bool):
-        shadow_notify = raw_shadow_notify
-    elif isinstance(raw_shadow_notify, str):
-        shadow_notify = raw_shadow_notify.strip().lower() in ("1", "1.0", "true", "yes", "on")
-    elif raw_shadow_notify is None:
-        shadow_notify = False
-    else:
-        try:
-            sn_f = float(raw_shadow_notify)
-            shadow_notify = bool(sn_f) if math.isfinite(sn_f) else False
-        except (TypeError, ValueError):
-            shadow_notify = False
+    shadow_notify = _parse_bool_flag(m.get("shadow_notify"), False)
 
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer

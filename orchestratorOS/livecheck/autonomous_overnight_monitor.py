@@ -27,7 +27,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from botcore import _parse_bool_flag
+from orchestratorOS.lib.technical_repair_ssot import (
+    clean_json_value,
+    gather_basic_os_resources,
+    parse_finite_float,
+    parse_procs_manifest,
+    read_json_recovering,
+    resolve_heartbeat_paths,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("autonomous_overnight_monitor")
@@ -93,38 +104,7 @@ class AutonomousOvernightMonitor:
 
     def parse_process_manifest(self) -> List[Dict[str, Any]]:
         """Parses the single source of truth process definitions from procs.conf."""
-        procs: List[Dict[str, Any]] = []
-        if not os.path.exists(self.procs_conf):
-            return procs
-
-        try:
-            with open(self.procs_conf, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split("|")
-                    if len(parts) >= 7:
-                        pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
-                        if role in ("bot", "fleet") and cmd:
-                            try:
-                                hb_val = float(hbstale)
-                                hb_stale_s = hb_val if math.isfinite(hb_val) and hb_val > 0 else 0.0
-                            except (TypeError, ValueError):
-                                hb_stale_s = 0.0
-                            procs.append({
-                                "name": label or pat,
-                                "pattern": pat,
-                                "dir": dr.replace("$ROOT", self.workspace_dir),
-                                "cmd": cmd.replace("$ROOT", self.workspace_dir),
-                                "hb_log": hblog.replace("$ROOT", self.workspace_dir),
-                                "hb_stale_s": hb_stale_s,
-                                "role": role,
-                            })
-        except Exception as e:
-            logger.warning("Error reading procs.conf: %s", e)
-
-        return procs
+        return parse_procs_manifest(self.workspace_dir)
 
     def _is_process_running(self, pattern: str) -> bool:
         """Checks if a process pattern is active using pgrep."""
@@ -137,41 +117,27 @@ class AutonomousOvernightMonitor:
 
     def check_processes(self, now: Optional[float] = None) -> List[ProcessHealth]:
         """Audits process running state and heartbeat timestamps."""
-        now_ts = (
-            float(now)
-            if isinstance(now, (int, float))
-            and not isinstance(now, bool)
-            and math.isfinite(float(now))
-            and float(now) > 0
-            else time.time()
-        )
+        now_val = parse_finite_float(now, None)
+        now_ts = now_val if (now_val is not None and now_val > 0) else time.time()
         results: List[ProcessHealth] = []
 
         for p in self.parse_process_manifest():
             running = self._is_process_running(p["pattern"])
-            hb_log = p["hb_log"]
-            stale_threshold = p["hb_stale_s"]
+            hb_log = p.get("hb_log", "")
+            stale_threshold = p.get("hb_stale_s", 0.0)
             age_sec = 0.0
             fresh = True
 
-            hb_paths: List[str] = []
-            if hb_log:
-                hb_paths = [
-                    (
-                        f.strip()
-                        if os.path.isabs(f.strip())
-                        else (
-                            os.path.join(self.workspace_dir, f.strip())
-                            if f.strip().startswith(("logs/", "cachedb/"))
-                            else os.path.join(p["dir"], f.strip())
-                        )
-                    )
-                    for f in hb_log.split(",") if f.strip()
-                ]
-            elif stale_threshold > 0:
-                raw_stem = os.path.basename(p["name"]).replace(".py", "")
-                clean_stem = "".join(c if (c.isalnum() or c in "-_") else "_" for c in raw_stem)
-                hb_paths = [os.path.join(self.workspace_dir, "logs", f"{clean_stem}.log")]
+            hb_paths = p.get("hb_paths")
+            if not isinstance(hb_paths, list):
+                hb_paths, _ = resolve_heartbeat_paths(
+                    self.workspace_dir,
+                    p.get("dir", self.workspace_dir),
+                    p.get("name", ""),
+                    p.get("pattern", ""),
+                    hb_log,
+                    stale_threshold,
+                )
 
             if hb_paths:
                 mtimes = []
@@ -209,33 +175,15 @@ class AutonomousOvernightMonitor:
         sensors: Dict[str, Any] = {}
 
         def _read(fname: str) -> Optional[Dict[str, Any]]:
-            p = os.path.join(self.cachedb_dir, fname)
-            for cand in (p, f"{p}.previous"):
-                if os.path.exists(cand):
-                    try:
-                        with open(cand, "r", encoding="utf-8", errors="replace") as f:
-                            data = json.load(f)
-                        if isinstance(data, dict):
-                            return data
-                    except Exception:
-                        continue
-            return None
-
-        def _finite_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-                return f if math.isfinite(f) else default
-            except (TypeError, ValueError):
-                return default
+            data = read_json_recovering(os.path.join(self.cachedb_dir, fname))
+            return data if isinstance(data, dict) else None
 
         # 1. Geopolitical Threat Sensor
         geo = _read("geopolitical_threat_eval.json")
         if geo:
             sensors["geopolitical_threat"] = {
                 "threat_level": str(geo.get("threat_level") or "NORMAL"),
-                "risk_score": _finite_float(geo.get("risk_score"), 0.0),
+                "risk_score": parse_finite_float(geo.get("risk_score"), 0.0),
                 "summary": str(geo.get("summary") or ""),
             }
 
@@ -256,18 +204,18 @@ class AutonomousOvernightMonitor:
             sensors["supervisor_eval"] = {
                 "mode": str(sup.get("mode") or "enforce"),
                 "decision": str(dec.get("decision") or "HOLD"),
-                "confidence": _finite_float(dec.get("confidence"), 0.0),
+                "confidence": parse_finite_float(dec.get("confidence"), 0.0),
                 "summary": str(sup.get("summary") or ""),
             }
 
         # 4. Fear & Greed & Market Breadth
         fg = _read("fear_greed_collect.json") or _read("fear_greed_cache.json")
         if fg:
-            sensors["fear_greed"] = _finite_float(fg.get("value"), None)
+            sensors["fear_greed"] = parse_finite_float(fg.get("value"), None)
 
         mb = _read("market_breadth_collect.json") or _read("market_breadth_cache.json")
         if mb:
-            sensors["market_breadth"] = _finite_float(mb.get("advance_ratio"), None)
+            sensors["market_breadth"] = parse_finite_float(mb.get("advance_ratio"), None)
 
         return sensors
 
@@ -331,19 +279,7 @@ class AutonomousOvernightMonitor:
 
     def gather_system_resources(self) -> Dict[str, Any]:
         """Reads local system resource utilization."""
-        stats: Dict[str, Any] = {}
-        try:
-            # 1-min, 5-min, 15-min load average
-            load1, load5, load15 = os.getloadavg()
-            stats["load_avg"] = [round(load1, 2), round(load5, 2), round(load15, 2)]
-
-            # Disk usage
-            disk = shutil.disk_usage(self.workspace_dir)
-            stats["disk_used_pct"] = round((disk.used / disk.total) * 100, 1) if disk.total > 0 else 0.0
-            stats["disk_free_gb"] = round(disk.free / (1024 ** 3), 1)
-        except Exception:
-            pass
-        return stats
+        return gather_basic_os_resources(self.workspace_dir)
 
     def run_cycle(self, persist: bool = True) -> OvernightMonitorReport:
         """Executes one comprehensive audit cycle and saves report."""
@@ -371,28 +307,14 @@ class AutonomousOvernightMonitor:
             system_resources=resources,
         )
 
-        if isinstance(persist, str):
-            do_persist = persist.strip().lower() in ("1", "true", "yes", "on", "1.0")
-        elif isinstance(persist, float) and not math.isfinite(persist):
-            do_persist = False
-        else:
-            do_persist = bool(persist)
+        do_persist = _parse_bool_flag(persist, False)
 
         if do_persist:
             try:
                 os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
                 from state_io import save_json_state
 
-                def _clean_json(val: Any) -> Any:
-                    if isinstance(val, float) and not math.isfinite(val):
-                        return None
-                    if isinstance(val, dict):
-                        return {str(k): _clean_json(v) for k, v in val.items()}
-                    if isinstance(val, (list, tuple)):
-                        return [_clean_json(v) for v in val]
-                    return val
-
-                save_json_state(self.status_file, _clean_json(asdict(report)), indent=2)
+                save_json_state(self.status_file, clean_json_value(asdict(report)), indent=2)
             except Exception as e:
                 logger.warning("Could not persist overnight status: %s", e)
 

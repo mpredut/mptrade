@@ -26,6 +26,7 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from botcore import float_env
 _KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
@@ -279,7 +280,7 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((a, c))
         canon_groups[k].append(c)
-    workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
+    workers = int(float_env("WORKERS") or (os.cpu_count() or 4))
     print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0

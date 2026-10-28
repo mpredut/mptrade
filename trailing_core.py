@@ -46,12 +46,7 @@ def _safe_nonneg_float(val, default: float = 0.0) -> float:
         return default
 
 
-def _parse_bool_flag(val, default: bool = False) -> bool:
-    if val is None:
-        return default
-    if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    return bool(val)
+from botcore import _parse_bool_flag
 
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:

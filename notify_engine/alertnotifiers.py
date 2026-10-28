@@ -18,6 +18,7 @@ from typing import Any, Optional
 # Import your modules
 import log
 from lock import FileLock
+from botcore import _parse_bool_flag
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -96,21 +97,7 @@ def _safe_pos_int(val: Any, default: int = 1) -> int:
         return default
 
 
-def _as_bool_flag(val: Any, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "1.0"}:
-            return True
-        if s in {"0", "false", "no", "off", "none", "0.0", ""}:
-            return False
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    return default
+_as_bool_flag = _parse_bool_flag
 
 
 def _delivery_state_path() -> Path:

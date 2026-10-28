@@ -18,6 +18,7 @@ import os
 import time
 import math
 import json
+from botcore import _parse_bool_flag
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
@@ -359,21 +360,7 @@ def _normalize_side_token(order_type: Any) -> str:
     return s
 
 
-def _parse_bool_flag(val: Any, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else fb
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in ("1", "true", "yes", "on", "y", "t"):
-            return True
-        if s in ("0", "0.0", "false", "no", "off", "n", "f"):
-            return False
-    return fb
+# _parse_bool_flag imported from botcore (SSOT)
 
 
 def opposite_side(order_type: str) -> str:
@@ -1192,11 +1179,8 @@ def _normalize_base_asset(sym: str) -> str:
 
 
 def _resolve_cachedb_dir() -> str:
-    try:
-        from cachepaths import get_cachedb_dir
-        return get_cachedb_dir()
-    except Exception:
-        return os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+    from cachepaths import get_cachedb_dir
+    return get_cachedb_dir()
 
 
 def _read_json_recovering(path: str) -> Optional[dict]:

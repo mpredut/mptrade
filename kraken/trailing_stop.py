@@ -39,7 +39,7 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 
-from kraken_common import (load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
+from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
                            required_env, required_float_env, single_instance)
 from kraken_client import KrakenClient  # noqa: E402
 try:
@@ -107,26 +107,8 @@ class KrakenTrailing:
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
         self.client = client
         self.log = log
-        if enabled is None:
-            self.enabled = required_bool_env("KRAKEN_TRAILING_ENABLED")
-        elif isinstance(enabled, bool):
-            self.enabled = enabled
-        elif isinstance(enabled, (int, float)):
-            self.enabled = bool(math.isfinite(float(enabled)) and float(enabled) != 0.0)
-        elif isinstance(enabled, str):
-            self.enabled = enabled.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        else:
-            self.enabled = False
-        if trailing_market is None:
-            self.trailing_market = TRAILING_MARKET
-        elif isinstance(trailing_market, bool):
-            self.trailing_market = trailing_market
-        elif isinstance(trailing_market, (int, float)):
-            self.trailing_market = bool(math.isfinite(float(trailing_market)) and float(trailing_market) != 0.0)
-        elif isinstance(trailing_market, str):
-            self.trailing_market = trailing_market.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        else:
-            self.trailing_market = False
+        self.enabled = _parse_bool_flag(enabled, required_bool_env("KRAKEN_TRAILING_ENABLED"))
+        self.trailing_market = _parse_bool_flag(trailing_market, TRAILING_MARKET)
         min_profit_pct = max(0.0, self._safe_float(min_profit_pct, float(MIN_PROFIT_PCT)))
         self.state_file = state_file
         self._tick_balances: dict | None = None

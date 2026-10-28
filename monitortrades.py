@@ -41,7 +41,7 @@ from strategies.position_exit_manager import (
 # Load versioned, non-secret global tuning parameters before reading the environment.
 # ``botcore.load_dotenv`` fills missing values without overwriting the real environment.
 # Per-instrument gain/loss/age/hard-TP configuration remains in the instrument configs.
-from botcore import load_dotenv as _load_dotenv, required_bool_env, required_float_env
+from botcore import _parse_bool_flag, load_dotenv as _load_dotenv, required_bool_env, required_float_env
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -142,21 +142,7 @@ def _safe_f(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
         return default
 
 
-def _parse_bool_flag(raw: Any, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(raw, bool):
-        return raw
-    if raw is None or isinstance(raw, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(raw, (int, float)):
-        return bool(raw) if math.isfinite(float(raw)) else fb
-    if isinstance(raw, str):
-        s = raw.strip().lower()
-        if s in ("1", "1.0", "true", "yes", "on", "y", "t"):
-            return True
-        if s in ("0", "0.0", "false", "no", "off", "n", "f"):
-            return False
-    return fb
+# _parse_bool_flag imported from botcore (SSOT)
 
 
 def _extract_trade_uid(trade: Any) -> str:
@@ -559,7 +545,7 @@ _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
 _DEFAULT_MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
 _MT_STATE_FILE = _DEFAULT_MT_STATE_FILE
-_MT_PERSISTENCE_ENABLED = os.environ.get("MT_DISABLE_STATE_PERSISTENCE", "0").lower() not in ("1", "true", "yes")
+_MT_PERSISTENCE_ENABLED = not _parse_bool_flag(os.environ.get("MT_DISABLE_STATE_PERSISTENCE"), False)
 _LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
 
 
@@ -725,7 +711,7 @@ def _is_simulated_env_or_inst(inst: Any = None) -> bool:
     if prov in _SIMULATED_PROVIDERS:
         return True
     return any(
-        os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+        _parse_bool_flag(os.environ.get(k), False)
         for k in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM")
     )
 

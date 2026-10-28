@@ -16,6 +16,7 @@ import sqlite3
 from typing import Any, Iterable, Optional, Set, Tuple
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
+from botcore import _parse_bool_flag
 from state_io import atomic_write_bytes
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
@@ -243,16 +244,7 @@ def _clean_cid_set(cids: Iterable[Any]) -> Set[str]:
     }
 
 
-def _as_bool_flag(val: Any, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, str):
-        return val.strip().lower() in {"1", "1.0", "true", "yes", "on"}
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    return default
+_as_bool_flag = _parse_bool_flag
 
 
 def _drop_summaries(cli_base: str, cids: Set[str]) -> None:

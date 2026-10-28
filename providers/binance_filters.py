@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import math
+from botcore import _parse_bool_flag
 
 
 class BinanceFilterError(ValueError):
@@ -20,24 +21,7 @@ def binance_filter_refusal_reason(error: Exception) -> str:
     return f"binance_filter_refused:{text}"
 
 
-def _parse_bool(value, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if value is None:
-        return fb
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        if not math.isfinite(float(value)):
-            return fb
-        return bool(value)
-    if isinstance(value, str):
-        cleaned = value.strip().lower()
-        if cleaned in ("1", "true", "yes", "on", "y", "t"):
-            return True
-        if cleaned in ("0", "false", "no", "off", "n", "f"):
-            return False
-        return fb
-    return fb
+_parse_bool = _parse_bool_flag
 
 
 def _decimal(value, *, name: str, allow_zero: bool = True) -> Decimal:

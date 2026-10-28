@@ -19,7 +19,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import load_dotenv, required_env, required_float_env, required_int_env  # noqa: E402
+from botcore import _parse_bool_flag, load_dotenv, required_env, required_float_env, required_int_env  # noqa: E402
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
@@ -102,23 +102,7 @@ def is_automated_thread(title: str, preview: str) -> bool:
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
 
 
-def _as_bool(val: object, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        if not math.isfinite(val):
-            return default
-        return bool(val)
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
-            return True
-        if norm in ("0", "0.0", "false", "no", "off", "n", "f", ""):
-            return False
-        return default
-    return default
+_as_bool = _parse_bool_flag
 
 
 def prune_old_cli_threads(

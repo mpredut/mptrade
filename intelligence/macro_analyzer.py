@@ -22,7 +22,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from botcore import load_dotenv, required_float_env
+from botcore import _parse_bool_flag, load_dotenv, required_float_env
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -31,15 +31,7 @@ logger = logging.getLogger("intelligence.macro_analyzer")
 
 
 def _as_bool(val: Any) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return False
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else False
-    if isinstance(val, str):
-        return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
-    return False
+    return _parse_bool_flag(val, False)
 
 
 class MacroAnalyzer:
@@ -286,20 +278,7 @@ class MacroAnalyzer:
                                 except (TypeError, ValueError, OverflowError):
                                     pass
                     def _fg_bool(val: Any, default: bool) -> bool:
-                        if val is None:
-                            return default
-                        if isinstance(val, bool):
-                            return val
-                        if isinstance(val, (int, float)):
-                            return bool(val) if math.isfinite(float(val)) else default
-                        if isinstance(val, str):
-                            s = val.strip().lower()
-                            if s in ("1", "1.0", "true", "yes", "on"):
-                                return True
-                            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", ""):
-                                return False
-                            return default
-                        return default
+                        return _parse_bool_flag(val, default)
 
                     fg_snap = FearGreedSnapshot(
                         value=fg_val,

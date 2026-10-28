@@ -16,6 +16,7 @@ sys.path.insert(0, ROOT_DIR)
 import botcore
 botcore.load_dotenv(os.path.join(ROOT_DIR, "config.env"))
 from notify_engine.server import NotificationServer
+from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
 
 
 class BotManager:
@@ -57,68 +58,16 @@ class BotManager:
         return venv or "myenv"
 
     def parse_procs_conf(self) -> List[Dict[str, Any]]:
-        bots = []
         conf_path = os.path.join(ROOT_DIR, "procs.conf")
         if not os.path.exists(conf_path):
             logging.error(f"Manifest not found: {conf_path}")
-            return bots
-
-        with open(conf_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("|")
-                if len(parts) >= 7:
-                    # pat | dir | start_cmd | label | hb_log | hb_stale_s | role
-                    pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
-
-                    venv = self.venv
-                    dr = dr.replace("$ROOT", ROOT_DIR)
-                    cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", venv)
-
-                    if cmd and role in ("bot", "fleet"):
-                        name = label or pat
-                        hblog_str = hblog.replace("$ROOT", ROOT_DIR) if hblog else ""
-                        try:
-                            hb_stale_sec = float(hbstale) if hbstale else 0.0
-                            if not math.isfinite(hb_stale_sec) or hb_stale_sec < 0:
-                                hb_stale_sec = 0.0
-                        except (TypeError, ValueError):
-                            hb_stale_sec = 0.0
-
-                        clean_stem = os.path.basename((label or pat).rstrip("$")).removesuffix(".py")
-                        log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
-
-                        hb_files = []
-                        if hblog_str:
-                            for part in [p.strip() for p in hblog_str.split(",") if p.strip()]:
-                                if os.path.isabs(part):
-                                    hb_files.append(part)
-                                elif part.startswith("logs/") or part.startswith("cachedb/"):
-                                    hb_files.append(os.path.join(ROOT_DIR, part))
-                                else:
-                                    hb_files.append(os.path.join(dr, part))
-
-                        # If a dedicated non-log heartbeat (e.g. .heartbeat) is configured,
-                        # require BOTH the dedicated heartbeat AND stdout log_file to indicate life!
-                        if hb_files and log_file not in hb_files and any(f.endswith(".heartbeat") for f in hb_files):
-                            hb_files.append(log_file)
-                        elif not hb_files and hb_stale_sec > 0:
-                            hb_files = [log_file]
-
-                        hb_file = hb_files[0] if hb_files else ""
-
-                        bots.append({
-                            "name": name,
-                            "dir": dr,
-                            "cmd": cmd,
-                            "log_file": log_file,
-                            "hb_file": hb_file,
-                            "hb_files": hb_files,
-                            "hb_stale_s": hb_stale_sec,
-                        })
-        return bots
+            return []
+        return parse_procs_manifest(
+            ROOT_DIR,
+            venv=self.venv,
+            roles=("bot", "fleet"),
+            include_stdout_with_heartbeat_file=True,
+        )
 
     async def _read_stream(self, stream, bot_name: str, log_file):
         verbose_stdout = self.verbose_stdout

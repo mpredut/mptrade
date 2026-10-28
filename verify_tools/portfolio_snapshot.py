@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import parse_dotenv, required_float_env  # noqa: E402
+from botcore import _parse_bool_flag, parse_dotenv, required_float_env  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from state_io import atomic_write_json, read_recovering_previous, save_json_state  # noqa: E402
 
@@ -69,13 +69,7 @@ def _f(x, default=0.0):
 
 
 def _is_paper(val) -> bool:
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else False
-    return False
+    return _parse_bool_flag(val, False)
 
 
 def kraken_rows() -> list[dict]:

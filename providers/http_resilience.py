@@ -17,26 +17,9 @@ cache (see systemd/DNS_RESILIENCE.md).
 """
 from __future__ import annotations
 
-import math
+from botcore import _parse_bool_flag
 
-
-def _as_bool(value, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return fb
-    if isinstance(value, (int, float)):
-        if not math.isfinite(float(value)):
-            return fb
-        return bool(value)
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("1", "1.0", "true", "yes", "on", "y", "t"):
-            return True
-        if s in ("0", "0.0", "false", "no", "off", "n", "f"):
-            return False
-    return fb
+_as_bool = _parse_bool_flag
 
 
 def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
