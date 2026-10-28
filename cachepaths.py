@@ -536,37 +536,56 @@ _LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
 })
 
 
+def _strip_kraken_asset_suffixes(token: str) -> str:
+    """Strip Kraken xStock/futures/staking suffixes (``x.T``, ``.T``, ``.F``, ``.S``)."""
+    if token.endswith("X.T") and len(token) > 3:
+        return token[:-3]
+    if token.endswith((".T", ".F", ".S")) and len(token) > 2:
+        return token[:-2]
+    return token
+
+
 def normalize_cache_base_asset(symbol: object) -> str:
     """Extract the canonical uppercase base asset from a spot/perp/venue symbol.
 
     Handles ``/``, ``-``, and ``_`` separators (e.g. ``TAO/USD``, ``SOL-USD``,
-    ``HYPE_USDC``) as well as concatenated quote suffixes while preserving the
-    stablecoin pair ``USDCUSDT`` intact. Returns ``""`` for non-string or blank
-    inputs.
+    ``HYPE_USDC``, ``SPCXx/USD``) as well as concatenated quote suffixes while
+    preserving the stablecoin pair ``USDCUSDT`` intact. Returns ``""`` for
+    non-string or blank inputs.
     """
     if not isinstance(symbol, str):
         return ""
-    s = symbol.strip().upper()
+    raw = symbol.strip()
+    s = raw.upper()
     if not s:
         return ""
     cleaned = s.replace("/", "").replace("-", "").replace("_", "")
     if cleaned == "USDCUSDT":
         return "USDCUSDT"
-    if "/" in s:
-        s = s.split("/", 1)[0].strip()
-    elif "-" in s:
-        s = s.split("-", 1)[0].strip()
-    elif "_" in s:
-        s = s.split("_", 1)[0].strip()
-    if s.endswith("X.T") and len(s) > 3:
-        s = s[:-3]
-    elif s.endswith((".T", ".F")) and len(s) > 2:
-        s = s[:-2]
+    if "/" in raw:
+        raw_base = raw.split("/", 1)[0].strip()
+    elif "-" in raw:
+        raw_base = raw.split("-", 1)[0].strip()
+    elif "_" in raw:
+        raw_base = raw.split("_", 1)[0].strip()
+    else:
+        raw_base = raw
+    # Strip lowercase 'x' xStock marker before quote or end (e.g. SPCXx, SPCXx/USD, SPCXxUSD)
+    for quote in CACHE_QUOTE_SUFFIXES:
+        if raw_base.upper().endswith(quote) and len(raw_base) > len(quote) + 2:
+            stem = raw_base[: -len(quote)]
+            if stem.endswith("x") and stem[:-1].isalnum() and stem[:-1].isupper():
+                raw_base = stem[:-1] + quote
+            break
+    if raw_base.endswith("x") and len(raw_base) > 2 and raw_base[:-1].isalnum() and raw_base[:-1].isupper():
+        raw_base = raw_base[:-1]
+    s = _strip_kraken_asset_suffixes(raw_base.upper())
     for quote in CACHE_QUOTE_SUFFIXES:
         if s.endswith(quote) and len(s) > len(quote):
             s = s[: -len(quote)]
             break
-    if len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES:
+    s = _strip_kraken_asset_suffixes(s)
+    if (len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES) or s in {"XBTZ", "XDGZ"}:
         s = s[:-1]
     if s == "XXBT":
         return "XBT"
@@ -632,16 +651,25 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ, SPCXx.T) into ``(base, quote)``."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
         return None
-    sym_u = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    raw = symbol.strip()
+    sym_u = raw.upper().replace("/", "").replace("-", "").replace("_", "")
     if not sym_u:
         return None
     if sym_u.endswith("USEQ") and len(sym_u) > 4:
-        return normalize_cache_base_asset(sym_u[:-4]), "USD"
+        return normalize_cache_base_asset(raw), "USD"
     for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
         if sym_u.endswith(quote) and len(sym_u) > len(quote):
-            return normalize_cache_base_asset(sym_u[: -len(quote)]), quote
-    if sym_u.endswith(("X.T", ".T", ".F")) and len(sym_u) > 3:
-        return normalize_cache_base_asset(sym_u), "USD"
+            if "/" in raw:
+                base_raw = raw.split("/", 1)[0].strip()
+            elif raw.upper().endswith(quote):
+                base_raw = raw[: -len(quote)].strip(" -_/")
+            else:
+                base_raw = sym_u[: -len(quote)]
+            return normalize_cache_base_asset(base_raw), quote
+    if sym_u.endswith(("X.T", ".T", ".F", ".S")) and len(sym_u) > 3:
+        return normalize_cache_base_asset(raw), "USD"
+    if raw.endswith("x") and len(raw) > 2 and raw[:-1].isalnum() and raw[:-1].isupper():
+        return normalize_cache_base_asset(raw[:-1]), "USD"
     return None
 
 
@@ -720,7 +748,7 @@ def cache_symbol_variants(
             if cand and cand not in variants:
                 variants.append(cand)
     if cleaned != "USDCUSDT":
-        base = normalize_cache_base_asset(raw)
+        base = normalize_cache_base_asset(symbol)
         bases = [base] if base else []
         for eq_b in _CROSS_VENUE_BASE_EQUIVALENTS.get(base, ()):
             if eq_b not in bases:
@@ -735,7 +763,10 @@ def cache_symbol_variants(
             eq_cand = f"{b}_US_EQ"
             if eq_cand not in variants:
                 variants.append(eq_cand)
-            for xst_cand in (f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD"):
+            for xst_cand in (
+                f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD",
+                f"{b}x/USD", f"{b}xUSD",
+            ):
                 if xst_cand not in variants:
                     variants.append(xst_cand)
     return variants

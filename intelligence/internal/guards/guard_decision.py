@@ -6,21 +6,15 @@ from enum import Enum
 import math
 from typing import Any, Dict, Optional
 
+from botcore import safe_float
+from providers.base import normalize_side
 
-def safe_guard_float(val: Any, default: Any = 0.0) -> Any:
-    """Safely coerce ``val`` to finite float, rejecting booleans and NaN/Inf."""
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+safe_guard_float = safe_float
 
 
 def safe_pos_guard_float(val: Any, default: Any = None, *, allow_zero: bool = False) -> Any:
     """Safely coerce ``val`` to a positive (or non-negative when ``allow_zero=True``) finite float."""
-    f = safe_guard_float(val, None)
+    f = safe_float(val, None)
     if f is None or (f < 0.0 if allow_zero else f <= 0.0):
         return default
     return f
@@ -28,14 +22,7 @@ def safe_pos_guard_float(val: Any, default: Any = None, *, allow_zero: bool = Fa
 
 def normalize_guard_side(side: Any) -> str:
     """Normalize order side aliases ('BUY'/'B'/'BID'/'LONG' -> 'BUY', 'SELL'/'S'/'ASK'/'A'/'SHORT' -> 'SELL')."""
-    if not isinstance(side, str):
-        return ""
-    s = side.strip().upper()
-    if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
-        return "BUY"
-    if s in ("S", "SELL", "ASK", "A", "SHORT", "CLOSE LONG", "OPEN SHORT"):
-        return "SELL"
-    return s
+    return normalize_side(side)
 
 
 def clean_guard_symbol_key(symbol: Any) -> str:

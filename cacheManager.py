@@ -76,6 +76,7 @@ from botcore import (
     required_env,
     required_float_env,
     required_int_env,
+    safe_int,
     single_instance,
 )
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -512,13 +513,8 @@ class CacheManagerInterface(ABC):
     # ── Memory/disk resilience: freshness, overwrite guard, and resync ────────
     @staticmethod
     def _safe_pos_ts_ms(val) -> int:
-        if val is None or isinstance(val, bool):
-            return 0
-        try:
-            vf = float(val)
-            return int(vf) if (math.isfinite(vf) and vf > 0) else 0
-        except (TypeError, ValueError, OverflowError):
-            return 0
+        i = safe_int(val, default=0)
+        return i if (i is not None and i > 0) else 0
 
     def _mem_max_ts(self):
         """Return memory freshness as the latest fetch time in milliseconds."""

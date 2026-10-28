@@ -47,6 +47,7 @@ except ImportError:  # pragma: no cover
 
 from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_int
 from cachepaths import cache_path, resolve_cachedb_filepath
+from providers.base import normalize_side
 
 logger = logging.getLogger(__name__)
 
@@ -126,14 +127,7 @@ def obj_float(obj: Any, key: str, default: float = 0.0) -> float:
 
 def normalize_order_side(side: Any) -> str:
     """Normalize order side aliases ('BUY'/'B'/'BID'/'LONG' -> 'BUY', 'SELL'/'S'/'ASK'/'SHORT' -> 'SELL')."""
-    if not isinstance(side, str):
-        return ""
-    s = side.strip().upper()
-    if s in ("BUY", "B", "BID", "LONG"):
-        return "BUY"
-    if s in ("SELL", "S", "A", "ASK", "SHORT"):
-        return "SELL"
-    return s
+    return normalize_side(side)
 
 
 def clean_symbol_key(symbol: Any) -> str:

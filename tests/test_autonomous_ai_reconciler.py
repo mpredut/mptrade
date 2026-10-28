@@ -2413,6 +2413,11 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
 
     assert normalize_guard_side("long") == "BUY"
     assert normalize_guard_side("short") == "SELL"
+    assert normalize_guard_side("INVALID") == ""
+    assert normalize_guard_side("HOLD") == ""
+    from intelligence.macro_sentiment_ssot import normalize_order_side
+    assert normalize_order_side("INVALID") == ""
+    assert normalize_order_side("HOLD") == ""
     assert clean_guard_symbol_key("hype/usdc") == "HYPEUSDC"
     assert snap_attr({"x": 42}, "x") == 42
     assert safe_guard_float("3.5", 0.0) == 3.5

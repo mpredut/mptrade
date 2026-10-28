@@ -138,6 +138,12 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
         return None
     if text.startswith("+") and text[1:].isdigit():
         text = text[1:]
+    try:
+        f = float(text)
+        if not math.isfinite(f) or f <= 0:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        pass
     return text
 
 

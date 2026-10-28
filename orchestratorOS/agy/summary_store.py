@@ -21,7 +21,7 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_int
 from state_io import atomic_write_bytes
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
@@ -129,15 +129,8 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
 
 
 def _safe_step_count(val: Any) -> int:
-    if val is None or isinstance(val, bool):
-        return 0
-    try:
-        fval = float(val)
-        if not math.isfinite(fval):
-            return 0
-        return max(0, int(fval))
-    except (TypeError, ValueError, OverflowError):
-        return 0
+    i = safe_int(val, default=0)
+    return max(0, i) if i is not None else 0
 
 
 def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
