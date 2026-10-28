@@ -31,6 +31,7 @@ if _ROOT_DIR not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import load_dotenv
+from cachepaths import cache_symbol_variants, normalize_cache_base_asset
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
@@ -708,12 +709,8 @@ class AutonomousAIReconciler:
         # Enrich every symbol (including Kraken/Hyperliquid/T212 pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
         multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
         for sym, entry in list(snapshot.prices_and_trends.items()):
-            base_prefix = (
-                sym[:-4]
-                if sym.endswith(("USDC", "USDT")) and len(sym) > 4
-                else (sym[:-3] if sym.endswith(("USD", "EUR")) and len(sym) > 3 else sym)
-            )
-            cand_keys = (sym, f"{base_prefix}USDC", f"{base_prefix}USDT", f"{base_prefix}USD", base_prefix)
+            base_prefix = normalize_cache_base_asset(sym)
+            cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
 
             # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD) when missing
             if "slope_15m" not in entry and isinstance(trends_data, dict):
@@ -779,16 +776,8 @@ class AutonomousAIReconciler:
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         for sym in list(snapshot.prices_and_trends.keys()):
-            base_sym = (
-                sym[:-4]
-                if sym.endswith(("USDC", "USDT")) and len(sym) > 4
-                else (sym[:-3] if sym.endswith(("USD", "EUR")) and len(sym) > 3 else sym)
-            )
-            p24_cands = [sym]
-            if base_sym:
-                for sib in (f"{base_sym}USDC", f"{base_sym}USDT", f"{base_sym}USD"):
-                    if sib not in p24_cands:
-                        p24_cands.append(sib)
+            base_sym = normalize_cache_base_asset(sym)
+            p24_cands = cache_symbol_variants(sym, include_original=True)
             m24: Dict[str, Any] = {}
             for p24_key in p24_cands:
                 p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{p24_key}.json"))
@@ -1500,8 +1489,14 @@ class AutonomousAIReconciler:
 
         if sensors.prices_and_trends:
             context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):")
-            btc_cand_keys = ("BTCUSDC", "BTCUSDT", "BTCUSD", "BTC_USD", "BTC")
-            btc_entry = next((sensors.prices_and_trends[k] for k in btc_cand_keys if isinstance(sensors.prices_and_trends.get(k), dict)), None)
+            # Locate canonical reference BTC entry using centralized base asset normalization
+            btc_entry = next(
+                (
+                    entry for k, entry in sensors.prices_and_trends.items()
+                    if isinstance(entry, dict) and normalize_cache_base_asset(k) in ("BTC", "XBT")
+                ),
+                None,
+            )
             btc_1h = _parse_finite_float(btc_entry.get("chg_1h_pct"), None) if btc_entry else None
             btc_24h = _parse_finite_float(btc_entry.get("chg_24h_pct"), None) if btc_entry else None
 
@@ -1539,7 +1534,9 @@ class AutonomousAIReconciler:
                         f"{c24_part}"
                         f"24h_range=[{l24}, {h24}]{pos24_sfx}"
                     )
-                if not sym.startswith("BTC") and not sym.endswith(("_EQ", "_US_EQ")):
+                base_asset = normalize_cache_base_asset(sym)
+                is_crypto = not sym.endswith(("_EQ", "_US_EQ"))
+                if is_crypto and base_asset not in ("BTC", "XBT"):
                     vs_btc_parts: List[str] = []
                     if btc_1h is not None and "chg_1h_pct" in pinfo:
                         alt_1h = _parse_finite_float(pinfo.get("chg_1h_pct"), None)

@@ -78,7 +78,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             out["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
         if p180 > 0:
             out["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
-        if p1440 > 0 and span_ms >= 3600000.0 * 6:
+        if p1440 > 0 and span_ms >= 3600000.0 * 18:
             out["chg_24h_pct"] = round((cur_px / p1440 - 1.0) * 100.0, 2)
         return out
     except Exception:

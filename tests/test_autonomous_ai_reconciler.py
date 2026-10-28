@@ -1536,6 +1536,14 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
                 "low_24h": 228.0,
                 "high_24h": 232.0,
             },
+            "XBTUSD": {
+                "price": 85010.0,
+                "trend": 1,
+                "growth_coefficient": 0.02,
+                "chg_15m_pct": 0.5,
+                "chg_1h_pct": 2.0,
+                "chg_24h_pct": 5.0,
+            },
         }
     )
 
@@ -1549,6 +1557,8 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     # Verify BTC does not have vs_btc
     btc_line = [ln for ln in prompt.splitlines() if "BTCUSDC" in ln][0]
     assert "vs_btc" not in btc_line
+    xbt_line = [ln for ln in prompt.splitlines() if "XBTUSD" in ln][0]
+    assert "vs_btc" not in xbt_line
     # Verify equities do not have vs_btc
     eq_line = [ln for ln in prompt.splitlines() if "AAPL_US_EQ" in ln][0]
     assert "vs_btc" not in eq_line
