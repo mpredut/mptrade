@@ -18,6 +18,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 import websockets
 
+from botcore import safe_nonneg_float, safe_pos_float
 from intelligence.external.collectors.orderbook_depth import _symbol_variants
 
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
@@ -74,15 +75,7 @@ class BybitLiquidationCollector:
             if isinstance(s, str) and s.strip()
         ]
         self._symbols = cleaned_syms or list(DEFAULT_SYMBOLS)
-        ret_sec = MAX_RETENTION_SEC
-        if retention_sec is not None and not isinstance(retention_sec, bool):
-            try:
-                rf = float(retention_sec)
-                if math.isfinite(rf) and rf > 0.0:
-                    ret_sec = rf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        self._retention = ret_sec
+        self._retention = safe_pos_float(retention_sec, default=MAX_RETENTION_SEC) or MAX_RETENTION_SEC
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
         self._lock = threading.Lock()
@@ -101,14 +94,7 @@ class BybitLiquidationCollector:
 
     def stop(self, timeout: float = 8.0) -> None:
         self._stop.set()
-        t_sec = 8.0
-        if timeout is not None and not isinstance(timeout, bool):
-            try:
-                tf = float(timeout)
-                if math.isfinite(tf) and tf >= 0.0:
-                    t_sec = tf
-            except (TypeError, ValueError, OverflowError):
-                t_sec = 8.0
+        t_sec = safe_nonneg_float(timeout, default=8.0) or 8.0
         if (
             self._thread
             and self._thread.is_alive()
@@ -224,13 +210,8 @@ class BybitLiquidationCollector:
 
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
-        if notional_usd is None or isinstance(notional_usd, bool) or not isinstance(symbol, str) or not isinstance(side, str):
-            return
-        try:
-            notional = float(notional_usd)
-        except (ValueError, TypeError):
-            return
-        if not math.isfinite(notional) or notional <= 0:
+        notional = safe_pos_float(notional_usd, default=None)
+        if notional is None or not isinstance(symbol, str) or not isinstance(side, str):
             return
         sym_norm = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
         if not sym_norm:
@@ -242,18 +223,13 @@ class BybitLiquidationCollector:
             side_norm = "SHORT"
         else:
             return
-        now = time.time()
-        if ts is not None and not isinstance(ts, bool):
-            try:
-                ts_f = float(ts)
-                if math.isfinite(ts_f) and ts_f > 0.0:
-                    now = ts_f
-                else:
-                    return
-            except (ValueError, TypeError):
+        if ts is not None:
+            ts_f = safe_pos_float(ts, default=None)
+            if ts_f is None:
                 return
-        elif isinstance(ts, bool):
-            return
+            now = ts_f
+        else:
+            now = time.time()
         with self._lock:
             dq = self._events.setdefault(sym_norm, deque())
             dq.append((now, side_norm, notional))
@@ -269,22 +245,8 @@ class BybitLiquidationCollector:
     ) -> LiquidationSummary:
         """Aggregate liquidation metrics for symbol over window_sec."""
         symbol = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "") if isinstance(symbol, str) else ""
-        now_ts = time.time()
-        if now is not None and not isinstance(now, bool):
-            try:
-                now_f = float(now)
-                if math.isfinite(now_f) and now_f > 0.0:
-                    now_ts = now_f
-            except (ValueError, TypeError):
-                pass
-        win_sec = 300.0
-        if window_sec is not None and not isinstance(window_sec, bool):
-            try:
-                win_f = float(window_sec)
-                if math.isfinite(win_f) and win_f > 0.0:
-                    win_sec = win_f
-            except (ValueError, TypeError):
-                pass
+        now_ts = safe_pos_float(now, default=None) or time.time()
+        win_sec = safe_pos_float(window_sec, default=300.0) or 300.0
         cutoff = now_ts - win_sec
         long_usd = short_usd = 0.0
         events_n = 0
