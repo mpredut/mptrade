@@ -33,7 +33,7 @@ from order_retry import (
     propagate_submission_refusal,
 )
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_pos_float as _finite_pos_float
 from cachepaths import cache_path
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,
@@ -201,16 +201,6 @@ _validate_intent_recovery_config()
 
 class _IntentRecoveryPending(RuntimeError):
     """A persisted venue intent is not yet safe to submit or discard."""
-
-
-def _finite_pos_float(raw, default=0.0):
-    if raw is None or isinstance(raw, bool):
-        return default
-    try:
-        val = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return val if (math.isfinite(val) and val > 0.0) else default
 
 
 class _LivePairVenue:
@@ -1860,65 +1850,49 @@ class TradingBot:
             if callable(unblock):
                 unblock(pid, False)
 
-        for record in pair_store.active(self.symbol):
-            state = record.get("state")
-            if not state:
-                state = {
-                    "pair_id": record["pair_id"], "qty": record["qty"],
-                    "start_side": record["start_side"], "phase": "quoting",
-                    "reason": "recovered_by_client_order_id", "shock": False,
-                    "elapsed_sec": max(
-                        0.0, time.time() - float(record.get("created_ts") or time.time())),
-                    "first_fill_elapsed_sec": None, "first_fill_side": None,
-                    "stop_order_id": None,
-                    "limit_revisions": {"BUY": 0, "SELL": 0},
-                    "hard_stop_revision": 0, "hard_stop_reason": None,
-                    "tickets": [], "snapshots": {},
-                }
-            try:
-                # The intent store is fsynced before venue submission, while the
-                # checkpoint follows the coordinator step. Merge any intent that
-                # raced ahead of the older checkpoint before adopting the round.
-                state = venue.merge_checkpoint_intents(record, state)
-                intents = record.get("intents", {})
-                all_exhausted = bool(intents) and all(
-                    isinstance(i, dict) and i.get("recovery_state") in {
-                        "absence_confirmed_no_reuse", "horizon_exhausted"}
-                    for i in intents.values()
-                )
-                if not state.get("tickets") and (
-                        all_exhausted or state.get("phase") not in {
-                            "startup_recovery", "hard_stop_recovery"}):
-                    state["phase"] = "failed"
-                    state["reason"] = (
-                        "recovery_horizon_exhausted" if all_exhausted
-                        else "recovery_intent_not_submitted"
-                    )
-                    pair_store.checkpoint(
-                        record["pair_id"], state, terminal=True)
-                    _clear_venue_blocked_pair(record["pair_id"])
-                    print(
-                        f"[{self.symbol}] pair={record['pair_id']} recovery: "
-                        "exhausted intent or no tickets placed; closed as terminal")
-                    continue
-                pair_store.checkpoint(
-                    record["pair_id"], state, terminal=False)
-            except Exception as exc:
-                print(
-                    f"[{self.symbol}] RECOVERY BLOCKED: "
-                    f"pair={record.get('pair_id')} {exc}")
-                recovery_blocked = True
-                continue
-            try:
-                coordinator = PairCoordinator.from_state(venue, policy, state)
-                active.append(coordinator)
-                print(f"[{self.symbol}] pair={coordinator.pair_id} adopted "
-                      f"phase={coordinator.phase} tickets={len(coordinator.tickets)}")
-            except Exception as exc:
-                print(f"[{self.symbol}] RECOVERY BLOCKED: {exc}")
-                recovery_blocked = True
+        def _default_recovered_state(record):
+            return {
+                "pair_id": record["pair_id"], "qty": record["qty"],
+                "start_side": record["start_side"], "phase": "quoting",
+                "reason": "recovered_by_client_order_id", "shock": False,
+                "elapsed_sec": max(
+                    0.0, time.time() - float(record.get("created_ts") or time.time())),
+                "first_fill_elapsed_sec": None, "first_fill_side": None,
+                "stop_order_id": None,
+                "limit_revisions": {"BUY": 0, "SELL": 0},
+                "hard_stop_revision": 0, "hard_stop_reason": None,
+                "tickets": [], "snapshots": {},
+            }
 
-        try:
+        def _adopt_record(record, *, retry_label=""):
+            state = record.get("state") or _default_recovered_state(record)
+            state = venue.merge_checkpoint_intents(record, state)
+            intents = record.get("intents", {})
+            all_exhausted = bool(intents) and all(
+                isinstance(i, dict) and i.get("recovery_state") in {
+                    "absence_confirmed_no_reuse", "horizon_exhausted"}
+                for i in intents.values()
+            )
+            if not state.get("tickets") and (
+                    all_exhausted or state.get("phase") not in {
+                        "startup_recovery", "hard_stop_recovery"}):
+                state["phase"] = "failed"
+                state["reason"] = (
+                    "recovery_horizon_exhausted" if all_exhausted
+                    else "recovery_intent_not_submitted"
+                )
+                pair_store.checkpoint(
+                    record["pair_id"], state, terminal=True)
+                _clear_venue_blocked_pair(record["pair_id"])
+                print(
+                    f"[{self.symbol}] pair={record['pair_id']} recovery{retry_label}: "
+                    "exhausted intent or no tickets placed; closed as terminal")
+                return None
+            pair_store.checkpoint(
+                record["pair_id"], state, terminal=False)
+            return PairCoordinator.from_state(venue, policy, state)
+
+        def _cleanup_orphan_rt_orders():
             known_client_ids = {
                 intent.get("client_order_id")
                 for rec in pair_store.active(self.symbol)
@@ -1934,8 +1908,6 @@ class TradingBot:
             for order in orphan_orders:
                 order_id = extract_order_id(order) or ""
                 client_id = order.get("clientOrderId")
-                # An RT_ order without local intent cannot be safely associated with a
-                # round because its ID is hashed. Cancel it instead of inventing state.
                 venue.executor.cancel_order(self.symbol, order_id)
                 try:
                     import order_retry
@@ -1956,7 +1928,26 @@ class TradingBot:
                 if not_canceled:
                     print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation "
                           f"for the RT_ orders {not_canceled}")
-                    recovery_blocked = True
+                    return True
+            return False
+
+        for record in pair_store.active(self.symbol):
+            try:
+                coordinator = _adopt_record(record)
+                if coordinator is None:
+                    continue
+                active.append(coordinator)
+                print(f"[{self.symbol}] pair={coordinator.pair_id} adopted "
+                      f"phase={coordinator.phase} tickets={len(coordinator.tickets)}")
+            except Exception as exc:
+                print(
+                    f"[{self.symbol}] RECOVERY BLOCKED: "
+                    f"pair={record.get('pair_id')} {exc}")
+                recovery_blocked = True
+
+        try:
+            if _cleanup_orphan_rt_orders():
+                recovery_blocked = True
         except Exception as exc:
             print(f"[{self.symbol}] RECOVERY BLOCKED: exchange inventory unavailable ({exc})")
             recovery_blocked = True
@@ -2003,84 +1994,17 @@ class TradingBot:
                             for record in pair_store.active(self.symbol):
                                 if record.get("pair_id") in adopted_ids:
                                     continue
-                                state = record.get("state") or {
-                                    "pair_id": record["pair_id"], "qty": record["qty"],
-                                    "start_side": record["start_side"], "phase": "quoting",
-                                    "reason": "recovered_by_client_order_id", "shock": False,
-                                    "elapsed_sec": max(
-                                        0.0, time.time() - float(record.get("created_ts") or time.time())),
-                                    "first_fill_elapsed_sec": None, "first_fill_side": None,
-                                    "stop_order_id": None,
-                                    "limit_revisions": {"BUY": 0, "SELL": 0},
-                                    "hard_stop_revision": 0, "hard_stop_reason": None,
-                                    "tickets": [], "snapshots": {},
-                                }
                                 try:
-                                    state = venue.merge_checkpoint_intents(record, state)
-                                    intents = record.get("intents", {})
-                                    all_exhausted = bool(intents) and all(
-                                        isinstance(i, dict) and i.get("recovery_state") in {
-                                            "absence_confirmed_no_reuse", "horizon_exhausted"}
-                                        for i in intents.values()
-                                    )
-                                    if not state.get("tickets") and (
-                                            all_exhausted or state.get("phase") not in {
-                                                "startup_recovery", "hard_stop_recovery"}):
-                                        state["phase"] = "failed"
-                                        state["reason"] = (
-                                            "recovery_horizon_exhausted" if all_exhausted
-                                            else "recovery_intent_not_submitted"
-                                        )
-                                        pair_store.checkpoint(
-                                            record["pair_id"], state, terminal=True)
-                                        _clear_venue_blocked_pair(record["pair_id"])
-                                        print(
-                                            f"[{self.symbol}] pair={record['pair_id']} recovery retry: "
-                                            "exhausted intent or no tickets placed; closed as terminal")
+                                    coordinator = _adopt_record(record, retry_label=" retry")
+                                    if coordinator is None:
                                         continue
-                                    pair_store.checkpoint(record["pair_id"], state, terminal=False)
-                                    coordinator = PairCoordinator.from_state(venue, policy, state)
                                     active.append(coordinator)
                                     adopted_ids.add(coordinator.pair_id)
                                 except Exception as adopt_exc:
                                     print(f"[{self.symbol}] startup recovery pair adoption still blocked: {adopt_exc}")
                                     retry_failed = True
-                            known_client_ids = {
-                                intent.get("client_order_id")
-                                for rec in pair_store.active(self.symbol)
-                                for intent in (rec.get("intents") or {}).values()
-                                if isinstance(intent, dict) and intent.get("client_order_id")
-                            }
-                            orphan_orders = [
-                                order for order in venue.executor.open_orders(self.symbol)
-                                if isinstance(order, dict)
-                                and str(order.get("clientOrderId") or "").startswith("RT_")
-                                and order.get("clientOrderId") not in known_client_ids
-                            ]
-                            for order in orphan_orders:
-                                order_id = extract_order_id(order) or ""
-                                client_id = order.get("clientOrderId")
-                                venue.executor.cancel_order(self.symbol, order_id)
-                                try:
-                                    import order_retry
-                                    order_retry.resolve_accepted_order(self.symbol, order_id)
-                                except Exception:
-                                    pass
-                                print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
-                                      f"order_id={order_id} client_id={client_id}")
-                            if orphan_orders:
-                                remaining = {
-                                    extract_order_id(order)
-                                    for order in venue.executor.open_orders(self.symbol)
-                                }
-                                not_canceled = [
-                                    extract_order_id(order) for order in orphan_orders
-                                    if extract_order_id(order) in remaining
-                                ]
-                                if not_canceled:
-                                    print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation "
-                                          f"for the RT_ orders {not_canceled}")
-                                    retry_failed = True
+                            if _cleanup_orphan_rt_orders():
+                                retry_failed = True
                             if not retry_failed:
                                 recovery_blocked = False
                                 print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")

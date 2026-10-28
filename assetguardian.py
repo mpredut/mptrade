@@ -279,15 +279,7 @@ ORDER_LIFECYCLE = mkt.tracked_order_lifecycle(
 
 
 def _finite_float(raw, *, positive=False):
-    if raw is None or isinstance(raw, bool):
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(value) or (positive and value <= 0):
-        return None
-    return value
+    return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
 
 
 def _price_row(row):
@@ -1225,8 +1217,8 @@ _rtrade_sell_block_since: dict = {}
 def _is_rtrade_order(order):
     if not isinstance(order, dict):
         return False
-    cid = str(order.get("clientOrderId") or "").strip()
-    return cid.startswith(("RT_", "MO_RT_"))
+    cid = str(order.get("clientOrderId") or order.get("client_order_id") or "").strip()
+    return cid.startswith(("RT_", "MO_RT_")) or api.resolve_order_owner(cid) == "rtrade"
 
 
 def _resolve_blocking_sell_orders(symbol, open_sells):

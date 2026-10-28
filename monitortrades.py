@@ -233,7 +233,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 total_qty = sum(extract_order_qty(t) for t in group)
                 total_val = sum(extract_order_qty(t) * extract_order_price(t) for t in group)
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
-                quote = "USDC" if sym_name.upper().endswith("USDC") else ("USDT" if sym_name.upper().endswith("USDT") else "USD")
+                quote = (cachepaths.split_symbol_assets(sym_name) or ("", ""))[1] or "USD"
 
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
                 print(f"[MONITORTRADES] 🎉 New executed order: {side} {total_qty:.6f} {sym_name} @ {avg_price:.2f} (orderId={oid}{fill_suffix})")
@@ -816,6 +816,11 @@ def _parse_mt_bool(key: str, val: str) -> bool:
     raise ValueError(f"monitortrades.conf: invalid boolean {key}={val!r}; expected yes/no or true/false")
 
 
+def _parse_mt_ratio(raw: str, pct_cutoff: float = 0.05) -> float:
+    val = float(raw)
+    return val / 100.0 if val > pct_cutoff else val
+
+
 def _load_mt_conf(path=None):
     """Strictly load mandatory global settings from monitortrades.conf at module init."""
     global HARD_TP_ENABLED, HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE
@@ -844,32 +849,23 @@ def _load_mt_conf(path=None):
         raise ValueError(f"monitortrades.conf: invalid tp_reference={parsed['tp_reference']!r}")
 
     MT_SL_TREND_DEFER_MAX_SEC = float(parsed["sl_trend_defer_max_s"])
-    v_rec = float(parsed["sl_bounce_min_recovery_pct"])
-    MT_SL_BOUNCE_MIN_RECOVERY_PCT = v_rec / 100.0 if v_rec > 0.05 else v_rec
-    v_pb = float(parsed["sl_bounce_pullback_pct"])
-    MT_SL_BOUNCE_PULLBACK_PCT = v_pb / 100.0 if v_pb > 0.05 else v_pb
+    MT_SL_BOUNCE_MIN_RECOVERY_PCT = _parse_mt_ratio(parsed["sl_bounce_min_recovery_pct"])
+    MT_SL_BOUNCE_PULLBACK_PCT = _parse_mt_ratio(parsed["sl_bounce_pullback_pct"])
     MT_SL_BOUNCE_RATCHET_ENABLED = _parse_mt_bool("sl_bounce_ratchet_enabled", parsed["sl_bounce_ratchet_enabled"])
     MT_SL_BOUNCE_RATCHET_K = float(parsed["sl_bounce_ratchet_k"])
-    v_mpb = float(parsed["sl_bounce_min_pullback_pct"])
-    MT_SL_BOUNCE_MIN_PULLBACK_PCT = v_mpb / 100.0 if v_mpb > 0.05 else v_mpb
+    MT_SL_BOUNCE_MIN_PULLBACK_PCT = _parse_mt_ratio(parsed["sl_bounce_min_pullback_pct"])
     MT_SL_STRUCTURAL_BREAK_ENABLED = _parse_mt_bool("sl_structural_break_enabled", parsed["sl_structural_break_enabled"])
-    v_dbr = float(parsed["sl_disaster_buffer_ratio"])
-    MT_SL_DISASTER_BUFFER_RATIO = v_dbr if v_dbr < 1.0 else v_dbr / 100.0
+    MT_SL_DISASTER_BUFFER_RATIO = _parse_mt_ratio(parsed["sl_disaster_buffer_ratio"], pct_cutoff=0.999999999)
     MT_SL_DISASTER_VOL_MULTIPLIER = float(parsed["sl_disaster_vol_multiplier"])
-    v_dbm = float(parsed["sl_disaster_buffer_min_pct"])
-    MT_SL_DISASTER_BUFFER_MIN_PCT = v_dbm / 100.0 if v_dbm > 0.05 else v_dbm
+    MT_SL_DISASTER_BUFFER_MIN_PCT = _parse_mt_ratio(parsed["sl_disaster_buffer_min_pct"])
 
     MT_TP_TREND_RIDE_ENABLED = _parse_mt_bool("tp_trend_ride_enabled", parsed["tp_trend_ride_enabled"])
-    v_tppb = float(parsed["tp_pullback_pct"])
-    MT_TP_PULLBACK_PCT = v_tppb / 100.0 if v_tppb > 0.05 else v_tppb
+    MT_TP_PULLBACK_PCT = _parse_mt_ratio(parsed["tp_pullback_pct"])
     MT_TP_RATCHET_ENABLED = _parse_mt_bool("tp_ratchet_enabled", parsed["tp_ratchet_enabled"])
     MT_TP_RATCHET_K = float(parsed["tp_ratchet_k"])
-    v_tprmp = float(parsed["tp_ratchet_min_pullback_pct"])
-    MT_TP_RATCHET_MIN_PULLBACK_PCT = v_tprmp / 100.0 if v_tprmp > 0.05 else v_tprmp
-    v_tpfr = float(parsed["tp_profit_floor_ratio"])
-    MT_TP_PROFIT_FLOOR_RATIO = v_tpfr if v_tpfr < 1.0 else v_tpfr / 100.0
-    v_tpfm = float(parsed["tp_profit_floor_min_pct"])
-    MT_TP_PROFIT_FLOOR_MIN_PCT = v_tpfm / 100.0 if v_tpfm > 0.05 else v_tpfm
+    MT_TP_RATCHET_MIN_PULLBACK_PCT = _parse_mt_ratio(parsed["tp_ratchet_min_pullback_pct"])
+    MT_TP_PROFIT_FLOOR_RATIO = _parse_mt_ratio(parsed["tp_profit_floor_ratio"], pct_cutoff=0.999999999)
+    MT_TP_PROFIT_FLOOR_MIN_PCT = _parse_mt_ratio(parsed["tp_profit_floor_min_pct"])
     MT_TP_STAGNATION_MAX_SEC = float(parsed["tp_stagnation_max_s"])
     MT_REENTRY_HYBRID_ENABLED = _parse_mt_bool("reentry_hybrid_enabled", parsed["reentry_hybrid_enabled"])
     MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(parsed["reentry_post_stop_cooldown_s"])
@@ -1605,6 +1601,31 @@ def _handle_position_recovery(
         print("Nothing interesting")
 
 
+def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_bypass: Any = None) -> set[str]:
+    """Resolve normalized bypass guards combining venue margins, instrument params, and caller extras."""
+    import order_guard
+    from guard_hierarchy import normalize_bypassed_guards
+    if provider is None and inst is not None:
+        provider = getattr(inst, "provider", None) or getattr(inst, "_provider", None)
+    inst_params = getattr(inst, "params", None) if inst is not None else None
+    inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
+    raw_venue = (
+        getattr(provider, "name", None)
+        or getattr(inst, "provider_name", None)
+        or getattr(inst, "provider_label", None)
+        or "binance"
+    )
+    venue_key = cachepaths.normalize_venue_name(raw_venue) or str(raw_venue).strip().lower()
+    m_cfg = order_guard._load_margins()
+    venue_bg = m_cfg.get(f"{venue_key}_bypass_guards", m_cfg.get("default_bypass_guards"))
+    res = normalize_bypassed_guards(bypass_guards=venue_bg)
+    if inst_bg:
+        res = res | normalize_bypassed_guards(bypass_guards=inst_bg)
+    if extra_bypass:
+        res = res | normalize_bypassed_guards(bypass_guards=extra_bypass)
+    return res
+
+
 def _can_pass_buy_quantity_policy(
     inst, symbol: str, current_price: float, requested_qty: float, min_qty: float = 0.0
 ) -> bool:
@@ -1620,21 +1641,9 @@ def _can_pass_buy_quantity_policy(
         return True
     try:
         import order_guard
-        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+        from guard_hierarchy import GUARD_REGISTRY
         from providers.quantity import resolve_assets
-        inst_params = getattr(inst, "params", None)
-        inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
-        venue_name = (
-            getattr(provider, "name", None)
-            or getattr(inst, "provider_name", None)
-            or getattr(inst, "provider_label", None)
-            or "binance"
-        )
-        m_cfg = order_guard._load_margins()
-        venue_bg = m_cfg.get(f"{str(venue_name).strip().lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
-        reentry_bg = {"G_PROF", "GLLM1"} | normalize_bypassed_guards(bypass_guards=venue_bg)
-        if inst_bg:
-            reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+        reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass={"G_PROF", "GLLM1"})
         bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
         base_asset, quote_asset = resolve_assets(
             symbol,
@@ -1776,24 +1785,11 @@ def _apply_post_stop_ai_guard(
     if _is_simulated_env_or_inst(inst):
         return True, buy_budget, buy_qty_cfg, qty
     try:
-        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+        from guard_hierarchy import GUARD_REGISTRY
         from intelligence.sentiment.guards.high_stake_guard import is_llm_guard_exempt
         from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
-        import order_guard
         provider = (getattr(inst, "provider", None) or getattr(inst, "_provider", None)) if inst is not None else None
-        inst_params = getattr(inst, "params", None) if inst is not None else None
-        inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
-        venue_name = (
-            getattr(provider, "name", None)
-            or getattr(inst, "provider_name", None)
-            or getattr(inst, "provider_label", None)
-            or "binance"
-        )
-        m_cfg = order_guard._load_margins()
-        venue_bg = m_cfg.get(f"{str(venue_name).strip().lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
-        caller_bg = normalize_bypassed_guards(bypass_guards=venue_bg)
-        if inst_bg:
-            caller_bg = caller_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+        caller_bg = _resolve_inst_bypass_guards(inst, provider=provider)
         if GUARD_REGISTRY["GLLM1"].is_bypassed(caller_bg) or "all" in caller_bg or "*" in caller_bg or is_llm_guard_exempt():
             return True, buy_budget, buy_qty_cfg, qty
         _ps_guard = get_post_stop_reentry_guard()

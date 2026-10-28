@@ -1469,9 +1469,9 @@ class MarketApi:
         if inst_params is None:
             try:
                 from instrument_registry import select_instruments
-                sym_clean = str(symbol or "").strip().upper().replace("/", "")
+                sym_clean = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
                 for spec in select_instruments(prov_name).values():
-                    if str(spec.symbol or "").strip().upper().replace("/", "") == sym_clean:
+                    if str(spec.symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "") == sym_clean:
                         inst_params = dict(spec.params or {})
                         if base is None and spec.base:
                             base = spec.base
