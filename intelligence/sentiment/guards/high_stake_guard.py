@@ -62,6 +62,15 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     return p_val
             return clean_series[0][1]
 
+        def _has_sample_near(mins: float, max_gap_mins: float) -> bool:
+            target = now_ms - mins * 60000.0
+            min_allowed = now_ms - (mins + max_gap_mins) * 60000.0
+            for tms, _ in reversed(clean_series):
+                if tms <= target:
+                    return tms >= min_allowed
+            return False
+
+        p1, p3, p5 = _px_ago(1), _px_ago(3), _px_ago(5)
         p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
         p360, p720, p1440 = _px_ago(360), _px_ago(720), _px_ago(1440)
         span_ms = now_ms - clean_series[0][0]
@@ -79,6 +88,12 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             out["span_24h_pct"] = round((h24 / l24 - 1.0) * 100.0, 2)
         if h24 > l24 > 0:
             out["pos_24h_pct"] = round(((cur_px - l24) / (h24 - l24)) * 100.0, 1)
+        if p1 > 0 and span_ms >= 60000.0 and _has_sample_near(1.0, 2.5):
+            out["chg_1m_pct"] = round((cur_px / p1 - 1.0) * 100.0, 2)
+        if p3 > 0 and span_ms >= 180000.0 and _has_sample_near(3.0, 4.0):
+            out["chg_3m_pct"] = round((cur_px / p3 - 1.0) * 100.0, 2)
+        if p5 > 0 and span_ms >= 300000.0 and _has_sample_near(5.0, 6.0):
+            out["chg_5m_pct"] = round((cur_px / p5 - 1.0) * 100.0, 2)
         if p15 > 0:
             out["chg_15m_pct"] = round((cur_px / p15 - 1.0) * 100.0, 2)
         if p30 > 0:
@@ -93,9 +108,183 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             out["chg_12h_pct"] = round((cur_px / p720 - 1.0) * 100.0, 2)
         if p1440 > 0 and span_ms >= 3600000.0 * 18:
             out["chg_24h_pct"] = round((cur_px / p1440 - 1.0) * 100.0, 2)
+
+        recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
+        if len(recent_15m) >= 3:
+            l15 = min(recent_15m)
+            h15 = max(recent_15m)
+            out["low_15m"] = l15
+            out["high_15m"] = h15
+            if h15 > l15 > 0:
+                out["pos_15m_pct"] = round(((cur_px - l15) / (h15 - l15)) * 100.0, 1)
+                out["span_15m_pct"] = round((h15 / l15 - 1.0) * 100.0, 2)
+            tape_pts = []
+            for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now")):
+                if m_off == 0.0 or (span_ms >= m_off * 60000.0 and _has_sample_near(m_off, max(3.0, m_off * 0.5))):
+                    px_m = cur_px if m_off == 0.0 else _px_ago(m_off)
+                    tape_pts.append(f"{lbl}:{px_m:.6g}")
+            if len(tape_pts) >= 3:
+                out["recent_tape_15m"] = tape_pts
         return out
     except Exception:
         return {}
+
+
+def load_symbol_price_series(
+    cachedb_dir: str,
+    symbol: str,
+    current_price_items: Optional[Dict[str, Any]] = None,
+) -> Tuple[list, list]:
+    """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
+    from cachepaths import cache_symbol_variants, legacy_filenames_for
+
+    cands = [c for c in cache_symbol_variants(symbol, include_original=True) if isinstance(c, str) and "/" not in c]
+    series_24h: list = []
+    vals_7d: list = []
+
+    # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
+    for cand in cands:
+        primary_24 = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
+        for p24_path in (primary_24, *legacy_filenames_for(primary_24)):
+            if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
+                continue
+            p24_data = read_recovering_previous(p24_path, json.loads, default=None)
+            if not isinstance(p24_data, dict):
+                continue
+            raw_items = p24_data.get("items", {})
+            ser = []
+            if isinstance(raw_items, dict):
+                for k_cand in cands:
+                    ser = raw_items.get(k_cand, [])
+                    if ser:
+                        break
+                if not ser and raw_items:
+                    ser = next(iter(raw_items.values()), [])
+            elif isinstance(raw_items, list):
+                ser = raw_items
+            if isinstance(ser, list) and len(ser) >= 2:
+                series_24h = list(ser)
+                break
+        if series_24h:
+            break
+
+    def _span_ms(pts: list) -> float:
+        if len(pts) < 2:
+            return 0.0
+        try:
+            t0 = float(pts[0][0])
+            t1 = float(pts[-1][0])
+            if t0 < 1e11:
+                t0 *= 1000.0
+            if t1 < 1e11:
+                t1 *= 1000.0
+            return max(0.0, t1 - t0)
+        except Exception:
+            return 0.0
+
+    # 2. Supplement or fallback from cache_365_price_<SYM>.jsonl/.json and cache_sparse_price_<SYM>.jsonl
+    if _span_ms(series_24h) < 3600000.0 * 18:
+        archive_pts: list = []
+        for cand in cands:
+            base_names = (
+                f"cache_365_price_{cand}.jsonl",
+                f"cache_365_price_{cand}.json",
+                f"cache_sparse_price_{cand}.jsonl",
+            )
+            candidate_paths: list = []
+            for bn in base_names:
+                full_p = os.path.join(cachedb_dir, bn)
+                candidate_paths.append(full_p)
+                candidate_paths.extend(legacy_filenames_for(full_p))
+            for arch_path in candidate_paths:
+                if not os.path.exists(arch_path):
+                    continue
+                try:
+                    if arch_path.endswith(".json"):
+                        adata = read_recovering_previous(arch_path, json.loads, default=None)
+                        if isinstance(adata, dict):
+                            aitems = adata.get("items", {})
+                            aser = aitems.get(cand, []) if isinstance(aitems, dict) else (aitems if isinstance(aitems, list) else [])
+                            if isinstance(aser, list) and len(aser) >= 2:
+                                archive_pts = list(aser)
+                                break
+                    else:
+                        with open(arch_path, "rb") as af:
+                            af.seek(0, os.SEEK_END)
+                            fsize = af.tell()
+                            read_bytes = min(fsize, 1024 * 1024)
+                            af.seek(max(0, fsize - read_bytes))
+                            raw_chunk = af.read().decode("utf-8", errors="replace")
+                        lines = raw_chunk.splitlines()
+                        if fsize > read_bytes and len(lines) > 1:
+                            lines = lines[1:]
+                        parsed_rows = []
+                        for ln in lines:
+                            ln = ln.strip()
+                            if not ln:
+                                continue
+                            try:
+                                rec = json.loads(ln)
+                            except ValueError:
+                                continue
+                            if isinstance(rec, dict):
+                                item = rec.get("i")
+                            elif isinstance(rec, list):
+                                item = rec
+                            else:
+                                continue
+                            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                                parsed_rows.append([item[0], item[1]])
+                        if len(parsed_rows) >= 2:
+                            archive_pts = parsed_rows
+                            break
+                except Exception:
+                    continue
+            if archive_pts:
+                break
+
+        if archive_pts:
+            try:
+                last_t = float(archive_pts[-1][0])
+                if last_t < 1e11:
+                    last_t *= 1000.0
+                cutoff_24h = last_t - 86400.0 * 1000.0
+                cutoff_7d = last_t - 7.0 * 86400.0 * 1000.0
+                pts_24 = []
+                pts_7d_vals = []
+                for row in archive_pts:
+                    rt = float(row[0])
+                    rp = float(row[1])
+                    if not (math.isfinite(rt) and rt > 0 and math.isfinite(rp) and rp > 0):
+                        continue
+                    tms = rt * 1000.0 if rt < 1e11 else rt
+                    if tms >= cutoff_7d:
+                        pts_7d_vals.append(rp)
+                    if tms >= cutoff_24h:
+                        pts_24.append([tms, rp])
+                if len(pts_7d_vals) >= 2:
+                    vals_7d = pts_7d_vals
+                if pts_24:
+                    if not series_24h:
+                        series_24h = pts_24
+                    else:
+                        series_24h = pts_24 + series_24h
+            except Exception:
+                pass
+
+    # 3. Overlay ultra-recent 1-second ticks from cache_current_price.json
+    if isinstance(current_price_items, dict) and current_price_items:
+        for cand in cands:
+            cur_list = current_price_items.get(cand)
+            if isinstance(cur_list, list) and len(cur_list) >= 2:
+                series_24h = list(series_24h) + [
+                    [pt[0], pt[1]]
+                    for pt in cur_list
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2
+                ]
+                break
+
+    return series_24h, vals_7d
 
 
 def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any]:
@@ -426,37 +615,21 @@ def collect_pretrade_telemetry(
     from intelligence.external.collectors.orderbook_depth import _symbol_variants
     sym_variants = _symbol_variants(symbol)
     try:
-        m24: Dict[str, Any] = {}
-        alt_series_24h: list = []
-        for cand in sym_variants:
-            if "/" in cand:
-                continue
-            p24_path = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
-            p24_data = read_recovering_previous(p24_path, json.loads, default=None)
-            if not isinstance(p24_data, dict):
-                continue
-            raw_items = p24_data.get("items", {})
-            series = []
-            if isinstance(raw_items, dict):
-                for k_cand in sym_variants:
-                    series = raw_items.get(k_cand, [])
-                    if series:
-                        break
-                if not series and raw_items:
-                    series = next(iter(raw_items.values()), [])
-            elif isinstance(raw_items, list):
-                series = raw_items
-            m24 = compute_24h_price_metrics(series)
-            if m24:
-                alt_series_24h = series if isinstance(series, list) else []
-                break
+        cur_p_data = read_recovering_previous(os.path.join(cachedb_dir, "cache_current_price.json"), json.loads, default=None)
+        cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
+        alt_series_24h, _ = load_symbol_price_series(cachedb_dir, symbol, current_price_items=cur_p_items)
+        m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
         if m24:
-            h_parts = [
+            h_parts = []
+            for micro_lbl, micro_k in (("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct")):
+                if micro_k in m24 and m24.get(micro_k) is not None:
+                    h_parts.append(f"{micro_lbl}={float(m24[micro_k]):+.2f}%")
+            h_parts.extend([
                 f"15m={m24.get('chg_15m_pct', 0):+.2f}%",
                 f"30m={m24.get('chg_30m_pct', 0):+.2f}%",
                 f"1h={m24.get('chg_1h_pct', 0):+.2f}%",
                 f"3h={m24.get('chg_3h_pct', 0):+.2f}%",
-            ]
+            ])
             for opt_lbl, opt_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct")):
                 if opt_k in m24 and m24.get(opt_k) is not None:
                     h_parts.append(f"{opt_lbl}={float(m24[opt_k]):+.2f}%")
@@ -472,32 +645,21 @@ def collect_pretrade_telemetry(
                 geom_parts.append(f"span={m24['span_24h_pct']}%")
             if geom_parts:
                 rng_str += f" ({', '.join(geom_parts)})"
+            if m24.get("recent_tape_15m"):
+                rng_str += f", tape_15m=[{', '.join(m24['recent_tape_15m'])}]"
             telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
 
             from cachepaths import normalize_cache_base_asset
             base_asset = normalize_cache_base_asset(symbol)
             if base_asset not in ("BTC", "XBT") and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
-                btc_m24: Dict[str, Any] = {}
-                btc_series_24h: list = []
-                for btc_cand in ("BTCUSDC", "BTCUSDT", "XBTUSD", "BTCUSD"):
-                    b_path = os.path.join(cachedb_dir, f"cache_24_price_{btc_cand}.json")
-                    b_data = read_recovering_previous(b_path, json.loads, default=None)
-                    if not isinstance(b_data, dict):
-                        continue
-                    b_items = b_data.get("items", {})
-                    if isinstance(b_items, dict):
-                        b_ser = b_items.get(btc_cand) or (next(iter(b_items.values()), []) if b_items else [])
-                    elif isinstance(b_items, list):
-                        b_ser = b_items
-                    else:
-                        b_ser = []
-                    btc_m24 = compute_24h_price_metrics(b_ser)
-                    if btc_m24:
-                        btc_series_24h = b_ser if isinstance(b_ser, list) else []
-                        break
+                btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items)
+                if not btc_series_24h:
+                    btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "XBTUSD", current_price_items=cur_p_items)
+                btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
                 if btc_m24:
                     vs_parts = []
                     for h_lbl, h_k in (
+                        ("5m", "chg_5m_pct"),
                         ("15m", "chg_15m_pct"),
                         ("1h", "chg_1h_pct"),
                         ("3h", "chg_3h_pct"),

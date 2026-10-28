@@ -1457,9 +1457,10 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     from intelligence.sentiment.guards.high_stake_guard import (
         compute_24h_price_metrics,
         compute_cross_btc_metrics,
+        load_symbol_price_series,
     )
 
-    # 1. compute_24h_price_metrics computes 6h/12h/24h changes and 24h range geometry
+    # 1. compute_24h_price_metrics computes 1m/3m/5m/6h/12h/24h changes, 15m tape, and 24h range geometry
     now_ms = 1_700_000_000_000.0
     series_24h = [
         [now_ms - 24 * 3600 * 1000, 100.0],
@@ -1468,6 +1469,9 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
         [now_ms - 3 * 3600 * 1000, 105.0],
         [now_ms - 1 * 3600 * 1000, 108.0],
         [now_ms - 15 * 60 * 1000, 112.0],
+        [now_ms - 5 * 60 * 1000, 111.0],
+        [now_ms - 3 * 60 * 1000, 109.5],
+        [now_ms - 1 * 60 * 1000, 109.8],
         [now_ms, 110.0],
     ]
     m24 = compute_24h_price_metrics(series_24h)
@@ -1475,10 +1479,32 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     assert m24.get("chg_12h_pct") == 7.84
     assert m24.get("chg_6h_pct") == 5.77
     assert m24.get("chg_1h_pct") == 1.85
+    assert m24.get("chg_5m_pct") == -0.9
+    assert m24.get("chg_3m_pct") == 0.46
+    assert m24.get("chg_1m_pct") == 0.18
     assert m24.get("dd_24h_high_pct") == -1.79
     assert m24.get("bounce_24h_low_pct") == 10.0
     assert m24.get("span_24h_pct") == 12.0
     assert m24.get("pos_24h_pct") == 83.3
+    assert isinstance(m24.get("recent_tape_15m"), list) and len(m24["recent_tape_15m"]) >= 4
+
+    # 1A. load_symbol_price_series reads cache_365_price_<SYM>.jsonl and overlays cache_current_price.json
+    arch_365 = os.path.join(cache_dir, "cache_365_price_SOLUSDC.jsonl")
+    with open(arch_365, "w", encoding="utf-8") as f:
+        for h_back in (48, 24, 12, 6, 3, 1):
+            f.write(json.dumps({"s": "SOLUSDC", "i": [now_ms - h_back * 3600_000, 150.0 + (48 - h_back) * 0.5]}) + "\n")
+    cur_items = {
+        "SOLUSDC": [
+            [now_ms - 180_000, 173.0],
+            [now_ms - 60_000, 173.5],
+            [now_ms, 174.0],
+        ]
+    }
+    sol_24h, sol_7d = load_symbol_price_series(cache_dir, "SOLUSDC", current_price_items=cur_items)
+    assert len(sol_24h) >= 7
+    assert len(sol_7d) >= 6
+    sol_m24 = compute_24h_price_metrics(sol_24h)
+    assert "chg_24h_pct" in sol_m24 and "chg_1m_pct" in sol_m24
 
     # Series shorter than 4h omits 6h/12h/24h
     series_short = [
@@ -1600,9 +1626,13 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     # Verify equities do not have vs_btc
     eq_line = [ln for ln in prompt.splitlines() if "AAPL_US_EQ" in ln][0]
     assert "vs_btc" not in eq_line
-    # Verify prescriptive rotation clichés were removed so the AI exercises 100% independent judgment
+    # Verify prescriptive rotation clichés and pre-judged BULL/BEAR trend labels were removed
     assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE" not in prompt
     assert "Phase 1 (BTC Breakout" not in prompt
+    assert "Trend=BULL" not in prompt
+    assert "Trend=BEAR" not in prompt
+    assert "Growth=" not in prompt
+    assert "[T=" not in prompt
 
 
 

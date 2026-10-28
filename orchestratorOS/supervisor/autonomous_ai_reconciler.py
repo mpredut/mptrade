@@ -37,6 +37,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
     extract_symbol_recent_fills,
+    load_symbol_price_series,
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorTrade.autonomous_intent_gateway import (
@@ -788,31 +789,31 @@ class AutonomousAIReconciler:
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         series_24h_by_sym: Dict[str, list] = {}
+        cur_p_items = (
+            prices_data.get("items", {})
+            if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict)
+            else {}
+        )
         for sym in list(snapshot.prices_and_trends.keys()):
             base_sym = normalize_cache_base_asset(sym)
-            p24_cands = cache_symbol_variants(sym, include_original=True)
-            m24: Dict[str, Any] = {}
-            matched_series_24h: list = []
-            for p24_key in p24_cands:
-                p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{p24_key}.json"))
-                if not isinstance(p24_data, dict):
-                    continue
-                raw_items = p24_data.get("items", {})
-                if isinstance(raw_items, dict):
-                    series = []
-                    for k_cand in p24_cands:
-                        series = raw_items.get(k_cand, [])
-                        if series:
-                            break
-                    if not series and raw_items:
-                        series = next(iter(raw_items.values()), [])
-                else:
-                    series = raw_items
-                m24 = compute_24h_price_metrics(series) or {}
-                if m24:
-                    if isinstance(series, list):
-                        matched_series_24h = series
-                    break
+            matched_series_24h, arch_vals_7d = load_symbol_price_series(
+                self.cache_dir, sym, current_price_items=cur_p_items
+            )
+            m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
+            if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
+                l7_v, h7_v, cur7_v = min(arch_vals_7d), max(arch_vals_7d), arch_vals_7d[-1]
+                snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
+                    ((cur7_v - arch_vals_7d[0]) / arch_vals_7d[0]) * 100.0, 2
+                )
+                snapshot.prices_and_trends[sym]["low_7d"] = l7_v
+                snapshot.prices_and_trends[sym]["high_7d"] = h7_v
+                if h7_v > 0:
+                    snapshot.prices_and_trends[sym]["dd_7d_high_pct"] = round((cur7_v / h7_v - 1.0) * 100.0, 2)
+                if l7_v > 0:
+                    snapshot.prices_and_trends[sym]["bounce_7d_low_pct"] = round((cur7_v / l7_v - 1.0) * 100.0, 2)
+                    snapshot.prices_and_trends[sym]["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
+                if h7_v > l7_v > 0:
+                    snapshot.prices_and_trends[sym]["pos_7d_pct"] = round(((cur7_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
             if not m24 and sym in inst_by_sym:
                 # Fallback for standalone Kraken/Hyperliquid/T212 pairs without a cachedb/cache_24_price_* file
                 prov = getattr(inst_by_sym[sym], "_provider", None)
@@ -1563,9 +1564,6 @@ class AutonomousAIReconciler:
                     if px_f >= 1.0
                     else (f"${px_f:.6g}" if px_f > 0 else (f"${px}" if px is not None and not isinstance(px, bool) else "N/A"))
                 )
-                tr = _parse_finite_float(pinfo.get("trend"), 0.0)
-                tr_label = "BULL (+1)" if tr > 0 else ("BEAR (-1)" if tr < 0 else "FLAT (0)")
-                growth = _parse_finite_float(pinfo.get("growth_coefficient"), 0.0)
                 extras: List[str] = []
                 if "chg_15m_pct" in pinfo:
                     l24, h24 = pinfo.get("low_24h"), pinfo.get("high_24h")
@@ -1597,11 +1595,16 @@ class AutonomousAIReconciler:
                             f" pos_24h={pos24}% (dd_high={float(dd24):+.2f}%, "
                             f"bounce_low={float(bnc24):+.2f}%, span={spn24}%)"
                         )
+                    micro_horizons = ""
+                    for m_lbl, m_k in (("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct")):
+                        if m_k in pinfo and pinfo.get(m_k) is not None:
+                            micro_horizons += f"{m_lbl}={_parse_finite_float(pinfo.get(m_k), 0.0):+.2f}% "
                     opt_horizons = ""
                     for h_lbl, h_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct")):
                         if h_k in pinfo and pinfo.get(h_k) is not None:
                             opt_horizons += f"{h_lbl}={_parse_finite_float(pinfo.get(h_k), 0.0):+.2f}% "
                     extras.append(
+                        f"{micro_horizons}"
                         f"15m={_parse_finite_float(pinfo.get('chg_15m_pct'), 0.0):+.2f}% "
                         f"30m={_parse_finite_float(pinfo.get('chg_30m_pct'), 0.0):+.2f}% "
                         f"1h={_parse_finite_float(pinfo.get('chg_1h_pct'), 0.0):+.2f}% "
@@ -1609,12 +1612,19 @@ class AutonomousAIReconciler:
                         f"{opt_horizons}"
                         f"24h_range=[{l24}, {h24}]{pos24_sfx}"
                     )
+                    if isinstance(pinfo.get("recent_tape_15m"), list) and pinfo["recent_tape_15m"]:
+                        tape_str = f"tape_15m=[{', '.join(str(x) for x in pinfo['recent_tape_15m'])}]"
+                        if pinfo.get("low_15m") is not None and pinfo.get("high_15m") is not None:
+                            pos15_sfx = f" pos_15m={pinfo['pos_15m_pct']}%" if pinfo.get("pos_15m_pct") is not None else ""
+                            tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
+                        extras.append(tape_str)
                 base_asset = normalize_cache_base_asset(sym)
                 is_crypto = not sym.endswith(("_EQ", "_US_EQ"))
                 if is_crypto and base_asset not in ("BTC", "XBT"):
                     vs_btc_parts: List[str] = []
                     if btc_entry:
                         for h_lbl, h_k in (
+                            ("5m", "chg_5m_pct"),
                             ("15m", "chg_15m_pct"),
                             ("1h", "chg_1h_pct"),
                             ("3h", "chg_3h_pct"),
@@ -1689,9 +1699,9 @@ class AutonomousAIReconciler:
                             f"/eps={_parse_finite_float(pinfo.get('epsilon'), 0.0):.4f}"
                         )
                     extras.append(
-                        f"slopes(3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}[T={int(_parse_finite_float(pinfo.get('trend_3_7m'), 0.0))}], "
-                        f"15m={_parse_finite_float(pinfo.get('slope_15m'), 0.0):+.5f}[T={int(_parse_finite_float(pinfo.get('trend_15m'), 0.0))}], "
-                        f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}[T={int(_parse_finite_float(pinfo.get('trend_2_5h'), 0.0))}]{fast_sfx})"
+                        f"slopes(3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}, "
+                        f"15m={_parse_finite_float(pinfo.get('slope_15m'), 0.0):+.5f}, "
+                        f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}{fast_sfx})"
                     )
                 if pinfo.get("vol_1h_pct") is not None:
                     vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
@@ -1709,7 +1719,7 @@ class AutonomousAIReconciler:
                     lt_str += ")"
                     extras.append(lt_str)
                 extra_str = f" | {' | '.join(extras)}" if extras else ""
-                context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}{extra_str}")
+                context_items.append(f"  * {sym}: Price={px_str}{extra_str}")
 
         if sensors.microstructure:
             context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:")
