@@ -35,7 +35,13 @@ from scipy.ndimage import maximum_filter1d, minimum_filter1d, median_filter
 from scipy.signal import fftconvolve
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-D = os.path.join(ROOT, "cachedb")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from botcore import _parse_bool_flag
+from cachepaths import get_cachedb_dir
+
+D = get_cachedb_dir()
 N_WIN = 222
 N_REC = 60
 IS_FRAC = 0.6
@@ -165,7 +171,8 @@ def build_candidates(px):
     only = set(filter(None, os.environ.get("BENCH_ONLY", "").split(",")))
     want = (lambda n: (not only) or n in only)
     yield "LEGACY (sf+gr)/2", legacy(px)
-    for k in (1, 3, 5, 7, 9):
+    k_list = (1, 3, 5, 7, 9) if _parse_bool_flag(os.environ.get("BENCH_ALL_MEDIANS")) else (1, 5)
+    for k in k_list:
         need_k = (
             (k in (3, 5) and want(f"LEGACY med{k}"))
             or any(want(f"SW p{p} med{k}") for p in (1, 2, 3, 4, 6, 8))
@@ -396,17 +403,17 @@ def main():
                 lo, hi = np.percentile(boots, [2.5, 97.5])
                 cells.append(f"{s} {point:+.2f} [{lo:+.2f},{hi:+.2f}]")
             print(f"{sym:<8} {c:<24} " + " | ".join(cells))
-    hdr = (f"{'Candidate':<20}|{'edgeIS':>7}{'edgeOOS':>8}|{'buyOOS':>7}{'sellOOS':>8}{'rideOOS':>8}|"
+    hdr = (f"{'Candidate':<24}|{'edgeIS':>7}{'edgeOOS':>8}|{'buyOOS':>7}{'sellOOS':>8}{'rideOOS':>8}|"
            f"{'sp60':>6}{'sp180':>7}{'hit%':>6}|{'flip/m':>7}{'lagMed':>7}{'lagAvg':>7}")
-    print("\n>>> MEAN ACROSS SYMBOLS, sorted by IN-SAMPLE edge (bps per decision) <<<")
+    print("\n>>> MEAN ACROSS SYMBOLS, sorted by OUT-OF-SAMPLE edge (bps per decision) <<<")
     print(hdr); print("-" * len(hdr))
     rows = []
     for c, a in agg.items():
         m = {s: {k: float(np.nanmean(v)) for k, v in a[s].items()} for s in a}
-        rows.append((m["IS"]["edge"], c, m))
+        rows.append((m["OOS"]["edge"], c, m))
     for _, c, m in sorted(rows, reverse=True):
         o = m["OOS"]
-        print(f"{c:<20}|{m['IS']['edge']:>+7.2f}{o['edge']:>+8.2f}|{o['buy']:>+7.2f}{o['sell']:>+8.2f}{o['ride']:>+8.2f}|"
+        print(f"{c:<24}|{m['IS']['edge']:>+7.2f}{o['edge']:>+8.2f}|{o['buy']:>+7.2f}{o['sell']:>+8.2f}{o['ride']:>+8.2f}|"
               f"{o['sp60']:>+6.2f}{o['sp180']:>+7.2f}{o['hit']:>6.1f}|{o['flips']:>7.2f}{o['lag_med']:>7.0f}{o['lag_mean']:>7.0f}")
     sys.stdout.flush()
     # per-symbol OOS for top candidates

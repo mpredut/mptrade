@@ -17,6 +17,8 @@ cache (see systemd/DNS_RESILIENCE.md).
 """
 from __future__ import annotations
 
+import math
+
 from botcore import _parse_bool_flag
 
 _as_bool = _parse_bool_flag
