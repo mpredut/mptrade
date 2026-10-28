@@ -1806,25 +1806,19 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
         encoding="utf-8",
     )
     (cache_dir / "cache_current_price.json").write_text(
-        json.dumps({"items": {"HYPEUSD": 62.0, "SPCX_US_EQ": 170.1}}),
+        json.dumps({"items": {"HYPEUSD": 62.0, "HYPEUSDC": 62.062, "SPCX_US_EQ": 170.1}}),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps({"imbalance_ratio": 0.61, "bid_depth_usd": 120000, "ask_depth_usd": 78000}),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_ADAUSD.json").write_text(
+        json.dumps({"imbalance_ratio": 0.44, "bid_depth_usd": 90000, "ask_depth_usd": 110000}),
         encoding="utf-8",
     )
 
     assert _discover_kraken_cache_pairs(str(tmp_path)) == [("HYPEUSD", "HYPE", "USD")]
-
-    # If xstock_state.json lists a tradable pair (e.g. SPCXUSD), gateway automatically includes it
-    (kraken_dir / "xstock_state.json").write_text(
-        json.dumps({
-            "known_assets": {"SPCXx.T": 15.74655, "AAPLx.T": 2e-06},
-            "allocated": {"asset": "SPCXx.T", "qty": 4.2786},
-            "pair": "SPCXUSD",
-        }),
-        encoding="utf-8",
-    )
-    assert _discover_kraken_cache_pairs(str(tmp_path)) == [
-        ("HYPEUSD", "HYPE", "USD"),
-        ("SPCXUSD", "SPCX", "USD"),
-    ]
 
     reconciler = AutonomousAIReconciler(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
     snap_crypto = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
@@ -1834,6 +1828,10 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert hl_cyc["HYPEUSDC"]["qty"] == 1.66
     assert hl_cyc["HYPEUSDC"]["last_buy_price"] == 59.052968
     assert hl_cyc["HYPEUSDC"]["resting_orders"][0]["px"] == 59.347
+
+    # Reference microstructure for ADAUSD is harvested even when ADAUSD is not traded
+    assert snap_crypto.microstructure["ADAUSD"]["ob_imbalance"] == 0.44
+    assert snap_crypto.microstructure["HYPEUSDC"]["ob_imbalance"] == 0.61
 
     xs_crypto = snap_crypto.portfolio_summary.get("kraken_xstocks", {})
     assert xs_crypto["underlying"] == "SPCX"
@@ -1847,5 +1845,20 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     snap_eq = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="equities")
     assert "kraken_xstocks" in snap_eq.portfolio_summary
     assert snap_eq.portfolio_summary["kraken_xstocks"]["holdings"]["SPCXx.T"] == 15.74655
+
+    # Verify prompt deduplicates HYPEUSDC + HYPEUSD in Sections 3 and 3B while showing sibling venue price
+    captured_prompt = {}
+    reconciler.gemini_auditor = GeminiClient(
+        custom_runner=lambda prompt, model, timeout: (
+            captured_prompt.update({"u": prompt}) or '{"summary":"ok","trade_intents":[]}'
+        )
+    )
+    reconciler.synthesize_and_diagnose(snap_crypto, LogEventSummary(0, 0, 0), topic_key="auto_cryptotrade_executor")
+    u_prompt = captured_prompt["u"]
+    assert "* HYPEUSDC (sibling venue: HYPEUSD=$62.00 [-0.10%]): Price=$62.06" in u_prompt
+    assert "\n  * HYPEUSD: Price=" not in u_prompt
+    assert "* HYPEUSDC (HYPEUSD): ob_imbalance=0.61" in u_prompt
+    assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
+    assert "READ-ONLY on Kraken — NOT API-tradable" in u_prompt
 
 

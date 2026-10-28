@@ -145,15 +145,49 @@ class GlobalTelemetryCollector:
         self.legacy_heartbeat_path = os.path.join(self.cache_dir, "intelligence_daemon.heartbeat")
 
     def _detect_active_symbols(self) -> List[str]:
-        """Detect enabled symbols from instruments.conf or default to core pairs."""
+        """Detect enabled symbols from instruments.conf plus Kraken reference cache pairs."""
+        out: List[str] = []
+        seen_bases: set[str] = set()
         try:
-            from instruments_config import binance_symbols
-            syms = binance_symbols()
-            if syms:
-                return syms
+            from cachepaths import normalize_cache_base_asset
+        except Exception:
+            normalize_cache_base_asset = lambda x: str(x).strip().upper()
+        try:
+            from instrument_registry import tracked_price_instruments
+            all_syms, _, _ = tracked_price_instruments()
+            for s in all_syms:
+                s_clean = str(s).strip().upper()
+                if s_clean and not s_clean.endswith(("_EQ", "_US_EQ")) and s_clean not in out:
+                    out.append(s_clean)
+                    seen_bases.add(normalize_cache_base_asset(s_clean))
         except Exception as e:
-            logger.debug("Could not read symbols from instruments.conf: %s", e)
-        return ["BTCUSDC", "TAOUSDC"]
+            logger.debug("Could not read tracked_price_instruments: %s", e)
+            try:
+                from instruments_config import binance_symbols
+                for s in binance_symbols():
+                    s_clean = str(s).strip().upper()
+                    if s_clean and s_clean not in out:
+                        out.append(s_clean)
+                        seen_bases.add(normalize_cache_base_asset(s_clean))
+            except Exception:
+                pass
+        try:
+            krk_cfg = os.path.join(_ROOT_DIR, "kraken", "config.env")
+            if os.path.exists(krk_cfg):
+                with open(krk_cfg, "r", encoding="utf-8", errors="replace") as f:
+                    for raw_line in f:
+                        line = raw_line.split("#", 1)[0].strip()
+                        if line.startswith("KRAKEN_CACHE_PAIRS") and "=" in line:
+                            _, val = line.split("=", 1)
+                            for item in val.split(","):
+                                p = item.strip().strip("'\"").upper()
+                                base = normalize_cache_base_asset(p)
+                                if p and base and base not in seen_bases and p not in out:
+                                    out.append(p)
+                                    seen_bases.add(base)
+        except Exception:
+            pass
+        return out if out else ["BTCUSDC", "TAOUSDC"]
 
     def update_orderbook(self, symbol: str) -> bool:
         """Fetch spot orderbook depth and update disk snapshot."""

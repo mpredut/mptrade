@@ -225,12 +225,37 @@ class OrderbookDepthCollector:
 
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
-            url = f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=50"
-            req = urllib.request.Request(url, headers={"User-Agent": "mptrade-orderbook/1.0"})
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError(f"Unexpected depth payload for {lookup_sym}: {type(data).__name__}")
+            data = None
+            last_err: Optional[Exception] = None
+            base_tok = _extract_base_asset(symbol)
+            kraken_pair = "XBTUSD" if base_tok in ("BTC", "XBT") else f"{base_tok}USD"
+            urls = (
+                f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=50",
+                f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=50",
+                f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=50",
+            )
+            for url in urls:
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "mptrade-orderbook/1.0"})
+                    with urllib.request.urlopen(req, timeout=4) as resp:
+                        raw_data = json.loads(resp.read().decode("utf-8"))
+                    if not isinstance(raw_data, dict):
+                        raise ValueError(f"Unexpected depth payload for {lookup_sym}: {type(raw_data).__name__}")
+                    if "bids" not in raw_data and isinstance(raw_data.get("result"), dict):
+                        krk_book = next(
+                            (v for v in raw_data["result"].values() if isinstance(v, dict) and "bids" in v),
+                            None,
+                        )
+                        if isinstance(krk_book, dict):
+                            raw_data = krk_book
+                        else:
+                            raise ValueError(f"Empty Kraken depth result for {kraken_pair}")
+                    data = raw_data
+                    break
+                except Exception as url_exc:
+                    last_err = url_exc
+            if data is None:
+                raise last_err if last_err is not None else ValueError(f"No depth data for {symbol}")
 
             def _parse_side(rows: Any) -> List[Tuple[float, float]]:
                 out: List[Tuple[float, float]] = []

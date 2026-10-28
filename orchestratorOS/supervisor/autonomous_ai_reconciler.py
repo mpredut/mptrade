@@ -1028,6 +1028,80 @@ class AutonomousAIReconciler:
                     m_info["divergence_regime"] = whale.get("divergence_regime")
                 snapshot.microstructure[sym] = m_info
 
+        # Also harvest reference microstructure files in cachedb/ (e.g. ADAUSD from KRAKEN_CACHE_PAIRS)
+        if os.path.isdir(self.cache_dir):
+            covered_micro_bases = {
+                "BTC" if normalize_cache_base_asset(k) in ("BTC", "XBT") else normalize_cache_base_asset(k)
+                for k in snapshot.microstructure
+            }
+            ref_micro_syms: List[str] = []
+            for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
+                for mpath in sorted(glob.glob(os.path.join(self.cache_dir, f"{pfx}*.json"))):
+                    mfname = os.path.basename(mpath)
+                    msym = mfname[len(pfx) : -len(".json")].upper()
+                    if not msym or not msym.isalnum() or msym in snapshot.microstructure or msym in ref_micro_syms:
+                        continue
+                    mbase = "BTC" if normalize_cache_base_asset(msym) in ("BTC", "XBT") else normalize_cache_base_asset(msym)
+                    if mbase not in covered_micro_bases:
+                        ref_micro_syms.append(msym)
+                        covered_micro_bases.add(mbase)
+            for msym in ref_micro_syms:
+                sym_cands = cache_symbol_variants(msym)
+                ob = next(
+                    (
+                        d
+                        for cand in sym_cands
+                        for d in (_read_json(os.path.join(self.cache_dir, f"orderbook_depth_{cand}.json")),)
+                        if isinstance(d, dict)
+                    ),
+                    None,
+                )
+                deriv = next(
+                    (
+                        d
+                        for cand in sym_cands
+                        for d in (_read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{cand}.json")),)
+                        if isinstance(d, dict)
+                    ),
+                    None,
+                )
+                whale = next(
+                    (
+                        d
+                        for cand in sym_cands
+                        for d in (_read_json(os.path.join(self.cache_dir, f"whale_snapshot_{cand}.json")),)
+                        if isinstance(d, dict)
+                    ),
+                    None,
+                )
+                if ob or deriv or whale:
+                    m_info_ref: Dict[str, Any] = {}
+                    if isinstance(ob, dict):
+                        m_info_ref["ob_imbalance"] = ob.get("imbalance_ratio")
+                        bd_f = _parse_finite_float(ob.get("bid_depth_usd"), -1.0)
+                        ad_f = _parse_finite_float(ob.get("ask_depth_usd"), -1.0)
+                        bw_f = _parse_finite_float(ob.get("largest_bid_wall_usd"), -1.0)
+                        aw_f = _parse_finite_float(ob.get("largest_ask_wall_usd"), -1.0)
+                        m_info_ref["bid_depth_usd"] = round(bd_f, 0) if bd_f >= 0 else None
+                        m_info_ref["ask_depth_usd"] = round(ad_f, 0) if ad_f >= 0 else None
+                        m_info_ref["bid_wall_px"] = ob.get("largest_bid_wall_price")
+                        m_info_ref["bid_wall_usd"] = round(bw_f, 0) if bw_f >= 0 else None
+                        m_info_ref["ask_wall_px"] = ob.get("largest_ask_wall_price")
+                        m_info_ref["ask_wall_usd"] = round(aw_f, 0) if aw_f >= 0 else None
+                    if isinstance(deriv, dict):
+                        m_info_ref["funding_rate"] = deriv.get("funding_rate")
+                        m_info_ref["pred_funding_rate"] = deriv.get("predicted_funding_rate")
+                        m_info_ref["oi_usd"] = deriv.get("open_interest_usd")
+                    if isinstance(whale, dict):
+                        m_info_ref["whale_long_pct"] = whale.get("top_traders_long_pct")
+                        m_info_ref["whale_long_ratio"] = whale.get("top_traders_long_ratio")
+                        m_info_ref["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
+                        m_info_ref["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
+                        m_info_ref["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
+                        m_info_ref["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
+                        m_info_ref["divergence_regime"] = whale.get("divergence_regime")
+                    snapshot.microstructure[msym] = m_info_ref
+
         # 8A. Symmetric cross-venue & sibling symbol synchronization (Binance <-> Kraken <-> Hyperliquid <-> T212/xStocks)
         for sym, pinfo in list(snapshot.prices_and_trends.items()):
             if not isinstance(pinfo, dict):
@@ -1846,9 +1920,24 @@ class AutonomousAIReconciler:
                 None,
             )
 
-            for sym, pinfo in sorted(sensors.prices_and_trends.items()):
-                if not isinstance(pinfo, dict):
+            # Group sibling venue symbols by canonical base asset (e.g. HYPEUSDC + HYPEUSD) to avoid duplicate 3A curves
+            grouped_3a: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+            for s_k, s_v in sorted(sensors.prices_and_trends.items()):
+                if not isinstance(s_v, dict):
                     continue
+                b_raw = normalize_cache_base_asset(s_k)
+                b_canon = "BTC" if b_raw in ("BTC", "XBT") else b_raw
+                grouped_3a.setdefault(b_canon, []).append((s_k, s_v))
+
+            for _, sym_group in sorted(grouped_3a.items(), key=lambda kv: kv[1][0][0]):
+                sym_group.sort(
+                    key=lambda item: (
+                        0 if item[0].endswith(("USDC", "_US_EQ", "_EQ")) else 1,
+                        -len(item[1]),
+                        item[0],
+                    )
+                )
+                sym, pinfo = sym_group[0]
                 px = pinfo.get("price")
                 px_f = _parse_finite_float(px, 0.0)
                 px_str = (
@@ -1856,6 +1945,22 @@ class AutonomousAIReconciler:
                     if px_f >= 1.0
                     else (f"${px_f:.6g}" if px_f > 0 else (f"${px}" if px is not None and not isinstance(px, bool) else "N/A"))
                 )
+                sib_lbl = ""
+                if len(sym_group) > 1:
+                    sib_parts: List[str] = []
+                    for sib_sym, sib_info in sym_group[1:]:
+                        s_px = _parse_finite_float(sib_info.get("price"), 0.0)
+                        if s_px > 0:
+                            s_px_s = f"${s_px:,.2f}" if s_px >= 1.0 else f"${s_px:.6g}"
+                            if px_f > 0 and abs(s_px - px_f) > 1e-9:
+                                spr_pct = (s_px - px_f) / px_f * 100.0
+                                sib_parts.append(f"{sib_sym}={s_px_s} [{spr_pct:+.2f}%]")
+                            else:
+                                sib_parts.append(f"{sib_sym}={s_px_s}")
+                        else:
+                            sib_parts.append(sib_sym)
+                    if sib_parts:
+                        sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
                 extras: List[str] = []
                 if "chg_15m_pct" in pinfo:
                     l24, h24 = pinfo.get("low_24h"), pinfo.get("high_24h")
@@ -2011,13 +2116,30 @@ class AutonomousAIReconciler:
                     lt_str += ")"
                     extras.append(lt_str)
                 extra_str = f" | {' | '.join(extras)}" if extras else ""
-                context_items.append(f"  * {sym}: Price={px_str}{extra_str}")
+                context_items.append(f"  * {sym}{sib_lbl}: Price={px_str}{extra_str}")
 
         if sensors.microstructure:
             context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:")
-            for sym, minfo in sorted(sensors.microstructure.items()):
+            seen_3b_bases: set[str] = set()
+            sorted_3b = sorted(
+                sensors.microstructure.items(),
+                key=lambda kv: (0 if kv[0].endswith("USDC") else 1, kv[0]),
+            )
+            for sym, minfo in sorted_3b:
                 if not isinstance(minfo, dict):
                     continue
+                b_raw_3b = normalize_cache_base_asset(sym)
+                b_canon_3b = "BTC" if b_raw_3b in ("BTC", "XBT") else b_raw_3b
+                if b_canon_3b in seen_3b_bases:
+                    continue
+                seen_3b_bases.add(b_canon_3b)
+                sib_3b = [
+                    other_s
+                    for other_s in sensors.microstructure
+                    if other_s != sym
+                    and ("BTC" if normalize_cache_base_asset(other_s) in ("BTC", "XBT") else normalize_cache_base_asset(other_s)) == b_canon_3b
+                ]
+                sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
                 cur_px = _parse_finite_float((sensors.prices_and_trends.get(sym) or {}).get("price"), 0.0)
                 if cur_px <= 0:
                     for cand in cache_symbol_variants(sym):
@@ -2042,7 +2164,7 @@ class AutonomousAIReconciler:
                     else ""
                 )
                 context_items.append(
-                    f"  * {sym}: ob_imbalance={minfo.get('ob_imbalance')} "
+                    f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
                     f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
                     f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
                     f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
@@ -2123,7 +2245,7 @@ class AutonomousAIReconciler:
             if ps.get("kraken_xstocks"):
                 xs = ps["kraken_xstocks"]
                 context_items.append(
-                    f"  * Kraken xStocks Cross-Venue Allocation & Holdings ({xs.get('underlying')} <-> {xs.get('t212_sibling')}): {xs}"
+                    f"  * Kraken xStocks Pre-IPO Holdings (READ-ONLY on Kraken — NOT API-tradable; cross-venue SpaceX exposure for Trading212 {xs.get('t212_sibling')}): {xs}"
                 )
             if ps.get("hyperliquid_readonly"):
                 context_items.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
@@ -2201,9 +2323,9 @@ class AutonomousAIReconciler:
             min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
             is_equities = getattr(spec, "asset_scope", "all") == "equities"
             target_desc = (
-                "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken xStocks SPCXx.T telemetry)"
+                "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken read-only xStocks SPCXx.T exposure)"
                 if is_equities
-                else "ALL live tradable crypto/xStock spot instruments (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD and listed xStocks on 'kraken', while TAOUSD/ADAUSD on Kraken serve as cross-venue reference telemetry)"
+                else "ALL live tradable crypto spot coins (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD on 'kraken', while TAOUSD/ADAUSD on Kraken serve as cross-venue reference telemetry)"
             )
             venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
             ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'

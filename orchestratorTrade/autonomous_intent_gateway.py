@@ -195,22 +195,6 @@ def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str
         if split is not None:
             seen_pairs.add(pair)
             out.append((pair, split[0], split[1]))
-
-    # Also include any listed xStock pair from kraken/xstock_state.json (e.g. SPCXUSD when listed)
-    xst_path = os.path.join(workspace_dir, "kraken", "xstock_state.json")
-    if os.path.exists(xst_path):
-        try:
-            with open(xst_path, "r", encoding="utf-8", errors="replace") as xf:
-                xst = json.load(xf)
-            if isinstance(xst, dict):
-                x_pair = str(xst.get("pair") or "").strip().upper()
-                if x_pair and x_pair not in seen_pairs:
-                    split = _split_symbol_assets(x_pair)
-                    if split is not None:
-                        seen_pairs.add(x_pair)
-                        out.append((x_pair, split[0], split[1]))
-        except (OSError, ValueError):
-            pass
     return out
 
 
