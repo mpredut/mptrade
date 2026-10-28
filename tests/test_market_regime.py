@@ -527,7 +527,18 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
                              ("bull", "long", "ohlc:1440m"))
             self.assertTrue(decision.fallback_used)
 
-
+    def test_cross_venue_symbol_and_power_normalization(self):
+        import pricewindow as pw
+        from market_regime import MarketRegimeContext
+        bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
+        ctx = MarketRegimeContext.from_decision(
+            bull, evaluated_at=1000.0, symbol="BTC-USDC", provider="BinanceSpot"
+        )
+        self.assertTrue(ctx.is_valid_for(now=1005.0, symbol="BTC_USDC", provider="binance"))
+        self.assertTrue(ctx.is_valid_for(now=1005.0, symbol="BTC/USDC", provider="Binance"))
+        self.assertEqual(pw.step_wols_power_for_symbol("XBTUSD"), 3.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("XXBTZUSD"), 3.0)
+        self.assertEqual(pw.fast_trend_window_for_symbol("TAO_USDC"), 90.0)
 
 
 if __name__ == "__main__":
