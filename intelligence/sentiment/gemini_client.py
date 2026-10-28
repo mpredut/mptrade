@@ -41,6 +41,16 @@ DEFAULT_FALLBACK_MODELS = tuple(
 AGY_CLI_PATH = resolve_agy_bot_bin()
 
 
+def canonical_rest_model(model_name: str) -> str:
+    """Map arbitrary LLM model names (Gemini, Argon, GPT-OSS, Claude) to a canonical Google AI Studio REST model."""
+    if not isinstance(model_name, str) or not model_name.strip():
+        return "gemini-2.5-flash"
+    cleaned = model_name.strip()
+    if any(k in cleaned.lower() for k in ("gemini", "argon")):
+        return cleaned.replace("-low", "").replace("-medium", "").replace("-high", "")
+    return "gemini-2.5-flash"
+
+
 class GeminiClient:
     """Wrapper for querying LLM models.
 
@@ -79,6 +89,75 @@ class GeminiClient:
         )
         self._custom_runner = custom_runner
         self._cache: Dict[str, tuple[float, str]] = {}
+
+    def get_model_candidates(self, primary_model: Optional[str] = None) -> list[str]:
+        """Return an ordered, deduplicated sequence of models to attempt (primary -> fallbacks)."""
+        selected = (primary_model.strip() if isinstance(primary_model, str) and primary_model.strip() else None) or self.model
+        candidates = [selected]
+        for fb in self.fallback_models:
+            if fb and fb not in candidates:
+                candidates.append(fb)
+        return candidates
+
+    def _execute_cli(
+        self,
+        resume: Optional[str],
+        text: str,
+        call_timeout: float,
+        cli_model: str,
+        bot_cli_base: str,
+        run_env: dict[str, str],
+        is_mocked: bool,
+    ) -> subprocess.CompletedProcess:
+        """Run the isolated agy CLI tool with robust file-locking and timeout management."""
+        cmd = [self.cli_path, "--project", self.project_id, "--model", cli_model, "--output-format", "json"]
+        if resume:
+            cmd.extend(["--conversation", resume])
+        cmd.extend(["-p", text])
+        if is_mocked or not os.path.isdir(bot_cli_base):
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
+                                  check=False, env=run_env)
+        lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
+        lock_wait = max(90.0, call_timeout) if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
+        deadline = time.monotonic() + lock_wait
+        with open(lock_path, "a+", encoding="utf-8") as lock_fh:
+            locked = False
+            while True:
+                try:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.15)
+            try:
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
+                                      check=False, env=run_env)
+            finally:
+                if locked:
+                    try:
+                        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _parse_cli_payload(proc: subprocess.CompletedProcess) -> Tuple[Optional[str], Optional[str]]:
+        """Extract response text and conversation_id from agy CLI JSON output."""
+        raw = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not raw:
+            return None, None
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            return raw, None
+        if not isinstance(payload, dict):
+            return raw, None
+        raw_resp = payload.get("response")
+        text_out = raw_resp.strip() if isinstance(raw_resp, str) else ""
+        raw_cid = payload.get("conversation_id")
+        cid_out = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
+        return (text_out or None), cid_out
 
     def query_text(
         self,
@@ -173,69 +252,18 @@ class GeminiClient:
                 run_env = os.environ.copy()
                 run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
 
-                def _run_cli(
-                    resume: Optional[str], text: str, call_timeout: float = timeout_sec, cli_model: str = selected_model
-                ) -> subprocess.CompletedProcess:
-                    cmd = [self.cli_path, "--project", self.project_id, "--model", cli_model,
-                           "--output-format", "json"]
-                    if resume:
-                        cmd.extend(["--conversation", resume])
-                    cmd.extend(["-p", text])
-                    if is_mocked or not os.path.isdir(bot_cli_base):
-                        return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
-                                              check=False, env=run_env)
-                    lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
-                    lock_wait = max(90.0, call_timeout) if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
-                    deadline = time.monotonic() + lock_wait
-                    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
-                        locked = False
-                        while True:
-                            try:
-                                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                locked = True
-                                break
-                            except BlockingIOError:
-                                if time.monotonic() >= deadline:
-                                    break
-                                time.sleep(0.15)
-                        try:
-                            return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
-                                                  check=False, env=run_env)
-                        finally:
-                            if locked:
-                                try:
-                                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-                                except OSError:
-                                    pass
-
-                def _parse(proc: subprocess.CompletedProcess) -> Tuple[Optional[str], Optional[str]]:
-                    raw = (proc.stdout or "").strip()
-                    if proc.returncode != 0 or not raw:
-                        return None, None
-                    try:
-                        payload = json.loads(raw)
-                    except ValueError:
-                        return raw, None
-                    if not isinstance(payload, dict):
-                        return raw, None
-                    raw_resp = payload.get("response")
-                    text_out = raw_resp.strip() if isinstance(raw_resp, str) else ""
-                    raw_cid = payload.get("conversation_id")
-                    cid_out = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
-                    return (text_out or None), cid_out
-
                 # Attempt primary model followed by fallback models if CLI call fails
-                models_to_try = [selected_model]
-                for fb in self.fallback_models:
-                    if fb and fb not in models_to_try:
-                        models_to_try.append(fb)
+                models_to_try = self.get_model_candidates(selected_model)
 
                 for attempt_idx, model_candidate in enumerate(models_to_try):
                     output, turn_cid = None, None
                     proc = None
                     try:
-                        proc = _run_cli(session.conversation_id, cli_prompt, timeout_sec, cli_model=model_candidate)
-                        output, turn_cid = _parse(proc)
+                        proc = self._execute_cli(
+                            session.conversation_id, cli_prompt, timeout_sec, model_candidate,
+                            bot_cli_base, run_env, is_mocked
+                        )
+                        output, turn_cid = self._parse_cli_payload(proc)
                     except subprocess.TimeoutExpired:
                         if not (session.conversation_id and not conversation_id):
                             if attempt_idx == len(models_to_try) - 1:
@@ -252,6 +280,13 @@ class GeminiClient:
                             session.conversation_id,
                             timeout_sec,
                         )
+                    except Exception as exc:
+                        logger.warning(
+                            "Model candidate %s failed with exception: %s; trying fallback.",
+                            model_candidate,
+                            exc,
+                        )
+                        continue
 
                     if output is None and session.conversation_id and not conversation_id:
                         # Runtime resilience: answer this call from a detached one-off thread.
@@ -268,10 +303,16 @@ class GeminiClient:
                                     fallback_prompt = f"{effective_title}\n\n{fallback_body}" if effective_title else fallback_body
                             except Exception:
                                 pass
-                        proc = _run_cli(None, fallback_prompt, timeout_sec, cli_model=model_candidate)
-                        output, detached_cid = _parse(proc)
-                        if detached_cid and detached_cid != session.conversation_id and not is_mocked:
-                            self._remove_detached_thread(bot_cli_base, detached_cid)
+                        try:
+                            proc = self._execute_cli(
+                                None, fallback_prompt, timeout_sec, model_candidate,
+                                bot_cli_base, run_env, is_mocked
+                            )
+                            output, detached_cid = self._parse_cli_payload(proc)
+                            if detached_cid and detached_cid != session.conversation_id and not is_mocked:
+                                self._remove_detached_thread(bot_cli_base, detached_cid)
+                        except Exception as exc:
+                            logger.warning("One-off thread attempt failed for model %s: %s", model_candidate, exc)
                         turn_cid = None
 
                     if output:
@@ -289,13 +330,16 @@ class GeminiClient:
                                 if session.compact and turn_cid:
                                     compact_timeout = max(timeout_sec, 120.0)
                                     try:
-                                        c_proc = _run_cli(
+                                        c_proc = self._execute_cli(
                                             turn_cid,
                                             "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
                                             compact_timeout,
-                                            cli_model=model_candidate,
+                                            model_candidate,
+                                            bot_cli_base,
+                                            run_env,
+                                            is_mocked,
                                         )
-                                        c_out, c_cid = _parse(c_proc)
+                                        c_out, c_cid = self._parse_cli_payload(c_proc)
                                         compacted_ok = bool(c_out or c_cid)
                                     except Exception as exc:
                                         logger.warning(
@@ -336,11 +380,7 @@ class GeminiClient:
         # 3. Direct REST API fallback if API key is provided
         if self.api_key:
             try:
-                # Direct Google AI Studio REST API supports Gemini models; non-Google candidate names fall back to a canonical Gemini endpoint
-                if any(k in selected_model.lower() for k in ("gemini", "argon")):
-                    clean_model = selected_model.replace("-low", "").replace("-medium", "").replace("-high", "")
-                else:
-                    clean_model = "gemini-2.5-flash"
+                clean_model = canonical_rest_model(selected_model)
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={self.api_key}"
                 body = {
                     "contents": [{"parts": [{"text": prompt}]}],

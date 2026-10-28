@@ -63,6 +63,8 @@ from offline.backtests.evaluation import (
     automatic_window_sizes,
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
+    extract_cfg_float,
+    extract_cfg_int,
     iso_utc as _iso,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
@@ -102,35 +104,25 @@ def main(argv: list[str] | None = None) -> int:
         if k.startswith("HL_") or (k.startswith("STRAT_") and k not in cfg):
             cfg[k] = v
 
-    def _cfg_f(key: str, default: float) -> float:
-        raw = cfg.get(key)
-        if raw is None or isinstance(raw, bool):
-            return default
-        try:
-            f = float(str(raw).strip() if isinstance(raw, str) else raw)
-            return f if math.isfinite(f) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
-
     coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper() or "HYPE"
     direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()
     if direction not in ("long", "short"):
         direction = "long"
-    fee_pct = args.fee if args.fee is not None else _cfg_f("HL_FEE_PCT", 0.035)
+    fee_pct = args.fee if args.fee is not None else extract_cfg_float(cfg, "HL_FEE_PCT", 0.035)
     if not math.isfinite(fee_pct) or fee_pct < 0:
         parser.error("--fee cannot be negative")
 
     if args.engine == "spot":
         strat_params = SpotStratParams.from_env(env=cfg)
     else:
-        entry = _cfg_f("STRAT_ENTRY", 350.0)
-        dca = _cfg_f("STRAT_DCA", 100.0)
-        disc = _cfg_f("STRAT_ENTRY_DISCOUNT_PCT", 0.2)
-        drop = _cfg_f("STRAT_DCA_DROP_PCT", 2.0)
-        tp = _cfg_f("STRAT_TAKEPROFIT_PCT", 5.0)
-        budget = _cfg_f("STRAT_MAX_BUDGET", 1050.0)
-        maxdca = max(0, int(_cfg_f("STRAT_MAX_DCA_BUYS", 7.0)))
-        sl = _cfg_f("STRAT_STOP_LOSS_PCT", 0.0)
+        entry = extract_cfg_float(cfg, "STRAT_ENTRY", 350.0)
+        dca = extract_cfg_float(cfg, "STRAT_DCA", 100.0)
+        disc = extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2)
+        drop = extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0)
+        tp = extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 5.0)
+        budget = extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 1050.0)
+        maxdca = max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 7))
+        sl = extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0)
 
         strat_params = StratParams(
             currency="USDC",

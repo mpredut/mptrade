@@ -36,6 +36,8 @@ from offline.backtests.evaluation import (
     build_execution_model_from_args,
     evaluate_segment as _evaluate_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
+    extract_cfg_float,
+    extract_cfg_int,
     iso_utc as _iso,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
@@ -78,27 +80,16 @@ def main(argv: list[str] | None = None) -> int:
         strat_params = StratParams.from_env(cfg)
     except Exception:
         # If .env does not specify every parameter, fall back to safe default test parameters
-        def _cf(key: str, default: float) -> float:
-            raw = cfg.get(key)
-            if raw is None or isinstance(raw, bool):
-                return default
-            try:
-                s = str(raw).split("#", 1)[0].split(";", 1)[0].strip() if isinstance(raw, str) else raw
-                val = float(s)
-                return val if math.isfinite(val) else default
-            except (TypeError, ValueError):
-                return default
-
         strat_params = StratParams(
             currency="USDT",
-            entry_amount=_cf("STRAT_ENTRY", 100.0),
-            entry_discount_pct=_cf("STRAT_ENTRY_DISCOUNT_PCT", 0.2),
-            dca_amount=_cf("STRAT_DCA", 50.0),
-            dca_drop_pct=_cf("STRAT_DCA_DROP_PCT", 2.0),
-            takeprofit_pct=_cf("STRAT_TAKEPROFIT_PCT", 2.0),
-            max_budget=_cf("STRAT_MAX_BUDGET", 500.0),
-            max_dca_buys=max(0, int(_cf("STRAT_MAX_DCA_BUYS", 5.0))),
-            stop_loss_pct=_cf("STRAT_STOP_LOSS_PCT", 0.0),
+            entry_amount=extract_cfg_float(cfg, "STRAT_ENTRY", 100.0),
+            entry_discount_pct=extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2),
+            dca_amount=extract_cfg_float(cfg, "STRAT_DCA", 50.0),
+            dca_drop_pct=extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0),
+            takeprofit_pct=extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 2.0),
+            max_budget=extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 500.0),
+            max_dca_buys=max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 5)),
+            stop_loss_pct=extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0),
             check_minutes=1.0,
             enable_takeprofit=True,
             order_ttl_min=60.0,

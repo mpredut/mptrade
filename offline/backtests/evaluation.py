@@ -9,7 +9,7 @@ aggregation logic. The context carries the timestamps the historical FX needs.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
 import math
@@ -315,6 +315,27 @@ def parse_intervals(value: str) -> list[int]:
     if not intervals or any(interval <= 0 for interval in intervals):
         raise argparse.ArgumentTypeError("intervals must be positive minutes")
     return intervals
+
+
+def extract_cfg_float(cfg: Any, key: str, default: float) -> float:
+    """Extract a finite float parameter from configuration mapping, safely stripping inline comments."""
+    if not isinstance(cfg, (dict, Mapping)):
+        return default
+    raw = cfg.get(key)
+    if raw is None or isinstance(raw, bool):
+        return default
+    try:
+        s = str(raw).split("#", 1)[0].split(";", 1)[0].strip() if isinstance(raw, str) else raw
+        val = float(s)
+        return val if math.isfinite(val) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def extract_cfg_int(cfg: Any, key: str, default: int) -> int:
+    """Extract an integer parameter from configuration mapping."""
+    val = extract_cfg_float(cfg, key, float(default))
+    return int(val)
 
 
 def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
