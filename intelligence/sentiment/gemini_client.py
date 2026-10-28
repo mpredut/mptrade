@@ -31,6 +31,10 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
+FALLBACK_MODELS_RAW = os.environ.get("LLM_FALLBACK_MODELS", "gemini-3.8-flash-medium,gemini-3.8-flash-low,gemini-4-argon-low")
+DEFAULT_FALLBACK_MODELS = tuple(
+    m.strip() for m in FALLBACK_MODELS_RAW.split(",") if m.strip()
+)
 AGY_CLI_PATH = resolve_agy_bot_bin()
 
 
@@ -48,8 +52,15 @@ class GeminiClient:
         cli_path: Optional[str] = None,
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
         project_id: Optional[str] = None,
+        fallback_models: Optional[tuple[str, ...] | list[str]] = None,
     ) -> None:
         self.model = model.strip() if isinstance(model, str) and model.strip() else DEFAULT_MODEL
+        if fallback_models is not None:
+            self.fallback_models = tuple(
+                m.strip() for m in fallback_models if isinstance(m, str) and m.strip()
+            )
+        else:
+            self.fallback_models = DEFAULT_FALLBACK_MODELS
         raw_key = (
             api_key
             if isinstance(api_key, str) and api_key.strip()
@@ -160,9 +171,9 @@ class GeminiClient:
                 run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
 
                 def _run_cli(
-                    resume: Optional[str], text: str, call_timeout: float = timeout_sec
+                    resume: Optional[str], text: str, call_timeout: float = timeout_sec, cli_model: str = selected_model
                 ) -> subprocess.CompletedProcess:
-                    cmd = [self.cli_path, "--project", self.project_id, "--model", selected_model,
+                    cmd = [self.cli_path, "--project", self.project_id, "--model", cli_model,
                            "--output-format", "json"]
                     if resume:
                         cmd.extend(["--conversation", resume])
@@ -210,86 +221,109 @@ class GeminiClient:
                     cid_out = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
                     return (text_out or None), cid_out
 
-                output, turn_cid = None, None
-                proc = None
-                try:
-                    proc = _run_cli(session.conversation_id, cli_prompt, timeout_sec)
-                    output, turn_cid = _parse(proc)
-                except subprocess.TimeoutExpired:
-                    if not (session.conversation_id and not conversation_id):
-                        raise
-                    logger.warning(
-                        "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
-                        topic_key,
-                        session.conversation_id,
-                        timeout_sec,
-                    )
+                # Attempt primary model followed by fallback models if CLI call fails
+                models_to_try = [selected_model]
+                for fb in self.fallback_models:
+                    if fb and fb not in models_to_try:
+                        models_to_try.append(fb)
 
-                if output is None and session.conversation_id and not conversation_id:
-                    # Runtime resilience: answer this call from a detached one-off thread. The topic keeps its
-                    # permanent conversation; the next call resumes it again.
-                    logger.info("Resuming topic '%s' conversation %s failed; answering from a one-off thread.",
-                                topic_key, session.conversation_id)
-                    fallback_prompt = cli_prompt
-                    if use_topic_session and topic_key and not session.history_prefix:
-                        try:
-                            hist_prefix = format_topic_history_prefix(topic_key)
-                            if hist_prefix:
-                                fallback_body = f"{hist_prefix}{prompt}"
-                                fallback_prompt = f"{effective_title}\n\n{fallback_body}" if effective_title else fallback_body
-                        except Exception:
-                            pass
-                    proc = _run_cli(None, fallback_prompt, timeout_sec)
-                    output, detached_cid = _parse(proc)
-                    if detached_cid and detached_cid != session.conversation_id and not is_mocked:
-                        self._remove_detached_thread(bot_cli_base, detached_cid)
-                    turn_cid = None
+                for attempt_idx, model_candidate in enumerate(models_to_try):
+                    output, turn_cid = None, None
+                    proc = None
+                    try:
+                        proc = _run_cli(session.conversation_id, cli_prompt, timeout_sec, cli_model=model_candidate)
+                        output, turn_cid = _parse(proc)
+                    except subprocess.TimeoutExpired:
+                        if not (session.conversation_id and not conversation_id):
+                            if attempt_idx == len(models_to_try) - 1:
+                                raise
+                            logger.warning(
+                                "Model candidate %s timed out after %ss; trying fallback.",
+                                model_candidate,
+                                timeout_sec,
+                            )
+                            continue
+                        logger.warning(
+                            "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
+                            topic_key,
+                            session.conversation_id,
+                            timeout_sec,
+                        )
 
-                if output:
-                    if cache_ttl_sec > 0:
-                        self._cache[prompt] = (now, output)
-                    if use_topic_session:
-                        def _finalize_topic_turn() -> None:
-                            compacted_ok = False
-                            if session.compact and turn_cid:
-                                compact_timeout = max(timeout_sec, 120.0)
-                                try:
-                                    c_proc = _run_cli(
-                                        turn_cid,
-                                        "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
-                                        compact_timeout,
-                                    )
-                                    c_out, c_cid = _parse(c_proc)
-                                    compacted_ok = bool(c_out or c_cid)
-                                except Exception as exc:
-                                    logger.warning(
-                                        "In-place /compact for topic '%s' conversation %s failed: %s",
-                                        topic_key,
-                                        turn_cid,
-                                        exc,
-                                    )
+                    if output is None and session.conversation_id and not conversation_id:
+                        # Runtime resilience: answer this call from a detached one-off thread.
+                        logger.info(
+                            "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread.",
+                            topic_key, session.conversation_id, model_candidate,
+                        )
+                        fallback_prompt = cli_prompt
+                        if use_topic_session and topic_key and not session.history_prefix:
                             try:
-                                record_topic_turn(
-                                    topic_key=topic_key,
-                                    conversation_id=turn_cid,
-                                    response_text=output,
-                                    compacted=compacted_ok,
-                                    cli_base=bot_cli_base,
-                                )
-                            except Exception as e:
-                                logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+                                hist_prefix = format_topic_history_prefix(topic_key)
+                                if hist_prefix:
+                                    fallback_body = f"{hist_prefix}{prompt}"
+                                    fallback_prompt = f"{effective_title}\n\n{fallback_body}" if effective_title else fallback_body
+                            except Exception:
+                                pass
+                        proc = _run_cli(None, fallback_prompt, timeout_sec, cli_model=model_candidate)
+                        output, detached_cid = _parse(proc)
+                        if detached_cid and detached_cid != session.conversation_id and not is_mocked:
+                            self._remove_detached_thread(bot_cli_base, detached_cid)
+                        turn_cid = None
 
-                        if session.compact and turn_cid and not is_mocked:
-                            threading.Thread(target=_finalize_topic_turn, daemon=False).start()
-                        else:
-                            _finalize_topic_turn()
-                    return output
-                else:
-                    logger.warning(
-                        "agy CLI exited with code %s: %s",
-                        proc.returncode if proc is not None else "timeout",
-                        (proc.stderr or "").strip()[:200] if proc is not None else "",
-                    )
+                    if output:
+                        if attempt_idx > 0:
+                            logger.warning(
+                                "LLM query succeeded using fallback model '%s' (primary '%s' failed).",
+                                model_candidate,
+                                selected_model,
+                            )
+                        if cache_ttl_sec > 0:
+                            self._cache[prompt] = (now, output)
+                        if use_topic_session:
+                            def _finalize_topic_turn() -> None:
+                                compacted_ok = False
+                                if session.compact and turn_cid:
+                                    compact_timeout = max(timeout_sec, 120.0)
+                                    try:
+                                        c_proc = _run_cli(
+                                            turn_cid,
+                                            "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
+                                            compact_timeout,
+                                            cli_model=model_candidate,
+                                        )
+                                        c_out, c_cid = _parse(c_proc)
+                                        compacted_ok = bool(c_out or c_cid)
+                                    except Exception as exc:
+                                        logger.warning(
+                                            "In-place /compact for topic '%s' conversation %s failed: %s",
+                                            topic_key,
+                                            turn_cid,
+                                            exc,
+                                        )
+                                try:
+                                    record_topic_turn(
+                                        topic_key=topic_key,
+                                        conversation_id=turn_cid,
+                                        response_text=output,
+                                        compacted=compacted_ok,
+                                        cli_base=bot_cli_base,
+                                    )
+                                except Exception as e:
+                                    logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+
+                            if session.compact and turn_cid and not is_mocked:
+                                threading.Thread(target=_finalize_topic_turn, daemon=False).start()
+                            else:
+                                _finalize_topic_turn()
+                        return output
+                    else:
+                        logger.warning(
+                            "agy CLI with model '%s' failed (code %s): %s",
+                            model_candidate,
+                            proc.returncode if proc is not None else "timeout",
+                            (proc.stderr or "").strip()[:200] if proc is not None else "",
+                        )
             except subprocess.TimeoutExpired:
                 logger.warning("Gemini query timed out after %s seconds", timeout_sec)
                 return None
