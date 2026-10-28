@@ -67,20 +67,23 @@ do_check() {
         [ "$dev_reachable" = false ] && { echo "[DEV CI] DEV machine ($DEV_HOST:$DEV_PORT) is unreachable and no local regression status is available."; exit 0; }
         echo "[DEV CI] No regression status available yet."; exit 0
     fi
-    STATUS_FILE="$status_file" IS_RUNNING="$is_running" "$PYTHON_BIN" -c '
+    STATUS_FILE="$status_file" IS_RUNNING="$is_running" "$PYTHON_BIN" - <<'EOF'
 import json, os, time
 try:
-    d = json.load(open(os.environ["STATUS_FILE"], encoding="utf-8"))
-    st, cm, msg = d.get("status", "UNKNOWN"), d.get("commit_short", "unknown"), d.get("commit_msg", "")
-    age = int(time.time() - d["ts"]) // 60 if d.get("ts") else 0
+    with open(os.environ["STATUS_FILE"], "r", encoding="utf-8") as f:
+        d = json.load(f)
+    st = d.get("status", "UNKNOWN")
+    cm = d.get("commit_short", "unknown")
+    msg = d.get("commit_msg", "")
+    age = int(time.time() - d.get("ts", 0)) // 60 if d.get("ts") else 0
     if os.environ.get("IS_RUNNING") == "true":
         print(f"[DEV CI] ⏳ RUNNING: A new regression is currently in progress on DEV (last finished: {st} on {cm} {age}m ago).")
     else:
         icon = "✅" if st == "PASSED" else "❌"
-        print(f"[DEV CI] {icon} {st} on [{cm}] (\"{msg}\") | Passed: {d.get(\"passed\", 0)} | Failed: {d.get(\"failed\", 0)} | Time: {d.get(\"duration_sec\", 0)}s | Completed {age}m ago")
+        print(f"[DEV CI] {icon} {st} on [{cm}] (\"{msg}\") | Passed: {d.get('passed', 0)} | Failed: {d.get('failed', 0)} | Time: {d.get('duration_sec', 0)}s | Completed {age}m ago")
 except Exception as e:
     print(f"[DEV CI] Error reading status: {e}")
-'
+EOF
 }
 
 do_run() {
@@ -103,7 +106,7 @@ do_run() {
 
     if [ "$was_queued" = true ] && [ -f "$STATUS_JSON" ]; then
         local last_cs
-        last_cs="$("$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(f"{d.get(\"commit\",\"\")}:{d.get(\"status\",\"\")}")' "$STATUS_JSON" 2>/dev/null || true)"
+        last_cs="$("$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("commit","")+":"+d.get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
         if [ "$last_cs" = "${commit_hash}:PASSED" ]; then
             echo "[dev_regression $(date '+%F %T')] Commit $commit_short already tested and PASSED while queued — skipping duplicate run"
             exit 0

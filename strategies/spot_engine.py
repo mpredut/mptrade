@@ -23,7 +23,7 @@ from botcore import (
     required_float_env, required_int_env, required_bool_env, safe_float,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
-from providers.base import _clean_single_order_id
+from providers.base import _clean_single_order_id, normalize_side
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError, StrategyExecutor
 from order_retry import (
@@ -680,11 +680,9 @@ class Strategy:
                 if "txid" in o and o.get("txid") is not None:
                     o["txid"] = _clean_order_id(o.get("txid"))
                 if "side" in o and not isinstance(o.get("side"), bool):
-                    s_norm = str(o.get("side") or "").strip().lower()
-                    if s_norm in ("b", "buy", "bid", "long"):
-                        o["side"] = "buy"
-                    elif s_norm in ("s", "a", "sell", "ask", "short"):
-                        o["side"] = "sell"
+                    s_norm = normalize_side(o.get("side"))
+                    if s_norm in ("BUY", "SELL"):
+                        o["side"] = s_norm.lower()
                 if "intent_id" in o:
                     o["intent_id"] = _clean_order_id(o.get("intent_id"))
                 if "vol" in o:
@@ -963,13 +961,9 @@ class Strategy:
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
                market: bool = False) -> bool:
         market = _parse_bool_flag(market, False)
-        side_s = str(side or "").strip().lower() if not isinstance(side, bool) else ""
-        if side_s in ("b", "bid", "long"):
-            side = "buy"
-        elif side_s in ("s", "a", "ask", "short"):
-            side = "sell"
-        elif side_s in ("buy", "sell"):
-            side = side_s
+        s_norm = normalize_side(side)
+        if s_norm in ("BUY", "SELL"):
+            side = s_norm.lower()
         # A market trailing/stop exit executes immediately instead of risking a missed
         # sharp drop with a limit order. Backtests fill it at the next bar's open.
         if (
@@ -1471,47 +1465,39 @@ class Strategy:
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
-    def _is_trend_up(self, regime: MarketRegimeDecision | None = None) -> bool:
-        """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
-        if self.s.get("trend_mode"):
-            return True
-        if regime is not None and self._regime_matches(regime, "bull", min_samples=self.p.regime_min_samples):
+    def _is_trend_direction(
+        self,
+        regime: MarketRegimeDecision | None,
+        expected_regime: str,
+        client_tokens: tuple[str, ...],
+    ) -> bool:
+        if regime is not None and self._regime_matches(regime, expected_regime, min_samples=self.p.regime_min_samples):
             return True
         try:
             if hasattr(self.client, "trend"):
                 t = self.client.trend(self.pair)
-                if t and str(t).lower() in ("up", "bull", "uptrend"):
+                if t and str(t).lower() in client_tokens:
                     return True
         except Exception:
             pass
         if regime is None:
             try:
                 reg, _ = self._regime_context()
-                if self._regime_matches(reg, "bull", min_samples=self.p.regime_min_samples):
+                if self._regime_matches(reg, expected_regime, min_samples=self.p.regime_min_samples):
                     return True
             except Exception:
                 pass
         return False
 
+    def _is_trend_up(self, regime: MarketRegimeDecision | None = None) -> bool:
+        """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
+        if self.s.get("trend_mode"):
+            return True
+        return self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
+
     def _is_trend_down(self, regime: MarketRegimeDecision | None = None) -> bool:
         """Return True if a downtrend is identified via regime or venue client."""
-        if regime is not None and self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples):
-            return True
-        try:
-            if hasattr(self.client, "trend"):
-                t = self.client.trend(self.pair)
-                if t and str(t).lower() in ("down", "bear", "downtrend"):
-                    return True
-        except Exception:
-            pass
-        if regime is None:
-            try:
-                reg, _ = self._regime_context()
-                if self._regime_matches(reg, "bear", min_samples=self.p.regime_min_samples):
-                    return True
-            except Exception:
-                pass
-        return False
+        return self._is_trend_direction(regime, "bear", ("down", "bear", "downtrend"))
 
     def _vol_1h_ratio(self) -> tuple[float, str]:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""

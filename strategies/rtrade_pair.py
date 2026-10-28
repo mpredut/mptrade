@@ -14,7 +14,7 @@ import uuid
 from typing import Callable, Optional, Protocol
 
 from botcore import _parse_bool_flag
-from providers.base import _clean_single_order_id
+from providers.base import _clean_single_order_id, normalize_side
 
 
 _MAX_LIMIT_REVISION = 1_000_000
@@ -44,12 +44,7 @@ class OrderTicket:
         ):
             raise ValueError("ticket rtrade invalid")
         self.order_id = clean_oid
-        side_u = str(self.side).strip().upper()
-        if side_u == "B":
-            side_u = "BUY"
-        elif side_u == "S":
-            side_u = "SELL"
-        self.side = side_u
+        self.side = normalize_side(self.side)
         try:
             self.price = float(self.price)
             self.qty = float(self.qty)
@@ -251,11 +246,7 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
       SELL: (sell-buy)/sell >= edge  -> sell >= buy/(1-edge)
       BUY:  (sell-buy)/sell >= edge  -> buy <= sell*(1-edge)
     """
-    side = "" if exit_side is None or isinstance(exit_side, bool) else str(exit_side).strip().upper()
-    if side == "B":
-        side = "BUY"
-    elif side == "S":
-        side = "SELL"
+    side = normalize_side(exit_side)
     if isinstance(fill_price, bool) or isinstance(current_price, bool) or fill_price is None or current_price is None:
         raise ValueError("the prices must be positive")
     try:
@@ -321,12 +312,7 @@ class PairCoordinator:
         self.policy = policy
         if start_side is None or isinstance(start_side, bool):
             raise ValueError("start_side must be BUY or SELL")
-        side_u = str(start_side).strip().upper()
-        if side_u == "B":
-            side_u = "BUY"
-        elif side_u == "S":
-            side_u = "SELL"
-        self.start_side = side_u
+        self.start_side = normalize_side(start_side)
         if self.start_side not in {"BUY", "SELL"}:
             raise ValueError("start_side must be BUY or SELL")
         self.clock = clock

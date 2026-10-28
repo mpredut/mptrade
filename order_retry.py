@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 from botcore import _parse_bool_flag, safe_float
+from cachepaths import normalize_venue_name
 
 from lock import FileLock
 from providers.base import (
@@ -44,6 +45,7 @@ from providers.base import (
     extract_order_price,
     extract_order_qty,
     extract_orig_qty,
+    normalize_side,
 )
 from providers.strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
@@ -401,8 +403,8 @@ def _same_deferred_stream(left, right):
             or item.get("last_failure_reason") not in _CONSOLIDATED_DEFERRAL_REASONS
             for item in (left, right)):
         return False
-    left_provider = str(left.get("provider_name") or "").strip().lower()
-    right_provider = str(right.get("provider_name") or "").strip().lower()
+    left_provider = normalize_venue_name(left.get("provider_name"))
+    right_provider = normalize_venue_name(right.get("provider_name"))
     provider_matches = (
         not left_provider or not right_provider or left_provider == right_provider)
     left_sym = str(left.get("symbol") or "").strip().upper()
@@ -581,11 +583,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         return None
     symbol = symbol.strip()
     now = now if now is not None else time.time()
-    side_u = str(side or "").strip().upper()
-    if side_u in ("B", "BID", "LONG"):
-        side_u = "BUY"
-    elif side_u in ("S", "ASK", "A", "SHORT"):
-        side_u = "SELL"
+    side_u = normalize_side(side)
     try:
         qty = float(qty)
         now = float(now)
@@ -714,13 +712,13 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
         if lifecycle == "awaiting_cancel":
-            provider_key = str(provider_name or "").casefold()
+            provider_key = normalize_venue_name(provider_name)
             replaced_key = clean_rep_oid
             for item in existing:
                 if (
                     str(item.get("lifecycle") or "").lower()
                     == "awaiting_cancel"
-                    and str(item.get("provider_name") or "").casefold()
+                    and normalize_venue_name(item.get("provider_name"))
                     == provider_key
                     and item.get("symbol") == symbol
                     and str(item.get("side") or "").upper() == side_u
@@ -1823,11 +1821,7 @@ def resolve(symbol, side):
     if isinstance(symbol, bool) or isinstance(side, bool):
         return 0
     target_sym = str(symbol or "").strip()
-    side_u = str(side or "").strip().upper()
-    if side_u in ("B", "BID", "LONG"):
-        side_u = "BUY"
-    elif side_u in ("S", "ASK", "A", "SHORT"):
-        side_u = "SELL"
+    side_u = normalize_side(side)
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
@@ -1975,11 +1969,10 @@ def price_gate_ok(rec, current_price, tol=None):
             not math.isfinite(req) or req <= 0 or
             not math.isfinite(tol) or tol < 0):
         return False
-    raw_side = rec.get("side")
-    side = str(raw_side or "").strip().upper() if not isinstance(raw_side, bool) else ""
-    if side in {"SELL", "S", "ASK", "A", "SHORT"}:
+    side = normalize_side(rec.get("side"))
+    if side == "SELL":
         return current_price >= req * (1.0 - tol)
-    if side in {"BUY", "B", "BID", "LONG"}:
+    if side == "BUY":
         return current_price <= req * (1.0 + tol)
     return False
 
@@ -2231,11 +2224,7 @@ class TrackedOrderLifecycle:
             raise ValueError("tracked intent missing client_order_id")
         if not clean_sym:
             raise ValueError("tracked intent missing symbol")
-        side_norm = str(side or "").strip().upper()
-        if side_norm in ("B", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
+        side_norm = normalize_side(side)
         now = self._now()
         intent = {
             "intent_id": clean_iid,
