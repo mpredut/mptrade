@@ -23,9 +23,9 @@ Write-Host ("{0} OK - downloaded locally ({1} MB): {2}" -f $stamp, $sz, $dstLoca
 try {
     Copy-Item -Path $dstLocal -Destination $dstWsl -Force
     Write-Host ("{0} OK - copied into WSL: {1}" -f $stamp, $dstWsl)
-    wsl.exe -d Ubuntu-24.04 -u $wslUser -e bash -lc "/home/${wslUser}/mptrade/offline/runners/sync_wsl_cache.sh --unpack-backup >> /home/${wslUser}/mptrade/logs/sync_wsl_cache.log 2>&1"
+    wsl.exe -d Ubuntu-24.04 -u $wslUser -e bash -lc "/home/${wslUser}/mptrade/offline/runners/sync_cache_to.sh wsl --unpack-backup >> /home/${wslUser}/mptrade/logs/sync_wsl_cache.log 2>&1"
     if ($LASTEXITCODE -ne 0) {
-        Write-Host ("{0} WARN - WSL sync_wsl_cache.sh exited with code {1}" -f $stamp, $LASTEXITCODE)
+        Write-Host ("{0} WARN - WSL sync_cache_to.sh exited with code {1}" -f $stamp, $LASTEXITCODE)
     } else {
         Write-Host ("{0} OK - unpacked and synced cachedb in WSL (/home/{1}/mptrade)" -f $stamp, $wslUser)
     }

@@ -5,7 +5,7 @@ the checkout and the branches are read exclusively from there.
 
 DEV needs no cron and no live services of its own. PROD orchestrates:
 
-- `refresh_dev.sh` every 30 minutes: fast-forward `main` and rsync `cachedb/`;
+- `sync_cache_to.sh dev` every 30 minutes: fast-forward `main` and rsync `cachedb/`;
 - `trigger_backtest_dev.sh` at 02:00 and 14:00;
 - DEV runs `run_backtest_cycle.sh` and publishes to `backtest-proposals`;
 - PROD applies the proposals with the guardrails in `apply_proposals.py`.

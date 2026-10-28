@@ -30,7 +30,7 @@ Administrative and disaster recovery tools.
 - **`manage_backups.sh`**
   Unified script for backup and disaster recovery (`local`, `remote`, `pull-prices`, `restore`). Creates the local full DR tarball (`~/mptrade-secrets-backup.tar.gz`), builds and uploads the raw price-only archive (`~/mptrade-price-data.tar.gz`) to Storj (`storj:mptrade-price-data/`), and performs full machine restoration (including automatic Storj price archive fallback).
 - **`windows/pull-binance-backup.ps1`**
-  Executed daily at `03:45 AM` by the Windows Scheduled Task `BinanceBackupPull`. Downloads `mptrade-secrets-backup.tar.gz` from PROD via SSH, copies it into WSL `Ubuntu-24.04`, and triggers `offline/runners/sync_wsl_cache.sh --unpack-backup`.
+  Executed daily at `03:45 AM` by the Windows Scheduled Task `BinanceBackupPull`. Downloads `mptrade-secrets-backup.tar.gz` from PROD via SSH, copies it into WSL `Ubuntu-24.04`, and triggers `offline/runners/sync_cache_to.sh wsl --unpack-backup`.
 - **`make_venv_portable.sh`**
   Fixes hardcoded absolute paths inside `.venv/bin/` wrappers when the repository is cloned or moved to a new path.
 - **`manage_agy.sh`**
@@ -54,17 +54,17 @@ Shared utility libraries.
 - **`process_control.sh`**
   Bash function library that parses `procs.conf`, matches binary paths via `ps`, and exposes `manifest_pids()` and `stop_manifest_process()` for clean process shutdowns.
 - **`backup_sync_common.sh`**
-  Shared SSOT library sourcing `env_common.sh` that provides `ensure_rclone_storj_config()`, `rclone_cmd()`, `rsync_cachedb()`, and `unpack_repo_payload()` used by `manage_backups.sh`, `refresh_dev.sh`, and `sync_wsl_cache.sh`.
+  Shared SSOT library sourcing `env_common.sh` that provides `ensure_rclone_storj_config()`, `rclone_cmd()`, `rsync_cachedb()`, `unpack_repo_payload()`, `dev_ssh()`, `dev_remote_git_pull()`, `dev_launch_regression_bg()`, and `dev_sync_regression_status()` used across `manage_backups.sh`, `sync_cache_to.sh`, `trigger_dev_regression.sh`, and `check_dev_regression.sh`.
 
 ## `offline/runners/`
 Backtesting and simulation execution scripts.
 
 - **`load_dev_backtest_env.sh`**
   Sets required environment variables like `BACKTEST_PROPOSALS_BRANCH`.
-- **`refresh_dev.sh`**
-  Triggered via SSH on the PROD server to sync the DEV machine. It `rsync`s the live `cachedb/` directory from PROD to DEV so backtests run on fresh data.
-- **`sync_wsl_cache.sh`**
-  Runs every 30 minutes via WSL cron (and at `03:45 AM` with `--unpack-backup` from `pull-binance-backup.ps1`) to unpack the daily PROD backup archive and `rsync` live `cachedb/` data from PROD and `.npz` archives from DEV into `/home/mariusp/mptrade/cachedb/` on WSL.
+- **`sync_cache_to.sh`**
+  Unified cache and repository synchronization script supporting two targets:
+  - `sync_cache_to.sh dev`: Runs every 30 minutes on PROD to fast-forward `main` on DEV and `rsync` live `cachedb/` data from PROD $\rightarrow$ DEV.
+  - `sync_cache_to.sh wsl [--unpack-backup]`: Runs every 30 minutes via WSL cron (and at `03:45 AM` with `--unpack-backup` from `pull-binance-backup.ps1`) to unpack the daily PROD backup archive and `rsync` live `cachedb/` data from PROD and `.npz` archives from DEV into `/home/mariusp/mptrade/cachedb/` on WSL.
 - **`run_backtest_cycle.sh`** (now includes `publish_proposals.sh`)
   Executes the full end-to-end backtest cycle: runs the simulation pilot in `--propose` mode, checks the results, and publishes them securely to the `backtest-proposals` git branch (via a dedicated git worktree) without dirtying the `main` branch working tree.
 - **`trigger_backtest_dev.sh`**

@@ -215,7 +215,8 @@ class _DiskBackedSymbolCollector:
         disk_snap = self._load_from_disk(sym_clean, now_f)
         if disk_snap is not None:
             return sym_clean, now_f, cached, disk_snap, False
-        return sym_clean, now_f, cached, None, self._as_bool_flag(allow_network, default=True)
+        allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
+        return sym_clean, now_f, cached, None, allow_net_bool
 
     def _commit_snapshot(self, symbol: str, now: float, snapshot: Any) -> Any:
         self._cache[symbol] = (now, snapshot)

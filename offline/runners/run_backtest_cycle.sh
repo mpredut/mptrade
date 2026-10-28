@@ -4,7 +4,7 @@
 # Uses a separate git WORKTREE to push to `backtest-proposals` without touching main.
 # Triggered from prod (trigger_backtest_dev.sh through ssh) or by hand.
 #
-# The data (cachedb) and the code (git pull) are brought up to date by refresh_dev.sh RUN
+# The data (cachedb) and the code (git pull) are brought up to date by sync_cache_to.sh dev RUN
 # ON PROD before this cycle is triggered — here we only run and publish.
 set -euo pipefail
 

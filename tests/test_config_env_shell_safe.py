@@ -1473,8 +1473,11 @@ def test_backup_sync_common_modular_primitives(tmp_path):
     scripts = [
         os.path.join(ROOT, "orchestratorOS", "lib", "backup_sync_common.sh"),
         os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh"),
-        os.path.join(ROOT, "offline", "runners", "refresh_dev.sh"),
-        os.path.join(ROOT, "offline", "runners", "sync_wsl_cache.sh"),
+        os.path.join(ROOT, "offline", "runners", "sync_cache_to.sh"),
+        os.path.join(ROOT, "offline", "runners", "trigger_backtest_dev.sh"),
+        os.path.join(ROOT, "offline", "runners", "trigger_dev_regression.sh"),
+        os.path.join(ROOT, "offline", "runners", "check_dev_regression.sh"),
+        os.path.join(ROOT, "offline", "runners", "run_dev_regression.sh"),
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", script], check=True)

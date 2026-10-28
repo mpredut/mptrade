@@ -1,137 +1,99 @@
 #!/usr/bin/env bash
-# os_notify.sh — unified helper for ntfy.sh push notifications from bash.
-# Topics that the mirror policy copies to email (ERROR, DEADMAN — see
-# notify_engine/mailer.py) are also emailed, in the background, best-effort.
-# Usage:
-#   Direct:  ./os_notify.sh "Title" "Body" [priority] [topic]
-#   Sourced: source os_notify.sh && send_os_ntfy "Title" "Body" [priority] [topic]
-# Returns curl's exit status for the push (0 = delivered to ntfy).
+# os_notify.sh — shared ntfy notification helper for OS/System scripts.
+# Routes notifications to NTFY_TOPIC_ERROR with deduplication, 5-min anti-burst gate, and email mirroring.
 
-set -u
+_OS_NOTIFY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=env_common.sh
+source "$_OS_NOTIFY_DIR/env_common.sh"
 
-if ! declare -f env_get >/dev/null 2>&1; then
-    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    source "$_script_dir/env_common.sh"
-fi
-
-_os_notify_root() {
-    echo "$ROOT"
+ntfy_error_topic() {
+  env_get NTFY_TOPIC_ERROR "$(env_get NTFY_TOPIC "ntfy-error-1978")"
 }
 
-_os_notify_env() {  # $1=root $2=KEY -> value from .env/config.env
-    env_get "$2"
+ntfy_direct_curl() {  # $1=topic $2=priority $3=tags $4=title $5=body [$6=timeout_sec]
+  local topic="${1:-$(ntfy_error_topic)}" prio="${2:-default}" tags="${3:-warning,computer}"
+  local title="${4:-OS Alert}" body="${5:-}" timeout_s="${6:-8}"
+  [ -n "$topic" ] || return 1
+  local token auth_hdr=()
+  token="$(env_get NTFY_TOKEN "")"
+  [ -n "$token" ] && auth_hdr=(-H "Authorization: Bearer $token")
+  curl -sS --max-time "$timeout_s" \
+    "${auth_hdr[@]}" \
+    -H "Title: $title" \
+    -H "Priority: $prio" \
+    -H "Tags: $tags" \
+    -d "$body" \
+    "https://ntfy.sh/$topic" >/dev/null 2>&1
 }
 
-# Email copy via the Python mailer (single SMTP choke point + mirror policy).
-# Detached so a dead line / slow SMTP never blocks the caller. When run as root
-# (vpn/autodeploy), drop to the repo owner so shared state files keep their owner.
-send_os_email() {  # $1=title $2=body [$3=topic: email only if that topic is mirrored]
-    local root; root="$(_os_notify_root)"
-    local log_file="$root/logs/mailer.log"
-    local cmd=("$root/orchestratorOS/run_python.sh" "$root/notify_engine/mailer.py")
-    [ -n "${3:-}" ] && cmd+=(--topic "$3")
-    cmd+=("$1" "${2:-}")
-    if [ "$(id -u)" = "0" ]; then
-        local owner; owner="$(stat -c %U "$root" 2>/dev/null || echo "")"
-        if [ -n "$owner" ] && [ "$owner" != "root" ]; then
-            touch "$log_file" 2>/dev/null && chown "$owner:$owner" "$log_file" 2>/dev/null || true
-            chmod 0664 "$log_file" 2>/dev/null || true
-            cmd=(runuser -u "$owner" -- "${cmd[@]}")
-        fi
-    fi
-    ( cd "$root" && "${cmd[@]}" >>"$log_file" 2>&1 ) </dev/null &
+send_os_ntfy() {  # $1=title $2=body [$3=priority] [$4=topic]
+  local title="${1:-OS Alert}" body="${2:-}" prio="${3:-default}"
+  local topic="${4:-$(ntfy_error_topic)}"
+  [ -n "$topic" ] || return 0
+
+  local state_file="${OS_NOTIFY_STATE_FILE:-/tmp/mptrade_os_notify_state.json}"
+  local dedup_sec="${OS_NOTIFY_DEDUP_SECONDS:-300}"
+  local gate_sec="${OS_NOTIFY_GATE_SECONDS:-300}"
+
+  if [ -n "${PYTHON_BIN:-}" ] && [ -x "$PYTHON_BIN" ]; then
+    local gate_res
+    gate_res=$(OS_NOTIFY_TITLE="$title" OS_NOTIFY_BODY="$body" OS_NOTIFY_TOPIC="$topic" \
+               OS_NOTIFY_STATE="$state_file" OS_NOTIFY_DEDUP="$dedup_sec" OS_NOTIFY_GATE="$gate_sec" \
+               "$PYTHON_BIN" - <<'PY' 2>/dev/null || echo "SEND"
+import hashlib, json, os, re, time
+state_path = os.environ["OS_NOTIFY_STATE"]
+title, body, topic = os.environ["OS_NOTIFY_TITLE"], os.environ["OS_NOTIFY_BODY"], os.environ["OS_NOTIFY_TOPIC"]
+dedup_s, gate_s, now = float(os.environ["OS_NOTIFY_DEDUP"]), float(os.environ["OS_NOTIFY_GATE"]), time.time()
+norm = re.sub(r"\b\d+(\.\d+)?\b", "<N>", f"{topic}|{title}|{body}".lower())
+sig = hashlib.sha256(norm.encode("utf-8", errors="ignore")).hexdigest()[:20]
+try:
+    with open(state_path, "r", encoding="utf-8") as fh:
+        st = json.load(fh)
+    if not isinstance(st, dict):
+        st = {}
+except Exception:
+    st = {}
+sigs = {k: v for k, v in st.get("sigs", {}).items() if now - float(v) < max(dedup_s, 3600.0)}
+last_sent = float(st.get("last_sent_ts", 0.0))
+decision = "SEND"
+if dedup_s > 0 and sig in sigs and (now - float(sigs[sig])) < dedup_s:
+    decision = "SKIP_DUP"
+elif gate_s > 0 and (now - last_sent) < gate_s:
+    decision = "SKIP_GATE"
+else:
+    sigs[sig] = now
+    st["last_sent_ts"] = now
+st["sigs"] = sigs
+try:
+    tmp = f"{state_path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(st, fh)
+    os.replace(tmp, state_path)
+except Exception:
+    pass
+print(decision)
+PY
+    )
+    [ "$gate_res" = "SKIP_DUP" ] || [ "$gate_res" = "SKIP_GATE" ] && return 0
+  fi
+
+  local tags="warning,computer"
+  [ "$prio" = "high" ] || [ "$prio" = "urgent" ] && tags="rotating_light,warning"
+  ntfy_direct_curl "$topic" "$prio" "$tags" "$title" "$body" 8 || return 1
+
+  if [ -n "${PYTHON_BIN:-}" ] && [ -x "$PYTHON_BIN" ]; then
+    PYTHONPATH="$ROOT:${PYTHONPATH:-}" \
+    OS_ERR_TITLE="$title" OS_ERR_BODY="$body" OS_ERR_PRIO="$prio" OS_ERR_TOPIC="$topic" \
+    "$PYTHON_BIN" -c '
+import os
+from orchestratorOS.notify import email_mirror
+email_mirror.send_error_email(
+    title=os.environ.get("OS_ERR_TITLE", ""),
+    body=os.environ.get("OS_ERR_BODY", ""),
+    priority=os.environ.get("OS_ERR_PRIO", "default"),
+    topic=os.environ.get("OS_ERR_TOPIC", ""),
+    category="os_shell",
+)
+' >/dev/null 2>&1 &
+  fi
 }
-
-send_os_ntfy() {
-    local title="${1:-OS Alert}"
-    local body="${2:-}"
-    local priority="${3:-default}"
-    local topic="${4:-}"
-    local root; root="$(_os_notify_root)"
-
-    if [ -z "$topic" ]; then
-        topic=$(_os_notify_env "$root" NTFY_TOPIC_ERROR)
-        [ -n "$topic" ] || topic=$(_os_notify_env "$root" NTFY_TOPIC)
-        [ -n "$topic" ] || topic="ntfy-error-1978"
-    fi
-
-    # Holistic 5-minute common gate + similarity elimination + bulk synthesis
-    local stamp_file="" gate_file="" bulk_file="" now_ts="" used_bulk=0
-    local dedup_sec="${OS_NOTIFY_DEDUP_SECONDS:-900}"
-    local gate_sec="${OS_NOTIFY_GATE_SECONDS:-300}"
-    if [ "$dedup_sec" -gt 0 ] 2>/dev/null; then
-        local dedup_dir="$root/logs/.os_notify_dedup"
-        mkdir -p "$dedup_dir" 2>/dev/null || true
-        chmod 0777 "$dedup_dir" 2>/dev/null || true
-        # Normalize volatile numbers/timestamps from title and first body line for similarity hash
-        local norm_title norm_body key_hash
-        norm_title="$(printf '%s' "$title" | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
-        norm_body="$(printf '%s' "$body" | head -n 1 | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
-        key_hash="$(printf '%s|%s|%s' "$topic" "$norm_title" "$norm_body" | md5sum 2>/dev/null | awk '{print $1}')"
-        if [ -n "$key_hash" ] && [ -d "$dedup_dir" ]; then
-            stamp_file="$dedup_dir/$key_hash"
-            gate_file="$dedup_dir/.global_gate_ts"
-            bulk_file="$dedup_dir/.pending_bulk"
-            now_ts="$(date +%s)"
-            # 1. Eliminate similar messages within dedup_sec
-            if [ -f "$stamp_file" ]; then
-                local last_ts; last_ts="$(cat "$stamp_file" 2>/dev/null || echo 0)"
-                if [ -n "$last_ts" ] && [ $((now_ts - last_ts)) -lt "$dedup_sec" ] 2>/dev/null; then
-                    return 0
-                fi
-            fi
-            # 2. Enforce 5-minute common gate and bulk synthesis for distinct messages
-            if [ "$gate_sec" -gt 0 ] 2>/dev/null && [ -f "$gate_file" ]; then
-                local gate_ts; gate_ts="$(cat "$gate_file" 2>/dev/null || echo 0)"
-                if [ -n "$gate_ts" ] && [ $((now_ts - gate_ts)) -lt "$gate_sec" ] 2>/dev/null; then
-                    printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
-                    chmod 0666 "$stamp_file" 2>/dev/null || true
-                    local compact_line
-                    compact_line="$(printf '%s: %s' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-160)")"
-                    printf '%s\n' "$compact_line" >> "$bulk_file" 2>/dev/null || true
-                    chmod 0666 "$bulk_file" 2>/dev/null || true
-                    return 0
-                fi
-            fi
-            if [ -s "$bulk_file" ]; then
-                local bulk_count
-                bulk_count=$(( $(wc -l < "$bulk_file" 2>/dev/null || echo 0) + 1 ))
-                body="$(cat "$bulk_file" 2>/dev/null; printf '%s: %s\n' "$title" "$body")"
-                title="📦 Bulk ($bulk_count): $title"
-                used_bulk=1
-            fi
-        fi
-    fi
-
-    local token="${NTFY_TOKEN:-}"
-    [ -n "$token" ] || token=$(_os_notify_env "$root" NTFY_TOKEN)
-    local auth_hdr=()
-    [ -n "$token" ] && auth_hdr=(-H "Authorization: Bearer $token")
-
-    send_os_email "$title" "$body" "$topic"
-
-    if curl --fail -sS -m 10 --retry 2 --retry-delay 3 --retry-all-errors -X POST "https://ntfy.sh/$topic" \
-        -H "Title: $title" \
-        -H "Priority: $priority" \
-        "${auth_hdr[@]}" \
-        -d "$body" >/dev/null 2>&1; then
-        if [ -n "$stamp_file" ]; then
-            printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
-            chmod 0666 "$stamp_file" 2>/dev/null || true
-            [ "$used_bulk" -eq 1 ] && rm -f "$bulk_file" 2>/dev/null || true
-            printf '%s\n' "$now_ts" > "$gate_file" 2>/dev/null || true
-            chmod 0666 "$gate_file" 2>/dev/null || true
-            if [ "$(id -u)" = "0" ]; then
-                rm -rf "$root/logs/.os_notify_dedup.root_old" 2>/dev/null || true
-                local owner; owner="$(stat -c %U "$root" 2>/dev/null || echo "")"
-                [ -n "$owner" ] && [ "$owner" != "root" ] && chown -R "$owner:$owner" "$root/logs/.os_notify_dedup" 2>/dev/null || true
-            fi
-        fi
-        return 0
-    fi
-    return 1
-}
-
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    send_os_ntfy "${1:-OS Alert}" "${2:-}" "${3:-default}" "${4:-}"
-fi

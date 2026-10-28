@@ -235,7 +235,7 @@ Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to 
   * *Step 7:* Monitortrades 392-day tick replay on Binance history — **PASSED**
   * *Step 8:* Automated proposals generation pushed to branch `backtest-proposals` — **PUBLISHED**
   * *Step 9:* Kraken continuous multi-asset grid — **COMPLETED**
-* **Sync Pipeline ([`refresh_dev.sh`](file:///home/predut/mptrade/offline/runners/refresh_dev.sh)):** Syncs upstream code via `git pull --ff-only` and mirrors live `cachedb/` tick archives via `rsync`.
+* **Sync Pipeline ([`sync_cache_to.sh`](file:///home/predut/mptrade/offline/runners/sync_cache_to.sh)):** Syncs upstream code via `git pull --ff-only` and mirrors live `cachedb/` tick archives via `rsync` to `dev` (`sync_cache_to.sh dev`) and `wsl` (`sync_cache_to.sh wsl`).
 
 ---
 
@@ -246,7 +246,7 @@ Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to 
 | **Fleet Healthcheck (Single Shot)** | `./myenv/bin/python orchestratorOS/livecheck/autonomous_overnight_monitor.py --once` |
 | **Fleet Status / Logs** | `systemctl status python_orchestrator.service` / `journalctl -u python_orchestrator.service -f` |
 | **Restart Live Fleet** | `sudo systemctl restart python_orchestrator.service` *(Orchestrator also auto-reloads on config edit)* |
-| **Sync Code & Data to DEV** | `bash offline/runners/refresh_dev.sh` |
+| **Sync Code & Data to DEV** | `bash offline/runners/sync_cache_to.sh dev` |
 | **Launch Overnight Master Suite on DEV** | `ssh -p 32238 predut@192.168.0.138 "nohup bash ~/mptrade/offline/runners/run_overnight_master_suite.sh > ~/mptrade/logs/overnight_runs/master_suite_current.log 2>&1 &"` |
 | **Tail DEV Master Suite Log** | `ssh -p 32238 predut@192.168.0.138 "tail -f ~/mptrade/logs/overnight_runs/master_suite_current.log"` |
 | **Run Core Test Regressions** | `./myenv/bin/python -m pytest tests/test_instrument_guards.py tests/test_order_guard_pillars.py tests/test_spot_explicit_configuration.py` |

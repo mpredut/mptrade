@@ -47,10 +47,10 @@ The entire deployment is reproducible and path-agnostic:
   - `pull-prices`: Downloads `storj:mptrade-price-data/mptrade-price-data.tar.gz` from Storj and unpacks the raw high-density price archives directly into `cachedb/`.
   - `restore <tarball_or_folder>`: Rebuilds secrets, Antigravity credentials, SSH keys/config, `rclone` config, and project definitions, automatically pulls `mptrade-price-data.tar.gz` from Storj if `cachedb/cache_365_price_*.jsonl` is missing locally, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh` (which auto-starts `antigravity-cli-daemon.service` authenticated as `prod-vm`).
 - **Off-Host Daily Pull & Continuous Cache Mirror (DEV + Windows/WSL)**:
-  - **DEV (`192.168.0.138`)**: Synced every 30 minutes from PROD via `offline/runners/refresh_dev.sh` (`rsync` of `cachedb/`).
+  - **DEV (`192.168.0.138`)**: Synced every 30 minutes from PROD via `offline/runners/sync_cache_to.sh dev` (git pull + `rsync` of `cachedb/`).
   - **Windows + WSL (`Ubuntu-24.04`, `/home/mariusp/mptrade`)**:
-    - Daily at `03:45 AM`, the Windows Scheduled Task `BinanceBackupPull` executes `C:\Users\mariusp\pull-binance-backup.ps1` (`orchestratorOS/admin/windows/pull-binance-backup.ps1`), which downloads `~/mptrade-secrets-backup.tar.gz` from PROD (`192.168.0.144:32238`) to `C:\Users\mariusp\mptrade-secrets-backup.tar.gz`, copies it into WSL (`/home/mariusp/mptrade-secrets-backup.tar.gz`), and invokes `offline/runners/sync_wsl_cache.sh --unpack-backup` to unpack the archive into `/home/mariusp/mptrade-secrets-backup` and `/home/mariusp/mptrade`.
-    - Every 30 minutes (`*/30 * * * *`), WSL cron executes `offline/runners/sync_wsl_cache.sh`, which `rsync`s `cachedb/` from `mptrade-prod` and `*.npz` + `dev_regression_status.json` from `mptrade-dev` into `/home/mariusp/mptrade/cachedb/`.
+    - Daily at `03:45 AM`, the Windows Scheduled Task `BinanceBackupPull` executes `C:\Users\mariusp\pull-binance-backup.ps1` (`orchestratorOS/admin/windows/pull-binance-backup.ps1`), which downloads `~/mptrade-secrets-backup.tar.gz` from PROD (`192.168.0.144:32238`) to `C:\Users\mariusp\mptrade-secrets-backup.tar.gz`, copies it into WSL (`/home/mariusp/mptrade-secrets-backup.tar.gz`), and invokes `offline/runners/sync_cache_to.sh wsl --unpack-backup` to unpack the archive into `/home/mariusp/mptrade-secrets-backup` and `/home/mariusp/mptrade`.
+    - Every 30 minutes (`*/30 * * * *`), WSL cron executes `offline/runners/sync_cache_to.sh wsl`, which `rsync`s `cachedb/` from `mptrade-prod` and `*.npz` + `dev_regression_status.json` from `mptrade-dev` into `/home/mariusp/mptrade/cachedb/`.
 - **Fleet Orchestration** (`orchestratorTrade/orchestrator.py`):
   - Supervised by `python_orchestrator.service` (`systemd`).
   - Reads `procs.conf` manifest to spawn all bots in isolated process groups.
@@ -63,7 +63,7 @@ The entire deployment is reproducible and path-agnostic:
   - Installs direct gateway routing drop-in `netplan-99-force-gateway.yaml`.
   - Installs logrotate cap for PIA daemon debug log (`logrotate-pia-daemon.conf`).
   - Installs user-level `antigravity-cli-daemon.service` along with its drop-ins (`antigravity-cli-daemon.service.d/override.conf` waiting on VPN readiness via `wait_for_vpn.sh`, and `antigravity-cli-daemon.service.d/store-fix.conf` running `orchestratorOS/admin/agy_store_fix.py pre/post` to keep the Web UI conversation summary store synchronized), plus the isolated headless bot wrapper `~/.local/bin/agy-bot` (`systemd/agy-bot`, using `~/agy_bot_home` so automated bot prompts never overwrite the human Web UI store), and enables user lingering (`loginctl enable-linger`).
-  - Sets up dynamic crontabs (`systemd/crontab.prod.txt` and `systemd/crontab.root.prod.txt`) including `manage_agy.sh`, `autonomous_ai_reconciler.py`, `refresh_dev.sh` (every 30m PROD $\rightarrow$ DEV sync), and `trigger_backtest_dev.sh` (02:00 / 14:00 backtest runs on DEV).
+  - Sets up dynamic crontabs (`systemd/crontab.prod.txt` and `systemd/crontab.root.prod.txt`) including `manage_agy.sh`, `autonomous_ai_reconciler.py`, `sync_cache_to.sh dev` (every 30m PROD $\rightarrow$ DEV sync), and `trigger_backtest_dev.sh` (02:00 / 14:00 backtest runs on DEV).
   - DEV machine (`192.168.0.138`) crontab (`systemd/crontab.dev.txt`) maintains automated continuous CI regression testing (`dev_ci_watcher.sh` & `run_dev_regression.sh`).
 - **VPN Supervisor** (`orchestratorOS/livecheck/pia_supervisor.sh`):
   - Reads `PIA_USER`, `PIA_PASS`, `PIA_DIP_TOKEN_FRANKFURT`, and `PIA_DIP_TOKEN_BELGIUM` directly from `.env` (fail-fast).
@@ -116,7 +116,7 @@ See `docs/PROXMOX_DR.md` for hypervisor network and firewall settings.
 
 Daily backups at `03:30 AM` via `manage_backups.sh remote` maintain a 3-tier disaster recovery architecture:
 1. **PROD Local Full DR Archive**: `$HOME/mptrade-secrets-backup.tar.gz` (+ 7 daily copies on PROD) containing all `.env` secrets, SSH/Antigravity/rclone credentials, and `cachedb/`.
-2. **Windows + WSL (`Ubuntu-24.04`) Off-Host Full Mirror**: Pulled daily at `03:45 AM` over SSH by Windows Scheduled Task `BinanceBackupPull` (`pull-binance-backup.ps1`) to `C:\Users\mariusp\mptrade-secrets-backup.tar.gz` and `/home/mariusp/mptrade-secrets-backup.tar.gz`, unpacked into `/home/mariusp/mptrade`, and continuously synced every 30 minutes via `offline/runners/sync_wsl_cache.sh`.
+2. **Windows + WSL (`Ubuntu-24.04`) Off-Host Full Mirror**: Pulled daily at `03:45 AM` over SSH by Windows Scheduled Task `BinanceBackupPull` (`pull-binance-backup.ps1`) to `C:\Users\mariusp\mptrade-secrets-backup.tar.gz` and `/home/mariusp/mptrade-secrets-backup.tar.gz`, unpacked into `/home/mariusp/mptrade`, and continuously synced every 30 minutes via `offline/runners/sync_cache_to.sh wsl`.
 3. **Storj Cloud Price Archive (`storj:mptrade-price-data/`)**: Holds `mptrade-price-data.tar.gz` (+ 7 daily dated copies) containing **only** raw collected high-density price series (`cache_365_price_*.jsonl`, `cache_24_price_*.json`, `cache_sparse_price_*.jsonl`, `cache_prices_multi.json`) with zero secrets exposed in cloud storage.
 
 ---
