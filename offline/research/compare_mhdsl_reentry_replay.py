@@ -10,8 +10,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from pathlib import Path
 from strategies import spot_engine as strat
 from strategies.spot_replay import run_replay
+from offline.backtests.datasets import load_dataset, validate_dataset
+from offline.backtests.evaluation import to_ohlc
 
 
 def _safe_f(val, default: float = 0.0) -> float:
@@ -40,20 +43,17 @@ def run_comparison(csv_path=None):
         print(f"Dataset not found at {csv_file}")
         return []
 
-    bars = []
-    with open(csv_file, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            try:
-                bar = (float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
-            except (KeyError, TypeError, ValueError, OverflowError):
-                continue
-            if (
-                all(math.isfinite(v) and v > 0 for v in bar)
-                and bar[1] >= max(bar[0], bar[2], bar[3])
-                and bar[2] <= min(bar[0], bar[1], bar[3])
-            ):
-                bars.append(bar)
+    p = Path(csv_file)
+    if not p.is_file():
+        print(f"Dataset not found at {csv_file}")
+        return []
+
+    try:
+        records = validate_dataset(load_dataset(p), interval_minutes=240)
+        bars = to_ohlc(records)
+    except Exception as exc:
+        print(f"Error loading dataset {csv_file}: {exc}")
+        return []
 
     if not bars:
         print(f"No valid bars in {csv_file}")

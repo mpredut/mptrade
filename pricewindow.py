@@ -130,6 +130,8 @@ def median_filter_kernel(sample_rate_sec, median_seconds: float = None) -> int:
 
 
 def _small_median(vals) -> float:
+    if len(vals) == 0:
+        return 0.0
     s = sorted(vals)
     n = len(s)
     mid = n // 2

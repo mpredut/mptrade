@@ -55,11 +55,9 @@ def load_series(sym):
     ts, px = [], []
     jsonl_path = os.path.join(D, f"cache_365_price_{sym}.jsonl")
     if not os.path.exists(jsonl_path):
-        for candidate_name in (f"cache_sparse_price_{sym}.jsonl", f"cache_price_sparse_{sym}.jsonl"):
-            candidate_path = os.path.join(D, candidate_name)
-            if os.path.exists(candidate_path):
-                jsonl_path = candidate_path
-                break
+        jsonl_path = os.path.join(D, f"cache_sparse_price_{sym}.jsonl")
+    if not os.path.exists(jsonl_path):
+        return np.empty(0), np.empty(0)
     with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             try:

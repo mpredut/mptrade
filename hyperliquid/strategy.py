@@ -82,30 +82,30 @@ class StratParams:
     sz_decimals: int = 4
 
     @classmethod
-    def from_env(cls) -> "StratParams":
-        mode = required_env("STRATEGY_MODE").strip().lower()
+    def from_env(cls, env: dict | None = None) -> "StratParams":
+        mode = required_env("STRATEGY_MODE", env).strip().lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
-        direction = required_env("HL_DIRECTION").strip().lower()
+        direction = required_env("HL_DIRECTION", env).strip().lower()
         if direction not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {direction!r}")
         return cls(
-            currency           = required_env("STRAT_CURRENCY").strip().upper(),
+            currency           = required_env("STRAT_CURRENCY", env).strip().upper(),
             direction          = direction,
-            entry_amount       = required_float_env("STRAT_ENTRY"),
-            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT"),
-            dca_amount         = required_float_env("STRAT_DCA"),
-            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT"),
-            check_minutes      = required_float_env("STRAT_CHECK_MINUTES"),
-            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT"),
-            max_budget         = required_float_env("STRAT_MAX_BUDGET"),
-            max_dca_buys       = required_int_env("STRAT_MAX_DCA_BUYS"),
+            entry_amount       = required_float_env("STRAT_ENTRY", env),
+            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env),
+            dca_amount         = required_float_env("STRAT_DCA", env),
+            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT", env),
+            check_minutes      = required_float_env("STRAT_CHECK_MINUTES", env),
+            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT", env),
+            max_budget         = required_float_env("STRAT_MAX_BUDGET", env),
+            max_dca_buys       = required_int_env("STRAT_MAX_DCA_BUYS", env),
             enable_takeprofit  = (mode != "dca_only"),
-            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN"),
-            signal_gate        = required_bool_env("HL_SIGNAL_GATE"),
-            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT"),
-            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT"),
-            fee_pct            = required_float_env("HL_FEE_PCT"),
+            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN", env),
+            signal_gate        = required_bool_env("HL_SIGNAL_GATE", env),
+            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT", env),
+            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
+            fee_pct            = required_float_env("HL_FEE_PCT", env),
         )
 
     @classmethod

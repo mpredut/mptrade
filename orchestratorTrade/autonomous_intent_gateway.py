@@ -615,13 +615,15 @@ class AutonomousIntentGateway:
             return None
         venue_norm = venue.strip().lower() if isinstance(venue, str) and venue.strip() else None
         req_base = (_split_symbol_assets(sym_norm) or (sym_norm, ""))[0]
+        if req_base in ("XBT", "XXBTZ"):
+            req_base = "BTC"
 
         def _inst_base_norm(inst: Any) -> str:
             raw_b = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol, ""))[0]
             b_norm = _norm_sym(str(raw_b))
             if b_norm.endswith("USEQ") and len(b_norm) > 4:
-                return b_norm[:-4]
-            return b_norm
+                b_norm = b_norm[:-4]
+            return "BTC" if b_norm in ("XBT", "XXBTZ") else b_norm
 
         # 1. Match strictly within the specified venue (never cross-venue fallback)
         if venue_norm:
@@ -677,8 +679,9 @@ class AutonomousIntentGateway:
             if isinstance(cdata, dict):
                 raw_items = cdata.get("items")
                 items = raw_items if isinstance(raw_items, dict) else {}
+                from cachepaths import cache_symbol_variants
                 sym_u = str(inst.symbol or "").strip().upper()
-                candidates = [inst.symbol, sym_u]
+                candidates = cache_symbol_variants(inst.symbol, include_original=True)
                 inst_base = getattr(inst, "base", None) or (_split_symbol_assets(sym_u) or (sym_u, ""))[0]
                 if inst_base:
                     for suffix in ("USDC", "USDT", "USD"):
@@ -710,12 +713,27 @@ class AutonomousIntentGateway:
                             return px_f
                 if inst_base:
                     base_u = str(inst_base).upper()
+                    if base_u in ("XBT", "XXBTZ"):
+                        base_u = "BTC"
                     for k, v in items.items():
                         k_base = (_split_symbol_assets(str(k)) or (str(k).upper(), ""))[0]
+                        if k_base in ("XBT", "XXBTZ"):
+                            k_base = "BTC"
                         if k_base == base_u and v:
                             px_f = _latest_valid_px(v)
                             if px_f is not None:
                                 return px_f
+        except Exception:
+            pass
+
+        # Fallback to cache_24_price_<SYM>.json / cache_365_price_<SYM>.jsonl / cache_sparse_price_<SYM>.jsonl
+        try:
+            from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
+            ser_24h, _ = load_symbol_price_series(self.cache_dir, str(inst.symbol or ""))
+            if ser_24h:
+                px_f = float(ser_24h[-1][1])
+                if math.isfinite(px_f) and px_f > 0:
+                    return px_f
         except Exception:
             pass
 

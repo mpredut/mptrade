@@ -70,6 +70,7 @@ def main():
     cutoff = last_ts - days * 86400.0 * ts_scale
     sliced = [r for r in rows if ts_of(r) >= cutoff]
 
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         for r in sliced:
             f.write(json.dumps(r) + "\n")

@@ -318,18 +318,23 @@ def parse_intervals(value: str) -> list[int]:
 
 
 def extract_cfg_float(cfg: Any, key: str, default: float) -> float:
-    """Extract a finite float parameter from configuration mapping, safely stripping inline comments."""
+    """Extract a finite float parameter from configuration mapping using botcore.float_env."""
     if not isinstance(cfg, (dict, Mapping)):
         return default
-    raw = cfg.get(key)
-    if raw is None or isinstance(raw, bool):
-        return default
     try:
-        s = str(raw).split("#", 1)[0].split(";", 1)[0].strip() if isinstance(raw, str) else raw
-        val = float(s)
-        return val if math.isfinite(val) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+        from botcore import float_env
+        val = float_env(key, cfg)
+        return default if val is None else val
+    except Exception:
+        raw = cfg.get(key)
+        if raw is None or isinstance(raw, bool):
+            return default
+        try:
+            s = str(raw).split("#", 1)[0].split(";", 1)[0].strip() if isinstance(raw, str) else raw
+            f = float(s)
+            return f if math.isfinite(f) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
 
 
 def extract_cfg_int(cfg: Any, key: str, default: int) -> int:

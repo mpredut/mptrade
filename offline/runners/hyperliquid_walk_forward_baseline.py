@@ -115,28 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.engine == "spot":
         strat_params = SpotStratParams.from_env(env=cfg)
     else:
-        entry = extract_cfg_float(cfg, "STRAT_ENTRY", 350.0)
-        dca = extract_cfg_float(cfg, "STRAT_DCA", 100.0)
-        disc = extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2)
-        drop = extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0)
-        tp = extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 5.0)
-        budget = extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 1050.0)
-        maxdca = max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 7))
-        sl = extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0)
-
-        strat_params = StratParams(
-            currency="USDC",
-            direction=direction,
-            entry_amount=entry,
-            entry_discount_pct=disc,
-            dca_amount=dca,
-            dca_drop_pct=drop,
-            takeprofit_pct=tp,
-            max_budget=budget,
-            max_dca_buys=maxdca,
-            stop_loss_pct=sl,
-            fee_pct=fee_pct,
-        )
+        try:
+            strat_params = StratParams.from_env(env=cfg)
+        except Exception:
+            strat_params = StratParams.from_dict(cfg, direction=direction)
+        if args.fee is not None:
+            strat_params = dataclasses.replace(strat_params, fee_pct=fee_pct)
 
     execution = build_execution_model_from_args(parser, args)
     dataset_map = _parse_dataset_specs(args.dataset)

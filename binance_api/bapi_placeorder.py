@@ -12,11 +12,10 @@ from binance.exceptions import BinanceAPIException
 import order_guard
 import symbols as sym
 import config as cfg
-import priceAnalysis as pa
+import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api
-from .bapi import _parse_bool_flag, _INVALID_BAPI_ID_STRINGS
 from .bapi_client import client
 from providers.base import (
     extract_order_id,

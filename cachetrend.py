@@ -771,17 +771,11 @@ class CacheShortTrendManager(CacheManagerInterface):
             if not isinstance(cand, str) or not cand:
                 continue
             cand_file = os.path.join(base_dir, f"cache_24_price_{cand}.json")
+            _migrate_legacy_filename_if_needed(cand_file)
             if os.path.exists(cand_file) or os.path.exists(
                 previous_generation_path(cand_file)
             ):
                 c24_file = cand_file
-                matched_sym = cand
-                break
-            legacy_file = os.path.join(base_dir, f"cache_24price_{cand}.json")
-            if os.path.exists(legacy_file) or os.path.exists(
-                previous_generation_path(legacy_file)
-            ):
-                c24_file = legacy_file
                 matched_sym = cand
                 break
         if c24_file is None:

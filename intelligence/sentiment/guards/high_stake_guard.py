@@ -182,107 +182,160 @@ def load_symbol_price_series(
         except Exception:
             return 0.0
 
-    # 2. Supplement or fallback from cache_365_price_<SYM>.jsonl/.json and cache_sparse_price_<SYM>.jsonl
-    if _span_ms(series_24h) < 3600000.0 * 18:
-        archive_pts: list = []
-        for cand in cands:
-            base_names = (
-                f"cache_365_price_{cand}.jsonl",
-                f"cache_365_price_{cand}.json",
-                f"cache_sparse_price_{cand}.jsonl",
-            )
-            candidate_paths: list = []
-            for bn in base_names:
-                full_p = os.path.join(cachedb_dir, bn)
-                candidate_paths.append(full_p)
-                candidate_paths.extend(legacy_filenames_for(full_p))
-            for arch_path in candidate_paths:
-                if not os.path.exists(arch_path):
-                    continue
-                try:
-                    if arch_path.endswith(".json"):
-                        adata = read_recovering_previous(arch_path, json.loads, default=None)
-                        if isinstance(adata, dict):
-                            aitems = adata.get("items", {})
-                            aser = aitems.get(cand, []) if isinstance(aitems, dict) else (aitems if isinstance(aitems, list) else [])
-                            if isinstance(aser, list) and len(aser) >= 2:
-                                archive_pts = list(aser)
-                                break
-                    else:
-                        with open(arch_path, "rb") as af:
-                            af.seek(0, os.SEEK_END)
-                            fsize = af.tell()
-                            read_bytes = min(fsize, 1024 * 1024)
-                            af.seek(max(0, fsize - read_bytes))
-                            raw_chunk = af.read().decode("utf-8", errors="replace")
-                        lines = raw_chunk.splitlines()
-                        if fsize > read_bytes and len(lines) > 1:
-                            lines = lines[1:]
-                        parsed_rows = []
-                        for ln in lines:
-                            ln = ln.strip()
-                            if not ln:
-                                continue
-                            try:
-                                rec = json.loads(ln)
-                            except ValueError:
-                                continue
-                            if isinstance(rec, dict):
-                                item = rec.get("i")
-                            elif isinstance(rec, list):
-                                item = rec
-                            else:
-                                continue
-                            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                                parsed_rows.append([item[0], item[1]])
-                        if len(parsed_rows) >= 2:
-                            archive_pts = parsed_rows
-                            break
-                except Exception:
-                    continue
-            if archive_pts:
-                break
-
-        if archive_pts:
+    # 2. Supplement 24h (when < 18h span) and extract 7d history from cache_365_price_<SYM> / cache_sparse_price_<SYM>
+    need_24h_supplement = _span_ms(series_24h) < 3600000.0 * 18
+    archive_pts: list = []
+    cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
+    for cand in cands:
+        base_names = (
+            f"cache_365_price_{cand}.jsonl",
+            f"cache_365_price_{cand}.json",
+            f"cache_sparse_price_{cand}.jsonl",
+        )
+        candidate_paths: list = []
+        for bn in base_names:
+            full_p = os.path.join(cachedb_dir, bn)
+            candidate_paths.append(full_p)
+            candidate_paths.extend(legacy_filenames_for(full_p))
+        for arch_path in candidate_paths:
+            if not os.path.exists(arch_path):
+                continue
             try:
-                last_t = float(archive_pts[-1][0])
-                if last_t < 1e11:
-                    last_t *= 1000.0
-                cutoff_24h = last_t - 86400.0 * 1000.0
-                cutoff_7d = last_t - 7.0 * 86400.0 * 1000.0
-                pts_24 = []
-                pts_7d_vals = []
-                for row in archive_pts:
-                    rt = float(row[0])
-                    rp = float(row[1])
-                    if not (math.isfinite(rt) and rt > 0 and math.isfinite(rp) and rp > 0):
-                        continue
-                    tms = rt * 1000.0 if rt < 1e11 else rt
-                    if tms >= cutoff_7d:
-                        pts_7d_vals.append(rp)
-                    if tms >= cutoff_24h:
-                        pts_24.append([tms, rp])
-                if len(pts_7d_vals) >= 2:
-                    vals_7d = pts_7d_vals
-                if pts_24:
-                    if not series_24h:
-                        series_24h = pts_24
-                    else:
-                        series_24h = pts_24 + series_24h
+                if arch_path.endswith(".json"):
+                    adata = read_recovering_previous(arch_path, json.loads, default=None)
+                    if isinstance(adata, dict):
+                        aitems = adata.get("items", {})
+                        aser: list = []
+                        if isinstance(aitems, dict):
+                            for k in cands:
+                                if k in aitems and isinstance(aitems[k], list) and aitems[k]:
+                                    aser = aitems[k]
+                                    break
+                            if not aser and aitems:
+                                aser = next(iter(aitems.values()), [])
+                        elif isinstance(aitems, list):
+                            aser = aitems
+                        if isinstance(aser, list) and len(aser) >= 2:
+                            archive_pts = list(aser)
+                            break
+                else:
+                    with open(arch_path, "rb") as af:
+                        af.seek(0, os.SEEK_END)
+                        fsize = af.tell()
+                        read_bytes = min(fsize, 1024 * 1024)
+                        af.seek(max(0, fsize - read_bytes))
+                        raw_chunk = af.read().decode("utf-8", errors="replace")
+                    lines = raw_chunk.splitlines()
+                    if fsize > read_bytes and len(lines) > 1:
+                        lines = lines[1:]
+                    parsed_rows = []
+                    for ln in lines:
+                        ln = ln.strip()
+                        if not ln:
+                            continue
+                        try:
+                            rec = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if isinstance(rec, dict):
+                            rec_s = rec.get("s")
+                            if (
+                                isinstance(rec_s, str)
+                                and rec_s.strip()
+                                and cands_upper
+                                and rec_s.strip().upper() not in cands_upper
+                            ):
+                                continue
+                            item = rec.get("i")
+                        elif isinstance(rec, list):
+                            item = rec
+                        else:
+                            continue
+                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            parsed_rows.append([item[0], item[1]])
+                    if len(parsed_rows) >= 2:
+                        archive_pts = parsed_rows
+                        break
             except Exception:
-                pass
+                continue
+        if archive_pts:
+            break
+
+    if archive_pts:
+        try:
+            last_t = float(archive_pts[-1][0])
+            if last_t < 1e11:
+                last_t *= 1000.0
+            cutoff_24h = last_t - 86400.0 * 1000.0
+            cutoff_7d = last_t - 7.0 * 86400.0 * 1000.0
+            pts_24 = []
+            pts_7d_vals = []
+            for row in archive_pts:
+                rt = float(row[0])
+                rp = float(row[1])
+                if not (math.isfinite(rt) and rt > 0 and math.isfinite(rp) and rp > 0):
+                    continue
+                tms = rt * 1000.0 if rt < 1e11 else rt
+                if tms >= cutoff_7d:
+                    pts_7d_vals.append(rp)
+                if need_24h_supplement and tms >= cutoff_24h:
+                    pts_24.append([tms, rp])
+            if len(pts_7d_vals) >= 2:
+                vals_7d = pts_7d_vals
+            if need_24h_supplement and pts_24:
+                if not series_24h:
+                    series_24h = pts_24
+                else:
+                    series_24h = pts_24 + series_24h
+        except Exception:
+            pass
 
     # 3. Overlay ultra-recent 1-second ticks from cache_current_price.json
     if isinstance(current_price_items, dict) and current_price_items:
         for cand in cands:
             cur_list = current_price_items.get(cand)
-            if isinstance(cur_list, list) and len(cur_list) >= 2:
+            if isinstance(cur_list, list) and cur_list:
                 series_24h = list(series_24h) + [
                     [pt[0], pt[1]]
                     for pt in cur_list
                     if isinstance(pt, (list, tuple)) and len(pt) >= 2
                 ]
                 break
+
+    # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] points
+    if series_24h:
+        cleaned_24h: list = []
+        for row in series_24h:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            raw_t, raw_p = row[0], row[1]
+            if raw_t is None or isinstance(raw_t, bool) or raw_p is None or isinstance(raw_p, bool):
+                continue
+            try:
+                tf = float(raw_t)
+                pf = float(raw_p)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not (math.isfinite(tf) and tf > 0 and math.isfinite(pf) and pf > 0):
+                continue
+            tms = tf * 1000.0 if tf < 1e11 else tf
+            cleaned_24h.append([tms, pf])
+        if len(cleaned_24h) >= 2:
+            cleaned_24h.sort(key=lambda x: x[0])
+            dedup_24h = [cleaned_24h[0]]
+            for pt in cleaned_24h[1:]:
+                if pt[0] > dedup_24h[-1][0]:
+                    dedup_24h.append(pt)
+                else:
+                    dedup_24h[-1] = pt
+            series_24h = dedup_24h if len(dedup_24h) >= 2 else []
+        else:
+            series_24h = []
+
+    if vals_7d and series_24h:
+        latest_px = float(series_24h[-1][1])
+        if math.isfinite(latest_px) and latest_px > 0 and vals_7d[-1] != latest_px:
+            vals_7d.append(latest_px)
 
     return series_24h, vals_7d
 

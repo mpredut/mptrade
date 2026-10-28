@@ -36,38 +36,7 @@ _KRAKEN_CFG: dict[str, str] = {}
 for _cfg_file in (KRAKEN_DIR / "config.env", KRAKEN_DIR / ".env"):
     if _cfg_file.is_file():
         _KRAKEN_CFG.update(parse_dotenv(str(_cfg_file)))
-def get_live_kraken_params() -> StratParams:
-    """Return live Kraken StratParams, falling back to canonical defaults if unconfigured."""
-    if _KRAKEN_CFG:
-        try:
-            return StratParams.from_env(_KRAKEN_CFG)
-        except Exception:
-            pass
-    return StratParams(
-        currency="USD",
-        entry_amount=100.0,
-        entry_discount_pct=0.2,
-        dca_amount=50.0,
-        dca_drop_pct=2.0,
-        check_minutes=1.0,
-        takeprofit_pct=2.0,
-        max_budget=500.0,
-        max_dca_buys=5,
-        total_budget=500.0,
-        alloc_pct=100.0,
-        entry_pct=20.0,
-        dca_pct=10.0,
-        enable_takeprofit=True,
-        order_ttl_min=60.0,
-        stop_loss_pct=0.0,
-        adopt_cost=0.0,
-        adopt_qty=0.0,
-        reentry_drop_pct=1.0,
-        reentry_tolerance_pct=0.5,
-    )
-
-
-LIVE_PARAMS = get_live_kraken_params()
+LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 
 DATASET_CSV = ROOT / "offline" / "research" / "hype_dataset" / "HYPEUSDC_240m_hlspot.csv"
 SHADOW_OHLC_JSON = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.ohlc.json"

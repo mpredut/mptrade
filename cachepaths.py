@@ -162,6 +162,8 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
     if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
         return "USDCUSDT"
     base = normalize_cache_base_asset(s)
+    if base in ("XBT", "XXBTZ"):
+        return "BTCUSDT"
     if base and base != s:
         return f"{base}USDT"
     return s.replace("USDC", "USDT") if "USDC" in s else s
@@ -193,12 +195,19 @@ def cache_symbol_variants(
                 variants.append(cand)
     if cleaned != "USDCUSDT":
         base = normalize_cache_base_asset(raw)
-        if base:
+        if base == "XXBTZ":
+            base = "XBT"
+        bases = [base] if base else []
+        if base == "XBT":
+            bases.append("BTC")
+        elif base == "BTC":
+            bases.append("XBT")
+        for b in bases:
             for suffix in quotes:
-                cand = f"{base}{suffix}"
+                cand = f"{b}{suffix}"
                 if cand and cand not in variants:
                     variants.append(cand)
-            if include_base and base not in variants:
-                variants.append(base)
+            if include_base and b not in variants:
+                variants.append(b)
     return variants
 
