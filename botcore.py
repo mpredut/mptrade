@@ -226,6 +226,17 @@ def safe_float(val: object, default: float | None = 0.0) -> float | None:
         return default
 
 
+def safe_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
+    f = safe_float(val, default=None)
+    if f is None or not math.isfinite(f):
+        return default
+    try:
+        return int(f)
+    except (ValueError, OverflowError):
+        return default
+
+
 def float_env(key: str, env: dict | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     The optional `env` argument preserves compatibility with legacy float_env(key) calls."""

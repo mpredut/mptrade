@@ -29,26 +29,7 @@ if KRAKEN_DIR not in sys.path:
 
 from strategies.spot_replay import run_replay
 from strategies import spot_engine as strat
-
-
-def _safe_f(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _safe_int(val: Any, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+from botcore import safe_float as _safe_f, safe_int as _safe_int
 
 
 def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:

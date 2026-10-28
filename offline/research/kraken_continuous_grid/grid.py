@@ -26,12 +26,7 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import float_env
-_KRAKEN_DIR = os.path.join(ROOT, "kraken")
-if _KRAKEN_DIR not in sys.path:
-    sys.path.append(_KRAKEN_DIR)
-os.chdir(ROOT)
-from botcore import parse_dotenv  # noqa: E402
+from botcore import float_env, parse_dotenv, safe_float as _safe_f, safe_int as _safe_int
 from strategies import spot_dca as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
 
@@ -120,28 +115,6 @@ W30, W90, WSTEP, WARM = 180, 540, 180, 40
 _LOAD_CACHE: dict = {}
 _ASSET_CACHE: dict = {}
 _TASK_CACHE: dict = {}
-
-
-def _safe_f(val, default: float = 0.0) -> float:
-    import math
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _safe_int(val, default: int = 0) -> int:
-    import math
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def load(path):

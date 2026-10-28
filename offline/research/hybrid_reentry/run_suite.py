@@ -9,25 +9,6 @@ import sys
 import time
 
 
-def _safe_f(val, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-        return res if math.isfinite(res) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _safe_int(val, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-        return int(res) if math.isfinite(res) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -35,6 +16,7 @@ _KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
 
+from botcore import safe_float as _safe_f, safe_int as _safe_int
 from strategies import spot_dca as strat
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,

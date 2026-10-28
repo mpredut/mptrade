@@ -29,7 +29,7 @@ try:
     sys.modules[_rp_spec.name] = rp
     _rp_spec.loader.exec_module(rp)
     strat = rp._strat
-    from botcore import parse_dotenv       # noqa: E402
+    from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int  # noqa: E402
 finally:
     sys.path[:] = _orig_sys_path
 
@@ -92,28 +92,6 @@ WARM, W90_1H, STEP_1H = 12, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per da
 _LOAD_CACHE: dict = {}
 _SPLIT_CACHE: dict = {}
 _TASK_CACHE: dict = {}
-
-
-def _safe_f(val, default: float = 0.0) -> float:
-    import math
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _safe_int(val, default: int = 0) -> int:
-    import math
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def load(asset, itv):

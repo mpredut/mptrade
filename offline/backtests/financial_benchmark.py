@@ -9,6 +9,7 @@ from typing import Iterable
 
 from offline.backtests.execution import ExecutionModel, FeeModel
 from offline.backtests.walk_forward import summarize_test_windows
+from botcore import safe_float as _safe_f, safe_int as _safe_int
 
 
 @dataclass(frozen=True)
@@ -188,26 +189,6 @@ def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
     if val <= -threshold_pct:
         return "bear"
     return "sideways"
-
-
-def _safe_f(val: object, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-    except (TypeError, ValueError):
-        return default
-    return vf if math.isfinite(vf) else default
-
-
-def _safe_int(val: object, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-    except (TypeError, ValueError):
-        return default
-    return int(vf) if math.isfinite(vf) else default
 
 
 def aggregate_financial_windows(

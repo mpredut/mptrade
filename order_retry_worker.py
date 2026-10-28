@@ -38,7 +38,7 @@ if _ROOT not in sys.path:
 
 import order_retry as oq
 import alertnotifiers as alert
-from botcore import _parse_bool_flag, required_float_env, single_instance
+from botcore import _parse_bool_flag, required_float_env, safe_int as _safe_int, single_instance
 from cachepaths import split_symbol_assets
 from lock import FileLock
 from providers.base import normalize_side
@@ -165,16 +165,6 @@ def _normalize_bypass_set(raw_bg) -> set[str]:
             if s is not None and not isinstance(s, bool) and str(s).strip()
         }
     return set()
-
-
-def _safe_int(val, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-        return int(vf) if math.isfinite(vf) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def _accepted_order(order):

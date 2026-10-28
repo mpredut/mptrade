@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "kraken") not in sys.path:
     sys.path.append(str(ROOT / "kraken"))
 
-from botcore import parse_dotenv
+from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int
 from kraken import replay as kraken_replay
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import load_dataset
@@ -194,26 +194,6 @@ def define_candidate_grid() -> dict[str, dict]:
             "trend_interval": 240,
         },
     }
-
-
-def _safe_f(val: object, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return vf if math.isfinite(vf) else default
-
-
-def _safe_int(val: object, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return int(vf) if math.isfinite(vf) else default
 
 
 def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:

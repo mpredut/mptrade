@@ -2,6 +2,7 @@ import math
 import threading
 import time
 
+from botcore import safe_float as _safe_float
 from . import bapi as api   # package-local Binance API facade
 
 
@@ -13,16 +14,6 @@ orders_cache = {}
 trades_cache = []
 _MAX_TRADES_CACHE = 1000
 _MAX_ORDERS_CACHE = 5000
-
-
-def _safe_float(val, default=0.0):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return res if math.isfinite(res) else default
 
 
 # ------------------------------

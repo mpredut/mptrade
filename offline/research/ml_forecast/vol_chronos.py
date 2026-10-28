@@ -24,6 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
+from botcore import safe_int as _safe_int  # noqa: E402
 
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
 MAX_CONTEXT = 512                       # maximum history hours supplied per prediction
@@ -65,16 +66,6 @@ def _load_pipeline():
     from chronos import ChronosPipeline
     print(f"  loading {MODEL_NAME} (zero-shot, no training)...")
     return ChronosPipeline.from_pretrained(MODEL_NAME, device_map="cpu", torch_dtype=torch.float32)
-
-
-def _safe_int(val, default: int) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if np.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):

@@ -24,6 +24,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
+from botcore import safe_float as _safe_float
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -79,16 +80,6 @@ class BacktestStats:
     funding_downscales: int = 0
     geopolitical_vetoes: int = 0
     sentiment_downscales: int = 0
-
-
-def _safe_float(val: object, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return vf if math.isfinite(vf) else default
 
 
 def _precompute_intelligence_tape(

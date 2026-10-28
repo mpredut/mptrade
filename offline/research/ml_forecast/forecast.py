@@ -26,26 +26,12 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall, calculate_hurst_exponent as hurst_rs  # noqa: E402
+from botcore import safe_float as _safe_f, safe_int as _safe_int  # noqa: E402
 
 HORIZON_H = 24
 WARMUP = 240            # history hours required for features; Hurst uses 240h
 
 FEATURES = ["r1", "r4", "r8", "r24", "r72", "vol24", "vol72", "mk_z", "hurst", "rsi", "snr24"]
-
-
-def _safe_f(val, default: float | None = 0.0) -> float | None:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if np.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _safe_int(val, default: int = 0) -> int:
-    f = _safe_f(val, None)
-    return int(f) if f is not None else default
 
 
 def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:

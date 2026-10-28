@@ -41,6 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from botcore import safe_float as _safe_float
 try:
     from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
@@ -161,16 +162,6 @@ def _log_dates(days_back):
 # -- Step B: independent price sampling that does not touch tradeall. ----------
 
 _LAST_SAMPLED_TS = {}
-
-
-def _safe_float(val, default=0.0):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-    except (TypeError, ValueError):
-        return default
-    return res if math.isfinite(res) else default
 
 
 def sample_current_prices(symbols):
