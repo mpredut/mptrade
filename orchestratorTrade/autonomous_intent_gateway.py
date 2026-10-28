@@ -160,35 +160,57 @@ def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
 
 
 def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str]]:
-    """Read KRAKEN_CACHE_PAIRS from kraken/config.env to include all live Kraken spot pairs."""
+    """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS) and listed xStock pairs from kraken/."""
     cfg_path = os.path.join(workspace_dir, "kraken", "config.env")
-    if not os.path.exists(cfg_path):
-        return []
-    raw_pairs = ""
-    try:
-        with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                cleaned = line.split("#", 1)[0].strip()
-                if not cleaned or "=" not in cleaned:
-                    continue
-                k, v = cleaned.split("=", 1)
-                key = k.strip()
-                if key.lower().startswith("export "):
-                    key = key[7:].strip()
-                if key.upper() == "KRAKEN_CACHE_PAIRS":
-                    raw_pairs = v.strip().strip('"').strip("'")
-                    break
-    except OSError:
-        return []
+    tradable_pairs = ""
+    cache_pairs = ""
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    cleaned = line.split("#", 1)[0].strip()
+                    if not cleaned or "=" not in cleaned:
+                        continue
+                    k, v = cleaned.split("=", 1)
+                    key = k.strip()
+                    if key.lower().startswith("export "):
+                        key = key[7:].strip()
+                    key_u = key.upper()
+                    val_s = v.strip().strip('"').strip("'")
+                    if key_u == "KRAKEN_TRADABLE_PAIRS":
+                        tradable_pairs = val_s
+                    elif key_u == "KRAKEN_CACHE_PAIRS":
+                        cache_pairs = val_s
+        except OSError:
+            pass
 
+    raw_pairs = tradable_pairs if tradable_pairs else cache_pairs
     out: List[Tuple[str, str, str]] = []
+    seen_pairs: set[str] = set()
     for item in raw_pairs.split(","):
         pair = item.strip().upper()
-        if not pair:
+        if not pair or pair in seen_pairs:
             continue
         split = _split_symbol_assets(pair)
         if split is not None:
+            seen_pairs.add(pair)
             out.append((pair, split[0], split[1]))
+
+    # Also include any listed xStock pair from kraken/xstock_state.json (e.g. SPCXUSD when listed)
+    xst_path = os.path.join(workspace_dir, "kraken", "xstock_state.json")
+    if os.path.exists(xst_path):
+        try:
+            with open(xst_path, "r", encoding="utf-8", errors="replace") as xf:
+                xst = json.load(xf)
+            if isinstance(xst, dict):
+                x_pair = str(xst.get("pair") or "").strip().upper()
+                if x_pair and x_pair not in seen_pairs:
+                    split = _split_symbol_assets(x_pair)
+                    if split is not None:
+                        seen_pairs.add(x_pair)
+                        out.append((x_pair, split[0], split[1]))
+        except (OSError, ValueError):
+            pass
     return out
 
 

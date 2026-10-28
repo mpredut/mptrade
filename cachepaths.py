@@ -146,9 +146,16 @@ def normalize_cache_base_asset(symbol: object) -> str:
         s = s.split("-", 1)[0].strip()
     elif "_" in s:
         s = s.split("_", 1)[0].strip()
+    if s.endswith("X.T") and len(s) > 3:
+        s = s[:-3]
+    elif s.endswith((".T", ".F")) and len(s) > 2:
+        s = s[:-2]
     for quote in CACHE_QUOTE_SUFFIXES:
         if s.endswith(quote) and len(s) > len(quote):
-            return s[: -len(quote)]
+            s = s[: -len(quote)]
+            break
+    if s in ("XXBT", "XXBTZ"):
+        return "XBT"
     return s
 
 
@@ -209,5 +216,8 @@ def cache_symbol_variants(
                     variants.append(cand)
             if include_base and b not in variants:
                 variants.append(b)
+            eq_cand = f"{b}_US_EQ"
+            if eq_cand not in variants:
+                variants.append(eq_cand)
     return variants
 

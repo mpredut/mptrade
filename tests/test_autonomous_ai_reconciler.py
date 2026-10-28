@@ -1734,3 +1734,118 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
     assert resolved is fake_kraken_xbt
     assert gw._get_live_price(fake_kraken_xbt) == 84800.0
 
+
+def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_path):
+    """Verify:
+    1. KRAKEN_TRADABLE_PAIRS=HYPEUSD restricts Kraken tradable pairs to HYPEUSD (+ listed xStocks)
+       while keeping KRAKEN_CACHE_PAIRS=HYPEUSD,TAOUSD,ADAUSD for reference data collection.
+    2. Hyperliquid .state_HYPE_long.json is harvested into hyperliquid_cycles['HYPEUSDC'] with
+       last_buy_price from last_open_price and resting_orders from orders.
+    3. Kraken xStock holdings (SPCXx.T) and allocation parameters are harvested into kraken_xstocks
+       and exposed in both crypto and equities (t212) scopes, linked with SPCX_US_EQ.
+    """
+    from cachepaths import cache_symbol_variants, normalize_cache_base_asset
+    from orchestratorTrade.autonomous_intent_gateway import _discover_kraken_cache_pairs
+
+    assert normalize_cache_base_asset("SPCXx.T") == "SPCX"
+    assert "SPCX_US_EQ" in cache_symbol_variants("SPCXUSD")
+    assert "SPCXUSD" in cache_symbol_variants("SPCX_US_EQ")
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True)
+    kraken_dir = tmp_path / "kraken"
+    kraken_dir.mkdir(parents=True)
+    hl_dir = tmp_path / "hyperliquid"
+    hl_dir.mkdir(parents=True)
+    t212_dir = tmp_path / "212trading"
+    t212_dir.mkdir(parents=True)
+
+    (kraken_dir / "config.env").write_text(
+        "KRAKEN_PAIR=HYPEUSD\n"
+        "KRAKEN_CACHE_PAIRS=HYPEUSD,TAOUSD,ADAUSD\n"
+        "KRAKEN_TRADABLE_PAIRS=HYPEUSD\n"
+        "XSTOCK_REGEX=SPCX|SPACEX\n"
+        "XSTOCK_ALLOC_PRICE=141.75\n"
+        "XSTOCK_TP_ALERT_PCT=41\n"
+        "XSTOCK_TP2_ALERT_PCT=81\n"
+        "XSTOCK_SL_ALERT_PCT=12\n"
+        "XSTOCK_YAHOO=SPCX\n",
+        encoding="utf-8",
+    )
+    (kraken_dir / "xstock_state.json").write_text(
+        json.dumps({
+            "known_assets": {"SPCXx.T": 15.74655, "AAPLx.T": 2e-06, "USDC": 2020.0},
+            "allocated": {"asset": "SPCXx.T", "qty": 4.2786, "ts": 1781276702.0},
+            "pair": None,
+        }),
+        encoding="utf-8",
+    )
+    (hl_dir / ".state_HYPE_long.json").write_text(
+        json.dumps({
+            "qty": 1.66,
+            "cost": 98.027928,
+            "entry_price": 59.052968,
+            "dca_buys": 0,
+            "last_open_price": 59.052968,
+            "orders": [{"oid": 359202348244, "side": "sell", "px": 59.347, "sz": 1.66, "role": "close"}],
+        }),
+        encoding="utf-8",
+    )
+    (hl_dir / ".state_dn_HYPE.json").write_text(
+        json.dumps({"qty": 999.0, "cost": 99999.0}),
+        encoding="utf-8",
+    )
+    (t212_dir / ".state_SPCX_US_EQ.json").write_text(
+        json.dumps({
+            "qty": 2.442965,
+            "cost_usd": 386.54,
+            "entry_price": 158.2257,
+            "last_buy_price": 158.2257,
+            "dca_buys": 0,
+        }),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSD": 62.0, "SPCX_US_EQ": 170.1}}),
+        encoding="utf-8",
+    )
+
+    assert _discover_kraken_cache_pairs(str(tmp_path)) == [("HYPEUSD", "HYPE", "USD")]
+
+    # If xstock_state.json lists a tradable pair (e.g. SPCXUSD), gateway automatically includes it
+    (kraken_dir / "xstock_state.json").write_text(
+        json.dumps({
+            "known_assets": {"SPCXx.T": 15.74655, "AAPLx.T": 2e-06},
+            "allocated": {"asset": "SPCXx.T", "qty": 4.2786},
+            "pair": "SPCXUSD",
+        }),
+        encoding="utf-8",
+    )
+    assert _discover_kraken_cache_pairs(str(tmp_path)) == [
+        ("HYPEUSD", "HYPE", "USD"),
+        ("SPCXUSD", "SPCX", "USD"),
+    ]
+
+    reconciler = AutonomousAIReconciler(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
+    snap_crypto = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
+    hl_cyc = snap_crypto.portfolio_summary.get("hyperliquid_cycles", {})
+    assert "HYPEUSDC" in hl_cyc
+    assert "DN_HYPEUSDC" not in hl_cyc
+    assert hl_cyc["HYPEUSDC"]["qty"] == 1.66
+    assert hl_cyc["HYPEUSDC"]["last_buy_price"] == 59.052968
+    assert hl_cyc["HYPEUSDC"]["resting_orders"][0]["px"] == 59.347
+
+    xs_crypto = snap_crypto.portfolio_summary.get("kraken_xstocks", {})
+    assert xs_crypto["underlying"] == "SPCX"
+    assert xs_crypto["t212_sibling"] == "SPCX_US_EQ"
+    assert xs_crypto["holdings"]["SPCXx.T"] == 15.74655
+    assert xs_crypto["alloc_price"] == 141.75
+    assert xs_crypto["live_price"] == 170.1
+    assert xs_crypto["pnl_vs_alloc_pct"] == 20.0
+    assert xs_crypto["t212_sibling_cycle"]["qty"] == 2.442965
+
+    snap_eq = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="equities")
+    assert "kraken_xstocks" in snap_eq.portfolio_summary
+    assert snap_eq.portfolio_summary["kraken_xstocks"]["holdings"]["SPCXx.T"] == 15.74655
+
+

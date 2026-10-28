@@ -484,12 +484,19 @@ class AutonomousAIReconciler:
         price_map: Dict[str, float] = {}
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
             for sym, item in prices_data["items"].items():
+                px_val = 0.0
                 if isinstance(item, list) and item:
                     last_pt = item[-1] if isinstance(item[-1], list) and len(item[-1]) > 1 else item[0]
                     if isinstance(last_pt, list) and len(last_pt) > 1:
                         px_val = _parse_finite_float(last_pt[1], 0.0)
-                        if px_val > 0:
-                            price_map[sym] = px_val
+                    elif isinstance(last_pt, (int, float)):
+                        px_val = _parse_finite_float(last_pt, 0.0)
+                elif isinstance(item, (int, float)) and not isinstance(item, bool):
+                    px_val = _parse_finite_float(item, 0.0)
+                elif isinstance(item, dict):
+                    px_val = _parse_finite_float(item.get("price") or item.get("c"), 0.0)
+                if px_val > 0:
+                    price_map[sym] = px_val
 
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
@@ -1021,6 +1028,39 @@ class AutonomousAIReconciler:
                     m_info["divergence_regime"] = whale.get("divergence_regime")
                 snapshot.microstructure[sym] = m_info
 
+        # 8A. Symmetric cross-venue & sibling symbol synchronization (Binance <-> Kraken <-> Hyperliquid <-> T212/xStocks)
+        for sym, pinfo in list(snapshot.prices_and_trends.items()):
+            if not isinstance(pinfo, dict):
+                continue
+            sym_variants = cache_symbol_variants(sym, include_original=True, include_base=True)
+            for cand in sym_variants:
+                if cand == sym:
+                    continue
+                sib_pinfo = snapshot.prices_and_trends.get(cand)
+                if isinstance(sib_pinfo, dict):
+                    if (
+                        _parse_finite_float(pinfo.get("price"), 0.0) <= 0.0
+                        and _parse_finite_float(sib_pinfo.get("price"), 0.0) > 0.0
+                    ):
+                        pinfo["price"] = sib_pinfo["price"]
+                    for k, v in sib_pinfo.items():
+                        if v is None:
+                            continue
+                        if k not in pinfo or pinfo.get(k) is None:
+                            pinfo[k] = v
+                        elif k in ("trend", "growth_coefficient") and pinfo.get(k) in (0, 0.0) and v not in (0, 0.0):
+                            pinfo[k] = v
+                if sym not in series_24h_by_sym and cand in series_24h_by_sym:
+                    series_24h_by_sym[sym] = series_24h_by_sym[cand]
+                sib_micro = snapshot.microstructure.get(cand)
+                if isinstance(sib_micro, dict) and sib_micro:
+                    if sym not in snapshot.microstructure:
+                        snapshot.microstructure[sym] = dict(sib_micro)
+                    else:
+                        for mk, mv in sib_micro.items():
+                            if snapshot.microstructure[sym].get(mk) is None and mv is not None:
+                                snapshot.microstructure[sym][mk] = mv
+
         # 8B. Cross-market 24h ALT/BTC ratio geometry, realized beta, and correlation vs BTC
         btc_series_24h = next(
             (
@@ -1105,9 +1145,22 @@ class AutonomousAIReconciler:
         hyperliquid_cycles: Dict[str, Any] = {}
         hl_dir = os.path.join(self.workspace_dir, "hyperliquid")
         if os.path.isdir(hl_dir):
-            for st_path in sorted(glob.glob(os.path.join(hl_dir, ".state_*.json"))):
+            hl_state_paths = sorted(
+                glob.glob(os.path.join(hl_dir, ".state_*.json")),
+                key=lambda p: (
+                    0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
+                    os.path.basename(p),
+                ),
+            )
+            for st_path in hl_state_paths:
                 fname = os.path.basename(st_path)
                 raw_tok = fname[len(".state_") : -len(".json")].upper()
+                if raw_tok.startswith("DN_") or raw_tok == "DN":
+                    continue
+                for sfx in ("_LONG", "_SHORT"):
+                    if raw_tok.endswith(sfx):
+                        raw_tok = raw_tok[: -len(sfx)]
+                        break
                 if not raw_tok.isalnum():
                     continue
                 pair_name = raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC"
@@ -1130,17 +1183,38 @@ class AutonomousAIReconciler:
                     if avg_cost and px_f > 0
                     else None
                 )
-                hyperliquid_cycles[pair_name] = {
+                last_buy_px = (
+                    st_data.get("last_buy_price")
+                    if st_data.get("last_buy_price") is not None
+                    else st_data.get("last_open_price")
+                )
+                cyc_entry: Dict[str, Any] = {
                     "qty": round(qty, 6),
                     "cost_usd": round(cost, 2),
                     "avg_cost_px": avg_cost,
                     "entry_price": st_data.get("entry_price"),
-                    "last_buy_price": st_data.get("last_buy_price"),
+                    "last_buy_price": last_buy_px,
                     "last_sell_price": st_data.get("last_sell_price"),
                     "last_exit_kind": st_data.get("last_exit_kind"),
                     "dca_buys": st_data.get("dca_buys"),
                     "dd_pct": dd_pct,
+                    "pos_peak": st_data.get("pos_peak") or st_data.get("trail_peak"),
                 }
+                raw_orders = st_data.get("orders")
+                if isinstance(raw_orders, list) and raw_orders:
+                    close_orders = [
+                        {
+                            "side": o.get("side"),
+                            "px": o.get("px") or o.get("price") or o.get("limit"),
+                            "sz": o.get("sz") or o.get("qty"),
+                            "role": o.get("role") or o.get("kind"),
+                        }
+                        for o in raw_orders
+                        if isinstance(o, dict)
+                    ]
+                    if close_orders:
+                        cyc_entry["resting_orders"] = close_orders
+                hyperliquid_cycles[pair_name] = cyc_entry
         if hyperliquid_cycles:
             snapshot.portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
 
@@ -1165,7 +1239,14 @@ class AutonomousAIReconciler:
                 raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
                 cost = _parse_finite_float(raw_cost, 0.0)
                 avg_cost = round(cost / qty, 4) if qty > 1e-12 and cost > 0 else None
-                px_f = _parse_finite_float(snapshot.prices_and_trends.get(ticker, {}).get("price"), 0.0)
+                px_f = 0.0
+                for cand in cache_symbol_variants(ticker):
+                    cand_px = _parse_finite_float(
+                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                    )
+                    if cand_px > 0:
+                        px_f = cand_px
+                        break
                 dd_pct = (
                     round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
                     if avg_cost and px_f > 0
@@ -1185,6 +1266,97 @@ class AutonomousAIReconciler:
                 }
         if t212_cycles:
             snapshot.portfolio_summary["t212_cycles"] = t212_cycles
+
+        # 9B-xStocks. Kraken xStocks state & cross-venue link with Trading212 (SPCXx.T <-> SPCX_US_EQ)
+        xst_path = os.path.join(kraken_dir, "xstock_state.json")
+        xst_data = _read_json(xst_path) if os.path.exists(xst_path) else None
+        if isinstance(xst_data, dict):
+            xstock_cfg: Dict[str, str] = {}
+            k_cfg_path = os.path.join(kraken_dir, "config.env")
+            if os.path.exists(k_cfg_path):
+                try:
+                    with open(k_cfg_path, "r", encoding="utf-8", errors="replace") as f:
+                        for raw_line in f:
+                            line = raw_line.split("#", 1)[0].strip()
+                            if line.startswith("XSTOCK_") and "=" in line:
+                                k_part, v_part = line.split("=", 1)
+                                xstock_cfg[k_part.strip()] = v_part.strip().strip("'\"")
+                except Exception:
+                    pass
+            known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
+            x_regex = xstock_cfg.get("XSTOCK_REGEX") or "SPCX|SPACEX"
+            x_holdings: Dict[str, float] = {}
+            for ak, av in known_assets.items():
+                ak_str = str(ak).strip()
+                av_f = _parse_finite_float(av, 0.0)
+                if av_f <= 0:
+                    continue
+                is_xstock_tok = ak_str.upper().endswith(("X.T", ".T"))
+                if not is_xstock_tok:
+                    try:
+                        is_xstock_tok = bool(re.search(x_regex, ak_str, re.IGNORECASE))
+                    except re.error:
+                        is_xstock_tok = False
+                if is_xstock_tok:
+                    x_holdings[ak_str] = round(av_f, 6)
+            alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
+            raw_pair = xst_data.get("pair")
+            listed_pair = (
+                str(raw_pair).strip().upper()
+                if isinstance(raw_pair, str) and raw_pair.strip() and raw_pair.strip().lower() not in ("none", "null", "nan")
+                else None
+            )
+            if x_holdings or alloc_info or listed_pair:
+                underlying = (xstock_cfg.get("XSTOCK_YAHOO") or "SPCX").strip().upper()
+                t212_sib = f"{underlying}_US_EQ"
+                alloc_px = _parse_finite_float(xstock_cfg.get("XSTOCK_ALLOC_PRICE"), 0.0)
+                tp1_pct = _parse_finite_float(xstock_cfg.get("XSTOCK_TP_ALERT_PCT"), 0.0)
+                tp2_pct = _parse_finite_float(xstock_cfg.get("XSTOCK_TP2_ALERT_PCT"), 0.0)
+                sl_pct = _parse_finite_float(xstock_cfg.get("XSTOCK_SL_ALERT_PCT"), 0.0)
+                live_px = 0.0
+                for cand in cache_symbol_variants(listed_pair or underlying):
+                    cand_px = _parse_finite_float(
+                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                    )
+                    if cand_px > 0:
+                        live_px = cand_px
+                        break
+                xst_summary: Dict[str, Any] = {
+                    "underlying": underlying,
+                    "t212_sibling": t212_sib,
+                    "holdings": x_holdings,
+                    "allocated": alloc_info,
+                    "listed_pair": listed_pair,
+                    "alloc_price": alloc_px if alloc_px > 0 else None,
+                    "tp1_alert_pct": tp1_pct if tp1_pct > 0 else None,
+                    "tp2_alert_pct": tp2_pct if tp2_pct > 0 else None,
+                    "sl_alert_pct": sl_pct if sl_pct > 0 else None,
+                }
+                if live_px > 0:
+                    xst_summary["live_price"] = live_px
+                    if alloc_px > 0:
+                        xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
+                sib_cyc = t212_cycles.get(t212_sib)
+                if not isinstance(sib_cyc, dict):
+                    sib_st_path = os.path.join(t212_dir, f".state_{t212_sib}.json")
+                    sib_st = _read_json(sib_st_path) if os.path.exists(sib_st_path) else None
+                    if isinstance(sib_st, dict):
+                        s_qty = _parse_finite_float(sib_st.get("qty"), 0.0)
+                        s_cost = _parse_finite_float(
+                            sib_st.get("cost_usd") if sib_st.get("cost_usd") is not None else sib_st.get("cost"),
+                            0.0,
+                        )
+                        sib_cyc = {
+                            "qty": round(s_qty, 6),
+                            "cost_usd": round(s_cost, 2),
+                            "avg_cost_px": round(s_cost / s_qty, 4) if s_qty > 1e-12 and s_cost > 0 else None,
+                            "entry_price": sib_st.get("entry_price"),
+                            "last_buy_price": sib_st.get("last_buy_price"),
+                            "dca_buys": sib_st.get("dca_buys"),
+                        }
+                if isinstance(sib_cyc, dict):
+                    xst_summary["t212_sibling_cycle"] = sib_cyc
+                snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
 
         # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid spot/perp equity summary)
         for l_dir in self.logs_dirs:
@@ -1233,9 +1405,11 @@ class AutonomousAIReconciler:
             if not isinstance(pos, dict):
                 continue
             p_sym = str(pos.get("symbol") or "").upper()
+            p_venue = str(pos.get("venue") or "").lower()
+            p_variants = cache_symbol_variants(p_sym)
             pos_px_f = _parse_finite_float(pos.get("price"), 0.0)
             if pos_px_f <= 0:
-                for cand in cache_symbol_variants(p_sym):
+                for cand in p_variants:
                     cand_px = _parse_finite_float(
                         (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
                     )
@@ -1268,8 +1442,21 @@ class AutonomousAIReconciler:
                     pos["last_sell_px"] = ls_px
                     if pos_px_f > 0:
                         pos["chg_vs_last_sell_pct"] = round(((pos_px_f - ls_px) / ls_px) * 100.0, 2)
-            for cyc_map in (kraken_cycles, hyperliquid_cycles, t212_cycles):
+            venue_cyc_maps = (
+                (hyperliquid_cycles, kraken_cycles, t212_cycles)
+                if p_venue == "hyperliquid"
+                else (t212_cycles, kraken_cycles, hyperliquid_cycles)
+                if p_venue == "t212"
+                else (kraken_cycles, hyperliquid_cycles, t212_cycles)
+            )
+            for cyc_map in venue_cyc_maps:
                 cyc = cyc_map.get(p_sym)
+                if not isinstance(cyc, dict) and (
+                    (p_venue == "kraken" and cyc_map is kraken_cycles)
+                    or (p_venue == "hyperliquid" and cyc_map is hyperliquid_cycles)
+                    or (p_venue == "t212" and cyc_map is t212_cycles)
+                ):
+                    cyc = next((cyc_map[c] for c in p_variants if isinstance(cyc_map.get(c), dict)), None)
                 if not isinstance(cyc, dict):
                     continue
                 avg_c = _parse_finite_float(cyc.get("avg_cost_px"), 0.0)
@@ -1933,6 +2120,11 @@ class AutonomousAIReconciler:
                         f"last_buy={tc.get('last_buy_price')}, last_sell={tc.get('last_sell_price')} "
                         f"({tc.get('last_exit_kind')}), dca_buys={tc.get('dca_buys')}, dd={tc.get('dd_pct')}%"
                     )
+            if ps.get("kraken_xstocks"):
+                xs = ps["kraken_xstocks"]
+                context_items.append(
+                    f"  * Kraken xStocks Cross-Venue Allocation & Holdings ({xs.get('underlying')} <-> {xs.get('t212_sibling')}): {xs}"
+                )
             if ps.get("hyperliquid_readonly"):
                 context_items.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
             for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
@@ -2009,9 +2201,9 @@ class AutonomousAIReconciler:
             min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
             is_equities = getattr(spec, "asset_scope", "all") == "equities"
             target_desc = (
-                "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours)"
+                "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken xStocks SPCXx.T telemetry)"
                 if is_equities
-                else "ALL live tradable crypto spot coins (e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken'; HYPEUSDC on 'hyperliquid')"
+                else "ALL live tradable crypto/xStock spot instruments (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD and listed xStocks on 'kraken', while TAOUSD/ADAUSD on Kraken serve as cross-venue reference telemetry)"
             )
             venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
             ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
