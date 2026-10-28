@@ -30,7 +30,15 @@ if _ROOT_DIR not in sys.path:
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, load_dotenv
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -76,6 +84,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
 )
 from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
+    _extract_intent_notional,
     _is_us_rth_open,
     _parse_finite_float,
     _parse_notify_enabled_flag,
@@ -106,10 +115,8 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
 
     if not isinstance(lines, (list, tuple)) or not lines:
         return []
-    fm = _parse_finite_float(file_mtime, time.time())
-    if fm <= 0:
-        fm = time.time()
-    cutoff_ts = _parse_finite_float(cutoff_ts, 0.0)
+    fm = safe_pos_float(file_mtime, default=None) or time.time()
+    cutoff_ts = safe_nonneg_float(cutoff_ts, default=0.0) or 0.0
     try:
         ref = datetime.fromtimestamp(fm)
     except (ValueError, OverflowError, OSError):
@@ -217,11 +224,9 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
             v_norm = normalize_venue_name(d.get("venue"))
             if v_norm:
                 d["venue"] = v_norm
-            if d.get("suggested_notional_usd") is None:
-                for nk in ("notional_usd", "amount_usd", "size_usd"):
-                    if d.get(nk) is not None:
-                        d["suggested_notional_usd"] = d[nk]
-                        break
+            extracted_usd = _extract_intent_notional(d, default=None)
+            if extracted_usd is not None:
+                d["suggested_notional_usd"] = extracted_usd
             candidates.append(d)
 
     # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first,
@@ -341,7 +346,7 @@ def _set_pos_anchor(
     overwrite: bool = True,
 ) -> None:
     """Attach a cost/buy/sell/peak price anchor and its percentage delta to a position dict."""
-    a_f = _parse_finite_float(anchor_val, 0.0)
+    a_f = safe_pos_float(anchor_val, default=0.0) or 0.0
     if a_f <= 0:
         return
     if not overwrite and pos.get(px_key) is not None:
@@ -412,16 +417,16 @@ def _load_symbol_microstructure(
     m_info: Dict[str, Any] = {}
     if isinstance(ob, dict):
         m_info["ob_imbalance"] = ob.get("imbalance_ratio")
-        bd_f = _parse_finite_float(ob.get("bid_depth_usd"), -1.0)
-        ad_f = _parse_finite_float(ob.get("ask_depth_usd"), -1.0)
-        bw_f = _parse_finite_float(ob.get("largest_bid_wall_usd"), -1.0)
-        aw_f = _parse_finite_float(ob.get("largest_ask_wall_usd"), -1.0)
-        m_info["bid_depth_usd"] = round(bd_f, 0) if bd_f >= 0 else None
-        m_info["ask_depth_usd"] = round(ad_f, 0) if ad_f >= 0 else None
+        for k_src, k_dst in (
+            ("bid_depth_usd", "bid_depth_usd"),
+            ("ask_depth_usd", "ask_depth_usd"),
+            ("largest_bid_wall_usd", "bid_wall_usd"),
+            ("largest_ask_wall_usd", "ask_wall_usd"),
+        ):
+            val = safe_nonneg_float(ob.get(k_src), default=None)
+            m_info[k_dst] = round(val, 0) if val is not None else None
         m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
-        m_info["bid_wall_usd"] = round(bw_f, 0) if bw_f >= 0 else None
         m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
-        m_info["ask_wall_usd"] = round(aw_f, 0) if aw_f >= 0 else None
     if isinstance(deriv, dict):
         m_info["funding_rate"] = deriv.get("funding_rate")
         m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
@@ -445,13 +450,13 @@ def _parse_venue_cycle_state(
     avg_decimals: int = 6,
 ) -> Dict[str, Any]:
     """Normalize a venue cycle `.state_*.json` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
-    qty = _parse_finite_float(st_data.get("qty"), 0.0)
+    qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
     raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
-    cost = _parse_finite_float(raw_cost, 0.0)
+    cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
     avg_cost = round(cost / qty, avg_decimals) if qty > 1e-12 and cost > 0 else None
     px_f = 0.0
     for cand in cache_symbol_variants(symbol):
-        cand_px = _parse_finite_float((prices_and_trends.get(cand) or {}).get("price"), 0.0)
+        cand_px = safe_pos_float((prices_and_trends.get(cand) or {}).get("price"), default=0.0) or 0.0
         if cand_px > 0:
             px_f = cand_px
             break
@@ -747,7 +752,7 @@ class AutonomousAIReconciler:
             enriched = dict(payload)
             raw_ts = enriched.get("ts")
             ref_ts: Optional[float] = None
-            ts_f = _parse_finite_float(raw_ts, 0.0)
+            ts_f = safe_pos_float(raw_ts, default=0.0) or 0.0
             eff_path = str(resolve_cachedb_filepath(fpath))
             if ts_f > 0:
                 ref_ts = ts_f / 1000.0 if ts_f > 1e12 else ts_f
@@ -828,12 +833,12 @@ class AutonomousAIReconciler:
             valid_news.sort(
                 key=lambda x: (
                     1 if x.get("is_high_severity") else 0,
-                    _parse_finite_float(x.get("first_seen_ts"), 0.0),
+                    safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0,
                 ),
                 reverse=True,
             )
             for item in valid_news[:6]:
-                seen_ts = _parse_finite_float(item.get("first_seen_ts"), 0.0)
+                seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
                 age_m = round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None
                 snapshot.breaking_news.append({
                     "title": item.get("title"),
@@ -864,8 +869,10 @@ class AutonomousAIReconciler:
                 k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
                 if isinstance(k_st, dict) and k_st.get("peak") is not None:
                     trailing_map.setdefault(k_key, k_st)
-                elif _parse_finite_float(k_st, 0.0) > 0:
-                    trailing_map.setdefault(k_key, {"peak": _parse_finite_float(k_st, 0.0)})
+                else:
+                    k_pk = safe_pos_float(k_st, default=0.0) or 0.0
+                    if k_pk > 0:
+                        trailing_map.setdefault(k_key, {"peak": k_pk})
 
         price_map: Dict[str, float] = {}
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
@@ -988,12 +995,12 @@ class AutonomousAIReconciler:
                     inst_by_sym[sym] = inst
 
                     px = snapshot.prices_and_trends.get(sym, {}).get("price")
-                    px_f = _parse_finite_float(px, 0.0)
+                    px_f = safe_pos_float(px, default=0.0) or 0.0
                     if px_f <= 0:
                         try:
                             get_px_fn = getattr(inst._provider, "get_current_price", None)
                             if callable(get_px_fn):
-                                live_px = _parse_finite_float(get_px_fn(sym), 0.0)
+                                live_px = safe_pos_float(get_px_fn(sym), default=0.0) or 0.0
                                 if live_px > 0:
                                     px = live_px
                                     px_f = live_px
@@ -1002,9 +1009,9 @@ class AutonomousAIReconciler:
                             px_f = 0.0
                     if px_f <= 0:
                         for cand in cache_symbol_variants(sym):
-                            cand_px = _parse_finite_float(
-                                (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
-                            )
+                            cand_px = safe_pos_float(
+                                (snapshot.prices_and_trends.get(cand) or {}).get("price"), default=0.0
+                            ) or 0.0
                             if cand_px > 0:
                                 px = cand_px
                                 px_f = cand_px
@@ -1012,7 +1019,7 @@ class AutonomousAIReconciler:
                     sym_entry = snapshot.prices_and_trends.setdefault(
                         sym, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0}
                     )
-                    if px_f > 0 and _parse_finite_float(sym_entry.get("price"), 0.0) <= 0:
+                    if px_f > 0 and (safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0:
                         sym_entry["price"] = px
 
                     base_free = _query_free_bal(inst, base)
@@ -2317,9 +2324,9 @@ class AutonomousAIReconciler:
             )
         if spec.can_trade:
             gw = self.intent_gateway
-            max_usd = _parse_finite_float(getattr(gw, "max_notional_usd", None), 2000.0)
-            min_usd = _parse_finite_float(getattr(gw, "min_notional_usd", None), 10.0)
-            min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
+            max_usd = safe_pos_float(getattr(gw, "max_notional_usd", None), default=2000.0) or 2000.0
+            min_usd = safe_pos_float(getattr(gw, "min_notional_usd", None), default=10.0) or 10.0
+            min_conf = safe_nonneg_float(getattr(gw, "min_confidence", None), default=0.85) or 0.85
             is_equities = getattr(spec, "asset_scope", "all") == "equities"
             target_desc = (
                 "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken read-only xStocks SPCXx.T exposure)"
@@ -2778,8 +2785,8 @@ class AutonomousAIReconciler:
             if m_decision in ("BUY", "SELL"):
                 m_sym = m_dec.get("symbol", "")
                 m_venue = m_dec.get("venue", "")
-                m_conf = _parse_finite_float(m_dec.get("confidence"), 0.0)
-                m_usd = _parse_finite_float(m_dec.get("suggested_notional_usd"), 0.0)
+                m_conf = safe_nonneg_float(m_dec.get("confidence"), default=0.0) or 0.0
+                m_usd = safe_nonneg_float(m_dec.get("suggested_notional_usd"), default=0.0) or 0.0
                 venue_sfx = f" ({m_venue})" if m_venue else ""
                 body_lines.append(f"Trading Intent: {m_decision} {m_sym}{venue_sfx} ${m_usd:.0f} (conf={m_conf:.2f})")
 

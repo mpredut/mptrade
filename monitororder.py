@@ -25,7 +25,6 @@ from providers.base import (
     normalize_side,
 )
 from cachepaths import split_symbol_assets
-from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
@@ -36,6 +35,7 @@ from botcore import (
     required_float_env,
     required_int_env,
     safe_nonneg_float,
+    safe_pos_float as _safe_pos_float,
 )
 
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
@@ -93,17 +93,25 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     return min(DEFAULT_ORDER_TTL_SEC, MAX_GLOBAL_ORDER_TTL_SEC)
 
 
+def _format_order_notify_fields(symbol, order_type, price, quantity, owner=None):
+    qty = _safe_pos_float(quantity, 0.0)
+    px = _safe_pos_float(price, 0.0)
+    val = px * qty
+    quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
+    side = normalize_side(order_type) or str(order_type).upper()
+    valid_owner = owner and owner not in ("unspecified", "unknown")
+    owner_tag = f" [{owner}]" if valid_owner else ""
+    owner_body = f" ({owner})" if valid_owner else ""
+    return qty, px, val, quote, side, owner_tag, owner_body
+
+
 def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=None, age_str="", ttl_str=""):
     """Notify when an expired open order is canceled by monitororder."""
     try:
         import alertnotifiers as alert
-        qty = _safe_pos_float(quantity, 0.0)
-        px = _safe_pos_float(price, 0.0)
-        val = px * qty
-        quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
-        side = normalize_side(order_type) or str(order_type).upper()
-        owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
-        owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
+        qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
+            symbol, order_type, price, quantity, owner
+        )
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
         alert.notify(
@@ -183,13 +191,9 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         return
     try:
         import alertnotifiers as alert
-        qty = _safe_pos_float(quantity, 0.0)
-        px = _safe_pos_float(price, 0.0)
-        val = px * qty
-        quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
-        side = normalize_side(order_type) or str(order_type).upper()
-        owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
-        owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
+        qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
+            symbol, order_type, price, quantity, owner
+        )
         print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
         alert.notify(
             title=f"📝 {side} {symbol} @ {px:.2f}{owner_tag}",

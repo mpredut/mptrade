@@ -38,7 +38,15 @@ if _ROOT not in sys.path:
 
 import order_retry as oq
 import alertnotifiers as alert
-from botcore import _parse_bool_flag, required_float_env, safe_int as _safe_int, single_instance
+from botcore import (
+    _parse_bool_flag,
+    required_float_env,
+    safe_float,
+    safe_int as _safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+    single_instance,
+)
 from cachepaths import split_symbol_assets
 from lock import FileLock
 from providers.base import normalize_side
@@ -169,6 +177,21 @@ def _normalize_bypass_set(raw_bg) -> set[str]:
 
 def _accepted_order(order):
     return oq.order_id_from_response(order) is not None
+
+
+def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
+    """Populate orig_qty from venue order_status when absent on the reconciled payload."""
+    if oq.order_qty_from_response(order) is None and hasattr(mkt, "order_status"):
+        try:
+            oid = oq.order_id_from_response(order)
+            if oid:
+                st = mkt.order_status(symbol, oid, provider_name=provider_name)
+                if st and getattr(st, "orig_qty", None):
+                    order = dict(order)
+                    order["orig_qty"] = st.orig_qty
+        except Exception:
+            pass
+    return order
 
 
 def _submission_requires_reconciliation(record):
@@ -403,16 +426,9 @@ def process_once(mkt, now=None):
             mkt, symbol, client_order_id, provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
-            if oq.order_qty_from_response(existing_order) is None and hasattr(mkt, "order_status"):
-                try:
-                    oid = oq.order_id_from_response(existing_order)
-                    if oid:
-                        st = mkt.order_status(symbol, oid, provider_name=provider_name)
-                        if st and getattr(st, "orig_qty", None):
-                            existing_order = dict(existing_order)
-                            existing_order["orig_qty"] = st.orig_qty
-                except Exception:
-                    pass
+            existing_order = _hydrate_missing_order_orig_qty(
+                mkt, symbol, existing_order, provider_name=provider_name
+            )
             if oq.complete_claim(
                     r, "accepted", now, order=existing_order,
                     provider_name=provider_name):
@@ -582,16 +598,9 @@ def process_once(mkt, now=None):
             if reconciliation_state == _RECONCILE_FOUND:
                 succeeded += 1
                 reconciled += 1
-                if oq.order_qty_from_response(existing_order) is None and hasattr(mkt, "order_status"):
-                    try:
-                        oid = oq.order_id_from_response(existing_order)
-                        if oid:
-                            st = mkt.order_status(symbol, oid, provider_name=provider_name)
-                            if st and getattr(st, "orig_qty", None):
-                                existing_order = dict(existing_order)
-                                existing_order["orig_qty"] = st.orig_qty
-                    except Exception:
-                        pass
+                existing_order = _hydrate_missing_order_orig_qty(
+                    mkt, symbol, existing_order, provider_name=provider_name
+                )
                 oq.complete_claim(
                     r, "accepted", now, order=existing_order,
                     provider_name=provider_name)
@@ -635,15 +644,8 @@ def process_once(mkt, now=None):
                 "skipping, it stays queued")
             oq.complete_claim(r, "release", now)
             continue
-        if price is None or isinstance(price, bool):
-            oq.complete_claim(r, "release", now)
-            continue
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            oq.complete_claim(r, "release", now)
-            continue
-        if not math.isfinite(price_f) or price_f <= 0:
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             oq.complete_claim(r, "release", now)
             continue
         if not oq.price_gate_ok(r, price_f):
@@ -661,17 +663,11 @@ def process_once(mkt, now=None):
         # - Stage 2 (Breakeven, 50% <= progress < 75%): Relax profit margin to fee buffer (0.15%).
         # - Stage 3 (Controlled Salvage, progress >= 75%): For SELL, allow math_reference bypass
         #           while strictly maintaining wait_for_trend=True and P2 whale/orderbook protections.
-        try:
-            raw_ttl_s = r.get("ttl_started_ts")
-            if raw_ttl_s is None or isinstance(raw_ttl_s, bool) or not raw_ttl_s:
-                raw_ttl_s = r.get("created_ts")
-            if raw_ttl_s is None or isinstance(raw_ttl_s, bool) or not raw_ttl_s:
-                raw_ttl_s = now
-            ttl_started = float(raw_ttl_s)
-        except (TypeError, ValueError, OverflowError):
-            ttl_started = now
-        if not math.isfinite(ttl_started) or ttl_started <= 0:
-            ttl_started = now
+        ttl_started = (
+            safe_pos_float(r.get("ttl_started_ts"), default=None)
+            or safe_pos_float(r.get("created_ts"), default=None)
+            or now
+        )
         if oq.is_non_failure_deferral(r.get("last_failure_reason")):
             age_sec = 0.0
         else:
@@ -681,11 +677,7 @@ def process_once(mkt, now=None):
             if hasattr(oq, "resolve_record_ttl")
             else float(oq.RETRY_TTL_SEC)
         )
-        total_ttl = (
-            effective_ttl
-            if (isinstance(effective_ttl, (int, float)) and not isinstance(effective_ttl, bool) and math.isfinite(effective_ttl) and effective_ttl > 0)
-            else 302400.0
-        )
+        total_ttl = safe_pos_float(effective_ttl, default=302400.0)
         age_progress = min(1.0, max(0.0, age_sec / total_ttl))
         side_u = normalize_side(r.get("side")) or str(r.get("side") or "").upper()
 
@@ -703,15 +695,7 @@ def process_once(mkt, now=None):
                 and not _parse_bool_flag(kwargs.get("wait_for_trend"), True)
             )
             kwargs["wait_for_trend"] = False if is_stop_expired_timer else True
-            cur_pm = kwargs.get("profit_margin")
-            try:
-                cur_pm_f = (
-                    float(cur_pm)
-                    if (cur_pm is not None and not isinstance(cur_pm, bool))
-                    else None
-                )
-            except (TypeError, ValueError, OverflowError):
-                cur_pm_f = None
+            cur_pm_f = safe_float(kwargs.get("profit_margin"), default=None)
             if age_progress >= 0.75:
                 retry_stage = "salvage"
                 if side_u == "SELL":
@@ -719,11 +703,11 @@ def process_once(mkt, now=None):
                     existing_bypasses.update({"G_PROF", "math_reference"})
                     kwargs["bypass_guards"] = sorted(list(existing_bypasses))
                     kwargs["allow_math_reference_sell"] = True
-                if cur_pm_f is None or not math.isfinite(cur_pm_f) or cur_pm_f > 0.15:
+                if cur_pm_f is None or cur_pm_f > 0.15:
                     kwargs["profit_margin"] = 0.15
             elif age_progress >= 0.50:
                 retry_stage = "breakeven"
-                if cur_pm_f is None or not math.isfinite(cur_pm_f) or cur_pm_f > 0.15:
+                if cur_pm_f is None or cur_pm_f > 0.15:
                     kwargs["profit_margin"] = 0.15
 
         outcome_context = {}
@@ -751,32 +735,19 @@ def process_once(mkt, now=None):
         except Exception as e:  # noqa: BLE001
             print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) — treating it as a failure")
             order = None
-        submitted_qty = outcome_context.get("submitted_qty")
-        if submitted_qty is not None and not isinstance(submitted_qty, bool):
-            try:
-                sq = float(submitted_qty)
-                if math.isfinite(sq) and sq > 0:
-                    r["qty"] = sq
-                    r["requested_qty_total"] = sq
-            except (TypeError, ValueError, OverflowError):
-                pass
+        sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
+        if sq is not None:
+            r["qty"] = sq
+            r["requested_qty_total"] = sq
         accepted = _accepted_order(order)
         if not accepted and outcome_context.get("state") != "refused":
             reconciliation_state, recovered = _reconcile_client_order(
                 mkt, symbol, client_order_id,
                 provider_name=provider_name)
             if reconciliation_state == _RECONCILE_FOUND:
-                order = recovered
-                if oq.order_qty_from_response(order) is None and hasattr(mkt, "order_status"):
-                    try:
-                        oid = oq.order_id_from_response(order)
-                        if oid:
-                            st = mkt.order_status(symbol, oid, provider_name=provider_name)
-                            if st and getattr(st, "orig_qty", None):
-                                order = dict(order)
-                                order["orig_qty"] = st.orig_qty
-                    except Exception:
-                        pass
+                order = _hydrate_missing_order_orig_qty(
+                    mkt, symbol, recovered, provider_name=provider_name
+                )
                 accepted = True
                 reconciled += 1
         if accepted:

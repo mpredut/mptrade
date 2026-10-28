@@ -93,6 +93,17 @@ def _parse_finite_float(val: Any, default: float) -> float:
     return safe_float(val, default=default)
 
 
+def _extract_intent_notional(data: Dict[str, Any], default: float) -> float:
+    """Extract and parse suggested notional USD across aliases, defaulting if missing or non-finite."""
+    raw_notional = data.get("suggested_notional_usd")
+    if raw_notional is None:
+        for nk in ("notional_usd", "amount_usd", "size_usd"):
+            if data.get(nk) is not None:
+                raw_notional = data.get(nk)
+                break
+    return _parse_finite_float(raw_notional, default)
+
+
 def extract_current_price_item(item: Any) -> Optional[float]:
     """Extract the latest positive finite price from any ``cache_current_price.json`` item format."""
     if item is None or isinstance(item, bool):
@@ -846,13 +857,7 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        raw_notional = intent.get("suggested_notional_usd")
-        if raw_notional is None:
-            for nk in ("notional_usd", "amount_usd", "size_usd"):
-                if intent.get(nk) is not None:
-                    raw_notional = intent.get(nk)
-                    break
-        suggested_usd = _parse_finite_float(raw_notional, self.max_notional_usd)
+        suggested_usd = _extract_intent_notional(intent, self.max_notional_usd)
         effective_usd = max(self.min_notional_usd, min(suggested_usd, self.max_notional_usd))
 
         price = self._get_live_price(inst)
@@ -1055,13 +1060,7 @@ class AutonomousIntentGateway:
             logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
                         source, side, symbol, confidence, self.min_confidence)
             return None
-        raw_notional = decision.get("suggested_notional_usd")
-        if raw_notional is None:
-            for nk in ("notional_usd", "amount_usd", "size_usd"):
-                if decision.get(nk) is not None:
-                    raw_notional = decision.get(nk)
-                    break
-        notional = _parse_finite_float(raw_notional, self.max_notional_usd)
+        notional = _extract_intent_notional(decision, self.max_notional_usd)
         notional = max(self.min_notional_usd, min(notional, self.max_notional_usd))
 
         now = time.time()
