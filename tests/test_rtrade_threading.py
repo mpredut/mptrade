@@ -1414,6 +1414,37 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(placed_orders[2][0], "SELL")
         self.assertAlmostEqual(placed_orders[2][2], 40.0, places=6)
 
+    def test_startup_reconcile_from_cache_resumes_one_sided_or_cancels_pair(self):
+        # Case 1: Only SELL open on reboot -> BUY had filled; resume buy_filled=True & cancel stale SELL
+        bot = _bot()
+        with patch.object(
+            rtrade.api,
+            "get_open_orders",
+            side_effect=lambda side, sym, allowed_owners=None: (
+                {} if side == "BUY" else {501: {"price": 103.5, "clientOrderId": "RT_sell"}}
+            ),
+        ), patch.object(rtrade.mkt, "latest_fill_price", return_value=97.25), \
+             patch.object(rtrade.api, "cancel_open_orders") as mock_cancel:
+            bot._reconcile_startup_from_cache()
+        self.assertTrue(bot.is_buy_filled)
+        self.assertFalse(bot.is_sell_filled)
+        self.assertEqual(bot.filled_buy_price, 97.25)
+        mock_cancel.assert_called_once_with("SELL", "TAOUSDC", allowed_owners={"rtrade"})
+
+        # Case 2: Both BUY and SELL open on reboot -> cancel both, neither side marked filled
+        bot2 = _bot()
+        with patch.object(
+            rtrade.api,
+            "get_open_orders",
+            side_effect=lambda side, sym, allowed_owners=None: {
+                601: {"price": 99.0, "clientOrderId": f"RT_{side.lower()}"}
+            },
+        ), patch.object(rtrade.api, "cancel_open_orders") as mock_cancel2:
+            bot2._reconcile_startup_from_cache()
+        self.assertFalse(bot2.is_buy_filled)
+        self.assertFalse(bot2.is_sell_filled)
+        self.assertEqual(mock_cancel2.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

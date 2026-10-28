@@ -1238,12 +1238,26 @@ class TradingBot:
         self.qty = qty
         self.transaction_state = "COMPLETED"  # Initial state.
         current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
-        self.filled_buy_price = round(current_price * (1 - RTRADE_INITIAL_SPREAD_PCT), 4)
-        self.filled_sell_price = round(current_price * (1 + RTRADE_INITIAL_SPREAD_PCT), 4)
+        try:
+            last_buy = _finite_pos_float(
+                mkt.latest_fill_price(symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0), 0.0
+            )
+            last_sell = _finite_pos_float(
+                mkt.latest_fill_price(symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0), 0.0
+            )
+        except Exception:
+            last_buy = last_sell = 0.0
+        self.filled_buy_price = round(
+            last_buy if last_buy > 0 else current_price * (1 - RTRADE_INITIAL_SPREAD_PCT), 4
+        )
+        self.filled_sell_price = round(
+            last_sell if last_sell > 0 else current_price * (1 + RTRADE_INITIAL_SPREAD_PCT), 4
+        )
         self.buy_filled = False
         self.sell_filled = False
         self.DEFAULT_ADJUSTMENT_PERCENT = DEFAULT_ADJUSTMENT_PERCENT
         self.lock = threading.RLock()  # Reentrant synchronization lock.
+        self._needs_startup_reconcile = True
 
     @property
     def is_buy_filled(self):
@@ -1389,6 +1403,7 @@ class TradingBot:
 
                 if self.is_buy_filled:
                     print(f"[{self.symbol}] Ignore BUY order. It was previously filled at {self.filled_buy_price:.2f}")
+                    self._finish_side_precheck("BUY", aborted=False)
                     completed = True
                     return self.mark_buy_filled(self.filled_buy_price)
 
@@ -1621,6 +1636,7 @@ class TradingBot:
 
                 if self.is_sell_filled:
                     print(f"[{self.symbol}] Ignore SELL order. It was previously filled at {self.filled_sell_price:.2f}")
+                    self._finish_side_precheck("SELL", aborted=False)
                     completed = True
                     return self.mark_sell_filled(self.filled_sell_price)
 
@@ -2194,10 +2210,60 @@ class TradingBot:
                 # could destroy valid legs owned by other pair IDs.
                 time.sleep(RTRADE_PAIR_POLL_SEC)
 
+    def _reconcile_startup_from_cache(self):
+        """Reconcile open RT_ orders and recent fill state from the cached API on reboot."""
+        try:
+            open_buys = api.get_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+            open_sells = api.get_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+        except Exception as exc:
+            print(f"[{self.symbol}] startup cache check warning: {exc}")
+            return
+        has_buys = isinstance(open_buys, dict) and bool(open_buys)
+        has_sells = isinstance(open_sells, dict) and bool(open_sells)
+        if not has_buys and not has_sells:
+            return
+        try:
+            if has_sells and not has_buys:
+                last_buy = _finite_pos_float(
+                    mkt.latest_fill_price(self.symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0),
+                    self.filled_buy_price,
+                )
+                if last_buy > 0:
+                    self.mark_buy_filled(round(last_buy, 4))
+                    print(
+                        f"[{self.symbol}] startup recovery: resumed after BUY fill at "
+                        f"{self.filled_buy_price:.2f}; cancelling stale SELL order(s) to continue follow-up."
+                    )
+                api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+            elif has_buys and not has_sells:
+                last_sell = _finite_pos_float(
+                    mkt.latest_fill_price(self.symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0),
+                    self.filled_sell_price,
+                )
+                if last_sell > 0:
+                    self.mark_sell_filled(round(last_sell, 4))
+                    print(
+                        f"[{self.symbol}] startup recovery: resumed after SELL fill at "
+                        f"{self.filled_sell_price:.2f}; cancelling stale BUY order(s) to continue follow-up."
+                    )
+                api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+            else:
+                print(
+                    f"[{self.symbol}] startup recovery: cancelling {len(open_buys)} BUY and "
+                    f"{len(open_sells)} SELL leftover RT_ orders."
+                )
+                api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+                api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+        except Exception as exc:
+            print(f"[{self.symbol}] startup order cleanup warning: {exc}")
+
     def run(self):
         _touch_rtrade_heartbeat(force=True)
         if RTRADE_PAIR_COORDINATOR_ENABLED:
             return self._run_coordinator_forever()
+        if getattr(self, "_needs_startup_reconcile", False):
+            self._needs_startup_reconcile = False
+            self._reconcile_startup_from_cache()
         # Reuse exactly two workers per bot across rounds. BUY and SELL remain concurrent
         # while avoiding thread churn and lost exceptions.
         prefix = f"rtrade-{self.symbol}"
