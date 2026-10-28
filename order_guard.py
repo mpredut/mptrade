@@ -551,7 +551,9 @@ def symbol_regime_context(
     benchmark_symbol: Optional[str] = None,
 ) -> MarketRegimeContext:
     """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
-    now_ts = safe_nonneg_float(now, default=None) or time.time()
+    now_ts = safe_nonneg_float(now, default=None)
+    if now_ts is None:
+        now_ts = time.time()
     decision = symbol_regime(
         symbol,
         provider=provider,
@@ -965,11 +967,24 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
     return float(weight)
 
 
+def _clean_required_qty_or_inf(required_qty) -> float:
+    """Parse required_qty (>0), preserving +inf for auto-quantity while rejecting None/bool/NaN/<=0."""
+    if required_qty is None or isinstance(required_qty, bool):
+        return 0.0
+    try:
+        rf = float(required_qty)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if math.isnan(rf) or rf <= 0.0:
+        return 0.0
+    return rf
+
+
 def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded_24h_value):
     """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
     w = min(1.0, _clean_pos_float(weight, 0.0))
     px = _clean_pos_float(price, 0.0)
-    req = safe_pos_float(required_qty, default=0.0) or 0.0
+    req = _clean_required_qty_or_inf(required_qty)
     if req <= 0.0 or w <= 0.0 or px <= 0.0:
         return 0.0
     avail = _clean_pos_float(available_qty, 0.0)
@@ -1004,7 +1019,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     )
     available = _clean_pos_float(available_qty, 0.0)
     px_clean = _clean_pos_float(price, 0.0)
-    req_clean = safe_pos_float(required_qty, default=0.0) or 0.0
+    req_clean = _clean_required_qty_or_inf(required_qty)
     adjusted = compute_weight_capped_qty(weight, px_clean, req_clean, available, traded_value)
     total_ref = traded_value + available * px_clean
     max_trade_value = total_ref * weight

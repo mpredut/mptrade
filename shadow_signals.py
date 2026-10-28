@@ -21,7 +21,7 @@ from state_io import atomic_write_json, read_recovering_previous, save_json_stat
 from datetime import date
 
 import numpy as np
-from botcore import float_env
+from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 
 def _f_env(name: str, default: float) -> float:
@@ -104,15 +104,7 @@ class KalmanStateTracker:
         # the order gate blocks every BUY.
         self._now = now_fn or time.time
         self.state_path = state_path
-        smi = 1.0
-        if state_min_interval is not None and not isinstance(state_min_interval, bool):
-            try:
-                smi_f = float(state_min_interval)
-                if math.isfinite(smi_f) and smi_f >= 0.0:
-                    smi = smi_f
-            except (TypeError, ValueError, OverflowError):
-                smi = 1.0
-        self.state_min_interval = smi
+        self.state_min_interval = safe_nonneg_float(state_min_interval, 1.0)
         self.compute_vol = bool(compute_vol)
         self._state: dict = {}
         if self.state_path:
@@ -159,27 +151,16 @@ class KalmanStateTracker:
         if not isinstance(st, dict) and isinstance(symbol, str):
             sym_u = symbol.strip().upper()
             if sym_u:
-                st = self._state.get(sym_u)
+                st = (
+                    self._state.get(sym_u)
+                    or self._state.get(sym_u.replace("/", "").replace("-", "").replace("_", ""))
+                )
         if not isinstance(st, dict) or not st:
             return None, 1e18
-        raw_ts = st.get("ts")
-        if isinstance(raw_ts, bool) or raw_ts is None:
-            return None, 1e18
-        try:
-            ts_f = float(raw_ts)
-            now_f = float(self._now())
-        except (TypeError, ValueError, OverflowError):
-            return None, 1e18
-        if not (math.isfinite(ts_f) and ts_f > 0 and math.isfinite(now_f)):
-            return None, 1e18
-        raw_kt = st.get("kalman_trend")
-        if raw_kt is None or isinstance(raw_kt, bool):
-            return None, 1e18
-        try:
-            kt_f = float(raw_kt)
-        except (TypeError, ValueError, OverflowError):
-            return None, 1e18
-        if not math.isfinite(kt_f) or kt_f not in (-1.0, 0.0, 1.0):
+        ts_f = safe_pos_float(st.get("ts"), default=None)
+        now_f = safe_float(self._now(), default=None)
+        kt_f = safe_float(st.get("kalman_trend"), default=None)
+        if ts_f is None or now_f is None or kt_f not in (-1.0, 0.0, 1.0):
             return None, 1e18
         age = now_f - ts_f
         if age < -60.0:
@@ -191,72 +172,43 @@ class KalmanStateTracker:
         n = len(fed)
         if n <= 2:
             return 0.0
-        g = [fed[1] - fed[0], *[(a - b) * 0.5 for a, b in zip(fed[2:], fed)], fed[-1] - fed[-2]]
-        mean = sum(g) / n
-        var = sum([(x - mean) * (x - mean) for x in g]) / n
-        return math.sqrt(var)
+        g0 = fed[1] - fed[0]
+        gn = fed[-1] - fed[-2]
+        sum_g = g0 + gn
+        sum_g2 = g0 * g0 + gn * gn
+        for i in range(1, n - 1):
+            gi = (fed[i + 1] - fed[i - 1]) * 0.5
+            sum_g += gi
+            sum_g2 += gi * gi
+        mean = sum_g / n
+        return math.sqrt(max(0.0, sum_g2 / n - mean * mean))
+
+    def _build_fields(self, k: dict, v1h: float | None) -> dict:
+        adapt_reentry, adapt_dca = adaptive_thresholds(v1h, k_reentry=K_REENTRY, k_dca=K_DCA)
+        return {
+            "kalman_vel": k["vel"],
+            "kalman_vel_std": k["vel_std"],
+            "kalman_trend": k["trend"],
+            "vol_1h_pct": v1h,
+            "adapt_reentry_pct": adapt_reentry,
+            "adapt_dca_pct": adapt_dca,
+        }
 
     def update(self, symbol: str, ts: float, price: float, epsilon: float | None,
                big_prices, big_sample_rate: float) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
-        if (
-            ts is None
-            or price is None
-            or isinstance(ts, bool)
-            or isinstance(price, bool)
-        ):
+        ts_f = safe_float(ts, default=None)
+        price_f = safe_pos_float(price, default=None)
+        if ts_f is None or price_f is None:
             k = self._last_kfields.get(
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
-            v1h = self._last_vol_fields.get(symbol)
-            return {
-                "kalman_vel": k["vel"],
-                "kalman_vel_std": k["vel_std"],
-                "kalman_trend": k["trend"],
-                "vol_1h_pct": v1h,
-            }
-        try:
-            ts = float(ts)
-            price = float(price)
-        except (TypeError, ValueError, OverflowError):
-            k = self._last_kfields.get(
-                symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
-            )
-            v1h = self._last_vol_fields.get(symbol)
-            return {
-                "kalman_vel": k["vel"],
-                "kalman_vel_std": k["vel_std"],
-                "kalman_trend": k["trend"],
-                "vol_1h_pct": v1h,
-            }
-        if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
-            k = self._last_kfields.get(
-                symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
-            )
-            v1h = self._last_vol_fields.get(symbol)
-            return {
-                "kalman_vel": k["vel"],
-                "kalman_vel_std": k["vel_std"],
-                "kalman_trend": k["trend"],
-                "vol_1h_pct": v1h,
-            }
-        sr_val = 1.0
-        if big_sample_rate is not None and not isinstance(big_sample_rate, bool):
-            try:
-                sr_f = float(big_sample_rate)
-                if math.isfinite(sr_f) and sr_f > 0:
-                    sr_val = sr_f
-            except (TypeError, ValueError, OverflowError):
-                sr_val = 1.0
-        eps_val = 0.0
-        if epsilon is not None and not isinstance(epsilon, bool):
-            try:
-                eps_f = float(epsilon)
-                if math.isfinite(eps_f) and eps_f >= 0:
-                    eps_val = eps_f
-            except (TypeError, ValueError, OverflowError):
-                eps_val = 0.0
+            return self._build_fields(k, self._last_vol_fields.get(symbol))
+        ts = ts_f
+        price = price_f
+        sr_val = safe_pos_float(big_sample_rate, 1.0)
+        eps_val = safe_nonneg_float(epsilon, 0.0)
         last_fed = self._last_fed.get(symbol, -1e18)
         if last_fed > ts:
             last_fed = -1e18
@@ -303,11 +255,7 @@ class KalmanStateTracker:
                 v1h = self._last_vol_fields.get(symbol)
         else:
             v1h = None
-        fields = {
-            "kalman_vel": k["vel"], "kalman_vel_std": k["vel_std"],
-            "kalman_trend": k["trend"],
-            "vol_1h_pct": v1h,
-        }
+        fields = self._build_fields(k, v1h)
         self._state[symbol] = {**fields, "ts": ts, "price": price}
         self._write_state(ts)
         return fields

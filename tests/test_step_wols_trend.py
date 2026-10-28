@@ -479,6 +479,20 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertIs(_runtime_market_regime_snapshot("TAOUSDC", now=1001.0), w90)
             self.assertIs(_runtime_market_regime_snapshot("BTCUSDC", now=1001.0), snap)
 
+    def test_kalman_grad_std_and_adaptive_thresholds_in_update(self):
+        import shadow_signals as ss
+
+        fed = [100.0, 101.2, 100.8, 102.5, 103.1, 102.9, 104.0]
+        ref_std = float(np.std(np.gradient(np.asarray(fed, dtype=float))))
+        self.assertAlmostEqual(ss.KalmanStateTracker._grad_std(fed), ref_std, places=11)
+
+        tracker = ss.KalmanStateTracker(journal=ss.KalmanJournal(fixed_path=os.devnull), state_path=None)
+        big_prices = [100.0 + 0.05 * math.sin(i * 0.2) for i in range(60)]
+        res = tracker.update("TAOUSDC", 1000.0, 100.5, 0.01, big_prices, 1.0)
+        self.assertIsNotNone(res.get("vol_1h_pct"))
+        self.assertIsNotNone(res.get("adapt_reentry_pct"))
+        self.assertIsNotNone(res.get("adapt_dca_pct"))
+
 
 if __name__ == "__main__":
     unittest.main()
