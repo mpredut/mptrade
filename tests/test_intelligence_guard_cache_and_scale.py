@@ -14612,7 +14612,7 @@ def test_iteration149_active_intents_accepted_order_persistence_and_rtrade_pair_
     assert ai._parse_bool_flag("true", False) is True
     assert ai._parse_bool_flag(float("nan"), True) is True
 
-    rtrade_path = tmp_path / "cachedb/rtrade_pairs.json"
+    rtrade_path = tmp_path / "cachedb/rtrade_pairs_state.json"
     rtrade_path.parent.mkdir(parents=True, exist_ok=True)
     rtrade_path.write_text(
         json.dumps(

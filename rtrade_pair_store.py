@@ -5,6 +5,7 @@ import json
 import hashlib
 import math
 import os
+import threading
 import time
 
 from botcore import _parse_bool_flag
@@ -26,9 +27,10 @@ _INVALID_STORE_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "in
 
 class RTradePairStore:
     def __init__(self, path=None, terminal_retention=200):
-        from cachepaths import cache_path
-        self.path = path or cache_path("rtrade_pairs_state.json")
-        self.lock_path = self.path + ".lock"
+        self.path = str(path) if path else None
+        self.lock_path = (self.path + ".lock") if self.path else None
+        self._mem_lock = threading.Lock()
+        self._mem_data = {"version": 1, "pairs": {}}
         if isinstance(terminal_retention, (bool, dict, list, tuple, set)) or terminal_retention is None:
             ret_i = 200
         else:
@@ -225,6 +227,8 @@ class RTradePairStore:
         return data
 
     def _read(self):
+        if not self.path:
+            return self._validate(json.loads(json.dumps(self._mem_data)))
         from cachepaths import resolve_cachedb_filepath
         eff_path = str(resolve_cachedb_filepath(self.path))
         try:
@@ -235,6 +239,9 @@ class RTradePairStore:
             return {"version": 1, "pairs": {}}
 
     def _write(self, data):
+        if not self.path:
+            self._mem_data = json.loads(json.dumps(data))
+            return
         from cachepaths import resolve_cachedb_filepath
         eff_path = str(resolve_cachedb_filepath(self.path))
         atomic_write_json(
@@ -242,7 +249,8 @@ class RTradePairStore:
         )
 
     def mutate(self, fn):
-        with FileLock(self.lock_path):
+        lock_ctx = FileLock(self.lock_path) if self.lock_path else self._mem_lock
+        with lock_ctx:
             data = self._read()
             result = fn(data["pairs"])
             if result is not False:
@@ -423,7 +431,8 @@ class RTradePairStore:
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return []
         sym_norm = symbol.strip().upper()
-        with FileLock(self.lock_path):
+        lock_ctx = FileLock(self.lock_path) if self.lock_path else self._mem_lock
+        with lock_ctx:
             pairs = self._read().get("pairs", {})
         return [
             rec for rec in pairs.values()

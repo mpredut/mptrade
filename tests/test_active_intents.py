@@ -13,7 +13,7 @@ def _write(path, payload, *, lines=False):
 def test_normalizes_multiple_owners_without_writing(tmp_path):
     outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
     t212 = tmp_path / "212trading/.state_NVDA_US_EQ.json"
-    rtrade = tmp_path / "cachedb/rtrade_pairs.json"
+    rtrade = tmp_path / "cachedb/rtrade_pairs_state.json"
     _write(outbox, [{
         "intent_id": "out-1", "provider_name": "Binance", "symbol": "TAOUSDC",
         "side": "BUY", "qty": 2, "lifecycle": "submit_pending",
@@ -43,7 +43,7 @@ def test_normalizes_multiple_owners_without_writing(tmp_path):
 
 
 def test_excludes_terminal_intents_and_reports_corrupt_sources(tmp_path):
-    _write(tmp_path / "cachedb/rtrade_pairs.json", {"pairs": {
+    _write(tmp_path / "cachedb/rtrade_pairs_state.json", {"pairs": {
         "done": {"terminal": True, "intents": {"x": {
             "intent_id": "done", "side": "SELL", "qty": 1,
         }}},
@@ -156,7 +156,7 @@ def test_normalizes_kraken_vol_t212_limit_price_and_nested_outbox_client_order_i
 
 
 def test_excludes_inactive_tickets_in_rtrade_pairs(tmp_path):
-    rtrade = tmp_path / "cachedb/rtrade_pairs.json"
+    rtrade = tmp_path / "cachedb/rtrade_pairs_state.json"
     _write(rtrade, {
         "pairs": {
             "round-1": {

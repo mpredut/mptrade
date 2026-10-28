@@ -222,6 +222,15 @@ class RTradePairStoreTest(unittest.TestCase):
             pairs = json.load(handle)["pairs"]
         self.assertEqual(len(pairs), 2)
 
+    def test_default_in_memory_store_creates_no_disk_file(self):
+        store = RTradePairStore()
+        self.assertIsNone(store.path)
+        self.assertIsNone(store.lock_path)
+        store.begin("TAOUSDC", "mem-1", "BUY", 1.0)
+        self.assertEqual(len(store.active("TAOUSDC")), 1)
+        store.checkpoint("mem-1", {"phase": "complete"}, terminal=True)
+        self.assertEqual(store.active("TAOUSDC"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
