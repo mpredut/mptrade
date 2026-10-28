@@ -48,6 +48,7 @@ from botcore import (
     required_bool_env,
     required_float_env,
     safe_float as _safe_f,
+    safe_pos_float,
 )
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
@@ -2272,22 +2273,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         last_exit_kind = "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
 
         def _valid_reentry_px(val, fallback: float) -> float:
-            if val is None or isinstance(val, bool):
-                return fallback
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0.0) else fallback
-            except (TypeError, ValueError):
-                return fallback
+            return safe_pos_float(val, default=fallback)
 
         def _valid_reentry_ts(val) -> Optional[float]:
-            if val is None or isinstance(val, bool):
-                return None
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0.0) else None
-            except (TypeError, ValueError):
-                return None
+            return safe_pos_float(val, default=None)
 
         sell_time_clean = _valid_reentry_ts(sell_time)
         prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))

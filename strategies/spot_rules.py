@@ -13,17 +13,10 @@ the same price thresholds.
 from __future__ import annotations
 
 import math
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 
-
-def _finite_float(val, default=None):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if math.isfinite(f) else default
+def _finite_float(val: object, default: float | None = None) -> float | None:
+    return safe_float(val, default=default)
 
 
 def _bool_flag(val: object) -> bool:

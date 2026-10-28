@@ -20,7 +20,8 @@ from typing import Callable
 from alertnotifiers import bind_notify
 from botcore import (
     _parse_bool_flag, are_close, log, defined_env, required_env,
-    required_float_env, required_int_env, required_bool_env, safe_float,
+    required_float_env, required_int_env, required_bool_env,
+    safe_float, safe_nonneg_float, safe_pos_float,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import _clean_single_order_id, normalize_side
@@ -59,13 +60,11 @@ notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 
 def _clean_pos_float(val: object) -> float | None:
-    f = safe_float(val, default=None)
-    return f if f is not None and f > 0.0 else None
+    return safe_pos_float(val, default=None)
 
 
 def _clean_nonneg_float(val: object) -> float | None:
-    f = safe_float(val, default=None)
-    return f if f is not None and f >= 0.0 else None
+    return safe_nonneg_float(val, default=None)
 
 
 def _clean_finite_float(val: object) -> float | None:

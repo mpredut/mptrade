@@ -17,7 +17,12 @@ from providers.base import (
 )
 
 
-from .bapi import _parse_bool_flag, _INVALID_BAPI_ID_STRINGS
+from .bapi import (
+    _INVALID_BAPI_ID_STRINGS,
+    _clean_bapi_oid_str,
+    _normalize_side,
+    _parse_bool_flag,
+)
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
@@ -120,17 +125,6 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
     return out
 
 
-def _normalize_side(order_type):
-    if isinstance(order_type, str):
-        cleaned = order_type.strip().upper()
-        if cleaned == "B":
-            return "BUY"
-        if cleaned == "S":
-            return "SELL"
-        return cleaned
-    return order_type
-
-
 def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False):
     strict = _parse_bool_flag(strict, False)
     try:
@@ -185,25 +179,14 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
             raw_oid = t['orderId']
             if isinstance(raw_oid, float) and math.isfinite(raw_oid) and raw_oid.is_integer():
                 raw_oid = int(raw_oid)
-            if isinstance(raw_oid, str):
-                raw_oid = raw_oid.strip()
-                if raw_oid.endswith(".0") and raw_oid[:-2].lstrip("+-").isdigit():
-                    raw_oid = raw_oid[:-2]
-                if raw_oid.startswith("+") and raw_oid[1:].isdigit():
-                    raw_oid = raw_oid[1:]
+            elif isinstance(raw_oid, str):
+                raw_oid = _clean_bapi_oid_str(raw_oid)
             valid_oid = (
                 raw_oid is not None
                 and not isinstance(raw_oid, (bool, float, dict, list, tuple, set, frozenset))
                 and (not isinstance(raw_oid, int) or raw_oid > 0)
-                and (not isinstance(raw_oid, str) or not raw_oid.startswith("-"))
-                and bool(str(raw_oid).strip())
-                and str(raw_oid).strip().lower() not in _INVALID_BAPI_ID_STRINGS
             )
-            key = (
-                (raw_oid.strip() if isinstance(raw_oid, str) else raw_oid)
-                if valid_oid
-                else f"_unkeyed_{idx}"
-            )
+            key = raw_oid if valid_oid else f"_unkeyed_{idx}"
             grouped[key]['price_qty'] += t['price'] * t['quantity']
             grouped[key]['quantity'] += t['quantity']
             grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])

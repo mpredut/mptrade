@@ -156,6 +156,10 @@ class KalmanStateTracker:
     def current_trend(self, symbol: str) -> tuple:
         """Return Kalman trend and state age for tradeall's live order gate."""
         st = self._state.get(symbol)
+        if not isinstance(st, dict) and isinstance(symbol, str):
+            sym_u = symbol.strip().upper()
+            if sym_u:
+                st = self._state.get(sym_u)
         if not isinstance(st, dict) or not st:
             return None, 1e18
         raw_ts = st.get("ts")

@@ -20,6 +20,7 @@ from providers.base import (
     extract_orig_qty,
     extract_remaining_qty,
     extract_timestamp_ms,
+    normalize_side,
 )
 
 resolve_order_owner = rc.resolve_order_owner
@@ -64,12 +65,7 @@ _INVALID_BAPI_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+
 
 def _normalize_side(order_type):
     if isinstance(order_type, str):
-        cleaned = order_type.strip().upper()
-        if cleaned == "B":
-            return "BUY"
-        if cleaned == "S":
-            return "SELL"
-        return cleaned
+        return normalize_side(order_type) or order_type.strip().upper()
     return order_type
 
 
@@ -523,12 +519,19 @@ def _convert_to_usdc(asset, amount):
         return 0.0
     if not math.isfinite(amt_f) or amt_f <= 0:
         return 0.0
-    if asset_clean == "USDC":
+    if asset_clean in {"USDC", "USD"}:
         return amt_f
 
     price = _get_symbol_price_safe(f"{asset_clean}USDC")
     if price:
         return amt_f * price
+
+    inv_price = _get_symbol_price_safe(f"USDC{asset_clean}")
+    if inv_price and inv_price > 0:
+        return amt_f / inv_price
+
+    if asset_clean in {"USDT", "FDUSD"}:
+        return amt_f
 
     return 0.0
 

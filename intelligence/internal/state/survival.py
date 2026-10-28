@@ -128,7 +128,7 @@ def block_slopes(ts, px, window_h, step_h):
             if var_x > 0.0:
                 sl = float(np.dot(dev_x, px[lo:hi]) / var_x)
                 out_t.append(t)
-                out_s.append(1.0 if sl > 0 else -1.0)
+                out_s.append(1.0 if sl > 0 else (-1.0 if sl < 0 else 0.0))
         t += s
     return np.array(out_t), np.array(out_s)
 
@@ -178,9 +178,9 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
             sf = float(s_val)
         except (TypeError, ValueError, OverflowError):
             continue
-        if math.isfinite(tf) and math.isfinite(sf) and sf != 0.0:
+        if math.isfinite(tf) and math.isfinite(sf):
             clean_bt.append(tf)
-            clean_bs.append(1.0 if sf > 0 else -1.0)
+            clean_bs.append(1.0 if sf > 0 else (-1.0 if sf < 0 else 0.0))
     n = len(clean_bt)
     if n == 0:
         return eps
@@ -189,6 +189,9 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
     i = 0
     while i < n:
         sign = bs[i]
+        if sign == 0.0:
+            i += 1
+            continue
         start = bt[i] - w_h * 3600.0
         last_confirm = bt[i]
         confirms, noise = 1, 0
@@ -355,6 +358,32 @@ def _extract_base_symbol(symbol: str) -> str:
     return normalize_cache_base_asset(symbol)
 
 
+_T_CACHE_FILE_MEMO: dict = {}
+
+
+def _read_t_cache_dict(t_cache_path: str) -> Optional[dict]:
+    if not t_cache_path or not isinstance(t_cache_path, str):
+        return None
+    stat_sig = None
+    try:
+        st = os.stat(t_cache_path)
+        stat_sig = (st.st_mtime_ns, st.st_size, id(read_recovering_previous))
+    except OSError:
+        stat_sig = None
+    if stat_sig is not None:
+        cached = _T_CACHE_FILE_MEMO.get(t_cache_path)
+        if cached is not None and cached[0] == stat_sig:
+            return cached[1]
+    loaded = read_recovering_previous(t_cache_path, json.loads, default=None)
+    if isinstance(loaded, dict):
+        if stat_sig is not None:
+            if len(_T_CACHE_FILE_MEMO) > 16:
+                _T_CACHE_FILE_MEMO.clear()
+            _T_CACHE_FILE_MEMO[t_cache_path] = (stat_sig, loaded)
+        return loaded
+    return None
+
+
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
     if not isinstance(data, dict) or not isinstance(symbol, str) or not symbol.strip():
         return None
@@ -407,8 +436,8 @@ def estimate_T(
             "ts": 0,
         }
     t_cache_path = _effective_t_cache_file()
-    loaded_cache = read_recovering_previous(t_cache_path, json.loads, default=None)
-    cache = loaded_cache if isinstance(loaded_cache, dict) else {}
+    loaded_cache = _read_t_cache_dict(t_cache_path)
+    cache = dict(loaded_cache) if isinstance(loaded_cache, dict) else {}
 
     ent = _lookup_t_cache_entry(cache, symbol)
     if ent:
@@ -480,6 +509,7 @@ def estimate_T(
     cache[cache_key] = res
     try:
         save_json_state(t_cache_path, cache, indent=2)
+        _T_CACHE_FILE_MEMO.pop(t_cache_path, None)
     except OSError:
         pass
     return res
@@ -508,7 +538,7 @@ def get_trend_survival_metrics(
 
     cached_entry: Optional[dict] = None
     try:
-        data = read_recovering_previous(_effective_t_cache_file(), json.loads, default=None)
+        data = _read_t_cache_dict(_effective_t_cache_file())
         if isinstance(data, dict):
             cached_entry = _lookup_t_cache_entry(data, symbol)
     except Exception:

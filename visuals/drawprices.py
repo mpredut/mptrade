@@ -180,10 +180,14 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
         return np.array([], dtype=np.float64)
     if n == 1:
         return np.full(hz, clean_p[0], dtype=np.float64)
+    mean_x = 0.5 * (n - 1)
     x = np.arange(n, dtype=np.float64)
     y = np.asarray(clean_p, dtype=np.float64)
-    # fit y ~ a*x + b
-    a, b = np.polyfit(x, y, 1)
+    # fit y ~ a*x + b via closed-form OLS
+    dev_x = x - mean_x
+    var_x = n * (n * n - 1.0) / 12.0
+    a = float(np.dot(dev_x, y) / var_x) if var_x > 0.0 else 0.0
+    b = float(np.mean(y)) - a * mean_x
     # Predictions for the following steps.
     x_future = np.arange(n, n + hz, dtype=np.float64)
     y_future = a * x_future + b

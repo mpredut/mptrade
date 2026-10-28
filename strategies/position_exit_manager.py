@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 
 try:
     from strategies.spot_rules import are_close, diff_percent
@@ -170,35 +170,11 @@ class PositionSnapshot(PriceGeometrySnapshot):
     def __post_init__(self) -> None:
         self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
         for attr in ("current_price", "avg_buy_price"):
-            val = getattr(self, attr, None)
-            if val is None or isinstance(val, bool):
-                setattr(self, attr, 0.0)
-            else:
-                try:
-                    f = float(val)
-                    setattr(self, attr, f if (math.isfinite(f) and f > 0.0) else 0.0)
-                except (TypeError, ValueError, OverflowError):
-                    setattr(self, attr, 0.0)
+            setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=0.0))
         for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
-            val = getattr(self, attr, 0.0)
-            if val is None or isinstance(val, bool):
-                setattr(self, attr, 0.0)
-            else:
-                try:
-                    f = float(val)
-                    setattr(self, attr, f if (math.isfinite(f) and f >= 0.0) else 0.0)
-                except (TypeError, ValueError, OverflowError):
-                    setattr(self, attr, 0.0)
+            setattr(self, attr, safe_nonneg_float(getattr(self, attr, 0.0), default=0.0))
         for attr in ("sma_value", "window_move_pct"):
-            val = getattr(self, attr, None)
-            if val is not None and not isinstance(val, bool):
-                try:
-                    f = float(val)
-                    setattr(self, attr, f if math.isfinite(f) else None)
-                except (TypeError, ValueError, OverflowError):
-                    setattr(self, attr, None)
-            elif isinstance(val, bool):
-                setattr(self, attr, None)
+            setattr(self, attr, safe_float(getattr(self, attr, None), default=None))
         if self.shadow_prices is None or isinstance(self.shadow_prices, (bool, str, bytes, dict)) or not hasattr(self.shadow_prices, "__iter__"):
             self.shadow_prices = []
         elif not isinstance(self.shadow_prices, list):
@@ -322,43 +298,11 @@ class ReentrySnapshot(PriceGeometrySnapshot):
 
     def __post_init__(self) -> None:
         self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
-        if self.current_price is None or isinstance(self.current_price, bool):
-            self.current_price = 0.0
-        else:
-            try:
-                cp_f = float(self.current_price)
-                self.current_price = cp_f if (math.isfinite(cp_f) and cp_f > 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                self.current_price = 0.0
-        for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough"):
-            val = getattr(self, attr, None)
-            if val is None or isinstance(val, bool):
-                setattr(self, attr, None)
-            else:
-                try:
-                    f = float(val)
-                    setattr(self, attr, f if (math.isfinite(f) and f > 0.0) else None)
-                except (TypeError, ValueError, OverflowError):
-                    setattr(self, attr, None)
+        self.current_price = safe_pos_float(self.current_price, default=0.0)
+        for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough", "last_sell_time_s"):
+            setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=None))
         for attr in ("current_time_s", "vol_1h"):
-            val = getattr(self, attr, 0.0)
-            if val is None or isinstance(val, bool):
-                setattr(self, attr, 0.0)
-            else:
-                try:
-                    f = float(val)
-                    setattr(self, attr, f if (math.isfinite(f) and f >= 0.0) else 0.0)
-                except (TypeError, ValueError, OverflowError):
-                    setattr(self, attr, 0.0)
-        if self.last_sell_time_s is not None:
-            if isinstance(self.last_sell_time_s, bool):
-                self.last_sell_time_s = None
-            else:
-                try:
-                    f = float(self.last_sell_time_s)
-                    self.last_sell_time_s = f if (math.isfinite(f) and f > 0.0) else None
-                except (TypeError, ValueError, OverflowError):
-                    self.last_sell_time_s = None
+            setattr(self, attr, safe_nonneg_float(getattr(self, attr, 0.0), default=0.0))
         if self.last_exit_kind is not None:
             if isinstance(self.last_exit_kind, (bool, dict, list, tuple, set, frozenset)):
                 self.last_exit_kind = None
@@ -513,15 +457,7 @@ class PositionExitConfig:
             "reentry_post_stop_cooldown_sec": 0.0,
         }
         for f_attr, f_def in _float_defaults.items():
-            raw = getattr(self, f_attr, f_def)
-            if raw is None or isinstance(raw, bool):
-                setattr(self, f_attr, f_def)
-            else:
-                try:
-                    vf = float(raw)
-                    setattr(self, f_attr, vf if (math.isfinite(vf) and vf >= 0.0) else f_def)
-                except (TypeError, ValueError, OverflowError):
-                    setattr(self, f_attr, f_def)
+            setattr(self, f_attr, safe_nonneg_float(getattr(self, f_attr, f_def), default=f_def))
 
 def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
     try:
@@ -700,6 +636,34 @@ class PositionExitManager:
             return
         self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
 
+    def _resolve_effective_vol_1h(
+        self,
+        symbol: str,
+        vol_1h: Optional[float] = None,
+        vol_source: str = "default",
+    ) -> Tuple[float, str]:
+        eff_vol = safe_pos_float(vol_1h, default=0.0)
+        eff_src = vol_source
+        if eff_vol <= 0:
+            if self.vol_resolver is not None:
+                try:
+                    resolved = self.vol_resolver(symbol)
+                    if isinstance(resolved, (tuple, list)):
+                        res_vol = resolved[0] if len(resolved) > 0 else 0.0
+                        if len(resolved) > 1 and isinstance(resolved[1], str) and resolved[1].strip():
+                            eff_src = resolved[1].strip()
+                    else:
+                        res_vol = resolved
+                except Exception:
+                    res_vol = 0.0
+                eff_vol = safe_pos_float(res_vol, default=0.0)
+            elif getattr(self.config, "allow_external_cache", True):
+                cached = safe_pos_float(resolve_cached_volatility_1h(symbol), default=0.0)
+                if cached > 0.0:
+                    eff_vol = cached
+                    eff_src = "cache"
+        return eff_vol, eff_src
+
     # -------------------------------------------------------------------------
     # Stop-Loss: Volatility-Scaled Disaster Buffer (Priority 1)
     # -------------------------------------------------------------------------
@@ -718,45 +682,7 @@ class PositionExitManager:
         """
         lost_threshold = _resolve_positive_threshold(lost_threshold, self.config.lost_threshold)
         buf_a = lost_threshold * self.config.sl_disaster_buffer_ratio
-
-        eff_vol = 0.0
-        if vol_1h is not None and not isinstance(vol_1h, bool):
-            try:
-                vf = float(vol_1h)
-                if math.isfinite(vf) and vf > 0.0:
-                    eff_vol = vf
-            except (TypeError, ValueError):
-                eff_vol = 0.0
-        eff_src = vol_source
-        if eff_vol <= 0:
-            if self.vol_resolver is not None:
-                try:
-                    resolved = self.vol_resolver(symbol)
-                    if isinstance(resolved, (tuple, list)):
-                        res_vol = resolved[0] if len(resolved) > 0 else 0.0
-                        if len(resolved) > 1 and isinstance(resolved[1], str) and resolved[1].strip():
-                            eff_src = resolved[1].strip()
-                    else:
-                        res_vol = resolved
-                except Exception:
-                    res_vol = 0.0
-                if res_vol is not None and not isinstance(res_vol, bool):
-                    try:
-                        rvf = float(res_vol)
-                        if math.isfinite(rvf) and rvf > 0.0:
-                            eff_vol = rvf
-                    except (TypeError, ValueError):
-                        eff_vol = 0.0
-            elif getattr(self.config, "allow_external_cache", True):
-                cached = resolve_cached_volatility_1h(symbol)
-                if cached is not None and not isinstance(cached, bool):
-                    try:
-                        cf = float(cached)
-                        if math.isfinite(cf) and cf > 0.0:
-                            eff_vol = cf
-                            eff_src = "cache"
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+        eff_vol, eff_src = self._resolve_effective_vol_1h(symbol, vol_1h, vol_source)
 
         buf_b = eff_vol * self.config.sl_disaster_vol_multiplier if eff_vol > 0 else 0.0
         min_floor = self.config.sl_disaster_buffer_min_pct
@@ -1147,37 +1073,7 @@ class PositionExitManager:
         """
         gain_threshold = _resolve_positive_threshold(gain_threshold, self.config.gain_threshold)
         peak_gain = _resolve_nonneg_threshold(peak_gain, 0.0)
-        eff_vol = 0.0
-        if vol_1h is not None and not isinstance(vol_1h, bool):
-            try:
-                vf = float(vol_1h)
-                if math.isfinite(vf) and vf > 0.0:
-                    eff_vol = vf
-            except (TypeError, ValueError):
-                eff_vol = 0.0
-        if eff_vol <= 0:
-            if self.vol_resolver is not None:
-                try:
-                    resolved = self.vol_resolver(symbol)
-                    res_vol = resolved[0] if isinstance(resolved, (tuple, list)) and len(resolved) > 0 else resolved
-                except Exception:
-                    res_vol = 0.0
-                if res_vol is not None and not isinstance(res_vol, bool):
-                    try:
-                        rvf = float(res_vol)
-                        if math.isfinite(rvf) and rvf > 0.0:
-                            eff_vol = rvf
-                    except (TypeError, ValueError):
-                        eff_vol = 0.0
-            elif getattr(self.config, "allow_external_cache", True):
-                cached = resolve_cached_volatility_1h(symbol)
-                if cached is not None and not isinstance(cached, bool):
-                    try:
-                        cf = float(cached)
-                        if math.isfinite(cf) and cf > 0.0:
-                            eff_vol = cf
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+        eff_vol, _ = self._resolve_effective_vol_1h(symbol, vol_1h)
 
         anomaly_a = gain_threshold * 1.5
         anomaly_b = (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0
@@ -1526,22 +1422,10 @@ class PositionExitManager:
         current_price = float(current_price)
 
         def _valid_px(val, fallback: float) -> float:
-            if val is None or isinstance(val, bool):
-                return fallback
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0) else fallback
-            except (TypeError, ValueError):
-                return fallback
+            return safe_pos_float(val, default=fallback)
 
         def _valid_ts(val) -> Optional[float]:
-            if val is None or isinstance(val, bool):
-                return None
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0) else None
-            except (TypeError, ValueError):
-                return None
+            return safe_pos_float(val, default=None)
 
         sell_time_s = _valid_ts(snapshot.last_sell_time_s)
 

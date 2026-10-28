@@ -92,8 +92,14 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
         
     if len(ks) < 3:
         return None
-        
-    slope, _ = np.polyfit(np.log(ks), np.log(vs), 1)
+
+    lx = np.log(ks)
+    ly = np.log(vs)
+    dev_x = lx - float(np.mean(lx))
+    var_x = float(np.dot(dev_x, dev_x))
+    if var_x <= 0.0:
+        return None
+    slope = float(np.dot(dev_x, ly) / var_x)
     h_val = float(slope / 2.0)
     return h_val if math.isfinite(h_val) else None
 

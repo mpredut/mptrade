@@ -49,15 +49,7 @@ trade_cache = []
 #######      get_my_trades     #######
 #######
 
-def _normalize_side(order_type):
-    if isinstance(order_type, str):
-        cleaned = order_type.strip().upper()
-        if cleaned == "B":
-            return "BUY"
-        if cleaned == "S":
-            return "SELL"
-        return cleaned
-    return order_type
+_normalize_side = api._normalize_side
 
 
 def _valid_fill_id(val):
@@ -79,6 +71,25 @@ def _valid_fill_id(val):
     if isinstance(val, int):
         return val if val >= 0 else None
     return None
+
+
+def _dedup_trades_by_fill_id(all_trades):
+    """Deduplicate trade fills by individual fill ID (falling back to orderId when absent)."""
+    latest_trades = {}
+    for idx, trade in enumerate(all_trades or ()):
+        if not isinstance(trade, dict):
+            continue
+        raw_key = _valid_fill_id(trade.get('id'))
+        if raw_key is None:
+            raw_key = _valid_fill_id(trade.get('orderId'))
+        fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
+        ts_ms = extract_timestamp_ms(trade, default=0) or 0
+        if (
+            fill_key not in latest_trades
+            or ts_ms >= (extract_timestamp_ms(latest_trades[fill_key], default=0) or 0)
+        ):
+            latest_trades[fill_key] = trade
+    return list(latest_trades.values())
 
 
 def aggregate_trades(trades):
@@ -309,24 +320,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         #    agg['avg_price'] = agg['price'] / agg['qty'] if agg['qty'] else 0
             
         ##########
-        latest_trades = {}
-        for idx, trade in enumerate(all_trades):
-            if not isinstance(trade, dict):
-                continue
-            raw_key = _valid_fill_id(trade.get('id'))
-            if raw_key is None:
-                raw_key = _valid_fill_id(trade.get('orderId'))
-            fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
-            ts_ms = extract_timestamp_ms(trade, default=0) or 0
-
-            # Deduplicate by individual fill ID (falling back to orderId when id is absent).
-            if (
-                fill_key not in latest_trades
-                or ts_ms >= (extract_timestamp_ms(latest_trades[fill_key], default=0) or 0)
-            ):
-                latest_trades[fill_key] = trade
-
-        return list(latest_trades.values())  # Return a list, not a mapping.
+        return _dedup_trades_by_fill_id(all_trades)
         
 
     except Exception as e:
@@ -394,22 +388,7 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
 
         # Deduplicate by individual fill ID (falling back to orderId only when id is absent)
         # so multi-fill orders do not lose earlier partial fills.
-        latest_trades = {}
-        for idx, trade in enumerate(all_trades):
-            if not isinstance(trade, dict):
-                continue
-            raw_key = _valid_fill_id(trade.get('id'))
-            if raw_key is None:
-                raw_key = _valid_fill_id(trade.get('orderId'))
-            fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
-            ts_ms = extract_timestamp_ms(trade, default=0) or 0
-            if (
-                fill_key not in latest_trades
-                or ts_ms >= (extract_timestamp_ms(latest_trades[fill_key], default=0) or 0)
-            ):
-                latest_trades[fill_key] = trade
-
-        return list(latest_trades.values())
+        return _dedup_trades_by_fill_id(all_trades)
 
     except Exception as e:
         print(f"An error occurred: {e}")

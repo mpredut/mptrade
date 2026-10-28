@@ -327,6 +327,41 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertIsNot(s_custom1, s_default)
         self.assertIs(s_custom1, s_custom2)
 
+    def test_survival_flat_window_slopes_and_episodes(self):
+        from intelligence.internal.state.survival import block_slopes, episodes
+        ts = np.arange(0.0, 200.0 * 3600.0, 3600.0)
+        px_flat = np.full_like(ts, 100.0)
+        bt, bs = block_slopes(ts, px_flat, window_h=24, step_h=8)
+        self.assertTrue(len(bs) > 0)
+        self.assertTrue(np.all(bs == 0.0))
+        eps = episodes(bt, bs, window_h=24)
+        self.assertEqual(eps, [])
+
+    def test_hurst_and_forecast_linear_closed_form_ols_parity(self):
+        from intelligence.internal.state.persistence import calculate_hurst_exponent
+        from visuals.drawprices import forecast_linear
+        rng = np.random.default_rng(42)
+        prices = [float(x) for x in (1000.0 + np.cumsum(rng.normal(0.1, 1.5, 500)))]
+        h = calculate_hurst_exponent(prices)
+        self.assertIsNotNone(h)
+        self.assertTrue(0.0 <= h <= 1.0)
+
+        t_in = np.linspace(1000.0, 2000.0, 50)
+        p_in = 50.0 + 0.025 * (t_in - t_in[0]) + rng.normal(0.0, 0.2, 50)
+        fp = forecast_linear(t_in, p_in, horizon=10)
+        x_in = np.arange(len(p_in))
+        m_ref, b_ref = np.polyfit(x_in, p_in, 1)
+        x_future = np.arange(len(p_in), len(p_in) + 10)
+        np.testing.assert_allclose(fp, m_ref * x_future + b_ref, rtol=1e-11, atol=1e-11)
+
+    def test_kalman_state_tracker_current_trend_normalized_lookup(self):
+        from shadow_signals import KalmanStateTracker
+        tracker = KalmanStateTracker(["TAOUSDC"])
+        tracker._now = lambda: 1010.0
+        tracker._state["TAOUSDC"] = {"ts": 1000.0, "kalman_trend": 1.0}
+        self.assertEqual(tracker.current_trend(" taousdc "), (1, 10.0))
+        self.assertEqual(tracker.current_trend("TAOUSDC"), (1, 10.0))
+
 
 if __name__ == "__main__":
     unittest.main()

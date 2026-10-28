@@ -838,6 +838,14 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             }
             self.assertEqual(sym_mod.get_quantity_precision(SYMBOL), 8)
 
+        # 18. _convert_to_usdc supports inverse USDCUSDT quote and stablecoin peg fallback
+        with mock.patch.object(bapi_mod, "_get_symbol_price_safe", side_effect=lambda s: 1.001 if s == "USDCUSDT" else None):
+            self.assertAlmostEqual(bapi_mod._convert_to_usdc("USDT", 100.1), 100.0, places=4)
+            self.assertEqual(bapi_mod._convert_to_usdc("FDUSD", 50.0), 50.0)
+            self.assertEqual(bapi_mod._convert_to_usdc("USD", 25.0), 25.0)
+        self.assertEqual(bapi_mod._normalize_side("long"), "BUY")
+        self.assertEqual(bapi_mod._normalize_side("short"), "SELL")
+
 
 
 if __name__ == "__main__":

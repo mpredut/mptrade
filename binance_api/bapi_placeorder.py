@@ -47,7 +47,7 @@ class WeightLimitBlock(Exception):
 
 _CACHE_SUBMIT_PERMIT_TTL_SEC = binance_cache_health.SUBMIT_PERMIT_TTL_SEC
 _CACHE_SUBMIT_PERMIT_ISSUER = object()
-_INVALID_BAPI_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+_INVALID_BAPI_ID_STRINGS = api._INVALID_BAPI_ID_STRINGS
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,15 +118,7 @@ class _AccountCacheSubmitPermit:
         return self._scope.expires_at
 
 
-def _normalize_side(order_type):
-    if isinstance(order_type, str):
-        cleaned = order_type.strip().upper()
-        if cleaned == "B":
-            return "BUY"
-        if cleaned == "S":
-            return "SELL"
-        return cleaned
-    return order_type
+_normalize_side = api._normalize_side
 
 
 def _resolve_qty(qty):
@@ -310,11 +302,7 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
     market = _parse_bool_flag(market, False)
     if side is None or isinstance(side, bool) or symbol is None or isinstance(symbol, bool):
         raise SubmissionRefused("invalid_order_parameters")
-    side = str(side).strip().upper()
-    if side == "B":
-        side = "BUY"
-    elif side == "S":
-        side = "SELL"
+    side = str(_normalize_side(side)).strip().upper()
     symbol = str(symbol).strip().upper()
     if isinstance(qty, bool) or (not market and isinstance(price, bool)):
         raise SubmissionRefused("invalid_order_parameters")
@@ -847,11 +835,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
     """Cancel adverse opposing Binance orders without changing the target price."""
     if isinstance(order_type, bool) or isinstance(requested_price, bool):
         raise SubmissionRefused("invalid_opposing_cancel_request")
-    order_type = str(order_type or "").strip().upper()
-    if order_type == "B":
-        order_type = "BUY"
-    elif order_type == "S":
-        order_type = "SELL"
+    order_type = str(_normalize_side(order_type or "")).strip().upper()
     try:
         req_px = float(requested_price)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -914,11 +898,7 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price,
     cancel_opposite = _parse_bool_flag(cancel_opposite, True)
     if isinstance(order_type, bool) or isinstance(price, bool):
         raise SubmissionRefused("invalid_order_parameters")
-    order_type = str(order_type or "").strip().upper()
-    if order_type == "B":
-        order_type = "BUY"
-    elif order_type == "S":
-        order_type = "SELL"
+    order_type = str(_normalize_side(order_type or "")).strip().upper()
     try:
         price = float(price)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -955,11 +935,7 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
         return None
     if isinstance(order_type, bool):
         raise ValueError("order_type must be BUY or SELL")
-    side = str(order_type).strip().upper()
-    if side == "B":
-        side = "BUY"
-    elif side == "S":
-        side = "SELL"
+    side = str(_normalize_side(order_type)).strip().upper()
     if side not in {"BUY", "SELL"}:
         raise ValueError("order_type must be BUY or SELL")
     if isinstance(requested_price, bool):
