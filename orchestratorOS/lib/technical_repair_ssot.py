@@ -16,6 +16,8 @@ import re
 import shutil
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
+from botcore import _parse_bool_flag
+
 # ---------------------------------------------------------------------------
 # 1. Canonical Taxonomy: Repair Actions, Targets & Issue Categories (SSOT)
 # ---------------------------------------------------------------------------
@@ -174,21 +176,7 @@ SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
 # 2. Shared Primitive Coercion & JSON Sanitization Helpers
 # ---------------------------------------------------------------------------
 
-def as_bool_flag(val: Any, default: bool = False) -> bool:
-    """Coerce ``val`` into a boolean flag with safe string/numeric/NaN handling."""
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y", "t", "1.0"):
-            return True
-        if norm in ("0", "false", "no", "off", "n", "f", "0.0", "none", ""):
-            return False
-    return default
+as_bool_flag = _parse_bool_flag
 
 
 def parse_finite_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:

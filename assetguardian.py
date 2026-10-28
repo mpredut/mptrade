@@ -26,7 +26,8 @@ from instrument_registry import symbols_for
 
 # Load tunable parameters from the versioned, secret-free config before reading
 # environment variables below. load_dotenv does not overwrite real environment.
-from botcore import load_dotenv as _load_dotenv
+from botcore import _parse_bool_flag, load_dotenv as _load_dotenv
+from cachepaths import cache_path
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -156,26 +157,9 @@ from state_io import atomic_write_json, load_json_state, save_json_state
 from lock import FileLock
 
 
-def _parse_bool_flag(raw, default=False):
-    if raw is None:
-        return default
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw) if math.isfinite(float(raw)) else default
-    if isinstance(raw, str):
-        s = raw.strip().lower()
-        if s in ("1", "1.0", "true", "yes", "on"):
-            return True
-        if s in ("0", "0.0", "false", "no", "off", "none", "null", "nan", ""):
-            return False
-    return default
-
-
 class AssetGuardianState:
     def __init__(self, path=None, *, fail_closed=True):
-        root = os.path.dirname(os.path.abspath(__file__))
-        self.path = path or os.path.join(root, "cachedb", "assetguardian_state.json")
+        self.path = path or cache_path("assetguardian_state.json")
         self.lock_path = self.path + ".lock"
         self.fail_closed = _parse_bool_flag(fail_closed, default=True)
 

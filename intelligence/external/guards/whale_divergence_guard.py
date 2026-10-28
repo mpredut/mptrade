@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from botcore import _parse_bool_flag
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
@@ -26,19 +27,7 @@ def _safe_float(val: Any, default: float) -> float:
         return default
 
 
-def _safe_bool(val: Any, default: bool = True) -> bool:
-    if val is None:
-        return default
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    s = str(val).strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "0.0", "false", "no", "off"):
-        return False
-    return default
+_safe_bool = _parse_bool_flag
 
 
 class WhaleDivergenceGuard:

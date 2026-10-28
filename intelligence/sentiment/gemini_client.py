@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
-from botcore import load_dotenv, required_env
+from botcore import _parse_bool_flag, load_dotenv, required_env
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
 from orchestratorOS.agy.topics import (
     TopicSession,
@@ -216,7 +216,7 @@ class GeminiClient:
                 return None
 
         if any(
-            os.environ.get(k, "").strip().lower() in ("1", "1.0", "true", "yes", "on")
+            _parse_bool_flag(os.environ.get(k))
             for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
         ):
             logger.debug("Gemini LLM query suppressed in backtest/replay mode.")

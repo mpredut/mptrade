@@ -27,7 +27,8 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import load_dotenv, required_float_env
+from botcore import _parse_bool_flag, load_dotenv, required_float_env
+from cachepaths import cache_path
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -41,11 +42,7 @@ _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
 def _effective_smart_sl_state_file() -> str:
     if _SMART_SL_STATE_FILE != _DEFAULT_SMART_SL_STATE_FILE:
         return _SMART_SL_STATE_FILE
-    try:
-        from cachepaths import cache_path
-        return cache_path("smart_stop_loss_state.json")
-    except Exception:
-        return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "smart_stop_loss_state.json")
+    return cache_path("smart_stop_loss_state.json")
 
 # In-memory grace tracker: symbol -> {start_ts, initial_loss, lost_threshold, provider, current_price, buy_price}
 _GRACE_TRACKER: Dict[str, Dict[str, Any]] = {}
@@ -167,12 +164,7 @@ def _is_simulated_provider(provider: Optional[str]) -> bool:
         "replay", "backtest", "sim", "mock", "paper_sim", "test",
     ):
         return True
-    if (
-        os.environ.get("REPLAY_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-        or os.environ.get("BACKTEST_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-    ):
-        return True
-    return False
+    return bool(_parse_bool_flag(os.environ.get("REPLAY_MODE")) or _parse_bool_flag(os.environ.get("BACKTEST_MODE")))
 
 
 def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
@@ -180,10 +172,7 @@ def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
     b_upper = body.upper()
     if "(REPLAY)" in t_upper or "(REPLAY)" in b_upper or "(BACKTEST)" in t_upper or "(SIM)" in t_upper:
         return
-    if (
-        os.environ.get("REPLAY_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-        or os.environ.get("BACKTEST_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-    ):
+    if _parse_bool_flag(os.environ.get("REPLAY_MODE")) or _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
         return
     try:
         from notify_engine.alertnotifiers import notify

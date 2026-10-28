@@ -10,6 +10,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 
+from botcore import _parse_bool_flag
+
 logger = logging.getLogger("intelligence.sentiment.market_breadth")
 
 
@@ -164,12 +166,7 @@ class MarketBreadthCollector:
 
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[MarketBreadthSnapshot]:
         """Fetch latest 24hr tickers from public Binance API and return market breadth snapshot."""
-        if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        elif isinstance(force_refresh, (int, float)) and not isinstance(force_refresh, bool):
-            force_refresh = math.isfinite(float(force_refresh)) and float(force_refresh) != 0.0
-        else:
-            force_refresh = bool(force_refresh)
+        force_refresh = _parse_bool_flag(force_refresh, False)
         now = time.time()
         if now_ts is not None and not isinstance(now_ts, bool):
             try:

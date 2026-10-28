@@ -13,6 +13,7 @@ from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
+from cachepaths import cache_path
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -83,11 +84,7 @@ class GeopoliticalThreatAnalyzer:
 
     def _effective_state_file(self) -> str:
         if self.state_file == DEFAULT_STATE_FILE:
-            try:
-                from cachepaths import cache_path
-                return cache_path("geopolitical_threat_eval.json")
-            except Exception:
-                return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "geopolitical_threat_eval.json")
+            return cache_path("geopolitical_threat_eval.json")
         return self.state_file
 
     def _load_from_disk(self) -> None:

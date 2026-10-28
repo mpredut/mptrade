@@ -20,6 +20,7 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from botcore import _parse_bool_flag
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
@@ -64,23 +65,7 @@ class PostStopReentryGuard:
             return "enforce"
         return raw_m
 
-    @staticmethod
-    def _as_bool_flag(val: Any, default: bool = True) -> bool:
-        default_b = bool(default) if isinstance(default, bool) else True
-        if val is None:
-            return default_b
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, str):
-            s = val.strip().lower()
-            if s in ("1", "1.0", "true", "yes", "on", "y", "t"):
-                return True
-            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", "", "n", "f"):
-                return False
-            return default_b
-        if isinstance(val, (int, float)):
-            return math.isfinite(float(val)) and float(val) != 0.0
-        return default_b
+    _as_bool_flag = staticmethod(_parse_bool_flag)
 
     def __init__(
         self,

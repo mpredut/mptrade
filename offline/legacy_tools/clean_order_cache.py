@@ -24,7 +24,11 @@ import time
 
 # offline/legacy_tools/ sits two levels below the repository root.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CACHE_DIR = os.environ.get("BINANCE_CACHE_DIR", os.path.join(REPO_ROOT, "cachedb"))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+from cachepaths import get_cachedb_dir
+
+CACHE_DIR = get_cachedb_dir()
 ORDER_FILE = os.path.join(CACHE_DIR, "cache_order.json")
 
 BAD_STATUS = {"CANCELED", "EXPIRED", "REJECTED", "NEW"}

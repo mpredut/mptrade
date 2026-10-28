@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from botcore import _parse_bool_flag
+from cachepaths import cache_path
+
 logger = logging.getLogger("intelligence.macro.news_feed")
 
 DEFAULT_RSS_URL = (
@@ -91,11 +94,7 @@ class NewsFeedCollector:
 
     def _effective_history_file(self) -> str:
         if self.history_file == DEFAULT_HISTORY_FILE:
-            try:
-                from cachepaths import cache_path
-                return cache_path("news_feed_collect.json")
-            except Exception:
-                return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "news_feed_collect.json")
+            return cache_path("news_feed_collect.json")
         return self.history_file
 
     @property
@@ -178,20 +177,10 @@ class NewsFeedCollector:
                     "first_seen_ts": ts,
                 })
             save_json_state(hist_file, payload, indent=2)
-            # Dual-write legacy filename if using standardized collect naming
-            if "_collect.json" in hist_file:
-                legacy = hist_file.replace("_collect.json", "_history.json")
-                save_json_state(legacy, payload, indent=2)
         except Exception as e:
             logger.debug("Could not save news history to %s: %s", hist_file, e)
 
-    @staticmethod
-    def _as_bool_flag(val: Any) -> bool:
-        if isinstance(val, str):
-            return val.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return math.isfinite(float(val)) and float(val) != 0.0
-        return bool(val)
+    _as_bool_flag = staticmethod(_parse_bool_flag)
 
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool and return aggregated snapshot."""

@@ -33,6 +33,8 @@ from order_retry import (
     propagate_submission_refusal,
 )
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+from botcore import _parse_bool_flag
+from cachepaths import cache_path
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,
     OrderTicket as PairOrderTicket,
@@ -41,28 +43,12 @@ from strategies.rtrade_pair import (
 )
 
 
-_RTRADE_HEARTBEAT_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "cachedb", "rtrade.heartbeat")
+_RTRADE_HEARTBEAT_PATH = cache_path("rtrade.heartbeat")
 _RTRADE_HEARTBEAT_INTERVAL_SEC = 30.0
 _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC = 120.0
 _rtrade_heartbeat_lock = threading.Lock()
 _rtrade_heartbeat_last = float("-inf")
 
-
-def _parse_bool_flag(raw, default=False):
-    if raw is None:
-        return default
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw) if math.isfinite(float(raw)) else default
-    if isinstance(raw, str):
-        s = raw.strip().lower()
-        if s in ("1", "1.0", "true", "yes", "on"):
-            return True
-        if s in ("0", "0.0", "false", "no", "off", "none", "null", "nan", ""):
-            return False
-    return default
 
 
 def _touch_rtrade_heartbeat(*, force=False, now=None):

@@ -113,16 +113,25 @@ def _parse_bool_flag(val, default: bool = False) -> bool:
         return default
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return default
+            return False
         return val != 0
     if isinstance(val, str):
         s = val.split("#", 1)[0].split(";", 1)[0].strip().lower()
-        if not s or s in {"none", "null", "nan"}:
+        if not s or s in {"none", "null"}:
             return default
+        if s == "nan":
+            return False
         if s in {"1", "1.0", "true", "yes", "on", "y", "t", "da"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
             return False
+        try:
+            fv = float(s)
+            if not math.isfinite(fv):
+                return False
+            return fv != 0.0
+        except (TypeError, ValueError):
+            return default
     return default
 
 

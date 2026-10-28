@@ -14,6 +14,8 @@ import sys
 import time
 from typing import Any, Dict, Optional
 
+from botcore import _parse_bool_flag
+
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     if val is None or isinstance(val, bool):
@@ -419,14 +421,7 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
         print("  • Macro Threat:   [No threat assessment in cachedb]")
 
     # Order Guard Preview
-    def _as_bool_preview(val: Any) -> bool:
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, (int, float)):
-            return bool(val) if math.isfinite(val) else False
-        if isinstance(val, str):
-            return val.strip().lower() in ("1", "1.0", "true", "yes", "on", "y", "t")
-        return False
+    _as_bool_preview = _parse_bool_flag
 
     print("\n🚦 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
     buy_std = gp.get("buy_standard")

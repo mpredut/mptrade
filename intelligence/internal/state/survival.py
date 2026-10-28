@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from binance_api.market_data import fetch_ohlc_candles
+from botcore import _parse_bool_flag
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
@@ -513,12 +514,7 @@ def get_trend_survival_metrics(
     except Exception:
         cached_entry = None
 
-    if isinstance(allow_network, str):
-        allow_net = allow_network.strip().lower() in ("1", "1.0", "true", "yes", "on")
-    elif isinstance(allow_network, (int, float)) and not isinstance(allow_network, bool):
-        allow_net = math.isfinite(float(allow_network)) and float(allow_network) != 0.0
-    else:
-        allow_net = bool(allow_network)
+    allow_net = _parse_bool_flag(allow_network, False)
     if cached_entry:
         median_d = _pos_float(cached_entry.get("median_d"), median_d)
         p90_d = _pos_float(cached_entry.get("p90_d"), p90_d)

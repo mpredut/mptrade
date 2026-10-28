@@ -30,7 +30,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
 
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
-    required_int_env, required_bool_env,
+    required_int_env, required_bool_env, _parse_bool_flag,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -96,21 +96,6 @@ def _clean_nonneg_float(val: object, default: float = 0.0) -> float:
         return default
     return f if (math.isfinite(f) and f >= 0.0) else default
 
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
-            return True
-        if norm in ("0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"):
-            return False
-    return default
 
 
 def generate_tp_ladder(

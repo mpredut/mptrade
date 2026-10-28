@@ -258,13 +258,8 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
 
 def get_kalman_state_path() -> str:
     """Return the canonical path to kalman_state.json honoring MPTRADE_CACHEDB_DIR."""
-    try:
-        from cachepaths import cache_path
-        return cache_path("kalman_state.json")
-    except Exception:
-        return os.path.join(
-            os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "kalman_state.json"
-        )
+    from cachepaths import cache_path
+    return cache_path("kalman_state.json")
 
 
 def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:

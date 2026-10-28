@@ -9,6 +9,8 @@ import time
 from typing import Any, Dict, Optional, Tuple
 import urllib.request
 
+from botcore import _parse_bool_flag
+
 logger = logging.getLogger("intelligence.sentiment.fear_greed")
 
 
@@ -117,12 +119,7 @@ class FearGreedCollector:
 
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:
         """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
-        if isinstance(force_refresh, str):
-            force_refresh = force_refresh.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        elif isinstance(force_refresh, (int, float)) and not isinstance(force_refresh, bool):
-            force_refresh = math.isfinite(float(force_refresh)) and float(force_refresh) != 0.0
-        else:
-            force_refresh = bool(force_refresh)
+        force_refresh = _parse_bool_flag(force_refresh, False)
         now = time.time()
         if now_ts is not None and not isinstance(now_ts, bool):
             try:
