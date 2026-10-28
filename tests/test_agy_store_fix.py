@@ -209,7 +209,7 @@ def test_active_webui_daemon_log_or_new_running_thread_blocks_ui_sync(store):
 
 def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_restart(store):
     cli, d1, d2 = store
-    # 1. Known permanent topic thread already hardlinked in D2 -> 0 restarts
+    # 1. Known permanent topic thread updated in D1 and re-hardlinked in D2 -> 0 restarts
     (d1 / "topic-10m.db").write_text("new-turn-content")
     os.link(d1 / "topic-10m.db", d2 / "topic-10m.db")
     # 2. Brand-new interactive Web UI thread created directly by the running daemon in D1 (not yet in D2) -> 0 restarts
@@ -221,10 +221,11 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
     assert asf.pending_ui_sync() == []
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
 
-    # 3. Background heartbeat lines (fetchAvailableModels / loadCodeAssist) do NOT block ui-sync when a topic turn unlinks D2
-    os.remove(d2 / "topic-10m.db")
+    # 3. Background heartbeat lines (fetchAvailableModels / loadCodeAssist) do NOT block ui-sync when a new topic thread appears
+    (d1 / "new-topic.db").write_text("first-turn")
+    _set_rows(["topic-10m", "webui-chat", "new-topic"])
     with open(asf.TOPIC_REGISTRY, "w", encoding="utf-8") as f:
-        f.write('{"auto_cryptotrade_executor": {"conversation_id": "topic-10m"}}')
+        f.write('{"auto_cryptotrade_executor": {"conversation_id": "new-topic"}}')
     log_dir = cli / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "cli-20261026_100000.log"
@@ -233,8 +234,8 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
         "I1026 10:05:00.000000 2 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n"
         "I1026 10:05:01.000000 3 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
     )
-    assert len(asf.pending_ui_sync()) == 1
-    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+    assert len(asf.pending_ui_sync()) == 2
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
 
 

@@ -2947,18 +2947,6 @@ class AutonomousAIReconciler:
                 intents_emitted and getattr(self.intent_gateway, "notify_enabled", False)
             )
         self.write_audit_artifact(report)
-        if "PYTEST_CURRENT_TEST" not in os.environ:
-            ui_sync_script = os.path.join(self.workspace_dir, "orchestratorOS", "admin", "manage_agy.sh")
-            if os.path.isfile(ui_sync_script) and os.access(ui_sync_script, os.X_OK):
-                try:
-                    subprocess.Popen(
-                        [ui_sync_script, "ui-sync"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                except OSError:
-                    pass
         logger.info("Autonomous AI Supervisor cycle complete: %s", report.summary)
         return report
 
