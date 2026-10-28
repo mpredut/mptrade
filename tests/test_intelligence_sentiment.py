@@ -804,4 +804,89 @@ class TestEnrichedPretradeTelemetry:
         assert "Technical Trend Regime: bull (gradient=+0.0012, epsilon=0.0004)" in prompt
         assert "€1,500.00 EUR" in prompt
 
+    def test_gemini_client_fallback_chain_and_non_gemini_rest(self):
+        from intelligence.sentiment.gemini_client import GeminiClient
+        import subprocess
+
+        # 1. Test fallback models initialization and inclusion of gpt-oss
+        client = GeminiClient(
+            model="primary-failing-model",
+            fallback_models=["gemini-3.8-flash-low", "gpt-oss-120b-medium"],
+            api_key=None,
+        )
+        assert client.fallback_models == ("gemini-3.8-flash-low", "gpt-oss-120b-medium")
+
+        # 2. Test REST fallback cleans non-Gemini model names safely
+        from unittest.mock import MagicMock
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}'
+        mock_resp.__enter__.return_value = mock_resp
+
+        mock_open = MagicMock(return_value=mock_resp)
+
+        import urllib.request
+        orig_urlopen = urllib.request.urlopen
+        try:
+            urllib.request.urlopen = mock_open
+            rest_client = GeminiClient(
+                model="gpt-oss-120b-medium",
+                api_key="test-api-key",
+                cli_path="/nonexistent/path/to/cli",
+            )
+            # When CLI fails, REST fallback uses canonical gemini endpoint
+            res = rest_client.query_text("test prompt")
+            assert res == "ok"
+            assert mock_open.call_count == 1
+            call_url = mock_open.call_args[0][0].full_url
+            assert "gemini-2.5-flash" in call_url
+        finally:
+            urllib.request.urlopen = orig_urlopen
+
+        # 3. Test CLI fallback sequence tries secondary model when primary fails
+        attempted_models = []
+        def mock_subproc_run(cmd, **kwargs):
+            m_idx = cmd.index("--model") + 1
+            used_m = cmd[m_idx]
+            attempted_models.append(used_m)
+            if used_m == "failing-model":
+                return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="Quota exceeded")
+            import json
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout=json.dumps({"response": f"success from {used_m}"}))
+
+        mock_run = MagicMock(side_effect=mock_subproc_run)
+        orig_run = subprocess.run
+        try:
+            subprocess.run = mock_run
+            cli_client = GeminiClient(
+                model="failing-model",
+                fallback_models=["gemini-3.8-flash-low", "gpt-oss-120b-medium"],
+                cli_path=__file__,
+                api_key=None,
+            )
+            # First test: primary fails, secondary succeeds
+            res = cli_client.query_text("sample prompt")
+            assert res == "success from gemini-3.8-flash-low"
+            assert attempted_models == ["failing-model", "gemini-3.8-flash-low"]
+
+            # Second test: both fail, third (gpt-oss-120b-medium) succeeds
+            attempted_models.clear()
+            def mock_subproc_run_gpt(cmd, **kwargs):
+                m_idx = cmd.index("--model") + 1
+                used_m = cmd[m_idx]
+                attempted_models.append(used_m)
+                if used_m in ("failing-model", "gemini-3.8-flash-low"):
+                    return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="Rate limit")
+                import json
+                return subprocess.CompletedProcess(cmd, returncode=0, stdout=json.dumps({"response": f"success from {used_m}"}))
+
+            subprocess.run = MagicMock(side_effect=mock_subproc_run_gpt)
+            res2 = cli_client.query_text("sample prompt 2")
+            assert res2 == "success from gpt-oss-120b-medium"
+            assert attempted_models == ["failing-model", "gemini-3.8-flash-low", "gpt-oss-120b-medium"]
+        finally:
+            subprocess.run = orig_run
+
+
+
 

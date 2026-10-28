@@ -31,7 +31,10 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
-FALLBACK_MODELS_RAW = os.environ.get("LLM_FALLBACK_MODELS", "gemini-3.8-flash-medium,gemini-3.8-flash-low,gemini-4-argon-low")
+FALLBACK_MODELS_RAW = os.environ.get(
+    "LLM_FALLBACK_MODELS",
+    "gemini-3.8-flash-medium,gemini-3.8-flash-low,gemini-4-argon-low,gpt-oss-120b-medium,claude-sonnet-5-5-low",
+)
 DEFAULT_FALLBACK_MODELS = tuple(
     m.strip() for m in FALLBACK_MODELS_RAW.split(",") if m.strip()
 )
@@ -333,7 +336,11 @@ class GeminiClient:
         # 3. Direct REST API fallback if API key is provided
         if self.api_key:
             try:
-                clean_model = selected_model.replace("-low", "").replace("-medium", "").replace("-high", "")
+                # Direct Google AI Studio REST API supports Gemini models; non-Google candidate names fall back to a canonical Gemini endpoint
+                if any(k in selected_model.lower() for k in ("gemini", "argon")):
+                    clean_model = selected_model.replace("-low", "").replace("-medium", "").replace("-high", "")
+                else:
+                    clean_model = "gemini-2.5-flash"
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={self.api_key}"
                 body = {
                     "contents": [{"parts": [{"text": prompt}]}],
