@@ -14,17 +14,12 @@ from __future__ import annotations
 from collections import deque
 import math
 from typing import Any, Literal
-from botcore import safe_float as _safe_float, safe_int as _safe_int
+from botcore import safe_float as _safe_float, safe_int as _safe_int, safe_pos_int as _safe_pos_int
 from intelligence.internal.triggers.trigger_event import (
     TriggerEvent,
     TriggerAction,
     TriggerSide,
 )
-
-
-def _safe_pos_int(val: Any, default: int) -> int:
-    i = _safe_int(val, default=None)
-    return max(1, i) if (i is not None and i >= 1) else default
 
 
 class MeanReversionTrigger:

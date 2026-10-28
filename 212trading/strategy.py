@@ -31,6 +31,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
     required_int_env, required_bool_env, _parse_bool_flag, safe_float,
+    safe_pos_float, safe_nonneg_float,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -78,13 +79,11 @@ def state_path_for(ticker: str) -> str:
 
 
 def _clean_pos_float(val: object) -> float | None:
-    f = safe_float(val, default=None)
-    return f if (f is not None and f > 0.0) else None
+    return safe_pos_float(val, default=None)
 
 
 def _clean_nonneg_float(val: object, default: float = 0.0) -> float:
-    f = safe_float(val, default=None)
-    return f if (f is not None and f >= 0.0) else default
+    return safe_nonneg_float(val, default=default)
 
 
 

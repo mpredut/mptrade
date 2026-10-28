@@ -10,6 +10,7 @@ _LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
+from botcore import safe_int as _safe_int
 from technical_repair_ssot import fleet_script_basenames, parse_finite_float
 
 ROOT = wc.ROOT
@@ -62,18 +63,6 @@ def _managed_script(proc):
 
 
 _safe_float = parse_finite_float
-
-
-def _safe_int(val, default=0):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
-
-
 _as_bool_flag = wc._parse_bool_flag
 
 

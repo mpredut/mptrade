@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
-from botcore import safe_int
+from botcore import safe_int, safe_pos_int as _safe_pos_int
 import symbols as sym
 import cacheManager as cm
 
@@ -220,10 +220,6 @@ def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarr
 # ==========================
 # 5) LSTM
 # ==========================
-
-def _safe_pos_int(val, default: int = 1) -> int:
-    i = safe_int(val, default=None)
-    return max(1, i) if (i is not None and i >= 1) else default
 
 
 def make_sequences(series: np.ndarray, window: int):

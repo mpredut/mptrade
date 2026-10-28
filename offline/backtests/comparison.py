@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
-from botcore import safe_float
+from botcore import safe_float, safe_nonneg_float
 
 
 def _finite_float(value: Any) -> float | None:
@@ -21,8 +21,7 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _safe_tolerance(value: Any, default: float = 1e-10) -> float:
-    parsed = safe_float(value, default=None)
-    return parsed if (parsed is not None and parsed >= 0.0) else default
+    return safe_nonneg_float(value, default=default)
 
 
 def relative_to_baseline(

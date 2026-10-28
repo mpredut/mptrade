@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_nonneg_float, safe_pos_float
 
 try:
     from strategies.spot_rules import are_close, diff_percent
@@ -70,23 +70,11 @@ class PriceGeometrySnapshot:
 
     @staticmethod
     def _finite_pos_float(val: Any) -> Optional[float]:
-        if val is None or isinstance(val, bool):
-            return None
-        try:
-            f = float(val)
-            return f if (math.isfinite(f) and f > 0.0) else None
-        except (TypeError, ValueError, OverflowError):
-            return None
+        return safe_pos_float(val, default=None)
 
     @staticmethod
     def _finite_nonneg_float(val: Any) -> Optional[float]:
-        if val is None or isinstance(val, bool):
-            return None
-        try:
-            f = float(val)
-            return f if (math.isfinite(f) and f >= 0.0) else None
-        except (TypeError, ValueError, OverflowError):
-            return None
+        return safe_nonneg_float(val, default=None)
 
     @property
     def is_valid_price(self) -> bool:
@@ -556,25 +544,11 @@ def _resolve_now_s(current_time_s: Optional[float]) -> float:
 
 
 def _resolve_positive_threshold(custom_val: Any, default_val: float) -> float:
-    if custom_val is not None and not isinstance(custom_val, bool):
-        try:
-            cf = float(custom_val)
-            if math.isfinite(cf) and cf > 0.0:
-                return cf
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return float(default_val)
+    return safe_pos_float(custom_val, default=float(default_val))
 
 
 def _resolve_nonneg_threshold(custom_val: Any, default_val: float) -> float:
-    if custom_val is not None and not isinstance(custom_val, bool):
-        try:
-            cf = float(custom_val)
-            if math.isfinite(cf) and cf >= 0.0:
-                return cf
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return float(default_val)
+    return safe_nonneg_float(custom_val, default=float(default_val))
 
 
 PERSISTED_EXIT_STATE_KEYS: Tuple[str, ...] = (

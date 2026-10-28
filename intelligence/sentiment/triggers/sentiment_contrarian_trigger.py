@@ -7,15 +7,16 @@ import time
 from typing import Optional, Tuple
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
-from intelligence.macro_sentiment_ssot import obj_attr, resolve_now_ts, safe_float, safe_pos_float
+from intelligence.macro_sentiment_ssot import (
+    obj_attr,
+    resolve_now_ts,
+    safe_float,
+    safe_pos_float,
+    safe_thresh as _safe_thresh,
+)
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_contrarian_trigger")
-
-
-def _safe_thresh(v, default: int) -> int:
-    f = safe_float(v, -1.0)
-    return int(round(f)) if 0.0 <= f <= 100.0 else default
 
 
 class SentimentContrarianTrigger:

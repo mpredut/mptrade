@@ -66,6 +66,12 @@ def safe_pos_float(val: Any, default: float = 0.0) -> float:
     return f if f > 0.0 else default
 
 
+def safe_thresh(val: Any, default: int) -> int:
+    """Safely coerce sentiment index/threshold to an integer in [0, 100]."""
+    f = safe_float(val, -1.0)
+    return int(round(f)) if 0.0 <= f <= 100.0 else default
+
+
 def safe_nonneg_ts(val: Any, default: float = 0.0) -> float:
     """Safely coerce ``val`` to a non-negative finite float (>= 0.0)."""
     f = safe_float(val, -1.0)

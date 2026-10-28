@@ -36,12 +36,7 @@ import math
 from state_io import load_json_state, save_json_state
 
 
-from botcore import _parse_bool_flag, safe_float
-
-
-def _safe_nonneg_float(val, default: float = 0.0) -> float:
-    f = safe_float(val, default=None)
-    return f if (f is not None and f >= 0.0) else default
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float as _safe_nonneg_float
 
 
 def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:

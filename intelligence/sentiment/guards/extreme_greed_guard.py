@@ -6,15 +6,16 @@ import math
 from typing import Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
-from intelligence.macro_sentiment_ssot import clean_scale, normalize_order_side, obj_attr, safe_float
+from intelligence.macro_sentiment_ssot import (
+    clean_scale,
+    normalize_order_side,
+    obj_attr,
+    safe_float,
+    safe_thresh as _safe_thresh,
+)
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 logger = logging.getLogger("intelligence.sentiment.extreme_greed_guard")
-
-
-def _safe_thresh(val, default: int) -> int:
-    f = safe_float(val, -1.0)
-    return int(round(f)) if 0.0 <= f <= 100.0 else default
 
 
 class ExtremeGreedGuard:

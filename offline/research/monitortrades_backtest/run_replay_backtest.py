@@ -35,7 +35,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env, safe_float
+from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float as _safe_nonneg_f
 from cachepaths import cache_path
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
@@ -49,11 +49,6 @@ from offline.research.monitortrades_backtest.replay_trend_source import (
 SEED_NOTIONAL_USD = 1000.0
 SBS = 12 * 24 * 3600 + 60   # The same default as live (MT_GUARD_WINDOW_DAYS=12).
 FEE_PCT = 0.1
-
-
-def _safe_nonneg_f(val, default: float = 0.0) -> float:
-    f = safe_float(val, default=None)
-    return f if (f is not None and f >= 0.0) else default
 
 
 def _live_mt_params(section):

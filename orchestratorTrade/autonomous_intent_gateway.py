@@ -30,7 +30,8 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, parse_dotenv
+from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_pos_float
+from providers.base import normalize_side
 
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -89,13 +90,7 @@ MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
 
 def _parse_finite_float(val: Any, default: float) -> float:
     """Parse ``val`` into a finite float, rejecting booleans, None, and NaN/Inf."""
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        parsed = float(val)
-        return parsed if math.isfinite(parsed) else default
-    except (ValueError, TypeError, OverflowError):
-        return default
+    return safe_float(val, default=default)
 
 
 def extract_current_price_item(item: Any) -> Optional[float]:
@@ -795,8 +790,8 @@ class AutonomousIntentGateway:
         intent_id = str(raw_iid).strip()
         raw_dec = intent.get("decision")
         if raw_dec is None:
-            raw_dec = intent.get("action") if intent.get("action") is not None else intent.get("side", "HOLD")
-        decision = "" if isinstance(raw_dec, bool) or raw_dec is None else str(raw_dec).strip().upper()
+            raw_dec = intent.get("action") if intent.get("action") is not None else intent.get("side", "")
+        decision = normalize_side(raw_dec)
         raw_sym = intent.get("symbol", "")
         symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
         raw_venue = intent.get("venue", "binance")
@@ -1032,8 +1027,8 @@ class AutonomousIntentGateway:
             return None
         raw_side = decision.get("decision")
         if raw_side is None:
-            raw_side = decision.get("action") if decision.get("action") is not None else decision.get("side", "HOLD")
-        side = "" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().upper()
+            raw_side = decision.get("action") if decision.get("action") is not None else decision.get("side", "")
+        side = normalize_side(raw_side)
         if side not in ("BUY", "SELL"):
             logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, side)
             return None

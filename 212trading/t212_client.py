@@ -17,7 +17,7 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float
+    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
     import os as _os
@@ -28,14 +28,13 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float
+    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float
 
 from providers.base import _clean_single_order_id
 
 
 def _clean_nonneg(val: object, default: float) -> float:
-    f = safe_float(val, default=default)
-    return f if f is not None and f >= 0.0 else default
+    return safe_nonneg_float(val, default=default)
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"

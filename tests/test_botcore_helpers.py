@@ -149,6 +149,42 @@ class DotenvHelpersTest(unittest.TestCase):
         self.assertIsNone(botcore.int_env("MISSING", env))
 
 
+class NumericCoercionHelpersTest(unittest.TestCase):
+    def test_safe_float_and_pos_and_nonneg_float(self):
+        self.assertEqual(botcore.safe_float("12.5", 0.0), 12.5)
+        self.assertEqual(botcore.safe_float(None, 0.0), 0.0)
+        self.assertEqual(botcore.safe_float(True, 0.0), 0.0)
+        self.assertEqual(botcore.safe_float(False, 0.0), 0.0)
+        self.assertEqual(botcore.safe_float(float("nan"), -1.0), -1.0)
+        self.assertEqual(botcore.safe_float(float("inf"), -1.0), -1.0)
+        self.assertIsNone(botcore.safe_float("bad", None))
+
+        self.assertEqual(botcore.safe_pos_float("10.5", 0.0), 10.5)
+        self.assertEqual(botcore.safe_pos_float("0.0", 5.0), 5.0)
+        self.assertEqual(botcore.safe_pos_float("-2.5", 5.0), 5.0)
+        self.assertIsNone(botcore.safe_pos_float("bad", None))
+
+        self.assertEqual(botcore.safe_nonneg_float("0.0", -1.0), 0.0)
+        self.assertEqual(botcore.safe_nonneg_float("15.2", -1.0), 15.2)
+        self.assertEqual(botcore.safe_nonneg_float("-0.01", 1.0), 1.0)
+        self.assertIsNone(botcore.safe_nonneg_float("invalid", None))
+
+    def test_safe_int_and_pos_int(self):
+        self.assertEqual(botcore.safe_int("42", 0), 42)
+        self.assertEqual(botcore.safe_int(42.9, 0), 42)
+        self.assertEqual(botcore.safe_int(True, 0), 0)
+        self.assertEqual(botcore.safe_int(False, 0), 0)
+        self.assertEqual(botcore.safe_int(None, 0), 0)
+        self.assertEqual(botcore.safe_int(float("nan"), -1), -1)
+        self.assertIsNone(botcore.safe_int("not_a_number", None))
+
+        self.assertEqual(botcore.safe_pos_int("5", 1), 5)
+        self.assertEqual(botcore.safe_pos_int("0", 1), 1)
+        self.assertEqual(botcore.safe_pos_int("-3", 1), 1)
+        self.assertEqual(botcore.safe_pos_int(True, 1), 1)
+        self.assertIsNone(botcore.safe_pos_int("bad", None))
+
+
 class BoundNotifierTest(unittest.TestCase):
     def test_explicit_symbol_then_environment_priority_then_fallback(self):
         bound = alertnotifiers.bind_notify(
