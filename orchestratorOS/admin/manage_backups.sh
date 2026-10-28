@@ -11,10 +11,49 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cmd="${1:-}"
 shift || true
 
+read_env_var() {
+    local key="$1" file="${2:-$ROOT/.env}"
+    [ -f "$file" ] || return 0
+    grep -E "^[[:space:]]*${key}=" "$file" | tail -n 1 | cut -d= -f2- | sed -E 's/^[[:space:]]*["'\'']?//; s/["'\'']?[[:space:]]*$//'
+}
+
+ensure_rclone_storj_config() {
+    local access_key secret_key endpoint bucket
+    access_key="${STORJ_ACCESS_KEY:-${STORJ_ACCES_KEY:-$(read_env_var STORJ_ACCESS_KEY)}}"
+    [ -n "$access_key" ] || access_key="$(read_env_var STORJ_ACCES_KEY)"
+    secret_key="${STORJ_SECRET_KEY:-$(read_env_var STORJ_SECRET_KEY)}"
+    endpoint="${STORJ_ENDPOINT:-$(read_env_var STORJ_ENDPOINT)}"
+    bucket="${STORJ_BUCKET:-$(read_env_var STORJ_BUCKET)}"
+
+    # Sanitize accidental leading characters before http(s):// (e.g. Yhttps://...)
+    if [[ "$endpoint" == *http* ]]; then
+        endpoint="http${endpoint#*http}"
+    fi
+    endpoint="${endpoint:-https://gateway.storjshare.io}"
+    export STORJ_BUCKET_RESOLVED="${bucket:-mptrade-price-data}"
+
+    if [ -n "$access_key" ] && [ -n "$secret_key" ]; then
+        mkdir -p "$HOME/.config/rclone"
+        chmod 700 "$HOME/.config/rclone" 2>/dev/null || true
+        if [ ! -f "$HOME/.config/rclone/rclone.conf" ] || ! grep -q '^\[storj\]' "$HOME/.config/rclone/rclone.conf" 2>/dev/null; then
+            cat >> "$HOME/.config/rclone/rclone.conf" <<EOF
+[storj]
+type = s3
+provider = Storj
+access_key_id = ${access_key}
+secret_access_key = ${secret_key}
+endpoint = ${endpoint}
+EOF
+            chmod 600 "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true
+        fi
+    fi
+}
+
 backup_local() {
     local OUT="${1:-$HOME/$(basename "$ROOT")-secrets-backup}"
     case "$OUT" in "$ROOT"|"$ROOT"/*) echo "❌ the destination can NOT be inside the repo: $OUT"; exit 1;; esac
     
+    ensure_rclone_storj_config
     cd "$ROOT"
     local LIST
     LIST="$(git ls-files --others --ignored --exclude-standard | grep -vE '^(myenv|\.venv)/' | grep -vE '(__pycache__|\.pyc$|\.log($|\.)|\.lock$|\.tmp($|\.)|\.previous$|^index\.html$|^\.claude/)')"
@@ -72,19 +111,43 @@ backup_local() {
 }
 
 backup_remote() {
+    ensure_rclone_storj_config
     local RCLONE="${RCLONE:-$HOME/bin/rclone}"
     command -v "$RCLONE" >/dev/null 2>&1 || RCLONE=rclone
-    local REMOTE="${RCLONE_REMOTE:-storj-crypt:}"
+    local BUCKET="${STORJ_BUCKET_RESOLVED:-mptrade-price-data}"
+    local DEFAULT_REMOTE="storj:${BUCKET}/"
+    if [ -f "$HOME/.config/rclone/rclone.conf" ] && grep -q '^\[storj-crypt\]' "$HOME/.config/rclone/rclone.conf" 2>/dev/null; then
+        DEFAULT_REMOTE="storj-crypt:"
+    fi
+    local REMOTE="${RCLONE_REMOTE:-$DEFAULT_REMOTE}"
     local BACKUP_NAME="${BACKUP_NAME:-$(basename "$ROOT")-secrets-backup}"
     local TAR="${BACKUP_TAR:-$HOME/$BACKUP_NAME.tar.gz}"
+    local DATED_NAME="${BACKUP_NAME}-$(date +%Y%m%d).tar.gz"
+    local DATED_TAR="$HOME/$DATED_NAME"
     local DEST="${REMOTE}${BACKUP_NAME}.tar.gz"
+    local DEST_DATED="${REMOTE}${DATED_NAME}"
     
     echo "$(date '+%F %T') === backup_remote ==="
-    backup_local "$HOME/$BACKUP_NAME" >/dev/null
+    backup_local "$HOME/$BACKUP_NAME"
     [ -f "$TAR" ] || { echo "❌ local tarball missing: $TAR"; exit 1; }
     
+    if [[ "$REMOTE" == storj:* ]]; then
+        "$RCLONE" mkdir "${REMOTE%/}" 2>/dev/null || true
+    fi
     "$RCLONE" copyto "$TAR" "$DEST" --transfers 1
-    echo "$(date '+%F %T') ✔ encrypted upload -> $DEST"
+    echo "$(date '+%F %T') ✔ remote upload -> $DEST"
+    if [ -f "$DATED_TAR" ]; then
+        "$RCLONE" copyto "$DATED_TAR" "$DEST_DATED" --transfers 1
+        echo "$(date '+%F %T') ✔ remote dated upload -> $DEST_DATED"
+        local KEEP="${BACKUP_KEEP:-7}"
+        local old_files
+        old_files="$("$RCLONE" lsf "$REMOTE" --include "${BACKUP_NAME}-????????.tar.gz" 2>/dev/null | sort -r | tail -n +"$((KEEP + 1))" || true)"
+        if [ -n "$old_files" ]; then
+            while IFS= read -r old_f; do
+                [ -n "$old_f" ] && "$RCLONE" deletefile "${REMOTE}${old_f}" 2>/dev/null || true
+            done <<< "$old_files"
+        fi
+    fi
 }
 
 log() { echo "[$(date -u +%FT%TZ)] $*"; }
