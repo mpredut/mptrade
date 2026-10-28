@@ -11,12 +11,19 @@ Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during orde
 from __future__ import annotations
 
 import logging
-import math
 import sys
-import time
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
+from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
+from intelligence.macro_sentiment_ssot import (
+    check_cooldown_gate,
+    clean_scale as _clean_scale,
+    clean_symbol_key,
+    normalize_order_side,
+    resolve_now_ts,
+    safe_pos_float,
+)
 
 logger = logging.getLogger("external_order_guard")
 
@@ -83,17 +90,11 @@ def check_external_order_guards(
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
-    if not isinstance(side, str):
-        return True, "not_supported_side", 1.0
-    order_side = side.strip().upper()
-    if order_side in ("B", "BID", "LONG"):
-        order_side = "BUY"
-    elif order_side in ("S", "A", "ASK", "SHORT"):
-        order_side = "SELL"
+    order_side = normalize_order_side(side)
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    sym_norm = clean_symbol_key(symbol)
 
     from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
@@ -112,38 +113,13 @@ def check_external_order_guards(
         if ext_mode == "off":
             return True, "external_guards_off", 1.0
 
-    price_f = 0.0
-    if price is not None and not isinstance(price, bool):
-        try:
-            pf = float(price)
-            if math.isfinite(pf) and pf > 0.0:
-                price_f = pf
-        except (TypeError, ValueError):
-            price_f = 0.0
-
-    from intelligence.internal.guards.guard_decision import BrakeAction
+    price_f = safe_pos_float(price, 0.0)
 
     effective_scale = 1.0
     active_reason = "ok"
 
-    now_ts = time.time()
-    if now is not None and not isinstance(now, bool):
-        try:
-            nf = float(now)
-            if math.isfinite(nf) and nf >= 0.0:
-                now_ts = nf
-        except (TypeError, ValueError):
-            pass
+    now_ts = resolve_now_ts(now)
     shadow_notify_enabled = _parse_bool_flag(m.get("shadow_notify"), False)
-
-    def _clean_scale(val: Any) -> float:
-        if val is None or isinstance(val, bool):
-            return 1.0
-        try:
-            vf = float(val)
-        except (TypeError, ValueError, OverflowError):
-            return 1.0
-        return vf if (math.isfinite(vf) and 0.0 <= vf <= 1.0) else 1.0
 
     def _send_micro_shadow_notify(
         guard_key: str,
@@ -152,12 +128,8 @@ def check_external_order_guards(
         scale_pct: Optional[int] = None,
     ) -> None:
         cd_key = (sym_norm or symbol, order_side, guard_key)
-        last_cd = _MICRO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)
-        if math.isfinite(last_cd) and 0.0 <= (now_ts - last_cd) < 1800.0:
+        if not check_cooldown_gate(_MICRO_SHADOW_NOTIFY_COOLDOWN, cd_key, now_ts):
             return
-        _MICRO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
-        while len(_MICRO_SHADOW_NOTIFY_COOLDOWN) > 1000:
-            _MICRO_SHADOW_NOTIFY_COOLDOWN.pop(next(iter(_MICRO_SHADOW_NOTIFY_COOLDOWN)), None)
         try:
             from notify_engine.alertnotifiers import notify
             price_str = f" @ ${price_f:,.2f}" if price_f > 0.0 else ""
@@ -180,11 +152,7 @@ def check_external_order_guards(
     if whale_mode != "off" and not GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-            w_col = get_whale_collector()
-            try:
-                w_snap = w_col.fetch(symbol, allow_network=False, now=now_ts)
-            except TypeError:
-                w_snap = w_col.fetch(symbol, allow_network=False)
+            w_snap = fetch_guard_snapshot(get_whale_collector(), symbol, now=now_ts, allow_network=False)
             sev_oi = m["severe_cascade_oi_pct"]
             min_tk = m["min_taker_ratio"]
             downscale_tk = m["taker_downscale_threshold"]
@@ -219,11 +187,7 @@ def check_external_order_guards(
     if ob_mode != "off" and not GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-            ob_col = get_orderbook_collector()
-            try:
-                ob_snap = ob_col.fetch(symbol, allow_network=False, now=now_ts)
-            except TypeError:
-                ob_snap = ob_col.fetch(symbol, allow_network=False)
+            ob_snap = fetch_guard_snapshot(get_orderbook_collector(), symbol, now=now_ts, allow_network=False)
             min_imb = m["min_buy_imbalance"]
             max_imb = m["max_sell_imbalance"]
             wall_limit = m["whale_wall_usd_limit"]
@@ -257,11 +221,7 @@ def check_external_order_guards(
     if funding_mode != "off" and not GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-            f_col = get_derivatives_collector()
-            try:
-                f_snap = f_col.fetch(symbol, allow_network=False, now=now_ts)
-            except TypeError:
-                f_snap = f_col.fetch(symbol, allow_network=False)
+            f_snap = fetch_guard_snapshot(get_derivatives_collector(), symbol, now=now_ts, allow_network=False)
             f_max = m["funding_max_long_rate"]
             f_min = m["funding_min_short_rate"]
             f_policy = str(m["funding_crowding_policy"] or "").strip().lower()

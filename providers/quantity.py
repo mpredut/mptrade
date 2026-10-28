@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 
 from botcore import _parse_bool_flag
-from .base import _clean_single_order_id
+from .base import _clean_single_order_id, normalize_side
 
 
 QUOTE_SUFFIXES = ("USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
@@ -46,14 +46,7 @@ def remaining_average_cost(fills, held_qty):
                 return None
             ts, amount, price, base_fee, quote_fee = (float(row[key]) for key in fields)
             identity = _clean_fill_id(row["id"])
-            raw_side = row["side"]
-            if raw_side is None or isinstance(raw_side, bool):
-                return None
-            side = str(raw_side).strip().upper()
-            if side in ("B", "BID", "LONG"):
-                side = "BUY"
-            elif side in ("A", "S", "ASK", "SHORT"):
-                side = "SELL"
+            side = normalize_side(row["side"])
             if (not identity or identity in seen or side not in {"BUY", "SELL"}
                     or not all(math.isfinite(v) for v in (ts, amount, price, base_fee, quote_fee))
                     or ts <= 0 or ts < last_ts or amount <= 0 or price <= 0
@@ -131,16 +124,10 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
                          quote: Optional[str] = None
                          ) -> tuple[Optional[float], Optional[str]]:
     base, quote = resolve_assets(symbol, base, quote)
-    if isinstance(side, bool):
-        raise ValueError("side must be BUY or SELL")
-    side = str(side or "").strip().upper()
-    if side in ("B", "BID", "LONG"):
-        side = "BUY"
-    elif side in ("A", "S", "ASK", "SHORT"):
-        side = "SELL"
-    asset = base if side == "SELL" else quote
+    side = normalize_side(side)
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be BUY or SELL")
+    asset = base if side == "SELL" else quote
     if not asset:
         return None, asset
     if side == "BUY":
@@ -200,16 +187,9 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                     **kwargs) -> QuantityDecision:
     # Historical safe contract: None means "maximum permitted", not missing
     # validation. Balance, policy, and the fee cap determine final quantity.
-    if isinstance(side, bool):
+    side = normalize_side(side)
+    if side not in {"BUY", "SELL"}:
         raise ValueError("side must be BUY or SELL")
-    side_u = str(side or "").strip().upper()
-    if side_u in ("B", "BID", "LONG"):
-        side_u = "BUY"
-    elif side_u in ("A", "S", "ASK", "SHORT"):
-        side_u = "SELL"
-    if side_u not in {"BUY", "SELL"}:
-        raise ValueError("side must be BUY or SELL")
-    side = side_u
     if requested_qty is None:
         requested = float("inf")
     else:

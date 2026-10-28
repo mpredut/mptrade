@@ -29,6 +29,7 @@ from .base import (
     env_value,
     extract_order_side,
     extract_timestamp_ms,
+    normalize_side,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -601,13 +602,10 @@ class KrakenProvider(MarketDataProvider):
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B", "BID", "LONG"}:
-            s = "buy"
-        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
-            s = "sell"
-        else:
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
             raise SubmissionRefused(f"submit_order {symbol}: invalid side={side!r}")
+        s = s_norm.lower()
         is_market = _parse_bool_flag(market, False)
         ordertype = "market" if (is_market or price is None) else "limit"
         px_f = None
@@ -659,8 +657,7 @@ class KrakenProvider(MarketDataProvider):
         mutating strategy state. BUY funding remains venue-authoritative because its
         required fee/slippage reserve depends on order type and execution.
         """
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm not in {"SELL", "S", "ASK", "A", "SHORT"}:
+        if normalize_side(side) != "SELL":
             return
         if qty is None:
             return

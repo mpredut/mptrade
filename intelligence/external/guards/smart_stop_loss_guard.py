@@ -345,28 +345,21 @@ class SmartStopLossGuard:
 
         # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
         from external_order_guard import get_orderbook_collector, get_whale_collector
+        from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 
         if whale_snapshot is not None:
             w_snap = whale_snapshot
         elif is_sim:
             w_snap = None
         else:
-            w_col = get_whale_collector()
-            try:
-                w_snap = w_col.fetch(sym_key, allow_network=False, now=now_ts)
-            except TypeError:
-                w_snap = w_col.fetch(sym_key, allow_network=False)
+            w_snap = fetch_guard_snapshot(get_whale_collector(), sym_key, now=now_ts, allow_network=False)
 
         if orderbook_snapshot is not None:
             ob_snap = orderbook_snapshot
         elif is_sim:
             ob_snap = None
         else:
-            ob_col = get_orderbook_collector()
-            try:
-                ob_snap = ob_col.fetch(sym_key, allow_network=False, now=now_ts)
-            except TypeError:
-                ob_snap = ob_col.fetch(sym_key, allow_network=False)
+            ob_snap = fetch_guard_snapshot(get_orderbook_collector(), sym_key, now=now_ts, allow_network=False)
 
         top_long_pct = _safe_float(_obj_attr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
         taker_ratio = _safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0

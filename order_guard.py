@@ -27,6 +27,7 @@ from providers.base import (
     extract_order_qty,
     extract_timestamp_ms,
     extract_timestamp_s,
+    normalize_side,
 )
 from providers.strategy_executor import ProviderError
 
@@ -294,10 +295,11 @@ _load_margins()
 def _provider_name(provider):
     if provider is None or isinstance(provider, bool):
         return ""
-    if isinstance(provider, str):
-        return provider
-    raw_name = getattr(provider, "name", "")
-    return str(raw_name) if raw_name and not isinstance(raw_name, bool) else ""
+    raw_name = provider if isinstance(provider, str) else getattr(provider, "name", "")
+    if not raw_name or isinstance(raw_name, bool):
+        return ""
+    from cachepaths import normalize_venue_name
+    return normalize_venue_name(str(raw_name))
 
 
 _PROCESS_TO_MODULE = {
@@ -345,14 +347,9 @@ def resolve_caller_module(
 
 
 def _normalize_side_token(order_type: Any) -> str:
-    if order_type is None or isinstance(order_type, bool) or not isinstance(order_type, str):
+    if not isinstance(order_type, str):
         return ""
-    s = order_type.strip().upper()
-    if s in ("B", "BID", "LONG"):
-        return "BUY"
-    if s in ("S", "A", "ASK", "SHORT"):
-        return "SELL"
-    return s
+    return normalize_side(order_type)
 
 
 # _parse_bool_flag imported from botcore (SSOT)
@@ -1197,24 +1194,34 @@ def _read_json_recovering(path: str) -> Optional[dict]:
     return read_recovering_previous(resolved, _loader, backup_path=backup_path)
 
 
-def _read_cached_trend_duration(symbol: str) -> float:
+def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
     try:
+        from cachepaths import cache_symbol_variants
         cachedb_dir = _resolve_cachedb_dir()
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
         data = _read_json_recovering(p)
         if not isinstance(data, dict):
-            return 0.0
+            return None
         all_items = data.get("items", {})
         if not isinstance(all_items, dict):
-            return 0.0
-        items = all_items.get(symbol) or all_items.get(symbol.upper())
-        if not items:
-            su_base = _normalize_base_asset(symbol)
-            for k, v in all_items.items():
-                if v and _normalize_base_asset(k) == su_base:
-                    items = v
-                    break
-        if items and isinstance(items, list):
+            return None
+        for cand in (symbol, symbol.upper(), *cache_symbol_variants(symbol)):
+            items = all_items.get(cand)
+            if items and isinstance(items, list):
+                return items
+        su_base = _normalize_base_asset(symbol)
+        for k, v in all_items.items():
+            if v and isinstance(v, list) and _normalize_base_asset(k) == su_base:
+                return v
+    except Exception:
+        pass
+    return None
+
+
+def _read_cached_trend_duration(symbol: str) -> float:
+    try:
+        items = _read_cached_long_trend_entries(symbol)
+        if items:
             for entry in reversed(items):
                 if entry is None:
                     break
@@ -1250,22 +1257,8 @@ def _resolve_trend_duration(symbol: str) -> float:
 
 def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     try:
-        cachedb_dir = _resolve_cachedb_dir()
-        p = os.path.join(cachedb_dir, "cache_long_trend.json")
-        data = _read_json_recovering(p)
-        if not isinstance(data, dict):
-            return None
-        all_items = data.get("items", {})
-        if not isinstance(all_items, dict):
-            return None
-        items = all_items.get(symbol) or all_items.get(symbol.upper())
-        if not items:
-            su_base = _normalize_base_asset(symbol)
-            for k, v in all_items.items():
-                if v and _normalize_base_asset(k) == su_base:
-                    items = v
-                    break
-        if items and isinstance(items, list):
+        items = _read_cached_long_trend_entries(symbol)
+        if items:
             for entry in reversed(items):
                 if entry is None:
                     break
@@ -1340,14 +1333,34 @@ def _read_cached_price_history(
     history: List[Tuple[float, float]] = []
 
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
+    from cachepaths import cache_symbol_variants
     su_base = _normalize_base_asset(su)
     safe_su = su.replace("/", "").replace("-", "").replace("_", "")
     cand_symbols: List[str] = []
-    for c in (safe_su, su, f"{su_base}USDC", f"{su_base}USDT", f"{su_base}USD", su_base):
-        if c and "/" not in c and "_" not in c and c not in cand_symbols:
+    for c in (safe_su, su, *cache_symbol_variants(symbol), f"{su_base}USDC", f"{su_base}USDT", f"{su_base}USD", su_base):
+        if c and c not in cand_symbols:
             cand_symbols.append(c)
+
+    def _extract_valid_ticks(raw_items: Any) -> None:
+        for item in raw_items or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                if isinstance(item[0], bool) or isinstance(item[1], bool):
+                    continue
+                try:
+                    ts_raw = float(item[0])
+                    px = float(item[1])
+                    if not (math.isfinite(ts_raw) and math.isfinite(px)):
+                        continue
+                    ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                    if cutoff_ts <= ts_sec <= (now_ts + 5.0) and px > 0:
+                        history.append((ts_sec, px))
+                except (ValueError, TypeError, OverflowError):
+                    continue
+
     p24_paths: List[str] = []
     for cand in cand_symbols:
+        if "/" in cand or "_" in cand:
+            continue
         p_cand = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
         if p_cand not in p24_paths:
             p24_paths.append(p_cand)
@@ -1370,20 +1383,7 @@ def _read_cached_price_history(
                             break
             elif isinstance(items_map, list):
                 raw_items = items_map
-            for item in raw_items or []:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    if isinstance(item[0], bool) or isinstance(item[1], bool):
-                        continue
-                    try:
-                        ts_raw = float(item[0])
-                        px = float(item[1])
-                        if not (math.isfinite(ts_raw) and math.isfinite(px)):
-                            continue
-                        ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                        if cutoff_ts <= ts_sec <= (now_ts + 5.0) and px > 0:
-                            history.append((ts_sec, px))
-                    except (ValueError, TypeError, OverflowError):
-                        continue
+            _extract_valid_ticks(raw_items)
             if history:
                 break
         except Exception:
@@ -1396,31 +1396,17 @@ def _read_cached_price_history(
         if isinstance(data, dict):
             try:
                 all_items = data.get("items", {})
-                raw_items = all_items.get(su)
+                raw_items = None
+                for cand in cand_symbols:
+                    raw_items = all_items.get(cand)
+                    if raw_items:
+                        break
                 if not raw_items:
-                    su_base = _normalize_base_asset(su)
-                    # Support exact normalized base asset keys (e.g. HYPE for HYPEUSD or HYPEUSDC)
-                    raw_items = all_items.get(su_base)
-                    if not raw_items:
-                        for k, v in all_items.items():
-                            if k and _normalize_base_asset(k) == su_base:
-                                raw_items = v
-                                break
-                if raw_items:
-                    for item in raw_items:
-                        if isinstance(item, (list, tuple)) and len(item) >= 2:
-                            if isinstance(item[0], bool) or isinstance(item[1], bool):
-                                continue
-                            try:
-                                ts_raw = float(item[0])
-                                px = float(item[1])
-                                if not (math.isfinite(ts_raw) and math.isfinite(px)):
-                                    continue
-                                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                                if cutoff_ts <= ts_sec <= (now_ts + 5.0) and px > 0:
-                                    history.append((ts_sec, px))
-                            except (ValueError, TypeError, OverflowError):
-                                continue
+                    for k, v in all_items.items():
+                        if k and _normalize_base_asset(k) == su_base:
+                            raw_items = v
+                            break
+                _extract_valid_ticks(raw_items)
             except Exception:
                 pass
 

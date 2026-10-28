@@ -566,8 +566,14 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
 
         # Valid for matching symbol
         self.assertTrue(ctx.is_valid_for("ETHUSDT", provider="binance", max_age_seconds=60.0, now=self.now + 10.0))
-        # Case insensitive
+        # Case insensitive & venue alias
         self.assertTrue(ctx.is_valid_for("ethusdt", provider="BINANCE", max_age_seconds=60.0, now=self.now + 10.0))
+        self.assertTrue(ctx.is_valid_for("ETHUSDT", provider="bin", max_age_seconds=60.0, now=self.now + 10.0))
+        self.assertEqual(order_guard.get_window_cfg("krk"), order_guard.get_window_cfg("kraken"))
+        self.assertEqual(
+            order_guard.get_profit_guard_mode_cfg("krk", "BUY"),
+            order_guard.get_profit_guard_mode_cfg("kraken", "BUY"),
+        )
         # Invalid for mismatched symbol
         self.assertFalse(ctx.is_valid_for("SOLUSDT", provider="binance", max_age_seconds=60.0, now=self.now + 10.0))
         # Invalid for mismatched provider

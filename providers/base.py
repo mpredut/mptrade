@@ -169,6 +169,18 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
     return cleaned if cleaned is not None else default
 
 
+def normalize_side(side: Any) -> str:
+    """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'``."""
+    if side is None or isinstance(side, bool):
+        return ""
+    s = str(side).strip().upper()
+    if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
+        return "BUY"
+    if s in ("A", "S", "SELL", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
+        return "SELL"
+    return s
+
+
 def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):
@@ -185,22 +197,13 @@ def extract_order_side(order: Any) -> str:
         None,
     )
     if raw_side is not None and str(raw_side).strip():
-        s = str(raw_side).strip().upper()
-        if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
-            return "BUY"
-        if s in ("A", "S", "SELL", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
-            return "SELL"
-        return s
+        return normalize_side(raw_side)
     raw_type = order.get("type")
     if raw_type is None and isinstance(order.get("descr"), dict):
         raw_type = order["descr"].get("type")
-    if (
-        raw_type is not None
-        and not isinstance(raw_type, bool)
-        and str(raw_type).strip().upper() in ("BUY", "SELL", "B", "S", "A", "BID", "ASK", "LONG", "SHORT")
-    ):
-        t_norm = str(raw_type).strip().upper()
-        return "BUY" if t_norm in ("BUY", "B", "BID", "LONG") else "SELL"
+    t_norm = normalize_side(raw_type)
+    if t_norm in ("BUY", "SELL"):
+        return t_norm
     if "isBuyer" in order and order.get("isBuyer") is not None:
         raw_buyer = order["isBuyer"]
         parsed_b = _parse_bool_flag(raw_buyer, None)
@@ -514,12 +517,8 @@ def aggregate_fills_by_order_id(
         return []
     if isinstance(side, bool):
         return []
-    want = str(side or "").strip().upper()
-    if want in ("B", "BID", "LONG"):
-        want = "BUY"
-    elif want in ("A", "S", "ASK", "SHORT"):
-        want = "SELL"
-    elif want and want not in ("BUY", "SELL"):
+    want = normalize_side(side)
+    if want and want not in ("BUY", "SELL"):
         return []
     out: List[dict] = []
     grouped: dict[tuple[str, str], dict] = {}

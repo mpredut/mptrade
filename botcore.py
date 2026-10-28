@@ -123,8 +123,10 @@ def _parse_bool_flag(val, default: bool | None = False):
         return val != 0
     if isinstance(val, str):
         s = val.split("#", 1)[0].split(";", 1)[0].strip().strip('"').strip("'").strip().lower()
-        if not s or s in {"none", "null", "nan"}:
+        if not s or s in {"none", "null"}:
             return fb
+        if s == "nan":
+            return False if fb is not None else None
         if s in {"1", "1.0", "true", "yes", "on", "y", "t", "da"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f"}:

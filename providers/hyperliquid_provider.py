@@ -35,6 +35,7 @@ from .base import (
     extract_order_side,
     extract_orig_qty,
     extract_timestamp_ms,
+    normalize_side,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -472,16 +473,12 @@ class HyperliquidProvider(MarketDataProvider):
         delta-neutral wallet co-mingling, which could otherwise unwind its spot leg.
         """
         self.validate_symbol(symbol)
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B", "BID", "LONG"}:
-            is_buy = True
-            side = "BUY"
-        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
-            is_buy = False
-            side = "SELL"
-        else:
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
             print(f"[HL] place_order {symbol}: refused invalid side={side!r}")
             return None
+        is_buy = s_norm == "BUY"
+        side = s_norm
         live = self.execution_enabled()
         is_market = (
             _parse_bool_flag(force, False)
@@ -671,15 +668,11 @@ class HyperliquidProvider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
         self.validate_symbol(symbol)
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B", "BID", "LONG"}:
-            is_buy = True
-            side = "BUY"
-        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
-            is_buy = False
-            side = "SELL"
-        else:
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
             raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
+        is_buy = s_norm == "BUY"
+        side = s_norm
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.
         if not self.execution_enabled():
             raise ProviderError(f"HL_LIVE_ORDERS=false — refusing a real order on HL ({side} {symbol})")
@@ -749,8 +742,7 @@ class HyperliquidProvider(MarketDataProvider):
         repeats this check to close the race after engine preflight.
         """
         self.validate_symbol(symbol)
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm not in {"BUY", "B", "BID", "LONG"}:
+        if normalize_side(side) != "BUY":
             return
         if qty is None:
             return

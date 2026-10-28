@@ -125,13 +125,8 @@ def check_qlimit2_order_guards(
     if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
         return True, "stop_loss_exempt", 1.0
 
-    if not isinstance(side, str):
-        return True, "not_supported_side", 1.0
-    order_side = side.strip().upper()
-    if order_side in ("B", "BID", "LONG"):
-        order_side = "BUY"
-    elif order_side in ("S", "A", "ASK", "SHORT"):
-        order_side = "SELL"
+    from providers.base import normalize_side
+    order_side = normalize_side(side) if isinstance(side, str) else ""
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 

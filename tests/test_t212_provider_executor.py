@@ -180,6 +180,10 @@ class T212ExecutorContractTest(unittest.TestCase):
             self.assertEqual(observed.status, "closed")
             self.assertEqual(observed.filled_qty, 2.83)
             self.assertEqual(observed.orig_qty, 2.83)
+            observed_short = self.provider.order_status("NVDA", "712")
+            self.assertEqual(observed_short.status, "closed")
+            with self.assertRaisesRegex(ProviderError, "ticker"):
+                self.provider.order_status("SPCX_US_EQ", "712")
 
         self.fake.status_result = {
             "ticker": "NVDA_US_EQ", "status": "FILLED", "filledQuantity": 1.0,

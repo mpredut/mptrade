@@ -18,7 +18,7 @@ import importlib
 from typing import Optional, List
 
 from botcore import _parse_bool_flag
-from .base import MarketDataProvider, _normalize_order, bool_env, env_value
+from .base import MarketDataProvider, _normalize_order, bool_env, env_value, normalize_side
 from .strategy_executor import (
     OrderNotFound,
     OrderReconciliationCapabilities,
@@ -63,6 +63,19 @@ def _definitive_submit_failure(status: int, payload) -> bool:
 
 def _live() -> bool:
     return bool_env("T212_LIVE_ORDERS")
+
+
+def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
+    """Return whether two T212 ticker strings refer to the same equity instrument."""
+    if not isinstance(sym_a, str) or not isinstance(sym_b, str):
+        return False
+    a = sym_a.strip().upper()
+    b = sym_b.strip().upper()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a.split("_", 1)[0] == b.split("_", 1)[0]
 
 
 class T212Provider(MarketDataProvider):
@@ -156,11 +169,7 @@ class T212Provider(MarketDataProvider):
             for p in port:
                 if not isinstance(p, dict):
                     continue
-                t_up = str(p.get("ticker", "")).strip().upper()
-                if t_up and (
-                    t_up in (f"{target_sym}_US_EQ", f"{target_sym}_EQ")
-                    or t_up.split("_", 1)[0] == target_sym
-                ):
+                if _t212_tickers_match(p.get("ticker", ""), target_sym):
                     return p
             return None
         except Exception as e:  # noqa: BLE001
@@ -278,8 +287,8 @@ class T212Provider(MarketDataProvider):
             return []
         if isinstance(side, bool):
             return []
-        want = str(side or "").strip().upper()
-        if want and want not in {"BUY", "B", "BID", "LONG"}:
+        want = normalize_side(side)
+        if want and want != "BUY":
             return []                         # Historical sells are not modeled.
         # Financial guards must block on account errors rather than mistake them
         # for a legitimately empty portfolio.
@@ -308,7 +317,7 @@ class T212Provider(MarketDataProvider):
     def _signed_qty(side: str, qty: float) -> float:
         if not isinstance(side, str):
             raise ProviderError(f"invalid T212 side: {side!r}")
-        side_u = side.strip().upper()
+        side_u = normalize_side(side)
         if isinstance(qty, bool):
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         try:
@@ -320,9 +329,9 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"invalid T212 quantity: {qty!r}") from e
         if not math.isfinite(qty_f) or qty_f < _ORDER_MIN:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
-        if side_u in {"BUY", "B", "BID", "LONG"}:
+        if side_u == "BUY":
             return qty_f
-        if side_u in {"SELL", "S", "ASK", "A", "SHORT"}:
+        if side_u == "SELL":
             return -qty_f
         raise ProviderError(f"invalid T212 side: {side!r}")
 
@@ -442,7 +451,7 @@ class T212Provider(MarketDataProvider):
         instrument_ticker = instrument.get("ticker") if isinstance(instrument, dict) else ""
         ticker = str(raw.get("ticker") or instrument_ticker or "").strip()
         expected_symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
-        if ticker and expected_symbol and ticker.upper() != expected_symbol.upper():
+        if ticker and expected_symbol and not _t212_tickers_match(ticker, expected_symbol):
             raise ProviderError(
                 f"order_status({order_id}): ticker {ticker!r}, asteptat {symbol!r}")
 

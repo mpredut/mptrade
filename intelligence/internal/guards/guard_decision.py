@@ -31,9 +31,9 @@ def normalize_guard_side(side: Any) -> str:
     if not isinstance(side, str):
         return ""
     s = side.strip().upper()
-    if s in ("B", "BUY", "BID", "LONG"):
+    if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
         return "BUY"
-    if s in ("S", "SELL", "ASK", "A", "SHORT"):
+    if s in ("S", "SELL", "ASK", "A", "SHORT", "CLOSE LONG", "OPEN SHORT"):
         return "SELL"
     return s
 
@@ -52,14 +52,29 @@ def snap_attr(obj: Any, key: str, default: Any = None) -> Any:
     return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
 
-def fetch_guard_snapshot(collector: Any, symbol: str, now: Optional[float] = None) -> Any:
-    """Fetch a snapshot from ``collector`` with optional ``now`` forwarding."""
+def fetch_guard_snapshot(
+    collector: Any,
+    symbol: str,
+    now: Optional[float] = None,
+    *,
+    allow_network: Optional[bool] = None,
+) -> Any:
+    """Fetch a snapshot from ``collector`` with optional ``now`` and ``allow_network`` forwarding."""
     if collector is None:
         return None
+    kwargs: Dict[str, Any] = {}
+    if allow_network is not None:
+        kwargs["allow_network"] = allow_network
+    if now is not None:
+        kwargs["now"] = now
     try:
-        return collector.fetch(symbol, now=now) if now is not None else collector.fetch(symbol)
+        return collector.fetch(symbol, **kwargs)
     except TypeError:
-        return collector.fetch(symbol)
+        kwargs.pop("now", None)
+        try:
+            return collector.fetch(symbol, **kwargs)
+        except TypeError:
+            return collector.fetch(symbol)
 
 
 class BrakeAction(str, Enum):

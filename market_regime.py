@@ -15,6 +15,7 @@ from collections import OrderedDict
 from typing import Mapping, Optional
 
 from botcore import _parse_bool_flag
+from cachepaths import normalize_venue_name
 
 
 def normalize_market_regime_snapshot(
@@ -210,9 +211,9 @@ class MarketRegimeContext:
             p_raw = getattr(provider, "name", None)
             p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else None)
             if isinstance(p_str, str) and p_str.strip():
-                target_prov = p_str.strip().lower()
+                target_prov = normalize_venue_name(p_str)
                 if self.provider is not None:
-                    if not isinstance(self.provider, str) or self.provider.strip().lower() != target_prov:
+                    if not isinstance(self.provider, str) or normalize_venue_name(self.provider) != target_prov:
                         return False
                 elif require_identity:
                     return False
@@ -282,7 +283,7 @@ class MarketRegimeContext:
         )
         p_raw = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
         prov_norm = (
-            str(p_raw).strip().lower()
+            normalize_venue_name(p_raw)
             if isinstance(p_raw, str) and p_raw.strip()
             else None
         )
