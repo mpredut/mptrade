@@ -958,14 +958,93 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert len(report.intents_emitted) == 2
     assert report.venue_actions == []
 
-    # Verify auto_technical_repair receives fleet, bot heartbeats, Linux system resources, VPN (wgpia0), and log audit
+    # Verify auto_technical_repair receives ONLY fleet, bot heartbeats, Linux system resources, internet/VPN (wgpia0),
+    # config audit, and persistent log anomalies — NEVER market prices, slopes, portfolio balances, or active positions.
     reconciler.run_cycle(topic_key="auto_technical_repair")
     repair_prompt = captured_prompts[-1]
     assert "LOG ANOMALIES & GUARD VETOES" in repair_prompt
     assert "LINUX SYSTEM RESOURCES & VPN TUNNEL HEALTH" in repair_prompt
     assert "VPN Tunnel (wgpia0):" in repair_prompt
+    assert "Internet & DNS Connectivity:" in repair_prompt
+    assert "Configuration Files Audit:" in repair_prompt
     assert "Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri" in repair_prompt
     assert "diagnosed_issues" in repair_prompt
+    assert "LIVE MARKET PRICES, MULTI-HORIZON TRENDS" not in repair_prompt
+    assert "SPOT WALLET BALANCES, TRADABLE POSITIONS" not in repair_prompt
+    assert "Portofoliu, Solduri & Poziții Active" not in repair_prompt
+    assert "Piața Live & Pante (Toate Monedele)" not in repair_prompt
+
+
+def test_auto_technical_repair_persistent_errors_config_patching_and_system_reboots(temp_env):
+    import subprocess
+    workspace, _, logs_dir = temp_env
+
+    # 1. Persistent unresolved errors in logs & config audit
+    with open(os.path.join(workspace, "order_guard.conf"), "w", encoding="utf-8") as f:
+        f.write("supervisor_mode = enforce\nsupervisor_notify = false\nmalformed_line_without_equals\n")
+    with open(os.path.join(workspace, "procs.conf"), "w", encoding="utf-8") as f:
+        f.write("rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n")
+
+    now = time.time()
+    stamp = lambda ago: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - ago))  # noqa: E731
+    with open(os.path.join(logs_dir, "rtrade.log"), "w", encoding="utf-8") as f:
+        f.write(f"{stamp(600)} [ERROR] Unhandled KeyError in rtrade execution loop\n")
+        f.write(f"{stamp(300)} [ERROR] Unhandled KeyError in rtrade execution loop\n")
+        f.write(f"{stamp(60)} [ERROR] Unhandled KeyError in rtrade execution loop\n")
+
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        mode="enforce",
+        notify_enabled=False,
+    )
+    logs = reconciler.harvest_log_anomalies(lookback_hours=1.0)
+    assert len(logs.persistent_errors) == 1
+    assert logs.persistent_errors[0]["file"] == "rtrade.log"
+    assert logs.persistent_errors[0]["count"] == 3
+    assert logs.persistent_errors[0]["unresolved_at_tail"] is True
+
+    sensors = reconciler.harvest_sensors_telemetry(include_fleet=True)
+    cfg_audit = sensors.system_and_vpn.get("config_audit", {})
+    assert "order_guard.conf" in cfg_audit.get("checked_files", [])
+    assert any("malformed_line_without_equals" in iss for iss in cfg_audit.get("issues", []))
+
+    # 2. _apply_code_patch_safely allows fixing config files (order_guard.conf, procs.conf) while protecting .env
+    env_secret = os.path.join(workspace, ".env")
+    with open(env_secret, "w", encoding="utf-8") as f:
+        f.write("API_SECRET=topsecret\n")
+    assert reconciler._apply_code_patch_safely(env_secret, "topsecret", "hacked", "must refuse .env") is False
+
+    og_conf = os.path.join(workspace, "order_guard.conf")
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess(["pytest"], 0, stdout="", stderr="")):
+        assert reconciler._apply_code_patch_safely(
+            og_conf,
+            "malformed_line_without_equals\n",
+            "",
+            "Remove malformed line in order_guard.conf",
+        ) is True
+    with open(og_conf, "r", encoding="utf-8") as f:
+        assert "malformed_line_without_equals" not in f.read()
+
+    # 3. _execute_venue_or_fleet_action executes RESTART_MODULE, RESTART_FLEET, RESTART_VPN, PIN_DNS, and REBOOT_SYSTEM
+    plan = {
+        "venue_actions": [
+            {"action": "RESTART_MODULE", "venue": "fleet", "symbol": "rtrade", "reason": "hung module"},
+            {"action": "RESTART_FLEET", "venue": "fleet", "symbol": "FLEET", "reason": "fleet wedge"},
+            {"action": "RESTART_VPN", "venue": "system", "symbol": "wgpia0", "reason": "vpn down"},
+            {"action": "PIN_DNS", "venue": "system", "symbol": "dns", "reason": "dns failure"},
+            {"action": "REBOOT_SYSTEM", "venue": "system", "symbol": "SYSTEM", "reason": "kernel deadlock"},
+        ]
+    }
+    with patch("subprocess.run", return_value=subprocess.CompletedProcess(["cmd"], 0, stdout="", stderr="")) as mock_run:
+        executed, _ = reconciler.apply_reconciliation(plan, allow_code_remediation=True)
+    assert executed is True
+    assert mock_run.call_count == 5
+    cmds = [c.args[0] for c in mock_run.call_args_list]
+    assert cmds[0] == ["pkill", "-f", "rtrade.py"]
+    assert any("restart" in cmd for cmd in cmds[1:])
+    assert any("reboot" in cmd for cmd in cmds[1:])
 
 
 def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venue_actions(temp_env):

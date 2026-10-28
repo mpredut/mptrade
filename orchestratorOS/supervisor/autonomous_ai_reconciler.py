@@ -1765,7 +1765,7 @@ class AutonomousAIReconciler:
                 else:
                     snapshot.portfolio_summary.pop("active_retry_queue", None)
 
-        # 10. Fleet processes health, Linux OS resources, and VPN tunnel state (only needed for SRE/self-heal audits)
+        # 10. Fleet processes health, Linux OS resources, internet/DNS, VPN tunnel state, and config audit (for SRE/self-heal audits)
         if include_fleet:
             try:
                 from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
@@ -1808,6 +1808,41 @@ class AutonomousAIReconciler:
                 sys_vpn["vpn_interface"] = vpn_if
                 sys_vpn["vpn_tunnel_up"] = False
 
+            # Internet default route, DNS resolvers, and VPN outage marker
+            try:
+                default_route_present = False
+                if os.path.exists("/proc/net/route"):
+                    with open("/proc/net/route", "r", encoding="utf-8", errors="replace") as rf:
+                        for rline in rf.readlines()[1:]:
+                            rcols = rline.strip().split()
+                            if len(rcols) >= 2 and rcols[1] == "00000000":
+                                default_route_present = True
+                                break
+                sys_vpn["default_route_present"] = default_route_present
+            except Exception:
+                pass
+
+            try:
+                dns_servers: List[str] = []
+                if os.path.exists("/etc/resolv.conf"):
+                    with open("/etc/resolv.conf", "r", encoding="utf-8", errors="replace") as df:
+                        for dline in df:
+                            dline = dline.split("#", 1)[0].strip()
+                            if dline.startswith("nameserver"):
+                                dparts = dline.split()
+                                if len(dparts) >= 2:
+                                    dns_servers.append(dparts[1])
+                if dns_servers:
+                    sys_vpn["dns_servers"] = dns_servers
+            except Exception:
+                pass
+
+            sys_vpn["vpn_outage_active"] = os.path.exists("/var/lib/pia_selfheal/outage_since")
+            sys_vpn["internet_healthy"] = bool(
+                sys_vpn.get("default_route_present", True)
+                and not sys_vpn.get("vpn_outage_active", False)
+            )
+
             rw_state = _read_json(os.path.join(self.workspace_dir, ".resource_watchdog_state.json"))
             if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
                 offenders = [
@@ -1818,12 +1853,71 @@ class AutonomousAIReconciler:
                 if offenders:
                     sys_vpn["resource_watchdog_offenders"] = offenders
 
+            sys_vpn["config_audit"] = self._audit_workspace_configs()
             snapshot.system_and_vpn = sys_vpn
 
         return snapshot
 
+    def _audit_workspace_configs(self) -> Dict[str, Any]:
+        """Audits workspace configuration files for syntax errors, missing required keys, or broken paths."""
+        checked: List[str] = []
+        issues: List[str] = []
+        for cfg_name in ("procs.conf", "order_guard.conf", "config.env", "instruments.conf"):
+            cfg_path = os.path.join(self.workspace_dir, cfg_name)
+            if not os.path.isfile(cfg_path):
+                continue
+            checked.append(cfg_name)
+            try:
+                with open(cfg_path, "r", encoding="utf-8", errors="replace") as cf:
+                    raw_lines = cf.readlines()
+                if cfg_name == "procs.conf":
+                    for idx, raw_l in enumerate(raw_lines, start=1):
+                        line = raw_l.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) < 7:
+                            issues.append(f"procs.conf:{idx} has {len(parts)} fields (expected >=7)")
+                            continue
+                        pat, dr, _, label, _, _, role = parts[:7]
+                        if role not in ("bot", "fleet"):
+                            issues.append(f"procs.conf:{idx} ({label or pat}) has invalid role {role!r}")
+                elif cfg_name in ("order_guard.conf", "config.env"):
+                    seen_keys: Dict[str, str] = {}
+                    for idx, raw_l in enumerate(raw_lines, start=1):
+                        line = raw_l.split("#", 1)[0].strip()
+                        if not line:
+                            continue
+                        if "=" not in line:
+                            issues.append(f"{cfg_name}:{idx} malformed line missing '=': {line[:60]!r}")
+                            continue
+                        k, v = line.split("=", 1)
+                        k_clean = k.strip().lower()
+                        v_clean = v.strip().strip("\"'")
+                        if not k_clean:
+                            issues.append(f"{cfg_name}:{idx} empty key name")
+                        else:
+                            seen_keys[k_clean] = v_clean
+                    if cfg_name == "order_guard.conf":
+                        sup_m = seen_keys.get("supervisor_mode", "").lower()
+                        if sup_m and sup_m not in ("enforce", "shadow", "off"):
+                            issues.append(f"order_guard.conf invalid supervisor_mode={sup_m!r}")
+            except Exception as exc:
+                issues.append(f"{cfg_name} read error: {exc}")
+        return {"checked_files": checked, "issues": issues}
+
+    @staticmethod
+    def _normalize_error_signature(line: str) -> str:
+        """Strip timestamps, PIDs, and hex addresses so recurring log errors group into one signature."""
+        s = _FULL_TS_RE.sub("", line)
+        s = _GLOG_TS_RE.sub("", s)
+        s = _CLOCK_TS_RE.sub("", s)
+        s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
+        s = re.sub(r"\b\d{4,}\b", "NUM", s)
+        return " ".join(s.strip().split())[:180]
+
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
-        """Parses recent log files for errors, unhandled exceptions, and guard vetoes."""
+        """Parses recent log files for errors, persistent unresolved exceptions, and guard vetoes."""
         hours = _parse_finite_float(lookback_hours, self.lookback_hours)
         if hours <= 0:
             hours = self.lookback_hours
@@ -1831,6 +1925,7 @@ class AutonomousAIReconciler:
 
         critical_events: List[str] = []
         guard_interventions: List[str] = []
+        persistent_errors: List[Dict[str, Any]] = []
         error_count = 0
         warning_count = 0
         scanned_count = 0
@@ -1864,7 +1959,10 @@ class AutonomousAIReconciler:
                         scanned_count += 1
                         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                             lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
-                            for line in lines:
+                            total_lines = len(lines)
+                            tail_start_idx = max(0, total_lines - max(10, total_lines // 4))
+                            file_sig_stats: Dict[str, Dict[str, Any]] = {}
+                            for idx, line in enumerate(lines):
                                 if supervisor_summary_pattern.search(line):
                                     continue
                                 if err_pattern.search(line) and not (
@@ -1875,22 +1973,37 @@ class AutonomousAIReconciler:
                                     cleaned = line.strip()
                                     if cleaned not in critical_events and len(critical_events) < 50:
                                         critical_events.append(cleaned)
+                                    sig = self._normalize_error_signature(cleaned)
+                                    if sig:
+                                        st = file_sig_stats.setdefault(
+                                            sig,
+                                            {"file": fname, "count": 0, "unresolved_at_tail": False, "sample": cleaned},
+                                        )
+                                        st["count"] += 1
+                                        st["sample"] = cleaned
+                                        if idx >= tail_start_idx:
+                                            st["unresolved_at_tail"] = True
                                 elif guard_pattern.search(line):
                                     warning_count += 1
                                     cleaned = line.strip()
                                     if cleaned not in guard_interventions and len(guard_interventions) < 50:
                                         guard_interventions.append(cleaned)
+                            for st in file_sig_stats.values():
+                                if st["count"] >= 2 or st["unresolved_at_tail"]:
+                                    persistent_errors.append(st)
                     except Exception as err:
                         logger.debug("Failed reading log file %s: %s", fpath, err)
             except Exception as d_err:
                 logger.debug("Failed scanning directory %s: %s", l_dir, d_err)
 
+        persistent_errors.sort(key=lambda item: (1 if item.get("unresolved_at_tail") else 0, int(item.get("count", 0))), reverse=True)
         return LogEventSummary(
             total_scanned_files=scanned_count,
             error_count=error_count,
             warning_count=warning_count,
             critical_events=critical_events,
             guard_interventions=guard_interventions,
+            persistent_errors=persistent_errors[:25],
         )
 
     def synthesize_and_diagnose(
@@ -1901,72 +2014,85 @@ class AutonomousAIReconciler:
         focus_symbols: Optional[List[str]] = None,
         topic_key: str,
     ) -> Dict[str, Any]:
-        """Feeds full sensor, market, and portfolio telemetry to Gemini; the topic spec bounds side effects."""
-        fg = sensors.fear_greed or {}
-        mb = sensors.market_breadth or {}
-        sa = sensors.sentiment_advisor or {}
-        gt = sensors.geopolitical_threat or {}
-
-        fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
-        fg_line = (
-            f"{fg.get('value', 'N/A')} ({fg.get('classification') or fg.get('sentiment') or 'N/A'}, "
-            f"7d_chg={fg.get('trend_7d_change', 'N/A')}"
-            + (f", 7d_hist={fg_hist}" if fg_hist else "")
-            + (f", age={fg.get('age_min')}m" if fg.get("age_min") is not None else "")
-            + ")"
-            if fg else "None"
-        )
-        mb_gainers = mb.get("top_gainers")[:3] if isinstance(mb.get("top_gainers"), list) else None
-        mb_losers = mb.get("top_losers")[:3] if isinstance(mb.get("top_losers"), list) else None
-        mb_line = (
-            f"advance_ratio={mb.get('advance_ratio', 'N/A')}, regime={mb.get('regime', 'N/A')}, "
-            f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
-            f"mean_chg={mb.get('mean_change_pct', 'N/A')}%, disp_std={mb.get('dispersion_std', 'N/A')}, "
-            f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
-            + (f", top_gainers={mb_gainers}" if mb_gainers else "")
-            + (f", top_losers={mb_losers}" if mb_losers else "")
-            if mb else "None"
-        )
-        sa_line = (
-            f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
-            f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')}"
-            + (f", age={sa.get('age_min')}m" if sa.get("age_min") is not None else "")
-            + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
-            if sa else "None"
-        )
-        gt_line = (
-            f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
-            f"brake={gt.get('recommended_brake', 'N/A')}"
-            + (f", age={gt.get('age_min')}m" if gt.get("age_min") is not None else "")
-            + f" | summary={gt.get('summary', '')}"
-            if gt else "None"
-        )
-
+        """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
+        is_pure_sre = bool(spec.can_self_heal and not spec.can_trade)
 
-        context_items = [
-            "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
-            f"- Fear & Greed: {fg_line}",
-            f"- Market Breadth: {mb_line}",
-            f"- Macro Sentiment Advisor: {sa_line}",
-            f"- Geopolitical Threat Shield: {gt_line}",
-        ]
-        if sensors.breaking_news:
-            context_items.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
-            for hn in sensors.breaking_news:
-                sev_tag = "[HIGH-SEV] " if hn.get("is_high_severity") else ""
-                kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
-                age_sfx = f" (age={hn.get('age_min')}m)" if hn.get("age_min") is not None else ""
-                context_items.append(f"  * {sev_tag}{hn.get('title')}{kw_sfx}{age_sfx}")
+        context_items: List[str] = []
+        if not is_pure_sre:
+            fg = sensors.fear_greed or {}
+            mb = sensors.market_breadth or {}
+            sa = sensors.sentiment_advisor or {}
+            gt = sensors.geopolitical_threat or {}
+
+            fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
+            fg_line = (
+                f"{fg.get('value', 'N/A')} ({fg.get('classification') or fg.get('sentiment') or 'N/A'}, "
+                f"7d_chg={fg.get('trend_7d_change', 'N/A')}"
+                + (f", 7d_hist={fg_hist}" if fg_hist else "")
+                + (f", age={fg.get('age_min')}m" if fg.get("age_min") is not None else "")
+                + ")"
+                if fg else "None"
+            )
+            mb_gainers = mb.get("top_gainers")[:3] if isinstance(mb.get("top_gainers"), list) else None
+            mb_losers = mb.get("top_losers")[:3] if isinstance(mb.get("top_losers"), list) else None
+            mb_line = (
+                f"advance_ratio={mb.get('advance_ratio', 'N/A')}, regime={mb.get('regime', 'N/A')}, "
+                f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
+                f"mean_chg={mb.get('mean_change_pct', 'N/A')}%, disp_std={mb.get('dispersion_std', 'N/A')}, "
+                f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
+                + (f", top_gainers={mb_gainers}" if mb_gainers else "")
+                + (f", top_losers={mb_losers}" if mb_losers else "")
+                if mb else "None"
+            )
+            sa_line = (
+                f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
+                f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')}"
+                + (f", age={sa.get('age_min')}m" if sa.get("age_min") is not None else "")
+                + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
+                if sa else "None"
+            )
+            gt_line = (
+                f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
+                f"brake={gt.get('recommended_brake', 'N/A')}"
+                + (f", age={gt.get('age_min')}m" if gt.get("age_min") is not None else "")
+                + f" | summary={gt.get('summary', '')}"
+                if gt else "None"
+            )
+
+            context_items.extend([
+                "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
+                f"- Fear & Greed: {fg_line}",
+                f"- Market Breadth: {mb_line}",
+                f"- Macro Sentiment Advisor: {sa_line}",
+                f"- Geopolitical Threat Shield: {gt_line}",
+            ])
+            if sensors.breaking_news:
+                context_items.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
+                for hn in sensors.breaking_news:
+                    sev_tag = "[HIGH-SEV] " if hn.get("is_high_severity") else ""
+                    kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
+                    age_sfx = f" (age={hn.get('age_min')}m)" if hn.get("age_min") is not None else ""
+                    context_items.append(f"  * {sev_tag}{hn.get('title')}{kw_sfx}{age_sfx}")
+
         if spec.can_self_heal:
             context_items.extend([
+                "### 1. FUNCTIONAL SYSTEM TELEMETRY, HEARTBEATS & WATCHDOG STATES:",
                 f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
-                f"\n### 2. LOG ANOMALIES & GUARD VETOES (PAST {self.lookback_hours:g}H):",
+                f"- Watchdog & Runtime State Files: {sensors.state_files}",
+                f"\n### 2. LOG ANOMALIES & GUARD VETOES / PERSISTENT UNRESOLVED ERRORS (PAST {self.lookback_hours:g}H):",
                 f"- Scanned Logs: {logs.total_scanned_files}",
                 f"- Error Count: {logs.error_count}",
                 f"- Guard Interventions: {logs.warning_count}",
-                "- Sample Errors & Interventions:",
             ])
+            if getattr(logs, "persistent_errors", None):
+                context_items.append("- Persistent / Unresolved Errors in Logs:")
+                for pe in logs.persistent_errors[:15]:
+                    tail_lbl = "UNRESOLVED_AT_TAIL" if pe.get("unresolved_at_tail") else "RECURRING"
+                    context_items.append(
+                        f"  * [{tail_lbl} x{pe.get('count', 1)} in {pe.get('file', 'log')}] {pe.get('sample', '')}"
+                    )
+            context_items.append("- Sample Errors & Interventions:")
             for evt in logs.critical_events[:15]:
                 context_items.append(f"  * {evt}")
             for g_evt in logs.guard_interventions[:10]:
@@ -1988,12 +2114,23 @@ class AutonomousAIReconciler:
 
             if sensors.system_and_vpn:
                 sv = sensors.system_and_vpn
+                cfg_audit = sv.get("config_audit") if isinstance(sv.get("config_audit"), dict) else {}
+                cfg_issues = cfg_audit.get("issues") or []
+                cfg_summary = (
+                    f"ISSUES DETECTED: {cfg_issues}"
+                    if cfg_issues
+                    else f"OK (verified {cfg_audit.get('checked_files', [])})"
+                )
                 context_items.append(
                     "\n### 2C. LINUX SYSTEM RESOURCES & VPN TUNNEL HEALTH:\n"
                     f"- CPU Load Avg (1m/5m/15m): {sv.get('load_avg', 'N/A')}\n"
                     f"- Memory: used={sv.get('mem_used_pct', 'N/A')}%, avail={sv.get('mem_avail_mb', 'N/A')} MB\n"
                     f"- Disk: used={sv.get('disk_used_pct', 'N/A')}%, free={sv.get('disk_free_gb', 'N/A')} GB\n"
-                    f"- VPN Tunnel ({sv.get('vpn_interface', 'wgpia0')}): {'UP' if sv.get('vpn_tunnel_up') else 'DOWN / NOT PRESENT'}"
+                    f"- VPN Tunnel ({sv.get('vpn_interface', 'wgpia0')}): {'UP' if sv.get('vpn_tunnel_up') else 'DOWN / NOT PRESENT'}\n"
+                    f"- Internet & DNS Connectivity: healthy={sv.get('internet_healthy', True)}, "
+                    f"default_route={sv.get('default_route_present', 'N/A')}, dns_servers={sv.get('dns_servers', 'N/A')}, "
+                    f"vpn_outage_active={sv.get('vpn_outage_active', False)}\n"
+                    f"- Configuration Files Audit: {cfg_summary}"
                     + (
                         f"\n- Sustained High-Resource Processes (.resource_watchdog_state.json): {sv['resource_watchdog_offenders']}"
                         if sv.get("resource_watchdog_offenders")
@@ -2001,7 +2138,7 @@ class AutonomousAIReconciler:
                     )
                 )
 
-        if sensors.prices_and_trends:
+        if not is_pure_sre and sensors.prices_and_trends:
             context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):")
             # Locate canonical reference BTC entry using centralized base asset normalization
             btc_entry = next(
@@ -2207,7 +2344,7 @@ class AutonomousAIReconciler:
                 extra_str = f" | {' | '.join(extras)}" if extras else ""
                 context_items.append(f"  * {sym}{sib_lbl}: Price={px_str}{extra_str}")
 
-        if sensors.microstructure:
+        if not is_pure_sre and sensors.microstructure:
             context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:")
             seen_3b_bases: set[str] = set()
             sorted_3b = sorted(
@@ -2262,7 +2399,7 @@ class AutonomousAIReconciler:
                     f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
                 )
 
-        if sensors.portfolio_summary:
+        if not is_pure_sre and sensors.portfolio_summary:
             ps = sensors.portfolio_summary
             context_items.append("\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:")
             if ps.get("total_value_usdc") is not None:
@@ -2371,7 +2508,7 @@ class AutonomousAIReconciler:
             if ps.get("recent_ai_intents"):
                 context_items.append(f"  * Recent Autonomous Intents: {ps['recent_ai_intents']}")
 
-        if focus_symbols:
+        if not is_pure_sre and focus_symbols:
             raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
             clean_syms = [
                 s.strip().upper()
@@ -2390,18 +2527,18 @@ class AutonomousAIReconciler:
         schema: List[str] = []
         if spec.can_self_heal:
             tasks.extend([
-                "1. Audit fleet processes (procs.conf), bot heartbeats, Linux system resources (CPU load, RAM, disk), VPN tunnel (wgpia0), and log anomalies: explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, OS/VPN issues, or guard vetoes.",
-                "2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.",
-                "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.",
+                "1. Audit functional system anomalies: fleet processes and modules (procs.conf), bot heartbeats, Linux OS resources (CPU load, RAM, disk), internet & VPN tunnel (wgpia0), configuration files (procs.conf, order_guard.conf, config.env, instruments.conf), and persistent unresolved errors in logs: explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, OS/network/VPN issues, or configuration errors.",
+                "2. Determine whether hung/errored bots or modules require restart (RESTART_BOT / RESTART_MODULE), whether the entire fleet or VPN/DNS requires restart (RESTART_FLEET / RESTART_VPN / PIN_DNS), or whether a critical unrecoverable Linux OS / kernel / system-wide hang requires a full machine reboot (REBOOT_SYSTEM).",
+                "3. If a reproducible code bug or configuration error exists in the workspace, formulate an exact search_block and replace_block in `code_remediation` to fix the code or configuration file.",
             ])
             schema.extend([
-                '  "summary": "1-2 sentence executive assessment of system health and multi-coin market posture"',
+                '  "summary": "1-2 sentence executive technical assessment of functional system, Linux OS, internet/VPN, configurations, and fleet health"',
                 '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
-                '"category": "BOT_EXCEPTION" | "ORPHAN_ORDER" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "GUARD_VETO" | "HEALTHY", '
+                '"category": "BOT_EXCEPTION" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "NETWORK_ERROR" | "CONFIG_ERROR" | "CODE_BUG" | "ORPHAN_ORDER" | "GUARD_VETO" | "HEALTHY", '
                 '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
-                '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "RESTART_BOT" | "NONE", '
-                '"venue": "binance" | "kraken" | "hyperliquid" | "t212" | "fleet", "symbol": "BTCUSDC or bot_name", '
-                '"order_id": "optional order id", "reason": "Why this action is needed"}]',
+                '  "venue_actions": [{"action": "RESTART_BOT" | "RESTART_MODULE" | "RESTART_FLEET" | "RESTART_VPN" | "PIN_DNS" | "REBOOT_SYSTEM" | "CANCEL_ORDER" | "SYNC_POSITION" | "NONE", '
+                '"venue": "fleet" | "system" | "binance" | "kraken" | "hyperliquid" | "t212", "symbol": "bot_or_module_name or SYSTEM", '
+                '"order_id": "optional order id", "reason": "Why this technical repair or restart/reboot action is needed"}]',
                 '  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
                 '"search_block": "", "replace_block": ""}',
             ])
@@ -2459,19 +2596,26 @@ class AutonomousAIReconciler:
 
         if spec.can_self_heal:
             role_intro = (
-                "You are the Lead SRE and Quantitative Autonomous System Supervisor for MPTrade.\n"
-                "Analyze the complete telemetry sensors, spot wallet balances, cycle states, and log anomalies:\n\n"
+                "You are the Lead SRE and Autonomous Technical Repair Supervisor for MPTrade.\n"
+                "Your STRICT mandate is solely to detect functional system anomalies (bots, fleet modules, heartbeats), "
+                "Linux OS resource issues, internet & VPN (wgpia0) connectivity failures, configuration errors, and "
+                "persistent unresolved errors in logs, and to remediate them by patching code or configurations and "
+                "restarting/rebooting bots, modules, the trading fleet, VPN/DNS, or the entire Linux system.\n"
+                "Do NOT analyze or report on market prices, trends/slopes, macro sentiment, portfolio balances, or active trading positions.\n\n"
                 f"{context_str}\n\n"
-                "Perform an executive diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n"
+                "Perform an executive technical diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n"
             )
             tool_rule = (
-                "- If you diagnose a reproducible code bug and need to verify exact lines before proposing `code_remediation`, "
+                "- If you diagnose a reproducible code bug or configuration error and need to verify exact lines before proposing `code_remediation`, "
                 "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
             )
             report_format_rule = (
                 "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
-                "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri, "
-                "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
+                "  1) A concise, well-structured Markdown report in **Romanian** strictly covering technical & SRE health "
+                "(bullet points for: Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri, "
+                "Conectivitate Internet & Audit Configurații, Erori Persistente Nerezolvate, și "
+                "Acțiuni de Remediere Cod/Config & Reboot Boți/Module/Flotă/Sistem). "
+                "NU analiza și NU menționa prețuri de piață, pante, portofoliu, solduri sau poziții active!\n"
             )
         else:
             role_intro = (
@@ -2533,7 +2677,7 @@ class AutonomousAIReconciler:
         return resp
 
     def _execute_venue_or_fleet_action(self, act: Dict[str, Any]) -> bool:
-        """Executes a single repair action (CANCEL_ORDER, SYNC_POSITION, or RESTART_BOT) in enforce mode."""
+        """Executes a single repair action (bot/module/fleet/VPN/DNS restart, system reboot, or order sync/cancel) in enforce mode."""
         if not isinstance(act, dict):
             return False
         raw_action = act.get("action")
@@ -2549,9 +2693,9 @@ class AutonomousAIReconciler:
         raw_reason = act.get("reason")
         reason = "" if isinstance(raw_reason, bool) or raw_reason is None else str(raw_reason)
 
-        if action_type == "RESTART_BOT":
+        if action_type in ("RESTART_BOT", "RESTART_MODULE"):
             if not symbol:
-                logger.warning("[ENFORCE] RESTART_BOT missing bot name/symbol in action: %s", act)
+                logger.warning("[ENFORCE] %s missing bot/module name in action: %s", action_type, act)
                 return False
             try:
                 from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
@@ -2567,14 +2711,58 @@ class AutonomousAIReconciler:
                     None,
                 )
                 if not matched:
-                    logger.warning("[ENFORCE] Refusing RESTART_BOT for unknown process %r (not in procs.conf)", symbol)
+                    logger.warning("[ENFORCE] Refusing %s for unknown process %r (not in procs.conf)", action_type, symbol)
                     return False
                 pattern = matched["pattern"].rstrip("$")
-                logger.warning("[ENFORCE EXECUTING] Restarting fleet bot %s (pattern=%s): %s", matched["name"], pattern, reason)
+                logger.warning("[ENFORCE EXECUTING] Restarting fleet bot/module %s (pattern=%s): %s", matched["name"], pattern, reason)
                 subprocess.run(["pkill", "-f", pattern], check=False)
                 return True
             except Exception as e:
-                logger.error("[ENFORCE] Failed restarting fleet bot %s: %s", symbol, e)
+                logger.error("[ENFORCE] Failed restarting fleet bot/module %s: %s", symbol, e)
+                return False
+
+        if action_type == "RESTART_FLEET":
+            try:
+                logger.warning("[ENFORCE EXECUTING] Restarting entire trading fleet + VPN: %s", reason)
+                admin_bin = "/usr/local/sbin/trading-admin"
+                cmd = ["sudo", "-n", admin_bin, "restart"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "restart", "python_orchestrator.service"]
+                res = subprocess.run(cmd, check=False)
+                return getattr(res, "returncode", 0) == 0
+            except Exception as e:
+                logger.error("[ENFORCE] Failed RESTART_FLEET: %s", e)
+                return False
+
+        if action_type == "RESTART_VPN":
+            try:
+                logger.warning("[ENFORCE EXECUTING] Restarting VPN service (wgpia0) + fleet: %s", reason)
+                admin_bin = "/usr/local/sbin/trading-admin"
+                cmd = ["sudo", "-n", admin_bin, "restart"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "restart", "pia.service"]
+                res = subprocess.run(cmd, check=False)
+                return getattr(res, "returncode", 0) == 0
+            except Exception as e:
+                logger.error("[ENFORCE] Failed RESTART_VPN: %s", e)
+                return False
+
+        if action_type == "PIN_DNS":
+            try:
+                logger.warning("[ENFORCE EXECUTING] Pinning DNS and restarting systemd-resolved: %s", reason)
+                admin_bin = "/usr/local/sbin/trading-admin"
+                cmd = ["sudo", "-n", admin_bin, "pin-dns"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "restart", "systemd-resolved"]
+                res = subprocess.run(cmd, check=False)
+                return getattr(res, "returncode", 0) == 0
+            except Exception as e:
+                logger.error("[ENFORCE] Failed PIN_DNS: %s", e)
+                return False
+
+        if action_type == "REBOOT_SYSTEM":
+            try:
+                logger.warning("[ENFORCE EXECUTING] Rebooting entire Linux system: %s", reason)
+                admin_bin = "/usr/local/sbin/trading-admin"
+                cmd = ["sudo", "-n", admin_bin, "reboot"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "reboot"]
+                res = subprocess.run(cmd, check=False)
+                return getattr(res, "returncode", 0) == 0
+            except Exception as e:
+                logger.error("[ENFORCE] Failed REBOOT_SYSTEM: %s", e)
                 return False
 
         if action_type == "CANCEL_ORDER":
@@ -2689,7 +2877,7 @@ class AutonomousAIReconciler:
         replace_block: str,
         rationale: str,
     ) -> bool:
-        """Applies code patch, executes pytest test suite, commits on 100% green or rolls back immediately."""
+        """Applies code or configuration patch, executes pytest test suite, commits on 100% green or rolls back immediately."""
         real_ws = os.path.realpath(self.workspace_dir)
         real_target = os.path.realpath(target_file)
         try:
@@ -2705,8 +2893,10 @@ class AutonomousAIReconciler:
             return False
 
         base_name = os.path.basename(real_target)
-        if base_name in (".env", "config.env", "order_guard.conf", "instruments.conf", "procs.conf") or base_name.endswith(".env"):
-            logger.warning("Refusing autonomous patch on protected configuration file: %s", target_file)
+        # Protect only raw secret credential files (.env); allow fixing workspace code and config files
+        # (e.g. procs.conf, order_guard.conf, config.env, instruments.conf, *.py, *.sh, *.json).
+        if base_name == ".env":
+            logger.warning("Refusing autonomous patch on protected secret credentials file: %s", target_file)
             return False
 
         if not search_block or search_block == replace_block:
@@ -2764,17 +2954,19 @@ class AutonomousAIReconciler:
         "ORPHAN_ORDER",
         "FLEET_STALE",
         "CODE_BUG",
+        "CONFIG_ERROR",
     })
     _SYSTEM_OS_ERROR_CATEGORIES = frozenset({
         "SYSTEM_ERROR",
         "SERVER_ERROR",
         "OS_RESOURCE",
         "VPN_ERROR",
+        "NETWORK_ERROR",
     })
 
     @classmethod
     def _is_bot_or_code_error_report(cls, report: SupervisorAuditReport) -> bool:
-        """Return True strictly for trading bot exceptions, venue order anomalies, or Python code bugs/patches."""
+        """Return True strictly for trading bot exceptions, fleet/config anomalies, or code/config patches."""
         for issue in report.diagnosed_issues or []:
             if not isinstance(issue, dict):
                 continue
@@ -2788,14 +2980,14 @@ class AutonomousAIReconciler:
             return True
         for act in report.venue_actions or []:
             if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() in (
-                "CANCEL_ORDER", "SYNC_POSITION", "RESTART_BOT"
+                "CANCEL_ORDER", "SYNC_POSITION", "RESTART_BOT", "RESTART_MODULE", "RESTART_FLEET"
             ):
                 return True
         return False
 
     @classmethod
     def _is_system_os_error_report(cls, report: SupervisorAuditReport) -> bool:
-        """Return True for Linux OS, VPN, memory, disk space, or server infrastructure anomalies."""
+        """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
         for issue in report.diagnosed_issues or []:
             if not isinstance(issue, dict):
                 continue
@@ -2804,6 +2996,11 @@ class AutonomousAIReconciler:
             if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev in ("CRITICAL", "HIGH", "MEDIUM"):
                 return True
             if sev in ("CRITICAL", "HIGH", "MEDIUM") and cat not in cls._BOT_AND_ORDER_ERROR_CATEGORIES:
+                return True
+        for act in report.venue_actions or []:
+            if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() in (
+                "RESTART_VPN", "PIN_DNS", "REBOOT_SYSTEM"
+            ):
                 return True
         return False
 
