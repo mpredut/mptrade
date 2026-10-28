@@ -2380,8 +2380,40 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert safe_guard_float("3.5", 0.0) == 3.5
     assert safe_pos_guard_float("-1.0", 2.0) == 2.0
 
+    # 9. instrument_registry, order_retry, rtrade_pair, and 212trading normalize venue, side, and T212 ticker aliases
+    from instrument_registry import select_instruments
+    from order_retry import _same_deferred_stream
+    from strategies.rtrade_pair import OrderTicket, anchored_exit_price
 
-
-
-
+    assert set(select_instruments("trading212", only_enabled=False)) == set(
+        select_instruments("t212", only_enabled=False)
+    )
+    assert set(select_instruments("hl", only_enabled=False)) == set(
+        select_instruments("hyperliquid", only_enabled=False)
+    )
+    assert _same_deferred_stream(
+        {
+            "lifecycle": "submit_pending",
+            "last_failure_reason": "trend_deferred",
+            "provider_name": "trading212",
+            "symbol": "SPCX_US_EQ",
+            "side": "BUY",
+            "kind": "ENTRY",
+        },
+        {
+            "lifecycle": "submit_pending",
+            "last_failure_reason": "trend_deferred",
+            "provider_name": "t212",
+            "symbol": "SPCX_US_EQ",
+            "side": "BUY",
+            "kind": "ENTRY",
+        },
+    )
+    t_long = OrderTicket(order_id="oid-long", side="long", price=100.0, qty=1.0)
+    t_short = OrderTicket(order_id="oid-short", side="short", price=100.0, qty=1.0)
+    assert t_long.side == "BUY"
+    assert t_short.side == "SELL"
+    assert anchored_exit_price("short", 100.0, 90.0, 0.01, 0.01) == anchored_exit_price(
+        "SELL", 100.0, 90.0, 0.01, 0.01
+    )
 

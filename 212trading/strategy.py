@@ -43,7 +43,7 @@ from providers.base import (
 )
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
-from providers.t212_provider import T212Provider
+from providers.t212_provider import T212Provider, _t212_tickers_match
 from strategies.state_store import JsonStateStore
 from strategies.position_exit_manager import (
     PositionExitManager,
@@ -800,7 +800,7 @@ class Strategy:
         ticker, side, qty, limit = self._active_order_identity(order)
         raw_ps = pending.get("side")
         pending_side = str(raw_ps or "").strip().upper() if not isinstance(raw_ps, bool) else ""
-        if not pending_side or ticker != self.ticker.upper() or side != pending_side:
+        if not pending_side or not _t212_tickers_match(ticker, self.ticker) or side != pending_side:
             return False
         raw_expected_qty = pending.get("qty")
         try:
@@ -1288,7 +1288,7 @@ class Strategy:
         for p in pf:
             if not isinstance(p, dict):
                 continue
-            if str(p.get("ticker", "")).upper() == self.ticker.upper():
+            if _t212_tickers_match(p.get("ticker", ""), self.ticker):
                 raw_q = p.get("quantity")
                 raw_avg = p.get("averagePrice")
                 if isinstance(raw_q, bool) or isinstance(raw_avg, bool):
@@ -1310,7 +1310,7 @@ class Strategy:
             return None
         active_ids: set[str] = set()
         for o in orders:
-            if not isinstance(o, dict) or self._active_order_identity(o)[0] != self.ticker.upper():
+            if not isinstance(o, dict) or not _t212_tickers_match(self._active_order_identity(o)[0], self.ticker):
                 continue
             oid = T212Client._clean_order_id(extract_order_id(o))
             if oid is not None:

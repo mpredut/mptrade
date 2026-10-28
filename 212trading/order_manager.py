@@ -32,6 +32,8 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
         sys.modules.pop(_mod_name, None)
 
 from state_io import atomic_write_json
+from providers.base import extract_order_side
+from providers.t212_provider import _t212_tickers_match
 
 try:
     from .ipo_common import log, now_str
@@ -213,7 +215,7 @@ def _portfolio_qty(client: T212Client, ticker: str) -> float | None:
     for position in portfolio:
         if not isinstance(position, dict):
             continue
-        if str(position.get("ticker") or "").upper() == ticker.upper():
+        if _t212_tickers_match(position.get("ticker") or "", ticker):
             raw_q = position.get("quantity")
             if isinstance(raw_q, bool):
                 return None
@@ -249,7 +251,7 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
         instrument = order.get("instrument")
         nested_ticker = instrument.get("ticker") if isinstance(instrument, dict) else None
         ticker = str(order.get("ticker") or nested_ticker or "").upper()
-        if ticker != str(record.get("ticker") or "").upper():
+        if not _t212_tickers_match(ticker, record.get("ticker") or ""):
             continue
         raw_sq = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
         raw_lim = order.get("limitPrice", order.get("limit"))
@@ -263,9 +265,7 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
             continue
         if not (math.isfinite(qty) and math.isfinite(limit)):
             continue
-        side = str(order.get("side") or "").upper()
-        if not side:
-            side = "BUY" if signed_qty > 0 else "SELL" if signed_qty < 0 else ""
+        side = extract_order_side(order) or ""
         if side != "BUY" or qty <= 0:
             continue
         if abs(qty - expected_qty) > max(0.011, expected_qty * 1e-6):
@@ -509,7 +509,7 @@ def place_order_with_retry(
         except (TypeError, ValueError, OverflowError):
             rec_qty_f, rec_lim_f = -1.0, -1.0
         same_intent = (
-            str(record.get("ticker") or "").upper() == ticker.upper()
+            _t212_tickers_match(record.get("ticker") or "", ticker)
             and math.isfinite(rec_qty_f) and rec_qty_f > 0
             and math.isfinite(rec_lim_f) and rec_lim_f > 0
             and abs(rec_qty_f - qty_r) <= 0.011
