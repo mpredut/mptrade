@@ -20,7 +20,7 @@ from typing import Callable
 from alertnotifiers import bind_notify
 from botcore import (
     _parse_bool_flag, are_close, log, defined_env, required_env,
-    required_float_env, required_int_env, required_bool_env,
+    required_float_env, required_int_env, required_bool_env, safe_float,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.execution_audit import intent_client_order_id
@@ -58,33 +58,17 @@ notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 
 def _clean_pos_float(val: object) -> float | None:
-    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str, Decimal)):
-        return None
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return f if math.isfinite(f) and f > 0.0 else None
+    f = safe_float(val, default=None)
+    return f if f is not None and f > 0.0 else None
 
 
 def _clean_nonneg_float(val: object) -> float | None:
-    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str, Decimal)):
-        return None
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return f if math.isfinite(f) and f >= 0.0 else None
+    f = safe_float(val, default=None)
+    return f if f is not None and f >= 0.0 else None
 
 
 def _clean_finite_float(val: object) -> float | None:
-    if val is None or isinstance(val, bool) or not isinstance(val, (int, float, str, Decimal)):
-        return None
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return f if math.isfinite(f) else None
+    return safe_float(val, default=None)
 
 
 def _clean_order_id(val: object) -> str | None:

@@ -36,7 +36,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 
 from lock import FileLock
 from providers.base import (
@@ -310,13 +310,7 @@ def _clean_retry_order_id(val) -> Optional[str]:
 
 
 def _clean_opt_finite_float(val):
-    if val is None or isinstance(val, bool):
-        return None
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else None
-    except (TypeError, ValueError, OverflowError):
-        return None
+    return safe_float(val, default=None)
 
 
 def _clean_now_sec(now=None) -> float:

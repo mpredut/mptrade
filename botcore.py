@@ -211,6 +211,17 @@ def parse_dotenv(path: str) -> dict:
     return out
 
 
+def safe_float(val: object, default: float | None = 0.0) -> float | None:
+    """Safely coerce ``val`` to finite float, rejecting booleans, None, and non-finite values."""
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def float_env(key: str, env: dict | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     The optional `env` argument preserves compatibility with legacy float_env(key) calls."""
@@ -219,11 +230,7 @@ def float_env(key: str, env: dict | None = None) -> float | None:
     if val is None or isinstance(val, bool):
         return None
     raw = str(val).split("#", 1)[0].strip()
-    try:
-        res = float(raw) if raw else None
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return res if (res is not None and math.isfinite(res)) else None
+    return safe_float(raw, default=None) if raw else None
 
 
 def int_env(key: str, env: dict | None = None) -> int | None:

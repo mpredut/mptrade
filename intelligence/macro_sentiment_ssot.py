@@ -45,7 +45,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
-from botcore import _parse_bool_flag, parse_dotenv
+from botcore import _parse_bool_flag, parse_dotenv, safe_float
 from cachepaths import cache_path, resolve_cachedb_filepath
 
 logger = logging.getLogger(__name__)
@@ -58,17 +58,6 @@ _CONFIG_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "parser": None}
 # ============================================================================
 # 0. Universal Coercion, Cache Freshness, Attribute & Daemon Primitives
 # ============================================================================
-
-def safe_float(val: Any, default: float = 0.0) -> float:
-    """Safely coerce ``val`` to finite float, rejecting booleans and NaN/Inf."""
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
 
 def safe_pos_float(val: Any, default: float = 0.0) -> float:
     """Safely coerce ``val`` to a strictly positive finite float (> 0.0)."""

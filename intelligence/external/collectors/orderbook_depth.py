@@ -17,6 +17,12 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import _parse_bool_flag
+from intelligence.macro_sentiment_ssot import (
+    resolve_now_ts as _effective_now_ts,
+    safe_float,
+    safe_nonneg_ts as _clean_nonneg_float,
+    safe_pos_float as _clean_pos_float,
+)
 from cachepaths import (
     cache_symbol_variants,
     normalize_cache_base_asset,
@@ -43,45 +49,7 @@ def _symbol_variants(symbol: str) -> List[str]:
 
 
 def _clean_dict_float(data: Dict[str, Any], key: str, default: float) -> float:
-    raw = data.get(key) if isinstance(data, dict) else None
-    if raw is None or isinstance(raw, bool):
-        return default
-    try:
-        val = float(raw)
-        return val if math.isfinite(val) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _clean_nonneg_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-        return vf if math.isfinite(vf) and vf >= 0.0 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _clean_pos_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-        return vf if math.isfinite(vf) and vf > 0.0 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _effective_now_ts(now: Optional[float]) -> float:
-    if now is not None and not isinstance(now, bool):
-        try:
-            now_f = float(now)
-            if math.isfinite(now_f) and now_f > 0.0:
-                return now_f
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return time.time()
+    return safe_float(data.get(key) if isinstance(data, dict) else None, default)
 
 
 class _DiskBackedSymbolCollector:
