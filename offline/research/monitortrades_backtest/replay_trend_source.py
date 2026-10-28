@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from collections import deque
 import math
+import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -146,8 +147,13 @@ UPWARD_EPSILON_K = 0.25
 def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float], eps: float = 0.0) -> bool:
     """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
     final_trend, gc, _slope_full, _gradient_recent = trend_tuple
-    if isinstance(eps, (int, float)) and not isinstance(eps, bool) and math.isfinite(eps) and eps > 0.0:
-        return gc > UPWARD_EPSILON_K * eps
+    k_env = os.environ.get("MPTRADE_UPWARD_EPSILON_K", os.environ.get("MPTRADE_TREND_NOISE_GATE_K"))
+    try:
+        k_val = float(k_env) if k_env is not None else UPWARD_EPSILON_K
+    except (TypeError, ValueError):
+        k_val = UPWARD_EPSILON_K
+    if isinstance(eps, (int, float)) and not isinstance(eps, bool) and math.isfinite(eps) and eps > 0.0 and k_val > 0.0:
+        return gc > k_val * eps
     return gc > 0 or (gc == 0 and final_trend > 0)
 
 

@@ -446,7 +446,9 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
             owned = max(0.0, owned - q)
             if owned <= 1e-12:
                 owned = 0.0
-            if q >= cost_qty * 0.98 or cost_qty - q <= 1e-12:
+                cost_qty = 0.0
+                active_avg = 0.0
+            elif q >= cost_qty * 0.98 or cost_qty - q <= 1e-12:
                 cost_qty = 0.0
                 active_avg = 0.0
             else:
@@ -518,37 +520,37 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     _position_stats_cache[cache_key] = (entry_sig, now_ts, res)
     return dict(res)
 
-HARD_TP_ENABLED: bool
-HARD_TP_PCT: float
-HARD_TP_FRACTION: float
-HARD_TP_COOLDOWN_S: float
-TP_REFERENCE: str
+HARD_TP_ENABLED: bool = False
+HARD_TP_PCT: float = 0.0
+HARD_TP_FRACTION: float = 0.0
+HARD_TP_COOLDOWN_S: float = 0.0
+TP_REFERENCE: str = ""
 _hard_tp_last = {}
 
-MT_SL_TREND_DEFER_MAX_SEC: float
-MT_SL_BOUNCE_MIN_RECOVERY_PCT: float
-MT_SL_BOUNCE_PULLBACK_PCT: float
-MT_SL_BOUNCE_RATCHET_ENABLED: bool
-MT_SL_BOUNCE_RATCHET_K: float
-MT_SL_BOUNCE_MIN_PULLBACK_PCT: float
-MT_SL_STRUCTURAL_BREAK_ENABLED: bool
+MT_SL_TREND_DEFER_MAX_SEC: float = 0.0
+MT_SL_BOUNCE_MIN_RECOVERY_PCT: float = 0.0
+MT_SL_BOUNCE_PULLBACK_PCT: float = 0.0
+MT_SL_BOUNCE_RATCHET_ENABLED: bool = False
+MT_SL_BOUNCE_RATCHET_K: float = 0.0
+MT_SL_BOUNCE_MIN_PULLBACK_PCT: float = 0.0
+MT_SL_STRUCTURAL_BREAK_ENABLED: bool = False
 _SL_BOUNCE_STATE = {}
 _SL_EPISODE_STATE: Dict[str, Dict[str, Any]] = {}  # SSOT: per-episode locked disaster floor
 
-MT_SL_DISASTER_BUFFER_RATIO: float
-MT_SL_DISASTER_VOL_MULTIPLIER: float
-MT_SL_DISASTER_BUFFER_MIN_PCT: float
+MT_SL_DISASTER_BUFFER_RATIO: float = 0.0
+MT_SL_DISASTER_VOL_MULTIPLIER: float = 0.0
+MT_SL_DISASTER_BUFFER_MIN_PCT: float = 0.0
 
-MT_TP_TREND_RIDE_ENABLED: bool
-MT_TP_PULLBACK_PCT: float
-MT_TP_RATCHET_ENABLED: bool
-MT_TP_RATCHET_K: float
-MT_TP_RATCHET_MIN_PULLBACK_PCT: float
-MT_TP_PROFIT_FLOOR_RATIO: float
-MT_TP_PROFIT_FLOOR_MIN_PCT: float
-MT_TP_STAGNATION_MAX_SEC: float
-MT_REENTRY_HYBRID_ENABLED: bool
-MT_REENTRY_POST_STOP_COOLDOWN_SEC: float
+MT_TP_TREND_RIDE_ENABLED: bool = False
+MT_TP_PULLBACK_PCT: float = 0.0
+MT_TP_RATCHET_ENABLED: bool = False
+MT_TP_RATCHET_K: float = 0.0
+MT_TP_RATCHET_MIN_PULLBACK_PCT: float = 0.0
+MT_TP_PROFIT_FLOOR_RATIO: float = 0.0
+MT_TP_PROFIT_FLOOR_MIN_PCT: float = 0.0
+MT_TP_STAGNATION_MAX_SEC: float = 0.0
+MT_REENTRY_HYBRID_ENABLED: bool = False
+MT_REENTRY_POST_STOP_COOLDOWN_SEC: float = 0.0
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
@@ -618,7 +620,7 @@ def _load_mt_state(now_curr: float | None = None):
             raw_map = data.get(key)
             if not isinstance(raw_map, dict):
                 continue
-            for sym, state in raw_map.items():
+            for s_name, state in raw_map.items():
                 if isinstance(state, dict):
                     raw_started = state.get("started_at", 0)
                     if isinstance(raw_started, bool):
@@ -643,31 +645,31 @@ def _load_mt_state(now_curr: float | None = None):
                             state = dict(state)
                             state["last_peak_time"] = now_curr
                     if 0 <= (now_curr - started) < 86400:
-                        target[str(sym).strip().upper()] = state
+                        target[str(s_name).strip().upper()] = state
         raw_reentry = data.get("reentry_state")
         if isinstance(raw_reentry, dict):
-            for sym, state in raw_reentry.items():
+            for s_name, state in raw_reentry.items():
                 if isinstance(state, dict):
-                    _REENTRY_STATE[str(sym).strip().upper()] = state
+                    _REENTRY_STATE[str(s_name).strip().upper()] = state
         raw_exit_kind = data.get("last_exit_kind")
         if isinstance(raw_exit_kind, dict):
-            for sym, kind in raw_exit_kind.items():
+            for s_name, kind in raw_exit_kind.items():
                 if isinstance(kind, str):
-                    _LAST_EXIT_KIND[str(sym).strip().upper()] = kind
+                    _LAST_EXIT_KIND[str(s_name).strip().upper()] = kind
         raw_done_sell = data.get("reentry_done_sell_time")
         if isinstance(raw_done_sell, dict):
-            for sym, s_ts in raw_done_sell.items():
+            for s_name, s_ts in raw_done_sell.items():
                 try:
                     if isinstance(s_ts, bool):
                         continue
                     s_ts_val = float(s_ts)
                     if math.isfinite(s_ts_val) and s_ts_val > 0 and 0 <= (now_curr - s_ts_val) < 7 * 86400:
-                        _REENTRY_DONE_SELL_TIME[str(sym).strip().upper()] = s_ts_val
+                        _REENTRY_DONE_SELL_TIME[str(s_name).strip().upper()] = s_ts_val
                 except (TypeError, ValueError):
                     pass
         raw_pending_stop = data.get("pending_stop_exit")
         if isinstance(raw_pending_stop, dict):
-            for sym, state in raw_pending_stop.items():
+            for s_name, state in raw_pending_stop.items():
                 if isinstance(state, dict):
                     raw_pts = state.get("time", 0)
                     if isinstance(raw_pts, bool):
@@ -683,16 +685,16 @@ def _load_mt_state(now_curr: float | None = None):
                         state["time"] = now_curr
                         p_ts = now_curr
                     if 0 <= (now_curr - p_ts) < 300:
-                        _PENDING_STOP_EXIT[str(sym).strip().upper()] = state
+                        _PENDING_STOP_EXIT[str(s_name).strip().upper()] = state
         raw_hard_tp = data.get("hard_tp_last")
         if isinstance(raw_hard_tp, dict):
-            for sym, h_ts in raw_hard_tp.items():
+            for s_name, h_ts in raw_hard_tp.items():
                 try:
                     if isinstance(h_ts, bool):
                         continue
                     h_ts_val = float(h_ts)
                     if math.isfinite(h_ts_val) and h_ts_val > 0 and 0 <= (now_curr - h_ts_val) < 86400:
-                        _hard_tp_last[str(sym).strip().upper()] = h_ts_val
+                        _hard_tp_last[str(s_name).strip().upper()] = h_ts_val
                 except (TypeError, ValueError):
                     pass
     except Exception:

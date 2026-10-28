@@ -47,6 +47,9 @@ def main():
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
         ROOT, "cachedb", f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
     src = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
+    if not os.path.isfile(src):
+        print(f"[slice] {src} missing", file=sys.stderr)
+        sys.exit(1)
 
     rows = []
     with open(src, encoding="utf-8") as f:

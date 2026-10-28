@@ -2176,8 +2176,8 @@ class CacheManagerInterface(ABC):
         with self.lock:
             if not self.fetchtime_per_symbol:
                 self.fetchtime_per_symbol = self._rebuild_fetchtimes()
-            for sym, rebuilt_ft in self.fetchtime_per_symbol.items():
-                self._rest_sync_cursor_per_symbol.setdefault(sym, rebuilt_ft)
+            for s_sym, rebuilt_ft in self.fetchtime_per_symbol.items():
+                self._rest_sync_cursor_per_symbol.setdefault(s_sym, rebuilt_ft)
 
         account_cycle_high_water = None
         for symbol in list(self.symbols):
@@ -2224,8 +2224,8 @@ class CacheManagerInterface(ABC):
         with self.lock:
             if not self.fetchtime_per_symbol:
                 self.fetchtime_per_symbol = self._rebuild_fetchtimes()
-                for sym, rebuilt_ft in self.fetchtime_per_symbol.items():
-                    self._rest_sync_cursor_per_symbol.setdefault(sym, rebuilt_ft)
+                for s_sym, rebuilt_ft in self.fetchtime_per_symbol.items():
+                    self._rest_sync_cursor_per_symbol.setdefault(s_sym, rebuilt_ft)
         self._persist_items(symbol, items)
         
     def _should_poll(self):
@@ -3115,13 +3115,13 @@ class Cache365PriceManager(Cache24PriceManager):
                 except (OSError, ValueError, TypeError):
                     pass
             if self.cache:
-                for sym, rebuilt_ft in self.rebuild_fetchtimes().items():
-                    self.fetchtime_per_symbol[sym] = max(
-                        int(self.fetchtime_per_symbol.get(sym, 0) or 0),
+                for s_sym, rebuilt_ft in self.rebuild_fetchtimes().items():
+                    self.fetchtime_per_symbol[s_sym] = max(
+                        int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
                         int(rebuilt_ft or 0),
                     )
                     self._rest_sync_cursor_per_symbol.setdefault(
-                        sym, self.fetchtime_per_symbol[sym]
+                        s_sym, self.fetchtime_per_symbol[s_sym]
                     )
 
     def _trim_old_data(self, symbol):
@@ -3194,14 +3194,14 @@ class Cache365PriceManager(Cache24PriceManager):
                                 )
                             changed = True
                 self._load_jsonl()
-                for sym, ft in original_fetchtimes.items():
-                    self.fetchtime_per_symbol[sym] = max(
-                        int(self.fetchtime_per_symbol.get(sym, 0) or 0),
+                for s_sym, ft in original_fetchtimes.items():
+                    self.fetchtime_per_symbol[s_sym] = max(
+                        int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
                         int(ft or 0),
                     )
-                for sym, cur in original_rest_cursors.items():
-                    self._rest_sync_cursor_per_symbol[sym] = max(
-                        int(self._rest_sync_cursor_per_symbol.get(sym, 0) or 0),
+                for s_sym, cur in original_rest_cursors.items():
+                    self._rest_sync_cursor_per_symbol[s_sym] = max(
+                        int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
                         int(cur or 0),
                     )
                 if changed:
@@ -3284,14 +3284,14 @@ class Cache365PriceManager(Cache24PriceManager):
                                 json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
                             )
                 self._load_jsonl()
-                for sym, ft in original_fetchtimes.items():
-                    self.fetchtime_per_symbol[sym] = max(
-                        int(self.fetchtime_per_symbol.get(sym, 0) or 0),
+                for s_sym, ft in original_fetchtimes.items():
+                    self.fetchtime_per_symbol[s_sym] = max(
+                        int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
                         int(ft or 0),
                     )
-                for sym, cur in original_rest_cursors.items():
-                    self._rest_sync_cursor_per_symbol[sym] = max(
-                        int(self._rest_sync_cursor_per_symbol.get(sym, 0) or 0),
+                for s_sym, cur in original_rest_cursors.items():
+                    self._rest_sync_cursor_per_symbol[s_sym] = max(
+                        int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
                         int(cur or 0),
                     )
                 meta_ok = self._write_meta({

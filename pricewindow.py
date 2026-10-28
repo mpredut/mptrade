@@ -86,6 +86,8 @@ def _resolve_step_wols_power(estimator_name: str = None) -> float:
 
 MEDIAN_FILTER_SECONDS = max(0.0, _env_float("MPTRADE_MEDIAN_FILTER_SECONDS", DEFAULT_MEDIAN_FILTER_SECONDS))
 STEP_WOLS_POWER = _resolve_step_wols_power(SHORT_TREND_ESTIMATOR)
+DEFAULT_TREND_NOISE_GATE_K = 0.0      # Multiplier k for adaptive noise gate (0.0 = bypassed, e.g. 0.05-0.10)
+TREND_NOISE_GATE_K = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", DEFAULT_TREND_NOISE_GATE_K))
 MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC = 2.0  # Sparser data: no 1s bid-ask bounce to remove.
 _MEDIAN_KERNELS = (1, 3, 5)
 _STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to this many steps.
@@ -289,7 +291,15 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
     if abs(gradient_recent) <= 1e-12:
         gradient_recent = 0.0
     growth_coefficient = step_wols_slope(analyzer.prices, sample_rate_sec)
-    final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
+    noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
+    noise_thr = 0.0
+    if noise_gate_k > 0.0 and len(analyzer.prices) >= 3:
+        grad_arr = np.array(gradient_lst) if len(gradient_lst) else np.gradient(np.array(analyzer.prices))
+        noise_thr = noise_gate_k * float(np.std(grad_arr))
+    if noise_thr > 0.0 and abs(growth_coefficient) <= noise_thr:
+        final_trend = 0
+    else:
+        final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
 
@@ -622,7 +632,6 @@ class IncrementalTrendBuffer:
             gradient_recent = 0.0
 
         growth_coefficient = self.step_wols_slope(a, b, sample_rate_sec)
-        final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
 
         if n < 3:
             epsilon = 0.0
@@ -633,6 +642,13 @@ class IncrementalTrendBuffer:
             mean_g = sum_g_all / n
             var_g = max(0.0, sum_g2 / n - mean_g * mean_g)
             epsilon = float(k_val * math.sqrt(var_g))
+
+        noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
+        noise_thr = noise_gate_k * epsilon if noise_gate_k > 0.0 else 0.0
+        if noise_thr > 0.0 and abs(growth_coefficient) <= noise_thr:
+            final_trend = 0
+        else:
+            final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
 
         return final_trend, growth_coefficient, slope_full, gradient_recent, epsilon
 
@@ -952,7 +968,6 @@ class PriceWindow:
     def get_min_and_index(self):
         with self._lock:
             if not self.sorted_prices:
-                print("BED1")
                 return None, None
             min_price = self.get_min()
             if min_price is not None and min_price > 0:
@@ -970,7 +985,6 @@ class PriceWindow:
     def get_max_and_index(self):
         with self._lock:
             if not self.sorted_prices:
-                print("BED2")
                 return None, None
             max_price = self.get_max()
             if max_price is not None and max_price > 0:
@@ -1027,7 +1041,7 @@ class PriceWindow:
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS)
+                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS, TREND_NOISE_GATE_K)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     return float(k_val * self._cached_eval_val[4])
                 res = self._trend_buf.eval_slice(
@@ -1058,7 +1072,7 @@ class PriceWindow:
                 and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
             ):
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS)
+                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS, TREND_NOISE_GATE_K)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
                 else:
@@ -1204,6 +1218,7 @@ class WindowAnalyzer:
     # ══════════════════════════════════════════════════════════════════════════════
     # [HISTORICAL EXPERIMENTS & DRAFT METRICS — PRESERVE FOR REFERENCE — DO NOT DELETE]
     # Păstrate pentru analiză și potențială reutilizare/recalibrare în strategii.
+    # Notă: evaluate_buy_sell_opportunity a fost ștearsă conform cerinței (era stub gol).
     # ══════════════════════════════════════════════════════════════════════════════
     # def calculate_slope_max_min(self):
     #     """Calculează panta directă între extremele ferestrei (min și max)."""
@@ -1259,7 +1274,3 @@ class WindowAnalyzer:
     #     slope_max = u.slope(max_price, max_index, newest_price, newest_index)
     #     slope_max_min = slope_max if abs(slope_max) > abs(slope_min) else slope_min
     #     return slope_max_min, price_diff
-    #
-    # def evaluate_buy_sell_opportunity(self, current_price, threshold_percent=1, decrease_percent=3.7):
-    #     """Stub inițial pentru detectarea oportunităților pe bază de scădere/creștere procentuală."""
-    #     pass

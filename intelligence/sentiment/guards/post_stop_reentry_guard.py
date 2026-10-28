@@ -385,9 +385,9 @@ def get_post_stop_reentry_guard(
         m = _load_margins()
     else:
         m = margins
-    if not isinstance(m, dict):
-        m = {}
-    raw_mode = m["post_stop_reentry_mode"]
+    if not isinstance(m, dict) or not m:
+        raise KeyError("post_stop_reentry_mode")
+    raw_mode = m.get("post_stop_reentry_mode", "enforce")
     mode = PostStopReentryGuard._normalize_mode(raw_mode, default="enforce")
     intel_master = PostStopReentryGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
     llm_master = PostStopReentryGuard._normalize_mode(m.get("llm_guard_mode", "enforce"), default="enforce")

@@ -144,6 +144,13 @@ class TestStepWolsGeneralization(unittest.TestCase):
         with patch.dict(os.environ, {"MPTRADE_STEP_WOLS_POWER": "3.5"}):
             self.assertEqual(pw._resolve_step_wols_power(), 3.5)
 
+    def test_noise_gating_neutralizes_sub_epsilon_slopes(self):
+        prices = [100.0 + 0.001 * (i % 2) for i in range(222)]
+        ft_raw, gc, _, _ = pw.instant_trend_from_prices(prices, 1.0)
+        with patch.dict(os.environ, {"MPTRADE_TREND_NOISE_GATE_K": "0.5"}):
+            ft_gated, _, _, _ = pw.instant_trend_from_prices(prices, 1.0)
+            self.assertEqual(ft_gated, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

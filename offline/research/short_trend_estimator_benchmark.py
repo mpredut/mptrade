@@ -53,7 +53,14 @@ def load_series(sym):
         z = np.load(npz)
         return z["ts"], z["px"]
     ts, px = [], []
-    with open(os.path.join(D, f"cache_365_price_{sym}.jsonl"), encoding="utf-8") as f:
+    jsonl_path = os.path.join(D, f"cache_365_price_{sym}.jsonl")
+    if not os.path.exists(jsonl_path):
+        for candidate_name in (f"cache_sparse_price_{sym}.jsonl", f"cache_price_sparse_{sym}.jsonl"):
+            candidate_path = os.path.join(D, candidate_name)
+            if os.path.exists(candidate_path):
+                jsonl_path = candidate_path
+                break
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             try:
                 r = json.loads(line)
@@ -121,13 +128,41 @@ def exp_steps(series, half_life):
     return conv_steps(series, kernel_newest_first(np.exp(lam * (k - (N_WIN - 1)))))
 
 
+def kaufman_er(px, win=N_WIN):
+    """Fractal Efficiency Ratio = |Net Change| / Path Length."""
+    dy = np.abs(np.diff(px, prepend=px[0]))
+    kernel = np.ones(win, dtype=np.float64)
+    path = fftconvolve(dy, kernel, mode="full")[:len(px)]
+    net = np.abs(px - np.pad(px[:-win], (win, 0), mode="edge"))
+    return net / np.maximum(path, 1e-12)
+
+
+def noise_gate(sig, px, win=N_WIN, k=0.25):
+    """Zero-out trend signals that do not exceed k * rolling_std(gradient)."""
+    dy = np.diff(px, prepend=px[0])
+    kernel = np.ones(win, dtype=np.float64) / win
+    mean_g = fftconvolve(dy, kernel, mode="full")[:len(px)]
+    var_g = np.maximum(0.0, fftconvolve(dy**2, kernel, mode="full")[:len(px)] - mean_g**2)
+    eps = np.sqrt(var_g)
+    return np.where(np.abs(sig) > k * eps, sig, 0.0)
+
+
+def platt_scale(sig, thr=0.6):
+    """Parametric sigmoid confidence gating: maps normalized slope to probability."""
+    s_std = np.std(sig)
+    if s_std <= 1e-12:
+        return sig
+    z = sig / s_std
+    prob = 1.0 / (1.0 + np.exp(-z))
+    return np.where(prob >= thr, sig, np.where(prob <= 1.0 - thr, sig, 0.0))
+
+
 def build_candidates(px):
     """Yield (name, signal) lazily to keep memory bounded on 6.8M-tick series."""
     only = set(filter(None, os.environ.get("BENCH_ONLY", "").split(",")))
     want = (lambda n: (not only) or n in only)
     meds = {k: causal_median(px, k) for k in (1, 3, 5, 7, 9)}
-    if want("LEGACY (sf+gr)/2"):
-        yield "LEGACY (sf+gr)/2", legacy(px)
+    yield "LEGACY (sf+gr)/2", legacy(px)
     for k in (3, 5):
         if want(f"LEGACY med{k}"):
             yield f"LEGACY med{k}", legacy(meds[k])
@@ -138,6 +173,25 @@ def build_candidates(px):
         for hl in (15, 30, 60):
             if want(f"EXP hl{hl} med{k}"):
                 yield f"EXP hl{hl} med{k}", exp_steps(meds[k], hl)
+
+    # New quantitative architectures: Kaufman ER, Noise Gating, Platt Scaling
+    er_val = None
+    for p in (2, 3):
+        base_sig = step_wols(meds[1], p)
+        for er_thr in (0.05, 0.10, 0.15, 0.20, 0.25, 0.35):
+            cname = f"SW p{p} + ER{er_thr}"
+            if want(cname):
+                if er_val is None:
+                    er_val = kaufman_er(px)
+                yield cname, np.where(er_val >= er_thr, base_sig, 0.0)
+        for k_eps in (0.05, 0.10, 0.15, 0.25, 0.50):
+            cname = f"SW p{p} + NoiseGate{k_eps}"
+            if want(cname):
+                yield cname, noise_gate(base_sig, px, k=k_eps)
+        for p_thr in (0.55, 0.60, 0.65):
+            cname = f"SW p{p} + Platt{p_thr}"
+            if want(cname):
+                yield cname, platt_scale(base_sig, thr=p_thr)
 
 
 def fwd_index(ts, h):
@@ -317,7 +371,7 @@ def main():
     top = [c for _, c, _ in sorted(rows, reverse=True)[:8]] + ["LEGACY (sf+gr)/2", "SW p3 med5"]
     print("\n>>> PER-SYMBOL OOS edge (bps) for top-8 + legacy + current SW p3 med5 <<<")
     for sym, N, res in results:
-        print(sym, " | ".join(f"{c}: {res[c]['OOS']['edge']:+.2f}" for c in dict.fromkeys(top)))
+        print(sym, " | ".join(f"{c}: {res[c]['OOS']['edge']:+.2f}" for c in dict.fromkeys(top) if c in res))
 
 
 if __name__ == "__main__":
