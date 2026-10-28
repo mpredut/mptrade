@@ -1,160 +1,176 @@
 #!/usr/bin/env bash
-# manage_agy.sh — Antigravity CLI daemon manager: watchdog, restart, status, update, ui-sync, clean-logs, clean-sessions.
-# Usage: ./manage_agy.sh [watchdog|restart|status|update|ui-sync|clean-logs|clean-sessions]
-set -uo pipefail
+# manage_agy.sh — Unified manager for Antigravity CLI (agy) & remote-control daemon
+# Commands: update (default) | watchdog | cron-update | restart | ui-sync | status | stop
+set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # shellcheck source=../lib/os_notify.sh
 source "$SCRIPT_DIR/../lib/os_notify.sh"
-
-export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-UID_NUM="$(id -u)"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID_NUM}"
-export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
-
-SERVICE="antigravity-cli-daemon.service"
-AGY_DIR="$HOME/.gemini/antigravity"
-AGY_CLI_DIR="$HOME/.gemini/antigravity-cli"
-LOG_FILE="$ROOT/logs/agy_manager.log"
-STATE_FILE="/tmp/agy_watchdog_failures"
-RESTART_LOCK="/tmp/agy_restart.lock"
-RESTART_TS_FILE="/tmp/agy_last_restart_ts"
-MAX_FAILURES=2
-COOLDOWN_SEC=180
-
 mkdir -p "$ROOT/logs"
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [AGY] $*" | tee -a "$LOG_FILE"; }
-send_alert() { send_os_ntfy "$1" "$2" "${3:-default}"; }
+
+export PATH="$HOME/.local/bin:$PATH"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+fi
+
+INSTANCE_NAME="prod-vm"
+LOCK_FILE="${XDG_RUNTIME_DIR}/manage_agy.lock"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [manage_agy] $*"; }
+send_alert() { send_os_ntfy "AGY Manager ($(hostname))" "$1" default || true; }
+
+AGY_BIN="$(command -v agy || true)"
+[ -z "$AGY_BIN" ] && [ -x "$HOME/.local/bin/agy" ] && AGY_BIN="$HOME/.local/bin/agy"
+if [ -z "$AGY_BIN" ] || [ ! -x "$AGY_BIN" ]; then
+    log "ERROR: agy binary not found in PATH or ~/.local/bin/agy" >&2
+    exit 1
+fi
 
 resolve_agy_log() {
-  local pid log_path=""
-  pid=$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null || echo 0)
-  [ "${pid:-0}" -gt 0 ] && [ -e "/proc/$pid/fd/1" ] && log_path=$(readlink -f "/proc/$pid/fd/1" 2>/dev/null || true)
-  { [ -z "$log_path" ] || [ ! -f "$log_path" ]; } && log_path="$AGY_CLI_DIR/cli.log"
-  echo "$log_path"
+    local pid log_file=""
+    pid="$(systemctl --user show -p MainPID --value antigravity-cli-daemon 2>/dev/null || true)"
+    [ -n "$pid" ] && [ "$pid" -gt 0 ] && [ -d "/proc/$pid" ] && log_file="$(readlink -f "/proc/$pid/fd/1" 2>/dev/null || true)"
+    if [ -z "$log_file" ] || [ ! -f "$log_file" ]; then
+        log_file="$(readlink -f "$HOME/.gemini/antigravity-cli/cli.log" 2>/dev/null || true)"
+    fi
+    echo "$log_file"
 }
 
-is_daemon_running() { systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; }
+is_active() {
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet antigravity-cli-daemon; then
+        return 0
+    fi
+    "$AGY_BIN" remote-control status 2>&1 | grep -qi "Daemon status: active"
+}
 
 is_tunnel_stuck() {
-  local log_path recent
-  log_path="$(resolve_agy_log)"
-  [ -f "$log_path" ] || return 1
-  recent=$(tail -n 30 "$log_path" 2>/dev/null || true)
-  if echo "$recent" | grep -qE "Connection failed, reconnecting|StatusCode\.UNAVAILABLE|Unable to reach the server|Deadline Exceeded|Authentication error"; then
-    local last_err last_ok
-    last_err=$(echo "$recent" | grep -nE "Connection failed|UNAVAILABLE|Unable to reach|Deadline Exceeded" | tail -1 | cut -d: -f1)
-    last_ok=$(echo "$recent" | grep -nE "Listening for|Connected to|Registered instance|Started session|Heartbeat OK" | tail -1 | cut -d: -f1)
-    [ -n "${last_err:-}" ] && { [ -z "${last_ok:-}" ] || [ "$last_err" -gt "$last_ok" ]; } && return 0
-  fi
-  return 1
+    local log_file last_status
+    log_file="$(resolve_agy_log)"
+    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        last_status="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 1 || true)"
+        if [ -n "$last_status" ] && echo "$last_status" | grep -qi "Failed before open"; then
+            local fail_count
+            fail_count="$(grep -c "Connection status: Failed before open" <(tail -n 30 "$log_file" 2>/dev/null) || true)"
+            [ "$fail_count" -ge 2 ] && return 0
+        fi
+    fi
+    return 1
 }
 
 do_restart() {
-  local reason="${1:-manual}"
-  exec 8>"$RESTART_LOCK"
-  flock -n 8 || { log "Restart already in progress, skipping."; return 0; }
-  local now last_ts=0
-  now=$(date +%s)
-  [ -f "$RESTART_TS_FILE" ] && last_ts=$(cat "$RESTART_TS_FILE" 2>/dev/null || echo 0)
-  if [ "$reason" != "manual" ] && [ $((now - last_ts)) -lt "$COOLDOWN_SEC" ]; then
-    log "Cooldown active ($((now - last_ts))s < ${COOLDOWN_SEC}s), skipping restart."
-    return 0
-  fi
-  log "Restarting $SERVICE (reason: $reason)..."
-  systemctl --user stop "$SERVICE" 2>/dev/null || true
-  sleep 2
-  pkill -9 -f "agy .*daemon" 2>/dev/null || true
-  pkill -9 -f "antigravity-cli.*daemon" 2>/dev/null || true
-  sleep 1
-  systemctl --user reset-failed "$SERVICE" 2>/dev/null || true
-  systemctl --user start "$SERVICE" 2>/dev/null || true
-  date +%s > "$RESTART_TS_FILE"
-  sleep 5
-  if is_daemon_running; then
-    log "$SERVICE restarted successfully (PID=$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null))."
-    echo 0 > "$STATE_FILE"
-    return 0
-  fi
-  log "ERROR: $SERVICE failed to start!"
-  send_alert "AGY Daemon Failed ($(hostname))" "antigravity-cli-daemon.service failed to start after restart ($reason)." "high"
-  return 1
+    log "Cycling daemon (stop -> start --name '${INSTANCE_NAME}')..."
+    if grep -q "antigravity-cli-daemon.service" /proc/self/cgroup 2>/dev/null && command -v systemd-run >/dev/null 2>&1; then
+        log "Executing inside daemon cgroup. Delegating restart to transient user systemd service..."
+        local job_unit="agy-restart-$(date +%s)"
+        systemd-run --user --unit="$job_unit" bash -c "
+            export PATH=\"\$HOME/.local/bin:\$PATH\"
+            export XDG_RUNTIME_DIR=\"\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}\"
+            [ -S \"\${XDG_RUNTIME_DIR}/bus\" ] && export DBUS_SESSION_BUS_ADDRESS=\"\${DBUS_SESSION_BUS_ADDRESS:-unix:path=\${XDG_RUNTIME_DIR}/bus}\"
+            sleep 3
+            '$AGY_BIN' remote-control stop || true
+            sleep 2
+            '$AGY_BIN' remote-control start --name '$INSTANCE_NAME'
+        "
+        log "Transient restart service queued ($job_unit)."
+    else
+        "$AGY_BIN" remote-control stop || true
+        sleep 2
+        "$AGY_BIN" remote-control start --name "$INSTANCE_NAME"
+        sleep 2
+        "$AGY_BIN" remote-control status || true
+    fi
 }
 
 do_watchdog() {
-  if ! is_daemon_running; then
-    log "WARN: $SERVICE is not active! Triggering immediate restart..."
-    do_restart "service_inactive" && send_alert "AGY Daemon Auto-Restarted ($(hostname))" "Service was inactive and has been restarted." "default"
-    return
-  fi
-  if is_tunnel_stuck; then
-    local fails=0
-    [ -f "$STATE_FILE" ] && fails=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
-    fails=$((fails + 1))
-    echo "$fails" > "$STATE_FILE"
-    log "WARN: Tunnel appears stuck ($fails/$MAX_FAILURES)."
-    if [ "$fails" -ge "$MAX_FAILURES" ]; then
-      do_restart "tunnel_stuck_${fails}_checks" && send_alert "AGY Tunnel Auto-Healed ($(hostname))" "Tunnel was stuck in reconnect loop ($fails checks) and daemon was restarted." "default"
-    fi
-  else
-    echo 0 > "$STATE_FILE"
-  fi
-}
+    exec 200>"$LOCK_FILE"
+    flock -n 200 || exit 0
 
-do_status() {
-  echo "=== Antigravity CLI Daemon Status ($(hostname)) ==="
-  echo "Binary   : $(command -v agy 2>/dev/null || echo 'NOT FOUND')"
-  echo "Version  : $(agy --version 2>/dev/null || echo 'unknown')"
-  echo "Service  : $(systemctl --user is-active "$SERVICE" 2>/dev/null || echo 'inactive') (PID=$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null || echo 0))"
-  systemctl --user status "$SERVICE" --no-pager -n 10 2>/dev/null || true
-  local log_path
-  log_path="$(resolve_agy_log)"
-  if [ -f "$log_path" ]; then
-    echo -e "\n=== Recent Daemon Log ($log_path) ==="
-    tail -n 15 "$log_path"
-  fi
+    if ! is_active; then
+        log "WARNING: Daemon is DOWN/INACTIVE. Triggering auto-recovery as '${INSTANCE_NAME}'..."
+        local start_out start_out_single
+        start_out="$("$AGY_BIN" remote-control start --name "$INSTANCE_NAME" 2>&1 || true)"
+        start_out_single="$(printf '%s' "$start_out" | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+        sleep 2
+        if is_active; then
+            log "SUCCESS: Daemon successfully recovered as '${INSTANCE_NAME}'. Output: ${start_out_single}"
+            send_alert "Antigravity remote-control daemon was found down and successfully revived as '${INSTANCE_NAME}'."
+        else
+            log "ERROR: Failed to recover daemon. Output: ${start_out_single}" >&2
+            send_alert "CRITICAL: Failed to revive Antigravity daemon (${INSTANCE_NAME}) on $(hostname)."
+            exit 2
+        fi
+    elif is_tunnel_stuck; then
+        log "WARNING: Daemon is running but tunnel is STUCK in reconnection failure. Triggering auto-recovery..."
+        do_restart
+        send_alert "Antigravity remote-control daemon tunnel was found stuck/broken and was automatically restarted as '${INSTANCE_NAME}'."
+    elif [ -t 1 ] || [ "${1:-}" = "--verbose" ]; then
+        log "Daemon is active and healthy (instance: ${INSTANCE_NAME})."
+    fi
 }
 
 do_update() {
-  log "Checking/updating Antigravity CLI..."
-  local before after
-  before=$(agy --version 2>/dev/null || echo "none")
-  if agy update 2>&1 | tee -a "$LOG_FILE"; then
-    after=$(agy --version 2>/dev/null || echo "none")
-    log "Update check complete: before=$before after=$after"
-    [ "$before" != "$after" ] && do_restart "cli_updated"
-  else
-    log "WARN: 'agy update' returned non-zero (may already be latest or require manual installer)."
-  fi
+    local mode="${1:-manual}" update_output
+    log "=== Antigravity CLI update check ==="
+    log "Using binary: $AGY_BIN (current: $("$AGY_BIN" --version 2>/dev/null || echo 'unknown'))"
+    update_output="$("$AGY_BIN" update 2>&1 || true)"
+    echo "$update_output"
+
+    if [ "$mode" = "cron" ]; then
+        if echo "$update_output" | grep -iq "Update successful"; then
+            log "Update applied successfully under cron. Cycling daemon..."
+            do_restart
+        elif echo "$update_output" | grep -iq "already on the latest version"; then
+            log "Already up to date. Cron check complete; no restart needed."
+        else
+            log "Cron check complete with no update applied."
+        fi
+    else
+        log "Manual update invoked. Cycling daemon as instance '${INSTANCE_NAME}'..."
+        do_restart
+    fi
+    log "=== Antigravity CLI update finished ==="
+}
+
+do_status() {
+    log "Binary: $AGY_BIN ($("$AGY_BIN" --version 2>/dev/null || echo 'unknown'))"
+    "$AGY_BIN" remote-control status || true
+    local log_file last_status
+    log_file="$(resolve_agy_log)"
+    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        last_status="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 1 || true)"
+        [ -n "$last_status" ] && log "Tunnel: $last_status"
+    fi
 }
 
 do_ui_sync() {
-  log "Syncing Antigravity UI customizations..."
-  "$PYTHON_BIN" "$ROOT/orchestratorOS/agy/ui_mirror.py" 2>&1 | tee -a "$LOG_FILE"
+    exec 200>"$LOCK_FILE"
+    flock -w 10 200 || exit 0
+    local idle_sec rc=0
+    idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC)"
+    if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
+        log "ERROR: AGY_UI_SYNC_IDLE_SEC missing or invalid in config.env ('$idle_sec')" >&2
+        exit 1
+    fi
+    is_active || exit 0
+    /usr/bin/python3 "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s; restarting to surface threads."
+            do_restart ;;
+        10|11|12|3) ;;
+        *)  log "WARNING: ui-sync-check failed (rc=$rc); see ~/agy_store_fix.log" >&2 ;;
+    esac
 }
 
-do_clean_logs() {
-  log "Truncating large Antigravity CLI logs (>20MB)..."
-  find "$AGY_DIR" "$AGY_CLI_DIR" -maxdepth 3 -name "*.log" -size +20M -exec truncate -s 5M {} + 2>/dev/null || true
-  [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)" -gt 10485760 ] && tail -n 2000 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
-  log "Log cleanup complete."
-}
-
-do_clean_sessions() {
-  local days="${1:-14}"
-  log "Cleaning Antigravity scratch/conversations older than $days days..."
-  [ -d "$AGY_DIR/scratch" ] && find "$AGY_DIR/scratch" -mindepth 1 -maxdepth 2 -mtime "+$days" -exec rm -rf {} + 2>/dev/null || true
-  log "Session cleanup complete."
-}
-
-case "${1:-watchdog}" in
-  watchdog)       do_watchdog ;;
-  restart)        do_restart "${2:-manual}" ;;
-  status)         do_status ;;
-  update|cron-update) do_update ;;
-  ui-sync)        do_ui_sync ;;
-  clean-logs)     do_clean_logs ;;
-  clean-sessions) do_clean_sessions "${2:-14}" ;;
-  help|--help|-h) echo "Usage: $0 {watchdog|restart|status|update|ui-sync|clean-logs|clean-sessions [days]}" ;;
-  *)              echo "Unknown command: $1" >&2; exit 2 ;;
+CMD="${1:-update}"
+case "$CMD" in
+    update|--update)                  do_update "manual" ;;
+    cron-update|--cron|--cron-update) do_update "cron" ;;
+    ui-sync|--ui-sync)                do_ui_sync ;;
+    watchdog|--watchdog)              shift 1 2>/dev/null || true; do_watchdog "$@" ;;
+    restart|--restart|--force)        do_restart ;;
+    status|--status)                  do_status ;;
+    stop|--stop)                      log "Stopping antigravity remote-control daemon..."; "$AGY_BIN" remote-control stop || true ;;
+    -h|--help|help)                   echo "Usage: $0 [update|watchdog|cron-update|restart|ui-sync|status|stop]" ;;
+    *)                                echo "Unknown command: $CMD. Run '$0 --help' for usage." >&2; exit 1 ;;
 esac
