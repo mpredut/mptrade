@@ -460,6 +460,25 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertAlmostEqual(entry["growth_15m"], 0.03, places=6)
         self.assertAlmostEqual(entry["growth_2_5h"], 0.08, places=6)
 
+    def test_runtime_market_regime_snapshot_uses_symbol_fast_window(self):
+        import cacheManager as cm
+        from providers.market_api import _runtime_market_regime_snapshot
+
+        w90 = {"growth_coefficient": -0.15, "gradient_recent": -0.15, "epsilon": 0.02, "window_seconds": 90.0, "ts": 1000.0}
+        snap = {
+            "growth_coefficient": 0.05,
+            "gradient_recent": 0.05,
+            "epsilon": 0.02,
+            "window_seconds": 222.0,
+            "ts": 1000.0,
+            "dynamic": {"90": w90},
+        }
+        fake_mgr = unittest.mock.MagicMock()
+        fake_mgr.get_fresh_snapshot.return_value = snap
+        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
+            self.assertIs(_runtime_market_regime_snapshot("TAOUSDC", now=1001.0), w90)
+            self.assertIs(_runtime_market_regime_snapshot("BTCUSDC", now=1001.0), snap)
+
 
 if __name__ == "__main__":
     unittest.main()

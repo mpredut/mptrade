@@ -496,9 +496,17 @@ def symbol_regime(
         # Graceful fallback for direct callers that did not inject a snapshot resolver
         try:
             import cacheManager as _cm
+            import pricewindow as _pw
             mgr = _cm.get_short_trend_manager()
             snap_fn = getattr(mgr, "get_fresh_snapshot", None)
             snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
+            if isinstance(snap, dict):
+                fast_w = _pw.fast_trend_window_for_symbol(symbol)
+                dyn = snap.get("dynamic")
+                if fast_w is not None and isinstance(dyn, dict):
+                    w_snap = dyn.get(f"{float(fast_w):g}")
+                    if isinstance(w_snap, dict):
+                        snap = w_snap
         except Exception:
             snap = None
 

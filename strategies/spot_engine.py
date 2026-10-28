@@ -1781,16 +1781,15 @@ class Strategy:
                 self._shadow_vol_cache_key = cache_key
                 self._shadow_vol_cache_val = val
                 return val
-        pts = list(sp)
-        rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, len(pts))
-                if pts[i - 1][1] > 0 and pts[i][1] > 0]
-        dts = [pts[i][0] - pts[i - 1][0] for i in range(1, len(pts))]
-        if len(rets) < 19 or not dts:
-            return None
-        mean_dt = sum(dts) / len(dts)
+        mean_dt = (sp[-1][0] - sp[0][0]) / (n_sp - 1)
         if mean_dt <= 0:
             return None
+        pts = list(sp)
+        rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, n_sp)
+                if pts[i - 1][1] > 0 and pts[i][1] > 0]
         n_r = len(rets)
+        if n_r < 19:
+            return None
         mean_r = sum(rets) / n_r
         var_r = sum((r - mean_r) ** 2 for r in rets) / (n_r - 1)
         std = math.sqrt(var_r)

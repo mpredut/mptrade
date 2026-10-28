@@ -88,9 +88,18 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
     """Read the optional short-trend snapshot at the application boundary."""
     try:
         import cacheManager as cm
+        import pricewindow as pw
         mgr = cm.get_short_trend_manager()
         snap_fn = getattr(mgr, "get_fresh_snapshot", None)
-        return snap_fn(symbol, now=now) if callable(snap_fn) else None
+        snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
+        if isinstance(snap, dict):
+            fast_w = pw.fast_trend_window_for_symbol(symbol)
+            dyn = snap.get("dynamic")
+            if fast_w is not None and isinstance(dyn, dict):
+                w_snap = dyn.get(f"{float(fast_w):g}")
+                if isinstance(w_snap, dict):
+                    return w_snap
+        return snap
     except Exception:
         return None
 
