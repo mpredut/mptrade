@@ -283,12 +283,14 @@ def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]
     return tuple(created)
 
 
-def _clean_stale_staging_in_dir(target_dir: str) -> None:
+def _clean_stale_staging_in_dir(target_dir: str, *, min_file_age_sec: float = 30.0) -> None:
     """Remove transient ``.<name>.previous.<rand>`` directories and stale ``.tmp`` files in ``target_dir``."""
     import shutil
+    import time
 
     if not os.path.isdir(target_dir):
         return
+    now = time.time()
     for item in os.listdir(target_dir):
         item_path = os.path.join(target_dir, item)
         if (
@@ -299,7 +301,7 @@ def _clean_stale_staging_in_dir(target_dir: str) -> None:
             try:
                 if os.path.isdir(item_path) and not os.path.islink(item_path):
                     shutil.rmtree(item_path, ignore_errors=True)
-                else:
+                elif (now - os.path.getmtime(item_path)) >= min_file_age_sec:
                     os.unlink(item_path)
             except OSError:
                 pass
