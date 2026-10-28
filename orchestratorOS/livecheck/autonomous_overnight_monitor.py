@@ -200,7 +200,7 @@ class AutonomousOvernightMonitor:
             }
 
         # 3. Autonomous AI Supervisor State
-        sup = _read("auto_cryptotrade_executor_eval.json") or _read("auto_trade_executor_eval.json")
+        sup = _read("auto_cryptotrade_executor_eval.json")
         if sup:
             raw_dec = sup.get("market_trading_decision")
             dec = raw_dec if isinstance(raw_dec, dict) else {}

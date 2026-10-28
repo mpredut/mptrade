@@ -395,7 +395,7 @@ def mock_workspace(tmp_path):
         "ts": time.time(),
     }))
 
-    (cachedb / "auto_trade_executor_eval.json").write_text(json.dumps({
+    (cachedb / "auto_cryptotrade_executor_eval.json").write_text(json.dumps({
         "mode": "enforce",
         "summary": "Core execution nominal",
         "market_trading_decision": {"decision": "HOLD", "confidence": 0.52},

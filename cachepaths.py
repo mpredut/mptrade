@@ -119,7 +119,6 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "prefixes": (
             "assetguardian_state",
             "rtrade_pairs",
-            "shadow_state",
             "mt_state.",
             "trailing_state.",
             "smart_stop_loss_state.",
@@ -610,7 +609,7 @@ def canonical_base_asset(symbol: object) -> str:
 
 
 def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
-    """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ) into ``(base, quote)``."""
+    """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ, SPCXx.T) into ``(base, quote)``."""
     if isinstance(symbol, bool) or not isinstance(symbol, str):
         return None
     sym_u = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
@@ -621,6 +620,8 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
         if sym_u.endswith(quote) and len(sym_u) > len(quote):
             return normalize_cache_base_asset(sym_u[: -len(quote)]), quote
+    if sym_u.endswith(("X.T", ".T", ".F")) and len(sym_u) > 3:
+        return normalize_cache_base_asset(sym_u), "USD"
     return None
 
 

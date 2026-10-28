@@ -756,7 +756,6 @@ class AutonomousAIReconciler:
         for hb_name in (
             "macro_analyzer.heartbeat",
             "globaltelemetry_collector.heartbeat",
-            "intelligence_daemon.heartbeat",
             "rtrade.heartbeat",
         ):
             data = _read_json(os.path.join(self.cache_dir, hb_name))
@@ -2838,9 +2837,6 @@ class AutonomousAIReconciler:
                 "market_trading_decisions": report.market_trading_decisions,
             })
             save_json_state(self.heartbeat_file, hb, indent=2)
-            if os.path.basename(self.state_file) == "auto_cryptotrade_executor_eval.json":
-                save_json_state(os.path.join(self.cache_dir, "auto_trade_executor_eval.json"), report_dict, indent=2)
-                save_json_state(os.path.join(self.cache_dir, "auto_trade_executor.heartbeat"), hb, indent=2)
         except Exception as e:
             logger.warning("Could not persist audit artifact: %s", e)
 

@@ -88,7 +88,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_stdout_hb_ts: float = 0.0
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
-        self.legacy_heartbeat_path = os.path.join(self.cache_dir, "intelligence_daemon.heartbeat")
 
     def _detect_active_symbols(self) -> List[str]:
         """Detect enabled symbols from instruments.conf plus Kraken reference cache pairs."""
@@ -228,7 +227,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             },
             "last_run": safe_status,
         }
-        write_daemon_heartbeat_files((self.heartbeat_path, self.legacy_heartbeat_path), payload, logger_inst=logger)
+        write_daemon_heartbeat_files((self.heartbeat_path,), payload, logger_inst=logger)
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""

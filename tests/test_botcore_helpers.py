@@ -255,7 +255,6 @@ class TestCachepaths(unittest.TestCase):
             "trailing_state.json": "bots",
             "smart_stop_loss_state.json": "bots",
             "autonomous_trade_intents.json": "bots",
-            "shadow_state_BTC.json": "bots",
             "rtrade_BTCUSDC.heartbeat": "system/heartbeat",
             "auto_technical_repair.heartbeat": "system/heartbeat",
             "auto_technical_repair.heartbeat.previous": "system/heartbeat",
