@@ -42,9 +42,10 @@ sys.path.insert(0, ROOT)
 import cacheManager as cm
 from binance_api import bapi_ws
 from botcore import single_instance
+from cachepaths import cache_path, get_cachedb_dir
 from instrument_registry import tracked_price_instruments
 
-CACHEDB_DIR = os.path.join(ROOT, "cachedb")
+CACHEDB_DIR = get_cachedb_dir()
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,24}$")
 
 
@@ -164,7 +165,7 @@ def main():
 
     caches = []
     for symbol in symbols:
-        filename = os.path.join(CACHEDB_DIR, f"cache_365_price_{symbol}.jsonl")
+        filename = cache_path(f"cache_365_price_{symbol}.jsonl")
         cache = cm.Cache365PriceManager(sync_ts=save_every, symbols=[symbol], filename=filename)
         cache.KEEP_HOURS = keep_hours   # per-instance override explicitly supported by the class
         cache.RETENTION_DAYS = keep_hours / 24.0
