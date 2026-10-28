@@ -784,11 +784,24 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
                   if same_intent else None)
     try:
         short_tm = cm.get_short_trend_manager()
-        try:
+        import pricewindow as pw
+        fast_w = pw.fast_trend_window_for_symbol(symbol)
+        if (
+            fast_w is not None
+            and isinstance(short_tm, cm.CacheShortTrendManager)
+            and isinstance(short_tm.get_short_trend_for_window(symbol, fast_w), dict)
+        ):
             should_wait = bool(
-                short_tm.should_wait(side, symbol, use_noise_gate=False))
-        except TypeError:
-            should_wait = bool(short_tm.should_wait(side, symbol))
+                short_tm.should_wait(
+                    side, symbol, window_seconds=fast_w, use_noise_gate=False
+                )
+            )
+        else:
+            try:
+                should_wait = bool(
+                    short_tm.should_wait(side, symbol, use_noise_gate=False))
+            except TypeError:
+                should_wait = bool(short_tm.should_wait(side, symbol))
     except Exception as exc:
         print(f"[{symbol}] Trend defer unavailable; continue submit: {exc}")
         should_wait = False

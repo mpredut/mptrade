@@ -362,6 +362,39 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertEqual(tracker.current_trend(" taousdc "), (1, 10.0))
         self.assertEqual(tracker.current_trend("TAOUSDC"), (1, 10.0))
 
+    def test_assetguardian_trend_defer_uses_fast_window_and_mem_published_window(self):
+        import time as _time
+        import assetguardian as ag
+        import cacheManager as cm
+
+        now_ts = _time.time()
+        mgr = cm.CacheShortTrendManager(["TAOUSDC"], writer=False)
+        mgr._set_mem(
+            "TAOUSDC",
+            growth_coefficient=0.05,
+            gradient_recent=0.05,
+            epsilon=0.01,
+            current_price=350.0,
+            ts=now_ts,
+            dynamic={
+                "90": {
+                    "growth_coefficient": -0.08,
+                    "gradient_recent": -0.08,
+                    "epsilon": 0.01,
+                    "n_samples": 90,
+                    "window_seconds": 90.0,
+                    "current_price": 350.0,
+                    "ts": now_ts,
+                }
+            },
+        )
+        # In-memory _mem dynamic["90"] is negative -> BUY should defer on 90s window even though 222s top-level is positive
+        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=mgr), \
+             unittest.mock.patch.object(ag, "_save_symbol_campaign"):
+            ready, new_state = ag._trend_defer_ready("TAOUSDC", "buy", "BUY", 5.0, {})
+            self.assertFalse(ready)
+            self.assertIn("trend_defer", new_state)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -592,6 +592,8 @@ class CacheShortTrendManager(CacheManagerInterface):
             pos=primary_pos,
             epsilon=eps_primary,
             n_samples=len(pwin.prices),
+            window_seconds=float(primary),
+            sample_rate_sec=float(pwin.sample_rate_sec),
             vol_1h_pct=v1h,
             current_price=current_price,
             ts=observed_at,
@@ -1162,7 +1164,7 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         variants = _short_trend_symbol_variants(symbol)
 
-        # 1. Check in-memory _live_windows first:
+        # 1. Check in-memory _live_windows and _mem['dynamic'] first:
         with self._lock:
             for cand in variants:
                 mem_live = (self._live_windows.get(cand) or {}).get(w_key)
@@ -1170,6 +1172,14 @@ class CacheShortTrendManager(CacheManagerInterface):
                     fresh = _check_fresh(mem_live)
                     if fresh is not None:
                         return fresh
+            for cand in variants:
+                mem_snap = self._mem.get(cand)
+                if isinstance(mem_snap, dict):
+                    mem_pub = mem_snap.get("dynamic")
+                    if isinstance(mem_pub, dict) and w_key in mem_pub:
+                        fresh = _check_fresh(mem_pub.get(w_key))
+                        if fresh is not None:
+                            return fresh
 
         # 2. Check shared snapshot file dynamic dict (authoritative if present):
         file_data = self._read_file()
