@@ -224,16 +224,14 @@ def extract_order_side(order: Any) -> str:
         return "BUY" if t_norm in ("BUY", "B", "BID", "LONG") else "SELL"
     if "isBuyer" in order and order.get("isBuyer") is not None:
         raw_buyer = order["isBuyer"]
-        if isinstance(raw_buyer, bool):
-            return "BUY" if raw_buyer else "SELL"
-        if isinstance(raw_buyer, (int, float)):
-            if math.isfinite(float(raw_buyer)):
-                return "BUY" if float(raw_buyer) != 0.0 else "SELL"
-        elif isinstance(raw_buyer, str):
+        parsed_b = _parse_bool_flag(raw_buyer, None)
+        if parsed_b is not None:
+            return "BUY" if parsed_b else "SELL"
+        if isinstance(raw_buyer, str):
             b_norm = raw_buyer.strip().lower()
-            if b_norm in ("true", "1", "yes", "y", "t", "b", "buy"):
+            if b_norm in ("b", "buy"):
                 return "BUY"
-            if b_norm in ("false", "0", "no", "n", "f", "s", "sell"):
+            if b_norm in ("s", "sell"):
                 return "SELL"
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
         signed_qty = order.get(sq_key)
