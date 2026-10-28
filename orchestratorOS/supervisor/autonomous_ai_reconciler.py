@@ -31,7 +31,12 @@ if _ROOT_DIR not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import _parse_bool_flag, load_dotenv
-from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    normalize_cache_base_asset,
+    split_symbol_assets,
+)
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
     compute_24h_price_metrics,
@@ -64,6 +69,7 @@ from orchestratorTrade.autonomous_intent_gateway import (
     _is_us_rth_open,
     _parse_finite_float,
     _parse_notify_enabled_flag,
+    extract_current_price_item,
     load_key_value_conf,
 )
 
@@ -810,30 +816,28 @@ class AutonomousAIReconciler:
         t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
         kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
         prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_prices_multi.json"))
-        trailing_data = _read_json(os.path.join(self.cache_dir, "trailing_state.json"))
-        trailing_map = dict(trailing_data) if isinstance(trailing_data, dict) else {}
-        krk_trail_data = _read_json(os.path.join(self.workspace_dir, "kraken", "trailing_state.json"))
-        if isinstance(krk_trail_data, dict):
-            for k_asset, k_st in krk_trail_data.items():
+        trailing_map: Dict[str, Dict[str, Any]] = {}
+        for raw_trail, default_quote in (
+            (_read_json(os.path.join(self.cache_dir, "trailing_state.json")), ""),
+            (_read_json(os.path.join(self.workspace_dir, "kraken", "trailing_state.json")), "USD"),
+        ):
+            if not isinstance(raw_trail, dict):
+                continue
+            for k_asset, k_st in raw_trail.items():
+                k_up = str(k_asset).strip().upper()
+                if not k_up:
+                    continue
+                k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
                 if isinstance(k_st, dict) and k_st.get("peak") is not None:
-                    k_key = k_asset.upper() if str(k_asset).upper().endswith("USD") else f"{str(k_asset).upper()}USD"
                     trailing_map.setdefault(k_key, k_st)
+                elif _parse_finite_float(k_st, 0.0) > 0:
+                    trailing_map.setdefault(k_key, {"peak": _parse_finite_float(k_st, 0.0)})
 
         price_map: Dict[str, float] = {}
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
             for sym, item in prices_data["items"].items():
-                px_val = 0.0
-                if isinstance(item, list) and item:
-                    last_pt = item[-1] if isinstance(item[-1], list) and len(item[-1]) > 1 else item[0]
-                    if isinstance(last_pt, list) and len(last_pt) > 1:
-                        px_val = _parse_finite_float(last_pt[1], 0.0)
-                    elif isinstance(last_pt, (int, float)):
-                        px_val = _parse_finite_float(last_pt, 0.0)
-                elif isinstance(item, (int, float)) and not isinstance(item, bool):
-                    px_val = _parse_finite_float(item, 0.0)
-                elif isinstance(item, dict):
-                    px_val = _parse_finite_float(item.get("price") or item.get("c"), 0.0)
-                if px_val > 0:
+                px_val = extract_current_price_item(item)
+                if px_val is not None:
                     price_map[sym] = px_val
 
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
@@ -988,7 +992,14 @@ class AutonomousAIReconciler:
                         else None
                     )
                     params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
-                    t_state = trailing_map.get(sym, {}) if isinstance(trailing_map.get(sym), dict) else {}
+                    t_state = next(
+                        (
+                            trailing_map[c]
+                            for c in cache_symbol_variants(sym, include_original=True, include_base=True)
+                            if isinstance(trailing_map.get(c), dict)
+                        ),
+                        {},
+                    )
                     peak = t_state.get("peak")
                     peak_f = _parse_finite_float(peak, 0.0)
                     dd_from_peak_pct = (

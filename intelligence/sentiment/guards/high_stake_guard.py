@@ -294,14 +294,26 @@ def load_symbol_price_series(
     # 3. Overlay ultra-recent 1-second ticks from cache_current_price.json
     if isinstance(current_price_items, dict) and current_price_items:
         for cand in cands:
-            cur_list = current_price_items.get(cand)
-            if isinstance(cur_list, list) and cur_list:
+            cur_item = current_price_items.get(cand)
+            if isinstance(cur_item, list) and cur_item:
                 series_24h = list(series_24h) + [
                     [pt[0], pt[1]]
-                    for pt in cur_list
+                    for pt in cur_item
                     if isinstance(pt, (list, tuple)) and len(pt) >= 2
                 ]
                 break
+            elif cur_item is not None and not isinstance(cur_item, bool):
+                raw_px = cur_item.get("price") or cur_item.get("c") if isinstance(cur_item, dict) else cur_item
+                if isinstance(raw_px, (int, float)) and not isinstance(raw_px, bool):
+                    px_f = float(raw_px)
+                    if math.isfinite(px_f) and px_f > 0 and series_24h:
+                        try:
+                            last_t = float(series_24h[-1][0])
+                            last_tms = last_t * 1000.0 if last_t < 1e11 else last_t
+                            series_24h = list(series_24h) + [[last_tms + 1000.0, px_f]]
+                        except Exception:
+                            pass
+                        break
 
     # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] points
     if series_24h:

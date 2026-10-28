@@ -2089,4 +2089,87 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert "CONFIG_ERROR" in ALL_DIAGNOSED_CATEGORIES
 
 
+def test_extract_current_price_item_instrument_resolution_and_trailing_state_normalization(tmp_path):
+    """Verify extract_current_price_item, canonical base priority in resolve_instrument, and trailing_state key normalization."""
+    from orchestratorTrade.autonomous_intent_gateway import (
+        AutonomousIntentGateway,
+        extract_current_price_item,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import (
+        compute_24h_price_metrics,
+        load_symbol_price_series,
+    )
+
+    # 1. extract_current_price_item handles scalar, 1-element list, [ts, px] series, and dicts
+    assert extract_current_price_item(85123.5) == 85123.5
+    assert extract_current_price_item([85123.5]) == 85123.5
+    assert extract_current_price_item([[1700000000000, 84000.0], [1700000060000, 85500.0]]) == 85500.0
+    assert extract_current_price_item({"price": "86000.25"}) == 86000.25
+    assert extract_current_price_item({"c": 86100.0}) == 86100.0
+    assert extract_current_price_item(True) is None
+    assert extract_current_price_item(-5.0) is None
+    assert extract_current_price_item([]) is None
+
+    # 2. resolve_instrument prefers exact canonical base asset (ETH -> ETHUSDC) over prefix match (ETHFIUSDC)
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), notify_enabled=False)
+    inst_ethfi = MagicMock(symbol="ETHFIUSDC", provider_name="binance", base="ETHFI", quote="USDC")
+    inst_eth = MagicMock(symbol="ETHUSDC", provider_name="binance", base="ETH", quote="USDC")
+    instruments = {"ETHFIUSDC": inst_ethfi, "ETHUSDC": inst_eth}
+    assert gw.resolve_instrument("ETH", "binance", instruments) is inst_eth
+    assert gw.resolve_instrument("ETHFI", "binance", instruments) is inst_ethfi
+
+    # 3. load_symbol_price_series appends scalar current_price_items entry onto 24h series
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    now_ms = 1_700_000_000_000.0
+    (cache_dir / "cache_24_price_ETHUSDC.json").write_text(
+        json.dumps({"items": [[now_ms - 3600_000, 3000.0], [now_ms - 60_000, 3050.0]]}),
+        encoding="utf-8",
+    )
+    s24, _ = load_symbol_price_series(str(cache_dir), "ETHUSDC", current_price_items={"ETHUSDC": 3120.0})
+    assert s24[-1][1] == 3120.0
+    m24 = compute_24h_price_metrics(s24)
+    assert m24["chg_1h_pct"] == 4.0
+
+    # 4. Kraken trailing_state.json with non-USD quote or bare base resolves cleanly without TAOUSDCUSD corruption
+    (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
+    krk_dir = tmp_path / "kraken"
+    krk_dir.mkdir(exist_ok=True)
+    (krk_dir / "trailing_state.json").write_text(
+        json.dumps({"HYPE": 64.0, "TAOUSDC": 520.0}),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSD": 60.8, "TAOUSDC": 494.0}}),
+        encoding="utf-8",
+    )
+    inst_hype = MagicMock(symbol="HYPEUSD", provider_name="kraken", base="HYPE", quote="USD", params={})
+    inst_hype._provider.get_current_price.return_value = 60.8
+    inst_hype._provider.free_balance.side_effect = lambda a: 5.0 if a == "HYPE" else 100.0
+    inst_hype.open_orders.return_value = []
+
+    inst_tao = MagicMock(symbol="TAOUSDC", provider_name="binance", base="TAO", quote="USDC", params={})
+    inst_tao._provider.get_current_price.return_value = 494.0
+    inst_tao._provider.free_balance.side_effect = lambda a: 2.0 if a == "TAO" else 100.0
+    inst_tao.open_orders.return_value = []
+
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.load_tradable_instruments.return_value = {"KRAKEN_HYPE": inst_hype, "TAOUSDC": inst_tao}
+
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir="cachedb",
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=mock_gw,
+    )
+    snap = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
+    pos_by_sym = {p["symbol"]: p for p in snap.portfolio_summary["tradable_positions"]}
+    assert pos_by_sym["HYPEUSD"]["trailing_peak"] == 64.0
+    assert pos_by_sym["HYPEUSD"]["dd_from_peak_pct"] == -5.0
+    assert pos_by_sym["TAOUSDC"]["trailing_peak"] == 520.0
+    assert pos_by_sym["TAOUSDC"]["dd_from_peak_pct"] == -5.0
+
+
+
 

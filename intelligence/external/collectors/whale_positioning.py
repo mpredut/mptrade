@@ -102,60 +102,18 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return 0.0
         try:
-            sym_u = symbol.upper()
-            variants = _symbol_variants(sym_u)
-            for sym_key in variants:
-                if "/" in sym_key:
-                    continue
-                p = os.path.join(cache_dir, f"cache_24_price_{sym_key}.json")
-                try:
-                    cdata = read_recovering_previous(p, json.loads, default=None)
-                    if not isinstance(cdata, dict):
-                        continue
-                    items_dict = cdata.get("items")
-                    pts = None
-                    if isinstance(items_dict, dict):
-                        for k_cand in variants:
-                            pts = items_dict.get(k_cand)
-                            if pts:
-                                break
-                        if not pts and items_dict:
-                            pts = next(iter(items_dict.values()))
-                    elif isinstance(items_dict, list):
-                        pts = items_dict
-                    if pts and len(pts) >= 2:
-                        valid_pts = []
-                        for pt in pts:
-                            try:
-                                if (
-                                    not isinstance(pt, (list, tuple))
-                                    or len(pt) < 2
-                                    or isinstance(pt[0], bool)
-                                    or isinstance(pt[1], bool)
-                                ):
-                                    continue
-                                raw_ts = float(pt[0])
-                                px = float(pt[1])
-                                if not (math.isfinite(raw_ts) and raw_ts > 0 and math.isfinite(px) and px > 0):
-                                    continue
-                                ts_s = raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts
-                                valid_pts.append((ts_s, px))
-                            except Exception:
-                                continue
-                        if len(valid_pts) >= 2:
-                            valid_pts.sort(key=lambda x: x[0])
-                            now_sec = valid_pts[-1][0]
-                            target_sec = now_sec - 3600.0
-                            latest_p = valid_pts[-1][1]
-                            ref_p = valid_pts[0][1]
-                            for pt_sec, pt_px in reversed(valid_pts):
-                                if pt_sec <= target_sec:
-                                    ref_p = pt_px
-                                    break
-                            if ref_p > 0:
-                                return (latest_p - ref_p) / ref_p * 100.0
-                except Exception:
-                    continue
+            from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
+            series_24h, _ = load_symbol_price_series(cache_dir, symbol.upper())
+            if len(series_24h) >= 2:
+                now_ms = float(series_24h[-1][0])
+                target_ms = now_ms - 3_600_000.0
+                latest_p = float(series_24h[-1][1])
+                ref_p = next(
+                    (float(pt[1]) for pt in reversed(series_24h) if float(pt[0]) <= target_ms),
+                    float(series_24h[0][1]),
+                )
+                if ref_p > 0:
+                    return (latest_p - ref_p) / ref_p * 100.0
         except Exception as e:
             logger.debug("Failed calculating 1h price change from cache for %s: %s", symbol, e)
         return 0.0

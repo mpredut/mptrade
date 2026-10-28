@@ -93,6 +93,29 @@ def _parse_finite_float(val: Any, default: float) -> float:
         return default
 
 
+def extract_current_price_item(item: Any) -> Optional[float]:
+    """Extract the latest positive finite price from any ``cache_current_price.json`` item format."""
+    if item is None or isinstance(item, bool):
+        return None
+    if isinstance(item, (int, float)):
+        px_f = _parse_finite_float(item, 0.0)
+        return px_f if px_f > 0 else None
+    if isinstance(item, dict):
+        px_f = _parse_finite_float(item.get("price") if item.get("price") is not None else item.get("c"), 0.0)
+        return px_f if px_f > 0 else None
+    if isinstance(item, (list, tuple)):
+        for entry in reversed(item):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                px_f = _parse_finite_float(entry[1], 0.0)
+                if px_f > 0:
+                    return px_f
+            elif isinstance(entry, (int, float)) and not isinstance(entry, bool):
+                px_f = _parse_finite_float(entry, 0.0)
+                if px_f > 0:
+                    return px_f
+    return None
+
+
 def _append_intent_history(intent: Dict[str, Any], entry: Dict[str, Any]) -> None:
     """Append an entry to ``intent['history']``, coercing null or non-list history fields."""
     hist = intent.get("history")
@@ -582,16 +605,16 @@ class AutonomousIntentGateway:
             for inst in active_values:
                 if _norm_sym(inst.symbol) == sym_norm and inst.provider_name.lower() == venue_norm:
                     return inst
+            if req_base:
+                for inst in active_values:
+                    if inst.provider_name.lower() == venue_norm and _inst_base_norm(inst) == req_base:
+                        return inst
             for inst in active_values:
                 inst_sym_n = _norm_sym(inst.symbol)
                 if inst.provider_name.lower() == venue_norm and (
                     inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n)
                 ):
                     return inst
-            if req_base:
-                for inst in active_values:
-                    if inst.provider_name.lower() == venue_norm and _inst_base_norm(inst) == req_base:
-                        return inst
             return None
 
         # 2. Match by exact symbol
@@ -599,15 +622,15 @@ class AutonomousIntentGateway:
             if _norm_sym(inst.symbol) == sym_norm:
                 return inst
 
-        # 3. Match by base asset prefix (e.g. BTC in BTCUSDC) or shared base asset
-        for inst in active_values:
-            inst_sym_n = _norm_sym(inst.symbol)
-            if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
-                return inst
+        # 3. Match by canonical base asset first, then prefix fallback
         if req_base:
             for inst in active_values:
                 if _inst_base_norm(inst) == req_base:
                     return inst
+        for inst in active_values:
+            inst_sym_n = _norm_sym(inst.symbol)
+            if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
+                return inst
 
         return None
 
@@ -631,7 +654,6 @@ class AutonomousIntentGateway:
             if isinstance(cdata, dict):
                 raw_items = cdata.get("items")
                 items = raw_items if isinstance(raw_items, dict) else {}
-                from cachepaths import cache_symbol_variants
                 sym_u = str(inst.symbol or "").strip().upper()
                 candidates = cache_symbol_variants(inst.symbol, include_original=True)
                 inst_base = getattr(inst, "base", None) or (_split_symbol_assets(sym_u) or (sym_u, ""))[0]
@@ -641,33 +663,16 @@ class AutonomousIntentGateway:
                         if cand not in candidates:
                             candidates.append(cand)
 
-                def _latest_valid_px(entries: Any) -> Optional[float]:
-                    if not isinstance(entries, (list, tuple)):
-                        return None
-                    for entry in reversed(entries):
-                        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
-                            continue
-                        raw_v = entry[1]
-                        if raw_v is None or isinstance(raw_v, bool):
-                            continue
-                        try:
-                            px_f = float(raw_v)
-                        except (TypeError, ValueError, OverflowError):
-                            continue
-                        if math.isfinite(px_f) and px_f > 0:
-                            return px_f
-                    return None
-
                 for cand in candidates:
-                    if cand in items and items[cand]:
-                        px_f = _latest_valid_px(items[cand])
+                    if cand in items and items[cand] is not None:
+                        px_f = extract_current_price_item(items[cand])
                         if px_f is not None:
                             return px_f
                 if inst_base:
                     base_u = canonical_base_asset(str(inst_base))
                     for k, v in items.items():
-                        if canonical_base_asset(str(k)) == base_u and v:
-                            px_f = _latest_valid_px(v)
+                        if canonical_base_asset(str(k)) == base_u and v is not None:
+                            px_f = extract_current_price_item(v)
                             if px_f is not None:
                                 return px_f
         except Exception:
