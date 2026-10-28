@@ -11,9 +11,11 @@ from typing import Any, Dict, List, Optional
 
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
+    get_cache_filenames,
     normalize_market_bias,
     normalize_recommended_action,
     normalize_risk_level,
+    record_dynamic_crisis_terms_from_assessment,
     resolve_global_trading_session,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
@@ -25,7 +27,8 @@ from cachepaths import cache_path
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
-DEFAULT_CACHE_FILE = "cachedb/sentiment_advisor_eval.json"
+_SENTIMENT_FILENAMES = get_cache_filenames("sentiment_advisor_files")
+DEFAULT_CACHE_FILE = f"cachedb/{_SENTIMENT_FILENAMES[0]}" if _SENTIMENT_FILENAMES else "cachedb/sentiment_advisor_eval.json"
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,8 @@ class SentimentAdvisor:
 
     def _effective_cache_file(self) -> str:
         if self.cache_file == DEFAULT_CACHE_FILE:
-            return cache_path("sentiment_advisor_eval.json")
+            primary_name = _SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_advisor_eval.json"
+            return cache_path(primary_name)
         return self.cache_file
 
     def _load_from_disk(self) -> None:
@@ -234,6 +238,14 @@ class SentimentAdvisor:
             ra_norm = normalize_recommended_action(resp.get("recommended_action"), default="HOLD")
             raw_sum = resp.get("summary")
             sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
+            if rl_norm in ("HIGH", "EXTREME") and (sum_str or key_risks):
+                record_dynamic_crisis_terms_from_assessment(
+                    sum_str,
+                    key_risks,
+                    is_acute_shock=(rl_norm == "EXTREME"),
+                    cache_dir=os.path.dirname(os.path.abspath(self._effective_cache_file())),
+                    now_ts=now,
+                )
             assessment = SentimentAdvisorAssessment(
                 market_bias=mb_norm,
                 risk_level=rl_norm,

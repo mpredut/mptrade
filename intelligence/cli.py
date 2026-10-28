@@ -243,8 +243,13 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 3. Pillar 3: Sentiment & Gemini Advisor
     try:
+        from intelligence.macro_sentiment_ssot import (
+            get_cache_filenames,
+            load_cached_geopolitical_eval,
+            load_cached_sentiment_advisor_eval,
+        )
         fg_data = None
-        for fg_fname in ("fear_greed_collect.json", "fear_greed_cache.json"):
+        for fg_fname in get_cache_filenames("fear_greed_files"):
             cand_fg = read_recovering_previous(os.path.join(cache_dir, fg_fname), json.loads, default=None)
             if isinstance(cand_fg, dict):
                 fg_data = cand_fg
@@ -258,12 +263,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         else:
             result["pillar3_sentiment"]["fear_greed"] = None
 
-        gem_data = None
-        for adv_fname in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
-            cand_adv = read_recovering_previous(os.path.join(cache_dir, adv_fname), json.loads, default=None)
-            if isinstance(cand_adv, dict):
-                gem_data = cand_adv
-                break
+        gem_data = load_cached_sentiment_advisor_eval(cache_dir)
         if isinstance(gem_data, dict):
             gem_ts = _safe_float(gem_data.get("ts"), 0.0)
             gem_age = (now - gem_ts) if gem_ts > 0.0 else float("inf")
@@ -278,7 +278,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 4. Pillar 4: Geopolitical Threat Shield
     try:
-        geo_data = read_recovering_previous(os.path.join(cache_dir, "geopolitical_threat_eval.json"), json.loads, default=None)
+        from intelligence.macro_sentiment_ssot import load_cached_geopolitical_eval
+        geo_data = load_cached_geopolitical_eval(cache_dir)
         if isinstance(geo_data, dict):
             geo_ts = _safe_float(geo_data.get("ts"), 0.0)
             geo_age = (now - geo_ts) if geo_ts > 0.0 else float("inf")

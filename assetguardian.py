@@ -426,18 +426,8 @@ def _read_p3b_sentiment(path=None, now_ts=None):
         if not state_path:
             return None
         cache_dir = os.path.dirname(os.path.abspath(state_path))
-        for fname in (
-            "sentiment_advisor_eval.json",
-            "macro_advisor_eval.json",
-            "gemini_macro_advisor.json",
-        ):
-            candidate = os.path.join(cache_dir, fname)
-            cand_data = read_recovering_previous(
-                candidate, json.loads, default=None
-            )
-            if isinstance(cand_data, dict):
-                data = cand_data
-                break
+        from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
+        data = load_cached_sentiment_advisor_eval(cache_dir)
         if not isinstance(data, dict):
             return None
     else:

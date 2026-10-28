@@ -729,3 +729,78 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert res2.threat_level == "CRITICAL_SHOCK"
         assert res2.recommended_brake == "HARD_VETO_NEW_BUYS"
 
+    def test_macro_intelligence_conf_and_dynamic_lexicon_discovery(self, tmp_path):
+        from intelligence.macro_sentiment_ssot import (
+            build_dynamic_rss_url,
+            discover_dynamic_terms_from_headlines,
+            get_active_acute_shock_phrases,
+            get_active_severity_keywords,
+            get_breadth_excluded_bases,
+            get_breadth_quote_suffixes,
+            get_cache_filenames,
+            get_fear_greed_endpoint_url,
+            get_market_breadth_endpoint_url,
+            get_specialized_rss_urls,
+            load_dynamic_lexicon,
+            match_high_severity_keywords,
+            record_dynamic_crisis_terms_from_assessment,
+        )
+
+        # 1. Config-driven endpoints, exclusions, and specialized feeds
+        assert "alternative.me" in get_fear_greed_endpoint_url()
+        assert "binance.com" in get_market_breadth_endpoint_url()
+        assert "USDC" in get_breadth_excluded_bases()
+        assert "USDT" in get_breadth_quote_suffixes()
+        assert "sentiment_advisor_eval.json" in get_cache_filenames("sentiment_advisor_files")
+
+        urls = get_specialized_rss_urls(cache_dir=str(tmp_path))
+        assert len(urls) >= 5
+        assert any("bbci.co.uk" in u for u in urls)
+        assert any("aljazeera.com" in u for u in urls)
+
+        # 2. Automatic discovery of emerging crisis bigrams from multi-source headlines
+        multi_source_headlines = [
+            {
+                "title": "Urgent: Bosphorus tanker blockade halts regional shipping corridor",
+                "source": "BBC World",
+            },
+            {
+                "title": "Markets tumble after Bosphorus tanker crisis escalates into naval standoff",
+                "source": "Al Jazeera",
+            },
+        ]
+        discovered = discover_dynamic_terms_from_headlines(
+            multi_source_headlines,
+            cache_dir=str(tmp_path),
+            now_ts=1_700_000_000.0,
+            persist=True,
+        )
+        assert "bosphorus tanker" in discovered
+        active_kws = get_active_severity_keywords(cache_dir=str(tmp_path), now_ts=1_700_000_100.0)
+        assert "bosphorus tanker" in active_kws
+
+        # Verify dynamic RSS search URL now incorporates the newly discovered term
+        dyn_url = build_dynamic_rss_url(cache_dir=str(tmp_path), now_ts=1_700_000_100.0)
+        assert "bosphorus" in dyn_url.lower()
+
+        # 3. AI Assessment feedback loop persists critical crisis terms into dynamic lexicon
+        recorded = record_dynamic_crisis_terms_from_assessment(
+            "Emergency Panama canal drought embargo threatens global LNG supply chains.",
+            ["Panama canal blockade", "LNG supply embargo"],
+            is_acute_shock=True,
+            cache_dir=str(tmp_path),
+            now_ts=1_700_000_200.0,
+        )
+        assert len(recorded) > 0
+        lex_state = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=1_700_000_200.0)
+        assert len(lex_state["dynamic_severity_keywords"]) > 0
+        assert len(lex_state["dynamic_acute_shock_phrases"]) > 0
+        matched = match_high_severity_keywords(
+            "Shipping rates spike on Panama canal blockade",
+            cache_dir=str(tmp_path),
+            now_ts=1_700_000_250.0,
+        )
+        assert len(matched) > 0
+        assert len(get_active_acute_shock_phrases(cache_dir=str(tmp_path), now_ts=1_700_000_250.0)) > 0
+
+

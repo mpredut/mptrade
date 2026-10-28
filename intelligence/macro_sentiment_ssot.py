@@ -286,15 +286,21 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
     now = float(now_ts if now_ts is not None else time.time())
     ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
+    empty_res: Dict[str, Tuple[str, ...]] = {
+        "high_severity_terms": (),
+        "acute_shock_phrases": (),
+        "dynamic_severity_keywords": (),
+        "dynamic_acute_shock_phrases": (),
+    }
     if not (os.path.exists(path) or os.path.exists(f"{path}.previous")):
-        return {"high_severity_terms": (), "acute_shock_phrases": ()}
+        return empty_res
     try:
         data = read_recovering_previous(path, json.loads, default=None)
         if not isinstance(data, dict):
-            return {"high_severity_terms": (), "acute_shock_phrases": ()}
+            return empty_res
         entries = data.get("entries")
         if not isinstance(entries, dict):
-            return {"high_severity_terms": (), "acute_shock_phrases": ()}
+            return empty_res
         high_terms: List[str] = []
         acute_terms: List[str] = []
         for term, meta in entries.items():
@@ -312,13 +318,17 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
                     high_terms.append(t_clean)
                 if tier == "acute" and t_clean not in acute_terms:
                     acute_terms.append(t_clean)
+        high_tup = tuple(high_terms)
+        acute_tup = tuple(acute_terms)
         return {
-            "high_severity_terms": tuple(high_terms),
-            "acute_shock_phrases": tuple(acute_terms),
+            "high_severity_terms": high_tup,
+            "acute_shock_phrases": acute_tup,
+            "dynamic_severity_keywords": high_tup,
+            "dynamic_acute_shock_phrases": acute_tup,
         }
     except Exception as exc:
         logger.debug("Could not load dynamic lexicon from %s: %s", path, exc)
-        return {"high_severity_terms": (), "acute_shock_phrases": ()}
+        return empty_res
 
 
 def update_dynamic_lexicon(
@@ -377,20 +387,26 @@ def update_dynamic_lexicon(
     return load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now)
 
 
-def get_active_severity_keywords(cache_dir: Optional[str] = None) -> Tuple[str, ...]:
+def get_active_severity_keywords(
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> Tuple[str, ...]:
     """Return active high-severity keywords combining config seed + dynamically discovered terms."""
     seed = list(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True))
-    dyn = load_dynamic_lexicon(cache_dir=cache_dir).get("high_severity_terms", ())
+    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("high_severity_terms", ())
     for item in dyn:
         if item not in seed:
             seed.append(item)
     return tuple(seed)
 
 
-def get_active_acute_shock_phrases(cache_dir: Optional[str] = None) -> Tuple[str, ...]:
+def get_active_acute_shock_phrases(
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> Tuple[str, ...]:
     """Return active acute shock phrases combining config seed + dynamically discovered acute terms."""
     seed = list(_split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True))
-    dyn = load_dynamic_lexicon(cache_dir=cache_dir).get("acute_shock_phrases", ())
+    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ())
     for item in dyn:
         if item not in seed:
             seed.append(item)
@@ -440,10 +456,9 @@ def discover_dynamic_terms_from_headlines(
         src_key = str(source or "unknown").strip().lower()
         for i in range(len(tokens) - 1):
             w1, w2 = tokens[i], tokens[i + 1]
-            if any(w.startswith(stem) or stem in w for stem in crisis_stems for w in (w1, w2)):
-                bigram = f"{w1} {w2}"
-                phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
-                phrase_sources.setdefault(bigram, set()).add(src_key)
+            bigram = f"{w1} {w2}"
+            phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
+            phrase_sources.setdefault(bigram, set()).add(src_key)
 
     discovered: List[str] = []
     for phrase, count in phrase_counts.items():
@@ -498,16 +513,19 @@ def record_dynamic_crisis_terms_from_assessment(
     return tuple(extracted)
 
 
-def build_dynamic_rss_url(cache_dir: Optional[str] = None) -> str:
+def build_dynamic_rss_url(
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> str:
     """Dynamically construct the supplementary RSS query URL from active dynamic lexicon + config."""
     template = _cfg_str("feeds", "dynamic_search_rss_template")
     max_terms = max(4, _cfg_int("feeds", "dynamic_search_max_terms", 16))
-    dyn = load_dynamic_lexicon(cache_dir=cache_dir)
+    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts)
     prioritized: List[str] = []
     for t in dyn.get("acute_shock_phrases", ()) + dyn.get("high_severity_terms", ()):
         if t and t not in prioritized:
             prioritized.append(t)
-    for t in get_active_severity_keywords(cache_dir=cache_dir):
+    for t in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts):
         if t and t not in prioritized:
             prioritized.append(t)
         if len(prioritized) >= max_terms:
@@ -523,10 +541,13 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None) -> str:
     return template
 
 
-def get_specialized_rss_urls(cache_dir: Optional[str] = None) -> Tuple[str, ...]:
+def get_specialized_rss_urls(
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> Tuple[str, ...]:
     """Return curated specialized editorial RSS feeds + dynamically built crisis query feed."""
     urls = list(_split_csv(_cfg_str("feeds", "specialized_rss_urls")))
-    dyn_url = build_dynamic_rss_url(cache_dir=cache_dir)
+    dyn_url = build_dynamic_rss_url(cache_dir=cache_dir, now_ts=now_ts)
     if dyn_url and dyn_url not in urls:
         urls.append(dyn_url)
     return tuple(urls)
@@ -538,26 +559,38 @@ ACUTE_SHOCK_PHRASES: Tuple[str, ...] = get_active_acute_shock_phrases()
 DEFAULT_RSS_URL: str = build_dynamic_rss_url()
 
 
-def has_high_severity_keywords(text: str, cache_dir: Optional[str] = None) -> bool:
+def has_high_severity_keywords(
+    text: str,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> bool:
     """Return True if a headline matches any active high-severity keyword."""
     lower = (text or "").lower()
-    keywords = get_active_severity_keywords(cache_dir=cache_dir)
+    keywords = get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
     return any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in keywords)
 
 
-def match_high_severity_keywords(text: str, cache_dir: Optional[str] = None) -> Tuple[str, ...]:
+def match_high_severity_keywords(
+    text: str,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> Tuple[str, ...]:
     """Return all matched high-severity keywords for ``text`` using the active lexicon."""
     lower = (text or "").lower()
-    keywords = get_active_severity_keywords(cache_dir=cache_dir)
+    keywords = get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
     return tuple(
         kw for kw in keywords
         if re.search(r"\b" + re.escape(kw) + r"\b", lower)
     )
 
 
-def has_acute_shock_keywords(texts: Sequence[str], cache_dir: Optional[str] = None) -> bool:
+def has_acute_shock_keywords(
+    texts: Sequence[str],
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> bool:
     """Return True if any headline in ``texts`` contains an active acute systemic shock phrase."""
-    phrases = get_active_acute_shock_phrases(cache_dir=cache_dir)
+    phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=now_ts)
     for text in texts:
         lower = (text or "").lower()
         if any(phrase in lower for phrase in phrases):
@@ -1047,6 +1080,7 @@ def load_cached_market_breadth_snapshot(
     now_ts: Optional[float] = None,
 ) -> Optional[MarketBreadthSnapshot]:
     """Load cached Market Breadth snapshot using configured candidate filenames."""
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
     from state_io import read_recovering_previous
 
     eval_now = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())

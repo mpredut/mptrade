@@ -12,9 +12,11 @@ from typing import Any, Dict, List, Optional
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     ACUTE_SHOCK_PHRASES,
+    get_cache_filenames,
     has_acute_shock_keywords,
     normalize_recommended_brake,
     normalize_threat_level,
+    record_dynamic_crisis_terms_from_assessment,
     resolve_global_trading_session,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
@@ -27,7 +29,8 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
-DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_eval.json"
+_GEO_FILENAMES = get_cache_filenames("geopolitical_eval_files")
+DEFAULT_STATE_FILE = f"cachedb/{_GEO_FILENAMES[0]}" if _GEO_FILENAMES else "cachedb/geopolitical_threat_eval.json"
 DEFAULT_CACHE_TTL_SEC = required_float_env("MACRO_LLM_INTERVAL_SEC")
 DEFAULT_FALLBACK_RETRY_TTL_SEC = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
 
@@ -82,7 +85,8 @@ class GeopoliticalThreatAnalyzer:
 
     def _effective_state_file(self) -> str:
         if self.state_file == DEFAULT_STATE_FILE:
-            return cache_path("geopolitical_threat_eval.json")
+            primary_name = _GEO_FILENAMES[0] if _GEO_FILENAMES else "geopolitical_threat_eval.json"
+            return cache_path(primary_name)
         return self.state_file
 
     def _load_from_disk(self) -> None:
@@ -344,6 +348,17 @@ class GeopoliticalThreatAnalyzer:
         summary = raw_sum.strip() if isinstance(raw_sum, str) else ""
         raw_rb = resp.get("recommended_brake")
         recommended_brake = normalize_recommended_brake(raw_rb, threat_level=threat_level)
+
+        if threat_level in ("ELEVATED", "CRITICAL_SHOCK") and summary:
+            raw_emerging = resp.get("emerging_crisis_terms") or resp.get("key_risks")
+            extra_terms = [str(x).strip() for x in raw_emerging if isinstance(x, str) and str(x).strip()] if isinstance(raw_emerging, (list, tuple)) else []
+            record_dynamic_crisis_terms_from_assessment(
+                summary,
+                extra_terms,
+                is_acute_shock=(threat_level == "CRITICAL_SHOCK"),
+                cache_dir=os.path.dirname(os.path.abspath(self._effective_state_file())),
+                now_ts=now,
+            )
 
         assessment = GeopoliticalThreatAssessment(
             threat_level=threat_level,

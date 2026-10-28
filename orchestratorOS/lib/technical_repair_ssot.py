@@ -79,6 +79,7 @@ AUDITED_CONFIG_FILES: Tuple[str, ...] = (
     "order_guard.conf",
     "config.env",
     "instruments.conf",
+    "macro_intelligence.conf",
 )
 PROTECTED_SECRET_FILES: FrozenSet[str] = frozenset({".env"})
 
