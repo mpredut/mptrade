@@ -117,7 +117,11 @@ class ReplayTrendSource:
         if win is None or len(win.prices) < 2:
             res = False
         else:
-            res = _is_trend_up_tuple(win.get_short_trend(), eps=win.get_noise_epsilon(k=1.0))
+            res = _is_trend_up_tuple(
+                win.get_short_trend(),
+                eps=win.get_noise_epsilon(k=1.0),
+                n_samples=len(win.prices),
+            )
         if window_seconds is None:
             self._cached_trend_up[symbol] = res
         return res
@@ -145,7 +149,11 @@ SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (user, 29 iul)
 UPWARD_EPSILON_K = 0.25
 
 
-def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float], eps: float = 0.0) -> bool:
+def _is_trend_up_tuple(
+    trend_tuple: Tuple[int, float, float, float],
+    eps: float = 0.0,
+    n_samples: Optional[int] = None,
+) -> bool:
     """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
     final_trend, gc, _slope_full, _gradient_recent = trend_tuple
     k_val = float_env("MPTRADE_UPWARD_EPSILON_K")
@@ -154,12 +162,23 @@ def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float], eps: float 
     if k_val is None:
         k_val = UPWARD_EPSILON_K
     if isinstance(eps, (int, float)) and not isinstance(eps, bool) and math.isfinite(eps) and eps > 0.0 and k_val > 0.0:
-        return gc > k_val * eps
+        scale = 1.0
+        if n_samples is not None and not isinstance(n_samples, bool):
+            try:
+                m_steps = float(n_samples) - 1.0
+                if math.isfinite(m_steps) and m_steps > 10.0:
+                    scale = math.sqrt(10.0 / m_steps)
+            except (TypeError, ValueError, OverflowError):
+                scale = 1.0
+        return gc > k_val * scale * eps
     return gc > 0 or (gc == 0 and final_trend > 0)
 
 
-def _instant_trend_from_slice(prices: Sequence[float], sample_rate_sec: float
-                               ) -> Tuple[int, float, float, float]:
+def _instant_trend_from_slice(
+    prices: Sequence[float],
+    sample_rate_sec: float,
+    symbol: Optional[str] = None,
+) -> Tuple[int, float, float, float]:
     """The same formula as PriceWindow.get_instant_trend(), applied directly to a
     a list of prices (without rebuilding a PriceWindow) — for slices computed
     PE CERERE dintr-un buffer brut. Intoarce (final_trend, growth_coefficient,
@@ -167,7 +186,7 @@ def _instant_trend_from_slice(prices: Sequence[float], sample_rate_sec: float
     30 Jul: a thin wrapper over pw.instant_trend_from_prices() (the single source of
     of the formula, extracted so it is not duplicated — cacheManager.py now uses
     the same function for the live dynamic window)."""
-    return pw.instant_trend_from_prices(prices, sample_rate_sec)
+    return pw.instant_trend_from_prices(prices, sample_rate_sec, symbol=symbol)
 
 
 class DynamicReplayTrendSource:
@@ -236,7 +255,10 @@ class DynamicReplayTrendSource:
         prices, sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 2:
             return False
-        return _is_trend_up_tuple(_instant_trend_from_slice(prices, sample_rate))
+        return _is_trend_up_tuple(
+            _instant_trend_from_slice(prices, sample_rate, symbol=symbol),
+            n_samples=len(prices),
+        )
 
     def is_trend_up_confirmed(self, symbol: str, timeouts_sec: Sequence[float],
                                min_agree: Optional[int] = None) -> bool:
@@ -277,7 +299,7 @@ class DynamicReplayTrendSource:
         if len(prices) < 3:
             return True   # Not enough data -> the safe behaviour: wait.
         _final_trend, growth_coefficient, _slope_full, _gradient_recent = \
-            _instant_trend_from_slice(prices, _sample_rate)
+            _instant_trend_from_slice(prices, _sample_rate, symbol=symbol)
         g = growth_coefficient
         if use_noise_gate:
             arr = np.array(prices)

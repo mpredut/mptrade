@@ -112,11 +112,14 @@ def _resolve_upward_eps_k() -> float:
 
 
 def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
+    import pricewindow as pw
     return (
         str(symbol),
         len(series),
         series[0] if series else None,
         series[-1] if series else None,
+        pw.step_wols_power_for_symbol(symbol),
+        _resolve_upward_eps_k(),
         _norm_trend_window_sec(trend_window_seconds),
     )
 
@@ -146,6 +149,7 @@ def prewarm_trend_series(
     cur_len = 0
     prev_ts = None
     up_k = _resolve_upward_eps_k()
+    sym_pwr = pw.step_wols_power_for_symbol(symbol)
     tape: list[bool] = []
     for ts, px in series:
         if prev_ts is not None and ts > prev_ts:
@@ -171,10 +175,17 @@ def prewarm_trend_series(
             tape.append(False)
         else:
             ft, gc, _sf, _gr, eps = buf.eval_slice(
-                blen - cur_len, blen - 1, sample_rate_sec=sample_rate, eps_k=1.0
+                blen - cur_len,
+                blen - 1,
+                sample_rate_sec=sample_rate,
+                eps_k=1.0,
+                power=sym_pwr,
+                symbol=symbol,
             )
             if eps > 0.0 and up_k > 0.0:
-                tape.append(gc > up_k * eps)
+                m_steps = cur_len - 1
+                scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
+                tape.append(gc > up_k * scale * eps)
             else:
                 tape.append(gc > 0.0 or (gc == 0.0 and ft > 0))
     res = tuple(tape)

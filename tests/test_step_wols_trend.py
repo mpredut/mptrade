@@ -1,10 +1,12 @@
-"""Step-WOLS short-trend estimator test suite (pricewindow SSOT, Oct 28).
+"""Step-WOLS short-trend estimator test suite (pricewindow SSOT).
 
-Pipeline: raw price -> adaptive causal median (~5s, bypassed above 2s sampling)
--> growth_coefficient = sum(k^p * dy_k) / sum(k^p) over the window's steps.
-Default power p=2 (Quadratic: empirical #1 champion on 11.26M ticks, +$8.04 vs legacy).
+Pipeline: raw price -> growth_coefficient = sum(k^p * dy_k) / sum(k^p) over the window's steps.
+Per-symbol power from instruments.conf (trend.step_wols_power):
+  - BTC (BTCUSDC): p=3.0 (Cubic Step-WOLS)
+  - Altcoins / Equities (TAOUSDC, HYPEUSD, ARBUSDC, ...): p=2.0 (Quadratic Step-WOLS)
 Supports p=1 (Linear), p=2 (Quadratic), p=3 (Cubic), and arbitrary powers p >= 0.
 """
+import math
 import os
 import sys
 import unittest
@@ -17,33 +19,34 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pricewindow as pw
 
 
-def _naive_step_wols(prices, kernel, power=None):
-    pwr = float(pw.STEP_WOLS_POWER if power is None else power)
+def _naive_step_wols(prices, power=None, symbol=None):
+    pwr = float(pw.step_wols_power_for_symbol(symbol) if power is None else power)
     arr = np.asarray(prices, dtype=float)
-    filt = np.array([np.median(arr[max(0, i - kernel + 1): i + 1]) for i in range(len(arr))])
-    m = len(filt) - 1
+    m = len(arr) - 1
     if m < 1:
         return 0.0
     k = np.arange(1, m + 1, dtype=float) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=float)
-    return float(np.dot(k, np.diff(filt)) / k.sum())
+    return float(np.dot(k, np.diff(arr)) / k.sum())
 
 
-class TestMedianKernel(unittest.TestCase):
-    def test_kernel_is_defined_in_seconds_and_bypassed_for_sparse_data(self):
-        self.assertEqual(pw.median_filter_kernel(0.8), 5)
-        self.assertEqual(pw.median_filter_kernel(1.0), 5)
-        self.assertEqual(pw.median_filter_kernel(1.5), 3)
-        self.assertEqual(pw.median_filter_kernel(2.0), 3)
-        self.assertEqual(pw.median_filter_kernel(2.5), 1)
-        self.assertEqual(pw.median_filter_kernel(17.0), 1)
-        for bad in (None, True, float("nan"), -1.0, 0.0, "x"):
-            self.assertEqual(pw.median_filter_kernel(bad), 5)  # DEFAULT_SAMPLE_RATE_SEC=0.8
-        self.assertEqual(pw.median_filter_kernel(1e-309), 5)   # subnormal rate must not overflow
+class TestSymbolPowerResolution(unittest.TestCase):
+    def test_per_symbol_power_from_instruments_conf(self):
+        self.assertEqual(pw.step_wols_power_for_symbol("BTCUSDC"), 3.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("BTCUSDT"), 3.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("BTC"), 3.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("TAOUSDC"), 2.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("HYPEUSD"), 2.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("HYPEUSDC"), 2.0)
+        self.assertEqual(pw.step_wols_power_for_symbol("ARBUSDC"), 2.0)
+        self.assertEqual(pw.step_wols_power_for_symbol(None), pw.DEFAULT_STEP_WOLS_POWER)
+        self.assertEqual(pw.step_wols_power_for_symbol("UNKNOWN_COIN"), pw.DEFAULT_STEP_WOLS_POWER)
 
-    def test_explicit_median_seconds_override(self):
-        self.assertEqual(pw.median_filter_kernel(1.0, median_seconds=3.0), 3)
-        self.assertEqual(pw.median_filter_kernel(1.0, median_seconds=0.0), 1)
-        self.assertEqual(pw.median_filter_kernel(1.0, median_seconds=5.0), 5)
+    def test_env_and_patch_overrides_take_precedence(self):
+        with patch.dict(os.environ, {"MPTRADE_STEP_WOLS_POWER": "1.5"}):
+            self.assertEqual(pw.step_wols_power_for_symbol("BTCUSDC"), 1.5)
+            self.assertEqual(pw.step_wols_power_for_symbol("TAOUSDC"), 1.5)
+        with patch.object(pw, "STEP_WOLS_POWER", 3.0):
+            self.assertEqual(pw.step_wols_power_for_symbol("TAOUSDC"), 3.0)
 
 
 class TestStepWolsGeneralization(unittest.TestCase):
@@ -51,9 +54,9 @@ class TestStepWolsGeneralization(unittest.TestCase):
         rng = np.random.default_rng(1)
         prices = 60000 + np.cumsum(rng.normal(0, 5, 300))
         for pwr in (1.0, 2.0, 3.0):
-            for sr, kern in ((1.0, 5), (1.5, 3), (17.0, 1)):
+            for sr in (1.0, 1.5, 17.0):
                 got = pw.step_wols_slope(prices, sr, power=pwr)
-                expected = _naive_step_wols(prices, kern, power=pwr)
+                expected = _naive_step_wols(prices, power=pwr)
                 self.assertAlmostEqual(got, expected, places=9)
 
     def test_buffer_matches_reference_on_subslices_after_trim_and_long_windows(self):
@@ -64,21 +67,20 @@ class TestStepWolsGeneralization(unittest.TestCase):
             buf.append(float(px))
         buf.trim_front(700)
         n = len(buf.prices)
-        for pwr in (2.0, 3.0):
+        for pwr in (1.0, 2.0, 3.0):
             with patch.object(pw, "STEP_WOLS_POWER", pwr):
                 for a, b, sr in ((0, n - 1, 0.8), (n - 222, n - 1, 1.0), (n - 1500, n - 1, 1.0),
                                  (5, 9, 1.0), (100, 101, 1.5), (40, 1300, 17.0)):
                     got = buf.step_wols_slope(a, b, sr, power=pwr)
                     ref = pw.step_wols_slope(buf.prices[a:b + 1], sr, power=pwr)
                     self.assertAlmostEqual(got, ref, delta=1e-9 * max(1.0, abs(ref)))
-                    res = buf.eval_slice(a, b, sample_rate_sec=sr)
+                    res = buf.eval_slice(a, b, sample_rate_sec=sr, power=pwr)
                     self.assertAlmostEqual(res[1], got, places=12)
                     self.assertEqual(res[0], 1 if got > 0 else (-1 if got < 0 else 0))
 
     def test_backward_compatible_aliases(self):
         rng = np.random.default_rng(123)
         prices = 50000 + np.cumsum(rng.normal(0, 2, 100))
-        # step_wols_cubic_slope delegates to step_wols_slope
         self.assertEqual(pw.step_wols_cubic_slope(prices, 1.0), pw.step_wols_slope(prices, 1.0))
         buf = pw.IncrementalTrendBuffer()
         for p in prices:
@@ -91,19 +93,20 @@ class TestStepWolsGeneralization(unittest.TestCase):
         buf = pw.IncrementalTrendBuffer()
         for px in prices:
             buf.append(px)
-        for a, b in ((0, 599), (378, 599), (590, 599)):
-            ft, gc, sf, gr, _ = buf.eval_slice(a, b, sample_rate_sec=1.0)
-            eft, egc, esf, egr = pw.instant_trend_from_prices(prices[a:b + 1], 1.0)
-            self.assertEqual(ft, eft)
-            self.assertAlmostEqual(gc, egc, delta=1e-9 * max(1.0, abs(egc)))
-            self.assertAlmostEqual(sf, esf, places=8)
-            self.assertAlmostEqual(gr, egr, places=8)
+        for sym in (None, "BTCUSDC", "TAOUSDC"):
+            for a, b in ((0, 599), (378, 599), (590, 599)):
+                ft, gc, sf, gr, _ = buf.eval_slice(a, b, sample_rate_sec=1.0, symbol=sym)
+                eft, egc, esf, egr = pw.instant_trend_from_prices(prices[a:b + 1], 1.0, symbol=sym)
+                self.assertEqual(ft, eft)
+                self.assertAlmostEqual(gc, egc, delta=1e-9 * max(1.0, abs(egc)))
+                self.assertAlmostEqual(sf, esf, places=8)
+                self.assertAlmostEqual(gr, egr, places=8)
 
     def test_single_tick_spike_does_not_flip_a_downtrend(self):
         prices = [60000.0 - 2.0 * i for i in range(222)]
-        prices[-1] = prices[-2] + 300.0  # isolated wick / bid-ask bounce on the newest tick
+        prices[-1] = prices[-2] + 30.0   # isolated 15x step bounce on the newest tick
         ft, gc, _, _ = pw.instant_trend_from_prices(prices, 1.0)
-        self.assertEqual(ft, -1)         # median + Step-WOLS keeps the real direction
+        self.assertEqual(ft, -1)
         self.assertLess(gc, 0.0)
 
     def test_constant_and_short_series_are_neutral(self):
@@ -114,17 +117,24 @@ class TestStepWolsGeneralization(unittest.TestCase):
             buf.append(100.0)
         self.assertEqual(buf.eval_slice(0, 49, sample_rate_sec=1.0)[:2], (0, 0.0))
 
-    def test_price_window_cache_respects_estimator_switch(self):
-        win = pw.PriceWindow("BTCUSDC", 300, sample_rate_sec=1.0, window_seconds=222.0)
+    def test_price_window_uses_symbol_power_and_respects_patch(self):
         rng = np.random.default_rng(4)
-        for px in 60000 + np.cumsum(rng.normal(0, 5, 222)):
-            win.process_price(float(px))
-        _, gc_quad, _, _ = win.get_short_trend()
-        self.assertAlmostEqual(gc_quad, pw.step_wols_slope(list(win.prices), 1.0, power=2.0), places=9)
-        with patch.object(pw, "STEP_WOLS_POWER", 3.0):
-            win._short_trend_cache = None
-            _, gc_cubic, _, _ = win.get_short_trend()
-            self.assertAlmostEqual(gc_cubic, pw.step_wols_slope(list(win.prices), 1.0, power=3.0), places=9)
+        sample_px = [float(x) for x in (60000 + np.cumsum(rng.normal(0, 5, 222)))]
+
+        win_btc = pw.PriceWindow("BTCUSDC", 300, sample_rate_sec=1.0, window_seconds=222.0)
+        win_tao = pw.PriceWindow("TAOUSDC", 300, sample_rate_sec=1.0, window_seconds=222.0)
+        for px in sample_px:
+            win_btc.process_price(px)
+            win_tao.process_price(px)
+
+        _, gc_btc, _, _ = win_btc.get_short_trend()
+        _, gc_tao, _, _ = win_tao.get_short_trend()
+        self.assertAlmostEqual(gc_btc, pw.step_wols_slope(sample_px, 1.0, power=3.0), places=9)
+        self.assertAlmostEqual(gc_tao, pw.step_wols_slope(sample_px, 1.0, power=2.0), places=9)
+
+        with patch.object(pw, "STEP_WOLS_POWER", 1.0):
+            _, gc_lin, _, _ = win_tao.get_short_trend()
+            self.assertAlmostEqual(gc_lin, pw.step_wols_slope(sample_px, 1.0, power=1.0), places=9)
 
     def test_env_resolution_defaults_to_step_wols_and_accepts_aliases(self):
         with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "step_wols_cubic"}):
@@ -150,6 +160,23 @@ class TestStepWolsGeneralization(unittest.TestCase):
         with patch.dict(os.environ, {"MPTRADE_TREND_NOISE_GATE_K": "0.5"}):
             ft_gated, _, _, _ = pw.instant_trend_from_prices(prices, 1.0)
             self.assertEqual(ft_gated, 0)
+
+    def test_scale_invariant_upward_formula(self):
+        from cachetrend import CacheShortTrendManager
+        # Sparse window (n_samples=11 -> m=10): threshold is 0.25 * eps = 0.25
+        self.assertFalse(CacheShortTrendManager._eval_upward_formula(
+            {"growth_coefficient": 0.10, "epsilon": 1.0, "n_samples": 11}
+        ))
+        self.assertTrue(CacheShortTrendManager._eval_upward_formula(
+            {"growth_coefficient": 0.30, "epsilon": 1.0, "n_samples": 11}
+        ))
+        # Dense 1-second window (n_samples=222 -> m=221): threshold scales by sqrt(10/221) ≈ 0.2127 -> ~0.0532
+        self.assertTrue(CacheShortTrendManager._eval_upward_formula(
+            {"growth_coefficient": 0.10, "epsilon": 1.0, "n_samples": 222}
+        ))
+        self.assertFalse(CacheShortTrendManager._eval_upward_formula(
+            {"growth_coefficient": 0.04, "epsilon": 1.0, "n_samples": 222}
+        ))
 
 
 if __name__ == "__main__":

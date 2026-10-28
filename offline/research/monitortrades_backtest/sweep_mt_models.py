@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Fast vectorized multi-model portfolio replay backtest for monitortrades.py.
 
-Evaluates Legacy, Step-WOLS (p=2, p=3, med1, med5), Adaptive Noise-Gating (k=0.0..0.25
-and scale-invariant z-score gating), Kaufman Efficiency Ratio (ER), and Tiered Hybrid
-models across all monitortrades instruments (BTCUSDC, TAOUSDC, ARBUSDC, HYPEUSD) on:
+Evaluates Legacy, uniform Step-WOLS (p=2, p=3), Adaptive Noise-Gating (k=0.0..0.25
+and scale-invariant z-score gating), and the Differentiated Per-Coin Step-WOLS
+architecture (BTC p=3.0, Altcoins p=2.0 from instruments.conf) across all
+monitortrades instruments (BTCUSDC, TAOUSDC, ARBUSDC, HYPEUSD) on:
   1. Full 329-day sparse archive (cache_sparse_price_*.jsonl)
   2. Dense 1-second archive (cache_365_price_*.jsonl / *.npz)
 """
@@ -14,7 +15,6 @@ import os
 import sys
 import time
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
@@ -26,16 +26,6 @@ import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
 import offline.research.monitortrades_backtest.run_replay_backtest as rrb
-
-
-def _causal_median_5(px: np.ndarray) -> np.ndarray:
-    n = len(px)
-    out = np.empty(n, dtype=np.float64)
-    for i in range(min(4, n)):
-        out[i] = float(np.median(px[: i + 1]))
-    if n > 4:
-        out[4:] = np.median(sliding_window_view(px, 5), axis=-1)
-    return out
 
 
 def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SECONDS):
@@ -68,8 +58,12 @@ def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SE
     return a_arr, sr_arr
 
 
-def compute_all_signals(series: list[tuple[float, float]], win_sec: float = rrb.DEFAULT_WINDOW_SECONDS):
-    """Vectorized O(1) prefix-sum evaluation of all short-trend estimators over series."""
+def compute_all_signals(
+    series: list[tuple[float, float]],
+    win_sec: float = rrb.DEFAULT_WINDOW_SECONDS,
+    symbol: str | None = None,
+):
+    """Vectorized O(1) prefix-sum evaluation of short-trend estimators over series."""
     N = len(series)
     ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=N)
     px = np.fromiter((p for _, p in series), dtype=np.float64, count=N)
@@ -103,7 +97,6 @@ def compute_all_signals(series: list[tuple[float, float]], win_sec: float = rrb.
     denom_ols = np.maximum(1.0, n_f * (n_f * n_f - 1.0))
     slope_full = np.where(valid & (ss_y > 1e-18), (12.0 * cov_xy) / denom_ols, 0.0)
 
-    # Recent gradient
     recent_sec = pw.effective_recent_gradient_seconds(None)
     r_arr = np.maximum(2, (recent_sec / np.maximum(1e-9, sr)).astype(np.int64))
     b_m1 = np.maximum(0, b - 1)
@@ -121,71 +114,35 @@ def compute_all_signals(series: list[tuple[float, float]], win_sec: float = rrb.
     tol_raw = 1e-10 * np.maximum(1.0, np.abs(px[b]))
     gc_legacy = np.where(np.abs(gc_legacy) <= tol_raw, 0.0, gc_legacy)
 
-    # Step-WOLS med1 (raw prices): p=1, p=2, p=3 via exact Abel summation
-    Q0 = P0
-    Q1 = P1
     Q2 = np.cumsum(k_idx * k_idx * dy_ref)
-    a0 = _range_sum(Q0, a, b_m1)
-    a1 = _range_sum(Q1, a, b_m1)
+    a0 = _range_sum(P0, a, b_m1)
+    a1 = _range_sum(P1, a, b_m1)
     a2 = _range_sum(Q2, a, b_m1)
     c_f = a.astype(np.float64)
 
-    # p=1: sum_{k=1..m} k (f_{a+k} - f_{a+k-1}) = m f_b - sum_{r=0..m-1} f_{a+r}
+    # p=1:
     total_p1 = m_f * dy_ref[b] - a0
     s1_w = 0.5 * m_f * (m_f + 1.0)
-    gc_sw1_med1 = np.where(valid, total_p1 / s1_w, 0.0)
-    gc_sw1_med1 = np.where(np.abs(gc_sw1_med1) <= tol_raw, 0.0, gc_sw1_med1)
+    gc_sw1 = np.where(valid, total_p1 / s1_w, 0.0)
+    gc_sw1 = np.where(np.abs(gc_sw1) <= tol_raw, 0.0, gc_sw1)
 
     # p=2:
     sum_2r1 = 2.0 * a1 - (2.0 * c_f - 1.0) * a0
     total_p2 = (m_f * m_f) * dy_ref[b] - sum_2r1
     s2_w = (m_f * (m_f + 1.0) * (2.0 * m_f + 1.0)) / 6.0
-    gc_sw2_med1 = np.where(valid, total_p2 / s2_w, 0.0)
-    gc_sw2_med1 = np.where(np.abs(gc_sw2_med1) <= tol_raw, 0.0, gc_sw2_med1)
+    gc_sw2 = np.where(valid, total_p2 / s2_w, 0.0)
+    gc_sw2 = np.where(np.abs(gc_sw2) <= tol_raw, 0.0, gc_sw2)
 
     # p=3:
     sum_r2 = a2 - 2.0 * c_f * a1 + c_f * c_f * a0
     sum_r1 = a1 - c_f * a0
     total_p3 = (m_f ** 3) * dy_ref[b] - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
     s3_w = (0.5 * m_f * (m_f + 1.0)) ** 2
-    gc_sw3_med1 = np.where(valid, total_p3 / s3_w, 0.0)
-    gc_sw3_med1 = np.where(np.abs(gc_sw3_med1) <= tol_raw, 0.0, gc_sw3_med1)
+    gc_sw3 = np.where(valid, total_p3 / s3_w, 0.0)
+    gc_sw3 = np.where(np.abs(gc_sw3) <= tol_raw, 0.0, gc_sw3)
 
-    # Step-WOLS p=3 med5 (with slice-local causal median head adjustment)
-    med5 = _causal_median_5(px)
-    z5 = med5 - y_ref
-    Q0_5 = np.cumsum(z5)
-    Q1_5 = np.cumsum(k_idx * z5)
-    Q2_5 = np.cumsum(k_idx * k_idx * z5)
-    a0_5 = _range_sum(Q0_5, a, b_m1)
-    a1_5 = _range_sum(Q1_5, a, b_m1)
-    a2_5 = _range_sum(Q2_5, a, b_m1)
-    sum_r2_5 = a2_5 - 2.0 * c_f * a1_5 + c_f * c_f * a0_5
-    sum_r1_5 = a1_5 - c_f * a0_5
-    total_p3_5 = (m_f ** 3) * z5[b] - (3.0 * sum_r2_5 + 3.0 * sum_r1_5 + a0_5)
-    # Local head adjustment for r = 0, 1, 2, 3 when kernel=5 (sr <= 1.25s) or kernel=3
-    # For general sr, kernel is determined by pw.median_filter_kernel(sr, 5.0):
-    # r=0: local_head[0] = px[a]
-    # r=1: local_head[1] = 0.5 * (px[a] + px[a+1])
-    # r=2: local_head[2] = median(px[a], px[a+1], px[a+2])
-    # r=3: local_head[3] = median(px[a..a+3])
-    a_1 = np.minimum(N - 1, a + 1)
-    a_2 = np.minimum(N - 1, a + 2)
-    a_3 = np.minimum(N - 1, a + 3)
-    lh0 = px[a]
-    lh1 = 0.5 * (px[a] + px[a_1])
-    lh2 = np.median(np.stack([px[a], px[a_1], px[a_2]], axis=0), axis=0)
-    lh3 = np.median(np.stack([px[a], px[a_1], px[a_2], px[a_3]], axis=0), axis=0)
-    for r_idx, lh, a_r in ((0, lh0, a), (1, lh1, a_1), (2, lh2, a_2), (3, lh3, a_3)):
-        active_r = m >= r_idx
-        coeff = 3.0 * (r_idx ** 2) + 3.0 * r_idx + 1.0
-        total_p3_5 = np.where(active_r, total_p3_5 - coeff * (lh - med5[a_r]), total_p3_5)
-    tol_med5 = 1e-10 * np.maximum(1.0, np.abs(med5[b]))
-    gc_sw3_med5 = np.where(valid, total_p3_5 / s3_w, 0.0)
-    gc_sw3_med5 = np.where(np.abs(gc_sw3_med5) <= tol_med5, 0.0, gc_sw3_med5)
-    # Note: when sample_rate > 2.5s (as in sparse data), median_filter_kernel(sr, 5.0) == 1!
-    kern_arr = np.where(sr >= 2.5, 1, 5)
-    gc_sw3_med5_adaptive = np.where(kern_arr == 1, gc_sw3_med1, gc_sw3_med5)
+    sym_p = pw.step_wols_power_for_symbol(symbol)
+    gc_diff = gc_sw3 if sym_p >= 2.5 else gc_sw2
 
     # Epsilon (population std of np.gradient(px[a:b+1]))
     pg2 = np.zeros(N, dtype=np.float64)
@@ -201,45 +158,31 @@ def compute_all_signals(series: list[tuple[float, float]], win_sec: float = rrb.
     var_g = np.maximum(0.0, sum_g2 / n_f - mean_g * mean_g)
     eps = np.where(n >= 3, np.sqrt(var_g), 0.0)
 
-    # Kaufman Efficiency Ratio (ER) on [a, b]
-    abs_dy = np.abs(np.diff(px, prepend=px[0]))
-    P_abs = np.cumsum(abs_dy)
-    path_len = P_abs[b] - P_abs[a]
-    net_chg = np.abs(px[b] - px[a])
-    er = np.where(valid, net_chg / np.maximum(path_len, 1e-12), 0.0)
-
-    # Exact L2 weight norm ||w||_2 for scale-invariant z-score gating:
-    # For Step-WOLS power p on m steps, ||w||_2 = sqrt(sum(k^(2p))) / sum(k^p) ~= sqrt(2p+1) / ((p+1)*sqrt(m))
-    w_norm_p2 = np.sqrt(5.0) / (3.0 * np.sqrt(m_f))
-    w_norm_p3 = np.sqrt(7.0) / (4.0 * np.sqrt(m_f))
+    scale_inv = np.where(m_f > 10.0, np.sqrt(10.0 / m_f), 1.0)
 
     return {
         "n": n,
         "m": m,
         "eps": eps,
-        "er": er,
-        "w_norm_p2": w_norm_p2,
-        "w_norm_p3": w_norm_p3,
+        "scale_inv": scale_inv,
         "legacy": gc_legacy,
-        "sw1_med1": gc_sw1_med1,
-        "sw2_med1": gc_sw2_med1,
-        "sw3_med1": gc_sw3_med1,
-        "sw3_med5": gc_sw3_med5,
-        "sw3_med5_adaptive": gc_sw3_med5_adaptive,
+        "sw1": gc_sw1,
+        "sw2": gc_sw2,
+        "sw3": gc_sw3,
+        "diff": gc_diff,
     }
 
 
-def make_tape(gc: np.ndarray, eps: np.ndarray, k_eps: float = 0.0,
-              er: np.ndarray | None = None, er_min: float = 0.0,
-              w_norm: np.ndarray | None = None, z_min: float = 0.0) -> tuple[bool, ...]:
+def make_tape(
+    gc: np.ndarray,
+    eps: np.ndarray,
+    k_eps: float = 0.0,
+    scale_inv: np.ndarray | None = None,
+) -> tuple[bool, ...]:
     cond = gc > 0.0
     if k_eps > 0.0:
-        cond = np.where(eps > 0.0, gc > (k_eps * eps), cond)
-    if z_min > 0.0 and w_norm is not None:
-        se = eps * w_norm
-        cond = np.where(se > 0.0, gc > (z_min * se), cond)
-    if er_min > 0.0 and er is not None:
-        cond = cond & (er >= er_min)
+        eff_k = k_eps * scale_inv if scale_inv is not None else k_eps
+        cond = np.where(eps > 0.0, gc > (eff_k * eps), cond)
     cond[:1] = False
     return cond.tolist()
 
@@ -271,23 +214,19 @@ def evaluate_dataset(use_365: bool = False):
             continue
         symbols.append(sym)
         series_map[sym] = series
-        sig_map[sym] = compute_all_signals(series)
+        sig_map[sym] = compute_all_signals(series, symbol=sym)
         dt = time.time() - t0
-        print(f"  [loaded & vectorized] {sym:<8}: {len(series):>9,} ticks in {dt:.2f}s (median m={int(np.median(sig_map[sym]['m']))} steps)")
+        print(f"  [loaded & vectorized] {sym:<8} (p={pw.step_wols_power_for_symbol(sym):.1f}): "
+              f"{len(series):>9,} ticks in {dt:.2f}s (median m={int(np.median(sig_map[sym]['m']))} steps)")
 
     models = [
         ("1. LEGACY (sf+gr)/2 (no NG)",       lambda s: make_tape(s["legacy"], s["eps"], k_eps=0.0)),
         ("2. LEGACY + NG k=0.25",             lambda s: make_tape(s["legacy"], s["eps"], k_eps=0.25)),
-        ("3. SW p3 med5 (always 5-sample)",   lambda s: make_tape(s["sw3_med5"], s["eps"], k_eps=0.0)),
-        ("4. SW p3 med1 (no NG)",             lambda s: make_tape(s["sw3_med1"], s["eps"], k_eps=0.0)),
-        ("5. SW p2 med1 + NG k=0.25 (curr)",  lambda s: make_tape(s["sw2_med1"], s["eps"], k_eps=0.25)),
-        ("6. SW p3 med1 + NG k=0.25",         lambda s: make_tape(s["sw3_med1"], s["eps"], k_eps=0.25)),
-        ("7. SW p3 med1 + NG k=0.05",         lambda s: make_tape(s["sw3_med1"], s["eps"], k_eps=0.05)),
-        ("8. SW p3 med1 + NG k=0.04",         lambda s: make_tape(s["sw3_med1"], s["eps"], k_eps=0.04)),
-        ("9. SW p3 med1 + ScaleInv z=1.0",    lambda s: make_tape(s["sw3_med1"], s["eps"], w_norm=s["w_norm_p3"], z_min=1.0)),
-        ("10. SW p2 med1 + ScaleInv z=1.0",   lambda s: make_tape(s["sw2_med1"], s["eps"], w_norm=s["w_norm_p2"], z_min=1.0)),
-        ("11. HYBRID p3 ER0.05 + NG k=0.05",  lambda s: make_tape(s["sw3_med1"], s["eps"], k_eps=0.05, er=s["er"], er_min=0.05)),
-        ("12. HYBRID p3 ER0.05 + z=1.0",      lambda s: make_tape(s["sw3_med1"], s["eps"], w_norm=s["w_norm_p3"], z_min=1.0, er=s["er"], er_min=0.05)),
+        ("3. SW p2 + NG k=0.25",              lambda s: make_tape(s["sw2"], s["eps"], k_eps=0.25)),
+        ("4. SW p3 + NG k=0.25",              lambda s: make_tape(s["sw3"], s["eps"], k_eps=0.25)),
+        ("5. SW p2 + ScaleInv NG k=0.25",     lambda s: make_tape(s["sw2"], s["eps"], k_eps=0.25, scale_inv=s["scale_inv"])),
+        ("6. SW p3 + ScaleInv NG k=0.25",     lambda s: make_tape(s["sw3"], s["eps"], k_eps=0.25, scale_inv=s["scale_inv"])),
+        ("7. DIFFERENTIATED (BTC p3/ALT p2)", lambda s: make_tape(s["diff"], s["eps"], k_eps=0.25, scale_inv=s["scale_inv"])),
     ]
 
     hdr = f"{'Model Architecture':<34} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
@@ -301,28 +240,23 @@ def evaluate_dataset(use_365: bool = False):
         tot_net = 0.0
         for sym in symbols:
             series = series_map[sym]
-            tape = tape_fn(sig_map[sym])
             key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-            rrb._TREND_TAPE_CACHE[key] = tape
-            info = rrb.SYMBOLS[sym]
-            res = rrb.run_symbol(sym, info["params"], info["base"], quiet=True, series=series)
-            net = res["net"] if res else 0.0
-            buys = res["buys"] if res else 0
-            sells = res["sells"] if res else 0
-            if sym not in bh_Wait and res:
-                bh_Wait[sym] = res["buy_hold"]
+            rrb._TREND_TAPE_CACHE[key] = tape_fn(sig_map[sym])
+            cfg = rrb.SYMBOLS[sym]
+            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series)
+            net = res["net"]
+            bh_Wait[sym] = res["buy_hold"]
             tot_net += net
-            cells.append(f"{net:>+8.2f} ({buys}/{sells})")
+            cells.append(f"{net:>+8.2f} ({res['buys']:>2}B/{res['sells']:>2}S)")
         print(f"{m_name:<34} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
-        sys.stdout.flush()
 
     bh_tot = sum(bh_Wait.values())
-    bh_cells = [f"{bh_Wait.get(s, 0.0):>+8.2f} (B&H)" for s in symbols]
+    bh_cells = [f"{bh_Wait[sym]:>+14.2f}" for sym in symbols]
     print("-" * len(hdr))
-    print(f"{'Buy & Hold Benchmark ($1000/sym)':<34} | " + " | ".join(f"{c:>14}" for c in bh_cells) + f" | {bh_tot:>+14.2f}")
+    print(f"{'Buy & Hold Benchmark':<34} | " + " | ".join(bh_cells) + f" | {bh_tot:>+14.2f}")
 
 
 if __name__ == "__main__":
     evaluate_dataset(use_365=False)
-    if os.environ.get("SWEEP_365") == "1":
+    if "--dense" in sys.argv:
         evaluate_dataset(use_365=True)

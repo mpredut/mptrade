@@ -7,8 +7,9 @@ Contains ``PriceTrendAnalyzer`` regression/EMA/gradient calculations, a lean sli
 ``PriceWindow`` with volatility-informed noise epsilon, and composed trading metrics.
 
 Short-trend SSOT (``growth_coefficient`` / ``final_trend``) is computed by the
-estimator selected in ``SHORT_TREND_ESTIMATOR`` (default: adaptive causal median
-filter followed by Step-WOLS cubic; see the constants block below).
+Step-WOLS estimator directly on raw price increments (no median filter lag),
+with per-instrument power ``trend.step_wols_power`` from ``instruments.conf``
+(Cubic ``p=3.0`` for BTC, Quadratic ``p=2.0`` for altcoins/equities).
 """
 import builtins
 import math
@@ -30,17 +31,14 @@ WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
 WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
 
 # ── Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) ──
-# Unified pipeline: [raw price] -> [adaptive causal median filter ~5s, bypassed for
-# sparse data] -> [estimator slope calculation].
-# Default: Step-WOLS Quadratic (p=2, med=5.0s) — empirical #1 champion on 11.26M 1.0s ticks
-# (+8.04 net vs old baseline, +$1.75 over cubic p=3, zero regressions).
-# Configurable via MPTRADE_STEP_WOLS_POWER (default 2.0; accepts any p >= 0).
-# Configurable via MPTRADE_MEDIAN_FILTER_SECONDS (default 5.0; 0 = bypass).
-#
-# Extensibility for future short-trend models:
-#   1. Add model name constant to SHORT_TREND_ESTIMATOR_*
-#   2. Register in _SHORT_TREND_ESTIMATORS
-#   3. Add dispatch logic in compute_short_trend_slope() and IncrementalTrendBuffer
+# Direct Step-WOLS estimator on raw price increments:
+#   growth_coefficient = sum(k^p * dy_k) / sum(k^p)
+# Differentiated per instrument via trend.step_wols_power in instruments.conf:
+#   - BTC (BTCUSDC): Cubic Step-WOLS (p=3.0)
+#   - Altcoins / Equities (TAO, HYPE, ARB, ...): Quadratic Step-WOLS (p=2.0)
+# Configurable globally via MPTRADE_STEP_WOLS_POWER (default 2.0; accepts any p >= 0).
+# Causal median pre-filtering (med3/med5) was permanently removed after 11.58M-tick
+# 1s OOS and 329-day portfolio backtests proved it destroys directional edge across all coins.
 SHORT_TREND_ESTIMATOR_STEP_WOLS = "step_wols"
 SHORT_TREND_ESTIMATOR_STEP_WOLS_QUADRATIC = "step_wols_quadratic"
 SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC = "step_wols_cubic"
@@ -52,8 +50,7 @@ _SHORT_TREND_ESTIMATORS = (
     SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR,
 )
 
-DEFAULT_STEP_WOLS_POWER = 2.0         # Quadratic: empirical champion on 11.26M real 1s ticks (+8.04 net)
-DEFAULT_MEDIAN_FILTER_SECONDS = 5.0   # Adaptive causal median filter window in seconds (k=5 at 1s)
+DEFAULT_STEP_WOLS_POWER = 2.0         # Default exponent p when symbol is not in instruments.conf
 
 
 def _resolve_short_trend_estimator() -> str:
@@ -82,13 +79,75 @@ def _resolve_step_wols_power(estimator_name: str = None) -> float:
     return DEFAULT_STEP_WOLS_POWER
 
 
-MEDIAN_FILTER_SECONDS = max(0.0, _env_float("MPTRADE_MEDIAN_FILTER_SECONDS", DEFAULT_MEDIAN_FILTER_SECONDS))
 STEP_WOLS_POWER = _resolve_step_wols_power(SHORT_TREND_ESTIMATOR)
 DEFAULT_TREND_NOISE_GATE_K = 0.0      # Multiplier k for adaptive noise gate (0.0 = bypassed, e.g. 0.05-0.10)
 TREND_NOISE_GATE_K = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", DEFAULT_TREND_NOISE_GATE_K))
-MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC = 2.0  # Sparser data: no 1s bid-ask bounce to remove.
-_MEDIAN_KERNELS = (1, 3, 5)
 _STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to this many steps.
+_SYMBOL_POWER_CACHE = {"mtime_ns": None, "map": {}}
+
+
+def _load_symbol_power_map() -> dict[str, float]:
+    conf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruments.conf")
+    try:
+        mtime_ns = os.stat(conf_path).st_mtime_ns
+    except OSError:
+        return {}
+    if _SYMBOL_POWER_CACHE["mtime_ns"] == mtime_ns and _SYMBOL_POWER_CACHE["map"]:
+        return _SYMBOL_POWER_CACHE["map"]
+    import configparser
+    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+    try:
+        cp.read(conf_path, encoding="utf-8")
+    except Exception:
+        return {}
+    mapping: dict[str, float] = {}
+    for sec in cp.sections():
+        raw_p = cp[sec].get("trend.step_wols_power")
+        if raw_p is None:
+            continue
+        try:
+            pval = float(raw_p)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not (math.isfinite(pval) and pval >= 0.0):
+            continue
+        sym = str(cp[sec].get("symbol") or "").strip().upper()
+        base = str(cp[sec].get("base") or "").strip().upper()
+        if sym:
+            mapping[sym] = pval
+        if base:
+            mapping.setdefault(base, pval)
+            for q in ("USDC", "USDT", "USD", "EUR"):
+                mapping.setdefault(f"{base}{q}", pval)
+    _SYMBOL_POWER_CACHE["mtime_ns"] = mtime_ns
+    _SYMBOL_POWER_CACHE["map"] = mapping
+    return mapping
+
+
+def step_wols_power_for_symbol(symbol: str | None = None) -> float:
+    """Resolve Step-WOLS exponent p for ``symbol``.
+
+    Explicit env/module overrides (``MPTRADE_STEP_WOLS_POWER``,
+    ``MPTRADE_SHORT_TREND_ESTIMATOR=step_wols_cubic|step_wols_linear``, or
+    patched ``STEP_WOLS_POWER``) take precedence; otherwise looks up
+    ``trend.step_wols_power`` in ``instruments.conf`` (BTC -> 3.0, altcoins -> 2.0),
+    falling back to ``DEFAULT_STEP_WOLS_POWER`` (2.0).
+    """
+    if "MPTRADE_STEP_WOLS_POWER" in os.environ:
+        return max(0.0, _env_float("MPTRADE_STEP_WOLS_POWER", DEFAULT_STEP_WOLS_POWER))
+    raw_est = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
+    if raw_est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
+        return 3.0
+    if raw_est == SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR:
+        return 1.0
+    if STEP_WOLS_POWER != DEFAULT_STEP_WOLS_POWER:
+        return max(0.0, float(STEP_WOLS_POWER))
+    if isinstance(symbol, str) and symbol.strip():
+        s_up = symbol.strip().upper().replace("/", "").replace("-", "")
+        pmap = _load_symbol_power_map()
+        if s_up in pmap:
+            return pmap[s_up]
+    return float(STEP_WOLS_POWER)
 
 
 def _active_estimator() -> str:
@@ -98,78 +157,24 @@ def _active_estimator() -> str:
     return SHORT_TREND_ESTIMATOR_STEP_WOLS
 
 
-def median_filter_kernel(sample_rate_sec, median_seconds: float = None) -> int:
-    """Return the causal median kernel length (1, 3 or 5 samples) for a sampling rate.
-
-    The filter is defined in seconds (~5s), not samples: 5 samples at the live
-    0.8-1.0s cadence, 3 samples up to 2s, and bypassed (1) for sparser data where a
-    multi-sample median would only add lag.
-    """
-    sr = DEFAULT_SAMPLE_RATE_SEC
-    if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
-        try:
-            cand = float(sample_rate_sec)
-            if math.isfinite(cand) and cand > 0:
-                sr = cand
-        except (TypeError, ValueError, OverflowError):
-            pass
-    med_sec = MEDIAN_FILTER_SECONDS if median_seconds is None else max(0.0, float(median_seconds))
-    if med_sec <= 0.0 or sr > MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC:
-        return 1
-    ratio = med_sec / sr
-    if not math.isfinite(ratio) or ratio >= 5.0:
-        return 5
-    if ratio < 1.5:
-        return 1
-    k = int(round(ratio))
-    if k % 2 == 0:
-        k -= 1
-    return max(3, min(5, k))
-
-
-def _small_median(vals) -> float:
-    if len(vals) == 0:
-        return 0.0
-    s = sorted(vals)
-    n = len(s)
-    mid = n // 2
-    return float(s[mid]) if n % 2 else 0.5 * (s[mid - 1] + s[mid])
-
-
-def causal_median_filter(prices, kernel: int) -> np.ndarray:
-    """Slice-local causal median: out[i] = median(prices[max(0, i-k+1) .. i])."""
-    arr = np.asarray(prices, dtype=np.float64)
-    if kernel <= 1 or len(arr) == 0:
-        return arr.copy()
-    out = np.empty_like(arr)
-    head = min(kernel - 1, len(arr))
-    for i in range(head):
-        out[i] = _small_median(arr[: i + 1])
-    if len(arr) >= kernel:
-        from numpy.lib.stride_tricks import sliding_window_view
-        out[kernel - 1:] = np.median(sliding_window_view(arr, kernel), axis=-1)
-    return out
-
-
-def step_wols_slope(prices, sample_rate_sec=None, power=None, median_seconds=None) -> float:
-    """Generalized Step-WOLS slope: sum(k^p * dy_k) / sum(k^p) on median-filtered prices.
+def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None = None) -> float:
+    """Generalized Step-WOLS slope: sum(k^p * dy_k) / sum(k^p) directly on raw prices.
 
     Args:
         prices: Iterable of float prices.
-        sample_rate_sec: Effective sampling interval in seconds (default 0.8s).
-        power: Exponent p (w_k = k^p). Defaults to STEP_WOLS_POWER (2.0 = quadratic).
-        median_seconds: Duration of causal median filter. Defaults to MEDIAN_FILTER_SECONDS (5.0s).
+        sample_rate_sec: Effective sampling interval in seconds (retained for signature compatibility).
+        power: Exponent p (w_k = k^p). Defaults to step_wols_power_for_symbol(symbol).
+        symbol: Optional symbol name for per-coin power lookup from instruments.conf.
     """
-    pwr = float(STEP_WOLS_POWER if power is None else power)
-    med_sec = float(MEDIAN_FILTER_SECONDS if median_seconds is None else median_seconds)
-    filtered = causal_median_filter(prices, median_filter_kernel(sample_rate_sec, median_seconds=med_sec))
-    m = len(filtered) - 1
+    pwr = float(step_wols_power_for_symbol(symbol) if power is None else power)
+    arr = np.asarray(prices, dtype=np.float64)
+    m = len(arr) - 1
     if m < 1:
         return 0.0
     k = np.arange(1, m + 1, dtype=np.float64)
     w = k ** pwr if pwr != 1.0 else k
-    val = float(np.dot(w, np.diff(filtered)) / np.sum(w))
-    tol = 1e-10 * max(1.0, abs(float(filtered[-1])))
+    val = float(np.dot(w, np.diff(arr)) / np.sum(w))
+    tol = 1e-10 * max(1.0, abs(float(arr[-1])))
     return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
 
 
@@ -266,7 +271,13 @@ def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
         return 2
 
 
-def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
+def instant_trend_from_prices(
+    prices,
+    sample_rate_sec,
+    window_seconds=None,
+    symbol: str | None = None,
+    power: float | None = None,
+):
     """Apply the exact ``PriceWindow.get_short_trend`` formula directly to a
     price list and sampling rate without constructing a complete window. This avoids
     incremental deque bookkeeping for a one-shot raw slice and is the single source of
@@ -290,7 +301,9 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
         gradient_recent = float(np.mean(gradient_lst)) if len(gradient_lst) else 0.0
     if abs(gradient_recent) <= 1e-12:
         gradient_recent = 0.0
-    growth_coefficient = step_wols_slope(analyzer.prices, sample_rate_sec)
+    growth_coefficient = step_wols_slope(
+        analyzer.prices, sample_rate_sec, power=power, symbol=symbol
+    )
     noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
     noise_thr = 0.0
     if noise_gate_k > 0.0 and len(analyzer.prices) >= 3:
@@ -317,6 +330,7 @@ class IncrementalTrendBuffer:
         self.p0 = []
         self.p1 = []
         self.p2 = []
+        self.pk2 = []
         self.pg2 = []
         self.plr2 = []
         self.nonpos = []
@@ -324,12 +338,8 @@ class IncrementalTrendBuffer:
         self.base_p0 = 0.0
         self.base_p1 = 0.0
         self.base_p2 = 0.0
+        self.base_pk2 = 0.0
         self.y_ref = None
-        # Step-WOLS cubic support: causal medians (kernels 3/5) and, per kernel
-        # (1 = raw), prefix sums of z, J*z, J^2*z with z = filtered - y_ref, J global index.
-        self.med = {3: [], 5: []}
-        self.fq = {k: ([], [], []) for k in _MEDIAN_KERNELS}
-        self.fq_base = {k: [0.0, 0.0, 0.0] for k in _MEDIAN_KERNELS}
 
     def clear(self):
         self.timestamps.clear()
@@ -337,18 +347,13 @@ class IncrementalTrendBuffer:
         self.p0.clear()
         self.p1.clear()
         self.p2.clear()
+        self.pk2.clear()
         self.pg2.clear()
         self.plr2.clear()
         self.nonpos.clear()
         self.offset = 0
-        self.base_p0 = self.base_p1 = self.base_p2 = 0.0
+        self.base_p0 = self.base_p1 = self.base_p2 = self.base_pk2 = 0.0
         self.y_ref = None
-        for lst in self.med.values():
-            lst.clear()
-        for k in _MEDIAN_KERNELS:
-            for lst in self.fq[k]:
-                lst.clear()
-            self.fq_base[k] = [0.0, 0.0, 0.0]
 
     def append(self, price: float, ts_ms: int = 0) -> None:
         if price is None or isinstance(price, bool) or isinstance(ts_ms, bool):
@@ -364,15 +369,18 @@ class IncrementalTrendBuffer:
             self.y_ref = y
         i = len(self.prices)
         k = self.offset + i
+        kf = float(k)
         dy = y - self.y_ref
         self.timestamps.append(ts_int)
         self.prices.append(y)
         prev0 = self.p0[-1] if i > 0 else self.base_p0
         prev1 = self.p1[-1] if i > 0 else self.base_p1
         prev2 = self.p2[-1] if i > 0 else self.base_p2
+        prevk2 = self.pk2[-1] if i > 0 else self.base_pk2
         self.p0.append(prev0 + dy)
-        self.p1.append(prev1 + k * dy)
+        self.p1.append(prev1 + kf * dy)
         self.p2.append(prev2 + dy * dy)
+        self.pk2.append(prevk2 + kf * kf * dy)
         if i >= 2:
             g_prev = 0.5 * (self.prices[i] - self.prices[i - 2])
             prev_pg2 = self.pg2[i - 2] + g_prev * g_prev
@@ -387,93 +395,66 @@ class IncrementalTrendBuffer:
             self.plr2.append(self.plr2[-1] if i > 0 else 0.0)
         prev_np = self.nonpos[-1] if i > 0 else 0
         self.nonpos.append(prev_np + (1 if y <= 0.0 else 0))
-        for kern in _MEDIAN_KERNELS:
-            if kern == 1:
-                fval = y
-            else:
-                fval = _small_median(self.prices[max(0, i - kern + 1): i + 1])
-                self.med[kern].append(fval)
-            z = fval - self.y_ref
-            q0, q1, q2 = self.fq[kern]
-            if i > 0:
-                b0, b1, b2 = q0[-1], q1[-1], q2[-1]
-            else:
-                b0, b1, b2 = self.fq_base[kern]
-            q0.append(b0 + z)
-            q1.append(b1 + k * z)
-            q2.append(b2 + float(k) * float(k) * z)
 
-    def _filtered(self, kern: int, j: int) -> float:
-        return self.prices[j] if kern == 1 else self.med[kern][j]
-
-    def _fq_range(self, kern: int, lo: int, hi: int):
-        """Return (sum z, sum J*z, sum J^2*z) over buffer indices [lo, hi]."""
-        q0, q1, q2 = self.fq[kern]
+    def _raw_moment_range(self, lo: int, hi: int):
+        """Return (sum dy, sum J*dy, sum J^2*dy) over buffer indices [lo, hi]."""
         if lo > 0:
-            b0, b1, b2 = q0[lo - 1], q1[lo - 1], q2[lo - 1]
+            b0, b1, bk2 = self.p0[lo - 1], self.p1[lo - 1], self.pk2[lo - 1]
         else:
-            b0, b1, b2 = self.fq_base[kern]
-        return q0[hi] - b0, q1[hi] - b1, q2[hi] - b2
+            b0, b1, bk2 = self.base_p0, self.base_p1, self.base_pk2
+        return self.p0[hi] - b0, self.p1[hi] - b1, self.pk2[hi] - bk2
 
-    def step_wols_slope(self, a: int, b: int, sample_rate_sec=None, power=None) -> float:
-        """Step-WOLS slope on [a, b] over the slice-local causal median with configurable power.
+    def step_wols_slope(
+        self, a: int, b: int, sample_rate_sec=None, power=None, symbol: str | None = None
+    ) -> float:
+        """Step-WOLS slope on [a, b] directly over raw prices with configurable power.
 
-        Equals ``step_wols_slope(prices[a:b+1], sample_rate_sec, power)``.
+        Equals ``step_wols_slope(prices[a:b+1], sample_rate_sec, power, symbol)``.
         Slices up to ``_STEP_WOLS_DIRECT_MAX_STEPS`` steps (1024) use exact direct
-        vectorized dot product on the stored medians; longer slices use O(1) Abel
-        summation on prefix sums for p=2 (Quadratic) or p=3 (Cubic) with bounded
-        floating-point precision error.
+        vectorized dot product; longer slices use O(1) Abel summation on prefix sums
+        for p=1 (Linear), p=2 (Quadratic), or p=3 (Cubic).
         """
         m = b - a
         if m < 1:
             return 0.0
-        kern = median_filter_kernel(sample_rate_sec)
         p = self.prices
-        n_local = min(kern - 1, m + 1) if kern > 1 else 0
-        local_head = [_small_median(p[a: a + r + 1]) for r in range(n_local)]
-        pwr = float(STEP_WOLS_POWER if power is None else power)
+        pwr = float(step_wols_power_for_symbol(symbol) if power is None else power)
+        ref_last = float(p[b])
 
-        if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (2.0, 3.0):
-            src = p if kern == 1 else self.med[kern]
-            f = np.asarray(src[a: b + 1], dtype=np.float64)
-            if n_local:
-                f[:n_local] = local_head
+        if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (1.0, 2.0, 3.0):
+            f = np.asarray(p[a: b + 1], dtype=np.float64)
             w = np.arange(1, m + 1, dtype=np.float64) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=np.float64)
             val = float(np.dot(w, np.diff(f)) / np.sum(w))
-            ref_last = float(f[-1])
+        elif pwr == 1.0:
+            # O(1) Linear Abel summation:
+            # sum_{k=1..m} k (y_{a+k} - y_{a+k-1}) = m * dy_b - sum_{r=0..m-1} dy_{a+r}
+            y_ref = self.y_ref if self.y_ref is not None else 0.0
+            a0, _, _ = self._raw_moment_range(a, b - 1)
+            total = float(m) * (ref_last - y_ref) - a0
+            s1 = 0.5 * float(m) * float(m + 1)
+            val = float(total / s1)
         elif pwr == 2.0:
             # O(1) Quadratic Abel summation:
-            # sum_{k=1..m} k^2 (f_{a+k} - f_{a+k-1}) = m^2 f_b - sum_{r=0..m-1} (2r + 1) f_{a+r}
-            # with sum_{r=0..m-1} (2r + 1) z_{a+r} = 2 a1 - (2c - 1) a0
+            # sum_{k=1..m} k^2 (y_{a+k} - y_{a+k-1}) = m^2 dy_b - sum_{r=0..m-1} (2r + 1) dy_{a+r}
             y_ref = self.y_ref if self.y_ref is not None else 0.0
             c = float(self.offset + a)
-            a0, a1, _ = self._fq_range(kern, a, b - 1)
+            a0, a1, _ = self._raw_moment_range(a, b - 1)
             sum_2r1 = 2.0 * a1 - (2.0 * c - 1.0) * a0
             m2 = float(m) ** 2
-            total = m2 * (self._filtered(kern, b) - y_ref) - sum_2r1
-            for r in range(n_local):
-                delta = local_head[r] - self._filtered(kern, a + r)
-                if delta:
-                    total -= (2.0 * r + 1.0) * delta
+            total = m2 * (ref_last - y_ref) - sum_2r1
             s2 = (float(m) * float(m + 1) * float(2 * m + 1)) / 6.0
             val = float(total / s2)
-            ref_last = self._filtered(kern, b)
         else:
             # O(1) Cubic Abel summation (p=3):
             y_ref = self.y_ref if self.y_ref is not None else 0.0
             c = float(self.offset + a)
-            a0, a1, a2 = self._fq_range(kern, a, b - 1)
+            a0, a1, a2 = self._raw_moment_range(a, b - 1)
             sum_r2 = a2 - 2.0 * c * a1 + c * c * a0
             sum_r1 = a1 - c * a0
             m3 = float(m) ** 3
-            total = m3 * (self._filtered(kern, b) - y_ref) - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
-            for r in range(n_local):
-                delta = local_head[r] - self._filtered(kern, a + r)
-                if delta:
-                    total -= (3.0 * r * r + 3.0 * r + 1.0) * delta
-            s3 = (0.5 * m * (m + 1)) ** 2
+            total = m3 * (ref_last - y_ref) - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
+            s3 = (0.5 * float(m) * float(m + 1)) ** 2
             val = float(total / s3)
-            ref_last = self._filtered(kern, b)
 
         tol = 1e-10 * max(1.0, abs(ref_last))
         return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
@@ -510,19 +491,13 @@ class IncrementalTrendBuffer:
         self.base_p0 = self.p0[idx - 1]
         self.base_p1 = self.p1[idx - 1]
         self.base_p2 = self.p2[idx - 1]
-        for kern in _MEDIAN_KERNELS:
-            q0, q1, q2 = self.fq[kern]
-            self.fq_base[kern] = [q0[idx - 1], q1[idx - 1], q2[idx - 1]]
-            del q0[:idx]
-            del q1[:idx]
-            del q2[:idx]
-        for lst in self.med.values():
-            del lst[:idx]
+        self.base_pk2 = self.pk2[idx - 1]
         del self.timestamps[:idx]
         del self.prices[:idx]
         del self.p0[:idx]
         del self.p1[:idx]
         del self.p2[:idx]
+        del self.pk2[:idx]
         del self.pg2[:idx]
         del self.plr2[:idx]
         del self.nonpos[:idx]
@@ -585,8 +560,16 @@ class IncrementalTrendBuffer:
             if isinstance(e, (list, tuple)) and len(e) >= 2:
                 self.append(e[1], e[0])
 
-    def eval_slice(self, a: int, b: int, sample_rate_sec: float = DEFAULT_SAMPLE_RATE_SEC,
-                   eps_k: float = 1.0, window_seconds: float | None = None):
+    def eval_slice(
+        self,
+        a: int,
+        b: int,
+        sample_rate_sec: float = DEFAULT_SAMPLE_RATE_SEC,
+        eps_k: float = 1.0,
+        window_seconds: float | None = None,
+        power: float | None = None,
+        symbol: str | None = None,
+    ):
         """Evaluate (final_trend, growth_coefficient, slope_full, gradient_recent, epsilon)
         on inclusive index range [a, b] in O(1) using cumulative prefix sums."""
         if isinstance(a, bool) or isinstance(b, bool):
@@ -631,7 +614,9 @@ class IncrementalTrendBuffer:
         if abs(gradient_recent) <= 1e-12:
             gradient_recent = 0.0
 
-        growth_coefficient = self.step_wols_slope(a, b, sample_rate_sec)
+        growth_coefficient = self.step_wols_slope(
+            a, b, sample_rate_sec, power=power, symbol=symbol
+        )
 
         if n < 3:
             epsilon = 0.0
@@ -1040,8 +1025,9 @@ class PriceWindow:
                 and self._trend_buf.prices[blen - n] == self.prices[0]
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
+                eff_power = step_wols_power_for_symbol(self.symbol)
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS, TREND_NOISE_GATE_K)
+                       _active_estimator(), eff_power, TREND_NOISE_GATE_K)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     return float(k_val * self._cached_eval_val[4])
                 res = self._trend_buf.eval_slice(
@@ -1050,6 +1036,8 @@ class PriceWindow:
                     sample_rate_sec=self.sample_rate_sec,
                     eps_k=1.0,
                     window_seconds=self.window_seconds,
+                    power=eff_power,
+                    symbol=self.symbol,
                 )
                 self._cached_eval_key = key
                 self._cached_eval_val = res
@@ -1067,12 +1055,13 @@ class PriceWindow:
         with self._lock:
             n = len(self.prices)
             blen = len(self._trend_buf.prices)
+            eff_power = step_wols_power_for_symbol(self.symbol)
             if (
                 blen >= n
                 and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
             ):
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS, TREND_NOISE_GATE_K)
+                       _active_estimator(), eff_power, TREND_NOISE_GATE_K)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
                 else:
@@ -1082,6 +1071,8 @@ class PriceWindow:
                         sample_rate_sec=self.sample_rate_sec,
                         eps_k=1.0,
                         window_seconds=self.window_seconds,
+                        power=eff_power,
+                        symbol=self.symbol,
                     )
                     self._cached_eval_key = key
                     self._cached_eval_val = res
@@ -1089,7 +1080,12 @@ class PriceWindow:
             else:
                 prices_snapshot = list(self.prices)
                 final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
-                    prices_snapshot, self.sample_rate_sec, window_seconds=self.window_seconds)
+                    prices_snapshot,
+                    self.sample_rate_sec,
+                    window_seconds=self.window_seconds,
+                    symbol=self.symbol,
+                    power=eff_power,
+                )
 
         if getattr(builtins.print, "__name__", "") != "_dummy_print":
             raw_rate = self.sample_rate_sec
