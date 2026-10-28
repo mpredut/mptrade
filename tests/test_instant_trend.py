@@ -625,7 +625,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         writer.start_computation({"BTCUSDT": c24}, cpm)
 
         # Request dynamic window 60s and flush writer
-        dyn60 = writer.get_short_trend_for_window("BTCUSDT", 60)
+        now_entry = c24.cache["BTCUSDT"][-1][0] / 1000.0
+        dyn60 = writer.get_short_trend_for_window("BTCUSDT", 60, now=now_entry)
         self.assertIsNotNone(dyn60)
         writer._write_file()
 
@@ -657,9 +658,9 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIsNotNone(cached_slice)
         self.assertEqual(cached_slice["final_trend"], slice_res["final_trend"])
 
-        dyn120 = reader.get_short_trend_for_window("BTCUSDT", 120)
+        dyn120 = reader.get_short_trend_for_window("BTCUSDT", 120, now=now_entry)
         self.assertIsNotNone(dyn120)
-        self.assertTrue(reader.is_trend_up("BTCUSDT", window_seconds=120))
+        self.assertTrue(reader.is_trend_up("BTCUSDT", window_seconds=120, now=now_entry))
 
     def test_provider_timestamp_propagates_to_cache24(self):
         from binance_api.bapi_ws import BinancePriceStream

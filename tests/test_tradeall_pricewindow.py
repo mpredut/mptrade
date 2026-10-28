@@ -442,12 +442,14 @@ class TestPriceWindowGetTrend(unittest.TestCase):
             self.assertIn(pw_mod.SHORT_TREND_ESTIMATOR, (pw_mod.SHORT_TREND_ESTIMATOR_STEP_WOLS, pw_mod.SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC))
             self.assertAlmostEqual(gc, pw_mod.step_wols_slope(prices, pw.sample_rate_sec), places=10)
 
-        with self.subTest("legacy estimator keeps gc = (sf + gr) / 2 for rollback"):
+        with self.subTest("power parameterization in PriceWindow"):
             import pricewindow as pw_mod
-            with patch.object(pw_mod, "SHORT_TREND_ESTIMATOR", pw_mod.SHORT_TREND_ESTIMATOR_LEGACY):
-                pw = _window([100 + i for i in range(20)])
+            prices = [100 + i for i in range(20)]
+            pw = _window(prices)
+            with patch.object(pw_mod, "STEP_WOLS_POWER", 3.0):
+                pw._short_trend_cache = None
                 _, gc, sf, gr = pw.get_short_trend()
-                self.assertAlmostEqual(gc, (sf + gr) / 2.0, places=10)
+                self.assertAlmostEqual(gc, pw_mod.step_wols_slope(prices, pw.sample_rate_sec, power=3.0), places=10)
 
         with self.subTest("neutral series return zero trend"):
             for label, prices in (("single", [100.0]), ("constant", [100.0] * 20)):

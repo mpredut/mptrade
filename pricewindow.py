@@ -19,10 +19,6 @@ from bisect import insort, bisect_left
 
 import numpy as np
 from scipy.stats import linregress
-# [DEPRECATED / REFERENCE ONLY — DO NOT IMPORT/CALL]
-# Kept for reference alongside commented-out polynomial_regression_trend.
-# from sklearn.preprocessing import PolynomialFeatures
-# from sklearn.linear_model import LinearRegression
 
 import utils as u
 
@@ -32,34 +28,30 @@ RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for prima
 WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
 WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
 
-# ── Short-trend estimator (SSOT for growth_coefficient / final_trend) ─────────
-# "step_wols" (default, Oct 28): [raw price] -> [adaptive causal median filter
-#   ~5s, bypassed for sparse data] -> [Step-WOLS: sum(k^p * dy_k) / sum(k^p)
-#   over the window's price steps].
-#   Default power: p=2 (Quadratic, empirical #1 champion on 11.26M 1.0s ticks:
-#   +$8.04 net vs legacy, +$1.75 over cubic p=3, zero regressions).
-#   Smooth convex growth with robust immunity to 2-3s intra-trend pullbacks.
-#   Configurable via MPTRADE_STEP_WOLS_POWER (default 2.0; accepts any p >= 0).
-#   Configurable via MPTRADE_MEDIAN_FILTER_SECONDS (default 5.0; 0 = bypass).
-# "step_wols_cubic": Backward-compatibility alias for Step-WOLS with p=3.
-# "step_wols_quadratic": Explicit alias for Step-WOLS with p=2.
-# "step_wols_linear": Explicit alias for Step-WOLS with p=1.
-# "legacy": growth_coefficient = (slope_full + gradient_recent) / 2 (pre-Oct 27).
-# Rollback without a deploy: MPTRADE_SHORT_TREND_ESTIMATOR=legacy.
+# ── Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) ──
+# Unified pipeline: [raw price] -> [adaptive causal median filter ~5s, bypassed for
+# sparse data] -> [estimator slope calculation].
+# Default: Step-WOLS Quadratic (p=2, med=5.0s) — empirical #1 champion on 11.26M 1.0s ticks
+# (+8.04 net vs old baseline, +$1.75 over cubic p=3, zero regressions).
+# Configurable via MPTRADE_STEP_WOLS_POWER (default 2.0; accepts any p >= 0).
+# Configurable via MPTRADE_MEDIAN_FILTER_SECONDS (default 5.0; 0 = bypass).
+#
+# Extensibility for future short-trend models:
+#   1. Add model name constant to SHORT_TREND_ESTIMATOR_*
+#   2. Register in _SHORT_TREND_ESTIMATORS
+#   3. Add dispatch logic in compute_short_trend_slope() and IncrementalTrendBuffer
 SHORT_TREND_ESTIMATOR_STEP_WOLS = "step_wols"
 SHORT_TREND_ESTIMATOR_STEP_WOLS_QUADRATIC = "step_wols_quadratic"
 SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC = "step_wols_cubic"
 SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR = "step_wols_linear"
-SHORT_TREND_ESTIMATOR_LEGACY = "legacy"
 _SHORT_TREND_ESTIMATORS = (
     SHORT_TREND_ESTIMATOR_STEP_WOLS,
     SHORT_TREND_ESTIMATOR_STEP_WOLS_QUADRATIC,
     SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC,
     SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR,
-    SHORT_TREND_ESTIMATOR_LEGACY,
 )
 
-DEFAULT_STEP_WOLS_POWER = 2.0         # Quadratic: empirical champion on 11.26M real 1s ticks (+8.04 vs legacy)
+DEFAULT_STEP_WOLS_POWER = 2.0         # Quadratic: empirical champion on 11.26M real 1s ticks (+8.04 net)
 DEFAULT_MEDIAN_FILTER_SECONDS = 5.0   # Adaptive causal median filter window in seconds (k=5 at 1s)
 
 
@@ -247,46 +239,6 @@ class PriceTrendAnalyzer:
         trend_line = slope * x + intercept
         return trend_line, slope, r_value
 
-    # ── [DEPRECATED / REFERENCE ONLY — DO NOT CALL (SSOT: PriceWindow.get_short_trend)] ──
-    # Preserved for historical reference only; must not be invoked by production or test code.
-    # def polynomial_regression_trend(self, degree=2):
-    #     if len(self.prices) < 2:
-    #         return [], []
-    #     deg_int = 2
-    #     if degree is not None and not isinstance(degree, bool):
-    #         try:
-    #             df = float(degree)
-    #             if math.isfinite(df) and df.is_integer() and int(df) >= 1:
-    #                 deg_int = int(df)
-    #         except (TypeError, ValueError, OverflowError):
-    #             deg_int = 2
-    #     x = np.arange(len(self.prices)).reshape(-1, 1)
-    #     y = np.array(self.prices)
-    #     poly_features = PolynomialFeatures(degree=deg_int)
-    #     x_poly = poly_features.fit_transform(x)
-    #
-    #     model = LinearRegression().fit(x_poly, y)
-    #     trend_poly = model.predict(x_poly)
-    #     return trend_poly, model.coef_
-    #
-    # def exponential_moving_average(self, span=5):
-    #     prices_list = list(self.prices)
-    #     if not prices_list:
-    #         return []
-    #     span_f = 5.0
-    #     if span is not None and not isinstance(span, bool):
-    #         try:
-    #             sf = float(span)
-    #             if math.isfinite(sf) and sf > 0:
-    #                 span_f = sf
-    #         except (TypeError, ValueError, OverflowError):
-    #             pass
-    #     ema = [prices_list[0]]
-    #     alpha = 2.0 / (span_f + 1.0)
-    #     for price in prices_list[1:]:
-    #         ema.append(alpha * price + (1 - alpha) * ema[-1])
-    #     return ema
-
     def calculate_gradient(self):
         if len(self.prices) < 2:
             print("Gradient: not enough data to compute the gradient.")
@@ -336,10 +288,7 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
         gradient_recent = float(np.mean(gradient_lst)) if len(gradient_lst) else 0.0
     if abs(gradient_recent) <= 1e-12:
         gradient_recent = 0.0
-    if _active_estimator() == SHORT_TREND_ESTIMATOR_LEGACY:
-        growth_coefficient = (slope_full + gradient_recent) / 2.0
-    else:
-        growth_coefficient = step_wols_slope(analyzer.prices, sample_rate_sec)
+    growth_coefficient = step_wols_slope(analyzer.prices, sample_rate_sec)
     final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
@@ -672,11 +621,7 @@ class IncrementalTrendBuffer:
         if abs(gradient_recent) <= 1e-12:
             gradient_recent = 0.0
 
-        growth_coefficient = (
-            float((slope_full + gradient_recent) / 2.0)
-            if _active_estimator() == SHORT_TREND_ESTIMATOR_LEGACY
-            else self.step_wols_slope(a, b, sample_rate_sec)
-        )
+        growth_coefficient = self.step_wols_slope(a, b, sample_rate_sec)
         final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
 
         if n < 3:
@@ -1082,7 +1027,7 @@ class PriceWindow:
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator())
+                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     return float(k_val * self._cached_eval_val[4])
                 res = self._trend_buf.eval_slice(
@@ -1113,7 +1058,7 @@ class PriceWindow:
                 and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
             ):
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator())
+                       _active_estimator(), STEP_WOLS_POWER, MEDIAN_FILTER_SECONDS)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
                 else:
@@ -1222,49 +1167,6 @@ class WindowAnalyzer:
     def calculate_acceleration(self, window_sec: float = 90.0) -> tuple[float, float]:
         return self.window.calculate_acceleration(window_sec)
 
-    # ── [DEPRECATED / REFERENCE ONLY — DO NOT CALL (SSOT: PriceWindow.get_short_trend)] ──
-    # Preserved for historical reference only; must not be invoked by production or test code.
-    # def calculate_slope_max_min(self):
-    #     w = self.window
-    #     if len(w.sorted_prices) < 2:
-    #         return 0
-    #     min_price, min_index = w.get_min_and_index()
-    #     max_price, max_index = w.get_max_and_index()
-    #     if min_price is None or max_price is None or max_index == min_index:
-    #         return 0
-    #     return (max_price - min_price) / (max_index - min_index)
-    #
-    # def calculate_proximities(self, current_price):
-    #     if current_price is None or isinstance(current_price, bool):
-    #         return 0, 0
-    #     try:
-    #         cp = float(current_price)
-    #     except (TypeError, ValueError, OverflowError):
-    #         return 0, 0
-    #     if not math.isfinite(cp):
-    #         return 0, 0
-    #     w = self.window
-    #     min_price, _ = w.get_min_and_index()
-    #     max_price, _ = w.get_max_and_index()
-    #     if min_price is None or max_price is None or max_price == min_price:
-    #         return 0, 0
-    #     min_proximity = (cp - min_price) / (max_price - min_price)
-    #     max_proximity = (max_price - cp) / (max_price - min_price)
-    #     if not (math.isfinite(min_proximity) and math.isfinite(max_proximity)):
-    #         return 0, 0
-    #     return max(min_proximity, 0), max(max_proximity, 0)
-    #
-    # def calculate_positions(self):
-    #     w = self.window
-    #     min_price, min_index = w.get_min_and_index()
-    #     max_price, max_index = w.get_max_and_index()
-    #     win_size = getattr(w, "window_size", 0)
-    #     if isinstance(win_size, bool) or not isinstance(win_size, (int, float)) or not math.isfinite(win_size) or win_size <= 0:
-    #         return None, None
-    #     min_position = min_index / win_size if min_index is not None else None
-    #     max_position = max_index / win_size if max_index is not None else None
-    #     return min_position, max_position
-
     def check_price_change(self, threshold):
         if threshold is None or isinstance(threshold, bool):
             return 0, 0
@@ -1298,18 +1200,3 @@ class WindowAnalyzer:
                       f'min_index={min_index}, max_index={max_index}')
             return -price_diff_newest if price_diff_max > price_diff_min else price_diff_newest, 0
         return 0, 0
-
-    # ── [DEPRECATED / REFERENCE ONLY — DO NOT CALL (SSOT: PriceWindow.get_short_trend)] ──
-    # Preserved for historical reference only; must not be invoked by production or test code.
-    # def _analyze_price_movement(self, min_price, min_index, max_price, max_index,
-    #                             newest_price, newest_index, price_diff):
-    #     price_diff_min = u.calculate_difference_percent(min_price, newest_price)
-    #     price_diff_max = u.calculate_difference_percent(max_price, newest_price)
-    #     grow = price_diff_max < price_diff_min
-    #     slope_min = u.slope(min_price, min_index, newest_price, newest_index)
-    #     slope_max = u.slope(max_price, max_index, newest_price, newest_index)
-    #     slope_max_min = slope_max if abs(slope_max) > abs(slope_min) else slope_min
-    #     return slope_max_min, price_diff
-    #
-    # def evaluate_buy_sell_opportunity(self, current_price, threshold_percent=1, decrease_percent=3.7):
-    #     pass

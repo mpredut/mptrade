@@ -102,10 +102,7 @@ class TestStepWolsGeneralization(unittest.TestCase):
     def test_single_tick_spike_does_not_flip_a_downtrend(self):
         prices = [60000.0 - 2.0 * i for i in range(222)]
         prices[-1] = prices[-2] + 300.0  # isolated wick / bid-ask bounce on the newest tick
-        with patch.object(pw, "SHORT_TREND_ESTIMATOR", pw.SHORT_TREND_ESTIMATOR_LEGACY):
-            legacy_ft, legacy_gc, _, _ = pw.instant_trend_from_prices(prices, 1.0)
         ft, gc, _, _ = pw.instant_trend_from_prices(prices, 1.0)
-        self.assertEqual(legacy_ft, 1)   # legacy flips to UP on one bad tick
         self.assertEqual(ft, -1)         # median + Step-WOLS keeps the real direction
         self.assertLess(gc, 0.0)
 
@@ -122,15 +119,14 @@ class TestStepWolsGeneralization(unittest.TestCase):
         rng = np.random.default_rng(4)
         for px in 60000 + np.cumsum(rng.normal(0, 5, 222)):
             win.process_price(float(px))
-        _, gc_new, sf, gr = win.get_short_trend()
-        with patch.object(pw, "SHORT_TREND_ESTIMATOR", pw.SHORT_TREND_ESTIMATOR_LEGACY):
-            _, gc_legacy, _, _ = win.get_short_trend()
-        self.assertAlmostEqual(gc_legacy, (sf + gr) / 2.0, places=10)
-        self.assertAlmostEqual(gc_new, pw.step_wols_slope(list(win.prices), 1.0), places=9)
+        _, gc_quad, _, _ = win.get_short_trend()
+        self.assertAlmostEqual(gc_quad, pw.step_wols_slope(list(win.prices), 1.0, power=2.0), places=9)
+        with patch.object(pw, "STEP_WOLS_POWER", 3.0):
+            win._short_trend_cache = None
+            _, gc_cubic, _, _ = win.get_short_trend()
+            self.assertAlmostEqual(gc_cubic, pw.step_wols_slope(list(win.prices), 1.0, power=3.0), places=9)
 
     def test_env_resolution_defaults_to_step_wols_and_accepts_aliases(self):
-        with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "legacy"}):
-            self.assertEqual(pw._resolve_short_trend_estimator(), "legacy")
         with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "step_wols_cubic"}):
             self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols_cubic")
             self.assertEqual(pw._resolve_step_wols_power("step_wols_cubic"), 3.0)
