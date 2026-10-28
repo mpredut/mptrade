@@ -30,7 +30,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, parse_dotenv
 
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -180,25 +180,13 @@ def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
 
 def _parse_env_file(env_path: str) -> Dict[str, str]:
     """Parse a key=value env/conf file into an uppercase-keyed dictionary without mutating os.environ."""
-    parsed: Dict[str, str] = {}
-    if not os.path.exists(env_path):
-        return parsed
+    if not env_path or not os.path.exists(env_path):
+        return {}
     try:
-        with open(env_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                cleaned = line.split("#", 1)[0].strip()
-                if not cleaned or "=" not in cleaned:
-                    continue
-                k, v = cleaned.split("=", 1)
-                key = k.strip()
-                if key.lower().startswith("export") and (len(key) == 6 or key[6].isspace()):
-                    key = key[6:].strip()
-                val = v.strip().strip('"').strip("'")
-                if key:
-                    parsed[key.upper()] = val
-    except OSError:
-        pass
-    return parsed
+        raw = parse_dotenv(env_path)
+        return {k.upper(): v for k, v in raw.items() if k}
+    except Exception:
+        return {}
 
 
 def _load_env_file_defaults(env_path: str) -> Dict[str, str]:

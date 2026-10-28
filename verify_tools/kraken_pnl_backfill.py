@@ -14,6 +14,11 @@ import os, sys, json, math, time, datetime as dt
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_HERE)                      # Repository root (parent of verify_tools/).
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from providers.base import env_value
+
 KD = os.path.join(ROOT, 'kraken')
 OUT = os.path.join(ROOT, 'kraken_trades_full.json')
 
@@ -26,28 +31,6 @@ def _safe_float(val, default=0.0):
     except (TypeError, ValueError):
         return default
     return res if math.isfinite(res) else default
-
-
-def env_value(folder, name):
-    for fn in ('.env', 'config.env', 'runtime.env'):
-        p = os.path.join(folder, fn)
-        if not os.path.exists(p):
-            continue
-        with open(p, encoding='utf-8') as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith('#') or '=' not in line:
-                    continue
-                k, _, v = line.partition('=')
-                k = k.strip()
-                if k.startswith('export') and (len(k) == 6 or k[6].isspace()):
-                    k = k[6:].strip()
-                if k == name:
-                    val = v.strip()
-                    if not (val.startswith('"') or val.startswith("'")):
-                        val = val.split('#', 1)[0].strip()
-                    return val.strip('"').strip("'") or None
-    return None
 
 
 def _client():

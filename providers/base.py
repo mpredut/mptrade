@@ -5,21 +5,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from botcore import _parse_bool_flag
-
-
-def _strip_env_value(raw_val: str) -> str:
-    val = raw_val.strip()
-    if len(val) >= 2 and val[0] in ('"', "'"):
-        q = val[0]
-        end_idx = val.find(q, 1)
-        if end_idx != -1:
-            return val[1:end_idx]
-    val = val.split("#", 1)[0].strip()
-    return val.strip('"').strip("'")
-
-
-# _parse_bool_flag imported from botcore (SSOT)
+from botcore import _parse_bool_flag, parse_dotenv
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -31,18 +17,11 @@ def env_value(folder: str, key: str) -> Optional[str]:
         if not os.path.exists(path):
             continue
         try:
-            with open(path, encoding="utf-8") as file:
-                for line in file:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    if line.startswith("export") and (len(line) == 6 or line[6].isspace()):
-                        line = line[6:].strip()
-                    name, _, value = line.partition("=")
-                    if name.strip() == key:
-                        cleaned = _strip_env_value(value)
-                        return cleaned or None
-        except OSError:
+            parsed = parse_dotenv(path)
+            if key in parsed:
+                val = str(parsed[key]).strip()
+                return val or None
+        except Exception:
             continue
     return None
 

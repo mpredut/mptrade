@@ -41,7 +41,13 @@ from strategies.position_exit_manager import (
 # Load versioned, non-secret global tuning parameters before reading the environment.
 # ``botcore.load_dotenv`` fills missing values without overwriting the real environment.
 # Per-instrument gain/loss/age/hard-TP configuration remains in the instrument configs.
-from botcore import _parse_bool_flag, load_dotenv as _load_dotenv, required_bool_env, required_float_env
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv as _load_dotenv,
+    parse_dotenv,
+    required_bool_env,
+    required_float_env,
+)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -826,16 +832,7 @@ def _load_mt_conf(path=None):
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
-    parsed: Dict[str, str] = {}
-    with open(path, encoding="utf-8") as f:
-        for raw in f:
-            line = raw.split("#", 1)[0].strip()
-            if not line or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            k, v = k.strip(), v.strip()
-            if k:
-                parsed[k] = v
+    parsed = parse_dotenv(path)
     missing = sorted(_REQUIRED_MT_CONF_KEYS - set(parsed.keys()))
     if missing:
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")

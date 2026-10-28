@@ -18,7 +18,7 @@ import os
 import time
 import math
 import json
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, parse_dotenv
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
@@ -248,19 +248,14 @@ def _load_margins():
         _MARGINS_FILE_MTIME = mtime
         return _MARGINS
     _MARGINS_FILE_MTIME = mtime
+    raw = parse_dotenv(path)
     m: Dict[str, Any] = {}
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.split("#", 1)[0].strip()
-            if not line or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            k = k.strip().lower()
-            v = v.strip()
-            try:
-                m[k] = float(v)
-            except ValueError:
-                m[k] = v
+    for k, v in raw.items():
+        k_clean = k.strip().lower()
+        try:
+            m[k_clean] = float(v)
+        except (TypeError, ValueError):
+            m[k_clean] = v
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         if _MARGINS is not None and _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
