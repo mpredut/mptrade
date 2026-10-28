@@ -276,12 +276,31 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
     return tuple(variants)
 
 
+_VOL_FILE_CACHE: dict = {}
+
+
 def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
     if not path or not isinstance(path, str) or not isinstance(symbol, str):
         return None
     try:
         from state_io import read_recovering_previous
-        data = read_recovering_previous(path, json.loads, default=None)
+        data = None
+        stat_sig = None
+        try:
+            st = os.stat(path)
+            stat_sig = (st.st_mtime_ns, st.st_size, id(read_recovering_previous))
+        except OSError:
+            stat_sig = None
+        if stat_sig is not None:
+            cached_entry = _VOL_FILE_CACHE.get(path)
+            if cached_entry is not None and cached_entry[0] == stat_sig:
+                data = cached_entry[1]
+        if data is None:
+            data = read_recovering_previous(path, json.loads, default=None)
+            if stat_sig is not None and isinstance(data, dict):
+                if len(_VOL_FILE_CACHE) > 32:
+                    _VOL_FILE_CACHE.clear()
+                _VOL_FILE_CACHE[path] = (stat_sig, data)
         if isinstance(data, dict):
             search_maps = [data]
             items_map = data.get("items")

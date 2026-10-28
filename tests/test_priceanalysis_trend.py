@@ -166,6 +166,26 @@ class TestBoundedPlotIndices(unittest.TestCase):
                 res_lt = pa.getTrendLongTerm("TESTUSDC", window_hours=6, step_hours=2, lookback_days=5, draw=False)
                 self.assertIsNotNone(res_lt)
                 self.assertEqual(res_lt["direction"], "up")
+                self.assertGreater(res_lt["duration_seconds"], 6 * 3600.0)
+
+        with self.subTest(msg="trend_wma_detects_downtrend_when_window_equals_series_length"):
+            ts_ms = [1_700_000_000_000 + i * 3600 * 1000 for i in range(4)]
+            data_down = [[t, 200.0 - i * 10.0] for i, t in enumerate(ts_ms)]
+            with patch.object(pa, "priceLstFor", return_value=data_down), patch.object(pa.plt, "show"):
+                res_down = pa.trend_wma("TESTUSDC", window_hours=12)
+            self.assertEqual(res_down["direction"], "down")
+
+        with self.subTest(msg="detect_long_term_trend_memo_invalidates_on_interior_change"):
+            ts = [1_700_000_000.0 + i * 3600.0 for i in range(60)]
+            px_up = [100.0 + i * 1.0 for i in range(60)]
+            r1 = pa.detect_long_term_trend(ts, px_up, window_hours=12, step_hours=4)
+            self.assertEqual(r1["direction"], "up")
+            # Keep endpoints and midpoint identical while inverting the recent interior window
+            px_inverted = list(px_up)
+            for j in range(48, 59):
+                px_inverted[j] = 300.0 - (j - 48) * 15.0
+            r2 = pa.detect_long_term_trend(ts, px_inverted, window_hours=12, step_hours=4)
+            self.assertNotEqual(r2, r1)
 
 
 if __name__ == "__main__":

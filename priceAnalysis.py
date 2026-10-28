@@ -162,10 +162,13 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
         return np.zeros_like(prices, dtype=float)
     window = min(int(window), len(prices))
     wma = np.zeros_like(prices, dtype=float)
-    weights = np.arange(1, window + 1)
-    weight_sum = float(np.sum(weights))
+    for i in range(window - 1):
+        w = np.arange(1, i + 2, dtype=float)
+        wma[i] = float(np.dot(prices[:i + 1], w) / (0.5 * (i + 1) * (i + 2)))
+    weights = np.arange(1, window + 1, dtype=float)
+    weight_sum = 0.5 * window * (window + 1)
     for i in range(window - 1, len(prices)):
-        wma[i] = np.sum(prices[i - window + 1:i + 1] * weights) / weight_sum
+        wma[i] = float(np.dot(prices[i - window + 1:i + 1], weights) / weight_sum)
     return wma
 
 
@@ -378,6 +381,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
             
             sum_slope += slope_h            
             trend_block_indices.append((start, end))
+            trend_start_ts = timestamps[start]
             last_slope_h = slope_h
         else:
             # The trend has broken.
@@ -599,13 +603,19 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     p_first = float(prices[0])
     p_mid = float(prices[n_pts // 2])
     p_last = float(prices[-1])
+    p_penult = float(prices[-2])
+    p_sum = round(float(np.sum(prices)), 6)
+    t_sum = round(float(np.sum(timestamps)), 3)
     cache_key = (
         n_pts,
         t_first,
         t_end,
         p_first,
         p_mid,
+        p_penult,
         p_last,
+        p_sum,
+        t_sum,
         window_hours,
         step_hours,
         min_consecutive_blocks,
