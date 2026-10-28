@@ -56,6 +56,7 @@ except ImportError:
     from strategy import Strategy, StratParams  # noqa: E402
     from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
+from providers.t212_provider import _t212_tickers_match  # noqa: E402
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 STOP = threading.Event()
@@ -81,9 +82,8 @@ def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
     instruments = client.list_instruments()
     if not instruments or not isinstance(instruments, list):
         return True
-    t_norm = str(ticker).strip().upper()
     match = next(
-        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).strip().upper() == t_norm),
+        (i for i in instruments if isinstance(i, dict) and _t212_tickers_match(i.get("ticker"), ticker)),
         None,
     )
     if not match:

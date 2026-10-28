@@ -133,21 +133,14 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     cfg = _config()
     if cfg is None:
         return False
+    from botcore import _parse_bool_flag
     subj_str = "" if isinstance(subject, bool) else str(subject or "")
     subject = re.sub(r"[\r\n]+", " ", subj_str).strip() or "Alert"
     body = "" if isinstance(body, bool) else str(body or "")
-    if isinstance(dedup, bool):
-        dedup_flag = dedup
-    elif dedup is None:
-        dedup_flag = True
-    elif isinstance(dedup, str):
-        s_dedup = dedup.strip().lower()
-        dedup_flag = False if s_dedup in {"0", "false", "no", "off", ""} else True
-    elif isinstance(dedup, (int, float)):
-        import math
-        dedup_flag = bool(dedup) if math.isfinite(float(dedup)) else True
+    if isinstance(dedup, str) and not dedup.strip():
+        dedup_flag = False
     else:
-        dedup_flag = True
+        dedup_flag = _parse_bool_flag(dedup, True)
     if dedup_flag:
         from notify_engine.alertnotifiers import pass_common_gate
         identity = [{"type": "email", "name": subject, "body": body, "source": "mailer"}]

@@ -21,6 +21,7 @@ except ImportError:
     except ImportError:
         from botcore import http_get, log
 
+from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
 
 
@@ -148,10 +149,8 @@ _UA = {"User-Agent": "Mozilla/5.0 (ipo-watch)"}
 
 
 def t212_to_yahoo(t212_ticker: str) -> str:
-    """Convert NVDA_US_EQ to NVDA for Yahoo price lookup."""
-    if isinstance(t212_ticker, bool) or not isinstance(t212_ticker, str):
-        return ""
-    return t212_ticker.strip().split("_")[0].strip().upper()
+    """Convert NVDA_US_EQ / SPCXx.T to NVDA / SPCX for Yahoo price lookup."""
+    return canonical_base_asset(t212_ticker)
 
 
 def _chart(sym: str, rng: str = "1d", interval: str = "5m"):

@@ -28,6 +28,7 @@ try:
     from kraken.kraken_common import _parse_bool_flag, http_get, http_post_form, log
 except ImportError:
     from kraken_common import _parse_bool_flag, http_get, http_post_form, log
+from providers.base import normalize_side
 
 API_URL = "https://api.kraken.com"
 
@@ -324,13 +325,10 @@ class KrakenClient:
             raise ValueError(f"invalid Kraken order volume: {volume!r}") from exc
         if not math.isfinite(vol_f) or vol_f <= 0.0:
             raise ValueError(f"invalid Kraken order volume: {volume!r}")
-        s_norm = str(side or "").strip().lower() if not isinstance(side, bool) else ""
-        if s_norm in {"buy", "b"}:
-            side_val = "buy"
-        elif s_norm in {"sell", "s"}:
-            side_val = "sell"
-        else:
+        side_u = normalize_side(side)
+        if not side_u:
             raise ValueError(f"invalid Kraken order side: {side!r}")
+        side_val = side_u.lower()
         ot_norm = str(ordertype or "").strip().lower() if not isinstance(ordertype, bool) else ""
         if ot_norm not in {"limit", "market"}:
             raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")

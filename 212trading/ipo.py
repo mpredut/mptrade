@@ -40,7 +40,7 @@ for _p in (_ROOT_DIR, _HERE):
     if _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)
-for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client", "order_manager", "strategy"):
+for _mod_name in ("ipo_common", "ipo_notify", "listing_watcher", "market_data", "t212_client", "order_manager", "strategy"):
     _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
     if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
         sys.modules.pop(_mod_name, None)
@@ -50,6 +50,7 @@ try:
         load_t212_environment, log, now_str, float_env, ET, required_env,
         required_float_env, required_bool_env,
     )
+    from .listing_watcher import in_market_window
     from .market_data import check_market, t212_to_yahoo
     from .t212_client import T212Client
     from .ipo_notify import notify
@@ -60,6 +61,7 @@ except ImportError:
         load_t212_environment, log, now_str, float_env, ET, required_env,
         required_float_env, required_bool_env,
     )
+    from listing_watcher import in_market_window
     try:
         from market_data import check_market, t212_to_yahoo
     except ImportError:
@@ -76,20 +78,12 @@ except ImportError:
     from order_manager import resolve_quantity, place_order_with_retry
     from strategy import Strategy, StratParams
 from credentials import t212_credentials
+from providers.t212_provider import _t212_tickers_match
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def in_market_window() -> bool:
-    """Return True between approximately 09:00 and 16:30 ET on weekdays."""
-    from datetime import datetime
-    n = datetime.now(ET)
-    if n.weekday() >= 5:
-        return False
-    minutes = n.hour * 60 + n.minute
-    return 9 * 60 <= minutes <= 16 * 60 + 30
-
-
 def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bool:
     """Best-effort verification that a configured EXPECTED_ISIN matches the ticker.
     Return False only for a proven mismatch identifying the wrong instrument."""
@@ -102,7 +96,7 @@ def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bo
         log("  ! cannot verify the ISIN (metadata unavailable) — continuing on the explicit ticker")
         return True
     match = next(
-        (i for i in instruments if isinstance(i, dict) and str(i.get("ticker", "")).strip().upper() == str(ticker).strip().upper()),
+        (i for i in instruments if isinstance(i, dict) and _t212_tickers_match(i.get("ticker"), ticker)),
         None,
     )
     if not match:

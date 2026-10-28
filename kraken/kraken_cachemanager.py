@@ -36,8 +36,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
-from kraken_common import (load_env_stack, log, required_env, required_float_env,
-                           single_instance)
+from kraken_common import (_parse_bool_flag, load_env_stack, log, required_env,
+                           required_float_env, single_instance)
 from kraken_client import KrakenClient
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
@@ -193,10 +193,10 @@ def _load_initial_cache(path):
                 row_copy["id"] = clean_id
                 row_copy["time"] = int(t_f)
                 if "isBuyer" in row_copy and isinstance(row_copy["isBuyer"], str):
-                    s_ib = row_copy["isBuyer"].strip().lower()
-                    if s_ib in {"1", "1.0", "true", "yes", "on"}:
-                        row_copy["isBuyer"] = True
-                    elif s_ib in {"0", "0.0", "false", "no", "off", "", "none", "null", "nan"}:
+                    parsed_ib = _parse_bool_flag(row_copy["isBuyer"], None)
+                    if parsed_ib is not None:
+                        row_copy["isBuyer"] = parsed_ib
+                    elif row_copy["isBuyer"].strip().lower() == "nan":
                         row_copy["isBuyer"] = False
                 valid_rows.append(row_copy)
             valid_rows.sort(key=lambda t: t["time"])

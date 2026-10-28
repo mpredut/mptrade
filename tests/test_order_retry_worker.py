@@ -1447,6 +1447,23 @@ class ProcessOnceTest(unittest.TestCase):
         self.assertEqual(len(self.alerts), 1)
         self.assertIn("TTL: 15m", self.alerts[0]["body"])
 
+    def test_cross_venue_display_assets_and_provider_label_normalization(self):
+        from cachepaths import split_symbol_assets
+        from notify_engine.server import _resolve_provider_label
+
+        self.assertEqual(split_symbol_assets("SPCXx.T"), ("SPCX", "USD"))
+        self.assertEqual(split_symbol_assets("SPCXx.T/EUR"), ("SPCX", "EUR"))
+        self.assertEqual(worker._resolve_display_assets("BTCUSDC"), ("BTC", "USDC"))
+        self.assertEqual(worker._resolve_display_assets("TAOUSDT"), ("TAO", "USDT"))
+        self.assertEqual(worker._resolve_display_assets("XXBTZUSD"), ("XBT", "USD"))
+        self.assertEqual(worker._resolve_display_assets("SPCXx.T"), ("SPCX", "USD"))
+        self.assertEqual(worker._resolve_display_assets("SPCX_US_EQ"), ("SPCX", "USD"))
+        self.assertEqual(worker._resolve_display_assets(True), ("?", "USD"))
+        self.assertEqual(_resolve_provider_label(source="krk"), "Kraken")
+        self.assertEqual(_resolve_provider_label(source="trading212"), "T212")
+        self.assertEqual(_resolve_provider_label(source="hl"), "Hyperliquid")
+        self.assertEqual(_resolve_provider_label(source="bin"), "Binance")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

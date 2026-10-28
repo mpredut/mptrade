@@ -16,7 +16,8 @@ import sys
 import time
 from typing import Optional, List, Callable, Any
 
-from providers.base import extract_order_id
+from cachepaths import normalize_venue_name
+from providers.base import extract_order_id, normalize_side
 from botcore import _parse_bool_flag
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
@@ -284,12 +285,8 @@ class Instrument:
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B", "BID", "LONG"}:
-            side_u = "BUY"
-        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
-            side_u = "SELL"
-        else:
+        side_u = normalize_side(side)
+        if not side_u:
             reason = "invalid_side"
             print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): {reason}")
             if outcome_context is not None:
@@ -320,7 +317,8 @@ class Instrument:
                 client_order_id=kwargs.get("client_order_id"),
             )
         m = order_guard._load_margins()
-        venue_key = f"{str(getattr(self._provider, 'name', '') or '').strip().lower()}_bypass_guards"
+        v_norm = normalize_venue_name(getattr(self._provider, "name", "") or self.provider_name)
+        venue_key = f"{v_norm}_bypass_guards"
         venue_bypass_raw = m.get(venue_key, m.get("default_bypass_guards"))
 
         bypassed_guards = (

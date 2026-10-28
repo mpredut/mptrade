@@ -38,8 +38,10 @@ if _ROOT not in sys.path:
 
 import order_retry as oq
 import alertnotifiers as alert
-from botcore import required_float_env, single_instance
+from botcore import _parse_bool_flag, required_float_env, single_instance
+from cachepaths import split_symbol_assets
 from lock import FileLock
+from providers.base import normalize_side
 from providers.execution_audit import ExecutionAudit
 from providers.quantity import resolve_assets
 from state_io import (
@@ -347,7 +349,8 @@ def process_once(mkt, now=None):
         symbol = r.get("symbol")
         if str(r.get("submission_state") or "").lower() == "producer_claimed":
             try:
-                claim_until = float(r.get("claim_until") or 0.0)
+                raw_cu = r.get("claim_until")
+                claim_until = 0.0 if isinstance(raw_cu, bool) else float(raw_cu or 0.0)
             except (TypeError, ValueError, OverflowError):
                 claim_until = 0.0
             if claim_until > float(now):
@@ -669,8 +672,13 @@ def process_once(mkt, now=None):
         # - Stage 3 (Controlled Salvage, progress >= 75%): For SELL, allow math_reference bypass
         #           while strictly maintaining wait_for_trend=True and P2 whale/orderbook protections.
         try:
-            ttl_started = float(r.get("ttl_started_ts") or r.get("created_ts") or now)
-        except (TypeError, ValueError):
+            raw_ttl_s = r.get("ttl_started_ts")
+            if raw_ttl_s is None or isinstance(raw_ttl_s, bool) or not raw_ttl_s:
+                raw_ttl_s = r.get("created_ts")
+            if raw_ttl_s is None or isinstance(raw_ttl_s, bool) or not raw_ttl_s:
+                raw_ttl_s = now
+            ttl_started = float(raw_ttl_s)
+        except (TypeError, ValueError, OverflowError):
             ttl_started = now
         if not math.isfinite(ttl_started) or ttl_started <= 0:
             ttl_started = now
@@ -689,7 +697,7 @@ def process_once(mkt, now=None):
             else 302400.0
         )
         age_progress = min(1.0, max(0.0, age_sec / total_ttl))
-        side_u = str(r.get("side") or "").upper()
+        side_u = normalize_side(r.get("side")) or str(r.get("side") or "").upper()
 
         retry_stage = "standard"
         if r.get("kind") == "monitor_order_replace":
@@ -702,7 +710,7 @@ def process_once(mkt, now=None):
         else:
             is_stop_expired_timer = (
                 str(r.get("kind") or kwargs.get("kind") or "").strip().upper() == "STOP"
-                and kwargs.get("wait_for_trend") in (False, 0, "0", "false", "False", "no", "off")
+                and not _parse_bool_flag(kwargs.get("wait_for_trend"), True)
             )
             kwargs["wait_for_trend"] = False if is_stop_expired_timer else True
             cur_pm = kwargs.get("profit_margin")
@@ -840,12 +848,14 @@ def process_once(mkt, now=None):
 
 def _resolve_display_assets(symbol):
     """Return (base_asset, quote_asset) for human-readable alert formatting."""
-    sym = str(symbol or "").strip().upper()
-    if not sym:
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         return "?", "USD"
+    sym = symbol.strip().upper()
+    split = split_symbol_assets(symbol)
+    if split is not None:
+        base, quote = split
+        return (base or sym), (quote or "USD")
     base, quote = resolve_assets(sym)
-    if quote is None and sym.endswith("USDT") and len(sym) > 4:
-        return sym[:-4], "USDT"
     return (base or sym), (quote or "USD")
 
 

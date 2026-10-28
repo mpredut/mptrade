@@ -24,6 +24,7 @@ from ipo_common import (  # noqa: E402
 )
 from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
+from providers.base import extract_order_side  # noqa: E402
 
 
 def _retry(fn, tries=4, pause=2):
@@ -107,15 +108,7 @@ def main() -> int:
         if q == 0.0:
             q = _sf(o, "orderedQuantity", _sf(o, "qty"))
         lp = o.get("limitPrice", o.get("price"))
-        raw_side = str(o.get("side") or "").strip().upper()
-        if raw_side in ("BUY", "SELL"):
-            side = raw_side
-        elif q > 0:
-            side = "BUY"
-        elif q < 0:
-            side = "SELL"
-        else:
-            side = "UNKNOWN"
+        side = extract_order_side(o) or "UNKNOWN"
         inst = o.get("instrument") if isinstance(o.get("instrument"), dict) else {}
         ticker = o.get("ticker") or inst.get("ticker") or ""
         print(f"    {str(ticker):<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={o.get('id','')}")

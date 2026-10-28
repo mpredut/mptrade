@@ -12,6 +12,7 @@ from collections import defaultdict
 from typing import Dict, Any, List
 
 from botcore import _parse_bool_flag, load_env_stack
+from cachepaths import normalize_venue_name
 from notify_engine.mailer import (
     is_configured as email_is_configured,
     is_email_mirrored,
@@ -108,6 +109,15 @@ def _topic_for_category(title: str, source: str) -> str:
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     bot_str = "" if isinstance(bot_name, bool) else str(bot_name or "")
     src_str = "" if isinstance(source, bool) else str(source or "")
+    for cand in (normalize_venue_name(src_str), normalize_venue_name(bot_str)):
+        if cand == "kraken":
+            return "Kraken"
+        if cand == "hyperliquid":
+            return "Hyperliquid"
+        if cand == "t212":
+            return "T212"
+        if cand == "binance":
+            return "Binance"
     s = src_str.lower()
     b = bot_str.lower()
     if "kraken" in s or "kraken" in b or "xstock" in b:
