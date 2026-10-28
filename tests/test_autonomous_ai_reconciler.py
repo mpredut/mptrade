@@ -1635,4 +1635,102 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     assert "[T=" not in prompt
 
 
+def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_path):
+    """Verifies XBT<->BTC alias resolution, 7d archive extraction when 24h cache is full,
+    cross-venue trends_data['items'] inheritance, and gateway price fallback to cache_24_price.
+    """
+    from types import SimpleNamespace
+    from cachepaths import cache_symbol_variants, resolve_binance_lookup_symbol
+    from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    assert "BTCUSDC" in cache_symbol_variants("XBTUSD")
+    assert "XBTUSD" in cache_symbol_variants("BTCUSDC")
+    assert resolve_binance_lookup_symbol("XBTUSD") == "BTCUSDT"
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True)
+    now_ms = 1_760_000_000_000
+
+    # 1. Write full 24h series in cache_24_price_BTCUSDC.json AND 7d history in cache_365_price_BTCUSDC.jsonl
+    pts_24h = [[now_ms - (24 - i) * 3600 * 1000, 80000.0 + i * 200.0] for i in range(25)]
+    (cache_dir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": pts_24h}}), encoding="utf-8"
+    )
+    arch_lines = [
+        json.dumps({"s": "OTHERCOIN", "i": [int((now_ms - 6 * 86400 * 1000) / 1000), 999999.0]}),
+        json.dumps({"s": "BTCUSDC", "i": [int((now_ms - 6 * 86400 * 1000) / 1000), 75000.0]}),
+        json.dumps({"s": "BTCUSDC", "i": [int((now_ms - 3 * 86400 * 1000) / 1000), 78000.0]}),
+        json.dumps({"s": "BTCUSDC", "i": [int(now_ms / 1000), 84800.0]}),
+    ]
+    (cache_dir / "cache_365_price_BTCUSDC.jsonl").write_text("\n".join(arch_lines) + "\n", encoding="utf-8")
+
+    # Single-tick current price item for BTCUSDC, looked up via XBTUSD
+    s24, v7d = load_symbol_price_series(
+        str(cache_dir), "XBTUSD", current_price_items={"BTCUSDC": [[now_ms + 5000, 85000.0]]}
+    )
+    assert len(s24) >= 25
+    assert s24[-1][1] == 85000.0
+    # Ensure OTHERCOIN row was filtered out and 7d values end with latest live price
+    assert 999999.0 not in v7d
+    assert v7d[0] == 75000.0
+    assert v7d[-1] == 85000.0
+
+    # 2. Verify harvest_sensors_telemetry inherits slopes from trends_data['items'] and microstructure for XBTUSD
+    (cache_dir / "cache_short_trend.json").write_text(
+        json.dumps({
+            "items": {
+                "BTCUSDC": {
+                    "current_price": None,
+                    "final_trend": 1,
+                    "slope_full": 0.0012,
+                    "gradient_recent_fast": 0.0025,
+                    "epsilon": 0.0005,
+                    "vol_1h_pct": 1.4,
+                    "dynamic": {
+                        "222": {"slope_full": 0.003, "final_trend": 1},
+                        "900": {"slope_full": 0.002, "final_trend": 1},
+                        "9000": {"slope_full": 0.001, "final_trend": 1},
+                    },
+                },
+                "XBTUSD": {"current_price": None},
+            }
+        }),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps({"imbalance_ratio": 0.42, "bid_depth_usd": 500000, "ask_depth_usd": 250000}),
+        encoding="utf-8",
+    )
+    kraken_dir = tmp_path / "kraken"
+    kraken_dir.mkdir(parents=True)
+    (kraken_dir / ".state_XBTUSD.json").write_text(
+        json.dumps({"qty": 0.01, "cost": 800.0, "entry_price": 80000.0}),
+        encoding="utf-8",
+    )
+
+    reconciler = AutonomousAIReconciler(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
+    snap = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
+    assert snap.prices_and_trends["BTCUSDC"]["price"] == 84800.0
+    assert snap.prices_and_trends["XBTUSD"]["price"] == 84800.0
+    assert snap.prices_and_trends["XBTUSD"]["slope_15m"] == 0.002
+    assert snap.prices_and_trends["XBTUSD"]["chg_7d_pct"] == round(((84800.0 - 75000.0) / 75000.0) * 100.0, 2)
+    assert snap.microstructure["XBTUSD"]["ob_imbalance"] == 0.42
+    assert snap.portfolio_summary["kraken_cycles"]["XBTUSD"]["dd_pct"] == 6.0
+
+    # 3. Verify gateway resolves BTCUSD -> XBTUSD on Kraken and falls back to cache_24_price when cache_current_price is absent
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
+    fake_kraken_xbt = SimpleNamespace(
+        name="KRAKEN_XBT",
+        provider_name="kraken",
+        symbol="XBTUSD",
+        base="XBT",
+        quote="USD",
+        enabled=True,
+        _provider=SimpleNamespace(),
+    )
+    resolved = gw.resolve_instrument("BTCUSD", venue="kraken", instruments_map={"KRAKEN_XBT": fake_kraken_xbt})
+    assert resolved is fake_kraken_xbt
+    assert gw._get_live_price(fake_kraken_xbt) == 84800.0
 

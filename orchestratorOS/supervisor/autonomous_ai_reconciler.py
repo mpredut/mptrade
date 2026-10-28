@@ -633,12 +633,23 @@ class AutonomousAIReconciler:
                                 if live_px > 0:
                                     px = live_px
                                     px_f = live_px
-                                    snapshot.prices_and_trends.setdefault(
-                                        sym, {"price": px, "trend": 0, "growth_coefficient": 0.0}
-                                    )["price"] = px
                         except Exception:
                             px = None
                             px_f = 0.0
+                    if px_f <= 0:
+                        for cand in cache_symbol_variants(sym):
+                            cand_px = _parse_finite_float(
+                                (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                            )
+                            if cand_px > 0:
+                                px = cand_px
+                                px_f = cand_px
+                                break
+                    sym_entry = snapshot.prices_and_trends.setdefault(
+                        sym, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0}
+                    )
+                    if px_f > 0 and _parse_finite_float(sym_entry.get("price"), 0.0) <= 0:
+                        sym_entry["price"] = px
 
                     base_free = _query_free_bal(inst, base)
                     quote_free = _query_free_bal(inst, quote)
@@ -713,22 +724,39 @@ class AutonomousAIReconciler:
 
         # Enrich every symbol (including Kraken/Hyperliquid/T212 pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
         multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
+        trends_items_map = (
+            trends_data.get("items")
+            if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict)
+            else (trends_data if isinstance(trends_data, dict) else {})
+        )
         for sym, entry in list(snapshot.prices_and_trends.items()):
             base_prefix = normalize_cache_base_asset(sym)
             cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
 
-            # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD) when missing
-            if "slope_15m" not in entry and isinstance(trends_data, dict):
+            # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD, BTCUSDC -> XBTUSD) when missing
+            has_slopes = bool(
+                entry.get("slope_3_7m") or entry.get("slope_15m") or entry.get("slope_2_5h")
+            )
+            if not has_slopes and isinstance(trends_items_map, dict):
                 for ck in cand_keys[1:]:
-                    tinfo = trends_data.get(ck)
+                    tinfo = trends_items_map.get(ck)
                     if isinstance(tinfo, dict):
                         dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
                         d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
                         d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
                         d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
+                        if not (d222.get("slope_full") or d900.get("slope_full") or d9000.get("slope_full") or tinfo.get("slope_full")):
+                            continue
+                        if _parse_finite_float(entry.get("price"), 0.0) <= 0 and tinfo.get("current_price") is not None:
+                            entry["price"] = tinfo.get("current_price")
                         entry["trend"] = tinfo.get("final_trend", entry.get("trend", 0))
                         entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
                         entry["slope_full"] = tinfo.get("slope_full", 0.0)
+                        entry["gradient_recent"] = tinfo.get("gradient_recent", 0.0)
+                        if tinfo.get("gradient_recent_fast") is not None:
+                            entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
+                        if tinfo.get("epsilon") is not None:
+                            entry["epsilon"] = tinfo.get("epsilon")
                         entry["slope_3_7m"] = d222.get("slope_full", 0.0)
                         entry["trend_3_7m"] = d222.get("final_trend", entry["trend"])
                         entry["slope_15m"] = d900.get("slope_full", 0.0)
@@ -737,6 +765,27 @@ class AutonomousAIReconciler:
                         entry["trend_2_5h"] = d9000.get("final_trend", entry["trend"])
                         if tinfo.get("vol_1h_pct") is not None:
                             entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
+                        has_slopes = True
+                        break
+            if not has_slopes:
+                for ck in cand_keys[1:]:
+                    sib = snapshot.prices_and_trends.get(ck)
+                    if isinstance(sib, dict) and (
+                        sib.get("slope_3_7m") or sib.get("slope_15m") or sib.get("slope_2_5h")
+                    ):
+                        for k_inh in (
+                            "slope_3_7m",
+                            "trend_3_7m",
+                            "slope_15m",
+                            "trend_15m",
+                            "slope_2_5h",
+                            "trend_2_5h",
+                            "gradient_recent_fast",
+                            "epsilon",
+                            "vol_1h_pct",
+                        ):
+                            if k_inh in sib and sib.get(k_inh) is not None and not entry.get(k_inh):
+                                entry[k_inh] = sib[k_inh]
                         break
 
             if isinstance(kalman_data, dict):
@@ -799,6 +848,16 @@ class AutonomousAIReconciler:
             matched_series_24h, arch_vals_7d = load_symbol_price_series(
                 self.cache_dir, sym, current_price_items=cur_p_items
             )
+            if (
+                _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0) <= 0.0
+                and matched_series_24h
+            ):
+                snapshot.prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
+            elif (
+                _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0) <= 0.0
+                and arch_vals_7d
+            ):
+                snapshot.prices_and_trends[sym]["price"] = arch_vals_7d[-1]
             m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
             if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
                 l7_v, h7_v, cur7_v = min(arch_vals_7d), max(arch_vals_7d), arch_vals_7d[-1]
@@ -898,6 +957,8 @@ class AutonomousAIReconciler:
                 snapshot.prices_and_trends[sym].update(m24)
                 if matched_series_24h:
                     series_24h_by_sym[sym] = matched_series_24h
+                    if _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0) <= 0.0:
+                        snapshot.prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
                 if snapshot.prices_and_trends[sym].get("trend", 0) == 0 and "chg_1h_pct" in m24:
                     c1h = _parse_finite_float(m24.get("chg_1h_pct"), 0.0)
                     if c1h >= 0.25:
@@ -905,24 +966,22 @@ class AutonomousAIReconciler:
                     elif c1h <= -0.25:
                         snapshot.prices_and_trends[sym]["trend"] = -1
 
-            ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{sym}.json"))
-            if ob is None and base_sym:
-                ob = (
-                    _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{base_sym}USDC.json"))
-                    or _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{base_sym}USDT.json"))
-                )
-            deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{sym}.json"))
-            if deriv is None and base_sym:
-                deriv = (
-                    _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{base_sym}USDC.json"))
-                    or _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{base_sym}USDT.json"))
-                )
-            whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{sym}.json"))
-            if whale is None and base_sym:
-                whale = (
-                    _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{base_sym}USDC.json"))
-                    or _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{base_sym}USDT.json"))
-                )
+            sym_cands = cache_symbol_variants(sym)
+            ob = None
+            for cand in sym_cands:
+                ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{cand}.json"))
+                if isinstance(ob, dict):
+                    break
+            deriv = None
+            for cand in sym_cands:
+                deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{cand}.json"))
+                if isinstance(deriv, dict):
+                    break
+            whale = None
+            for cand in sym_cands:
+                whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{cand}.json"))
+                if isinstance(whale, dict):
+                    break
             if ob or deriv or whale:
                 m_info: Dict[str, Any] = {}
                 if isinstance(ob, dict):
@@ -960,6 +1019,12 @@ class AutonomousAIReconciler:
             ),
             None,
         )
+        if btc_series_24h is None and series_24h_by_sym:
+            btc_fb, _ = load_symbol_price_series(
+                self.cache_dir, "BTCUSDC", current_price_items=cur_p_items
+            )
+            if len(btc_fb) >= 2:
+                btc_series_24h = btc_fb
         if btc_series_24h:
             for sym, alt_ser in series_24h_by_sym.items():
                 if sym.endswith(("_EQ", "_US_EQ")) or normalize_cache_base_asset(sym) in ("BTC", "XBT"):
@@ -999,7 +1064,14 @@ class AutonomousAIReconciler:
                 qty = _parse_finite_float(st_data.get("qty"), 0.0)
                 cost = _parse_finite_float(st_data.get("cost"), 0.0)
                 avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
-                px_f = _parse_finite_float(snapshot.prices_and_trends.get(pair_name, {}).get("price"), 0.0)
+                px_f = 0.0
+                for cand in cache_symbol_variants(pair_name):
+                    cand_px = _parse_finite_float(
+                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                    )
+                    if cand_px > 0:
+                        px_f = cand_px
+                        break
                 dd_pct = (
                     round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
                     if avg_cost and px_f > 0
@@ -1034,11 +1106,14 @@ class AutonomousAIReconciler:
                 qty = _parse_finite_float(st_data.get("qty"), 0.0)
                 cost = _parse_finite_float(st_data.get("cost"), 0.0)
                 avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
-                px_f = _parse_finite_float(
-                    snapshot.prices_and_trends.get(pair_name, {}).get("price")
-                    or snapshot.prices_and_trends.get(f"{raw_tok}USD", {}).get("price"),
-                    0.0,
-                )
+                px_f = 0.0
+                for cand in cache_symbol_variants(pair_name):
+                    cand_px = _parse_finite_float(
+                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                    )
+                    if cand_px > 0:
+                        px_f = cand_px
+                        break
                 dd_pct = (
                     round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
                     if avg_cost and px_f > 0
@@ -1148,6 +1223,21 @@ class AutonomousAIReconciler:
                 continue
             p_sym = str(pos.get("symbol") or "").upper()
             pos_px_f = _parse_finite_float(pos.get("price"), 0.0)
+            if pos_px_f <= 0:
+                for cand in cache_symbol_variants(p_sym):
+                    cand_px = _parse_finite_float(
+                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                    )
+                    if cand_px > 0:
+                        pos_px_f = cand_px
+                        pos["price"] = cand_px
+                        fb_val = _parse_finite_float(pos.get("free_base"), -1.0)
+                        if fb_val >= 0:
+                            pos["value_usd"] = round(fb_val * cand_px, 2)
+                        pk_val = _parse_finite_float(pos.get("trailing_peak"), 0.0)
+                        if pk_val > 0:
+                            pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
+                        break
             ro = recent_orders.get(p_sym)
             if isinstance(ro, dict):
                 avg_b = _parse_finite_float(ro.get("active_avg_buy_px"), 0.0)
@@ -1287,6 +1377,10 @@ class AutonomousAIReconciler:
                 else:
                     snapshot.portfolio_summary.pop("active_retry_queue", None)
         elif scope == "crypto":
+            snapshot.prices_and_trends = {
+                k: v for k, v in snapshot.prices_and_trends.items()
+                if not str(k).upper().endswith(("_EQ", "_US_EQ"))
+            }
             snapshot.portfolio_summary.pop("t212_cycles", None)
             if "recent_ai_intents" in snapshot.portfolio_summary:
                 crypto_intents = [
@@ -1727,6 +1821,14 @@ class AutonomousAIReconciler:
                 if not isinstance(minfo, dict):
                     continue
                 cur_px = _parse_finite_float((sensors.prices_and_trends.get(sym) or {}).get("price"), 0.0)
+                if cur_px <= 0:
+                    for cand in cache_symbol_variants(sym):
+                        cand_px = _parse_finite_float(
+                            (sensors.prices_and_trends.get(cand) or {}).get("price"), 0.0
+                        )
+                        if cand_px > 0:
+                            cur_px = cand_px
+                            break
                 bw_px = minfo.get("bid_wall_px")
                 aw_px = minfo.get("ask_wall_px")
                 bw_px_f = _parse_finite_float(bw_px, 0.0)
