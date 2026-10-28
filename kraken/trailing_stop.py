@@ -107,8 +107,14 @@ class KrakenTrailing:
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
         self.client = client
         self.log = log
-        self.enabled = _parse_bool_flag(enabled, required_bool_env("KRAKEN_TRAILING_ENABLED"))
-        self.trailing_market = _parse_bool_flag(trailing_market, TRAILING_MARKET)
+        self.enabled = _parse_bool_flag(
+            enabled,
+            required_bool_env("KRAKEN_TRAILING_ENABLED") if enabled is None else False,
+        )
+        self.trailing_market = _parse_bool_flag(
+            trailing_market,
+            TRAILING_MARKET if trailing_market is None else False,
+        )
         min_profit_pct = max(0.0, self._safe_float(min_profit_pct, float(MIN_PROFIT_PCT)))
         self.state_file = state_file
         self._tick_balances: dict | None = None

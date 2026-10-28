@@ -276,6 +276,8 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
             pass
     for cost_key, exec_key in (
         ("cummulativeQuoteQty", "executedQty"),
+        ("cummulativeQuoteQty", "qty"),
+        ("cummulativeQuoteQty", "quantity"),
         ("quoteQty", "qty"),
         ("quoteQty", "quantity"),
         ("cost", "vol_exec"),

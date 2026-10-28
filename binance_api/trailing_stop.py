@@ -138,7 +138,7 @@ class TrailingStop:
         self.po = po
         self.sym = sym
         self.log = log
-        self.enabled = _parse_bool_flag(enabled, TRAILING_ENABLED)
+        self.enabled = _parse_bool_flag(enabled, TRAILING_ENABLED if enabled is None else False)
         self.sell_fraction = _finite(
             sell_fraction, name="TRAILING_SELL_FRACTION", minimum=0.0, maximum=1.0)
         min_profit_pct = _finite(

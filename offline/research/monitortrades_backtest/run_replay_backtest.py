@@ -112,17 +112,12 @@ def _resolve_upward_eps_k() -> float:
 
 
 def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
-    import pricewindow as pw
     return (
         str(symbol),
         len(series),
         series[0] if series else None,
         series[-1] if series else None,
         _norm_trend_window_sec(trend_window_seconds),
-        pw._active_estimator(),
-        os.environ.get("MPTRADE_STEP_WOLS_POWER", str(pw.STEP_WOLS_POWER)),
-        os.environ.get("MPTRADE_MEDIAN_FILTER_SECONDS", str(pw.MEDIAN_FILTER_SECONDS)),
-        _resolve_upward_eps_k(),
     )
 
 
@@ -327,8 +322,22 @@ def run_symbol(
                 min_hard_tp_gain_ratio = float(g_ratio)
         return res
 
+    def _clear_symbol_mt_state(sym: str) -> None:
+        mt.clear_position_stats_cache()
+        for st_dict in (
+            mt._SL_BOUNCE_STATE,
+            mt._SL_EPISODE_STATE,
+            mt._TP_RIDE_STATE,
+            mt._REENTRY_STATE,
+            mt._LAST_EXIT_KIND,
+            mt._REENTRY_DONE_SELL_TIME,
+            mt._PENDING_STOP_EXIT,
+            mt._hard_tp_last,
+        ):
+            st_dict.pop(sym, None)
+
     mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
-    mt.clear_position_stats_cache()
+    _clear_symbol_mt_state(symbol)
     try:
         first_price = provider.advance(symbol)
         if first_price is None:
@@ -518,7 +527,7 @@ def run_symbol(
                 log.enable_print()
             except Exception:
                 pass
-        mt.clear_position_stats_cache()
+        _clear_symbol_mt_state(symbol)
         mt.is_trend_up = orig_is_trend_up
         mt.get_symbol_volatility_1h = orig_get_vol
         mt._MT_PERSISTENCE_ENABLED = orig_persist

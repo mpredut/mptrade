@@ -395,7 +395,8 @@ def get_post_stop_reentry_guard(
         timeout = DEFAULT_TIMEOUT_SEC
     raw_fb = m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)
     fallback = str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK
-    notify_en = PostStopReentryGuard._as_bool_flag(m.get("post_stop_reentry_notify", True), default=True)
+    raw_notify = m.get("post_stop_reentry_notify")
+    notify_en = True if raw_notify is None else PostStopReentryGuard._as_bool_flag(raw_notify, default=False)
     cache_ttl = _safe_pos_f(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
 
     if gemini_client is not None:

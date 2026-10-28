@@ -182,6 +182,29 @@ _CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
 }
 
 
+_VENUE_ALIASES: dict[str, str] = {
+    "bin": "binance",
+    "binance_spot": "binance",
+    "krk": "kraken",
+    "kraken_spot": "kraken",
+    "hl": "hyperliquid",
+    "hyper_liquid": "hyperliquid",
+    "hyperliquid_spot": "hyperliquid",
+    "trading212": "t212",
+    "trading_212": "t212",
+    "212trading": "t212",
+    "212": "t212",
+}
+
+
+def normalize_venue_name(venue: object) -> str:
+    """Return the canonical lowercase venue identifier ('binance' | 'kraken' | 'hyperliquid' | 't212')."""
+    if isinstance(venue, bool) or not isinstance(venue, str):
+        return ""
+    v = venue.strip().lower().replace("-", "_").replace(" ", "_")
+    return _VENUE_ALIASES.get(v, v)
+
+
 def canonical_base_asset(symbol: object) -> str:
     """Return the venue-agnostic canonical ticker for any symbol (e.g. XBTUSD -> BTC, SPCXx.T -> SPCX)."""
     base = normalize_cache_base_asset(symbol)
@@ -293,5 +316,8 @@ def cache_symbol_variants(
             eq_cand = f"{b}_US_EQ"
             if eq_cand not in variants:
                 variants.append(eq_cand)
+            for xst_cand in (f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD"):
+                if xst_cand not in variants:
+                    variants.append(xst_cand)
     return variants
 

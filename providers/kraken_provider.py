@@ -21,6 +21,7 @@ import math
 import time
 from typing import Optional, List
 
+from botcore import _parse_bool_flag
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -47,30 +48,59 @@ _KRAKEN_CACHE_FILE = os.path.join(os.path.dirname(_KRAKEN_DIR), "cachedb", "cach
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
 
 
-def _kraken_pair_key(value: str) -> str:
-    """Canonicalize common Kraken legacy pair wrappers for strict comparison."""
+_KRAKEN_QUOTES = (
+    "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
+    "BTC", "XBT", "ETH",
+)
+
+
+def _split_kraken_pair(value: str) -> tuple[str, str]:
+    """Split a Kraken pair or bare asset into ``(canonical_base, canonical_quote)``."""
     if not isinstance(value, str):
-        return ""
+        return "", ""
     key = "".join(ch for ch in value.upper() if ch.isalnum())
-    quote = next((candidate for candidate in (
-        "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
-        "BTC", "XBT", "ETH",
-    ) if key.endswith(candidate) or key.endswith("Z" + candidate)), None)
-    if quote is None:
-        return key.replace("XBT", "BTC")
-    suffix = "Z" + quote if key.endswith("Z" + quote) else quote
-    base = key[:-len(suffix)]
+    if not key:
+        return "", ""
+    quote = next(
+        (
+            cand for cand in _KRAKEN_QUOTES
+            if (key.endswith(cand) and len(key) > len(cand))
+            or (key.endswith("Z" + cand) and len(key) > len(cand) + 1)
+        ),
+        "",
+    )
+    if not quote:
+        base = key
+    else:
+        suffix = "Z" + quote if key.endswith("Z" + quote) and len(key) > len(quote) + 1 else quote
+        base = key[:-len(suffix)]
     if base.startswith("X") and len(base) > 3:
         base = base[1:]
-    return (base + quote).replace("XBT", "BTC")
+    if base == "XBT":
+        base = "BTC"
+    elif base == "XDG":
+        base = "DOGE"
+    if quote == "XBT":
+        quote = "BTC"
+    return base, quote
+
+
+def _kraken_pair_key(value: str) -> str:
+    """Canonicalize common Kraken legacy pair wrappers for strict comparison."""
+    base, quote = _split_kraken_pair(value)
+    return base + quote
 
 
 def _kraken_pair_matches(expected: str, actual: str) -> bool:
     if isinstance(expected, bool) or isinstance(actual, bool):
         return False
-    k_exp = _kraken_pair_key(expected)
-    k_act = _kraken_pair_key(actual)
-    return bool(k_exp and k_act and k_exp == k_act)
+    b_exp, q_exp = _split_kraken_pair(expected)
+    b_act, q_act = _split_kraken_pair(actual)
+    if not b_exp or not b_act or b_exp != b_act:
+        return False
+    if q_exp and q_act:
+        return q_exp == q_act
+    return True
 
 
 def _normalize_kraken_fill(raw: dict) -> dict:
@@ -108,24 +138,6 @@ def _kraken_client_order_id(client_order_id: str) -> str:
 
 
 _INVALID_KRAKEN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
-
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        if isinstance(val, float) and not math.isfinite(val):
-            return fb
-        return bool(val)
-    s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on", "y", "t"}:
-        return True
-    if s in {"0", "false", "no", "off", "n", "f"}:
-        return False
-    return fb
 
 
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:
@@ -430,17 +442,7 @@ class KrakenProvider(MarketDataProvider):
         ft = data.get("fetchtime")
         if not isinstance(items, dict) or not isinstance(ft, dict):
             return None
-        su = str(symbol).strip().upper()
         key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
-        if key is None:
-            key = next(
-                (
-                    k
-                    for k in items
-                    if isinstance(k, str) and k.strip() and (su in k.upper() or k.strip().upper() in su)
-                ),
-                None,
-            )
         if key is None or not isinstance(items.get(key), list):
             return None
         raw_ft = ft.get(key)

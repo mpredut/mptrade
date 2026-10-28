@@ -275,7 +275,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         if disk_snap is not None:
             return disk_snap
 
-        if not self._as_bool_flag(allow_network, default=True):
+        if not (True if allow_network is None else self._as_bool_flag(allow_network, default=False)):
             return None
 
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
