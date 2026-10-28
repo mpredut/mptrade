@@ -31,6 +31,25 @@ from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 from intelligence.sentiment.guards.high_stake_guard import DEFAULT_MIN_NOTIONAL_USD, HighStakeGuard
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+from intelligence.macro_sentiment_ssot import (
+    clean_scale,
+    clean_symbol_key,
+    normalize_order_side,
+    obj_attr,
+    resolve_now_ts,
+    safe_float,
+    safe_pos_float,
+)
+
+
+def _opt_finite(val: object) -> Optional[float]:
+    f = safe_float(val, float("nan"))
+    return f if math.isfinite(f) else None
+
+
+def _opt_pos_finite(val: object) -> Optional[float]:
+    f = safe_pos_float(val, -1.0)
+    return f if f > 0.0 else None
 
 
 @dataclass(frozen=True)
@@ -64,41 +83,35 @@ class CompositeMarketIntelligence:
         gemini_guard: Optional[HighStakeGuard] = None,
         geopolitical_guard: Optional[GeopoliticalShockGuard] = None,
     ):
-        # Triggers (Drivers - Signals IN and Signals OUT)
         self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
         self.gradient_triggers: Dict[str, LinearGradientTrigger] = {}
         self.liquidation_trigger = LiquidationCapitulationTrigger()
         self.sentiment_trigger = SentimentContrarianTrigger()
         self.breadth_trigger = MarketBreadthTrigger()
 
-        # Pillar 1: Internal Guards (Brakes)
         self.parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
         self.exhaustion_guard = WeibullExhaustionGuard(policy=exhaustion_policy, exhausted_scale=exhaustion_scale)
         self.noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
 
-        # Pillar 2: External Guards (Brakes)
         self.cascade_guard = LiquidationCascadeGuard(max_active_cascade_usd=max_active_cascade_usd)
         self.funding_guard = FundingCrowdingGuard(max_long_funding_rate=max_long_funding_rate)
 
-        # Pillar 3: Sentiment & LLM Guards (Brakes)
         self.greed_guard = ExtremeGreedGuard(
             downscale_threshold=greed_downscale_threshold,
             hard_veto_threshold=greed_hard_veto_threshold,
         )
         self.panic_guard = PanicWashoutGuard()
         self.gemini_guard = gemini_guard or HighStakeGuard(min_notional_eur=gemini_min_notional_eur)
-
-        # Macro Geopolitical & Energy Shock Shield (Black Swan Brake)
         self.geopolitical_guard = geopolitical_guard or GeopoliticalShockGuard()
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
-        sym = (symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")) if isinstance(symbol, str) else ""
+        sym = clean_symbol_key(symbol) if isinstance(symbol, str) else ""
         if sym not in self.kalman_triggers:
             self.kalman_triggers[sym] = KalmanTrendTrigger()
         return self.kalman_triggers[sym]
 
     def _get_gradient(self, symbol: str) -> LinearGradientTrigger:
-        sym = (symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")) if isinstance(symbol, str) else ""
+        sym = clean_symbol_key(symbol) if isinstance(symbol, str) else ""
         if sym not in self.gradient_triggers:
             self.gradient_triggers[sym] = LinearGradientTrigger()
         return self.gradient_triggers[sym]
@@ -125,20 +138,13 @@ class CompositeMarketIntelligence:
         now: Optional[float] = None,
         bypass_guards: Optional[object] = None,
     ) -> GuardDecision:
-        """Run all protection guards (brakes) across all pillars in sequence.
-
-        Returns the first blocking/downscaling decision or an approved allow decision.
-        """
+        """Run all protection guards (brakes) across all pillars in sequence."""
         effective_scale = 1.0
         downscale_dec: Optional[GuardDecision] = None
         raw_bypass_tokens = BaseGuard._coerce_bypass_set(bypass_guards)
         recognized_tokens = [t for t in raw_bypass_tokens if t in _ALL_GUARD_ALIASES]
         bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
-        side = side.strip().upper() if isinstance(side, str) else ""
-        if side in ("B", "BID", "LONG"):
-            side = "BUY"
-        elif side in ("S", "A", "ASK", "SHORT"):
-            side = "SELL"
+        side = normalize_order_side(side)
 
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
             if not bypassed:
@@ -147,53 +153,21 @@ class CompositeMarketIntelligence:
                 return True
             if code:
                 spec = GUARD_REGISTRY.get(code)
-                if spec is not None and spec.is_bypassed(bypassed):
+                if (spec is not None and spec.is_bypassed(bypassed)) or code.lower() in bypassed:
                     return True
-                if code.lower() in bypassed:
-                    return True
-            for ln in legacy_names:
-                if ln.lower() in bypassed:
-                    return True
-            return False
+            return any(ln.lower() in bypassed for ln in legacy_names)
 
         def _record_downscale(dec: GuardDecision) -> None:
             nonlocal effective_scale, downscale_dec
-            raw_scale = getattr(dec, "suggested_scale", 1.0)
-            if raw_scale is None or isinstance(raw_scale, bool):
-                s_val = 1.0
-            else:
-                try:
-                    sf = float(raw_scale)
-                    if math.isfinite(sf) and 1.0 < sf <= 100.0:
-                        sf = sf / 100.0
-                    s_val = sf if (math.isfinite(sf) and 0.0 <= sf <= 1.0) else 1.0
-                except (TypeError, ValueError):
-                    s_val = 1.0
+            s_val = clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
             if s_val < effective_scale or downscale_dec is None:
                 effective_scale = min(effective_scale, s_val)
                 downscale_dec = GuardDecision.downscale(
-                    dec.guard_name,
-                    scale=effective_scale,
-                    reason=dec.reason,
-                    **dec.metadata,
+                    dec.guard_name, scale=effective_scale, reason=dec.reason, **dec.metadata
                 )
 
-        grad_finite: Optional[float] = None
-        if gradient is not None and not isinstance(gradient, bool):
-            try:
-                gf = float(gradient)
-                if math.isfinite(gf):
-                    grad_finite = gf
-            except (TypeError, ValueError):
-                pass
-        eps_finite: Optional[float] = None
-        if epsilon is not None and not isinstance(epsilon, bool):
-            try:
-                ef = float(epsilon)
-                if math.isfinite(ef):
-                    eps_finite = ef
-            except (TypeError, ValueError):
-                pass
+        grad_finite = _opt_finite(gradient)
+        eps_finite = _opt_finite(epsilon)
 
         # 1. Noise Floor Guard
         if grad_finite is not None and eps_finite is not None and not _is_bypassed(None, "noise_guard", "noisefloorguard"):
@@ -204,21 +178,13 @@ class CompositeMarketIntelligence:
         # 2. Parabolic Surge Guard (Anti-FOMO)
         if not _is_bypassed("G_QLIMIT2", "parabolic_guard", "parabolicsurgeguard"):
             parabolic_dec = self.parabolic_guard.check(
-                symbol, side, price, price_history=price_history,
-                volatility_1h_pct=volatility_1h_pct, now=now,
+                symbol, side, price, price_history=price_history, volatility_1h_pct=volatility_1h_pct, now=now
             )
             if not parabolic_dec.allowed:
                 return parabolic_dec
 
         # 3. Weibull Trend Exhaustion Guard (G_QLIMIT2)
-        dur_sec = 0.0
-        if trend_duration_seconds is not None and not isinstance(trend_duration_seconds, bool):
-            try:
-                df = float(trend_duration_seconds)
-                if math.isfinite(df) and df > 0.0:
-                    dur_sec = df
-            except (TypeError, ValueError):
-                dur_sec = 0.0
+        dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
         if dur_sec > 0.0 and not _is_bypassed("G_QLIMIT2", "exhaustion_guard", "weibullexhaustionguard"):
             surv = get_trend_survival_metrics(symbol, dur_sec)
             qlimit1_active = not _is_bypassed("G_QLIMIT1", "qlimit1", "gaussian_horizon")
@@ -238,7 +204,7 @@ class CompositeMarketIntelligence:
             if exh_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 _record_downscale(exh_dec)
 
-        # 4. External Liquidation Cascade Guard (Active Falling Knife)
+        # 4. External Liquidation Cascade Guard
         if liquidation_summary is not None and not _is_bypassed(None, "cascade_guard", "liquidationcascadeguard"):
             cascade_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
             if not cascade_dec.allowed:
@@ -266,8 +232,7 @@ class CompositeMarketIntelligence:
         # 7. Sentiment Panic Washout Guard (GLLM2)
         if (market_breadth_snapshot is not None or fear_greed_snapshot is not None) and not _is_bypassed("GLLM2", "panic_guard", "panicwashoutguard"):
             panic_dec = self.panic_guard.check(
-                symbol,
-                side,
+                symbol, side,
                 breadth_snapshot=market_breadth_snapshot,
                 fear_greed_snapshot=fear_greed_snapshot,
                 asset_24h_change_pct=asset_24h_change_pct,
@@ -278,30 +243,9 @@ class CompositeMarketIntelligence:
                 _record_downscale(panic_dec)
 
         # 8. Google Gemini High-Stake Guard (GLLM1)
-        computed_notional: Optional[float] = None
-        if notional_eur is not None and not isinstance(notional_eur, bool):
-            try:
-                nf = float(notional_eur)
-                if math.isfinite(nf) and nf > 0.0:
-                    computed_notional = nf
-            except (TypeError, ValueError):
-                computed_notional = None
-        qty_finite: Optional[float] = None
-        if qty is not None and not isinstance(qty, bool):
-            try:
-                qf = float(qty)
-                if math.isfinite(qf) and qf > 0.0:
-                    qty_finite = qf
-            except (TypeError, ValueError):
-                qty_finite = None
-        price_finite: Optional[float] = None
-        if price is not None and not isinstance(price, bool):
-            try:
-                pf = float(price)
-                if math.isfinite(pf) and pf > 0.0:
-                    price_finite = pf
-            except (TypeError, ValueError):
-                price_finite = None
+        computed_notional = _opt_pos_finite(notional_eur)
+        qty_finite = _opt_pos_finite(qty)
+        price_finite = _opt_pos_finite(price)
         if computed_notional is None and qty_finite is not None and price_finite is not None:
             computed_notional = price_finite * qty_finite
         if (
@@ -310,25 +254,14 @@ class CompositeMarketIntelligence:
             and not _is_bypassed("GLLM1", "gemini_guard", "highstakeguard")
         ):
             telemetry_ctx = {
-                "fear_greed": (
-                    fear_greed_snapshot.get("value")
-                    if isinstance(fear_greed_snapshot, dict)
-                    else getattr(fear_greed_snapshot, "value", None)
-                ) if fear_greed_snapshot else None,
-                "breadth_regime": (
-                    market_breadth_snapshot.get("regime")
-                    if isinstance(market_breadth_snapshot, dict)
-                    else getattr(market_breadth_snapshot, "regime", None)
-                ) if market_breadth_snapshot else None,
+                "fear_greed": obj_attr(fear_greed_snapshot, "value"),
+                "breadth_regime": obj_attr(market_breadth_snapshot, "regime"),
             }
             eff_price = price_finite if price_finite is not None else price
             eff_qty = qty_finite if qty_finite is not None else 1.0
             try:
                 gemini_dec = self.gemini_guard.check(
-                    symbol,
-                    side,
-                    eff_price,
-                    eff_qty,
+                    symbol, side, eff_price, eff_qty,
                     notional_eur=computed_notional,
                     telemetry=telemetry_ctx,
                     dur_sec=dur_sec if dur_sec > 0 else None,
@@ -336,10 +269,7 @@ class CompositeMarketIntelligence:
                 )
             except TypeError:
                 gemini_dec = self.gemini_guard.check(
-                    symbol,
-                    side,
-                    eff_price,
-                    eff_qty,
+                    symbol, side, eff_price, eff_qty,
                     notional_eur=computed_notional,
                     telemetry=telemetry_ctx,
                 )
@@ -356,10 +286,7 @@ class CompositeMarketIntelligence:
             if geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 _record_downscale(geo_dec)
 
-        if downscale_dec is not None:
-            return downscale_dec
-
-        return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
+        return downscale_dec if downscale_dec is not None else GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 
     def evaluate(
         self,
@@ -384,104 +311,54 @@ class CompositeMarketIntelligence:
         bypass_guards: Optional[object] = None,
     ) -> MarketIntelligenceEvaluation:
         """Evaluate directional triggers and validate against all guards."""
-        now_ts = time.time()
-        if ts is not None and not isinstance(ts, bool):
-            try:
-                tf = float(ts)
-                if math.isfinite(tf) and tf > 0.0:
-                    now_ts = tf
-            except (TypeError, ValueError):
-                pass
-        price_clean = 0.0
-        if price is not None and not isinstance(price, bool):
-            try:
-                pf = float(price)
-                if math.isfinite(pf) and pf > 0.0:
-                    price_clean = pf
-            except (TypeError, ValueError, OverflowError):
-                price_clean = 0.0
-        price = price_clean
+        now_ts = resolve_now_ts(ts)
+        price = safe_pos_float(price, 0.0)
         triggered_events: List[TriggerEvent] = []
 
-        # 1. Kalman trigger
-        kalman = self._get_kalman(symbol)
-        k_out, k_event = kalman.evaluate(symbol, now_ts, price, epsilon)
+        k_out, k_event = self._get_kalman(symbol).evaluate(symbol, now_ts, price, epsilon)
         if k_event:
             triggered_events.append(k_event)
 
-        # 2. Gradient trigger
         if gradient is not None and epsilon is not None:
-            grad = self._get_gradient(symbol)
-            _, g_event = grad.evaluate(symbol, price, gradient, epsilon, ts=now_ts)
+            _, g_event = self._get_gradient(symbol).evaluate(symbol, price, gradient, epsilon, ts=now_ts)
             if g_event:
                 triggered_events.append(g_event)
 
-        # 3. External Liquidation Capitulation Trigger
         if liquidation_summary is not None:
             l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
             l_event = l_res[1] if isinstance(l_res, tuple) else l_res
             if l_event:
                 triggered_events.append(l_event)
 
-        # 4. Sentiment Contrarian Trigger (Fear & Greed)
         if fear_greed_snapshot is not None:
             _, s_event = self.sentiment_trigger.evaluate(symbol, price, fear_greed_snapshot, ts=now_ts)
             if s_event:
                 triggered_events.append(s_event)
 
-        # 5. Market Breadth Trigger
         if market_breadth_snapshot is not None:
             _, b_event = self.breadth_trigger.evaluate(
-                symbol,
-                price,
-                market_breadth_snapshot,
-                asset_24h_change_pct=asset_24h_change_pct,
-                ts=now_ts,
+                symbol, price, market_breadth_snapshot, asset_24h_change_pct=asset_24h_change_pct, ts=now_ts
             )
             if b_event:
                 triggered_events.append(b_event)
 
-        # Calculate volatility if prices given
         vol1h: Optional[float] = None
-        sr_sec = 60.0
-        if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
-            try:
-                sr_f = float(sample_rate_sec)
-                if math.isfinite(sr_f) and sr_f > 0.0:
-                    sr_sec = sr_f
-            except (TypeError, ValueError, OverflowError):
-                sr_sec = 60.0
+        sr_sec = safe_pos_float(sample_rate_sec, 60.0)
         if prices_for_vol is not None and not isinstance(prices_for_vol, (bool, str, bytes)):
             vol1h = calculate_volatility_1h(prices_for_vol, sr_sec)
 
-        # Select primary active trigger (prioritize highest strength among executable triggers)
         executable_triggers = [t for t in triggered_events if t.is_executable()]
         if executable_triggers:
-            active_trigger = max(
-                executable_triggers,
-                key=lambda t: (
-                    float(t.strength)
-                    if isinstance(getattr(t, "strength", None), (int, float))
-                    and not isinstance(getattr(t, "strength", None), bool)
-                    and math.isfinite(float(t.strength))
-                    else 0.0
-                ),
-            )
+            active_trigger = max(executable_triggers, key=lambda t: safe_float(getattr(t, "strength", None), 0.0))
         else:
             active_trigger = triggered_events[0] if triggered_events else None
-        raw_side = getattr(active_trigger.side, "value", active_trigger.side) if active_trigger else "HOLD"
-        side = str(raw_side or "HOLD").strip().upper() if not isinstance(raw_side, bool) else "HOLD"
-        if side in ("B", "BID", "LONG"):
-            side = "BUY"
-        elif side in ("S", "A", "ASK", "SHORT"):
-            side = "SELL"
 
-        # Evaluate guards against active side
+        raw_side = getattr(active_trigger.side, "value", active_trigger.side) if active_trigger else "HOLD"
+        side = normalize_order_side(str(raw_side or "HOLD") if not isinstance(raw_side, bool) else "HOLD") or "HOLD"
+
         if active_trigger and active_trigger.is_executable():
             guard_dec = self.evaluate_guards(
-                symbol,
-                side,
-                price,
+                symbol, side, price,
                 gradient=gradient,
                 epsilon=epsilon,
                 trend_duration_seconds=trend_duration_seconds,
@@ -503,15 +380,11 @@ class CompositeMarketIntelligence:
 
         can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
         raw_sc = getattr(guard_dec, "suggested_scale", 1.0)
-        sc_val = 1.0
-        if raw_sc is not None and not isinstance(raw_sc, bool):
-            try:
-                sf = float(raw_sc)
-                if math.isfinite(sf) and 1.0 < sf <= 100.0:
-                    sf = sf / 100.0
-                sc_val = min(1.0, max(0.0, sf)) if math.isfinite(sf) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                sc_val = 0.0
+        sc_f = _opt_finite(raw_sc)
+        if sc_f is not None:
+            if 1.0 < sc_f <= 100.0:
+                sc_f = sc_f / 100.0
+            sc_val = min(1.0, max(0.0, sc_f))
         else:
             sc_val = 0.0
         scale = (1.0 if side == "SELL" else sc_val) if can_exec else 0.0
@@ -533,20 +406,8 @@ class CompositeMarketIntelligence:
                 "volatility_1h": vol1h,
                 "gradient": gradient,
                 "epsilon": epsilon,
-                "fear_greed": (
-                    fear_greed_snapshot.get("value")
-                    if isinstance(fear_greed_snapshot, dict)
-                    else getattr(fear_greed_snapshot, "value", None)
-                ) if fear_greed_snapshot else None,
-                "market_regime": (
-                    market_breadth_snapshot.get("regime")
-                    if isinstance(market_breadth_snapshot, dict)
-                    else getattr(market_breadth_snapshot, "regime", None)
-                ) if market_breadth_snapshot else None,
-                "geopolitical_threat": (
-                    geopolitical_assessment.get("threat_level")
-                    if isinstance(geopolitical_assessment, dict)
-                    else getattr(geopolitical_assessment, "threat_level", None)
-                ) if geopolitical_assessment else None,
+                "fear_greed": obj_attr(fear_greed_snapshot, "value"),
+                "market_regime": obj_attr(market_breadth_snapshot, "regime"),
+                "geopolitical_threat": obj_attr(geopolitical_assessment, "threat_level"),
             },
         )

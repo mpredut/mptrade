@@ -15,59 +15,24 @@ Single symmetric coordinator for all LLM-powered trading guards:
 from __future__ import annotations
 
 import logging
-import math
 import re
-import time
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
+from intelligence.macro_sentiment_ssot import (
+    check_cooldown_gate,
+    clean_scale as _clean_scale,
+    clean_symbol_key,
+    normalize_order_side as _normalize_side,
+    obj_attr,
+    resolve_now_ts as _resolve_now_ts,
+    safe_pos_float as _pos_float,
+)
 
 logger = logging.getLogger("llm_order_guard")
 
 _LLM_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
 _GEO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
-
-
-def _pos_float(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if (math.isfinite(f) and f > 0.0) else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _clean_scale(val: Any) -> float:
-    if val is None or isinstance(val, bool):
-        return 1.0
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return 1.0
-    return f if (math.isfinite(f) and 0.0 <= f <= 1.0) else 1.0
-
-
-def _normalize_side(val: Any) -> str:
-    if not isinstance(val, str):
-        return ""
-    s = val.strip().upper()
-    if s in ("B", "BID", "LONG"):
-        return "BUY"
-    if s in ("S", "A", "ASK", "SHORT"):
-        return "SELL"
-    return s
-
-
-def _resolve_now_ts(now: Any) -> float:
-    if now is not None and not isinstance(now, bool):
-        try:
-            f = float(now)
-            if math.isfinite(f) and f > 0.0:
-                return f
-        except (TypeError, ValueError):
-            pass
-    return time.time()
 
 
 # ============================================================================
@@ -101,9 +66,8 @@ def evaluate_high_stake_order_guard(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    if "intelligence_guards_mode" in margins:
-        if validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
-            return True, "ok", 1.0
+    if "intelligence_guards_mode" in margins and validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+        return True, "ok", 1.0
     skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
     if skip_llm or llm_mode == "off":
@@ -123,43 +87,23 @@ def evaluate_high_stake_order_guard(
         prev_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
     else:
         prev_notional = None
-    if (
-        prev_notional is None
-        and fallback_notional is not None
-        and not (isinstance(decisions_map, dict) and cache_key in decisions_map)
-    ):
+    if prev_notional is None and fallback_notional is not None and not (isinstance(decisions_map, dict) and cache_key in decisions_map):
         prev_notional = fallback_notional
 
     prev_notional_f = _pos_float(prev_notional, -1.0)
     prev_notional = prev_notional_f if prev_notional_f > 0.0 else None
 
-    notional_jump = (
-        prev_notional is not None
-        and (computed_notional - prev_notional) / max(prev_notional, 1.0) > 0.20
-    )
-    needs_eval = prev_notional is None or prev_notional < min_notional or notional_jump
-    if needs_eval:
+    notional_jump = prev_notional is not None and (computed_notional - prev_notional) / max(prev_notional, 1.0) > 0.20
+    if prev_notional is None or prev_notional < min_notional or notional_jump:
         ctx_usable = valid_context or isinstance(regime_context, dict)
         if dur_sec is None and ctx_usable:
-            if isinstance(regime_context, dict):
-                dur_sec = (
-                    regime_context.get("trend_duration_seconds")
-                    or regime_context.get("resolved_duration_sec")
-                )
-            else:
-                dur_sec = (
-                    getattr(regime_context, "trend_duration_seconds", None)
-                    or getattr(regime_context, "resolved_duration_sec", None)
-                )
+            dur_sec = obj_attr(regime_context, "trend_duration_seconds") or obj_attr(regime_context, "resolved_duration_sec")
         timeout_sec = _pos_float(margins.get("llm_timeout_sec"), 5.0)
         fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
         llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
         try:
             g_dec = llm_guard.check(
-                symbol,
-                side,
-                price,
-                qty if qty is not None else 1.0,
+                symbol, side, price, qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
                 regime_context=regime_context if ctx_usable else None,
                 dur_sec=dur_sec,
@@ -167,10 +111,7 @@ def evaluate_high_stake_order_guard(
             )
         except TypeError:
             g_dec = llm_guard.check(
-                symbol,
-                side,
-                price,
-                qty if qty is not None else 1.0,
+                symbol, side, price, qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
             )
         g_scale = _clean_scale(getattr(g_dec, "suggested_scale", 1.0))
@@ -190,11 +131,7 @@ def evaluate_high_stake_order_guard(
             except Exception:
                 pass
 
-        do_notify = (
-            notify_on_eval
-            if isinstance(notify_on_eval, bool)
-            else str(notify_on_eval).strip().lower() not in ("0", "0.0", "false", "no", "off", "n", "f", "")
-        )
+        do_notify = _parse_bool_flag(notify_on_eval, True) if not isinstance(notify_on_eval, bool) else notify_on_eval
         if do_notify or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
@@ -202,49 +139,36 @@ def evaluate_high_stake_order_guard(
                 f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
             )
 
-        if do_notify:
-            now_ts = _resolve_now_ts(now)
-            cd_key = (str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", ""), side)
-            if not (0.0 <= (now_ts - _LLM_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
-                _LLM_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
-                while len(_LLM_SHADOW_NOTIFY_COOLDOWN) > 1000:
-                    _LLM_SHADOW_NOTIFY_COOLDOWN.pop(next(iter(_LLM_SHADOW_NOTIFY_COOLDOWN)), None)
-                try:
-                    from notify_engine.alertnotifiers import notify
-                    from orchestratorOS.agy.topics import topic_spec
+        if do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), _resolve_now_ts(now)):
+            try:
+                from notify_engine.alertnotifiers import notify
+                from orchestratorOS.agy.topics import topic_spec
 
-                    hs_tag = topic_spec("guard_high_stake").bracket_tag
-                    scale_pct = int(g_scale * 100)
-                    if not g_dec.allowed:
-                        g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
-                    elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                        g_title = f"🛡 {hs_tag} SCALE {scale_pct}% {side} {symbol}"
-                    else:
-                        g_title = f"🧭 {hs_tag} ACCEPT {side} {symbol}"
+                hs_tag = topic_spec("guard_high_stake").bracket_tag
+                scale_pct = int(g_scale * 100)
+                if not g_dec.allowed:
+                    g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
+                elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                    g_title = f"🛡 {hs_tag} SCALE {scale_pct}% {side} {symbol}"
+                else:
+                    g_title = f"🧭 {hs_tag} ACCEPT {side} {symbol}"
 
-                    meta_reason = (getattr(g_dec, "metadata", None) or {}).get("gemini_reason")
-                    clean_reason = str(meta_reason or re.sub(
-                        r"^(?:Gemini|LLM) (?:vetoed|approved|downscaled) high-stake (?:BUY|SELL):\s*",
-                        "",
-                        g_dec.reason,
-                    )).strip()
+                meta_reason = (getattr(g_dec, "metadata", None) or {}).get("gemini_reason")
+                clean_reason = str(meta_reason or re.sub(
+                    r"^(?:Gemini|LLM) (?:vetoed|approved|downscaled) high-stake (?:BUY|SELL):\s*",
+                    "",
+                    g_dec.reason,
+                )).strip()
 
-                    px_clean = _pos_float(price, 0.0)
-                    qty_clean = _pos_float(qty, 0.0)
-                    price_str = f"${px_clean:,.2f}" if px_clean > 0.0 else ""
-                    qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
-                    order_header = f"Order: {side} {qty_str}{symbol}"
-                    if price_str:
-                        order_header += f" @ {price_str}"
-                    order_header += f" · €{computed_notional:,.0f} (Scale: {scale_pct}%)"
-                    notify(
-                        title=g_title,
-                        body=f"{order_header}\n{clean_reason}",
-                        source="order_guard",
-                        symbol=symbol,
-                    )
-                except Exception:
-                    pass
+                px_clean = _pos_float(price, 0.0)
+                qty_clean = _pos_float(qty, 0.0)
+                price_str = f"${px_clean:,.2f}" if px_clean > 0.0 else ""
+                qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
+                order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
+                order_header += f" · €{computed_notional:,.0f} (Scale: {scale_pct}%)"
+                notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
+            except Exception:
+                pass
 
         if llm_mode == "enforce":
             if not g_dec.allowed or g_scale <= 0.0:
@@ -280,26 +204,17 @@ def check_geopolitical_order_guards(
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
 ) -> Tuple[bool, str, float]:
-    """Evaluate pre-trade orders against published geopolitical threat assessment (GLLM3).
-
-    Returns:
-        (allowed: bool, reason: str, suggested_scale: float)
-    """
+    """Evaluate pre-trade orders against published geopolitical threat assessment (GLLM3)."""
     order_side = _normalize_side(side)
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
-    if margins is None:
-        m = _load_margins()
-    else:
-        m = margins
-
     from intelligence.internal.guards.guard_decision import BrakeAction
+    from order_guard import _load_margins, validate_guard_mode_cfg
+    m = _load_margins() if margins is None else margins
 
-    if "intelligence_guards_mode" in m:
-        if validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
-            return True, "intelligence_guards_off", 1.0
+    if "intelligence_guards_mode" in m and validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+        return True, "intelligence_guards_off", 1.0
 
     geo_mode = validate_guard_mode_cfg(m["geopolitical_guard_mode"], "geopolitical_guard_mode")
     if geo_mode == "off":
@@ -310,49 +225,42 @@ def check_geopolitical_order_guards(
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
         from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-        analyzer = GeopoliticalThreatAnalyzer()
-        cached_geo = analyzer._cached_assessment
+        cached_geo = GeopoliticalThreatAnalyzer()._cached_assessment
         if cached_geo is not None:
-            geo_guard = GeopoliticalShockGuard()
-            geo_dec = geo_guard.check(symbol, order_side, cached_geo)
+            geo_dec = GeopoliticalShockGuard().check(symbol, order_side, cached_geo)
             geo_scale = _clean_scale(getattr(geo_dec, "suggested_scale", 1.0))
             if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_scale})")
-                if geo_mode == "shadow" and shadow_notify:
-                    cd_key = (str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", ""), order_side)
-                    now_ts = _resolve_now_ts(now)
-                    if not (0.0 <= (now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
-                        _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
-                        while len(_GEO_SHADOW_NOTIFY_COOLDOWN) > 1000:
-                            _GEO_SHADOW_NOTIFY_COOLDOWN.pop(next(iter(_GEO_SHADOW_NOTIFY_COOLDOWN)), None)
-                        try:
-                            from notify_engine.alertnotifiers import notify
-                            from orchestratorOS.agy.topics import topic_spec
+                if (
+                    geo_mode == "shadow"
+                    and shadow_notify
+                    and check_cooldown_gate(_GEO_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), order_side), _resolve_now_ts(now))
+                ):
+                    try:
+                        from notify_engine.alertnotifiers import notify
+                        from orchestratorOS.agy.topics import topic_spec
 
-                            geo_tag = topic_spec("macro_geopolitical").bracket_tag
-                            scale_pct = int(geo_scale * 100)
-                            if not geo_dec.allowed:
-                                geo_title = f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
-                            else:
-                                geo_title = f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
-
-                            raw_sum = cached_geo.get("summary") if isinstance(cached_geo, dict) else getattr(cached_geo, "summary", None)
-                            clean_summary = raw_sum or geo_dec.reason
-                            if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
-                                clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
-
-                            raw_tl = cached_geo.get("threat_level") if isinstance(cached_geo, dict) else getattr(cached_geo, "threat_level", "UNKNOWN")
-                            raw_rs = _pos_float(cached_geo.get("risk_score") if isinstance(cached_geo, dict) else getattr(cached_geo, "risk_score", 0.0), 0.0)
-                            geo_body = f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}"
-                            notify(
-                                title=geo_title,
-                                body=geo_body,
-                                source="macro_shadow",
-                                symbol=symbol,
-                            )
-                        except Exception:
-                            pass
+                        geo_tag = topic_spec("macro_geopolitical").bracket_tag
+                        scale_pct = int(geo_scale * 100)
+                        geo_title = (
+                            f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
+                            if not geo_dec.allowed
+                            else f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
+                        )
+                        clean_summary = obj_attr(cached_geo, "summary") or geo_dec.reason
+                        if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
+                            clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
+                        raw_tl = obj_attr(cached_geo, "threat_level", "UNKNOWN")
+                        raw_rs = _pos_float(obj_attr(cached_geo, "risk_score", 0.0), 0.0)
+                        notify(
+                            title=geo_title,
+                            body=f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}",
+                            source="macro_shadow",
+                            symbol=symbol,
+                        )
+                    except Exception:
+                        pass
                 if geo_mode == "enforce":
                     if not geo_dec.allowed or geo_scale <= 0.0:
                         return False, geo_dec.reason, 0.0

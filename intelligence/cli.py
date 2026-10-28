@@ -15,36 +15,19 @@ import time
 from typing import Any, Dict, Optional
 
 from botcore import _parse_bool_flag
+from intelligence.macro_sentiment_ssot import (
+    get_cache_filenames,
+    inspect_daemon_heartbeat,
+    load_cached_geopolitical_eval,
+    load_cached_sentiment_advisor_eval,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
+)
 
 
-def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _safe_int(val: Any, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def _format_age(seconds: float) -> str:
+def _format_age(seconds: Any) -> str:
     """Format duration in human-readable string."""
-    if seconds is None or isinstance(seconds, bool):
-        return "unknown"
-    try:
-        sec_f = float(seconds)
-    except (TypeError, ValueError, OverflowError):
-        return "unknown"
+    sec_f = _safe_float(seconds, float("nan"))
     if not math.isfinite(sec_f):
         return "unknown"
     if sec_f < 0:
@@ -56,97 +39,47 @@ def _format_age(seconds: float) -> str:
     return f"{sec_f / 3600:.1f}h ago"
 
 
+def _stamp_age(data: Dict[str, Any], now: float, *, include_seconds: bool = True, ts_fallback_key: Optional[str] = None) -> Dict[str, Any]:
+    raw_ts = data.get("ts")
+    if raw_ts is None and ts_fallback_key:
+        raw_ts = data.get(ts_fallback_key)
+    ts = _safe_float(raw_ts, 0.0)
+    age = (now - ts) if ts > 0.0 else float("inf")
+    if include_seconds:
+        data["age_seconds"] = round(age, 1) if math.isfinite(age) else None
+    data["age_formatted"] = _format_age(age)
+    return data
+
+
+def _with_formatted_hb_age(res: Dict[str, Any]) -> Dict[str, Any]:
+    if "pid" in res:
+        age = res.get("age_seconds")
+        res["age_formatted"] = _format_age(age if age is not None else float("inf"))
+    return res
+
+
 def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Inspect the running background telemetry daemon."""
-    from state_io import read_recovering_previous
-    data = None
-    for fname in ("globaltelemetry_collector.heartbeat", "intelligence_daemon.heartbeat"):
-        cand = os.path.join(cache_dir, fname)
-        if os.path.exists(cand) or os.path.exists(f"{cand}.previous"):
-            try:
-                cand_data = read_recovering_previous(cand, json.loads, default=None)
-                if isinstance(cand_data, dict):
-                    data = cand_data
-                    break
-            except Exception:
-                continue
-    if data is None:
-        return {"running": False, "reason": "no_heartbeat_file"}
-
-    try:
-        pid = _safe_int(data.get("pid", 0), 0)
-        ts = _safe_float(data.get("ts", 0.0), 0.0)
-        age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
-
-        is_alive = False
-        if pid > 0:
-            try:
-                # Check process existence via signal 0
-                os.kill(pid, 0)
-                is_alive = True
-            except PermissionError:
-                is_alive = True
-            except (OSError, OverflowError):
-                is_alive = False
-
-        status_str = "alive" if (is_alive and age < 120.0) else ("stale" if is_alive else "dead")
-        raw_symbols = data.get("symbols")
-        symbols_list = [str(s) for s in raw_symbols if s is not None and not isinstance(s, bool)] if isinstance(raw_symbols, list) else []
-        raw_intervals = data.get("intervals")
-        raw_last_run = data.get("last_run")
-        return {
-            "running": is_alive and age < 120.0,
-            "pid": pid,
-            "status": status_str,
-            "age_seconds": round(age, 1) if math.isfinite(age) else None,
-            "age_formatted": _format_age(age),
-            "symbols": symbols_list,
-            "intervals": raw_intervals if isinstance(raw_intervals, dict) else {},
-            "last_run": raw_last_run if isinstance(raw_last_run, dict) else {},
-        }
-    except Exception as e:
-        return {"running": False, "error": str(e)}
+    return _with_formatted_hb_age(
+        inspect_daemon_heartbeat(
+            cache_dir,
+            ("globaltelemetry_collector.heartbeat", "intelligence_daemon.heartbeat"),
+            max_alive_age_sec=120.0,
+            include_symbols=True,
+        )
+    )
 
 
 def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Inspect the running macro intelligence analyzer daemon."""
-    from state_io import read_recovering_previous
-    hb_path = os.path.join(cache_dir, "macro_analyzer.heartbeat")
-    if not (os.path.exists(hb_path) or os.path.exists(f"{hb_path}.previous")):
-        return {"running": False, "reason": "no_heartbeat_file"}
-
-    try:
-        data = read_recovering_previous(hb_path, json.loads, default=None)
-        if not isinstance(data, dict):
-            return {"running": False, "reason": "no_heartbeat_file"}
-        pid = _safe_int(data.get("pid", 0), 0)
-        ts = _safe_float(data.get("ts", 0.0), 0.0)
-        age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
-
-        is_alive = False
-        if pid > 0:
-            try:
-                os.kill(pid, 0)
-                is_alive = True
-            except PermissionError:
-                is_alive = True
-            except (OSError, OverflowError):
-                is_alive = False
-
-        status_str = "alive" if (is_alive and age < 300.0) else ("stale" if is_alive else "dead")
-        raw_intervals = data.get("intervals")
-        raw_last_run = data.get("last_run")
-        return {
-            "running": is_alive and age < 300.0,
-            "pid": pid,
-            "status": status_str,
-            "age_seconds": round(age, 1) if math.isfinite(age) else None,
-            "age_formatted": _format_age(age),
-            "intervals": raw_intervals if isinstance(raw_intervals, dict) else {},
-            "last_run": raw_last_run if isinstance(raw_last_run, dict) else {},
-        }
-    except Exception as e:
-        return {"running": False, "error": str(e)}
+    return _with_formatted_hb_age(
+        inspect_daemon_heartbeat(
+            cache_dir,
+            ("macro_analyzer.heartbeat",),
+            max_alive_age_sec=300.0,
+            include_symbols=False,
+        )
+    )
 
 
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:
@@ -170,8 +103,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         from intelligence.internal.state.survival import _lookup_t_cache_entry, estimate_T
         t_est = None
         if not hasattr(estimate_T, "_mock_name"):
-            local_t_path = os.path.join(cache_dir, "cache_T_trend.json")
-            local_t_data = read_recovering_previous(local_t_path, json.loads, default=None)
+            local_t_data = read_recovering_previous(os.path.join(cache_dir, "cache_T_trend.json"), json.loads, default=None)
             if isinstance(local_t_data, dict):
                 t_est = _lookup_t_cache_entry(local_t_data, symbol)
         if not isinstance(t_est, dict):
@@ -198,96 +130,46 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         if not sym_candidates:
             sym_candidates = [symbol]
 
-        def _load_first_symbol_snapshot(prefix: str) -> Optional[Dict[str, Any]]:
+        for key, prefix in (
+            ("orderbook", "orderbook_depth"),
+            ("derivatives", "derivatives_telemetry"),
+            ("whale", "whale_snapshot"),
+        ):
+            snap_data = None
             for cand in sym_candidates:
-                cand_path = os.path.join(cache_dir, f"{prefix}_{cand}.json")
-                data = read_recovering_previous(cand_path, json.loads, default=None)
-                if isinstance(data, dict):
-                    return data
-            return None
-
-        # Orderbook depth
-        ob_data = _load_first_symbol_snapshot("orderbook_depth")
-        if isinstance(ob_data, dict):
-            ob_ts = _safe_float(ob_data.get("ts"), 0.0)
-            ob_age = (now - ob_ts) if ob_ts > 0.0 else float("inf")
-            ob_data["age_seconds"] = round(ob_age, 1) if math.isfinite(ob_age) else None
-            ob_data["age_formatted"] = _format_age(ob_age)
-            result["pillar2_external"]["orderbook"] = ob_data
-        else:
-            result["pillar2_external"]["orderbook"] = None
-
-        # Derivatives telemetry
-        deriv_data = _load_first_symbol_snapshot("derivatives_telemetry")
-        if isinstance(deriv_data, dict):
-            deriv_ts = _safe_float(deriv_data.get("ts"), 0.0)
-            deriv_age = (now - deriv_ts) if deriv_ts > 0.0 else float("inf")
-            deriv_data["age_seconds"] = round(deriv_age, 1) if math.isfinite(deriv_age) else None
-            deriv_data["age_formatted"] = _format_age(deriv_age)
-            result["pillar2_external"]["derivatives"] = deriv_data
-        else:
-            result["pillar2_external"]["derivatives"] = None
-
-        # Whale positioning
-        whale_data = _load_first_symbol_snapshot("whale_snapshot")
-        if isinstance(whale_data, dict):
-            whale_ts = _safe_float(whale_data.get("ts"), 0.0)
-            whale_age = (now - whale_ts) if whale_ts > 0.0 else float("inf")
-            whale_data["age_seconds"] = round(whale_age, 1) if math.isfinite(whale_age) else None
-            whale_data["age_formatted"] = _format_age(whale_age)
-            result["pillar2_external"]["whale"] = whale_data
-        else:
-            result["pillar2_external"]["whale"] = None
+                cand_data = read_recovering_previous(os.path.join(cache_dir, f"{prefix}_{cand}.json"), json.loads, default=None)
+                if isinstance(cand_data, dict):
+                    snap_data = cand_data
+                    break
+            result["pillar2_external"][key] = _stamp_age(snap_data, now) if isinstance(snap_data, dict) else None
     except Exception as e:
         result["pillar2_external"]["error"] = str(e)
 
     # 3. Pillar 3: Sentiment & Gemini Advisor
     try:
-        from intelligence.macro_sentiment_ssot import (
-            get_cache_filenames,
-            load_cached_geopolitical_eval,
-            load_cached_sentiment_advisor_eval,
-        )
         fg_data = None
         for fg_fname in get_cache_filenames("fear_greed_files"):
             cand_fg = read_recovering_previous(os.path.join(cache_dir, fg_fname), json.loads, default=None)
             if isinstance(cand_fg, dict):
                 fg_data = cand_fg
                 break
-        if isinstance(fg_data, dict):
-            raw_fg_ts = fg_data.get("ts") if fg_data.get("ts") is not None else fg_data.get("timestamp")
-            fg_ts = _safe_float(raw_fg_ts, 0.0)
-            fg_age = (now - fg_ts) if fg_ts > 0.0 else float("inf")
-            fg_data["age_formatted"] = _format_age(fg_age)
-            result["pillar3_sentiment"]["fear_greed"] = fg_data
-        else:
-            result["pillar3_sentiment"]["fear_greed"] = None
+        result["pillar3_sentiment"]["fear_greed"] = (
+            _stamp_age(fg_data, now, include_seconds=False, ts_fallback_key="timestamp")
+            if isinstance(fg_data, dict)
+            else None
+        )
 
         gem_data = load_cached_sentiment_advisor_eval(cache_dir)
-        if isinstance(gem_data, dict):
-            gem_ts = _safe_float(gem_data.get("ts"), 0.0)
-            gem_age = (now - gem_ts) if gem_ts > 0.0 else float("inf")
-            gem_data["age_formatted"] = _format_age(gem_age)
-            result["pillar3_sentiment"]["sentiment_advisor"] = gem_data
-            result["pillar3_sentiment"]["gemini_macro"] = gem_data
-        else:
-            result["pillar3_sentiment"]["sentiment_advisor"] = None
-            result["pillar3_sentiment"]["gemini_macro"] = None
+        stamped_gem = _stamp_age(gem_data, now, include_seconds=False) if isinstance(gem_data, dict) else None
+        result["pillar3_sentiment"]["sentiment_advisor"] = stamped_gem
+        result["pillar3_sentiment"]["gemini_macro"] = stamped_gem
     except Exception as e:
         result["pillar3_sentiment"]["error"] = str(e)
 
     # 4. Pillar 4: Geopolitical Threat Shield
     try:
-        from intelligence.macro_sentiment_ssot import load_cached_geopolitical_eval
         geo_data = load_cached_geopolitical_eval(cache_dir)
-        if isinstance(geo_data, dict):
-            geo_ts = _safe_float(geo_data.get("ts"), 0.0)
-            geo_age = (now - geo_ts) if geo_ts > 0.0 else float("inf")
-            geo_data["age_seconds"] = round(geo_age, 1) if math.isfinite(geo_age) else None
-            geo_data["age_formatted"] = _format_age(geo_age)
-            result["pillar4_macro"] = geo_data
-        else:
-            result["pillar4_macro"] = None
+        result["pillar4_macro"] = _stamp_age(geo_data, now) if isinstance(geo_data, dict) else None
     except Exception as e:
         result["pillar4_macro_error"] = str(e)
 
@@ -297,35 +179,11 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         ob_item = result.get("pillar2_external", {}).get("orderbook")
         mid_px_raw = _safe_float(ob_item.get("mid_price"), 100.0) if isinstance(ob_item, dict) else 100.0
         mid_px = mid_px_raw if mid_px_raw > 0.0 else 100.0
-        # BUY evaluation with standard 250 EUR notional
-        allowed, reason, scale = check_intelligence_guards(
-            provider="binance",
-            symbol=symbol,
-            order_type="BUY",
-            price=mid_px,
-            qty=1.0,
-            notional_eur=250.0,
-        )
-        result["guard_preview"]["buy_standard"] = {
-            "allowed": allowed,
-            "reason": reason,
-            "suggested_scale": scale,
-        }
-
-        # BUY evaluation with high stake (1500 EUR)
-        allowed_high, reason_high, scale_high = check_intelligence_guards(
-            provider="binance",
-            symbol=symbol,
-            order_type="BUY",
-            price=mid_px,
-            qty=15.0,
-            notional_eur=1500.0,
-        )
-        result["guard_preview"]["buy_high_stake"] = {
-            "allowed": allowed_high,
-            "reason": reason_high,
-            "suggested_scale": scale_high,
-        }
+        for preview_key, qty_val, notional_val in (("buy_standard", 1.0, 250.0), ("buy_high_stake", 15.0, 1500.0)):
+            allowed, reason, scale = check_intelligence_guards(
+                provider="binance", symbol=symbol, order_type="BUY", price=mid_px, qty=qty_val, notional_eur=notional_val
+            )
+            result["guard_preview"][preview_key] = {"allowed": allowed, "reason": reason, "suggested_scale": scale}
     except Exception as e:
         result["guard_preview"]["error"] = str(e)
 
