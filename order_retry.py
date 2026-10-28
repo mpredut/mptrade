@@ -36,7 +36,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 from cachepaths import normalize_venue_name
 
 from lock import FileLock
@@ -316,14 +316,7 @@ def _clean_opt_finite_float(val):
 
 
 def _clean_now_sec(now=None) -> float:
-    if now is not None and not isinstance(now, bool):
-        try:
-            f = float(now)
-            if math.isfinite(f) and f > 0:
-                return f
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return float(time.time())
+    return safe_pos_float(now, default=float(time.time()))
 
 
 def valid_record(rec):
@@ -879,13 +872,8 @@ def enqueue_claimed(
 
 
 def _rev_int(val, default=-1):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-        return int(vf) if (math.isfinite(vf) and vf.is_integer()) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+    f = safe_float(val, default=None)
+    return int(f) if (f is not None and f.is_integer()) else default
 
 
 def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
@@ -2053,15 +2041,7 @@ class StrategyExecutorLifecycleApi:
 
 
 def _lifecycle_finite(raw, *, positive=False):
-    if isinstance(raw, bool):
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(value) or (positive and value <= 0):
-        return None
-    return value
+    return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
 
 
 def _terminal_payload(status: OrderStatus, observed_at: float) -> dict:

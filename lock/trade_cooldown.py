@@ -24,6 +24,7 @@ import contextlib
 import configparser
 
 from .cooldown import Cooldown
+from providers.base import normalize_side as _norm_side
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))          # = lock/
 STATE_FILE = os.path.join(BASE_DIR, "trade_cooldown.json")     # runtime state (gitignored)
@@ -121,15 +122,7 @@ def _clean_order_id_meta(val):
     return s if s and s.lower() not in _INVALID_COOLDOWN_ID_STRINGS else None
 
 
-def _norm_side(side):
-    if side is None or isinstance(side, bool):
-        return ""
-    s = str(side).strip().upper()
-    if s in ("B", "BUY", "BID", "LONG"):
-        return "BUY"
-    if s in ("A", "S", "SELL", "ASK", "SHORT"):
-        return "SELL"
-    return s
+
 
 
 def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
