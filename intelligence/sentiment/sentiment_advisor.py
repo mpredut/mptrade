@@ -9,6 +9,13 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+from intelligence.macro_sentiment_ssot import (
+    DEFAULT_SENTIMENT_INTERVAL_SEC,
+    normalize_market_bias,
+    normalize_recommended_action,
+    normalize_risk_level,
+    resolve_global_trading_session,
+)
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
@@ -40,11 +47,11 @@ class SentimentAdvisor:
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        cache_ttl_sec: float = 10800.0,  # 3 hours cache by default
+        cache_ttl_sec: float = DEFAULT_SENTIMENT_INTERVAL_SEC,  # 3 hours base cache by default
         cache_file: str = DEFAULT_CACHE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
-        ttl_f = 10800.0
+        ttl_f = DEFAULT_SENTIMENT_INTERVAL_SEC
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
             try:
                 cf = float(cache_ttl_sec)
@@ -93,15 +100,9 @@ class SentimentAdvisor:
                 if isinstance(raw_risks, (list, tuple))
                 else []
             )
-            mb_norm = str(data.get("market_bias") or "NEUTRAL").strip().upper()
-            if mb_norm not in ("BULLISH", "BEARISH", "NEUTRAL", "CAUTION"):
-                mb_norm = "NEUTRAL"
-            rl_norm = str(data.get("risk_level") or "MODERATE").strip().upper()
-            if rl_norm not in ("LOW", "MODERATE", "HIGH", "EXTREME"):
-                rl_norm = "MODERATE"
-            ra_norm = str(data.get("recommended_action") or "HOLD").strip().upper()
-            if ra_norm not in ("ACCUMULATE", "HOLD", "TRIM_PROFITS", "DEFENSIVE"):
-                ra_norm = "HOLD"
+            mb_norm = normalize_market_bias(data.get("market_bias"), default="NEUTRAL")
+            rl_norm = normalize_risk_level(data.get("risk_level"), default="MODERATE")
+            ra_norm = normalize_recommended_action(data.get("recommended_action"), default="HOLD")
             raw_sum = data.get("summary")
             sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
             self._cached_assessment = SentimentAdvisorAssessment(
@@ -160,7 +161,11 @@ class SentimentAdvisor:
         def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
             return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
-        prompt_context = []
+        session_ctx = resolve_global_trading_session(now)
+        prompt_context = [
+            f"- Active Global Session: {session_ctx.session_label} ({session_ctx.eet_time_str} / {session_ctx.ny_time_str})",
+            f"- Session Flow Profile: {session_ctx.trader_flow_profile}",
+        ]
         if fear_greed:
             fg_val = int(round(_sf(_obj_attr(fear_greed, "value", 50), 50.0)))
             fg_cls = str(_obj_attr(fear_greed, "classification", None) or "Neutral")
@@ -181,6 +186,7 @@ class SentimentAdvisor:
             "Synthesize the following real-time telemetry into a periodic macro market perspective:\n"
             f"{context_str}\n\n"
             "Key analytical framework:\n"
+            f"- Intraday Session Guidance: {session_ctx.llm_session_guidance}\n"
             "- Correlate price change, open interest change, taker buy/sell ratio, and funding rates.\n"
             "- If divergence regime is 'short_squeeze_primed' or 'short_squeeze', evaluate if trapped shorts or cascade buying can drive sudden upside squeezes.\n"
             "- Distinguish true forced liquidations ('long_liquidation') from voluntary orderly de-risking ('long_unwinding').\n\n"
@@ -223,15 +229,9 @@ class SentimentAdvisor:
                 if isinstance(raw_risks, (list, tuple))
                 else []
             )
-            mb_norm = str(resp.get("market_bias") or "NEUTRAL").strip().upper()
-            if mb_norm not in ("BULLISH", "BEARISH", "NEUTRAL", "CAUTION"):
-                mb_norm = "NEUTRAL"
-            rl_norm = str(resp.get("risk_level") or "MODERATE").strip().upper()
-            if rl_norm not in ("LOW", "MODERATE", "HIGH", "EXTREME"):
-                rl_norm = "MODERATE"
-            ra_norm = str(resp.get("recommended_action") or "HOLD").strip().upper()
-            if ra_norm not in ("ACCUMULATE", "HOLD", "TRIM_PROFITS", "DEFENSIVE"):
-                ra_norm = "HOLD"
+            mb_norm = normalize_market_bias(resp.get("market_bias"), default="NEUTRAL")
+            rl_norm = normalize_risk_level(resp.get("risk_level"), default="MODERATE")
+            ra_norm = normalize_recommended_action(resp.get("recommended_action"), default="HOLD")
             raw_sum = resp.get("summary")
             sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
             assessment = SentimentAdvisorAssessment(

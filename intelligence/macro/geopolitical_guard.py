@@ -7,6 +7,10 @@ from typing import Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+from intelligence.macro_sentiment_ssot import (
+    normalize_recommended_brake,
+    normalize_threat_level,
+)
 
 logger = logging.getLogger("intelligence.macro.geopolitical_guard")
 
@@ -54,9 +58,9 @@ class GeopoliticalShockGuard:
             return assessment.get(key, default) if isinstance(assessment, dict) else getattr(assessment, key, default)
 
         raw_level = _attr("threat_level", None)
-        level = str(raw_level).strip().upper() if isinstance(raw_level, str) else ""
+        level = normalize_threat_level(raw_level, default="NORMAL")
         raw_brake = _attr("recommended_brake", None)
-        brake = str(raw_brake).strip().upper() if isinstance(raw_brake, str) else ""
+        brake = normalize_recommended_brake(raw_brake, threat_level=level)
         raw_summary = _attr("summary", None)
         summary = str(raw_summary).strip() if (isinstance(raw_summary, str) and raw_summary.strip()) else "geopolitical_shock"
         raw_risk = _attr("risk_score", 0.0)

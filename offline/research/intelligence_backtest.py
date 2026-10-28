@@ -23,6 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from cachepaths import cache_path as resolve_cache_path
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -191,7 +192,7 @@ def run_intelligence_backtest(
     parabolic_surge_pct = float(parabolic_surge_pct)
     fee_pct = float(fee_pct)
     if cache_path is None:
-        cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+        cache_path = resolve_cache_path(f"cache_sparse_price_{symbol}.jsonl")
 
     logger.info("Loading price series for %s from %s ...", symbol, cache_path)
     raw_series = load_price_series(cache_path, symbol)

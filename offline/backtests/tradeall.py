@@ -33,6 +33,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
 from providers.replay_clock import SimClock as _SimClock  # noqa: F401
 from state_io import atomic_write_json, read_recovering_previous
+from cachepaths import cache_path, legacy_filenames_for, migrate_legacy_filename_if_needed
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
 )
@@ -279,16 +280,13 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
 def load_ticks_history(symbol, start_ts, end_ts):
     """Reads cache_sparse_price_{symbol}.jsonl — a long history, SPARSE."""
-    path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+    path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
+    migrate_legacy_filename_if_needed(path)
     if not os.path.exists(path):
-        try:
-            import cachepaths
-            for legacy_path in cachepaths.legacy_filenames_for(path):
-                if os.path.exists(legacy_path):
-                    path = legacy_path
-                    break
-        except Exception:
-            pass
+        for legacy_path in legacy_filenames_for(path):
+            if os.path.exists(legacy_path):
+                path = legacy_path
+                break
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
     yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
@@ -300,28 +298,22 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     if filename:
         path = filename
     else:
-        path = os.path.join(ROOT, "cachedb", f"cache_24_price_{symbol}.json")
+        path = cache_path(f"cache_24_price_{symbol}.json")
+        migrate_legacy_filename_if_needed(path)
         if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
-            alt_jsonl = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
-            try:
-                import cachepaths
-                for cand in (alt_jsonl, *cachepaths.legacy_filenames_for(alt_jsonl)):
-                    if os.path.exists(cand):
-                        path = cand
-                        break
-            except Exception:
-                if os.path.exists(alt_jsonl):
-                    path = alt_jsonl
+            alt_jsonl = cache_path(f"cache_365_price_{symbol}.jsonl")
+            migrate_legacy_filename_if_needed(alt_jsonl)
+            for cand in (alt_jsonl, *legacy_filenames_for(alt_jsonl)):
+                if os.path.exists(cand):
+                    path = cand
+                    break
     if str(path).endswith(".jsonl"):
+        migrate_legacy_filename_if_needed(path)
         if not os.path.exists(path):
-            try:
-                import cachepaths
-                for legacy_path in cachepaths.legacy_filenames_for(path):
-                    if os.path.exists(legacy_path):
-                        path = legacy_path
-                        break
-            except Exception:
-                pass
+            for legacy_path in legacy_filenames_for(path):
+                if os.path.exists(legacy_path):
+                    path = legacy_path
+                    break
         if not os.path.exists(path):
             raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
         yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)

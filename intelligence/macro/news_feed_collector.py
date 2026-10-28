@@ -14,20 +14,15 @@ import xml.etree.ElementTree as ET
 
 from botcore import _parse_bool_flag
 from cachepaths import cache_path
+from intelligence.macro_sentiment_ssot import (
+    ACUTE_SHOCK_PHRASES,
+    DEFAULT_NEWS_ROLLING_WINDOW_SEC,
+    DEFAULT_RSS_URL,
+    HIGH_SEVERITY_KEYWORDS,
+    has_acute_shock_keywords,
+)
 
 logger = logging.getLogger("intelligence.macro.news_feed")
-
-DEFAULT_RSS_URL = (
-    "https://news.google.com/rss/search?"
-    "q=war+OR+conflict+OR+%22military+strike%22+OR+%22energy+crisis%22+OR+%22oil+spike%22+OR+%22gas+pipeline%22+when:1d"
-    "&hl=en-US&gl=US&ceid=US:en"
-)
-
-HIGH_SEVERITY_KEYWORDS = (
-    "war", "military strike", "missile", "airstrike", "invasion",
-    "energy crisis", "oil embargo", "strait of hormuz", "gas pipeline",
-    "nuclear", "blackout", "sanctions", "escalation", "attack",
-)
 
 
 @dataclass(frozen=True)
@@ -64,7 +59,7 @@ class NewsFeedCollector:
         rss_url: str = DEFAULT_RSS_URL,
         cache_ttl_sec: float = 60.0,  # 1 minute cache for RSS fetches
         history_file: str = DEFAULT_HISTORY_FILE,
-        rolling_window_sec: float = 14400.0,  # 4 hours aggregation horizon
+        rolling_window_sec: float = DEFAULT_NEWS_ROLLING_WINDOW_SEC,  # 6 hours aggregation horizon
     ) -> None:
         self.rss_url = rss_url
         ttl = 60.0
@@ -75,7 +70,7 @@ class NewsFeedCollector:
                     ttl = tf
             except (TypeError, ValueError):
                 pass
-        rw = 14400.0
+        rw = DEFAULT_NEWS_ROLLING_WINDOW_SEC
         if rolling_window_sec is not None and not isinstance(rolling_window_sec, bool):
             try:
                 rf = float(rolling_window_sec)
@@ -243,12 +238,8 @@ class NewsFeedCollector:
             )
         ]
         high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
-        has_shock = len(high_sev) >= 3 or any(
-            any(
-                w in (h.title.lower() if isinstance(getattr(h, "title", None), str) else "")
-                for w in ("declared war", "nuclear", "strait of hormuz", "major offensive")
-            )
-            for h in high_sev
+        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
+            [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)]
         )
 
         return NewsFeedSnapshot(
@@ -291,12 +282,8 @@ class NewsFeedCollector:
             )
         ]
         high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
-        has_shock = len(high_sev) >= 3 or any(
-            any(
-                w in (h.title.lower() if isinstance(getattr(h, "title", None), str) else "")
-                for w in ("declared war", "nuclear", "strait of hormuz", "major offensive")
-            )
-            for h in high_sev
+        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
+            [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)]
         )
         return NewsFeedSnapshot(
             headlines=tuple(all_headlines[:35]),
@@ -365,10 +352,7 @@ class NewsFeedCollector:
             )
 
         high_sev = [h for h in parsed_headlines if h.is_high_severity]
-        has_shock = len(high_sev) >= 3 or any(
-            any(w in h.title.lower() for w in ("declared war", "nuclear", "strait of hormuz", "major offensive"))
-            for h in high_sev
-        )
+        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords([h.title for h in high_sev])
 
         return NewsFeedSnapshot(
             headlines=tuple(parsed_headlines[:25]),

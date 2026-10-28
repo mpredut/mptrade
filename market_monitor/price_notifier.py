@@ -27,7 +27,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import create_new_coins_checker, NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from alertnotifiers import AlertNotifier
-from botcore import load_env_stack, required_bool_env
+from botcore import load_env_stack, required_bool_env, required_env
 from market_monitor.alerts_config import load_config, resolve
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,34 +36,24 @@ ALERT_NEW_COIN = required_bool_env("ALERT_NEW_COIN")
 
 # Price alerts route to their dedicated ntfy topic, passed explicitly to the batch
 # notifier (no PHONE_ALERT_URL indirection).
-_price_topic = (os.environ.get("NTFY_TOPIC_PRICE") or "").split("#", 1)[0].strip()
+_price_topic = required_env("NTFY_TOPIC_PRICE")
 PRICE_WEBHOOK_URL = (
     _price_topic
     if _price_topic.startswith(("http://", "https://"))
     else f"https://ntfy.sh/{_price_topic.lstrip('/')}"
-) if _price_topic else None
+)
 
-CMC_API_KEY = os.environ.get('CMC_API_KEY')
+CMC_API_KEY = required_env("CMC_API_KEY")
 TIME_INTERVAL_CLEANUP = 6 * 60 * 60  # 6 hours in seconds
-REQUIRED_ENV_VARS = ("CMC_API_KEY",)
+REQUIRED_ENV_VARS = ("CMC_API_KEY", "NTFY_TOPIC_PRICE")
 ENABLED_SOURCES = ["coinmarketcap", "coingecko", "binance", "dexscreener"]
 
 def validate_required_env():
-    missing = []
     for key in REQUIRED_ENV_VARS:
-        if not os.environ.get(key):
-            missing.append(key)
-
-    if not os.environ.get("NTFY_TOPIC_PRICE"):
-        missing.append("NTFY_TOPIC_PRICE")
-
-    if missing:
-        raise RuntimeError(
-            "Missing required environment variables: " + ", ".join(sorted(set(missing)))
-        )
+        required_env(key)
+    return True
 
 validate_required_env()
-CMC_API_KEY = os.environ.get('CMC_API_KEY')
 
 def print_notification_channels_status():
     print("ENV CONFIGURATION:")

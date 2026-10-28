@@ -102,13 +102,27 @@ def _norm_trend_window_sec(trend_window_seconds: float | None) -> float:
     return win_sec
 
 
+def _resolve_upward_eps_k() -> float:
+    v = float_env("MPTRADE_UPWARD_EPSILON_K")
+    if v is None:
+        v = float_env("MPTRADE_TREND_NOISE_GATE_K")
+    if v is None:
+        return 0.25
+    return v if v >= 0.0 else 0.25
+
+
 def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
+    import pricewindow as pw
     return (
         str(symbol),
         len(series),
         series[0] if series else None,
         series[-1] if series else None,
         _norm_trend_window_sec(trend_window_seconds),
+        pw._active_estimator(),
+        os.environ.get("MPTRADE_STEP_WOLS_POWER", str(pw.STEP_WOLS_POWER)),
+        os.environ.get("MPTRADE_MEDIAN_FILTER_SECONDS", str(pw.MEDIAN_FILTER_SECONDS)),
+        _resolve_upward_eps_k(),
     )
 
 
@@ -136,6 +150,7 @@ def prewarm_trend_series(
     sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
     cur_len = 0
     prev_ts = None
+    up_k = _resolve_upward_eps_k()
     tape: list[bool] = []
     for ts, px in series:
         if prev_ts is not None and ts > prev_ts:
@@ -163,9 +178,7 @@ def prewarm_trend_series(
             ft, gc, _sf, _gr, eps = buf.eval_slice(
                 blen - cur_len, blen - 1, sample_rate_sec=sample_rate, eps_k=1.0
             )
-            up_k_val = float_env("MPTRADE_UPWARD_EPSILON_K") or float_env("MPTRADE_TREND_NOISE_GATE_K") or 0.25
-            up_k = up_k_val if up_k_val >= 0.0 else 0.25
-            if eps > 0.0:
+            if eps > 0.0 and up_k > 0.0:
                 tape.append(gc > up_k * eps)
             else:
                 tape.append(gc > 0.0 or (gc == 0.0 and ft > 0))

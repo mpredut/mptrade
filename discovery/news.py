@@ -6,12 +6,17 @@ The request paths below do not set timeouts or call ``raise_for_status``.
 """
 
 import math
+import os
 import time
 import requests
 import pandas as pd
+from botcore import load_env_stack
 
-# Embedded CoinMarketCap credential used directly by this script.
-API_KEY_CMC = "4d587781-722b-40a3-83f0-2436d45942f7"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_env_stack(os.path.join(_ROOT, ".env"))
+
+# CoinMarketCap credential sourced from environment (CMC_API_KEY)
+API_KEY_CMC = os.environ.get("CMC_API_KEY", "").split("#", 1)[0].strip()
 url_cmc = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 
 

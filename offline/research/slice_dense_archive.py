@@ -14,6 +14,9 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from cachepaths import cache_path
 
 
 def ts_of(r) -> float:
@@ -44,9 +47,9 @@ def main():
     if not (math.isfinite(days) and days > 0):
         print(f"[slice] invalid days={sys.argv[2]!r}", file=sys.stderr)
         sys.exit(1)
-    out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
-        ROOT, "cachedb", f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
-    src = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
+    out = sys.argv[3] if len(sys.argv) > 3 else cache_path(
+        f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
+    src = cache_path(f"cache_365_price_{symbol}.jsonl")
     if not os.path.isfile(src):
         print(f"[slice] {src} missing", file=sys.stderr)
         sys.exit(1)

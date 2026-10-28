@@ -146,13 +146,18 @@ def kaufman_er(px, win=N_WIN):
     return net / np.maximum(path, 1e-12)
 
 
-def noise_gate(sig, px, win=N_WIN, k=0.25):
-    """Zero-out trend signals that do not exceed k * rolling_std(gradient)."""
+def rolling_eps(px, win=N_WIN):
     dy = np.diff(px, prepend=px[0])
     kernel = np.ones(win, dtype=np.float64) / win
     mean_g = fftconvolve(dy, kernel, mode="full")[:len(px)]
     var_g = np.maximum(0.0, fftconvolve(dy**2, kernel, mode="full")[:len(px)] - mean_g**2)
-    eps = np.sqrt(var_g)
+    return np.sqrt(var_g)
+
+
+def noise_gate(sig, px, win=N_WIN, k=0.25, eps=None):
+    """Zero-out trend signals that do not exceed k * rolling_std(gradient)."""
+    if eps is None:
+        eps = rolling_eps(px, win=win)
     return np.where(np.abs(sig) > k * eps, sig, 0.0)
 
 
@@ -193,9 +198,10 @@ def build_candidates(px):
 
     # New quantitative architectures: Kaufman ER, Noise Gating, Platt Scaling, and Tiered Hybrid
     er_val = None
+    eps_val = None
     for p in (2, 3):
         base_sig = None
-        for er_thr in (0.05, 0.10, 0.15, 0.20, 0.25, 0.35):
+        for er_thr in (0.03, 0.05, 0.10, 0.15):
             cname = f"SW p{p} + ER{er_thr}"
             if want(cname):
                 if base_sig is None:
@@ -203,26 +209,30 @@ def build_candidates(px):
                 if er_val is None:
                     er_val = kaufman_er(px)
                 yield cname, np.where(er_val >= er_thr, base_sig, 0.0)
-        for k_eps in (0.05, 0.10, 0.15, 0.25, 0.50):
+        for k_eps in (0.015, 0.02, 0.025, 0.03, 0.04, 0.05, 0.10, 0.25):
             cname = f"SW p{p} + NoiseGate{k_eps}"
             if want(cname):
                 if base_sig is None:
                     base_sig = step_wols(px, p)
-                yield cname, noise_gate(base_sig, px, k=k_eps)
+                if eps_val is None:
+                    eps_val = rolling_eps(px)
+                yield cname, noise_gate(base_sig, px, k=k_eps, eps=eps_val)
         for p_thr in (0.55, 0.60, 0.65):
             cname = f"SW p{p} + Platt{p_thr}"
             if want(cname):
                 if base_sig is None:
                     base_sig = step_wols(px, p)
                 yield cname, platt_scale(base_sig, thr=p_thr)
-        for er_thr, k_eps in ((0.05, 0.05), (0.10, 0.10)):
+        for er_thr, k_eps in ((0.03, 0.025), (0.05, 0.025), (0.05, 0.05)):
             cname = f"HYBRID p{p} ER{er_thr}+NG{k_eps}"
             if want(cname):
                 if base_sig is None:
                     base_sig = step_wols(px, p)
                 if er_val is None:
                     er_val = kaufman_er(px)
-                ng_sig = noise_gate(base_sig, px, k=k_eps)
+                if eps_val is None:
+                    eps_val = rolling_eps(px)
+                ng_sig = noise_gate(base_sig, px, k=k_eps, eps=eps_val)
                 yield cname, np.where(er_val >= er_thr, ng_sig, 0.0)
 
 
@@ -379,10 +389,12 @@ def main():
         "SW p1 med1", "SW p2 med1", "SW p3 med1",
         "SW p2 med5", "SW p3 med5", "EXP hl30 med1",
         "SW p2 + ER0.05", "SW p3 + ER0.05",
-        "SW p2 + NoiseGate0.05", "SW p2 + NoiseGate0.1", "SW p2 + NoiseGate0.25",
-        "SW p3 + NoiseGate0.05", "SW p3 + NoiseGate0.1", "SW p3 + NoiseGate0.25",
-        "SW p3 + Platt0.55", "SW p3 + Platt0.6",
-        "HYBRID p2 ER0.05+NG0.05", "HYBRID p3 ER0.05+NG0.05", "HYBRID p3 ER0.1+NG0.1",
+        "SW p2 + NoiseGate0.02", "SW p2 + NoiseGate0.025", "SW p2 + NoiseGate0.03", "SW p2 + NoiseGate0.05", "SW p2 + NoiseGate0.25",
+        "SW p3 + NoiseGate0.02", "SW p3 + NoiseGate0.025", "SW p3 + NoiseGate0.03", "SW p3 + NoiseGate0.05", "SW p3 + NoiseGate0.25",
+        "SW p3 + Platt0.6", "SW p3 + Platt0.65",
+        "HYBRID p2 ER0.03+NG0.025", "HYBRID p3 ER0.03+NG0.025",
+        "HYBRID p2 ER0.05+NG0.025", "HYBRID p3 ER0.05+NG0.025",
+        "HYBRID p2 ER0.05+NG0.05", "HYBRID p3 ER0.05+NG0.05",
     ]
     print("\n>>> PAIRED BOOTSTRAP vs LEGACY: edge diff (bps/decision), 95% CI, per symbol & period <<<")
     for sym, N, res in results:

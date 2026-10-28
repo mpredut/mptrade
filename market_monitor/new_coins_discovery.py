@@ -19,8 +19,8 @@ from botcore import _parse_bool_flag
 # Global configuration
 # ============================================
 
-# Embedded default credential passed to CoinMarketCapSource unless callers override it.
-CMC_API_KEY = "4d587781-722b-40a3-83f0-2436d45942f7"
+# Sourced from environment (CMC_API_KEY), passed to CoinMarketCapSource unless callers override it.
+CMC_API_KEY = os.environ.get("CMC_API_KEY", "").split("#", 1)[0].strip()
 
 # Discovery configuration
 NEW_COINS_AGE_DAYS = 3

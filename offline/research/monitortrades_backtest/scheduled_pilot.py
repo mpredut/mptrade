@@ -52,6 +52,7 @@ os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import _parse_bool_flag, float_env
+from cachepaths import cache_path
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
@@ -219,7 +220,7 @@ def _split_series(symbol):
     cached = _SERIES_SPLIT_CACHE.get(symbol)
     if cached is not None:
         return cached
-    path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+    path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
     series = load_price_series(path, symbol)
     mid = len(series) // 2
     res = (series[:mid], series[mid:])

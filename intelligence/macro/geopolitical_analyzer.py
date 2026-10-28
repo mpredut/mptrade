@@ -10,6 +10,13 @@ import time
 from typing import Any, Dict, List, Optional
 
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
+from intelligence.macro_sentiment_ssot import (
+    ACUTE_SHOCK_PHRASES,
+    has_acute_shock_keywords,
+    normalize_recommended_brake,
+    normalize_threat_level,
+    resolve_global_trading_session,
+)
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
@@ -23,15 +30,6 @@ logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_eval.json"
 DEFAULT_CACHE_TTL_SEC = required_float_env("MACRO_LLM_INTERVAL_SEC")
 DEFAULT_FALLBACK_RETRY_TTL_SEC = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
-
-ACUTE_SHOCK_PHRASES = (
-    "declared war",
-    "nuclear strike",
-    "nuclear weapon",
-    "strait of hormuz",
-    "oil embargo",
-    "major offensive",
-)
 
 
 @dataclass(frozen=True)
@@ -128,13 +126,9 @@ class GeopoliticalThreatAnalyzer:
                 except (TypeError, ValueError, OverflowError):
                     hl_cnt = 0
             raw_tl = data.get("threat_level")
-            tl_norm = raw_tl.strip().upper() if isinstance(raw_tl, str) else "NORMAL"
-            if tl_norm not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
-                tl_norm = "NORMAL"
+            tl_norm = normalize_threat_level(raw_tl, default="NORMAL")
             raw_rb = data.get("recommended_brake")
-            rb_norm = raw_rb.strip().upper() if isinstance(raw_rb, str) else "NONE"
-            if rb_norm not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
-                rb_norm = "NONE"
+            rb_norm = normalize_recommended_brake(raw_rb, threat_level=tl_norm)
             self._cached_assessment = GeopoliticalThreatAssessment(
                 threat_level=tl_norm,
                 risk_score=risk_val,
@@ -191,16 +185,35 @@ class GeopoliticalThreatAnalyzer:
         def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
             return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
+        raw_headlines = _obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
+        high_sev = (
+            [h for h in raw_headlines if self._as_bool_flag(_obj_attr(h, "is_high_severity", False))]
+            if isinstance(raw_headlines, (list, tuple))
+            else []
+        )
+        headline_digest = " || ".join(str(_obj_attr(h, "title", None) or "") for h in high_sev[:12])
+        has_new_acute_phrase = bool(
+            high_sev
+            and headline_digest != self._last_headlines_digest
+            and any(
+                phrase in str(_obj_attr(h, "title", None) or "").lower()
+                and phrase not in self._last_headlines_digest.lower()
+                for h in high_sev
+                for phrase in ACUTE_SHOCK_PHRASES
+            )
+        )
         acute_shock_alert = (
             news_snapshot is not None
             and self._as_bool_flag(_obj_attr(news_snapshot, "has_critical_shock_keywords", False))
             and self._cached_assessment is not None
-            and self._cached_assessment.threat_level == "NORMAL"
+            and (
+                self._cached_assessment.threat_level == "NORMAL"
+                or (self._cached_assessment.threat_level == "ELEVATED" and has_new_acute_phrase)
+            )
         )
         if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             return self._cached_assessment
 
-        raw_headlines = _obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
         if not isinstance(raw_headlines, (list, tuple)) or len(raw_headlines) == 0:
             return self._cached_assessment or GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
@@ -212,7 +225,6 @@ class GeopoliticalThreatAnalyzer:
             )
 
         # Stage 1: Local screen — if zero high-severity headlines, return NORMAL immediately
-        high_sev = [h for h in raw_headlines if self._as_bool_flag(_obj_attr(h, "is_high_severity", False))]
         if not high_sev:
             normal_assessment = GeopoliticalThreatAssessment(
                 threat_level="NORMAL",
@@ -229,7 +241,6 @@ class GeopoliticalThreatAnalyzer:
             return normal_assessment
 
         # Stage 2: High-severity headlines present -> Check if headlines have changed
-        headline_digest = " || ".join(str(_obj_attr(h, "title", None) or "") for h in high_sev[:12])
         if (
             not force_refresh
             and not acute_shock_alert
@@ -244,16 +255,19 @@ class GeopoliticalThreatAnalyzer:
             return self._cached_assessment
 
         # Stage 3: New high-severity headlines detected -> Query Google Gemini LLM
+        session_ctx = resolve_global_trading_session(now)
         headline_list = "\n".join(
             f"- {_obj_attr(h, 'title', None) or ''} ({_obj_attr(h, 'source', None) or 'Unknown'})"
             for h in high_sev[:12]
         )
         prompt = (
-            "You are a senior macroeconomic and geopolitical risk officer for an algorithmic crypto fund.\n"
-            "Evaluate these breaking headlines regarding war, military action, or energy crises:\n\n"
+            "You are a senior macroeconomic and geopolitical risk officer for an algorithmic crypto & equities fund.\n"
+            f"Active Global Trading Session: {session_ctx.session_label} ({session_ctx.eet_time_str} / {session_ctx.ny_time_str})\n"
+            "Evaluate these breaking worldwide headlines (military conflicts, energy/shipping chokepoints, "
+            "sweeping tariffs/sanctions, central bank emergency actions, or systemic financial shocks):\n\n"
             f"{headline_list}\n\n"
             "Assess whether these events represent an acute systemic shock (sudden escalation, oil/gas supply cut, "
-            "risk-off flight to USD) that could crash crypto asset markets in the next 24-48 hours.\n\n"
+            "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"
             "{\n"
             '  "threat_level": "NORMAL" | "ELEVATED" | "CRITICAL_SHOCK",\n'
@@ -273,10 +287,8 @@ class GeopoliticalThreatAnalyzer:
             topic_key="macro_geopolitical",
         )
         if not resp or not isinstance(resp, dict):
-            has_acute_phrase = any(
-                phrase in str(_obj_attr(h, "title", None) or "").lower()
-                for h in high_sev
-                for phrase in ACUTE_SHOCK_PHRASES
+            has_acute_phrase = has_acute_shock_keywords(
+                [str(_obj_attr(h, "title", None) or "") for h in high_sev]
             )
             if (
                 self._cached_assessment is not None
@@ -317,9 +329,7 @@ class GeopoliticalThreatAnalyzer:
             return fallback_assessment
 
         raw_tl = resp.get("threat_level")
-        threat_level = raw_tl.upper().strip() if isinstance(raw_tl, str) else "NORMAL"
-        if threat_level not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
-            threat_level = "NORMAL"
+        threat_level = normalize_threat_level(raw_tl, default="NORMAL")
         raw_score = resp.get("risk_score")
         if raw_score is None or isinstance(raw_score, bool):
             risk_score = 0.5
@@ -333,9 +343,7 @@ class GeopoliticalThreatAnalyzer:
         raw_sum = resp.get("summary")
         summary = raw_sum.strip() if isinstance(raw_sum, str) else ""
         raw_rb = resp.get("recommended_brake")
-        recommended_brake = raw_rb.upper().strip() if isinstance(raw_rb, str) else "NONE"
-        if recommended_brake not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
-            recommended_brake = "NONE"
+        recommended_brake = normalize_recommended_brake(raw_rb, threat_level=threat_level)
 
         assessment = GeopoliticalThreatAssessment(
             threat_level=threat_level,

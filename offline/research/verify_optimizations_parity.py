@@ -24,6 +24,7 @@ import pricewindow as pw
 import priceAnalysis as pa
 import monitortrades as mt
 import intelligence.internal.state.volatility as vol
+from cachepaths import cache_path
 
 
 def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
@@ -112,7 +113,7 @@ def test_detect_long_term_trend_real_data() -> None:
 
     symbols = ["BTCUSDC", "TAOUSDC"]
     for sym in symbols:
-        cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{sym}.jsonl")
+        cache_path = cache_path(f"cache_sparse_price_{sym}.jsonl")
         if not os.path.exists(cache_path):
             continue
         series = load_price_series(cache_path, sym)

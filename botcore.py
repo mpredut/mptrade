@@ -115,16 +115,20 @@ def _parse_bool_flag(val, default: bool | None = False):
         fb = _parse_bool_flag(default, False)
     if isinstance(val, bool):
         return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
+    if val is None:
         return fb
+    if isinstance(val, (dict, list, tuple, set, frozenset)):
+        return False if fb is not None else None
     if isinstance(val, (int, float)):
         if isinstance(val, float) and not math.isfinite(val):
-            return fb
+            return False if fb is not None else None
         return val != 0
     if isinstance(val, str):
         s = val.split("#", 1)[0].split(";", 1)[0].strip().strip('"').strip("'").strip().lower()
-        if not s or s in {"none", "null", "nan"}:
+        if not s:
             return fb
+        if s in {"none", "null", "nan"}:
+            return False if fb is not None else None
         if s in {"1", "1.0", "true", "yes", "on", "y", "t", "da"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
@@ -132,7 +136,7 @@ def _parse_bool_flag(val, default: bool | None = False):
         try:
             fv = float(s)
             if not math.isfinite(fv):
-                return fb
+                return False if fb is not None else None
             return fv != 0.0
         except (TypeError, ValueError):
             return fb

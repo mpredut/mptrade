@@ -11,6 +11,7 @@ import requests
 from collections import defaultdict
 from typing import Dict, Any, List
 
+from botcore import _parse_bool_flag, load_env_stack
 from notify_engine.mailer import (
     is_configured as email_is_configured,
     is_email_mirrored,
@@ -43,11 +44,13 @@ _SERVER_MARKERS = (
 )
 
 def _ensure_env_loaded() -> None:
-    from botcore import load_dotenv
-    for fname in (".env", "config.env"):
-        p = os.path.join(ROOT_DIR, fname)
-        if os.path.isfile(p):
-            load_dotenv(p)
+    env_p = os.path.join(ROOT_DIR, ".env")
+    if os.path.isfile(env_p):
+        load_env_stack(env_p)
+    else:
+        cfg_p = os.path.join(ROOT_DIR, "config.env")
+        if os.path.isfile(cfg_p):
+            load_env_stack(cfg_p)
 
 
 def resolve_topic(category: str) -> str:
@@ -133,20 +136,13 @@ class NotificationServer:
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _ensure_environment(self) -> None:
-        from botcore import load_dotenv
-        for fname in (".env", "config.env"):
-            p = os.path.join(ROOT_DIR, fname)
-            if os.path.isfile(p):
-                load_dotenv(p)
+        _ensure_env_loaded()
 
     def _load_ntfy_token(self) -> str:
         tok = os.environ.get("NTFY_TOKEN", "").strip()
         if not tok:
-            env_path = os.path.join(ROOT_DIR, ".env")
-            if os.path.isfile(env_path):
-                from botcore import load_dotenv
-                load_dotenv(env_path)
-                tok = os.environ.get("NTFY_TOKEN", "").strip()
+            _ensure_env_loaded()
+            tok = os.environ.get("NTFY_TOKEN", "").strip()
         return tok
 
     def _load_rules(self) -> List[Dict[str, Any]]:
@@ -243,7 +239,7 @@ class NotificationServer:
         message = "" if isinstance(message, bool) or message is None else str(message)
         priority = "default" if isinstance(priority, bool) or priority is None else (str(priority).strip() or "default")
         if any(
-            os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on", "1.0"}
+            _parse_bool_flag(os.environ.get(k), False)
             for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
         ):
             logging.debug(f"External notifications disabled: would send to {topic_str}: {title}")

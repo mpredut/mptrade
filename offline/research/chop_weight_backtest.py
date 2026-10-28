@@ -30,6 +30,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from priceAnalysis import get_trade_weight
+from cachepaths import cache_path
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -437,7 +438,7 @@ def run_chop_benchmark(
     all_results: Dict[str, List[ChopBacktestStats]] = {}
 
     # Load BTC series for proxy reference
-    btc_path = os.path.join(ROOT, "cachedb", "cache_sparse_price_BTCUSDC.jsonl")
+    btc_path = cache_path("cache_sparse_price_BTCUSDC.jsonl")
     raw_btc = load_price_series(btc_path, "BTCUSDC")
     sampled_btc: List[Tuple[float, float]] = []
     last_t = 0.0
@@ -447,9 +448,9 @@ def run_chop_benchmark(
             last_t = t
 
     for sym in symbols:
-        cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{sym}.jsonl")
-        logger.info("Loading price series for %s from %s ...", sym, cache_path)
-        raw_series = load_price_series(cache_path, sym)
+        cache_path_sym = cache_path(f"cache_sparse_price_{sym}.jsonl")
+        logger.info("Loading price series for %s from %s ...", sym, cache_path_sym)
+        raw_series = load_price_series(cache_path_sym, sym)
         if not raw_series:
             logger.warning("No price data found for %s, skipping.", sym)
             continue
