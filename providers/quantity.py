@@ -108,6 +108,8 @@ def resolve_assets(symbol: str, base: Optional[str] = None,
             stem = symbol_u[:-len(suffix)].rstrip("/-_")
             if stem:
                 return base_u or stem, quote_u or suffix
+    if symbol_u.endswith(("_US_EQ", "_EQ")):
+        return base_u or symbol_u, quote_u or "USD"
     return base_u or symbol_u, quote_u
 
 

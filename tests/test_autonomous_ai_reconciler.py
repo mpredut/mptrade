@@ -2211,6 +2211,18 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert _kraken_pair_matches("HYPE", "HYPEUSD") is True
     assert _kraken_pair_matches("DOGEUSD", "XXDGZUSD") is True
     assert _kraken_pair_matches("BTCUSD", "XXBTZUSD") is True
+    assert _kraken_pair_matches("XTZUSD", "XTZUSD") is True
+    assert _kraken_pair_matches("XTZUSD", "XTUSD") is False
+    assert _kraken_pair_matches("CHZUSD", "CHUSD") is False
+    assert _kraken_pair_matches("XAUTUSD", "AUTUSD") is False
+    assert _kraken_pair_matches("XRPUSD", "XXRPZUSD") is True
+
+    from cachepaths import canonical_base_asset, normalize_cache_base_asset
+    assert canonical_base_asset("XXDGZUSD") == "DOGE"
+    assert normalize_cache_base_asset("XXRPZUSD") == "XRP"
+    assert normalize_cache_base_asset("XTZUSD") == "XTZ"
+    assert normalize_cache_base_asset("CHZUSD") == "CHZ"
+    assert normalize_cache_base_asset("XAUTUSD") == "XAUT"
 
     # 4. Cross-venue extract_symbol_recent_fills (Kraken + Hyperliquid)
     now_s = 1_700_000_000.0
@@ -2235,6 +2247,68 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert fills_summary["last_buy"]["qty"] == 2.5
     assert fills_summary["last_sell"]["price"] == 44.0
     assert fills_summary["last_sell"]["qty"] == 2.5
+
+    # 5. Provider free_balance & resolve_assets symmetry (Kraken DOGE/xStocks, T212 short base, Hyperliquid symbol)
+    from providers.kraken_provider import KrakenProvider
+    from providers.quantity import resolve_assets
+    from providers.t212_provider import T212Provider
+
+    assert resolve_assets("SPCX_US_EQ") == ("SPCX_US_EQ", "USD")
+    krk_p = KrakenProvider()
+    krk_p._cli = MagicMock()
+    krk_p._cli.balance.return_value = {"XXDG": "1500.0", "SPCXx.T": "15.75"}
+    assert krk_p.free_balance("DOGE") == 1500.0
+    assert krk_p.free_balance("SPCX") == 15.75
+    assert krk_p.free_balance("SPCXx.T") == 15.75
+
+    t212_p = T212Provider(client=MagicMock(get_portfolio=lambda: [{"ticker": "SPCX_US_EQ", "quantity": 4.25}]))
+    assert t212_p.free_balance("SPCX") == 4.25
+    assert t212_p.free_balance("SPCX_US_EQ") == 4.25
+
+    # 6. Venue-isolated recent_orders prevents Kraken HYPEUSD from polluting Hyperliquid HYPEUSDC cost basis
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
+    hl_dir = tmp_path / "hyperliquid"
+    hl_dir.mkdir(exist_ok=True)
+    (hl_dir / ".state_HYPE.json").write_text(
+        json.dumps({"qty": 10.0, "cost": 380.0, "entry_price": 38.0, "last_buy_price": 38.0}),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_trade_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [{"closetm": now_s - 3600, "descr": {"type": "buy", "price": "25.0"}, "vol_exec": "2.0", "cost": "50.0"}]
+            }
+        }),
+        encoding="utf-8",
+    )
+    hl_inst = MagicMock(symbol="HYPEUSDC", provider_name="hyperliquid", base="HYPE", quote="USDC", params={})
+    hl_inst._provider.get_current_price.return_value = 41.8
+    hl_inst._provider.free_balance.side_effect = lambda a: 10.0 if a == "HYPE" else 200.0
+    hl_inst._provider.get_orders.return_value = []
+    hl_inst.open_orders.return_value = []
+
+    krk_inst = MagicMock(symbol="HYPEUSD", provider_name="kraken", base="HYPE", quote="USD", params={})
+    krk_inst._provider.get_current_price.return_value = 41.8
+    krk_inst._provider.free_balance.side_effect = lambda a: 2.0 if a == "HYPE" else 100.0
+    krk_inst.open_orders.return_value = []
+
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.load_tradable_instruments.return_value = {"HYPERLIQUID_HYPE": hl_inst, "KRAKEN_HYPE": krk_inst}
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir="cachedb",
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=mock_gw,
+    )
+    snap = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
+    pos_by_venue_sym = {(p["venue"], p["symbol"]): p for p in snap.portfolio_summary["tradable_positions"]}
+    assert pos_by_venue_sym[("hyperliquid", "HYPEUSDC")]["active_avg_buy_px"] == 38.0
+    assert pos_by_venue_sym[("hyperliquid", "HYPEUSDC")]["last_buy_px"] == 38.0
+    assert pos_by_venue_sym[("kraken", "HYPEUSD")]["active_avg_buy_px"] == 25.0
+    assert pos_by_venue_sym[("kraken", "HYPEUSD")]["last_buy_px"] == 25.0
 
 
 

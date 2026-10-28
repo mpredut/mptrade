@@ -52,6 +52,9 @@ _KRAKEN_QUOTES = (
     "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
     "BTC", "XBT", "ETH",
 )
+_LEGACY_KRAKEN_X_BASES = frozenset({
+    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP",
+})
 
 
 def _split_kraken_pair(value: str) -> tuple[str, str]:
@@ -62,19 +65,16 @@ def _split_kraken_pair(value: str) -> tuple[str, str]:
     if not key:
         return "", ""
     quote = next(
-        (
-            cand for cand in _KRAKEN_QUOTES
-            if (key.endswith(cand) and len(key) > len(cand))
-            or (key.endswith("Z" + cand) and len(key) > len(cand) + 1)
-        ),
+        (cand for cand in _KRAKEN_QUOTES if key.endswith(cand) and len(key) > len(cand)),
         "",
     )
     if not quote:
         base = key
     else:
-        suffix = "Z" + quote if key.endswith("Z" + quote) and len(key) > len(quote) + 1 else quote
-        base = key[:-len(suffix)]
-    if base.startswith("X") and len(base) > 3:
+        base = key[:-len(quote)]
+        if len(base) == 5 and base.startswith("X") and base.endswith("Z") and base[:-1] in _LEGACY_KRAKEN_X_BASES:
+            base = base[:-1]
+    if base in _LEGACY_KRAKEN_X_BASES:
         base = base[1:]
     if base == "XBT":
         base = "BTC"
@@ -319,9 +319,20 @@ class KrakenProvider(MarketDataProvider):
             candidates = [asset_u, "X" + asset_u, "Z" + asset_u, asset_u + ".F"]
             if asset_u in {"BTC", "XBT"}:
                 candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
+            elif asset_u in {"DOGE", "XDG"}:
+                candidates.extend(["DOGE", "XDG", "XXDG", "XDG.F", "XXDG.F"])
             for key in candidates:
                 if key in bal:
                     raw_val = bal[key]
+                    if isinstance(raw_val, bool):
+                        return None
+                    val = float(raw_val or 0.0)
+                    if not math.isfinite(val) or val < 0.0:
+                        return None
+                    return val
+            cands_up = {c.upper() for c in candidates} | {f"{asset_u}X.T"}
+            for k_raw, raw_val in bal.items():
+                if str(k_raw).strip().upper() in cands_up:
                     if isinstance(raw_val, bool):
                         return None
                     val = float(raw_val or 0.0)

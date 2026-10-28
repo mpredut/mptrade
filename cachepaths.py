@@ -124,6 +124,11 @@ CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (
 )
 
 
+_LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
+    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP",
+})
+
+
 def normalize_cache_base_asset(symbol: object) -> str:
     """Extract the canonical uppercase base asset from a spot/perp/venue symbol.
 
@@ -154,12 +159,14 @@ def normalize_cache_base_asset(symbol: object) -> str:
         if s.endswith(quote) and len(s) > len(quote):
             s = s[: -len(quote)]
             break
-    if s in ("XXBT", "XXBTZ"):
+    if len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES:
+        s = s[:-1]
+    if s == "XXBT":
         return "XBT"
-    if s in ("XETH", "XETHZ"):
-        return "ETH"
-    if s in ("XXDG",):
+    if s == "XXDG":
         return "XDG"
+    if s in _LEGACY_KRAKEN_X_BASES:
+        return s[1:]
     return s
 
 
@@ -171,6 +178,7 @@ _CANONICAL_BASE_ALIASES: dict[str, str] = {
     "XETHZ": "ETH",
     "XDG": "DOGE",
     "XXDG": "DOGE",
+    "XXDGZ": "DOGE",
 }
 _CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
     "BTC": ("XBT",),

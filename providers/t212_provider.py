@@ -153,6 +153,15 @@ class T212Provider(MarketDataProvider):
                     continue
                 if str(p.get("ticker", "")).strip().upper() == target_sym:
                     return p
+            for p in port:
+                if not isinstance(p, dict):
+                    continue
+                t_up = str(p.get("ticker", "")).strip().upper()
+                if t_up and (
+                    t_up in (f"{target_sym}_US_EQ", f"{target_sym}_EQ")
+                    or t_up.split("_", 1)[0] == target_sym
+                ):
+                    return p
             return None
         except Exception as e:  # noqa: BLE001
             if strict:

@@ -1467,17 +1467,26 @@ class AutonomousAIReconciler:
 
         # 9D. Recent fills across Binance (cache_order.json), Kraken (cache_trade_kraken.json), and Hyperliquid
         recent_orders: Dict[str, Any] = {}
-        for order_cache_name in ("cache_order.json", "cache_trade_kraken.json"):
+        venue_recent_orders: Dict[str, Dict[str, Any]] = {
+            "binance": {},
+            "kraken": {},
+            "hyperliquid": {},
+            "t212": {},
+        }
+        for order_cache_name, cache_venue in (
+            ("cache_order.json", "binance"),
+            ("cache_trade_kraken.json", "kraken"),
+        ):
             orders_data = _read_json(os.path.join(self.cache_dir, order_cache_name))
             if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
                 for sym, o_list in orders_data["items"].items():
-                    if sym in recent_orders:
-                        continue
                     fills = extract_symbol_recent_fills(o_list)
                     if fills:
-                        recent_orders[sym] = fills
+                        venue_recent_orders[cache_venue][sym] = fills
+                        recent_orders.setdefault(sym, fills)
         for sym, inst in inst_by_sym.items():
-            if sym in recent_orders or str(getattr(inst, "provider_name", "")).lower() != "hyperliquid":
+            v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
+            if v_inst != "hyperliquid" or sym in venue_recent_orders["hyperliquid"]:
                 continue
             try:
                 prov = getattr(inst, "_provider", None)
@@ -1485,6 +1494,7 @@ class AutonomousAIReconciler:
                     hl_orders = prov.get_orders(sym, None, 90 * 86400.0)
                     fills = extract_symbol_recent_fills(hl_orders)
                     if fills:
+                        venue_recent_orders["hyperliquid"][sym] = fills
                         recent_orders[sym] = fills
             except Exception:
                 pass
@@ -1494,7 +1504,7 @@ class AutonomousAIReconciler:
             if not isinstance(pos, dict):
                 continue
             p_sym = str(pos.get("symbol") or "").upper()
-            p_venue = str(pos.get("venue") or "").lower()
+            p_venue = normalize_venue_name(pos.get("venue"))
             p_variants = cache_symbol_variants(p_sym)
             pos_px_f = _parse_finite_float(pos.get("price"), 0.0)
             if pos_px_f <= 0:
@@ -1512,7 +1522,13 @@ class AutonomousAIReconciler:
                         if pk_val > 0:
                             pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
                         break
-            ro = next((recent_orders[c] for c in p_variants if isinstance(recent_orders.get(c), dict)), None)
+            v_ro_map = venue_recent_orders.get(p_venue, {})
+            ro = next(
+                (v_ro_map[c] for c in p_variants if isinstance(v_ro_map.get(c), dict)),
+                None,
+            )
+            if not isinstance(ro, dict) and isinstance(recent_orders.get(p_sym), dict):
+                ro = recent_orders[p_sym]
             if isinstance(ro, dict):
                 lb = ro.get("last_buy")
                 ls = ro.get("last_sell")
@@ -1630,7 +1646,7 @@ class AutonomousAIReconciler:
                 if list_key in snapshot.portfolio_summary:
                     filtered_items = [
                         item for item in snapshot.portfolio_summary[list_key]
-                        if isinstance(item, dict) and (str(item.get("venue") or "").lower() == "t212") == want_t212
+                        if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
                     ]
                     if filtered_items:
                         snapshot.portfolio_summary[list_key] = filtered_items

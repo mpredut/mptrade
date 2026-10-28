@@ -300,19 +300,25 @@ class HyperliquidProvider(MarketDataProvider):
             balances = user_state.get("balances")
             if not isinstance(balances, list):
                 return None
-            for b in balances:
-                if not isinstance(b, dict):
-                    continue
-                if str(b.get("coin") or "").strip().upper() == asset_u:
-                    raw_total = b.get("total")
-                    raw_hold = b.get("hold")
-                    if isinstance(raw_total, bool) or isinstance(raw_hold, bool):
-                        return None
-                    total = float(raw_total or 0.0)
-                    hold = float(raw_hold or 0.0)
-                    if not (math.isfinite(total) and math.isfinite(hold)) or total < 0.0 or hold < 0.0:
-                        return None
-                    return max(total - hold, 0.0)
+            target_coins = [asset_u]
+            if asset_u != "USDC" and asset_u.endswith("USDC") and len(asset_u) > 4:
+                stem = asset_u[:-4].rstrip("/-_")
+                if stem and stem not in target_coins:
+                    target_coins.append(stem)
+            for target_coin in target_coins:
+                for b in balances:
+                    if not isinstance(b, dict):
+                        continue
+                    if str(b.get("coin") or "").strip().upper() == target_coin:
+                        raw_total = b.get("total")
+                        raw_hold = b.get("hold")
+                        if isinstance(raw_total, bool) or isinstance(raw_hold, bool):
+                            return None
+                        total = float(raw_total or 0.0)
+                        hold = float(raw_hold or 0.0)
+                        if not (math.isfinite(total) and math.isfinite(hold)) or total < 0.0 or hold < 0.0:
+                            return None
+                        return max(total - hold, 0.0)
             return 0.0
         except Exception as e:  # noqa: BLE001
             print(f"[HL] free_balance({asset}) failed: {e}")
