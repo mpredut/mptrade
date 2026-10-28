@@ -1,154 +1,92 @@
-#!/bin/bash
-# git_autodeploy.sh -- optional auto-deploy, part of disaster recovery.
-#
-# From the ROOT crontab (systemd/crontab.root.prod.txt) it checks whether origin/<branch>
-# moved (e.g. a push from WSL). Depending on the mode it either just reports what it WOULD
-# do (shadow), or fast-forwards the local repo and restarts the fleet (python_orchestrator.service) so
-# the role=fleet processes come back on the new code. It does NOT reboot and does NOT touch
-# PIA (the tunnel stays up); the role=bot processes reload on their next supervise cycle.
-#
-# MODE lives in a LOCAL, gitignored config so toggling it never dirties the tree or needs a
-# commit:
-#     cp autodeploy.local.conf.example autodeploy.local.conf     # then set AUTODEPLOY_MODE
-#   off    -- do nothing.
-#   shadow -- (DEFAULT) detect a moved origin, log + alert what it would do; apply NOTHING.
-#   on     -- pull the fast-forward and `systemctl restart python_orchestrator.service`.
-#
-# Guards (never clobber, never loop):
-#   - refuses if the working tree is dirty (uncommitted local changes) -> alert;
-#   - refuses if origin/<branch> is not a clean fast-forward of HEAD (divergence) -> alert;
-#   - retries the fetch (GitHub is flaky through the PIA tunnel) and does nothing on failure;
-#   - in `on`, records the deployed SHA + a cooldown so a bad state cannot loop-restart.
-#
-# Runs as ROOT (needs systemctl); every git command runs as the repo owner via runuser.
-set -u
-export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"   # cron has a minimal PATH
+#!/usr/bin/env bash
+# manage_gitautodeploy.sh — safe git auto-pull and conditional fleet restart on PROD.
+# Cron: */5 * * * *
+# Respects FLEET_PAUSED, active order locks, and AUTODEPLOY_MODE (off|shadow|active).
+set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OWNER="$(stat -c %U "$ROOT")"
-STATE_DIR="/var/lib/git_autodeploy"
-LAST_MARK="$STATE_DIR/last_deploy"
-SHADOW_MARK="$STATE_DIR/shadow_seen"
-last_sha=""
-last_ts=0
-if [ -f "$LAST_MARK" ]; then
-    read -r last_sha last_ts < "$LAST_MARK" 2>/dev/null || true
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/os_notify.sh
+source "$SCRIPT_DIR/../lib/os_notify.sh"
+
+cd "$ROOT" || exit 1
+mkdir -p "$ROOT/logs"
+
+LOCK="/tmp/mptrade_gitautodeploy.lock"
+LAST_MARK="/tmp/mptrade_gitautodeploy_last_sha"
+LOG="$ROOT/logs/gitautodeploy.log"
+
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+
+AUTODEPLOY_MODE="$(env_get AUTODEPLOY_MODE "active")"
+[ "$AUTODEPLOY_MODE" = "off" ] || [ -f "$ROOT/FLEET_PAUSED" ] && exit 0
+
+LAST_PROCESSED=""
+[ -f "$LAST_MARK" ] && LAST_PROCESSED="$(cat "$LAST_MARK" 2>/dev/null || true)"
+
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o BatchMode=yes}"
+if ! timeout 25 git fetch -q origin main 2>>"$LOG"; then
+  log "WARN: git fetch origin main failed"
+  exit 0
 fi
 
-# --- local config (gitignored; default SHADOW = observe only) ---
-AUTODEPLOY_MODE=shadow
-AUTODEPLOY_BRANCH=main
-AUTODEPLOY_COOLDOWN=900          # min seconds between fleet restarts for the same target
-AUTODEPLOY_RESTART_ON_LOCAL=false # default: false (restart ONLY on external push)
-LOCAL_CONF="$ROOT/autodeploy.local.conf"
-[ -r "$LOCAL_CONF" ] && . "$LOCAL_CONF"
-case "${AUTODEPLOY_MODE:-shadow}" in
-    off) exit 0 ;;
-    shadow|on) ;;
-    *) AUTODEPLOY_MODE=shadow ;;
-esac
-BRANCH="${AUTODEPLOY_BRANCH:-main}"
-COOLDOWN="${AUTODEPLOY_COOLDOWN:-900}"
-RESTART_ON_LOCAL="${AUTODEPLOY_RESTART_ON_LOCAL:-false}"
-mkdir -p "$STATE_DIR" 2>/dev/null
+LOCAL_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
+REMOTE_SHA="$(git rev-parse origin/main 2>/dev/null || echo "")"
 
-log() { echo "$(date '+%F %T') $*"; }
-g() {
-    if [ "$(id -u)" -eq 0 ]; then
-        runuser -u "$OWNER" -- git -C "$ROOT" "$@"
-    else
-        git -C "$ROOT" "$@"
-    fi
-}
-
-alert() {  # best-effort ntfy on the ERROR topic (mirrored to email); failure is fine
-    # shellcheck source=../lib/os_notify.sh
-    source "$ROOT/orchestratorOS/lib/os_notify.sh"
-    send_os_ntfy "$1" "$2" default || true
-}
-
-# Fetch with retry (GitHub over the tunnel is intermittently flaky).
-fetched=0
-for _i in 1 2 3; do g fetch --quiet origin "$BRANCH" 2>/dev/null && { fetched=1; break; }; sleep 5; done
-[ "$fetched" = 1 ] || { log "fetch of origin/$BRANCH failed after retries; retrying next run"; exit 0; }
-
-local_sha="$(g rev-parse HEAD 2>/dev/null)"
-remote_sha="$(g rev-parse "origin/$BRANCH" 2>/dev/null)"
-[ -n "$local_sha" ] && [ -n "$remote_sha" ] || { log "cannot resolve SHAs; skipping"; exit 0; }
-# GUARD: clean working tree (a dirty tracked tree would be clobbered by the pull).
-if [ -n "$(g status --porcelain -uno 2>/dev/null)" ]; then
-    log "REFUSED: tracked working tree is dirty"
-    exit 0
+if [ -z "$LOCAL_SHA" ] || [ -z "$REMOTE_SHA" ] || [ "$LOCAL_SHA" = "$REMOTE_SHA" ] || [ "$REMOTE_SHA" = "$LAST_PROCESSED" ]; then
+  exit 0
 fi
 
-# When local and remote match: restart only if explicit RESTART_ON_LOCAL is enabled.
-if [ "$local_sha" = "$remote_sha" ]; then
-    case "${RESTART_ON_LOCAL:-false}" in
-        1|[tT][rR][uU][eE]|[yY][eE][sS]|[oO][nN])
-            # Optional: check if local HEAD has been deployed yet
-            last_sha=""
-            last_ts=0
-            if [ -f "$LAST_MARK" ]; then
-                read -r last_sha last_ts < "$LAST_MARK" 2>/dev/null || true
-            fi
-            if [ -n "$last_sha" ] && [ "$last_sha" = "$local_sha" ]; then
-                exit 0     # up to date and already deployed
-            fi
-            ;;
-        *)
-            # Default: restart ONLY on external push (when origin moved and was pulled)
-            exit 0
-            ;;
-    esac
+if ! git merge-base --is-ancestor "$LOCAL_SHA" "$REMOTE_SHA" 2>/dev/null; then
+  log "ERROR: origin/main ($REMOTE_SHA) is not a fast-forward of HEAD ($LOCAL_SHA). Skipping."
+  echo "$REMOTE_SHA" > "$LAST_MARK"
+  send_os_ntfy "AutoDeploy Skipped ($(hostname))" "origin/main (${REMOTE_SHA:0:8}) is not a fast-forward of HEAD (${LOCAL_SHA:0:8}). Manual intervention required." "high"
+  exit 1
 fi
 
-if [ "$local_sha" != "$remote_sha" ]; then
-    # GUARD: fast-forward only (origin must descend from HEAD; no divergence / history rewrite).
-    if [ "$(g merge-base HEAD "origin/$BRANCH" 2>/dev/null)" != "$local_sha" ]; then
-        log "REFUSED: origin/$BRANCH is not a fast-forward of HEAD (diverged)"
-        exit 0
-    fi
+CHANGED_FILES="$(git diff --name-only "$LOCAL_SHA" "$REMOTE_SHA" 2>/dev/null || true)"
+COMMIT_SUMMARY="$(git log --oneline "${LOCAL_SHA}..${REMOTE_SHA}" 2>/dev/null | head -n 5)"
 
-    # SHADOW: report what we WOULD do, deduped so we do not alert every run for the same target.
-    if [ "$AUTODEPLOY_MODE" = shadow ]; then
-        log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD pull + restart python_orchestrator.service. Not applied."
-        seen=""; [ -f "$SHADOW_MARK" ] && seen="$(cat "$SHADOW_MARK" 2>/dev/null)"
-        if [ "$seen" != "$remote_sha" ]; then
-            echo "$remote_sha" > "$SHADOW_MARK"
-            alert "autodeploy SHADOW ($(hostname))" \
-                "origin/$BRANCH -> ${remote_sha:0:9} is ready. Set AUTODEPLOY_MODE=on in autodeploy.local.conf to apply (pull + restart the fleet)."
-        fi
-        exit 0
-    fi
-
-    # --- mode=on: apply pull ---
-    if ! g pull --ff-only --quiet origin "$BRANCH" 2>/dev/null; then
-        log "git pull --ff-only failed"
-        alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted."
-        exit 0
-    fi
+if ! timeout 90 "$PYTHON_BIN" "$ROOT/orchestratorOS/livecheck/verify_deploy_gate.py" --target-sha "$REMOTE_SHA" >>"$LOG" 2>&1; then
+  echo "$REMOTE_SHA" > "$LAST_MARK"
+  log "BLOCKED: verify_deploy_gate.py vetoed commit ${REMOTE_SHA:0:8}."
+  send_os_ntfy "AutoDeploy VETOED ($(hostname))" "Commit ${REMOTE_SHA:0:8} failed verify_deploy_gate.py on $(hostname). Deploy aborted.
+Commits:
+$COMMIT_SUMMARY" "high"
+  exit 1
 fi
 
-# --- mode=on: apply restart ---
-if [ "$AUTODEPLOY_MODE" = shadow ]; then
-    log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD restart python_orchestrator.service. Not applied."
-    seen=""; [ -f "$SHADOW_MARK" ] && seen="$(cat "$SHADOW_MARK" 2>/dev/null)"
-    if [ "$seen" != "$remote_sha" ]; then
-        echo "$remote_sha" > "$SHADOW_MARK"
-        alert "autodeploy SHADOW ($(hostname))" \
-            "origin/$BRANCH -> ${remote_sha:0:9} is ready. Set AUTODEPLOY_MODE=on in autodeploy.local.conf to apply (restart the fleet)."
-    fi
-    exit 0
+NEED_RESTART=0
+echo "$CHANGED_FILES" | grep -qE '\.(py|conf|env)$|^procs\.conf$|^orchestrator' && NEED_RESTART=1
+
+if [ "$AUTODEPLOY_MODE" = "shadow" ]; then
+  echo "$REMOTE_SHA" > "$LAST_MARK"
+  log "SHADOW: new commit ${LOCAL_SHA:0:8} -> ${REMOTE_SHA:0:8} (need_restart=$NEED_RESTART)"
+  send_os_ntfy "AutoDeploy Shadow ($(hostname))" "New commit on origin/main: ${LOCAL_SHA:0:8} -> ${REMOTE_SHA:0:8} (need_restart=$NEED_RESTART)
+$COMMIT_SUMMARY" "default"
+  exit 0
 fi
 
-# GUARD: anti-loop -- do not redeploy the same target within the cooldown.
-if [ -n "$last_sha" ] && [ "$last_sha" = "$remote_sha" ] && [ $(( $(date +%s) - ${last_ts:-0} )) -lt "$COOLDOWN" ]; then
-    log "already deployed $remote_sha within the ${COOLDOWN}s cooldown; skipping"
-    exit 0
-fi
+git reset --hard "$REMOTE_SHA" >>"$LOG" 2>&1
+echo "$REMOTE_SHA" > "$LAST_MARK"
+log "DEPLOYED: ${LOCAL_SHA:0:8} -> ${REMOTE_SHA:0:8} (need_restart=$NEED_RESTART)"
 
-printf '%s %s\n' "$remote_sha" "$(date +%s)" > "$LAST_MARK"
-log "deployed $remote_sha; restarting python_orchestrator.service (role=fleet reloads; role=bot reload on next supervise)"
-systemctl restart python_orchestrator.service >/dev/null 2>&1
-alert "autodeploy ($(hostname))" \
-    "Deployed $BRANCH -> ${remote_sha:0:9} and restarted the fleet (python_orchestrator.service). PIA untouched, no reboot."
+if [ "$NEED_RESTART" -eq 1 ]; then
+  PY_CHANGED=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
+  if [ -n "$PY_CHANGED" ]; then
+    for f in $PY_CHANGED; do
+      if [ -f "$ROOT/$f" ] && ! "$PYTHON_BIN" -m py_compile "$ROOT/$f" 2>>"$LOG"; then
+        log "ERROR: Syntax error in $f! Rolling back to $LOCAL_SHA"
+        git reset --hard "$LOCAL_SHA" >>"$LOG" 2>&1
+        send_os_ntfy "AutoDeploy Rollback ($(hostname))" "Syntax error in $f on commit ${REMOTE_SHA:0:8}. Rolled back to ${LOCAL_SHA:0:8}." "urgent"
+        exit 1
+      fi
+    done
+  fi
+  log "Touching trigger_restart.flag for graceful orchestrator reload."
+  touch "$ROOT/trigger_restart.flag"
+  send_os_ntfy "AutoDeploy Applied ($(hostname))" "Updated ${LOCAL_SHA:0:8} -> ${REMOTE_SHA:0:8} and triggered graceful reload.
+$COMMIT_SUMMARY" "default"
+fi

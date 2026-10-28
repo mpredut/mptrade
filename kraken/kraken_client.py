@@ -25,9 +25,9 @@ import time
 import urllib.parse
 
 try:
-    from kraken.kraken_common import http_get, http_post_form, log
+    from kraken.kraken_common import _parse_bool_flag, http_get, http_post_form, log
 except ImportError:
-    from kraken_common import http_get, http_post_form, log
+    from kraken_common import _parse_bool_flag, http_get, http_post_form, log
 
 API_URL = "https://api.kraken.com"
 
@@ -363,14 +363,7 @@ class KrakenClient:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
             data["cl_ord_id"] = str(cl_ord_id).strip().lower()
-        if isinstance(validate, bool):
-            val_flag = validate
-        elif isinstance(validate, (int, float)):
-            val_flag = bool(math.isfinite(float(validate)) and float(validate) != 0.0)
-        elif isinstance(validate, str):
-            val_flag = validate.strip().lower() in {"1", "1.0", "true", "yes", "on"}
-        else:
-            val_flag = False
+        val_flag = _parse_bool_flag(validate, default=False)
         if val_flag:
             data["validate"] = "true"
         return self._private("AddOrder", data)

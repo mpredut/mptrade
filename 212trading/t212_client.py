@@ -17,7 +17,7 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import http_get, http_post_json, log, required_env, required_float_env
+    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
     import os as _os
@@ -28,7 +28,7 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import http_get, http_post_json, log, required_env, required_float_env
+    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -285,14 +285,7 @@ class T212Client:
         qty_r = round(qty_f, 2)
         if qty_r == 0.0:
             raise ValueError("place_market_order rounded quantity must be non-zero")
-        if isinstance(extended_hours, bool):
-            ext_flag = extended_hours
-        elif isinstance(extended_hours, (int, float)):
-            ext_flag = bool(math.isfinite(float(extended_hours)) and float(extended_hours) != 0.0)
-        elif isinstance(extended_hours, str):
-            ext_flag = extended_hours.strip().lower() in {"1", "1.0", "true", "yes", "on"}
-        else:
-            ext_flag = False
+        ext_flag = _parse_bool_flag(extended_hours, default=False)
         return self._place_order("market", {
             "ticker": str(ticker).strip(),
             "quantity": qty_r,

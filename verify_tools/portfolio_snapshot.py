@@ -144,7 +144,7 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
     if any(
-        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        _parse_bool_flag(os.environ.get(k), False)
         for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
     ):
         return

@@ -1,132 +1,64 @@
 #!/usr/bin/env bash
-# manage_logs.sh — combined log rotation and retention
-# 1. logrotate: caps the size of continuous nohup console logs via copytruncate.
-# 2. retention: age-based compression and deletion for dated files in logger/
-#
-# A suggested cron (hourly, offset so it does not clash with the healthcheck at :*0/:*5):
-# Schedule this script through the rendered production crontab.
+# manage_logs.sh — rotates, compresses, and prunes application logs across all venue folders.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-echo "=== manage_logs $(date '+%Y-%m-%d %H:%M:%S') ==="
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/env_common.sh
+source "$SCRIPT_DIR/../lib/env_common.sh"
 
-# 1. Rotate continuous stream logs via logrotate
-POLICY="$ROOT/config.env"
-if [ -r "$POLICY" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$POLICY"
-    set +a
-    LOGROTATE="$(command -v logrotate || echo /usr/sbin/logrotate)"
-    if [ -x "$LOGROTATE" ]; then
-        # Ensure archive subdirectories exist for stream logs
-        mkdir -p "$ROOT/logs/archive" \
-                 "$ROOT/kraken/archive" \
-                 "$ROOT/hyperliquid/archive" \
-                 "$ROOT/212trading/archive" \
-                 "$ROOT/binance_api/archive"
+LOG_RETENTION_DAYS="$(env_get LOG_RETENTION_DAYS 30)"
+LOG_MAX_SIZE="$(env_get LOG_MAX_SIZE 50M)"
+LOG_ROTATE_COUNT="$(env_get LOG_ROTATE_COUNT 14)"
 
-        CONF="$(mktemp)"
-        {
-            cat <<EOF
-$ROOT/logs/*.log
-$ROOT/kraken/*.log
-$ROOT/hyperliquid/*.log
-$ROOT/212trading/*.log
-$ROOT/binance_api/*.log
-{
-    size ${LOGROTATE_MAX_SIZE:-20M}
-    rotate ${LOGROTATE_KEEP:-5}
+STATE_FILE="$ROOT/logs/.logrotate.state"
+CONF_FILE="/tmp/mptrade_logrotate_$$.conf"
+trap 'rm -f "$CONF_FILE"' EXIT
+
+STREAM_DIRS=(logs kraken hyperliquid 212trading binance_api)
+for d in "${STREAM_DIRS[@]}"; do
+  mkdir -p "$ROOT/$d/archive"
+done
+
+# 1. Move stray rotated .gz files into their respective archive/ folder
+for d in logger "${STREAM_DIRS[@]}"; do
+  target_arch="$ROOT/${d/logger/logs}/archive"
+  if [ -d "$ROOT/$d" ]; then
+    find "$ROOT/$d" -maxdepth 1 -type f -name "*.log*.gz" -exec mv -f {} "$target_arch/" \; 2>/dev/null || true
+  fi
+done
+
+# 2. Generate logrotate config and run rotation if logrotate is installed
+if command -v logrotate >/dev/null 2>&1; then
+  : > "$CONF_FILE"
+  for d in "${STREAM_DIRS[@]}"; do
+    cat >> "$CONF_FILE" <<EOF
+"$ROOT/$d/*.log" {
+    daily
+    maxsize $LOG_MAX_SIZE
+    rotate $LOG_ROTATE_COUNT
     missingok
     notifempty
     compress
+    delaycompress
     copytruncate
-    olddir archive
-}
-$ROOT/*.log
-{
-    size ${LOGROTATE_MAX_SIZE:-20M}
-    rotate ${LOGROTATE_KEEP:-5}
-    missingok
-    notifempty
-    compress
-    copytruncate
-    olddir $ROOT/logs/archive
+    olddir $ROOT/$d/archive
 }
 EOF
-        } > "$CONF"
-        "$LOGROTATE" -s "$ROOT/.logrotate.state" "$CONF"
-        rm -f "$CONF"
-        echo "✔ logrotate complete."
-    else
-        echo "⚠ logrotate not found, skipping."
-    fi
-else
-    echo "⚠ policy $POLICY missing, logrotate skipped."
+  done
+  logrotate -s "$STATE_FILE" "$CONF_FILE" 2>/dev/null || true
 fi
 
-# 2. Age-based retention for dated logs in logger/
-LOGGER_DIR="$ROOT/logger"
-LOGGER_ARCHIVE_DIR="$LOGGER_DIR/archive"
-COMPRESS_AFTER_DAYS="${LOG_COMPRESS_AFTER_DAYS:-1}"
-DELETE_AFTER_DAYS="${LOG_DELETE_AFTER_DAYS:-45}"
+# 3. Direct size-cap fallback (truncate any single active log > 200MB if logrotate skipped it)
+for d in "${STREAM_DIRS[@]}"; do
+  find "$ROOT/$d" -maxdepth 1 -type f -name "*.log" -size +200M | while read -r biglog; do
+    ts="$(date '+%Y%m%d_%H%M%S')"
+    base="$(basename "$biglog")"
+    gzip -c "$biglog" > "$ROOT/$d/archive/${base}.${ts}.gz" && : > "$biglog"
+  done
+done
 
-if [ -d "$LOGGER_DIR" ]; then
-    mkdir -p "$LOGGER_ARCHIVE_DIR"
-    echo "  before retention: $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
-
-    # Compress dated logs older than COMPRESS_AFTER_DAYS (skips today's active file)
-    find "$LOGGER_DIR" -maxdepth 1 -name "*.log" -mtime +"$COMPRESS_AFTER_DAYS" -print0 \
-        | xargs -0 -r gzip -f
-
-    # Move any compressed .gz files from logger/ root into logger/archive/
-    find "$LOGGER_DIR" -maxdepth 1 -name "*.log*.gz" -print0 \
-        | while IFS= read -r -d '' gz_file; do
-            mv -f "$gz_file" "$LOGGER_ARCHIVE_DIR/"
-        done
-
-    # Move any loose .gz files in logs/ into logs/archive/ if left behind
-    if [ -d "$ROOT/logs" ]; then
-        find "$ROOT/logs" -maxdepth 1 -name "*.log*.gz" -print0 \
-            | while IFS= read -r -d '' gz_file; do
-                mv -f "$gz_file" "$ROOT/logs/archive/"
-            done
-    fi
-
-    # Delete archives older than DELETE_AFTER_DAYS from all archive directories
-    find "$LOGGER_ARCHIVE_DIR" -maxdepth 1 -name "*.gz" -mtime +"$DELETE_AFTER_DAYS" -print0 \
-        | xargs -0 -r rm -f
-
-    for arch_dir in "$ROOT/logs/archive" "$ROOT/kraken/archive" "$ROOT/hyperliquid/archive" "$ROOT/212trading/archive" "$ROOT/binance_api/archive"; do
-        if [ -d "$arch_dir" ]; then
-            find "$arch_dir" -maxdepth 1 -name "*.gz" -mtime +"$DELETE_AFTER_DAYS" -print0 \
-                | xargs -0 -r rm -f
-        fi
-    done
-
-    # Prune dated backtest and overnight run subdirectories older than LOG_BACKTEST_DELETE_AFTER_DAYS (default 14d)
-    BACKTEST_RETENTION_DAYS="${LOG_BACKTEST_DELETE_AFTER_DAYS:-14}"
-    for run_dir in "$LOGGER_DIR/backtest" "$ROOT/logs/overnight_runs"; do
-        if [ -d "$run_dir" ]; then
-            find "$run_dir" -mindepth 1 -maxdepth 1 -mtime +"$BACKTEST_RETENTION_DAYS" -exec rm -rf {} + 2>/dev/null || true
-        fi
-    done
-
-    # Prune stale user-owned temporary test directories in /tmp older than 1 day
-    find /tmp -maxdepth 1 -user "$(id -un)" \( -name "tmp*" -o -name "pytest-of-*" -o -name "binance-tests-*" -o -name "mptrade-tests-*" -o -name "rtrade-*" -o -name "test_reentry_state_*" \) -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-
-    echo "  after retention:  $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
-fi
-
-# 3. Retention for autonomous LLM CLI threads older than CLI_THREAD_RETENTION_DAYS (autonommptrade)
-# Runs every 3 hours (not every hour) to avoid unnecessary churn
-CURRENT_HOUR="$(date +%-H)"
-if [ $((CURRENT_HOUR % 3)) -eq 0 ]; then
-    PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_llm_threads.py"
-    if [ -f "$PRUNE_SCRIPT" ]; then
-        # Store and retention come from config.env (AGY_BOT_HOME, CLI_THREAD_RETENTION_DAYS); topic threads are protected.
-        echo "  pruning automated agy-bot CLI threads (3h cycle)..."
-        "$ROOT/orchestratorOS/run_python.sh" "$PRUNE_SCRIPT" || true
-    fi
-fi
-
+# 4. Enforce retention window on archived .gz logs and /tmp test artifacts
+for d in "${STREAM_DIRS[@]}"; do
+  find "$ROOT/$d/archive" -maxdepth 1 -type f -name "*.gz" -mtime "+$LOG_RETENTION_DAYS" -delete 2>/dev/null || true
+done
+find /tmp -maxdepth 1 -name "pytest-of-*" -mtime +3 -exec rm -rf {} + 2>/dev/null || true

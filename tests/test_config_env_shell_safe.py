@@ -1472,6 +1472,9 @@ def test_datasets_execution_calibration_and_benchmark_hardening():
 def test_backup_sync_common_modular_primitives(tmp_path):
     scripts = [
         os.path.join(ROOT, "orchestratorOS", "lib", "backup_sync_common.sh"),
+        os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh"),
+        os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh"),
+        os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh"),
         os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh"),
         os.path.join(ROOT, "offline", "runners", "sync_cache_to.sh"),
         os.path.join(ROOT, "offline", "runners", "trigger_backtest_dev.sh"),

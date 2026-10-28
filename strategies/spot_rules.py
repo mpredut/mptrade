@@ -13,6 +13,7 @@ the same price thresholds.
 from __future__ import annotations
 
 import math
+from botcore import _parse_bool_flag
 
 
 def _finite_float(val, default=None):
@@ -26,13 +27,7 @@ def _finite_float(val, default=None):
 
 
 def _bool_flag(val: object) -> bool:
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else False
-    if isinstance(val, str):
-        return val.strip().lower() in {"1", "1.0", "true", "yes", "on", "y", "t"}
-    return False
+    return _parse_bool_flag(val, default=False)
 
 
 def diff_percent(v1: float, v2: float) -> float:

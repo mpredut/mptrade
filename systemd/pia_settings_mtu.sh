@@ -1,28 +1,15 @@
 #!/bin/bash
-# Ensure PIA runs WireGuard with a 1200-byte tunnel MTU.
-#
-# The dedicated-IP path on this wired ISP has a sub-1500 MTU: without a small tunnel MTU
-# the addKey/TLS to <DIP>:1337 and the WireGuard handshake time out (ApiNetworkError 1200)
-# and the tunnel never comes up on the dedicated IP. `piactl` has NO `mtu` setting
-# ("Unknown type: mtu"), so it lives in the daemon's settings.json, which the pia-daemon
-# reads ONLY at startup. This runs as an ExecStartPre of piavpn.service (root), before the
-# daemon starts, so a fresh install / PIA reinstall / reboot always comes up at MTU 1200
-# without a human remembering. Idempotent and best-effort (never blocks the daemon).
-#
-# settings.json is otherwise persistent, so on a running box this is a no-op; the case it
-# exists for is a PIA reinstall (self-heal rung 4), which resets settings.json to defaults.
+# pia_settings_mtu.sh — Ensure PIA runs WireGuard with a 1200-byte tunnel MTU and auto killswitch.
+# Runs as ExecStartPre of piavpn.service (root) before pia-daemon reads settings.json.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-[ -r "$ROOT/config.env" ] && {
-    set -a
-    . "$ROOT/config.env" 2>/dev/null || true
-    set +a
-}
+# shellcheck source=../orchestratorOS/lib/env_common.sh
+source "$ROOT/orchestratorOS/lib/env_common.sh"
 
-SETTINGS="${PIA_SETTINGS_JSON:-/opt/piavpn/etc/settings.json}"
-WANT_MTU="${PIA_TUNNEL_MTU:-1200}"
-WANT_KILLSWITCH="${PIA_KILLSWITCH:-auto}"
+SETTINGS="$(env_get PIA_SETTINGS_JSON /opt/piavpn/etc/settings.json)"
+WANT_MTU="$(env_get PIA_TUNNEL_MTU 1200)"
+WANT_KILLSWITCH="$(env_get PIA_KILLSWITCH auto)"
 
 [ -f "$SETTINGS" ] || { echo "pia_settings_mtu: $SETTINGS not found; skipping" >&2; exit 0; }
 
@@ -41,5 +28,4 @@ if ! grep -q "\"killswitch\":[[:space:]]*\"${WANT_KILLSWITCH}\"" "$SETTINGS"; th
             && echo "pia_settings_mtu: set killswitch=${WANT_KILLSWITCH} in $SETTINGS" >&2
     fi
 fi
-
 exit 0

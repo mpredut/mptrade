@@ -26,7 +26,13 @@ from instrument_registry import symbols_for
 
 # Load tunable parameters from the versioned, secret-free config before reading
 # environment variables below. load_dotenv does not overwrite real environment.
-from botcore import _parse_bool_flag, load_dotenv as _load_dotenv
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv as _load_dotenv,
+    required_env,
+    required_float_env,
+    required_int_env,
+)
 from cachepaths import cache_path
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
@@ -72,27 +78,15 @@ def _validate_required_config_presence():
 
 def _required_config(name):
     """Return one mandatory AG setting or abort startup on missing/empty input."""
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        raise ValueError(f"Missing or empty mandatory AssetGuardian setting: {name}")
-    return str(raw).strip()
+    return required_env(name)
 
 
 def _required_float_config(name):
-    raw = _required_config(name)
-    try:
-        return float(raw)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(
-            f"Invalid numeric AssetGuardian setting: {name}={raw!r}") from exc
+    return required_float_env(name)
 
 
 def _required_int_config(name):
-    value = _required_float_config(name)
-    if not math.isfinite(value) or not value.is_integer():
-        raise ValueError(
-            f"Invalid integer AssetGuardian setting: {name}={value!r}")
-    return int(value)
+    return required_int_env(name)
 
 
 # Every financial/operational parameter is mandatory in config.env.

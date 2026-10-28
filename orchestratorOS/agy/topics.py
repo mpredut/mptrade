@@ -15,7 +15,7 @@ import os
 import re
 from typing import Any, Dict, NamedTuple, Optional, Set
 
-from botcore import required_int_env
+from botcore import _parse_bool_flag, required_int_env
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
 from orchestratorOS.agy.summary_store import (
     get_thread_step_count,
@@ -404,12 +404,7 @@ def record_topic_turn(
     spec = topic_spec(topic_key)
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
-    if isinstance(compacted, str):
-        compacted = compacted.strip().lower() in {"1", "true", "yes", "on", "1.0"}
-    elif isinstance(compacted, (int, float)) and not isinstance(compacted, bool):
-        compacted = bool(compacted) if math.isfinite(float(compacted)) else False
-    elif not isinstance(compacted, bool):
-        compacted = False
+    compacted = _parse_bool_flag(compacted, default=False)
     if max_history_entries is None or isinstance(max_history_entries, bool):
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
     else:
