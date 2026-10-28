@@ -18,6 +18,7 @@ import log
 import utils as u
 import symbols as sym
 from binance_api import bapi as api
+from botcore import required_env
 
 # Import the base classes from cacheManager
 from cacheManager import CacheManagerInterface, CacheFactory, _should_poll_for_manager
@@ -494,9 +495,7 @@ class StockYahooPricePlatform(PricePlatformInterface):
 
     def __init__(self, tickers: Optional[List[str]] = None):
         if tickers is None:
-            configured = os.environ.get("STOCK_TICKERS", "").strip()
-            if not configured:
-                raise ValueError("STOCK_TICKERS is required when tickers are not injected")
+            configured = required_env("STOCK_TICKERS")
             src = configured.split(",")
         elif isinstance(tickers, str):
             src = tickers.split(",")

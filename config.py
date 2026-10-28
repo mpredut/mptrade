@@ -46,8 +46,11 @@ def _read_properties_file(path: str) -> dict:
                             value = value.split("#", 1)[0].strip().strip("'").strip('"')
                     else:
                         value = value.split("#", 1)[0].strip()
-                    val_b = _parse_bool_flag(value, None)
-                    result[key] = val_b if val_b is not None else value
+                    if value.lower() in ("true", "1", "yes", "on", "y", "t"):
+                        value = True
+                    elif value.lower() in ("false", "0", "no", "off", "n", "f"):
+                        value = False
+                    result[key] = value
     except Exception:
         pass
     return result

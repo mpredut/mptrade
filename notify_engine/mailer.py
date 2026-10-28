@@ -41,8 +41,9 @@ def last_error_is_auth_failure() -> bool:
 
 
 def _disabled() -> bool:
+    from botcore import _parse_bool_flag
     return any(
-        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on", "1.0"}
+        _parse_bool_flag(os.environ.get(k))
         for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
     )
 

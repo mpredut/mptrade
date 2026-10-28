@@ -18,7 +18,7 @@ from typing import Any, Optional
 # Import your modules
 import log
 from lock import FileLock
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, float_env
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -249,7 +249,8 @@ def _common_gate_seconds() -> int:
     raw = os.environ.get("NOTIFICATION_GATE_SECONDS")
     if raw is not None and str(raw).strip() != "":
         return _positive_int_env("NOTIFICATION_GATE_SECONDS", 300)
-    if os.environ.get("NOTIFICATION_DEDUP_SECONDS") == "0" or "PYTEST_CURRENT_TEST" in os.environ:
+    dedup_s = float_env("NOTIFICATION_DEDUP_SECONDS")
+    if dedup_s == 0.0 or "PYTEST_CURRENT_TEST" in os.environ:
         return 0
     return 300
 
@@ -861,7 +862,7 @@ class AlertNotifier:
         alerts = list(alerts)
         subject = subject or AlertNotifier.email_subject(alerts)
         message = AlertNotifier.format_batch_message(alerts)
-        if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
+        if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
             # The orchestrator parses child stdout; same schema as its retry queue.
             intent = {"__orchestrator_intent__": "email", "subject": subject, "message": message}
             sys.stdout.write(json.dumps(intent, default=str) + "\n")
@@ -876,7 +877,7 @@ class AlertNotifier:
             return False
         if _external_notifications_disabled():
             return True
-        if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
+        if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
             def default_serializer(obj):
                 if hasattr(obj, "to_dict"):
                     return obj.to_dict()

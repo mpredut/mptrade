@@ -35,6 +35,8 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from botcore import _parse_bool_flag, float_env
+from cachepaths import cache_path
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
 from instrument import Instrument
@@ -161,8 +163,10 @@ def prewarm_trend_series(
             ft, gc, _sf, _gr, eps = buf.eval_slice(
                 blen - cur_len, blen - 1, sample_rate_sec=sample_rate, eps_k=1.0
             )
+            up_k_val = float_env("MPTRADE_UPWARD_EPSILON_K") or float_env("MPTRADE_TREND_NOISE_GATE_K") or 0.25
+            up_k = up_k_val if up_k_val >= 0.0 else 0.25
             if eps > 0.0:
-                tape.append(gc > 0.25 * eps)
+                tape.append(gc > up_k * eps)
             else:
                 tape.append(gc > 0.0 or (gc == 0.0 and ft > 0))
     res = tuple(tape)
@@ -180,7 +184,11 @@ def run_symbol(
 ):
     from_disk = series is None
     if from_disk:
-        path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+        use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
+        fname = f"cache_365_price_{symbol}.jsonl" if use_365 else f"cache_sparse_price_{symbol}.jsonl"
+        path = cache_path(fname)
+        if use_365 and not os.path.exists(path):
+            path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
         series = load_price_series(path, symbol)
         if not series:
             sys.stderr.write(f"[{symbol}] no history at {path}\n")

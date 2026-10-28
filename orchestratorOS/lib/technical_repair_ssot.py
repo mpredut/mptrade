@@ -287,6 +287,7 @@ def parse_procs_manifest(
     venv: str = "myenv",
     roles: Tuple[str, ...] = ("bot", "fleet"),
     include_stdout_with_heartbeat_file: bool = False,
+    require_cmd: bool = False,
 ) -> List[Dict[str, Any]]:
     """Parse ``procs.conf`` from ``workspace_dir`` as the single source of truth for bots and fleet modules."""
     procs: List[Dict[str, Any]] = []
@@ -304,7 +305,7 @@ def parse_procs_manifest(
                 if len(parts) < 7:
                     continue
                 pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
-                if role not in roles or not cmd:
+                if role not in roles or (require_cmd and not cmd):
                     continue
                 hb_val = parse_finite_float(hbstale, 0.0) or 0.0
                 hb_stale_s = hb_val if hb_val > 0 else 0.0

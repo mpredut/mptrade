@@ -2658,11 +2658,11 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         assert ob_col.fetch("BTCUSDC", allow_network=False) is None
 
-        # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous or legacy file when primary is corrupt
+        # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt
         sa_file = tmp_path / "sentiment_advisor_eval.json"
-        sa_legacy = tmp_path / "macro_advisor_eval.json"
+        sa_prev = tmp_path / "sentiment_advisor_eval.json.previous"
         sa_file.write_text("{corrupt", encoding="utf-8")
-        sa_legacy.write_text(
+        sa_prev.write_text(
             json.dumps({"market_bias": "BEARISH", "risk_level": "HIGH", "confidence": 0.9, "summary": "ok", "key_risks": [], "recommended_action": "DEFENSIVE", "ts": 1234.0}),
             encoding="utf-8",
         )

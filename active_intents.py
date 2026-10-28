@@ -13,6 +13,8 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
+from botcore import _parse_bool_flag
+
 
 @dataclass(frozen=True)
 class StateSource:
@@ -40,28 +42,6 @@ _INVALID_SCALAR_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
 def _is_backup(path: str) -> bool:
     name = os.path.basename(path)
     return any(token in name for token in (".pre_", ".bak", ".backup", ".tmp"))
-
-
-def _parse_bool_flag(val, default: bool | None = None) -> bool | None:
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set)):
-        return default
-    if isinstance(val, (int, float)):
-        import math
-        if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
-    s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on"}:
-        return True
-    if s in {"0", "false", "no", "off"}:
-        return False
-    return default
 
 
 def _clean_id(val) -> str | None:

@@ -79,18 +79,8 @@ def _account_ref(
 
 
 def _manifest(root: Path) -> list[str]:
-    path = root / "procs.conf"
-    if not path.exists():
-        return []
-    patterns = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("|")
-        if len(parts) >= 7 and parts[6].strip() in {"bot", "fleet"}:
-            patterns.append(parts[0].strip())
-    return patterns
+    from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
+    return [p["pattern"] for p in parse_procs_manifest(str(root), roles=("bot", "fleet"))]
 
 
 def _pattern(patterns: list[str], target: str) -> str | None:

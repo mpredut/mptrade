@@ -128,7 +128,8 @@ class NotificationServer:
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
         
         # Persistent Queue File
-        self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or os.path.join(ROOT_DIR, "cachedb", "notification_queue.jsonl")
+        from cachepaths import cache_path
+        self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or cache_path("notification_queue.jsonl")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _ensure_environment(self) -> None:

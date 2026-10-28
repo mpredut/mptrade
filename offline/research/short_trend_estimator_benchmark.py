@@ -59,9 +59,14 @@ def load_series(sym):
     if not os.path.exists(jsonl_path):
         return np.empty(0), np.empty(0)
     with open(jsonl_path, encoding="utf-8") as f:
+        try:
+            import orjson as _json_mod
+            _loads = _json_mod.loads
+        except ImportError:
+            _loads = json.loads
         for line in f:
             try:
-                r = json.loads(line)
+                r = _loads(line)
                 if r.get("s") != sym:
                     continue
                 t, p = float(r["i"][0]) / 1000.0, float(r["i"][1])
@@ -159,37 +164,59 @@ def build_candidates(px):
     """Yield (name, signal) lazily to keep memory bounded on 6.8M-tick series."""
     only = set(filter(None, os.environ.get("BENCH_ONLY", "").split(",")))
     want = (lambda n: (not only) or n in only)
-    meds = {k: causal_median(px, k) for k in (1, 3, 5, 7, 9)}
     yield "LEGACY (sf+gr)/2", legacy(px)
-    for k in (3, 5):
-        if want(f"LEGACY med{k}"):
-            yield f"LEGACY med{k}", legacy(meds[k])
     for k in (1, 3, 5, 7, 9):
+        need_k = (
+            (k in (3, 5) and want(f"LEGACY med{k}"))
+            or any(want(f"SW p{p} med{k}") for p in (1, 2, 3, 4, 6, 8))
+            or any(want(f"EXP hl{hl} med{k}") for hl in (15, 30, 60))
+        )
+        if not need_k:
+            continue
+        med_k = causal_median(px, k)
+        if k in (3, 5) and want(f"LEGACY med{k}"):
+            yield f"LEGACY med{k}", legacy(med_k)
         for p in (1, 2, 3, 4, 6, 8):
             if want(f"SW p{p} med{k}"):
-                yield f"SW p{p} med{k}", step_wols(meds[k], p)
+                yield f"SW p{p} med{k}", step_wols(med_k, p)
         for hl in (15, 30, 60):
             if want(f"EXP hl{hl} med{k}"):
-                yield f"EXP hl{hl} med{k}", exp_steps(meds[k], hl)
+                yield f"EXP hl{hl} med{k}", exp_steps(med_k, hl)
+        del med_k
 
-    # New quantitative architectures: Kaufman ER, Noise Gating, Platt Scaling
+    # New quantitative architectures: Kaufman ER, Noise Gating, Platt Scaling, and Tiered Hybrid
     er_val = None
     for p in (2, 3):
-        base_sig = step_wols(meds[1], p)
+        base_sig = None
         for er_thr in (0.05, 0.10, 0.15, 0.20, 0.25, 0.35):
             cname = f"SW p{p} + ER{er_thr}"
             if want(cname):
+                if base_sig is None:
+                    base_sig = step_wols(px, p)
                 if er_val is None:
                     er_val = kaufman_er(px)
                 yield cname, np.where(er_val >= er_thr, base_sig, 0.0)
         for k_eps in (0.05, 0.10, 0.15, 0.25, 0.50):
             cname = f"SW p{p} + NoiseGate{k_eps}"
             if want(cname):
+                if base_sig is None:
+                    base_sig = step_wols(px, p)
                 yield cname, noise_gate(base_sig, px, k=k_eps)
         for p_thr in (0.55, 0.60, 0.65):
             cname = f"SW p{p} + Platt{p_thr}"
             if want(cname):
+                if base_sig is None:
+                    base_sig = step_wols(px, p)
                 yield cname, platt_scale(base_sig, thr=p_thr)
+        for er_thr, k_eps in ((0.05, 0.05), (0.10, 0.10)):
+            cname = f"HYBRID p{p} ER{er_thr}+NG{k_eps}"
+            if want(cname):
+                if base_sig is None:
+                    base_sig = step_wols(px, p)
+                if er_val is None:
+                    er_val = kaufman_er(px)
+                ng_sig = noise_gate(base_sig, px, k=k_eps)
+                yield cname, np.where(er_val >= er_thr, ng_sig, 0.0)
 
 
 def fwd_index(ts, h):
@@ -316,8 +343,13 @@ def main():
     D = args.data_dir
     os.environ["SHORT_TREND_BENCH_DATA_DIR"] = D
     syms = args.symbols
-    with Pool(len(syms), initializer=_set_data_dir, initargs=(D,)) as pool:
-        results = pool.map(evaluate, syms)
+    n_workers = min(len(syms), max(1, int(os.environ.get("BENCH_WORKERS", "1"))))
+    if n_workers <= 1:
+        _set_data_dir(D)
+        results = [evaluate(s) for s in syms]
+    else:
+        with Pool(n_workers, initializer=_set_data_dir, initargs=(D,)) as pool:
+            results = pool.map(evaluate, syms)
     agg = {}
     for sym, N, res in results:
         any_c = next(iter(res.values()))

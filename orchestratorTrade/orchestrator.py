@@ -67,6 +67,7 @@ class BotManager:
             venv=self.venv,
             roles=("bot", "fleet"),
             include_stdout_with_heartbeat_file=True,
+            require_cmd=True,
         )
 
     async def _read_stream(self, stream, bot_name: str, log_file):
