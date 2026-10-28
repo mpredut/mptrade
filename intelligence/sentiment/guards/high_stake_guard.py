@@ -665,8 +665,8 @@ def collect_pretrade_telemetry(
             pass
 
     # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
-    from intelligence.external.collectors.orderbook_depth import _symbol_variants
-    sym_variants = _symbol_variants(symbol)
+    from cachepaths import cache_symbol_variants, canonical_base_asset
+    sym_variants = cache_symbol_variants(symbol)
     try:
         cur_p_data = read_recovering_previous(os.path.join(cachedb_dir, "cache_current_price.json"), json.loads, default=None)
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
@@ -702,9 +702,7 @@ def collect_pretrade_telemetry(
                 rng_str += f", tape_15m=[{', '.join(m24['recent_tape_15m'])}]"
             telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
 
-            from cachepaths import normalize_cache_base_asset
-            base_asset = normalize_cache_base_asset(symbol)
-            if base_asset not in ("BTC", "XBT") and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
+            if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
                 btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items)
                 if not btc_series_24h:
                     btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "XBTUSD", current_price_items=cur_p_items)

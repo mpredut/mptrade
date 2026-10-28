@@ -276,13 +276,10 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
     clean = raw.replace("/", "").replace("-", "").replace("_", "")
     if clean == "USDCUSDT":
         return ("USDCUSDT",)
-    base = clean
-    for suffix in ("USDC", "USDT", "FDUSD", "EUR", "RON", "GBP", "USD"):
-        if base.endswith(suffix) and len(base) > len(suffix):
-            base = base[: -len(suffix)]
-            break
+    from cachepaths import cache_symbol_variants, normalize_cache_base_asset
+    base = normalize_cache_base_asset(raw)
     variants = [raw]
-    for cand in (clean, f"{base}USDC", f"{base}USDT", f"{base}USD", f"{base}/USDC", base):
+    for cand in (*cache_symbol_variants(raw, include_base=True), f"{base}/USDC" if base else ""):
         if cand and cand not in variants:
             variants.append(cand)
     return tuple(variants)

@@ -1693,9 +1693,11 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     assert len(captured_prompts) == 1
     prompt = captured_prompts[0]
 
-    # Verify full multi-horizon vs_btc and alt_btc_24h on TAOUSDC
+    # Verify full multi-horizon vs_btc and raw alt_btc_24h range geometry on TAOUSDC (without pre-calculated beta/corr)
     assert "vs_btc(15m=-0.30%, 1h=-1.00%, 3h=-0.50%, 6h=+1.00%, 12h=+2.00%, 24h=+3.00%, 7d=+12.00%)" in prompt
-    assert "alt_btc_24h(pos=74.5%, dd_high=-1.20%, bounce_low=+3.40%, beta=1.42, corr=0.65)" in prompt
+    assert "alt_btc_24h(pos=74.5%, dd_high=-1.20%, bounce_low=+3.40%)" in prompt
+    assert "beta=" not in prompt
+    assert "corr=" not in prompt
     assert "dd_high=-3.70%, bounce_low=+8.33%, span=12.5%" in prompt
     # Verify BTC and XBT do not have vs_btc
     btc_line = [ln for ln in prompt.splitlines() if "BTCUSDC" in ln][0]
@@ -1823,7 +1825,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     3. Kraken xStock holdings (SPCXx.T) and allocation parameters are harvested into kraken_xstocks
        and exposed in both crypto and equities (t212) scopes, linked with SPCX_US_EQ.
     """
-    from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset
+    from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset, split_symbol_assets
     from orchestratorTrade.autonomous_intent_gateway import _discover_kraken_cache_pairs
 
     assert normalize_cache_base_asset("SPCXx.T") == "SPCX"
@@ -1833,6 +1835,9 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert canonical_base_asset("HYPEUSDC") == "HYPE"
     assert canonical_base_asset("SPCXx.T") == "SPCX"
     assert canonical_base_asset("NVDA_US_EQ") == "NVDA"
+    assert split_symbol_assets("XXBTZUSD") == ("XBT", "USD")
+    assert split_symbol_assets("NVDA_US_EQ") == ("NVDA", "USD")
+    assert split_symbol_assets("SPCXx.TUSD") == ("SPCX", "USD")
     assert "SPCX_US_EQ" in cache_symbol_variants("SPCXUSD")
     assert "SPCXUSD" in cache_symbol_variants("SPCX_US_EQ")
 
@@ -1956,7 +1961,7 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert hl_cyc["HYPEUSDC"]["realized_pnl_usd"] == 18.45
     assert hl_cyc["HYPEUSDC"]["tp_sold_levels"] == [1, 2]
     assert hl_cyc["HYPEUSDC"]["resting_orders"][0]["px"] == 59.347
-    assert snap_crypto.portfolio_summary["hyperliquid_signal"]["regime"] == "BULLISH_FLOW"
+    assert "hyperliquid_signal" not in snap_crypto.portfolio_summary
 
     # Reference microstructure for ADAUSD is harvested even when ADAUSD is not traded
     assert snap_crypto.microstructure["ADAUSD"]["ob_imbalance"] == 0.44
@@ -1971,14 +1976,13 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert xs_crypto["pnl_vs_alloc_pct"] == 20.0
     assert xs_crypto["t212_sibling_cycle"]["qty"] == 2.442965
 
-    # Verify cross_market_context is populated for both crypto and equities scopes
+    # Verify cross_market_context provides raw multi-horizon telemetry without pre-judged correlations or sync labels
     cmc_crypto = snap_crypto.portfolio_summary.get("cross_market_context", {})
-    assert "market_sync_pattern" in cmc_crypto
-    assert cmc_crypto["market_sync_pattern"]["advancing_24h_ratio"] == 1.0
+    assert "market_sync_pattern" not in cmc_crypto
+    assert "cross_asset_correlations_24h" not in cmc_crypto
     assert "NVDA_US_EQ" in cmc_crypto.get("equity_bellwethers", {})
     assert cmc_crypto["equity_bellwethers"]["NVDA_US_EQ"]["t212_cycle"]["qty"] == 3.0
-    assert "NVDA_US_EQ_vs_BTC" in cmc_crypto.get("cross_asset_correlations_24h", {})
-    assert "NVDA_US_EQ_vs_TAO" in cmc_crypto.get("cross_asset_correlations_24h", {})
+    assert "chg_24h_pct" in cmc_crypto["equity_bellwethers"]["NVDA_US_EQ"]
 
     snap_eq = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="equities")
     assert "kraken_xstocks" in snap_eq.portfolio_summary
@@ -1986,9 +1990,10 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     cmc_eq = snap_eq.portfolio_summary.get("cross_market_context", {})
     assert "BTC" in cmc_eq.get("crypto_bellwethers", {})
     assert "TAO" in cmc_eq.get("crypto_bellwethers", {})
-    assert "NVDA_US_EQ_vs_TAO" in cmc_eq.get("cross_asset_correlations_24h", {})
+    assert "chg_24h_pct" in cmc_eq["crypto_bellwethers"]["TAO"]
+    assert "cross_asset_correlations_24h" not in cmc_eq
 
-    # Verify prompt deduplicates HYPEUSDC + HYPEUSD in Sections 3 and 3B while showing sibling venue price & cross-market context
+    # Verify prompt deduplicates HYPEUSDC + HYPEUSD in Sections 3 and 3B while showing sibling venue price & raw cross-market context
     captured_prompt = {}
     reconciler.gemini_auditor = GeminiClient(
         custom_runner=lambda prompt, model, timeout: (
@@ -2003,12 +2008,85 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
     assert "realized_pnl=$18.45, tp_sold=[1, 2]" in u_prompt
     assert "READ-ONLY on Kraken — NOT API-tradable" in u_prompt
-    assert "Cross-Market US Equities & Tech/AI Bellwethers" in u_prompt
-    assert "Realized 24h Cross-Asset Correlation, Beta & Spread Matrix" in u_prompt
+    assert "Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles)" in u_prompt
+    assert "Realized 24h Cross-Asset Correlation" not in u_prompt
+    assert "Hyperliquid Bot Signal Telemetry" not in u_prompt
 
     reconciler.synthesize_and_diagnose(snap_eq, LogEventSummary(0, 0, 0), topic_key="auto_sharetrade_executor")
     eq_prompt = captured_prompt["u"]
-    assert "Cross-Market 24/7 Crypto & AI Bellwethers" in eq_prompt
-    assert "NVDA_US_EQ_vs_TAO" in eq_prompt
+    assert "Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure)" in eq_prompt
+    assert "TAO decentralized AI proxy" not in eq_prompt
+
+
+def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
+    """Verify Single Source of Truth (SSOT) normalization across all auto_technical_repair targets and actions."""
+    from orchestratorOS.lib.technical_repair_ssot import (
+        ALL_DIAGNOSED_CATEGORIES,
+        ALL_REPAIR_ACTIONS,
+        build_system_admin_command,
+        fleet_script_basenames,
+        normalize_repair_action,
+        parse_procs_manifest,
+        resolve_manifest_process,
+        resolve_patchable_target,
+    )
+
+    (tmp_path / "procs.conf").write_text(
+        "rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n"
+        "hyperliquid/hl_bot.py|$ROOT/hyperliquid|python hl_bot.py|HL-bot|cachedb/HL-bot.heartbeat|600|bot\n"
+        "market_monitor/price_notifier.py|$ROOT|python market_monitor/price_notifier.py|price_notifier|cachedb/price_notifier.heartbeat|180|fleet\n",
+        encoding="utf-8",
+    )
+
+    manifest = parse_procs_manifest(str(tmp_path), include_stdout_with_heartbeat_file=True)
+    assert len(manifest) == 3
+    assert fleet_script_basenames(str(tmp_path)) == {"rtrade.py", "price_notifier.py"}
+    # Dedicated .heartbeat file also appends logs/<stem>.log when include_stdout_with_heartbeat_file=True
+    assert any(p.endswith("logs/rtrade.log") for p in manifest[0]["hb_files"])
+
+    # Alias/stem resolution for bots and modules
+    assert resolve_manifest_process("hl_bot", str(tmp_path))["name"] == "HL-bot"
+    assert resolve_manifest_process("hyperliquid/hl_bot.py", str(tmp_path))["name"] == "HL-bot"
+    assert resolve_manifest_process("price_notifier.py", str(tmp_path))["name"] == "price_notifier"
+
+    # Synonym & target alias normalization (RESTART_BOT + FLEET/wgpia0/dns/SYSTEM -> canonical actions)
+    n_bot = normalize_repair_action({"action": "REBOOT_BOT", "bot": "hl_bot.py", "reason": "stale"}, str(tmp_path))
+    assert n_bot["action"] == "RESTART_BOT"
+    assert n_bot["symbol"] == "HL-bot"
+    assert n_bot["venue"] == "fleet"
+    assert n_bot["matched_process"]["clean_pattern"] == "hyperliquid/hl_bot.py"
+
+    n_fleet = normalize_repair_action({"action": "RESTART_BOT", "symbol": "flota", "reason": "all wedged"}, str(tmp_path))
+    assert n_fleet["action"] == "RESTART_FLEET"
+    assert n_fleet["venue"] == "fleet"
+
+    n_vpn = normalize_repair_action({"action": "RESTART_MODULE", "target": "wgpia0", "reason": "tunnel down"}, str(tmp_path))
+    assert n_vpn["action"] == "RESTART_VPN"
+    assert n_vpn["venue"] == "system"
+
+    n_dns = normalize_repair_action({"action": "FIX_DNS", "target": "systemd-resolved"}, str(tmp_path))
+    assert n_dns["action"] == "PIN_DNS"
+
+    n_sys = normalize_repair_action({"action": "RESTART_BOT", "symbol": "intreg_sistemul"}, str(tmp_path))
+    assert n_sys["action"] == "REBOOT_SYSTEM"
+    assert n_sys["venue"] == "system"
+
+    for sys_act in ("RESTART_FLEET", "RESTART_VPN", "PIN_DNS", "REBOOT_SYSTEM"):
+        cmd_desc = build_system_admin_command(sys_act, admin_bin="/nonexistent/trading-admin")
+        assert cmd_desc is not None
+        assert cmd_desc[0][:2] == ["sudo", "-n"]
+
+    # Patch target boundary & secret file protection
+    cfg_file = tmp_path / "order_guard.conf"
+    cfg_file.write_text("supervisor_mode = enforce\n", encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text("SECRET=1\n", encoding="utf-8")
+    ok_path, err = resolve_patchable_target("order_guard.conf", str(tmp_path))
+    assert ok_path == os.path.realpath(str(cfg_file)) and err is None
+    bad_env, env_err = resolve_patchable_target(".env", str(tmp_path))
+    assert bad_env is None and "protected secret" in env_err
+    assert "REBOOT_SYSTEM" in ALL_REPAIR_ACTIONS
+    assert "CONFIG_ERROR" in ALL_DIAGNOSED_CATEGORIES
+
 
 

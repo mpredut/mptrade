@@ -39,6 +39,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from cachepaths import cache_symbol_variants, canonical_base_asset, split_symbol_assets
+
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
 # Trade thesis, profit/loss protection, multi-tranche scaling, trend timing, microstructure, and
@@ -109,13 +111,36 @@ def _norm_sym(symbol: str) -> str:
 
 def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
     """Split a standard spot pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD) into (base, quote)."""
-    sym_u = _norm_sym(symbol)
-    if sym_u.endswith("USEQ") and len(sym_u) > 4:
-        return sym_u[:-4], "USD"
-    for quote in _QUOTE_SUFFIXES:
-        if sym_u.endswith(quote) and len(sym_u) > len(quote):
-            return sym_u[: -len(quote)], quote
-    return None
+    return split_symbol_assets(symbol)
+
+
+def _parse_notify_enabled_flag(notify_enabled: Any, conf: Dict[str, str], conf_key: str) -> bool:
+    """Validate and coerce an explicit ``notify_enabled`` override or ``conf[conf_key]`` into a bool."""
+    if notify_enabled is not None:
+        if isinstance(notify_enabled, str):
+            ne_s = notify_enabled.strip().lower()
+            if ne_s in ("1", "true", "yes", "on", "1.0"):
+                return True
+            if ne_s in ("0", "false", "no", "off", "0.0", ""):
+                return False
+            ne_num = _parse_finite_float(ne_s, float("nan"))
+            if not math.isfinite(ne_num):
+                raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
+            return bool(ne_num != 0.0)
+        if isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
+            raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
+        return bool(notify_enabled)
+    if conf_key not in conf:
+        raise KeyError(f"Missing required '{conf_key}' in order_guard.conf")
+    raw_notify = str(conf[conf_key]).strip().lower()
+    if raw_notify in ("1", "true", "yes", "on", "1.0"):
+        return True
+    if raw_notify in ("0", "false", "no", "off", "0.0"):
+        return False
+    notify_num = _parse_finite_float(raw_notify, float("nan"))
+    if not math.isfinite(notify_num):
+        raise ValueError(f"Invalid {conf_key} {conf[conf_key]!r}")
+    return bool(notify_num != 0.0)
 
 
 def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
@@ -335,35 +360,9 @@ class AutonomousIntentGateway:
                 f"Invalid autonomous_trading_min_confidence {self.min_confidence!r}; must be in [0.0, 1.0]"
             )
 
-        if notify_enabled is not None:
-            if isinstance(notify_enabled, str):
-                ne_s = notify_enabled.strip().lower()
-                if ne_s in ("1", "true", "yes", "on", "1.0"):
-                    self.notify_enabled = True
-                elif ne_s in ("0", "false", "no", "off", "0.0", ""):
-                    self.notify_enabled = False
-                else:
-                    ne_num = _parse_finite_float(ne_s, float("nan"))
-                    if not math.isfinite(ne_num):
-                        raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-                    self.notify_enabled = bool(ne_num != 0.0)
-            elif isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
-                raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-            else:
-                self.notify_enabled = bool(notify_enabled)
-        else:
-            if "autonomous_trading_notify" not in conf:
-                raise KeyError("Missing required 'autonomous_trading_notify' in order_guard.conf")
-            raw_notify = str(conf["autonomous_trading_notify"]).strip().lower()
-            if raw_notify in ("1", "true", "yes", "on", "1.0"):
-                self.notify_enabled = True
-            elif raw_notify in ("0", "false", "no", "off", "0.0"):
-                self.notify_enabled = False
-            else:
-                notify_num = _parse_finite_float(raw_notify, float("nan"))
-                if not math.isfinite(notify_num):
-                    raise ValueError(f"Invalid autonomous_trading_notify {conf['autonomous_trading_notify']!r}")
-                self.notify_enabled = bool(notify_num != 0.0)
+        self.notify_enabled = _parse_notify_enabled_flag(
+            notify_enabled, conf, "autonomous_trading_notify"
+        )
 
     def _load_conf(self) -> Dict[str, str]:
         """Loads configuration from order_guard.conf / config.env, overlaying workspace-specific overrides."""
@@ -622,16 +621,11 @@ class AutonomousIntentGateway:
         if isinstance(venue, bool):
             return None
         venue_norm = venue.strip().lower() if isinstance(venue, str) and venue.strip() else None
-        req_base = (_split_symbol_assets(sym_norm) or (sym_norm, ""))[0]
-        if req_base in ("XBT", "XXBTZ"):
-            req_base = "BTC"
+        req_base = canonical_base_asset(symbol)
 
         def _inst_base_norm(inst: Any) -> str:
-            raw_b = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol, ""))[0]
-            b_norm = _norm_sym(str(raw_b))
-            if b_norm.endswith("USEQ") and len(b_norm) > 4:
-                b_norm = b_norm[:-4]
-            return "BTC" if b_norm in ("XBT", "XXBTZ") else b_norm
+            raw_b = getattr(inst, "base", None) or getattr(inst, "symbol", "")
+            return canonical_base_asset(str(raw_b))
 
         # 1. Match strictly within the specified venue (never cross-venue fallback)
         if venue_norm:
@@ -720,14 +714,9 @@ class AutonomousIntentGateway:
                         if px_f is not None:
                             return px_f
                 if inst_base:
-                    base_u = str(inst_base).upper()
-                    if base_u in ("XBT", "XXBTZ"):
-                        base_u = "BTC"
+                    base_u = canonical_base_asset(str(inst_base))
                     for k, v in items.items():
-                        k_base = (_split_symbol_assets(str(k)) or (str(k).upper(), ""))[0]
-                        if k_base in ("XBT", "XXBTZ"):
-                            k_base = "BTC"
-                        if k_base == base_u and v:
+                        if canonical_base_asset(str(k)) == base_u and v:
                             px_f = _latest_valid_px(v)
                             if px_f is not None:
                                 return px_f

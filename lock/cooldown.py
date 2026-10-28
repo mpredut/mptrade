@@ -24,6 +24,7 @@ import multiprocessing
 import contextlib
 
 from .file_lock import FileLock
+from botcore import _parse_bool_flag
 
 
 def _is_active_entry(last, now: float, ttl: float) -> bool:
@@ -61,24 +62,7 @@ def _sanitize_json_payload(value):
     return value
 
 
-def _as_bool_flag(val, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        if not math.isfinite(val):
-            return fb
-        return bool(val)
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
-            return True
-        if norm in ("0", "0.0", "false", "no", "off", "n", "f", ""):
-            return False
-        return fb
-    return fb
+_as_bool_flag = _parse_bool_flag
 
 
 def _safe_list(val) -> list:

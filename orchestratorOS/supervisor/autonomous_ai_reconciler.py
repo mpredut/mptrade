@@ -30,20 +30,40 @@ if _ROOT_DIR not in sys.path:
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import load_dotenv
+from botcore import _parse_bool_flag, load_dotenv
 from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
     compute_24h_price_metrics,
-    compute_cross_btc_metrics,
     extract_symbol_recent_fills,
     load_symbol_price_series,
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
+from orchestratorOS.lib.technical_repair_ssot import (
+    ACTIONABLE_ERROR_SEVERITIES,
+    ALL_DIAGNOSED_CATEGORIES,
+    ALL_REPAIR_ACTIONS,
+    AUDITED_CONFIG_FILES,
+    BOT_AND_ORDER_ERROR_CATEGORIES,
+    BOT_MODULE_REPAIR_ACTIONS,
+    BOT_OR_FLEET_ERROR_ACTIONS,
+    DIAGNOSED_SEVERITIES,
+    SYSTEM_ADMIN_ACTION_SPECS,
+    SYSTEM_OS_ERROR_ACTIONS,
+    SYSTEM_OS_ERROR_CATEGORIES,
+    audit_workspace_configs,
+    build_system_admin_command,
+    clean_json_value,
+    gather_system_and_vpn_telemetry,
+    normalize_repair_action,
+    read_json_recovering,
+    resolve_patchable_target,
+)
 from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
     _is_us_rth_open,
     _parse_finite_float,
+    _parse_notify_enabled_flag,
     load_key_value_conf,
 )
 
@@ -153,21 +173,7 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
     return picked
 
 
-def _as_bool_flag(val: Any, default: bool = False) -> bool:
-    """Coerce ``val`` into a boolean flag with safe string/numeric handling."""
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    if isinstance(val, str):
-        norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y", "t", "1.0"):
-            return True
-        if norm in ("0", "false", "no", "off", "n", "f", "0.0", "none", ""):
-            return False
-    return default
+_as_bool_flag = _parse_bool_flag
 
 
 def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -382,10 +388,9 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
 def _build_cross_market_context(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
-    series_24h_by_sym: Dict[str, list],
     all_t212_cycles: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Compute cross-asset synchronization, dispersion, and Crypto <-> US Equities correlation/bellwethers."""
+    """Build raw, objective cross-market telemetry (Crypto <-> US Equities) with zero pre-calculated correlations or bias."""
     ctx: Dict[str, Any] = {}
 
     # Deduplicate symbols by canonical base asset so multi-venue siblings (HYPEUSDC/HYPEUSD) count once
@@ -402,46 +407,26 @@ def _build_cross_market_context(
         ) or len(pinfo) > len(prev[1]):
             by_base[b_canon] = (sym, pinfo)
 
-    # 1. Multi-asset synchronization & dispersion pattern across tracked assets
-    chg_15m_list: List[Tuple[str, float]] = []
-    chg_1h_list: List[Tuple[str, float]] = []
-    chg_24h_list: List[Tuple[str, float]] = []
-    for _, (sym, pinfo) in sorted(by_base.items()):
-        c15 = _parse_finite_float(pinfo.get("chg_15m_pct"), None)
-        c1h = _parse_finite_float(pinfo.get("chg_1h_pct"), None)
-        c24 = _parse_finite_float(pinfo.get("chg_24h_pct"), None)
-        if c15 is not None:
-            chg_15m_list.append((sym, c15))
-        if c1h is not None:
-            chg_1h_list.append((sym, c1h))
-        if c24 is not None:
-            chg_24h_list.append((sym, c24))
+    raw_horizon_keys = (
+        "chg_1m_pct",
+        "chg_3m_pct",
+        "chg_5m_pct",
+        "chg_15m_pct",
+        "chg_30m_pct",
+        "chg_1h_pct",
+        "chg_3h_pct",
+        "chg_6h_pct",
+        "chg_12h_pct",
+        "chg_24h_pct",
+        "chg_7d_pct",
+        "pos_24h_pct",
+        "slope_3_7m",
+        "slope_15m",
+        "slope_2_5h",
+        "kalman_vel",
+    )
 
-    sync_pat: Dict[str, Any] = {}
-    if chg_15m_list:
-        adv15 = sum(1 for _, v in chg_15m_list if v > 0)
-        sync_pat["advancing_15m"] = f"{adv15}/{len(chg_15m_list)}"
-        sync_pat["advancing_15m_ratio"] = round(adv15 / len(chg_15m_list), 2)
-    if chg_1h_list:
-        adv1h = sum(1 for _, v in chg_1h_list if v > 0)
-        sync_pat["advancing_1h"] = f"{adv1h}/{len(chg_1h_list)}"
-        sync_pat["advancing_1h_ratio"] = round(adv1h / len(chg_1h_list), 2)
-        s1h = sorted(chg_1h_list, key=lambda kv: kv[1])
-        sync_pat["leader_1h"] = {"symbol": s1h[-1][0], "chg_1h_pct": s1h[-1][1]}
-        sync_pat["laggard_1h"] = {"symbol": s1h[0][0], "chg_1h_pct": s1h[0][1]}
-        sync_pat["dispersion_1h_pct"] = round(s1h[-1][1] - s1h[0][1], 2)
-    if chg_24h_list:
-        adv24 = sum(1 for _, v in chg_24h_list if v > 0)
-        sync_pat["advancing_24h"] = f"{adv24}/{len(chg_24h_list)}"
-        sync_pat["advancing_24h_ratio"] = round(adv24 / len(chg_24h_list), 2)
-        s24 = sorted(chg_24h_list, key=lambda kv: kv[1])
-        sync_pat["leader_24h"] = {"symbol": s24[-1][0], "chg_24h_pct": s24[-1][1]}
-        sync_pat["laggard_24h"] = {"symbol": s24[0][0], "chg_24h_pct": s24[0][1]}
-        sync_pat["dispersion_24h_pct"] = round(s24[-1][1] - s24[0][1], 2)
-    if sync_pat:
-        ctx["market_sync_pattern"] = sync_pat
-
-    # 2. Crypto bellwethers summary (gives Trading212 Equities AI 24/7 visibility into BTC, TAO AI proxy, HYPE, ADA)
+    # 1. Raw Crypto market telemetry for Trading212 Equities AI (24/7 prices, multi-horizon deltas & microstructure)
     crypto_bellwethers: Dict[str, Any] = {}
     for b_canon, (sym, pinfo) in sorted(by_base.items()):
         if sym.endswith(("_EQ", "_US_EQ")):
@@ -450,7 +435,7 @@ def _build_cross_market_context(
         if px_f <= 0:
             continue
         cb_entry: Dict[str, Any] = {"symbol": sym, "price": px_f}
-        for k_copy in ("chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct", "slope_15m", "kalman_vel"):
+        for k_copy in raw_horizon_keys:
             if pinfo.get(k_copy) is not None:
                 cb_entry[k_copy] = pinfo.get(k_copy)
         m_info = microstructure.get(sym)
@@ -460,14 +445,14 @@ def _build_cross_market_context(
                 None,
             )
         if isinstance(m_info, dict):
-            for mk_copy in ("ob_imbalance", "whale_long_pct", "divergence_regime", "funding_rate"):
+            for mk_copy in ("ob_imbalance", "whale_long_pct", "funding_rate", "oi_1h_chg_pct"):
                 if m_info.get(mk_copy) is not None:
                     cb_entry[mk_copy] = m_info.get(mk_copy)
         crypto_bellwethers[b_canon] = cb_entry
     if crypto_bellwethers:
         ctx["crypto_bellwethers"] = crypto_bellwethers
 
-    # 3. US Equities / Tech & AI bellwethers summary (gives Crypto AI visibility into NVDA_US_EQ, SPCX_US_EQ, RGNT_US_EQ)
+    # 2. Raw US Equities telemetry for Crypto AI (Trading212 raw prices, multi-horizon deltas & active cycle anchors)
     equity_bellwethers: Dict[str, Any] = {}
     eq_syms = sorted(
         {s for s in prices_and_trends if str(s).upper().endswith(("_EQ", "_US_EQ"))}
@@ -479,7 +464,7 @@ def _build_cross_market_context(
         eq_entry: Dict[str, Any] = {"symbol": eq_sym}
         if pinfo.get("price") is not None:
             eq_entry["price"] = pinfo.get("price")
-        for k_copy in ("chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct", "slope_15m"):
+        for k_copy in raw_horizon_keys:
             if pinfo.get(k_copy) is not None:
                 eq_entry[k_copy] = pinfo.get(k_copy)
         if t_cyc:
@@ -492,52 +477,6 @@ def _build_cross_market_context(
             equity_bellwethers[eq_sym] = eq_entry
     if equity_bellwethers:
         ctx["equity_bellwethers"] = equity_bellwethers
-
-    # 4. Realized 24h Cross-Asset Correlations & Beta (Equities <-> BTC/TAO and Crypto <-> BTC)
-    series_by_base: Dict[str, Tuple[str, list]] = {}
-    for s_key, ser in sorted(series_24h_by_sym.items()):
-        if not isinstance(ser, list) or len(ser) < 2:
-            continue
-        b_c = canonical_base_asset(s_key)
-        if b_c not in series_by_base or s_key.endswith(("USDC", "_US_EQ", "_EQ")):
-            series_by_base[b_c] = (s_key, ser)
-
-    cross_corrs: Dict[str, Any] = {}
-    btc_ser_pair = series_by_base.get("BTC")
-    tao_ser_pair = series_by_base.get("TAO")
-
-    for b_c, (s_key, ser) in sorted(series_by_base.items()):
-        if b_c == "BTC":
-            continue
-        if btc_ser_pair is not None:
-            cm = compute_cross_btc_metrics(ser, btc_ser_pair[1])
-            if isinstance(cm, dict) and (cm.get("corr_btc_24h") is not None or cm.get("beta_btc_24h") is not None):
-                p_a = _parse_finite_float((prices_and_trends.get(s_key) or {}).get("chg_24h_pct"), None)
-                p_b = _parse_finite_float((prices_and_trends.get(btc_ser_pair[0]) or {}).get("chg_24h_pct"), None)
-                pair_entry: Dict[str, Any] = {
-                    "corr_24h": cm.get("corr_btc_24h"),
-                    "beta_24h": cm.get("beta_btc_24h"),
-                    "ratio_pos_24h_pct": cm.get("alt_btc_pos_24h_pct"),
-                }
-                if p_a is not None and p_b is not None:
-                    pair_entry["spread_24h_pct"] = round(p_a - p_b, 2)
-                cross_corrs[f"{s_key}_vs_BTC"] = pair_entry
-        if s_key.startswith("NVDA") and tao_ser_pair is not None:
-            cm_tao = compute_cross_btc_metrics(ser, tao_ser_pair[1])
-            if isinstance(cm_tao, dict) and (cm_tao.get("corr_btc_24h") is not None or cm_tao.get("beta_btc_24h") is not None):
-                p_nvda = _parse_finite_float((prices_and_trends.get(s_key) or {}).get("chg_24h_pct"), None)
-                p_tao = _parse_finite_float((prices_and_trends.get(tao_ser_pair[0]) or {}).get("chg_24h_pct"), None)
-                tao_entry: Dict[str, Any] = {
-                    "corr_24h": cm_tao.get("corr_btc_24h"),
-                    "beta_24h": cm_tao.get("beta_btc_24h"),
-                    "ratio_pos_24h_pct": cm_tao.get("alt_btc_pos_24h_pct"),
-                }
-                if p_nvda is not None and p_tao is not None:
-                    tao_entry["spread_24h_pct"] = round(p_nvda - p_tao, 2)
-                cross_corrs[f"{s_key}_vs_TAO"] = tao_entry
-
-    if cross_corrs:
-        ctx["cross_asset_correlations_24h"] = cross_corrs
 
     return ctx
 
@@ -632,35 +571,7 @@ class AutonomousAIReconciler:
         if self.mode not in ("off", "shadow", "enforce"):
             raise ValueError(f"Invalid supervisor_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']")
 
-        if notify_enabled is not None:
-            if isinstance(notify_enabled, str):
-                ne_s = notify_enabled.strip().lower()
-                if ne_s in ("1", "true", "yes", "on", "1.0"):
-                    self.notify_enabled = True
-                elif ne_s in ("0", "false", "no", "off", "0.0", ""):
-                    self.notify_enabled = False
-                else:
-                    ne_num = _parse_finite_float(ne_s, float("nan"))
-                    if not math.isfinite(ne_num):
-                        raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-                    self.notify_enabled = bool(ne_num != 0.0)
-            elif isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
-                raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-            else:
-                self.notify_enabled = bool(notify_enabled)
-        else:
-            if "supervisor_notify" not in conf:
-                raise KeyError("Missing required 'supervisor_notify' in order_guard.conf")
-            raw_notify = str(conf["supervisor_notify"]).strip().lower()
-            if raw_notify in ("1", "true", "yes", "on", "1.0"):
-                self.notify_enabled = True
-            elif raw_notify in ("0", "false", "no", "off", "0.0"):
-                self.notify_enabled = False
-            else:
-                notify_num = _parse_finite_float(raw_notify, float("nan"))
-                if not math.isfinite(notify_num):
-                    raise ValueError(f"Invalid supervisor_notify {conf['supervisor_notify']!r}")
-                self.notify_enabled = bool(notify_num != 0.0)
+        self.notify_enabled = _parse_notify_enabled_flag(notify_enabled, conf, "supervisor_notify")
 
         self.ntfy_url = conf.get("phone_alert_url", "")
         if "ntfy_topic_guard" not in conf:
@@ -690,22 +601,14 @@ class AutonomousAIReconciler:
         self,
         *,
         include_fleet: bool = True,
+        include_market_portfolio: bool = True,
         asset_scope: str = "all",
     ) -> TelemetrySensorSnapshot:
         """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
         scope = (asset_scope or "all").strip().lower()
         snapshot = TelemetrySensorSnapshot()
         now_ts = time.time()
-
-        def _read_json(fpath: str) -> Optional[Any]:
-            for cand in (fpath, f"{fpath}.previous"):
-                if os.path.exists(cand):
-                    try:
-                        with open(cand, "r", encoding="utf-8", errors="replace") as f:
-                            return json.load(f)
-                    except Exception:
-                        continue
-            return None
+        _read_json = read_json_recovering
 
         def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
             enriched = dict(payload)
@@ -722,6 +625,45 @@ class AutonomousAIReconciler:
             if ref_ts is not None:
                 enriched.setdefault("age_min", round(max(0.0, now_ts - ref_ts) / 60.0, 1))
             return enriched
+
+        # 5. Heartbeat sensors
+        for hb_name in (
+            "macro_analyzer.heartbeat",
+            "globaltelemetry_collector.heartbeat",
+            "intelligence_daemon.heartbeat",
+            "rtrade.heartbeat",
+        ):
+            data = _read_json(os.path.join(self.cache_dir, hb_name))
+            if isinstance(data, dict) and data:
+                snapshot.active_heartbeats[hb_name] = data
+
+        # 6. Bot state files in workspace
+        for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json", "kraken_trades_full.json"):
+            s_path = os.path.join(self.workspace_dir, s_file)
+            if os.path.exists(s_path):
+                try:
+                    mtime = os.path.getmtime(s_path)
+                    snapshot.state_files[s_file] = {"age_hours": max(0.0, (now_ts - mtime) / 3600.0)}
+                except OSError:
+                    pass
+
+        # 10. Fleet processes health, Linux OS resources, internet/DNS, VPN tunnel state, and config audit (SSOT)
+        if include_fleet:
+            base_res: Dict[str, Any] = {}
+            try:
+                from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+                monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
+                snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
+                base_res = dict(monitor.gather_system_resources() or {})
+            except Exception:
+                base_res = {}
+            snapshot.system_and_vpn = gather_system_and_vpn_telemetry(
+                self.workspace_dir,
+                base_resources=base_res,
+            )
+
+        if not include_market_portfolio:
+            return snapshot
 
         # 1. Fear & Greed sensor
         for fg_name in ("fear_greed_collect.json", "fear_greed_cache.json"):
@@ -775,27 +717,6 @@ class AutonomousAIReconciler:
                     "keywords": item.get("matched_keywords") or [],
                     "age_min": age_m,
                 })
-
-        # 5. Heartbeat sensors
-        for hb_name in (
-            "macro_analyzer.heartbeat",
-            "globaltelemetry_collector.heartbeat",
-            "intelligence_daemon.heartbeat",
-            "rtrade.heartbeat",
-        ):
-            data = _read_json(os.path.join(self.cache_dir, hb_name))
-            if isinstance(data, dict) and data:
-                snapshot.active_heartbeats[hb_name] = data
-
-        # 6. Bot state files in workspace
-        for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json", "kraken_trades_full.json"):
-            s_path = os.path.join(self.workspace_dir, s_file)
-            if os.path.exists(s_path):
-                try:
-                    mtime = os.path.getmtime(s_path)
-                    snapshot.state_files[s_file] = {"age_hours": max(0.0, (now_ts - mtime) / 3600.0)}
-                except OSError:
-                    pass
 
         # 7. Live market prices, short/long/Weibull trend, 1s 24trend windows, 7d range, and Kalman velocity
         prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
@@ -1175,7 +1096,6 @@ class AutonomousAIReconciler:
                     entry.update(_compute_7d_range_metrics(vals))
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
-        series_24h_by_sym: Dict[str, list] = {}
         cur_p_items = (
             prices_data.get("items", {})
             if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict)
@@ -1257,10 +1177,8 @@ class AutonomousAIReconciler:
                         pass
             if m24:
                 snapshot.prices_and_trends[sym].update(m24)
-                if matched_series_24h:
-                    series_24h_by_sym[sym] = matched_series_24h
-                    if _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0) <= 0.0:
-                        snapshot.prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
+                if matched_series_24h and _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0) <= 0.0:
+                    snapshot.prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
                 if snapshot.prices_and_trends[sym].get("trend", 0) == 0 and "chg_1h_pct" in m24:
                     c1h = _parse_finite_float(m24.get("chg_1h_pct"), 0.0)
                     if c1h >= 0.25:
@@ -1313,8 +1231,6 @@ class AutonomousAIReconciler:
                             pinfo[k] = v
                         elif k in ("trend", "growth_coefficient") and pinfo.get(k) in (0, 0.0) and v not in (0, 0.0):
                             pinfo[k] = v
-                if sym not in series_24h_by_sym and cand in series_24h_by_sym:
-                    series_24h_by_sym[sym] = series_24h_by_sym[cand]
                 sib_micro = snapshot.microstructure.get(cand)
                 if isinstance(sib_micro, dict) and sib_micro:
                     if sym not in snapshot.microstructure:
@@ -1323,29 +1239,6 @@ class AutonomousAIReconciler:
                         for mk, mv in sib_micro.items():
                             if snapshot.microstructure[sym].get(mk) is None and mv is not None:
                                 snapshot.microstructure[sym][mk] = mv
-
-        # 8B. Cross-market 24h ALT/BTC ratio geometry, realized beta, and correlation vs BTC
-        btc_series_24h = next(
-            (
-                ser
-                for s_key, ser in series_24h_by_sym.items()
-                if canonical_base_asset(s_key) == "BTC" and ser
-            ),
-            None,
-        )
-        if btc_series_24h is None and series_24h_by_sym:
-            btc_fb, _ = load_symbol_price_series(
-                self.cache_dir, "BTCUSDC", current_price_items=cur_p_items
-            )
-            if len(btc_fb) >= 2:
-                btc_series_24h = btc_fb
-        if btc_series_24h:
-            for sym, alt_ser in series_24h_by_sym.items():
-                if sym.endswith(("_EQ", "_US_EQ")) or canonical_base_asset(sym) == "BTC":
-                    continue
-                cross_m = compute_cross_btc_metrics(alt_ser, btc_series_24h)
-                if cross_m and sym in snapshot.prices_and_trends:
-                    snapshot.prices_and_trends[sym].update(cross_m)
 
         # 9. Portfolio value, Kraken cycle states, cross-venue snapshot, recent orders/fills & autonomous intents
         asset_val_path = os.path.join(self.cache_dir, "cache_asset_value.jsonl")
@@ -1409,9 +1302,6 @@ class AutonomousAIReconciler:
                 hyperliquid_cycles[pair_name] = _parse_venue_cycle_state(
                     st_data, pair_name, snapshot.prices_and_trends, avg_decimals=6
                 )
-            hl_sig = _read_json(os.path.join(hl_dir, "signal.json"))
-            if isinstance(hl_sig, dict) and hl_sig:
-                snapshot.portfolio_summary["hyperliquid_signal"] = hl_sig
         if hyperliquid_cycles:
             snapshot.portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
 
@@ -1513,11 +1403,10 @@ class AutonomousAIReconciler:
                     xst_summary["t212_sibling_cycle"] = sib_cyc
                 snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
 
-        # 9B-CrossMarket. Build cross-market synchronization, dispersion & Crypto <-> US Equities context before scope filtering
+        # 9B-CrossMarket. Build raw cross-market Crypto <-> US Equities telemetry before scope filtering
         cross_market_ctx = _build_cross_market_context(
             snapshot.prices_and_trends,
             snapshot.microstructure,
-            series_24h_by_sym,
             all_t212_cycles,
         )
         if cross_market_ctx:
@@ -1765,146 +1654,11 @@ class AutonomousAIReconciler:
                 else:
                     snapshot.portfolio_summary.pop("active_retry_queue", None)
 
-        # 10. Fleet processes health, Linux OS resources, internet/DNS, VPN tunnel state, and config audit (for SRE/self-heal audits)
-        if include_fleet:
-            try:
-                from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
-                monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
-                snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
-                sys_vpn = dict(monitor.gather_system_resources() or {})
-            except Exception:
-                sys_vpn = {}
-
-            try:
-                if os.path.exists("/proc/meminfo"):
-                    mem_kv: Dict[str, int] = {}
-                    with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as mf:
-                        for mline in mf:
-                            parts = mline.split(":")
-                            if len(parts) == 2:
-                                k = parts[0].strip()
-                                v_parts = parts[1].strip().split()
-                                if v_parts and v_parts[0].isdigit():
-                                    mem_kv[k] = int(v_parts[0])
-                    if mem_kv.get("MemTotal", 0) > 0 and "MemAvailable" in mem_kv:
-                        total_kb = mem_kv["MemTotal"]
-                        avail_kb = mem_kv["MemAvailable"]
-                        sys_vpn["mem_used_pct"] = round(((total_kb - avail_kb) / total_kb) * 100.0, 1)
-                        sys_vpn["mem_avail_mb"] = round(avail_kb / 1024.0, 0)
-            except Exception:
-                pass
-
-            vpn_if = os.environ.get("PIA_VPN_IF", "wgpia0").strip() or "wgpia0"
-            vpn_net_dir = f"/sys/class/net/{vpn_if}"
-            if os.path.exists(vpn_net_dir):
-                try:
-                    with open(f"{vpn_net_dir}/operstate", "r", encoding="utf-8") as vf:
-                        oper = vf.read().strip().lower()
-                except Exception:
-                    oper = "unknown"
-                sys_vpn["vpn_interface"] = vpn_if
-                sys_vpn["vpn_tunnel_up"] = oper in ("up", "unknown")
-            else:
-                sys_vpn["vpn_interface"] = vpn_if
-                sys_vpn["vpn_tunnel_up"] = False
-
-            # Internet default route, DNS resolvers, and VPN outage marker
-            try:
-                default_route_present = False
-                if os.path.exists("/proc/net/route"):
-                    with open("/proc/net/route", "r", encoding="utf-8", errors="replace") as rf:
-                        for rline in rf.readlines()[1:]:
-                            rcols = rline.strip().split()
-                            if len(rcols) >= 2 and rcols[1] == "00000000":
-                                default_route_present = True
-                                break
-                sys_vpn["default_route_present"] = default_route_present
-            except Exception:
-                pass
-
-            try:
-                dns_servers: List[str] = []
-                if os.path.exists("/etc/resolv.conf"):
-                    with open("/etc/resolv.conf", "r", encoding="utf-8", errors="replace") as df:
-                        for dline in df:
-                            dline = dline.split("#", 1)[0].strip()
-                            if dline.startswith("nameserver"):
-                                dparts = dline.split()
-                                if len(dparts) >= 2:
-                                    dns_servers.append(dparts[1])
-                if dns_servers:
-                    sys_vpn["dns_servers"] = dns_servers
-            except Exception:
-                pass
-
-            sys_vpn["vpn_outage_active"] = os.path.exists("/var/lib/pia_selfheal/outage_since")
-            sys_vpn["internet_healthy"] = bool(
-                sys_vpn.get("default_route_present", True)
-                and not sys_vpn.get("vpn_outage_active", False)
-            )
-
-            rw_state = _read_json(os.path.join(self.workspace_dir, ".resource_watchdog_state.json"))
-            if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
-                offenders = [
-                    {"key": k, "reasons": v.get("last_reasons"), "consecutive_high": v.get("high")}
-                    for k, v in rw_state["tracked"].items()
-                    if isinstance(v, dict) and _parse_finite_float(v.get("high"), 0.0) > 0
-                ]
-                if offenders:
-                    sys_vpn["resource_watchdog_offenders"] = offenders
-
-            sys_vpn["config_audit"] = self._audit_workspace_configs()
-            snapshot.system_and_vpn = sys_vpn
-
         return snapshot
 
     def _audit_workspace_configs(self) -> Dict[str, Any]:
-        """Audits workspace configuration files for syntax errors, missing required keys, or broken paths."""
-        checked: List[str] = []
-        issues: List[str] = []
-        for cfg_name in ("procs.conf", "order_guard.conf", "config.env", "instruments.conf"):
-            cfg_path = os.path.join(self.workspace_dir, cfg_name)
-            if not os.path.isfile(cfg_path):
-                continue
-            checked.append(cfg_name)
-            try:
-                with open(cfg_path, "r", encoding="utf-8", errors="replace") as cf:
-                    raw_lines = cf.readlines()
-                if cfg_name == "procs.conf":
-                    for idx, raw_l in enumerate(raw_lines, start=1):
-                        line = raw_l.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        parts = [p.strip() for p in line.split("|")]
-                        if len(parts) < 7:
-                            issues.append(f"procs.conf:{idx} has {len(parts)} fields (expected >=7)")
-                            continue
-                        pat, dr, _, label, _, _, role = parts[:7]
-                        if role not in ("bot", "fleet"):
-                            issues.append(f"procs.conf:{idx} ({label or pat}) has invalid role {role!r}")
-                elif cfg_name in ("order_guard.conf", "config.env"):
-                    seen_keys: Dict[str, str] = {}
-                    for idx, raw_l in enumerate(raw_lines, start=1):
-                        line = raw_l.split("#", 1)[0].strip()
-                        if not line:
-                            continue
-                        if "=" not in line:
-                            issues.append(f"{cfg_name}:{idx} malformed line missing '=': {line[:60]!r}")
-                            continue
-                        k, v = line.split("=", 1)
-                        k_clean = k.strip().lower()
-                        v_clean = v.strip().strip("\"'")
-                        if not k_clean:
-                            issues.append(f"{cfg_name}:{idx} empty key name")
-                        else:
-                            seen_keys[k_clean] = v_clean
-                    if cfg_name == "order_guard.conf":
-                        sup_m = seen_keys.get("supervisor_mode", "").lower()
-                        if sup_m and sup_m not in ("enforce", "shadow", "off"):
-                            issues.append(f"order_guard.conf invalid supervisor_mode={sup_m!r}")
-            except Exception as exc:
-                issues.append(f"{cfg_name} read error: {exc}")
-        return {"checked_files": checked, "issues": issues}
+        """Audits workspace configuration files via the technical repair SSOT."""
+        return audit_workspace_configs(self.workspace_dir)
 
     @staticmethod
     def _normalize_error_signature(line: str) -> str:
@@ -2270,10 +2024,6 @@ class AutonomousAIReconciler:
                         cross_parts.append(f"dd_high={_parse_finite_float(pinfo.get('alt_btc_dd_24h_high_pct'), 0.0):+.2f}%")
                     if pinfo.get("alt_btc_bounce_24h_low_pct") is not None:
                         cross_parts.append(f"bounce_low={_parse_finite_float(pinfo.get('alt_btc_bounce_24h_low_pct'), 0.0):+.2f}%")
-                    if pinfo.get("beta_btc_24h") is not None:
-                        cross_parts.append(f"beta={pinfo.get('beta_btc_24h')}")
-                    if pinfo.get("corr_btc_24h") is not None:
-                        cross_parts.append(f"corr={pinfo.get('corr_btc_24h')}")
                     if cross_parts:
                         extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
                 if "chg_7d_pct" in pinfo:
@@ -2447,8 +2197,6 @@ class AutonomousAIReconciler:
                 context_items.append("  * Hyperliquid Active Cycle Cost & Drawdown Anchors:")
                 for h_sym, hc in sorted(ps["hyperliquid_cycles"].items()):
                     context_items.append(_format_venue_cycle_line("hyperliquid", h_sym, hc))
-            if ps.get("hyperliquid_signal"):
-                context_items.append(f"  * Hyperliquid Bot Signal Telemetry (hyperliquid/signal.json): {ps['hyperliquid_signal']}")
             if ps.get("t212_cycles"):
                 context_items.append("  * Trading212 Active Cycle Cost & Drawdown Anchors:")
                 for t_sym, tc in sorted(ps["t212_cycles"].items()):
@@ -2461,21 +2209,13 @@ class AutonomousAIReconciler:
             if ps.get("cross_market_context"):
                 cmc = ps["cross_market_context"]
                 if isinstance(cmc, dict):
-                    if cmc.get("market_sync_pattern"):
-                        context_items.append(
-                            f"  * Multi-Asset Synchronization, Leader/Laggard & Dispersion Pattern: {cmc['market_sync_pattern']}"
-                        )
                     if cmc.get("crypto_bellwethers") and getattr(spec, "asset_scope", "all") == "equities":
                         context_items.append(
-                            f"  * Cross-Market 24/7 Crypto & AI Bellwethers (BTC, TAO decentralized AI proxy for NVDA_US_EQ, HYPE, ADA): {cmc['crypto_bellwethers']}"
+                            f"  * Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure): {cmc['crypto_bellwethers']}"
                         )
                     if cmc.get("equity_bellwethers") and getattr(spec, "asset_scope", "all") != "equities":
                         context_items.append(
-                            f"  * Cross-Market US Equities & Tech/AI Bellwethers (Trading212 NVDA_US_EQ, SPCX_US_EQ, RGNT_US_EQ): {cmc['equity_bellwethers']}"
-                        )
-                    if cmc.get("cross_asset_correlations_24h"):
-                        context_items.append(
-                            f"  * Realized 24h Cross-Asset Correlation, Beta & Spread Matrix (Equities <-> Crypto & AI Proxies): {cmc['cross_asset_correlations_24h']}"
+                            f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {cmc['equity_bellwethers']}"
                         )
             if ps.get("hyperliquid_readonly"):
                 context_items.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
@@ -2526,17 +2266,21 @@ class AutonomousAIReconciler:
         tasks: List[str] = []
         schema: List[str] = []
         if spec.can_self_heal:
+            sev_union = " | ".join(f'"{s}"' for s in DIAGNOSED_SEVERITIES)
+            cat_union = " | ".join(f'"{c}"' for c in ALL_DIAGNOSED_CATEGORIES)
+            act_union = " | ".join(f'"{a}"' for a in ALL_REPAIR_ACTIONS)
+            cfg_list_str = ", ".join(AUDITED_CONFIG_FILES)
             tasks.extend([
-                "1. Audit functional system anomalies: fleet processes and modules (procs.conf), bot heartbeats, Linux OS resources (CPU load, RAM, disk), internet & VPN tunnel (wgpia0), configuration files (procs.conf, order_guard.conf, config.env, instruments.conf), and persistent unresolved errors in logs: explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, OS/network/VPN issues, or configuration errors.",
+                f"1. Audit functional system anomalies: fleet processes and modules (procs.conf), bot heartbeats, Linux OS resources (CPU load, RAM, disk), internet & VPN tunnel (wgpia0), configuration files ({cfg_list_str}), and persistent unresolved errors in logs: explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, OS/network/VPN issues, or configuration errors.",
                 "2. Determine whether hung/errored bots or modules require restart (RESTART_BOT / RESTART_MODULE), whether the entire fleet or VPN/DNS requires restart (RESTART_FLEET / RESTART_VPN / PIN_DNS), or whether a critical unrecoverable Linux OS / kernel / system-wide hang requires a full machine reboot (REBOOT_SYSTEM).",
                 "3. If a reproducible code bug or configuration error exists in the workspace, formulate an exact search_block and replace_block in `code_remediation` to fix the code or configuration file.",
             ])
             schema.extend([
                 '  "summary": "1-2 sentence executive technical assessment of functional system, Linux OS, internet/VPN, configurations, and fleet health"',
-                '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
-                '"category": "BOT_EXCEPTION" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "NETWORK_ERROR" | "CONFIG_ERROR" | "CODE_BUG" | "ORPHAN_ORDER" | "GUARD_VETO" | "HEALTHY", '
+                f'  "diagnosed_issues": [{{"severity": {sev_union}, '
+                f'"category": {cat_union}, '
                 '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
-                '  "venue_actions": [{"action": "RESTART_BOT" | "RESTART_MODULE" | "RESTART_FLEET" | "RESTART_VPN" | "PIN_DNS" | "REBOOT_SYSTEM" | "CANCEL_ORDER" | "SYNC_POSITION" | "NONE", '
+                f'  "venue_actions": [{{"action": {act_union}, '
                 '"venue": "fleet" | "system" | "binance" | "kraken" | "hyperliquid" | "t212", "symbol": "bot_or_module_name or SYSTEM", '
                 '"order_id": "optional order id", "reason": "Why this technical repair or restart/reboot action is needed"}]',
                 '  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
@@ -2680,40 +2424,23 @@ class AutonomousAIReconciler:
         """Executes a single repair action (bot/module/fleet/VPN/DNS restart, system reboot, or order sync/cancel) in enforce mode."""
         if not isinstance(act, dict):
             return False
-        raw_action = act.get("action")
-        action_type = "" if isinstance(raw_action, bool) or raw_action is None else str(raw_action).strip().upper()
-        if not action_type:
-            action_type = "NONE"
-        raw_venue = act.get("venue")
-        venue = "binance" if isinstance(raw_venue, bool) or raw_venue is None or not str(raw_venue).strip() else str(raw_venue).strip().lower()
-        raw_sym = act.get("symbol") or act.get("bot") or act.get("target")
-        symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip()
-        raw_oid = act.get("order_id")
-        order_id = "" if isinstance(raw_oid, bool) or raw_oid is None else str(raw_oid).strip()
-        raw_reason = act.get("reason")
-        reason = "" if isinstance(raw_reason, bool) or raw_reason is None else str(raw_reason)
+        norm = normalize_repair_action(act, self.workspace_dir)
+        action_type = norm["action"]
+        venue = norm["venue"]
+        symbol = norm["symbol"]
+        order_id = norm["order_id"]
+        reason = norm["reason"]
+        matched = norm["matched_process"]
 
-        if action_type in ("RESTART_BOT", "RESTART_MODULE"):
+        if action_type in BOT_MODULE_REPAIR_ACTIONS:
             if not symbol:
                 logger.warning("[ENFORCE] %s missing bot/module name in action: %s", action_type, act)
                 return False
             try:
-                from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
-                monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
-                target_lower = symbol.lower()
-                matched = next(
-                    (
-                        p for p in monitor.parse_process_manifest()
-                        if p["name"].lower() == target_lower
-                        or p["pattern"].rstrip("$").lower() == target_lower
-                        or os.path.basename(p["pattern"].rstrip("$")).lower() == target_lower
-                    ),
-                    None,
-                )
-                if not matched:
+                if matched is None:
                     logger.warning("[ENFORCE] Refusing %s for unknown process %r (not in procs.conf)", action_type, symbol)
                     return False
-                pattern = matched["pattern"].rstrip("$")
+                pattern = matched.get("clean_pattern") or matched["pattern"].rstrip("$")
                 logger.warning("[ENFORCE EXECUTING] Restarting fleet bot/module %s (pattern=%s): %s", matched["name"], pattern, reason)
                 subprocess.run(["pkill", "-f", pattern], check=False)
                 return True
@@ -2721,48 +2448,17 @@ class AutonomousAIReconciler:
                 logger.error("[ENFORCE] Failed restarting fleet bot/module %s: %s", symbol, e)
                 return False
 
-        if action_type == "RESTART_FLEET":
+        if action_type in SYSTEM_ADMIN_ACTION_SPECS:
             try:
-                logger.warning("[ENFORCE EXECUTING] Restarting entire trading fleet + VPN: %s", reason)
-                admin_bin = "/usr/local/sbin/trading-admin"
-                cmd = ["sudo", "-n", admin_bin, "restart"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "restart", "python_orchestrator.service"]
+                built = build_system_admin_command(action_type)
+                if built is None:
+                    return False
+                cmd, desc = built
+                logger.warning("[ENFORCE EXECUTING] %s: %s", desc, reason)
                 res = subprocess.run(cmd, check=False)
                 return getattr(res, "returncode", 0) == 0
             except Exception as e:
-                logger.error("[ENFORCE] Failed RESTART_FLEET: %s", e)
-                return False
-
-        if action_type == "RESTART_VPN":
-            try:
-                logger.warning("[ENFORCE EXECUTING] Restarting VPN service (wgpia0) + fleet: %s", reason)
-                admin_bin = "/usr/local/sbin/trading-admin"
-                cmd = ["sudo", "-n", admin_bin, "restart"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "restart", "pia.service"]
-                res = subprocess.run(cmd, check=False)
-                return getattr(res, "returncode", 0) == 0
-            except Exception as e:
-                logger.error("[ENFORCE] Failed RESTART_VPN: %s", e)
-                return False
-
-        if action_type == "PIN_DNS":
-            try:
-                logger.warning("[ENFORCE EXECUTING] Pinning DNS and restarting systemd-resolved: %s", reason)
-                admin_bin = "/usr/local/sbin/trading-admin"
-                cmd = ["sudo", "-n", admin_bin, "pin-dns"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "restart", "systemd-resolved"]
-                res = subprocess.run(cmd, check=False)
-                return getattr(res, "returncode", 0) == 0
-            except Exception as e:
-                logger.error("[ENFORCE] Failed PIN_DNS: %s", e)
-                return False
-
-        if action_type == "REBOOT_SYSTEM":
-            try:
-                logger.warning("[ENFORCE EXECUTING] Rebooting entire Linux system: %s", reason)
-                admin_bin = "/usr/local/sbin/trading-admin"
-                cmd = ["sudo", "-n", admin_bin, "reboot"] if os.path.exists(admin_bin) else ["sudo", "-n", "/bin/systemctl", "reboot"]
-                res = subprocess.run(cmd, check=False)
-                return getattr(res, "returncode", 0) == 0
-            except Exception as e:
-                logger.error("[ENFORCE] Failed REBOOT_SYSTEM: %s", e)
+                logger.error("[ENFORCE] Failed %s: %s", action_type, e)
                 return False
 
         if action_type == "CANCEL_ORDER":
@@ -2826,12 +2522,13 @@ class AutonomousAIReconciler:
         for act in venue_actions:
             if not isinstance(act, dict):
                 continue
-            action_type = str(act.get("action") or "NONE").strip().upper()
+            norm = normalize_repair_action(act, self.workspace_dir)
+            action_type = norm["action"]
             if action_type == "NONE":
                 continue
             if not is_enforce or not allow_remediation:
                 logger.info("[SHADOW WOULD EXECUTE] Venue/fleet action %s for %s (%s): %s",
-                            action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
+                            action_type, norm["symbol"] or act.get("symbol"), norm["venue"], norm["reason"])
             else:
                 if self._execute_venue_or_fleet_action(act):
                     venue_executed = True
@@ -2878,25 +2575,9 @@ class AutonomousAIReconciler:
         rationale: str,
     ) -> bool:
         """Applies code or configuration patch, executes pytest test suite, commits on 100% green or rolls back immediately."""
-        real_ws = os.path.realpath(self.workspace_dir)
-        real_target = os.path.realpath(target_file)
-        try:
-            in_workspace = os.path.commonpath([real_ws, real_target]) == real_ws
-        except ValueError:
-            in_workspace = False
-        if not in_workspace:
-            logger.warning("Refusing autonomous patch outside workspace_dir: %s", target_file)
-            return False
-
-        if not os.path.isfile(real_target):
-            logger.error("Target patch file does not exist: %s", target_file)
-            return False
-
-        base_name = os.path.basename(real_target)
-        # Protect only raw secret credential files (.env); allow fixing workspace code and config files
-        # (e.g. procs.conf, order_guard.conf, config.env, instruments.conf, *.py, *.sh, *.json).
-        if base_name == ".env":
-            logger.warning("Refusing autonomous patch on protected secret credentials file: %s", target_file)
+        real_target, err_msg = resolve_patchable_target(target_file, self.workspace_dir)
+        if real_target is None:
+            logger.warning("%s", err_msg)
             return False
 
         if not search_block or search_block == replace_block:
@@ -2949,20 +2630,8 @@ class AutonomousAIReconciler:
             subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
             return False
 
-    _BOT_AND_ORDER_ERROR_CATEGORIES = frozenset({
-        "BOT_EXCEPTION",
-        "ORPHAN_ORDER",
-        "FLEET_STALE",
-        "CODE_BUG",
-        "CONFIG_ERROR",
-    })
-    _SYSTEM_OS_ERROR_CATEGORIES = frozenset({
-        "SYSTEM_ERROR",
-        "SERVER_ERROR",
-        "OS_RESOURCE",
-        "VPN_ERROR",
-        "NETWORK_ERROR",
-    })
+    _BOT_AND_ORDER_ERROR_CATEGORIES = BOT_AND_ORDER_ERROR_CATEGORIES
+    _SYSTEM_OS_ERROR_CATEGORIES = SYSTEM_OS_ERROR_CATEGORIES
 
     @classmethod
     def _is_bot_or_code_error_report(cls, report: SupervisorAuditReport) -> bool:
@@ -2972,17 +2641,17 @@ class AutonomousAIReconciler:
                 continue
             cat = str(issue.get("category") or "").strip().upper()
             sev = str(issue.get("severity") or "").strip().upper()
-            if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev in ("CRITICAL", "HIGH", "MEDIUM"):
+            if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
                 return True
         if isinstance(report.code_remediation, dict) and _as_bool_flag(report.code_remediation.get("has_fix"), False):
             return True
         if report.tests_passed is False:
             return True
         for act in report.venue_actions or []:
-            if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() in (
-                "CANCEL_ORDER", "SYNC_POSITION", "RESTART_BOT", "RESTART_MODULE", "RESTART_FLEET"
-            ):
-                return True
+            if isinstance(act, dict):
+                norm_act = normalize_repair_action(act, "").get("action")
+                if norm_act in BOT_OR_FLEET_ERROR_ACTIONS:
+                    return True
         return False
 
     @classmethod
@@ -2993,15 +2662,15 @@ class AutonomousAIReconciler:
                 continue
             cat = str(issue.get("category") or "").strip().upper()
             sev = str(issue.get("severity") or "").strip().upper()
-            if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev in ("CRITICAL", "HIGH", "MEDIUM"):
+            if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
                 return True
-            if sev in ("CRITICAL", "HIGH", "MEDIUM") and cat not in cls._BOT_AND_ORDER_ERROR_CATEGORIES:
+            if sev in ACTIONABLE_ERROR_SEVERITIES and cat not in cls._BOT_AND_ORDER_ERROR_CATEGORIES:
                 return True
         for act in report.venue_actions or []:
-            if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() in (
-                "RESTART_VPN", "PIN_DNS", "REBOOT_SYSTEM"
-            ):
-                return True
+            if isinstance(act, dict):
+                norm_act = normalize_repair_action(act, "").get("action")
+                if norm_act in SYSTEM_OS_ERROR_ACTIONS:
+                    return True
         return False
 
     @classmethod
@@ -3137,19 +2806,10 @@ class AutonomousAIReconciler:
             os.makedirs(self.cache_dir, exist_ok=True)
             from state_io import save_json_state
 
-            def _clean_json(val: Any) -> Any:
-                if isinstance(val, float) and not math.isfinite(val):
-                    return None
-                if isinstance(val, dict):
-                    return {str(k): _clean_json(v) for k, v in val.items()}
-                if isinstance(val, (list, tuple)):
-                    return [_clean_json(v) for v in val]
-                return val
-
-            report_dict = _clean_json(asdict(report))
+            report_dict = clean_json_value(asdict(report))
             save_json_state(self.state_file, report_dict, indent=2)
 
-            hb = _clean_json({
+            hb = clean_json_value({
                 "status": "alive",
                 "ts": report.ts,
                 "mode": report.mode,
@@ -3200,9 +2860,16 @@ class AutonomousAIReconciler:
             return report
 
         try:
-            sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal, asset_scope=scope)
+            sensors = self.harvest_sensors_telemetry(
+                include_fleet=spec.can_self_heal,
+                include_market_portfolio=spec.can_trade,
+                asset_scope=scope,
+            )
         except TypeError:
-            sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal)
+            try:
+                sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal, asset_scope=scope)
+            except TypeError:
+                sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal)
         logs = (
             self.harvest_log_anomalies()
             if spec.can_self_heal

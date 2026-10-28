@@ -188,6 +188,21 @@ def canonical_base_asset(symbol: object) -> str:
     return _CANONICAL_BASE_ALIASES.get(base, base)
 
 
+def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
+    """Split a spot/equity pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD, SPCX_US_EQ) into ``(base, quote)``."""
+    if isinstance(symbol, bool) or not isinstance(symbol, str):
+        return None
+    sym_u = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    if not sym_u:
+        return None
+    if sym_u.endswith("USEQ") and len(sym_u) > 4:
+        return normalize_cache_base_asset(sym_u[:-4]), "USD"
+    for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
+        if sym_u.endswith(quote) and len(sym_u) > len(quote):
+            return normalize_cache_base_asset(sym_u[: -len(quote)]), quote
+    return None
+
+
 def resolve_binance_lookup_symbol(symbol: object) -> str:
     """Resolve a cross-venue symbol to its canonical Binance ``<BASE>USDT`` lookup symbol."""
     if not isinstance(symbol, str):
