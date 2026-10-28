@@ -29,7 +29,7 @@ import binance_cache_health
 # Load versioned, non-secret tuning parameters before reading the environment below.
 # ``botcore.load_dotenv`` never overwrites variables already set in the real environment;
 # it only fills missing values, matching tradeall_config.env and monitortrades_config.env.
-from botcore import load_dotenv as _load_dotenv, required_float_env, required_int_env
+from botcore import _parse_bool_flag, load_dotenv as _load_dotenv, required_float_env, required_int_env
 _load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "bapi_placeorder_config.env"))
 
@@ -48,24 +48,6 @@ class WeightLimitBlock(Exception):
 _CACHE_SUBMIT_PERMIT_TTL_SEC = binance_cache_health.SUBMIT_PERMIT_TTL_SEC
 _CACHE_SUBMIT_PERMIT_ISSUER = object()
 _INVALID_BAPI_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
-
-
-def _parse_bool_flag(val, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return default
-    if isinstance(val, (int, float)):
-        if isinstance(val, float) and not math.isfinite(val):
-            return default
-        return val != 0
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
-            return False
-    return default
 
 
 @dataclass(frozen=True, slots=True)

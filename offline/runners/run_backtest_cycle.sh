@@ -1,43 +1,28 @@
 #!/usr/bin/env bash
-# run_backtest_cycle.sh — a complete backtest cycle on DEV: it runs the pilot in
-# --propose mode (it applies nothing) and publishes the proposals to the git branch.
-# Uses a separate git WORKTREE to push to `backtest-proposals` without touching main.
-# Triggered from prod (trigger_backtest_dev.sh through ssh) or by hand.
-#
-# The data (cachedb) and the code (git pull) are brought up to date by sync_cache_to.sh dev RUN
-# ON PROD before this cycle is triggered — here we only run and publish.
+# run_backtest_cycle.sh — runs scheduled_pilot.py in --propose mode on DEV and publishes
+# proposals to the backtest-proposals git branch using a separate git worktree.
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RUNNER_DIR/load_dev_backtest_env.sh"
-REPO_ROOT="${BINANCE_REPO_ROOT:-${ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}}"
-source "$REPO_ROOT/orchestratorOS/lib/env_common.sh"
-ONLY="${PILOT_ONLY:-}"            # empty = every key; e.g. "maxage,hardtp"
+REPO_ROOT="${BINANCE_REPO_ROOT:-$ROOT}"
+ONLY="${PILOT_ONLY:-}"
 cd "$REPO_ROOT"
 
-MUTEX="/tmp/mptrade_backtest_cycle.lock"
-exec 9>"$MUTEX"
-if ! flock -n 9; then
-  echo "[cycle $(date '+%F %T')] Another backtest cycle is already running — skipping"
-  exit 0
-fi
+exec 9>"/tmp/mptrade_backtest_cycle.lock"
+flock -n 9 || { echo "[cycle $(date '+%F %T')] Another backtest cycle is already running — skipping"; exit 0; }
 
-# 1. Run scheduled pilot
 echo "[cycle $(date '+%F %T')] pilot --propose (only='${ONLY:-all}')"
 args=(--propose)
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 "$PYTHON_BIN" offline/research/monitortrades_backtest/scheduled_pilot.py "${args[@]}"
 
-# 2. Publish proposals
 echo "[cycle $(date '+%F %T')] publish proposals to git"
 DEFAULT_WT="$(dirname "$REPO_ROOT")/mptrade-proposals"
-if [ ! -d "$DEFAULT_WT" ] && [ -d "$(dirname "$REPO_ROOT")/binance-proposals" ]; then
-  DEFAULT_WT="$(dirname "$REPO_ROOT")/binance-proposals"
-fi
+[ ! -d "$DEFAULT_WT" ] && [ -d "$(dirname "$REPO_ROOT")/binance-proposals" ] && DEFAULT_WT="$(dirname "$REPO_ROOT")/binance-proposals"
 WT="${WT:-$DEFAULT_WT}"
 BRANCH="$BACKTEST_PROPOSALS_BRANCH"
 SRC_FILE="$REPO_ROOT/backtest_proposals.json"
-
 [ -f "$SRC_FILE" ] || { echo "[publish] is missing $SRC_FILE — run the pilot with --propose first"; exit 1; }
 
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2}"
@@ -64,5 +49,4 @@ else
   timeout 30 git -C "$WT" push -q origin "$BRANCH"
   echo "[publish] $n proposal(s) published on branch $BRANCH"
 fi
-
 echo "[cycle $(date '+%F %T')] done"

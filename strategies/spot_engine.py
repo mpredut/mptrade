@@ -19,7 +19,7 @@ from typing import Callable
 
 from alertnotifiers import bind_notify
 from botcore import (
-    are_close, log, defined_env, required_env,
+    _parse_bool_flag, are_close, log, defined_env, required_env,
     required_float_env, required_int_env, required_bool_env,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
@@ -85,23 +85,6 @@ def _clean_finite_float(val: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return f if math.isfinite(f) else None
-
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else fb
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
-            return False
-    return fb
 
 
 def _clean_order_id(val: object) -> str | None:

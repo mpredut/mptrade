@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from botcore import _parse_bool_flag
+
 try:
     from strategies.spot_rules import are_close, diff_percent
 except ImportError:
@@ -61,23 +63,6 @@ class ExitDecision:
     forced: bool = False
     sell_fraction: float = 1.0
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-def _parse_bool_flag(val: Any, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else fb
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
-            return False
-    return fb
 
 
 class PriceGeometrySnapshot:

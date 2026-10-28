@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
 # trigger_dev_regression.sh — triggers code pull and full test regression on DEV from PROD.
-# Usage:
-#   ./offline/runners/trigger_dev_regression.sh          # Fire-and-forget (instant, async)
-#   ./offline/runners/trigger_dev_regression.sh --wait   # Wait for completion & sync status to prod
+# Usage: ./offline/runners/trigger_dev_regression.sh [--wait]
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RUNNER_DIR/load_dev_backtest_env.sh"
-# shellcheck source=orchestratorOS/lib/backup_sync_common.sh
-source "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh"
 
 LOCAL_SHORT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
 echo "[trigger_dev_ci $(date '+%F %T')] Contacting DEV ($DEV_HOST:$DEV_PORT) to pull and run regression..."
-
 dev_remote_git_pull 2>&1 | sed 's/^/  [dev] /'
 
 if [ "${1:-}" == "--wait" ]; then

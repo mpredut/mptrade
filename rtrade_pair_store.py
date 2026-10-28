@@ -7,6 +7,7 @@ import math
 import os
 import time
 
+from botcore import _parse_bool_flag
 from lock import FileLock
 from state_io import atomic_write_json
 
@@ -57,26 +58,7 @@ class RTradePairStore:
             s = s[1:]
         return s if s and s.lower() not in _INVALID_STORE_STRINGS else ""
 
-    @staticmethod
-    def _parse_bool_flag(value, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if value is None or isinstance(value, (dict, list, tuple, set)):
-            return default
-        if isinstance(value, (int, float)):
-            if isinstance(value, float) and not math.isfinite(value):
-                return default
-            if value == 1:
-                return True
-            if value == 0:
-                return False
-            return default
-        s = str(value).strip().lower()
-        if s in {"1", "true", "yes", "on"}:
-            return True
-        if s in {"0", "false", "no", "off"}:
-            return False
-        return default
+    _parse_bool_flag = staticmethod(_parse_bool_flag)
 
     @staticmethod
     def _finite_positive(value, field):

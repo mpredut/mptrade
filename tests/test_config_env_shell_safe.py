@@ -1471,16 +1471,28 @@ def test_datasets_execution_calibration_and_benchmark_hardening():
 
 def test_backup_sync_common_modular_primitives(tmp_path):
     scripts = [
+        os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh"),
+        os.path.join(ROOT, "orchestratorOS", "lib", "os_notify.sh"),
         os.path.join(ROOT, "orchestratorOS", "lib", "backup_sync_common.sh"),
         os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh"),
         os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh"),
         os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh"),
+        os.path.join(ROOT, "orchestratorOS", "livecheck", "deadman_switch.sh"),
+        os.path.join(ROOT, "orchestratorOS", "livecheck", "ntfy_check.sh"),
         os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh"),
+        os.path.join(ROOT, "orchestratorOS", "admin", "manage_agy.sh"),
+        os.path.join(ROOT, "orchestratorOS", "admin", "manage_gitautodeploy.sh"),
+        os.path.join(ROOT, "orchestratorOS", "admin", "manage_logs.sh"),
+        os.path.join(ROOT, "orchestratorOS", "admin", "make_venv_portable.sh"),
+        os.path.join(ROOT, "offline", "runners", "load_dev_backtest_env.sh"),
         os.path.join(ROOT, "offline", "runners", "sync_cache_to.sh"),
         os.path.join(ROOT, "offline", "runners", "trigger_backtest_dev.sh"),
         os.path.join(ROOT, "offline", "runners", "trigger_dev_regression.sh"),
         os.path.join(ROOT, "offline", "runners", "check_dev_regression.sh"),
         os.path.join(ROOT, "offline", "runners", "run_dev_regression.sh"),
+        os.path.join(ROOT, "offline", "runners", "run_backtest_cycle.sh"),
+        os.path.join(ROOT, "systemd", "pia_settings_mtu.sh"),
+        os.path.join(ROOT, "systemd", "install_prod.sh"),
     ]
     for script in scripts:
         subprocess.run(["bash", "-n", script], check=True)

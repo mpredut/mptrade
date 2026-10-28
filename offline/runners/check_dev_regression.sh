@@ -4,8 +4,6 @@ set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RUNNER_DIR/load_dev_backtest_env.sh"
-# shellcheck source=orchestratorOS/lib/backup_sync_common.sh
-source "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh"
 
 mkdir -p "$ROOT/cachedb/system"
 STATUS_FILE="$ROOT/cachedb/system/dev_regression_status.json"

@@ -16,6 +16,8 @@ import urllib.parse
 import urllib.request
 from typing import Mapping
 
+from botcore import _parse_bool_flag
+
 API_URL = "https://api.binance.com/api/v3/klines"
 
 INTERVALS_MIN_TO_STR: dict[int, str] = {
@@ -55,27 +57,6 @@ _CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
     "3D": "3d",
     "1W": "1w",
 }
-
-
-def _parse_bool_flag(val: object, default: bool = True) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return default
-    if isinstance(val, (int, float)):
-        if isinstance(val, float) and not math.isfinite(val):
-            return default
-        if val == 1:
-            return True
-        if val == 0:
-            return False
-        return default
-    s = str(val).strip().lower()
-    if s in {"1", "1.0", "true", "yes", "on"}:
-        return True
-    if s in {"0", "0.0", "false", "no", "off", ""}:
-        return False
-    return default
 
 
 def parse_interval_minutes(interval: int | str) -> int:

@@ -13,6 +13,8 @@ import time
 import uuid
 from typing import Callable, Optional, Protocol
 
+from botcore import _parse_bool_flag
+
 
 _MAX_LIMIT_REVISION = 1_000_000
 _INVALID_PAIR_IDS = {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "none", "null", "inf", "-inf", "+inf"}
@@ -70,23 +72,6 @@ def _clean_ticket_order_id(val: object) -> Optional[str]:
     except (TypeError, ValueError, OverflowError):
         pass
     return text
-
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else fb
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
-            return False
-    return fb
 
 
 @dataclass

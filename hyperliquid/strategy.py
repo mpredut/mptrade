@@ -35,6 +35,7 @@ for _mod_name in ("common", "notify", "hl_client", "market_data", "signals"):
         sys.modules.pop(_mod_name, None)
 
 from common import (
+    _parse_bool_flag,
     log, are_close, load_env_stack, required_env, required_float_env,
     required_int_env, required_bool_env,
 )
@@ -220,20 +221,6 @@ def _clean_oid(val: object) -> str | None:
     except (TypeError, ValueError, OverflowError):
         pass
     return text
-
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
-            return False
-    return default
 
 
 def _sanitize_state(raw: dict) -> dict:

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # run_dev_regression.sh — runs the full test suite regression on DEV,
 # records atomic execution status in cachedb/system/dev_regression_status.json,
-# and emits ntfy alerts on failure. Thread-safe via flock mutex.
+# and emits ntfy alerts on failure/recovery. Thread-safe via flock mutex.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=orchestratorOS/lib/env_common.sh
-source "$SCRIPT_DIR/../../orchestratorOS/lib/env_common.sh"
+# shellcheck source=../../orchestratorOS/lib/os_notify.sh
+source "$SCRIPT_DIR/../../orchestratorOS/lib/os_notify.sh"
 cd "$ROOT"
 
 exec 8>"/tmp/dev_regression.lock"
@@ -39,7 +39,6 @@ fi
 START_TS="$(date +%s)"
 START_ISO="$(date -Iseconds)"
 echo "[dev_regression $START_ISO] Starting regression on commit $COMMIT_SHORT: $COMMIT_MSG" | tee -a "$LOG_FILE"
-
 unset BACKTEST_MODE REPLAY_MODE DISABLE_EXTERNAL_NOTIFICATIONS DISABLE_GEMINI_LLM
 
 set +e
@@ -56,10 +55,7 @@ REG_COMMIT_HASH="$COMMIT_HASH" REG_COMMIT_SHORT="$COMMIT_SHORT" REG_COMMIT_MSG="
 REG_START_ISO="$START_ISO" REG_STATUS_JSON="$STATUS_JSON" \
 "$PYTHON_BIN" - <<'EOF' | tee -a "$LOG_FILE"
 import json, os, re, sys, time
-
-rc = int(os.environ.get("REG_RC") or 0)
-duration = int(os.environ.get("REG_DURATION") or 0)
-status_json_path = os.environ["REG_STATUS_JSON"]
+rc, duration, status_json_path = int(os.environ.get("REG_RC") or 0), int(os.environ.get("REG_DURATION") or 0), os.environ["REG_STATUS_JSON"]
 counts = {"passed": 0, "failed": 0, "errors": 0, "warnings": 0}
 try:
     content = open(os.environ["REG_LOG_PATH"], "r", encoding="utf-8", errors="replace").read()
@@ -69,39 +65,24 @@ try:
             counts[key] = int(m.group(1))
 except Exception as e:
     print(f"Warning parsing test output: {e}", file=sys.stderr)
-
 status = "PASSED" if rc == 0 and counts["failed"] == 0 and counts["errors"] == 0 else "FAILED"
 status_data = {
     "status": status, "exit_code": rc,
-    "commit": os.environ.get("REG_COMMIT_HASH", ""),
-    "commit_short": os.environ.get("REG_COMMIT_SHORT", ""),
-    "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
-    **counts,
-    "duration_sec": duration,
-    "started_at": os.environ.get("REG_START_ISO", ""),
-    "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    "ts": int(time.time()),
+    "commit": os.environ.get("REG_COMMIT_HASH", ""), "commit_short": os.environ.get("REG_COMMIT_SHORT", ""), "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
+    **counts, "duration_sec": duration, "started_at": os.environ.get("REG_START_ISO", ""), "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": int(time.time()),
 }
-tmp_out = f"{status_json_path}.tmp"
-with open(tmp_out, "w", encoding="utf-8") as f:
+with open(f"{status_json_path}.tmp", "w", encoding="utf-8") as f:
     json.dump(status_data, f, indent=2)
-os.replace(tmp_out, status_json_path)
+os.replace(f"{status_json_path}.tmp", status_json_path)
 print(f"[dev_regression] Status: {status} | Passed: {counts['passed']} | Failed: {counts['failed']} | Duration: {duration}s")
 EOF
 
 if [ "$RC" -ne 0 ]; then
     echo "[dev_regression $(date '+%F %T')] FAILED on commit $COMMIT_SHORT ($RC)" | tee -a "$LOG_FILE" >&2
-    if [ -f "$ROOT/orchestratorOS/lib/os_notify.sh" ]; then
-        source "$ROOT/orchestratorOS/lib/os_notify.sh"
-        send_os_ntfy "DEV CI Regression FAILED" "Commit $COMMIT_SHORT failed: $COMMIT_MSG (exit code: $RC). Duration: ${DURATION}s." "high" "ntfy-error-1978" || true
-    fi
+    send_os_ntfy "DEV CI Regression FAILED" "Commit $COMMIT_SHORT failed: $COMMIT_MSG (exit code: $RC). Duration: ${DURATION}s." "high" || true
 else
     echo "[dev_regression $(date '+%F %T')] PASSED on commit $COMMIT_SHORT in ${DURATION}s" | tee -a "$LOG_FILE"
-    if [ "$PREV_STATUS" = "FAILED" ] && [ -f "$ROOT/orchestratorOS/lib/os_notify.sh" ]; then
-        source "$ROOT/orchestratorOS/lib/os_notify.sh"
-        send_os_ntfy "DEV CI Regression RECOVERED" "Commit $COMMIT_SHORT passed all tests: $COMMIT_MSG. Duration: ${DURATION}s." "default" "ntfy-error-1978" || true
-    fi
+    [ "$PREV_STATUS" = "FAILED" ] && send_os_ntfy "DEV CI Regression RECOVERED" "Commit $COMMIT_SHORT passed all tests: $COMMIT_MSG. Duration: ${DURATION}s." "default" || true
 fi
-
 rm -f "$LOG_FILE.run"
 exit "$RC"

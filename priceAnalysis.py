@@ -15,7 +15,7 @@ from datetime import datetime
 # Local imports.
 import utils as u
 import symbols as sym
-from botcore import (load_dotenv as _load_dotenv, required_bool_env,
+from botcore import (_parse_bool_flag, load_dotenv as _load_dotenv, required_bool_env,
                      required_int_env)
 from state_io import (
     atomic_write_json,
@@ -466,22 +466,6 @@ MIN_POINTS_PER_WINDOW = 4
 _trend_memo_cache: dict = {}
 _TREND_MEMO_MAX_ENTRIES = 128
 _TREND_MEMO_NONE = object()
-
-
-def _parse_bool_flag(val, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(float(val)) else default
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "true", "yes", "on"}:
-            return True
-        if s in {"0", "false", "no", "off", "none", ""}:
-            return False
-    return default
 
 
 def _parse_strict_int(val):
