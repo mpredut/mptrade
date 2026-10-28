@@ -32,7 +32,7 @@ from pricewindow import (
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (load_dotenv as _load_dotenv,
                      required_bool_env, required_float_env, required_int_env,
-                     safe_pos_float)
+                     safe_nonneg_float, safe_pos_float)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -206,13 +206,13 @@ def _kalman_gate_blocks(symbol, action, reason=None):
         return False, mode, None        # Fast kinematic plunge exits bypass Kalman lag.
     try:
         trend, age = _kalman_ref.current_trend(symbol)
-        age_f = float(age) if (age is not None and not isinstance(age, bool)) else float("nan")
+        age_f = safe_nonneg_float(age, default=None)
     except Exception:
         # No confirming signal (read failed): fail CLOSED for a BUY -- do not add
         # exposure blind -- but never for a SELL, so a risk-reducing exit is never
         # trapped by missing data.
         return action == "BUY", mode, None
-    if trend is None or not math.isfinite(age_f) or age_f < 0 or age_f > GATE_STALE_SEC:
+    if trend is None or age_f is None or age_f > GATE_STALE_SEC:
         return action == "BUY", mode, None   # Absent/stale signal: block a blind BUY, allow a SELL.
     wanted = 1 if action == "BUY" else -1
     if mode == "permissive":
