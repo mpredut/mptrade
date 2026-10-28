@@ -26,6 +26,7 @@ from .base import (
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
+    normalize_side,
 )
 from .binance_filters import (
     BinanceFilterError,
@@ -307,11 +308,7 @@ class BinanceProvider(MarketDataProvider):
                 and str(raw_coid).strip().lower() not in _INVALID_API_ID_STRINGS
                 else None
             )
-            side_norm = str(raw_side or "").strip().upper()
-            if side_norm in {"B", "BID", "LONG"}:
-                side_norm = "BUY"
-            elif side_norm in {"S", "A", "ASK", "SHORT"}:
-                side_norm = "SELL"
+            side_norm = normalize_side(raw_side) or str(raw_side or "").strip().upper()
             normalized.append({
                 "orderId": str(oid_int),
                 "clientOrderId": clean_coid,
@@ -595,12 +592,8 @@ class BinanceProvider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None,
                      cache_permit=None) -> str:
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B", "BID", "LONG"}:
-            order_type = "BUY"
-        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
-            order_type = "SELL"
-        else:
+        order_type = normalize_side(side)
+        if not order_type:
             raise SubmissionRefused(f"invalid_side:{side!r}")
         is_market = _parse_bool_flag(market, False)
         permit_requested_price = price
@@ -884,14 +877,8 @@ class MarketApi:
                           provider_name=None, min_notional=None,
                           max_notional=None) -> Optional[float]:
         """Return the newest normalized fill without a Binance-specific API."""
-        if isinstance(side, bool):
-            raise ValueError("side must be BUY or SELL")
-        side = str(side or "").strip().upper()
-        if side in {"B", "BID", "LONG"}:
-            side = "BUY"
-        elif side in {"S", "A", "ASK", "SHORT"}:
-            side = "SELL"
-        if side not in {"BUY", "SELL"}:
+        side = normalize_side(side)
+        if not side:
             raise ValueError("side must be BUY or SELL")
         if isinstance(since_s, bool) or since_s is None:
             raise ValueError("since_s must be finite and positive")
@@ -1289,7 +1276,7 @@ class MarketApi:
             benchmark = item.strip()
             if not benchmark:
                 raise ValueError("benchmark symbols must be non-empty")
-            identity = benchmark.upper().replace("/", "")
+            identity = benchmark.upper().replace("/", "").replace("-", "").replace("_", "")
             if identity not in seen_benchmarks:
                 normalized_benchmarks.append(benchmark)
                 seen_benchmarks.add(identity)

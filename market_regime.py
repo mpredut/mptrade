@@ -18,6 +18,12 @@ from botcore import _parse_bool_flag
 from cachepaths import normalize_venue_name
 
 
+def _clean_regime_symbol_key(symbol) -> str:
+    if isinstance(symbol, bool) or symbol is None:
+        return ""
+    return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+
+
 def normalize_market_regime_snapshot(
     snapshot: Optional[Mapping],
 ) -> Optional[dict]:
@@ -198,9 +204,9 @@ class MarketRegimeContext:
         if symbol is not None:
             if not isinstance(symbol, str) or not symbol.strip():
                 return False
-            target_sym = symbol.strip().upper().replace("/", "")
+            target_sym = _clean_regime_symbol_key(symbol)
             if self.symbol is not None:
-                if not isinstance(self.symbol, str) or self.symbol.strip().upper().replace("/", "") != target_sym:
+                if not isinstance(self.symbol, str) or _clean_regime_symbol_key(self.symbol) != target_sym:
                     return False
             elif require_identity:
                 return False
@@ -1080,10 +1086,10 @@ class MarketRegimeService:
                 ),
                 "",
             )
-        asset_key = str(asset_symbol or "").strip().upper().replace("/", "")
+        asset_key = _clean_regime_symbol_key(asset_symbol)
         selected = {}
         for item in directional:
-            item_key = str(item.symbol or "").strip().upper().replace("/", "")
+            item_key = _clean_regime_symbol_key(item.symbol)
             key = (item_key, item.role)
             selected.setdefault(key, item)
 
@@ -1093,18 +1099,18 @@ class MarketRegimeService:
         benchmark_symbols = tuple(dict.fromkeys(
             item.symbol
             for item in directional
-            if str(item.symbol or "").strip().upper().replace("/", "") != asset_key
+            if _clean_regime_symbol_key(item.symbol) != asset_key
             and item.role in {"benchmark_short", "benchmark_long"}
         ))
         benchmarks = tuple(
             (
                 symbol,
                 selected.get(
-                    (str(symbol or "").strip().upper().replace("/", ""), "benchmark_short"),
+                    (_clean_regime_symbol_key(symbol), "benchmark_short"),
                     None,
                 ),
                 selected.get(
-                    (str(symbol or "").strip().upper().replace("/", ""), "benchmark_long"),
+                    (_clean_regime_symbol_key(symbol), "benchmark_long"),
                     None,
                 ),
             )

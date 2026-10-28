@@ -87,6 +87,16 @@ _SYMBOL_POWER_CACHE = {"mtime_ns": None, "map": {}}
 _SYMBOL_FAST_WINDOW_CACHE = {"mtime_ns": None, "map": {}}
 
 
+def _register_symbol_param(target_map: dict[str, float], sym: str, base: str, c_base: str, val: float) -> None:
+    if sym:
+        target_map[sym] = val
+    for b in (base, c_base):
+        if b:
+            target_map.setdefault(b, val)
+            for q in ("USDC", "USDT", "USD", "EUR"):
+                target_map.setdefault(f"{b}{q}", val)
+
+
 def _load_symbol_power_map() -> dict[str, float]:
     conf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruments.conf")
     try:
@@ -100,11 +110,16 @@ def _load_symbol_power_map() -> dict[str, float]:
         registry = load_registry(conf_path)
     except Exception:
         return {}
+    try:
+        from cachepaths import canonical_base_asset
+    except Exception:
+        canonical_base_asset = lambda x: ""  # noqa: E731
     mapping: dict[str, float] = {}
     fast_win_map: dict[str, float] = {}
     for spec in registry.values():
         sym = str(spec.symbol or "").strip().upper()
         base = str(spec.base or "").strip().upper()
+        c_base = canonical_base_asset(base or sym)
         raw_p = spec.params.get("trend.step_wols_power")
         if raw_p is not None:
             try:
@@ -112,12 +127,7 @@ def _load_symbol_power_map() -> dict[str, float]:
             except (TypeError, ValueError, OverflowError):
                 pval = float("nan")
             if math.isfinite(pval) and pval >= 0.0:
-                if sym:
-                    mapping[sym] = pval
-                if base:
-                    mapping.setdefault(base, pval)
-                    for q in ("USDC", "USDT", "USD", "EUR"):
-                        mapping.setdefault(f"{base}{q}", pval)
+                _register_symbol_param(mapping, sym, base, c_base, pval)
         raw_fw = spec.params.get("trend.fast_window_sec")
         if raw_fw is not None:
             try:
@@ -125,12 +135,7 @@ def _load_symbol_power_map() -> dict[str, float]:
             except (TypeError, ValueError, OverflowError):
                 fw_val = float("nan")
             if math.isfinite(fw_val) and fw_val > 0.0:
-                if sym:
-                    fast_win_map[sym] = fw_val
-                if base:
-                    fast_win_map.setdefault(base, fw_val)
-                    for q in ("USDC", "USDT", "USD", "EUR"):
-                        fast_win_map.setdefault(f"{base}{q}", fw_val)
+                _register_symbol_param(fast_win_map, sym, base, c_base, fw_val)
     _SYMBOL_POWER_CACHE["mtime_ns"] = mtime_ns
     _SYMBOL_POWER_CACHE["map"] = mapping
     _SYMBOL_FAST_WINDOW_CACHE["mtime_ns"] = mtime_ns
@@ -149,6 +154,25 @@ def _load_symbol_fast_window_map() -> dict[str, float]:
     return _SYMBOL_FAST_WINDOW_CACHE["map"]
 
 
+def _lookup_symbol_param(symbol: str | None, param_map: dict[str, float]) -> float | None:
+    if not (isinstance(symbol, str) and symbol.strip() and param_map):
+        return None
+    s_up = symbol.strip().upper().replace("/", "").replace("-", "")
+    if s_up in param_map:
+        return param_map[s_up]
+    s_clean = s_up.replace("_", "")
+    if s_clean in param_map:
+        return param_map[s_clean]
+    try:
+        from cachepaths import canonical_base_asset
+        c_base = canonical_base_asset(symbol)
+        if c_base and c_base in param_map:
+            return param_map[c_base]
+    except Exception:
+        pass
+    return None
+
+
 def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     """Resolve optional per-symbol fast short-trend window (in seconds) from ``instruments.conf``.
 
@@ -158,12 +182,7 @@ def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     if "MPTRADE_FAST_TREND_WINDOW_SEC" in os.environ:
         val = _env_float("MPTRADE_FAST_TREND_WINDOW_SEC", 0.0)
         return val if val > 0.0 else None
-    if isinstance(symbol, str) and symbol.strip():
-        s_up = symbol.strip().upper().replace("/", "").replace("-", "")
-        fmap = _load_symbol_fast_window_map()
-        if s_up in fmap:
-            return fmap[s_up]
-    return None
+    return _lookup_symbol_param(symbol, _load_symbol_fast_window_map())
 
 
 def step_wols_power_for_symbol(symbol: str | None = None) -> float:
@@ -184,11 +203,9 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
         return 1.0
     if STEP_WOLS_POWER != DEFAULT_STEP_WOLS_POWER:
         return max(0.0, float(STEP_WOLS_POWER))
-    if isinstance(symbol, str) and symbol.strip():
-        s_up = symbol.strip().upper().replace("/", "").replace("-", "")
-        pmap = _load_symbol_power_map()
-        if s_up in pmap:
-            return pmap[s_up]
+    found = _lookup_symbol_param(symbol, _load_symbol_power_map())
+    if found is not None:
+        return found
     return float(STEP_WOLS_POWER)
 
 

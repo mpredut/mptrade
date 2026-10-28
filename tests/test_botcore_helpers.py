@@ -531,5 +531,40 @@ def test_kraken_cache_touch_ws_fetchtimes():
     assert cache["fetchtime"]["TAOUSDC"] > 0
 
 
+def test_autonomous_intent_gateway_extract_price():
+    from orchestratorTrade.autonomous_intent_gateway import extract_current_price_item
+    assert extract_current_price_item(100.5) == 100.5
+    assert extract_current_price_item({"price": "101.2"}) == 101.2
+    assert extract_current_price_item({"c": 102.3}) == 102.3
+    assert extract_current_price_item([[1, 103.4]]) == 103.4
+    assert extract_current_price_item([104.5]) == 104.5
+    assert extract_current_price_item(None) is None
+    assert extract_current_price_item(True) is None
+    assert extract_current_price_item(-5.0) is None
+
+
+def test_price_analysis_parse_strict_int():
+    from priceAnalysis import _parse_strict_int
+    assert _parse_strict_int(5) == 5
+    assert _parse_strict_int(5.0) == 5
+    assert _parse_strict_int("5.0") == 5
+    with pytest.raises(ValueError, match="not integral"):
+        _parse_strict_int(3.5)
+    with pytest.raises(ValueError, match="not integral"):
+        _parse_strict_int(None)
+    with pytest.raises(ValueError, match="not integral"):
+        _parse_strict_int(True)
+
+
+def test_execution_audit_json_safe_value():
+    from decimal import Decimal
+    from providers.execution_audit import _json_safe_value, _parse_cache_max
+    assert _json_safe_value(Decimal("123.45")) == 123.45
+    assert _json_safe_value(Decimal("nan")) is None
+    assert _json_safe_value(float("inf")) is None
+    assert _json_safe_value({"a": Decimal("10.0"), "b": [1, 2.5]}) == {"a": 10.0, "b": [1, 2.5]}
+    assert _parse_cache_max() >= 100
+
+
 if __name__ == "__main__":
     unittest.main()

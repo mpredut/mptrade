@@ -97,21 +97,19 @@ def extract_current_price_item(item: Any) -> Optional[float]:
     """Extract the latest positive finite price from any ``cache_current_price.json`` item format."""
     if item is None or isinstance(item, bool):
         return None
-    if isinstance(item, (int, float)):
-        px_f = _parse_finite_float(item, 0.0)
-        return px_f if px_f > 0 else None
+    if isinstance(item, (int, float, str)):
+        return safe_pos_float(item, None)
     if isinstance(item, dict):
-        px_f = _parse_finite_float(item.get("price") if item.get("price") is not None else item.get("c"), 0.0)
-        return px_f if px_f > 0 else None
+        return safe_pos_float(item.get("price") if item.get("price") is not None else item.get("c"), None)
     if isinstance(item, (list, tuple)):
         for entry in reversed(item):
             if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                px_f = _parse_finite_float(entry[1], 0.0)
-                if px_f > 0:
+                px_f = safe_pos_float(entry[1], None)
+                if px_f is not None:
                     return px_f
-            elif isinstance(entry, (int, float)) and not isinstance(entry, bool):
-                px_f = _parse_finite_float(entry, 0.0)
-                if px_f > 0:
+            else:
+                px_f = safe_pos_float(entry, None)
+                if px_f is not None:
                     return px_f
     return None
 

@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
-from botcore import _parse_bool_flag, float_env
+from botcore import (
+    _parse_bool_flag,
+    float_env,
+    safe_float,
+    safe_pos_float,
+    safe_pos_int,
+)
 
 from .strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
@@ -36,10 +42,7 @@ _UUID_HEX_SUFFIX = re.compile(r"([0-9a-fA-F]{32})$")
 
 
 def _parse_cache_max() -> int:
-    f = float_env("EXECUTION_AUDIT_CACHE_MAX")
-    if f is not None and math.isfinite(f):
-        return max(100, int(f))
-    return 10000
+    return max(100, safe_pos_int(float_env("EXECUTION_AUDIT_CACHE_MAX"), 10000))
 
 
 _CACHE_MAX = _parse_cache_max()
@@ -53,16 +56,8 @@ def _slug(value: object) -> str:
 
 
 def _json_safe_value(val: Any) -> Any:
-    if isinstance(val, Decimal):
-        if not val.is_finite():
-            return None
-        try:
-            f = float(val)
-            return f if math.isfinite(f) else None
-        except (ValueError, OverflowError):
-            return None
-    if isinstance(val, float):
-        return val if math.isfinite(val) else None
+    if isinstance(val, (float, Decimal)):
+        return safe_float(val, default=None)
     if isinstance(val, dict):
         out = {}
         for k, v in val.items():
@@ -130,16 +125,8 @@ class ExecutionAudit:
         append is not fsynced and therefore is not a durability boundary.
         """
         try:
-            raw_ts = self._clock()
-            if isinstance(raw_ts, bool) or raw_ts is None:
-                ts = time.time()
-            else:
-                try:
-                    ts = float(raw_ts)
-                except (TypeError, ValueError, OverflowError):
-                    ts = time.time()
-                if not math.isfinite(ts) or ts <= 0 or ts >= 32503680000:
-                    ts = time.time()
+            ts_val = safe_pos_float(self._clock(), None)
+            ts = ts_val if (ts_val is not None and ts_val < 32503680000) else time.time()
             payload = {
                 "ts": ts,
                 "ts_utc": datetime.fromtimestamp(ts, timezone.utc).isoformat(),

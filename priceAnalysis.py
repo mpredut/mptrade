@@ -15,8 +15,13 @@ from datetime import datetime
 # Local imports.
 import utils as u
 import symbols as sym
-from botcore import (_parse_bool_flag, load_dotenv as _load_dotenv, required_bool_env,
-                     required_int_env)
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv as _load_dotenv,
+    required_bool_env,
+    required_int_env,
+    safe_float,
+)
 from intelligence.macro_sentiment_ssot import safe_pos_float as _clean_pos_float
 from state_io import (
     atomic_write_json,
@@ -464,12 +469,8 @@ _TREND_MEMO_NONE = object()
 
 
 def _parse_strict_int(val):
-    if val is None or isinstance(val, bool):
-        raise ValueError("bool or None")
-    if isinstance(val, int):
-        return val
-    f = float(val)
-    if not math.isfinite(f) or not f.is_integer():
+    f = safe_float(val, default=None)
+    if f is None or not f.is_integer():
         raise ValueError("not integral")
     return int(f)
 
