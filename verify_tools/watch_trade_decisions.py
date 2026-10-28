@@ -23,24 +23,14 @@ from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
 import symbols as sym  # noqa: E402
+from botcore import safe_float as _f  # noqa: E402
+from instrument_registry import load_registry  # noqa: E402
 
 SYMBOLS = [sym.taosymbol, sym.btcsymbol]
-HARD_TP_PCT = 17.0   # Keep in sync with monitortrades.conf (hard_tp_pct).
-GAIN_PCT = 9.2
 
 
 import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 _base = utils.base_asset
-
-
-def _f(val, default=0.0):
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-    except (TypeError, ValueError):
-        return default
-    return res if math.isfinite(res) else default
 
 
 def free_qty(symbol):
@@ -72,8 +62,24 @@ def position(symbol, maxage=17 * 24 * 3600):
 
 def main():
     mgr = cm.get_short_trend_manager()
+    try:
+        reg = load_registry()
+    except Exception:
+        reg = {}
+    specs_by_sym = {spec.symbol: spec for spec in reg.values()}
+
     print(f"==== TRADE WATCH {time.strftime('%Y-%m-%d %H:%M:%S')} ====")
     for s in SYMBOLS:
+        spec = specs_by_sym.get(s)
+        try:
+            gain_pct = spec.number("mt.gain") if spec else 9.2
+        except Exception:
+            gain_pct = 9.2
+        try:
+            hard_tp_pct = spec.number("mt.hardtp") if spec else 17.0
+        except Exception:
+            hard_tp_pct = 17.0
+
         snap = mgr.get_snapshot(s) or {}
         if not isinstance(snap, dict):
             snap = {}
@@ -84,15 +90,15 @@ def main():
         ref = last_buy or avg   # The bot uses the LAST buy as its reference (TP_REFERENCE="last").
         gain = (px - ref) / ref * 100 if ref else 0.0
         trend = "UP  " if gr > 0 else ("DOWN" if gr < 0 else "flat")
-        hard_px = ref * (1 + HARD_TP_PCT / 100) if ref else 0.0
+        hard_px = ref * (1 + hard_tp_pct / 100) if ref else 0.0
         print(f"  {s}: px={px:.2f}  ref=ULTIMUL_buy {ref:.2f} (avg {avg:.2f})  gain={gain:+.1f}%")
         print(f"      trend_instant={trend} ({gr:+.4f})  |  free={free:.4f}  net={net:.4f}  sells={n_sells}")
         flags = []
-        if gain >= HARD_TP_PCT:
+        if gain >= hard_tp_pct:
             flags.append(f"HARD-TP ARMED (it sells 50%={free*0.5:.3f})")
-        elif gain >= GAIN_PCT and gr < 0:
-            flags.append("A NORMAL SALE IS ARMED (gain>9.2% plus a DOWN trend -> it sells EVERYTHING)")
-        elif gain >= GAIN_PCT and gr >= 0:
+        elif gain >= gain_pct and gr < 0:
+            flags.append(f"A NORMAL SALE IS ARMED (gain>{gain_pct:.1f}% plus a DOWN trend -> it sells EVERYTHING)")
+        elif gain >= gain_pct and gr >= 0:
             flags.append(f"in profit but the trend is UP -> holding (HARD-TP at px {hard_px:.2f})")
         else:
             flags.append(f"below the thresholds (HARD-TP at px {hard_px:.2f})")

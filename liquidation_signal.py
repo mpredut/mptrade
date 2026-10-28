@@ -62,17 +62,9 @@ WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up this long.
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
+from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
+
 _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
-
-
-def _safe_pos_float(val, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if (math.isfinite(f) and f > 0.0) else default
 
 
 class LiquidationSignal:

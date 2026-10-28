@@ -285,11 +285,12 @@ class T212Provider(MarketDataProvider):
             return []
         if not math.isfinite(since_val) or since_val <= 0:
             return []
-        if isinstance(side, bool):
-            return []
-        want = normalize_side(side)
-        if want and want != "BUY":
-            return []                         # Historical sells are not modeled.
+        if side is not None:
+            if isinstance(side, bool):
+                return []
+            want = normalize_side(side)
+            if want != "BUY":
+                return []                         # Historical sells are not modeled.
         # Financial guards must block on account errors rather than mistake them
         # for a legitimately empty portfolio.
         p = self._position(symbol, strict=True)

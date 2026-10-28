@@ -59,7 +59,7 @@ class NewsFeedSnapshot:
 
 
 _NEWS_FILENAMES = get_cache_filenames("news_feed_files")
-DEFAULT_HISTORY_FILE = f"cachedb/{_NEWS_FILENAMES[0]}" if _NEWS_FILENAMES else "cachedb/news_feed_collect.json"
+DEFAULT_HISTORY_FILE = cache_path(_NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json")
 
 
 class NewsFeedCollector:

@@ -220,6 +220,36 @@ class TestStepWolsGeneralization(unittest.TestCase):
                 places=9,
             )
 
+    def test_per_symbol_fast_trend_window_tao_90s(self):
+        import cachetrend
+        import monitortrades as mt
+        self.assertEqual(pw.fast_trend_window_for_symbol("TAOUSDC"), 90.0)
+        self.assertEqual(pw.fast_trend_window_for_symbol("TAO"), 90.0)
+        self.assertIsNone(pw.fast_trend_window_for_symbol("BTCUSDC"))
+        self.assertIsNone(pw.fast_trend_window_for_symbol("HYPEUSD"))
+        self.assertIn(90.0, cachetrend.CM_PUBLISHED_TREND_WINDOWS_SEC)
+
+        queried = []
+
+        class _FakeMgr:
+            @staticmethod
+            def get_short_trend_for_window(sym, win_sec, now=None):
+                queried.append((sym, win_sec))
+                return {"growth_coefficient": 0.5, "epsilon": 0.1, "n_samples": 11}
+
+            @staticmethod
+            def is_trend_up(sym, window_seconds=None, now=None):
+                queried.append(("fallback", sym, window_seconds))
+                return False
+
+        import cacheManager as cm
+        with patch.object(cm, "get_short_trend_manager", return_value=_FakeMgr()):
+            self.assertTrue(mt.is_trend_up("TAOUSDC"))
+            self.assertEqual(queried, [("TAOUSDC", 90.0)])
+            queried.clear()
+            self.assertFalse(mt.is_trend_up("BTCUSDC"))
+            self.assertEqual(queried, [("fallback", "BTCUSDC", None)])
+
 
 if __name__ == "__main__":
     unittest.main()

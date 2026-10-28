@@ -84,6 +84,7 @@ DEFAULT_TREND_NOISE_GATE_K = 0.0      # Multiplier k for adaptive noise gate (0.
 TREND_NOISE_GATE_K = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", DEFAULT_TREND_NOISE_GATE_K))
 _STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to this many steps.
 _SYMBOL_POWER_CACHE = {"mtime_ns": None, "map": {}}
+_SYMBOL_FAST_WINDOW_CACHE = {"mtime_ns": None, "map": {}}
 
 
 def _load_symbol_power_map() -> dict[str, float]:
@@ -94,34 +95,75 @@ def _load_symbol_power_map() -> dict[str, float]:
         return {}
     if _SYMBOL_POWER_CACHE["mtime_ns"] == mtime_ns and _SYMBOL_POWER_CACHE["map"]:
         return _SYMBOL_POWER_CACHE["map"]
-    import configparser
-    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
     try:
-        cp.read(conf_path, encoding="utf-8")
+        from instrument_registry import load_registry
+        registry = load_registry(conf_path)
     except Exception:
         return {}
     mapping: dict[str, float] = {}
-    for sec in cp.sections():
-        raw_p = cp[sec].get("trend.step_wols_power")
-        if raw_p is None:
-            continue
-        try:
-            pval = float(raw_p)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not (math.isfinite(pval) and pval >= 0.0):
-            continue
-        sym = str(cp[sec].get("symbol") or "").strip().upper()
-        base = str(cp[sec].get("base") or "").strip().upper()
-        if sym:
-            mapping[sym] = pval
-        if base:
-            mapping.setdefault(base, pval)
-            for q in ("USDC", "USDT", "USD", "EUR"):
-                mapping.setdefault(f"{base}{q}", pval)
+    fast_win_map: dict[str, float] = {}
+    for spec in registry.values():
+        sym = str(spec.symbol or "").strip().upper()
+        base = str(spec.base or "").strip().upper()
+        raw_p = spec.params.get("trend.step_wols_power")
+        if raw_p is not None:
+            try:
+                pval = float(raw_p)
+            except (TypeError, ValueError, OverflowError):
+                pval = float("nan")
+            if math.isfinite(pval) and pval >= 0.0:
+                if sym:
+                    mapping[sym] = pval
+                if base:
+                    mapping.setdefault(base, pval)
+                    for q in ("USDC", "USDT", "USD", "EUR"):
+                        mapping.setdefault(f"{base}{q}", pval)
+        raw_fw = spec.params.get("trend.fast_window_sec")
+        if raw_fw is not None:
+            try:
+                fw_val = float(raw_fw)
+            except (TypeError, ValueError, OverflowError):
+                fw_val = float("nan")
+            if math.isfinite(fw_val) and fw_val > 0.0:
+                if sym:
+                    fast_win_map[sym] = fw_val
+                if base:
+                    fast_win_map.setdefault(base, fw_val)
+                    for q in ("USDC", "USDT", "USD", "EUR"):
+                        fast_win_map.setdefault(f"{base}{q}", fw_val)
     _SYMBOL_POWER_CACHE["mtime_ns"] = mtime_ns
     _SYMBOL_POWER_CACHE["map"] = mapping
+    _SYMBOL_FAST_WINDOW_CACHE["mtime_ns"] = mtime_ns
+    _SYMBOL_FAST_WINDOW_CACHE["map"] = fast_win_map
     return mapping
+
+
+def _load_symbol_fast_window_map() -> dict[str, float]:
+    conf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruments.conf")
+    try:
+        mtime_ns = os.stat(conf_path).st_mtime_ns
+    except OSError:
+        return {}
+    if _SYMBOL_FAST_WINDOW_CACHE["mtime_ns"] != mtime_ns:
+        _load_symbol_power_map()
+    return _SYMBOL_FAST_WINDOW_CACHE["map"]
+
+
+def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
+    """Resolve optional per-symbol fast short-trend window (in seconds) from ``instruments.conf``.
+
+    Returns ``None`` when the symbol uses the default 222s primary window, or a positive
+    float (e.g. ``90.0`` for ``TAOUSDC``) when ``trend.fast_window_sec`` is configured.
+    """
+    if "MPTRADE_FAST_TREND_WINDOW_SEC" in os.environ:
+        val = _env_float("MPTRADE_FAST_TREND_WINDOW_SEC", 0.0)
+        return val if val > 0.0 else None
+    if isinstance(symbol, str) and symbol.strip():
+        s_up = symbol.strip().upper().replace("/", "").replace("-", "")
+        fmap = _load_symbol_fast_window_map()
+        if s_up in fmap:
+            return fmap[s_up]
+    return None
 
 
 def step_wols_power_for_symbol(symbol: str | None = None) -> float:

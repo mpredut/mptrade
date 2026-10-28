@@ -35,7 +35,7 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
 _GEO_FILENAMES = get_cache_filenames("geopolitical_eval_files")
-DEFAULT_STATE_FILE = f"cachedb/{_GEO_FILENAMES[0]}" if _GEO_FILENAMES else "cachedb/geopolitical_threat_eval.json"
+DEFAULT_STATE_FILE = cache_path(_GEO_FILENAMES[0] if _GEO_FILENAMES else "geopolitical_threat_eval.json")
 DEFAULT_CACHE_TTL_SEC = required_float_env("MACRO_LLM_INTERVAL_SEC")
 DEFAULT_FALLBACK_RETRY_TTL_SEC = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
 

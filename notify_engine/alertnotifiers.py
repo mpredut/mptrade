@@ -18,7 +18,7 @@ from typing import Any, Optional
 # Import your modules
 import log
 from lock import FileLock
-from botcore import _parse_bool_flag, float_env, int_env
+from botcore import _parse_bool_flag, float_env, int_env, safe_float as _safe_float
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -61,16 +61,6 @@ _TRADE_MARKERS = (
 def _positive_int_env(name: str, default: int) -> int:
     val = int_env(name)
     return val if (val is not None and val >= 0) else default
-
-
-def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if math.isfinite(f) else default
 
 
 def _safe_pos_int(val: Any, default: int = 1) -> int:

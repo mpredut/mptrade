@@ -67,6 +67,7 @@ CM_DYNAMIC_WINDOW_MAX_SEC = 24.0 * 3600.0
 # and cachedb/24trend/live_<SYMBOL>.json so reader processes (e.g. rtrade) have O(1)
 # access without needing an in-process Cache24 subscription.
 CM_PUBLISHED_TREND_WINDOWS_SEC = (
+    90.0,                     # 90s fast momentum window (TAOUSDC)
     float(round(3.7 * 60)),   # 222s primary momentum window
     15.0 * 60.0,              # 900s rtrade regime / trend filter window
     2.5 * 3600.0,             # 9000s secondary macro trend window

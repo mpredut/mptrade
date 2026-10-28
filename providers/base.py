@@ -178,7 +178,7 @@ def normalize_side(side: Any) -> str:
         return "BUY"
     if s in ("A", "S", "SELL", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
         return "SELL"
-    return s
+    return ""
 
 
 def extract_order_side(order: Any) -> str:
@@ -515,11 +515,13 @@ def aggregate_fills_by_order_id(
     """
     if rows is None or isinstance(rows, (str, bytes, bool)) or not hasattr(rows, "__iter__"):
         return []
-    if isinstance(side, bool):
-        return []
-    want = normalize_side(side)
-    if want and want not in ("BUY", "SELL"):
-        return []
+    want = None
+    if side is not None:
+        if isinstance(side, bool):
+            return []
+        want = normalize_side(side)
+        if not want:
+            return []
     out: List[dict] = []
     grouped: dict[tuple[str, str], dict] = {}
     for r in rows:

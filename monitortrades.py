@@ -47,6 +47,7 @@ from botcore import (
     parse_dotenv,
     required_bool_env,
     required_float_env,
+    safe_float as _safe_f,
 )
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
@@ -136,16 +137,6 @@ def reset_trades_monitor_state_for_test():
     _notified_trade_ids = _FifoTradeIdTracker()
     _trades_monitor_initialized = False
     _trades_monitor_warmup_failed_symbols.clear()
-
-
-def _safe_f(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-        return vf if math.isfinite(vf) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 # _parse_bool_flag imported from botcore (SSOT)
@@ -259,12 +250,19 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
 
 
 
-# Simplified upward-trend check (supports default snapshot or arbitrary dynamic window).
+# Simplified upward-trend check (supports default snapshot, per-symbol fast window, or arbitrary dynamic window).
 def is_trend_up(symbol, window_seconds=None, now=None):
-    """Evaluate upward trend via CacheShortTrendManager (primary snapshot or dynamic window)."""
+    """Evaluate upward trend via CacheShortTrendManager (primary snapshot, per-symbol fast window, or dynamic window)."""
     try:
         import cacheManager as cm
         mgr = cm.get_short_trend_manager()
+        if window_seconds is None:
+            import pricewindow as pw
+            fast_w = pw.fast_trend_window_for_symbol(symbol)
+            if fast_w is not None and hasattr(mgr, "get_short_trend_for_window"):
+                dyn = mgr.get_short_trend_for_window(symbol, fast_w, now=now)
+                if isinstance(dyn, dict):
+                    return bool(cm.CacheShortTrendManager._eval_upward_formula(dyn))
         if hasattr(mgr, "is_trend_up"):
             return bool(mgr.is_trend_up(symbol, window_seconds=window_seconds, now=now))
         snap = mgr.get_fresh_snapshot(symbol) if now is None else mgr.get_fresh_snapshot(symbol, now=now)
@@ -810,11 +808,9 @@ _REQUIRED_MT_CONF_KEYS = frozenset({
 
 
 def _parse_mt_bool(key: str, val: str) -> bool:
-    low = val.strip().lower()
-    if low in ("yes", "true"):
-        return True
-    if low in ("no", "false"):
-        return False
+    parsed = _parse_bool_flag(val, default=None)
+    if parsed is not None:
+        return parsed
     raise ValueError(f"monitortrades.conf: invalid boolean {key}={val!r}; expected yes/no or true/false")
 
 

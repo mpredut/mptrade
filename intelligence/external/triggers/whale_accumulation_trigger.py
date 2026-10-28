@@ -12,21 +12,12 @@ import math
 import time
 from typing import Optional
 
+from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
-
-
-def _safe_pos_float(val, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if (math.isfinite(f) and f > 0.0) else default
 
 
 class WhaleAccumulationTrigger:

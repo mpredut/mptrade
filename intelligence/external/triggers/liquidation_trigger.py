@@ -11,21 +11,12 @@ import math
 import time
 from typing import Any, Optional
 
+from botcore import safe_float as _safe_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.bybit_liquidations import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
-
-
-def _safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 class LiquidationCapitulationTrigger:

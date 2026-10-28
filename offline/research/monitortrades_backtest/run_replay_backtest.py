@@ -119,6 +119,7 @@ def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | N
         series[0] if series else None,
         series[-1] if series else None,
         pw.step_wols_power_for_symbol(symbol),
+        pw.fast_trend_window_for_symbol(symbol),
         _resolve_upward_eps_k(),
         _norm_trend_window_sec(trend_window_seconds),
     )
@@ -143,6 +144,11 @@ def prewarm_trend_series(
         return cached
     import pricewindow as pw
     import math
+    eff_win_sec = win_sec
+    if math.isclose(win_sec, DEFAULT_WINDOW_SECONDS, rel_tol=0.0, abs_tol=1e-6):
+        fast_w = pw.fast_trend_window_for_symbol(symbol)
+        if fast_w is not None and fast_w > 0.0:
+            eff_win_sec = float(fast_w)
     buf = pw.IncrementalTrendBuffer()
     win_size = 200
     sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
@@ -156,7 +162,7 @@ def prewarm_trend_series(
             rate = ts - prev_ts
             if rate > 0 and math.isfinite(rate):
                 sample_rate = rate
-                new_size = min(100000, max(10, int(win_sec / rate)))
+                new_size = min(100000, max(10, int(eff_win_sec / rate)))
                 if new_size != win_size:
                     win_size = new_size
                     if cur_len > new_size:

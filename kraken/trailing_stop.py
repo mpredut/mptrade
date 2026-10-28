@@ -40,7 +40,7 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
-                           required_env, required_float_env, single_instance)
+                           required_env, required_float_env, safe_float, single_instance)
 from kraken_client import KrakenClient  # noqa: E402
 try:
     from kraken.notify import notify  # noqa: E402
@@ -296,15 +296,7 @@ class KrakenTrailing:
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
 
-    @staticmethod
-    def _safe_float(val, default: float = 0.0) -> float:
-        if val is None or isinstance(val, bool):
-            return default
-        try:
-            f = float(val)
-            return f if math.isfinite(f) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
+    _safe_float = staticmethod(safe_float)
 
     def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
         st = getattr(persist, "st", None)

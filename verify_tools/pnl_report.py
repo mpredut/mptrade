@@ -7,6 +7,7 @@ import sys, os, time, json, math
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from botcore import safe_float as _safe_float
 from binance_api import bapi_allorders as ao
 from binance_api import bapi
 from instrument_registry import symbols_for
@@ -18,16 +19,6 @@ from providers.base import (
 )
 
 WINDOW_D = 120
-
-
-def _safe_float(val, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def binance_symbol(symbol):

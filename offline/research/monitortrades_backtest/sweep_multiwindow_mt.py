@@ -84,9 +84,11 @@ def run_multiwindow_sweep(use_365: bool = False):
         ("6. Multi AND (222s AND 90s)",
          lambda d: (_up_arr(d[222]) & _up_arr(d[90])).tolist()),
         ("7. Macro-Guarded (222s & !Crash900s)",
-         lambda d: (_up_arr(d[222]) & _not_crash_arr(d[900], 1.5)).tolist()),
+         lambda d, sym="": (_up_arr(d[222]) & _not_crash_arr(d[900], 1.5)).tolist()),
         ("8. 2-of-3 Majority (60s, 222s, 900s)",
-         lambda d: ((_up_arr(d[60]).astype(int) + _up_arr(d[222]).astype(int) + _up_arr(d[900]).astype(int)) >= 2).tolist()),
+         lambda d, sym="": ((_up_arr(d[60]).astype(int) + _up_arr(d[222]).astype(int) + _up_arr(d[900]).astype(int)) >= 2).tolist()),
+        ("9. Per-Coin PROD (TAO 90s, others 222s)",
+         lambda d, sym="": _up_arr(d[int(pw.fast_trend_window_for_symbol(sym) or 222)]).tolist()),
     ]
 
     hdr = f"{'Multi-Window Policy':<36} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
@@ -100,7 +102,7 @@ def run_multiwindow_sweep(use_365: bool = False):
         for sym in symbols:
             series = series_map[sym]
             key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
-            rrb._TREND_TAPE_CACHE[key] = fn(sigs[sym])
+            rrb._TREND_TAPE_CACHE[key] = fn(sigs[sym], sym) if fn.__code__.co_argcount >= 2 else fn(sigs[sym])
             cfg = rrb.SYMBOLS[sym]
             res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series)
             net = res["net"]

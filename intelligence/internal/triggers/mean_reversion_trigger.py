@@ -14,21 +14,12 @@ from __future__ import annotations
 from collections import deque
 import math
 from typing import Any, Literal
+from botcore import safe_float as _safe_float
 from intelligence.internal.triggers.trigger_event import (
     TriggerEvent,
     TriggerAction,
     TriggerSide,
 )
-
-
-def _safe_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 def _safe_pos_int(val: Any, default: int) -> int:
