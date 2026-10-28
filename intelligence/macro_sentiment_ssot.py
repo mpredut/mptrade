@@ -53,7 +53,7 @@ SENTIMENT_CHECKPOINT_COOLDOWN_SEC: float = 2700.0     # 45 minutes minimum spaci
 DEFAULT_GEOPOLITICAL_INTERVAL_SEC: float = 16200.0    # 4.5 hours base interval
 MIN_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = 900.0  # 15 minutes cooldown on non-acute headline spikes
 MAX_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = 21600.0  # 6.0 hours maximum during global calm (0 high-sev news)
-DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = 21600.0      # 6.0 hours rolling headline window (covers max calm TTL)
+DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = 14400.0      # 4.0 hours rolling headline window (standard aggregation horizon)
 DEFAULT_FALLBACK_RETRY_TTL_SEC: float = 120.0         # 2 minutes retry when LLM times out
 
 
