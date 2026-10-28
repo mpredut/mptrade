@@ -525,3 +525,207 @@ def test_macro_advisor_skips_redundant_cached_notifications(temp_cache_dir):
         ok2 = analyzer.assess_market_advisor(force=True)
         assert ok2 is True
         assert mock_notify.call_count == 1
+
+
+class TestMacroSentimentSSOTAndDynamicIntervals:
+    """Tests for GlobalSessionContext, session checkpoints, dynamic interval scaling, and SSOT normalizers."""
+
+    def test_ssot_normalizers(self):
+        from intelligence.macro_sentiment_ssot import (
+            normalize_market_bias,
+            normalize_recommended_action,
+            normalize_recommended_brake,
+            normalize_risk_level,
+            normalize_threat_level,
+        )
+
+        assert normalize_market_bias("risk_on") == "BULLISH"
+        assert normalize_market_bias("defensive") == "CAUTION"
+        assert normalize_market_bias("risk_off") == "BEARISH"
+        assert normalize_risk_level("elevated") == "HIGH"
+        assert normalize_risk_level("severe") == "EXTREME"
+        assert normalize_recommended_action("buy") == "ACCUMULATE"
+        assert normalize_recommended_action("take_profit") == "TRIM_PROFITS"
+        assert normalize_threat_level("critical") == "CRITICAL_SHOCK"
+        assert normalize_recommended_brake("HARD_VETO", threat_level="CRITICAL_SHOCK") == "HARD_VETO_NEW_BUYS"
+        assert normalize_recommended_brake("DOWNSCALE_QTY", threat_level="ELEVATED") == "DOWNSCALE_50"
+        assert normalize_recommended_brake("ALLOW", threat_level="NORMAL") == "NONE"
+
+    def test_global_trading_sessions_europe_morning_buy_and_evening_close(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from intelligence.macro_sentiment_ssot import (
+            did_cross_session_checkpoint,
+            resolve_global_trading_session,
+        )
+
+        tz_eet = ZoneInfo("Europe/Bucharest")
+
+        # Tuesday 09:00 EET -> EU_OPEN_ACCUMULATION (European morning buy/accumulation)
+        t_eu_morning = datetime(2026, 10, 27, 9, 0, tzinfo=tz_eet).timestamp()
+        ctx_morning = resolve_global_trading_session(t_eu_morning)
+        assert ctx_morning.session_key == "EU_OPEN_ACCUMULATION"
+        assert ctx_morning.is_active_western_session is True
+        assert ctx_morning.is_peak_transition_window is True
+        assert "accumulate" in ctx_morning.trader_flow_profile.lower()
+
+        # Tuesday 16:45 EET -> US_OPEN_OVERLAP (EU afternoon + Wall Street open)
+        t_us_open = datetime(2026, 10, 27, 16, 45, tzinfo=tz_eet).timestamp()
+        ctx_overlap = resolve_global_trading_session(t_us_open)
+        assert ctx_overlap.session_key == "US_OPEN_OVERLAP"
+        assert ctx_overlap.is_peak_transition_window is True
+
+        # Tuesday 19:00 EET -> EU_EVENING_CLOSE (European traders closing positions / profit-taking)
+        t_eu_evening = datetime(2026, 10, 27, 19, 0, tzinfo=tz_eet).timestamp()
+        ctx_evening = resolve_global_trading_session(t_eu_evening)
+        assert ctx_evening.session_key == "EU_EVENING_CLOSE"
+        assert ctx_evening.is_active_western_session is True
+        assert ctx_evening.is_peak_transition_window is True
+        assert "close intraday positions" in ctx_evening.trader_flow_profile.lower()
+
+        # Wednesday 03:30 EET -> ASIA_OVERNIGHT_CALM
+        t_asia = datetime(2026, 10, 28, 3, 30, tzinfo=tz_eet).timestamp()
+        ctx_asia = resolve_global_trading_session(t_asia)
+        assert ctx_asia.session_key == "ASIA_OVERNIGHT_CALM"
+        assert ctx_asia.is_active_western_session is False
+
+        # Checkpoints: 07:30 -> 08:20 EET crosses EU_MORNING_BUY_OPEN; 17:30 -> 18:35 EET crosses EU_EVENING_POSITION_CLOSE
+        t_0730 = datetime(2026, 10, 27, 7, 30, tzinfo=tz_eet).timestamp()
+        t_0820 = datetime(2026, 10, 27, 8, 20, tzinfo=tz_eet).timestamp()
+        assert did_cross_session_checkpoint(t_0730, t_0820) == "EU_MORNING_BUY_OPEN"
+
+        t_1730 = datetime(2026, 10, 27, 17, 30, tzinfo=tz_eet).timestamp()
+        t_1835 = datetime(2026, 10, 27, 18, 35, tzinfo=tz_eet).timestamp()
+        assert did_cross_session_checkpoint(t_1730, t_1835) == "EU_EVENING_POSITION_CLOSE"
+
+    def test_dynamic_sentiment_interval_adapts_to_context(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from intelligence.macro_sentiment_ssot import compute_dynamic_sentiment_interval
+        from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+        from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+
+        tz_eet = ZoneInfo("Europe/Bucharest")
+        base = 10800.0  # 3h
+
+        # 1. Global calm overnight (02:00 EET, neutral breadth & F&G) -> stretches to 14400s (4.0h)
+        t_night = datetime(2026, 10, 27, 2, 0, tzinfo=tz_eet).timestamp()
+        calm_fg = FearGreedSnapshot(
+            value=50,
+            classification="Neutral",
+            timestamp=t_night,
+            historical_values=(50, 49, 51),
+            trend_7d_change=0,
+            is_extreme_fear=False,
+            is_extreme_greed=False,
+        )
+        calm_br = MarketBreadthSnapshot(
+            advance_ratio=0.52,
+            advancing_count=26,
+            declining_count=24,
+            total_count=50,
+            median_change_pct=0.4,
+            mean_change_pct=0.5,
+            dispersion_std=1.2,
+            regime="NEUTRAL",
+            top_gainers=(),
+            top_losers=(),
+            ts=t_night,
+        )
+        itv_calm, reason_calm = compute_dynamic_sentiment_interval(
+            base_interval_sec=base,
+            last_eval_ts=t_night - 3600.0,
+            now_ts=t_night,
+            fear_greed=calm_fg,
+            breadth=calm_br,
+        )
+        assert itv_calm == 14400.0
+        assert "global_calm_quiet" in reason_calm
+
+        # 2. European morning buy window (09:30 EET, after 08:15 checkpoint) -> 5400s (1.5h)
+        t_eu_buy = datetime(2026, 10, 27, 9, 30, tzinfo=tz_eet).timestamp()
+        itv_eu, reason_eu = compute_dynamic_sentiment_interval(
+            base_interval_sec=base,
+            last_eval_ts=t_eu_buy - 1800.0,
+            now_ts=t_eu_buy,
+            fear_greed=calm_fg,
+            breadth=calm_br,
+        )
+        assert itv_eu == 5400.0
+        assert "EU_OPEN_ACCUMULATION" in reason_eu
+
+        # 3. Crossing European evening close checkpoint (17:40 -> 18:35 EET) -> 2700s (45m)
+        t_1740 = datetime(2026, 10, 27, 17, 40, tzinfo=tz_eet).timestamp()
+        t_1835 = datetime(2026, 10, 27, 18, 35, tzinfo=tz_eet).timestamp()
+        itv_cp, reason_cp = compute_dynamic_sentiment_interval(
+            base_interval_sec=base,
+            last_eval_ts=t_1740,
+            now_ts=t_1835,
+            fear_greed=calm_fg,
+            breadth=calm_br,
+        )
+        assert itv_cp == 2700.0
+        assert reason_cp == "session_checkpoint_EU_EVENING_POSITION_CLOSE"
+
+        # 4. Rapid F&G jump (>= 8 pts) or PANIC_WASHOUT -> 1800s (30m)
+        itv_jump, reason_jump = compute_dynamic_sentiment_interval(
+            base_interval_sec=base,
+            last_eval_ts=t_night - 2000.0,
+            now_ts=t_night,
+            fear_greed=calm_fg,
+            breadth=calm_br,
+            prev_fear_greed_val=38,
+        )
+        assert itv_jump == 1800.0
+        assert "fear_greed_jump" in reason_jump
+
+    def test_elevated_threat_escalates_immediately_on_new_acute_shock_headline(self, tmp_path):
+        calls = []
+
+        def mock_runner(prompt, model, timeout):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return json.dumps({
+                    "threat_level": "ELEVATED",
+                    "risk_score": 0.65,
+                    "summary": "Sanctions announced.",
+                    "recommended_brake": "DOWNSCALE_50",
+                })
+            return json.dumps({
+                "threat_level": "CRITICAL_SHOCK",
+                "risk_score": 0.96,
+                "summary": "Strait of Hormuz blockade declared.",
+                "recommended_brake": "HARD_VETO_NEW_BUYS",
+            })
+
+        elevated_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+  <item><title>New sanctions package debated after border conflict</title></item>
+</channel></rss>"""
+
+        acute_escalation_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+  <item><title>Breaking: Strait of Hormuz closed after declared war and nuclear strike threat</title></item>
+  <item><title>New sanctions package debated after border conflict</title></item>
+</channel></rss>"""
+
+        client = GeminiClient(custom_runner=mock_runner)
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=client,
+            cache_ttl_sec=16200.0,
+            state_file=str(tmp_path / "geo_escalate.json"),
+        )
+        t0 = 1_700_000_000.0
+        snap1 = NewsFeedCollector.parse_rss_xml(elevated_xml, now_ts=t0)
+        res1 = analyzer.assess(snap1, now_ts=t0)
+        assert res1.threat_level == "ELEVATED"
+        assert len(calls) == 1
+
+        # Only 10 minutes later (t0 + 600s << 16200s TTL), an acute shock headline arrives:
+        # must bypass TTL immediately and escalate to CRITICAL_SHOCK!
+        snap2 = NewsFeedCollector.parse_rss_xml(acute_escalation_xml, now_ts=t0 + 600.0)
+        res2 = analyzer.assess(snap2, now_ts=t0 + 600.0)
+        assert len(calls) == 2
+        assert res2.threat_level == "CRITICAL_SHOCK"
+        assert res2.recommended_brake == "HARD_VETO_NEW_BUYS"
+
