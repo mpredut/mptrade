@@ -298,11 +298,19 @@ class TrailingStop:
         Errors return 0: optional filters do not block, but this is not a safety guarantee."""
         try:
             import cacheManager as cm
+            import pricewindow as pw
             snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
             if snap:
-                raw_val = snap.get('growth_coefficient')
+                target = snap
+                fast_w = pw.fast_trend_window_for_symbol(symbol)
+                dyn = snap.get("dynamic") if isinstance(snap, dict) else None
+                if fast_w is not None and isinstance(dyn, dict):
+                    w_snap = dyn.get(f"{float(fast_w):g}")
+                    if isinstance(w_snap, dict):
+                        target = w_snap
+                raw_val = target.get('growth_coefficient')
                 if raw_val is None or isinstance(raw_val, bool):
-                    raw_val = snap.get('gradient_recent', snap.get('slope_small', 0.0))
+                    raw_val = target.get('gradient_recent', target.get('slope_small', 0.0))
                 return safe_float(raw_val, 0.0)
         except Exception:
             pass

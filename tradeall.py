@@ -722,6 +722,24 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     eps_fn = getattr(price_window, "get_noise_epsilon", None)
     eps_val = eps_fn() if callable(eps_fn) else 0.0
     n_samp = len(getattr(price_window, "prices", ()))
+    raw_ws = getattr(price_window, "window_seconds", None)
+    raw_sr = getattr(price_window, "sample_rate_sec", None)
+    win_sec = (
+        float(raw_ws)
+        if isinstance(raw_ws, (int, float))
+        and not isinstance(raw_ws, bool)
+        and math.isfinite(float(raw_ws))
+        and float(raw_ws) > 0
+        else 222.0
+    )
+    sr_sec = (
+        float(raw_sr)
+        if isinstance(raw_sr, (int, float))
+        and not isinstance(raw_sr, bool)
+        and math.isfinite(float(raw_sr))
+        and float(raw_sr) > 0
+        else 1.0
+    )
     return {
         "symbol": symbol,
         "final_trend": gradient,
@@ -733,6 +751,8 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
         "pos": pos,
         "epsilon": eps_val,
         "n_samples": n_samp,
+        "window_seconds": win_sec,
+        "sample_rate_sec": sr_sec,
         "current_price": current_price,
         "ts": time.time(),
     }

@@ -395,6 +395,50 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertFalse(ready)
             self.assertIn("trend_defer", new_state)
 
+    def test_trailing_stop_trend_value_prefers_symbol_fast_window_when_available(self):
+        import time as _time
+        import cacheManager as cm
+        from binance_api.trailing_stop import TrailingStop
+        from kraken import trailing_stop as kt_mod
+
+        now_ts = _time.time()
+        snap_tao = {
+            "growth_coefficient": 0.04,
+            "gradient_recent": 0.04,
+            "ts": now_ts,
+            "dynamic": {
+                "90": {
+                    "growth_coefficient": -0.11,
+                    "gradient_recent": -0.09,
+                    "ts": now_ts,
+                }
+            },
+        }
+        snap_btc = {
+            "growth_coefficient": 0.04,
+            "gradient_recent": 0.04,
+            "ts": now_ts,
+            "dynamic": {
+                "90": {
+                    "growth_coefficient": -0.11,
+                    "gradient_recent": -0.09,
+                    "ts": now_ts,
+                }
+            },
+        }
+        ts_obj = TrailingStop.__new__(TrailingStop)
+        fake_mgr = unittest.mock.MagicMock()
+        fake_mgr.get_fresh_snapshot.side_effect = lambda s: snap_tao if "TAO" in s else snap_btc
+        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=fake_mgr):
+            self.assertAlmostEqual(ts_obj._trend_value("TAOUSDC"), -0.11, places=6)
+            self.assertAlmostEqual(ts_obj._trend_value("BTCUSDC"), 0.04, places=6)
+
+        kt_obj = kt_mod.KrakenTrailing.__new__(kt_mod.KrakenTrailing)
+        kt_obj._safe_float = lambda v, d=0.0: float(v) if v is not None else d
+        with unittest.mock.patch("state_io.read_recovering_previous", return_value={"TAOUSD": snap_tao, "XBTUSD": snap_btc}):
+            self.assertAlmostEqual(kt_obj._trend_value("TAOUSD"), -0.11, places=6)
+            self.assertAlmostEqual(kt_obj._trend_value("XBTUSD"), 0.04, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

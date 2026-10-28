@@ -230,9 +230,17 @@ class KrakenTrailing:
                     return 0.0
                 age = time.time() - raw_ts
                 if -5.0 <= age <= 15.0:
-                    raw_grad = snap.get("growth_coefficient")
+                    import pricewindow as pw
+                    target = snap
+                    fast_w = pw.fast_trend_window_for_symbol(pair)
+                    dyn = snap.get("dynamic")
+                    if fast_w is not None and isinstance(dyn, dict):
+                        w_snap = dyn.get(f"{float(fast_w):g}")
+                        if isinstance(w_snap, dict):
+                            target = w_snap
+                    raw_grad = target.get("growth_coefficient")
                     if raw_grad is None or isinstance(raw_grad, bool):
-                        raw_grad = snap.get("gradient_recent", snap.get("slope_small", 0.0))
+                        raw_grad = target.get("gradient_recent", target.get("slope_small", 0.0))
                     return self._safe_float(raw_grad, 0.0)
         except Exception:
             pass
