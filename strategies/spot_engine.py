@@ -21,7 +21,7 @@ from alertnotifiers import bind_notify
 from botcore import (
     _parse_bool_flag, are_close, log, defined_env, required_env,
     required_float_env, required_int_env, required_bool_env,
-    safe_float, safe_nonneg_float, safe_pos_float,
+    safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import _clean_single_order_id, normalize_side
@@ -638,13 +638,14 @@ class Strategy:
             state = _new_state()
         for k, v in _new_state().items():
             state.setdefault(k, v)
-        state["cycle"] = max(1, int(_clean_pos_float(state.get("cycle")) or 1))
+        state["cycle"] = safe_pos_int(state.get("cycle"), default=1) or 1
         for nkey in ("qty", "cost", "spent", "cycle_fees", "fees_total"):
-            state[nkey] = _clean_nonneg_float(state.get(nkey)) or 0.0
+            state[nkey] = safe_nonneg_float(state.get(nkey), default=0.0) or 0.0
         for fkey in ("realized_gross", "realized_net"):
-            state[fkey] = _clean_finite_float(state.get(fkey)) or 0.0
+            state[fkey] = safe_float(state.get(fkey), default=0.0) or 0.0
         for ikey in ("dca_buys", "trend_confirm_count"):
-            state[ikey] = max(0, int(_clean_nonneg_float(state.get(ikey)) or 0))
+            i = safe_int(state.get(ikey), default=0)
+            state[ikey] = i if (i is not None and i >= 0) else 0
         for pkey in (
             "entry_price",
             "last_buy_price",
@@ -820,18 +821,11 @@ class Strategy:
         return cost / qty if (qty is not None and cost is not None and qty > 1e-12) else None
 
     def _qty_for(self, amount: float, price: float) -> float:
-        if (
-            isinstance(amount, bool)
-            or isinstance(price, bool)
-            or not isinstance(amount, (int, float))
-            or not isinstance(price, (int, float))
-            or not math.isfinite(amount)
-            or not math.isfinite(price)
-            or amount <= 0
-            or price <= 0
-        ):
+        amt_f = safe_pos_float(amount, default=None)
+        px_f = safe_pos_float(price, default=None)
+        if amt_f is None or px_f is None:
             return 0.0
-        return round(amount / price, self.vol_dec)
+        return round(amt_f / px_f, self.vol_dec)
 
     def _dust_safe_qty(self, qty: float) -> float:
         """Leave one volume tick to tolerate a venue's rounded balance.
@@ -840,13 +834,8 @@ class Strategy:
         cause permanent insufficient-funds retries. Preserve historical high-precision
         behavior without magnifying dust on low-precision venues.
         """
-        if isinstance(qty, bool) or qty is None:
-            return 0.0
-        try:
-            qty_f = float(qty)
-        except (TypeError, ValueError):
-            return 0.0
-        if not math.isfinite(qty_f) or qty_f <= 0:
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             return 0.0
         dust_decimals = self.vol_dec if self.vol_dec <= 2 else self.vol_dec - 1
         step = 10.0 ** -max(dust_decimals, 1)

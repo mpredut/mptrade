@@ -223,17 +223,10 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def is_valid_price(self) -> bool:
         """Verify whether price geometry is valid and strictly positive."""
-        if (
-            self.avg_buy_price is None or isinstance(self.avg_buy_price, bool)
-            or self.current_price is None or isinstance(self.current_price, bool)
-        ):
-            return False
-        try:
-            bp = float(self.avg_buy_price)
-            cp = float(self.current_price)
-            return math.isfinite(bp) and bp > 0 and math.isfinite(cp) and cp > 0
-        except (TypeError, ValueError):
-            return False
+        return (
+            self._finite_pos_float(self.avg_buy_price) is not None
+            and self._finite_pos_float(self.current_price) is not None
+        )
 
     def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if position is in stop-loss territory honoring fuzzy tolerance."""

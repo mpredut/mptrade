@@ -13,7 +13,13 @@ import time
 import uuid
 from typing import Callable, Optional, Protocol
 
-from botcore import _parse_bool_flag
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from providers.base import _clean_single_order_id, normalize_side
 
 
@@ -34,30 +40,26 @@ class OrderTicket:
 
     def __post_init__(self):
         clean_oid = _clean_ticket_order_id(self.order_id)
-        if (
-            clean_oid is None
-            or self.side is None
-            or isinstance(self.side, bool)
-            or isinstance(self.price, bool)
-            or isinstance(self.qty, bool)
-            or isinstance(self.revision, bool)
-        ):
+        if clean_oid is None:
             raise ValueError("ticket rtrade invalid")
         self.order_id = clean_oid
         self.side = normalize_side(self.side)
-        try:
-            self.price = float(self.price)
-            self.qty = float(self.qty)
-            rev_f = float(self.revision)
-            if not math.isfinite(rev_f) or rev_f != int(rev_f):
-                raise ValueError("ticket rtrade invalid")
-            self.revision = int(rev_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("ticket rtrade invalid") from exc
-        if (self.side not in {"BUY", "SELL"} or not math.isfinite(self.price)
-                or self.price <= 0 or not math.isfinite(self.qty) or self.qty <= 0
-                or not 0 <= self.revision <= _MAX_LIMIT_REVISION):
+        if self.side not in {"BUY", "SELL"}:
             raise ValueError("ticket rtrade invalid")
+        px = safe_pos_float(self.price, default=None)
+        q = safe_pos_float(self.qty, default=None)
+        rev = safe_int(self.revision, default=None)
+        if (
+            px is None
+            or q is None
+            or rev is None
+            or not 0 <= rev <= _MAX_LIMIT_REVISION
+            or (isinstance(self.revision, float) and not self.revision.is_integer())
+        ):
+            raise ValueError("ticket rtrade invalid")
+        self.price = px
+        self.qty = q
+        self.revision = rev
         if self.pair_id is not None:
             clean_pid = _clean_pair_id(self.pair_id)
             if clean_pid is None:
@@ -87,13 +89,8 @@ class OrderSnapshot:
             ("cost", self.cost),
             ("fee", self.fee),
         ):
-            if isinstance(value, bool):
-                raise ValueError("invalid rtrade financial snapshot")
-            try:
-                f = float(value)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("invalid rtrade financial snapshot") from exc
-            if not math.isfinite(f) or f < 0:
+            f = safe_nonneg_float(value, default=None)
+            if f is None:
                 raise ValueError("invalid rtrade financial snapshot")
             object.__setattr__(self, name, f)
 
@@ -119,13 +116,8 @@ class PairPolicy:
             ("shock_hard_stop_fraction", self.shock_hard_stop_fraction),
             ("hard_stop_fraction", self.hard_stop_fraction),
         ):
-            if isinstance(value, bool):
-                raise ValueError("the rtrade policy must hold finite values")
-            try:
-                f = float(value)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("the rtrade policy must hold finite values") from exc
-            if not math.isfinite(f):
+            f = safe_float(value, default=None)
+            if f is None:
                 raise ValueError("the rtrade policy must hold finite values")
             object.__setattr__(self, name, f)
         if not 0 < self.adjustment_fraction < 1:
@@ -141,15 +133,10 @@ class PairPolicy:
         if not self.shock_hard_stop_fraction <= self.hard_stop_fraction < 1:
             raise ValueError(
                 "hard_stop_fraction must be >= shock_hard_stop_fraction and < 1")
-        if isinstance(self.price_decimals, bool):
+        pd = safe_int(self.price_decimals, default=None)
+        if pd is None or pd < 0 or (isinstance(self.price_decimals, float) and not self.price_decimals.is_integer()):
             raise ValueError("price_decimals must be a non-negative integer")
-        try:
-            pd_f = float(self.price_decimals)
-            if not math.isfinite(pd_f) or pd_f != int(pd_f) or int(pd_f) < 0:
-                raise ValueError("price_decimals must be a non-negative integer")
-            object.__setattr__(self, "price_decimals", int(pd_f))
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("price_decimals must be a non-negative integer") from exc
+        object.__setattr__(self, "price_decimals", pd)
 
 
 @dataclass(frozen=True)
@@ -206,31 +193,15 @@ def _place_failure_reason(venue: PairVenue, side: str) -> str:
 def quote_prices(mid: float, adjustment_fraction: float,
                  decimals: int = 4) -> tuple[float, float]:
     """Return bid/ask quotes symmetric around the same market snapshot."""
-    if isinstance(mid, bool) or mid is None:
+    mid_f = safe_pos_float(mid, default=None)
+    if mid_f is None:
         raise ValueError("mid must be positive")
-    try:
-        mid_f = float(mid)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("mid must be positive") from exc
-    if not math.isfinite(mid_f) or mid_f <= 0:
-        raise ValueError("mid must be positive")
-    if isinstance(adjustment_fraction, bool) or adjustment_fraction is None:
+    adj_f = safe_float(adjustment_fraction, default=None)
+    if adj_f is None or not 0 < adj_f < 1:
         raise ValueError("adjustment_fraction must be in (0, 1)")
-    try:
-        adj_f = float(adjustment_fraction)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("adjustment_fraction must be in (0, 1)") from exc
-    if not math.isfinite(adj_f) or not 0 < adj_f < 1:
-        raise ValueError("adjustment_fraction must be in (0, 1)")
-    if isinstance(decimals, bool) or decimals is None:
+    dec_i = safe_int(decimals, default=None)
+    if dec_i is None or dec_i < 0 or (isinstance(decimals, float) and not decimals.is_integer()):
         raise ValueError("decimals must be a non-negative integer")
-    try:
-        dec_f = float(decimals)
-        if not math.isfinite(dec_f) or dec_f != int(dec_f) or int(dec_f) < 0:
-            raise ValueError("decimals must be a non-negative integer")
-        dec_i = int(dec_f)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("decimals must be a non-negative integer") from exc
     return (
         round(mid_f * (1 - adj_f), dec_i),
         round(mid_f * (1 + adj_f), dec_i),
@@ -247,40 +218,19 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
       BUY:  (sell-buy)/sell >= edge  -> buy <= sell*(1-edge)
     """
     side = normalize_side(exit_side)
-    if isinstance(fill_price, bool) or isinstance(current_price, bool) or fill_price is None or current_price is None:
+    fill_f = safe_pos_float(fill_price, default=None)
+    cur_f = safe_pos_float(current_price, default=None)
+    if fill_f is None or cur_f is None:
         raise ValueError("the prices must be positive")
-    try:
-        fill_f = float(fill_price)
-        cur_f = float(current_price)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("the prices must be positive") from exc
-    if not math.isfinite(fill_f) or not math.isfinite(cur_f) or fill_f <= 0 or cur_f <= 0:
-        raise ValueError("the prices must be positive")
-    if isinstance(adjustment_fraction, bool) or adjustment_fraction is None:
+    adj_f = safe_float(adjustment_fraction, default=None)
+    if adj_f is None or not 0 < adj_f < 1:
         raise ValueError("adjustment_fraction must be in (0, 1)")
-    try:
-        adj_f = float(adjustment_fraction)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("adjustment_fraction must be in (0, 1)") from exc
-    if not math.isfinite(adj_f) or not 0 < adj_f < 1:
-        raise ValueError("adjustment_fraction must be in (0, 1)")
-    if isinstance(min_edge_fraction, bool) or min_edge_fraction is None:
+    edge_f = safe_float(min_edge_fraction, default=None)
+    if edge_f is None or not 0 <= edge_f < 1:
         raise ValueError("min_edge_fraction must be in [0, 1)")
-    try:
-        edge_f = float(min_edge_fraction)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("min_edge_fraction must be in [0, 1)") from exc
-    if not math.isfinite(edge_f) or not 0 <= edge_f < 1:
-        raise ValueError("min_edge_fraction must be in [0, 1)")
-    if isinstance(decimals, bool) or decimals is None:
+    dec_i = safe_int(decimals, default=None)
+    if dec_i is None or dec_i < 0 or (isinstance(decimals, float) and not decimals.is_integer()):
         raise ValueError("decimals must be a non-negative integer")
-    try:
-        dec_f = float(decimals)
-        if not math.isfinite(dec_f) or dec_f != int(dec_f) or int(dec_f) < 0:
-            raise ValueError("decimals must be a non-negative integer")
-        dec_i = int(dec_f)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("decimals must be a non-negative integer") from exc
     if side == "SELL":
         market_target = cur_f * (1 + adj_f)
         floor = fill_f / (1 - edge_f)
