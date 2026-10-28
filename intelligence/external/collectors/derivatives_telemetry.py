@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import time
 import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from intelligence.external.collectors.orderbook_depth import (
+    _DiskBackedSymbolCollector,
+    _clean_dict_float,
+    _effective_now_ts,
     _resolve_binance_lookup_symbol,
     _symbol_variants,
 )
-from state_io import read_recovering_previous
 
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")
 
@@ -39,34 +39,25 @@ class DerivativesTelemetry:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> DerivativesTelemetry:
-        import math
         if not isinstance(data, dict):
             data = {}
-
-        def _f(key: str, default: float) -> float:
-            raw = data.get(key)
-            if raw is None or isinstance(raw, bool):
-                return default
-            try:
-                val = float(raw)
-                return val if math.isfinite(val) else default
-            except (TypeError, ValueError):
-                return default
-
         raw_sym = data.get("symbol")
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         return cls(
             symbol=sym_str,
-            funding_rate=_f("funding_rate", 0.0),
-            predicted_funding_rate=_f("predicted_funding_rate", 0.0),
-            open_interest=max(0.0, _f("open_interest", 0.0)),
-            open_interest_usd=max(0.0, _f("open_interest_usd", 0.0)),
-            ts=max(0.0, _f("ts", 0.0)),
+            funding_rate=_clean_dict_float(data, "funding_rate", 0.0),
+            predicted_funding_rate=_clean_dict_float(data, "predicted_funding_rate", 0.0),
+            open_interest=max(0.0, _clean_dict_float(data, "open_interest", 0.0)),
+            open_interest_usd=max(0.0, _clean_dict_float(data, "open_interest_usd", 0.0)),
+            ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
         )
 
 
-class DerivativesTelemetryCollector:
+class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
     """Fetches and caches public derivatives market metrics."""
+
+    _DISK_FILE_PREFIX = "derivatives_telemetry"
+    _SNAPSHOT_CLS = DerivativesTelemetry
 
     def __init__(
         self,
@@ -74,79 +65,7 @@ class DerivativesTelemetryCollector:
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 120.0,
     ) -> None:
-        import math
-
-        def _clean_ttl(val: Any, default: float) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                vf = float(val)
-                return vf if math.isfinite(vf) and vf >= 0.0 else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
-        self.cache_ttl_sec = _clean_ttl(cache_ttl_sec, 60.0)
-        self.cache_dir = cache_dir
-        self.disk_ttl_sec = _clean_ttl(disk_ttl_sec, 120.0)
-        self._cache: Dict[str, tuple[float, DerivativesTelemetry]] = {}
-
-    def _disk_path(self, symbol: str) -> Optional[str]:
-        if not self.cache_dir or not isinstance(symbol, str) or not symbol.strip():
-            return None
-        cache_dir = self.cache_dir
-        if cache_dir == "cachedb":
-            try:
-                from cachepaths import get_cachedb_dir
-                cache_dir = get_cachedb_dir()
-            except Exception:
-                cache_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
-        return os.path.join(cache_dir, f"derivatives_telemetry_{safe_sym}.json")
-
-    @staticmethod
-    def _as_bool_flag(val: Any, default: bool = False) -> bool:
-        import math
-        if val is None:
-            return default
-        if isinstance(val, str):
-            s = val.strip().lower()
-            if s in ("1", "1.0", "true", "yes", "on"):
-                return True
-            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", ""):
-                return False
-            return default
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return math.isfinite(float(val)) and float(val) != 0.0
-        return bool(val)
-
-    def _load_from_disk(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
-        from state_io import read_recovering_previous
-        max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-        for cand in _symbol_variants(symbol):
-            p = self._disk_path(cand)
-            if not p:
-                continue
-            try:
-                data = read_recovering_previous(p, json.loads, default=None)
-                if not isinstance(data, dict):
-                    continue
-                telemetry = DerivativesTelemetry.from_dict(data)
-                if telemetry.ts > 0.0 and 0.0 <= (now - telemetry.ts) < max_age:
-                    self._cache[symbol.strip().upper()] = (telemetry.ts, telemetry)
-                    return telemetry
-            except Exception as e:
-                logger.debug("Failed loading derivatives telemetry from %s: %s", p, e)
-        return None
-
-    def _save_to_disk(self, telemetry: DerivativesTelemetry) -> None:
-        p = self._disk_path(telemetry.symbol)
-        if not p:
-            return
-        try:
-            from state_io import save_json_state
-            save_json_state(p, telemetry.to_dict(), indent=2)
-        except Exception as e:
-            logger.debug("Failed writing derivatives telemetry to %s: %s", p, e)
+        super().__init__(cache_ttl_sec, 60.0, cache_dir, disk_ttl_sec, 120.0)
 
     def fetch(
         self,
@@ -155,33 +74,15 @@ class DerivativesTelemetryCollector:
         now: Optional[float] = None,
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
-        import math
         if not isinstance(symbol, str):
             return None
         symbol = symbol.strip().upper()
         if not symbol:
             return None
-        try:
-            now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
-            now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()
-        except (TypeError, ValueError, OverflowError):
-            now = time.time()
-        cached = None
-        for cand in _symbol_variants(symbol):
-            cached = self._cache.get(cand)
-            if cached is not None:
-                break
-        if cached:
-            if isinstance(cached, tuple) and len(cached) >= 2:
-                c_ts = cached[0]
-                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
-                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
-                        return cached[1]
-            elif isinstance(cached, DerivativesTelemetry):
-                c_ts = getattr(cached, "ts", None)
-                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
-                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
-                        return cached
+        now = _effective_now_ts(now)
+        cached, fresh = self._lookup_cached(symbol, now)
+        if fresh is not None:
+            return fresh
 
         disk_snap = self._load_from_disk(symbol, now)
         if disk_snap is not None:
@@ -201,17 +102,8 @@ class DerivativesTelemetryCollector:
             if not isinstance(data_fund, dict):
                 raise ValueError(f"Unexpected premiumIndex payload for {lookup_sym}: {type(data_fund).__name__}")
 
-            def _safe_float(raw, default: float = 0.0) -> float:
-                if raw is None or isinstance(raw, bool):
-                    return default
-                try:
-                    val = float(raw)
-                    return val if math.isfinite(val) else default
-                except (TypeError, ValueError, OverflowError):
-                    return default
-
-            funding_rate = _safe_float(data_fund.get("lastFundingRate"), 0.0)
-            next_funding = _safe_float(data_fund.get("nextFundingRate"), funding_rate)
+            funding_rate = _clean_dict_float(data_fund, "lastFundingRate", 0.0)
+            next_funding = _clean_dict_float(data_fund, "nextFundingRate", funding_rate)
 
             # 2. Open interest endpoint
             url_oi = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={lookup_sym}"
@@ -221,8 +113,8 @@ class DerivativesTelemetryCollector:
             if not isinstance(data_oi, dict):
                 raise ValueError(f"Unexpected openInterest payload for {lookup_sym}: {type(data_oi).__name__}")
 
-            oi = max(0.0, _safe_float(data_oi.get("openInterest"), 0.0))
-            mark_price = max(0.0, _safe_float(data_fund.get("markPrice"), 0.0))
+            oi = max(0.0, _clean_dict_float(data_oi, "openInterest", 0.0))
+            mark_price = max(0.0, _clean_dict_float(data_fund, "markPrice", 0.0))
             oi_usd = oi * mark_price
 
             telemetry = DerivativesTelemetry(
@@ -238,31 +130,8 @@ class DerivativesTelemetryCollector:
             return telemetry
         except Exception as e:
             logger.warning("Could not fetch derivatives telemetry for %s: %s", symbol, e)
-            if cached:
-                if isinstance(cached, tuple) and len(cached) >= 2:
-                    return cached[1]
-                if isinstance(cached, DerivativesTelemetry):
-                    return cached
-            for cand in _symbol_variants(symbol):
-                p = self._disk_path(cand)
-                if p:
-                    try:
-                        data = read_recovering_previous(p, json.loads, default=None)
-                        if isinstance(data, dict):
-                            return DerivativesTelemetry.from_dict(data)
-                    except Exception:
-                        pass
-            return None
+            return self._fallback_stale(symbol, cached)
 
     def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:
         """Inject telemetry directly (useful for tests and synthetic feeds)."""
-        import math
-        if isinstance(telemetry, dict):
-            telemetry = DerivativesTelemetry.from_dict(telemetry)
-        if telemetry is None or not isinstance(getattr(telemetry, "symbol", None), str) or not telemetry.symbol.strip():
-            return
-        raw_ts = getattr(telemetry, "ts", None)
-        ts_val = float(raw_ts) if (isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and math.isfinite(float(raw_ts)) and float(raw_ts) > 0.0) else time.time()
-        self._cache[telemetry.symbol.strip().upper()] = (ts_val, telemetry)
-        if self._as_bool_flag(save_to_disk, default=False):
-            self._save_to_disk(telemetry)
+        self._record_item(telemetry, save_to_disk=save_to_disk)

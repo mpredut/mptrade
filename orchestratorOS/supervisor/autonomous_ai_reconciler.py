@@ -184,28 +184,21 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     seen_keys: set[Tuple[str, str, str]] = set()
 
     raw_multi = plan.get("market_trading_decisions")
-    if isinstance(raw_multi, list):
-        for item in raw_multi:
-            if isinstance(item, dict):
-                key = (
-                    str(item.get("venue") or "").strip().lower(),
-                    str(item.get("symbol") or "").strip().upper(),
-                    str(item.get("decision") or "HOLD").strip().upper(),
-                )
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    decisions.append(item)
-
     raw_single = plan.get("market_trading_decision")
-    if isinstance(raw_single, dict) and raw_single:
-        key = (
-            str(raw_single.get("venue") or "").strip().lower(),
-            str(raw_single.get("symbol") or "").strip().upper(),
-            str(raw_single.get("decision") or "HOLD").strip().upper(),
-        )
-        if key not in seen_keys:
-            seen_keys.add(key)
-            decisions.append(raw_single)
+    candidates = [
+        *(raw_multi if isinstance(raw_multi, list) else ()),
+        *([raw_single] if isinstance(raw_single, dict) and raw_single else ()),
+    ]
+    for item in candidates:
+        if isinstance(item, dict):
+            key = (
+                str(item.get("venue") or "").strip().lower(),
+                str(item.get("symbol") or "").strip().upper(),
+                str(item.get("decision") or "HOLD").strip().upper(),
+            )
+            if key not in seen_keys:
+                seen_keys.add(key)
+                decisions.append(item)
 
     # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first.
     def _sort_key(d: Dict[str, Any]) -> Tuple[int, float]:
@@ -216,6 +209,98 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     decisions.sort(key=_sort_key)
     return decisions
+
+
+def _read_last_jsonl_dict(fpath: str, tail_bytes: int = 4096) -> Optional[Dict[str, Any]]:
+    """Read and parse the last JSON object from a JSONL file using a bounded tail seek."""
+    if not os.path.exists(fpath):
+        return None
+    try:
+        with open(fpath, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
+        if lines:
+            parsed = json.loads(lines[-1])
+            if isinstance(parsed, dict):
+                return parsed
+    except Exception:
+        pass
+    return None
+
+
+def _apply_short_trend_item(
+    entry: Dict[str, Any],
+    tinfo: Dict[str, Any],
+    *,
+    fallback_price: Any = None,
+    require_any_slope: bool = False,
+) -> bool:
+    """Populate short/dynamic trend slopes (3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
+    dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
+    d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
+    d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
+    d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
+    if require_any_slope and not any(
+        x is not None
+        for x in (
+            d222.get("slope_full"),
+            d900.get("slope_full"),
+            d9000.get("slope_full"),
+            tinfo.get("slope_full"),
+        )
+    ):
+        return False
+    cur_px = tinfo.get("current_price", fallback_price)
+    if _parse_finite_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
+        entry["price"] = cur_px
+    trend = tinfo.get("final_trend", entry.get("trend", 0))
+    entry["trend"] = trend
+    entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
+    entry["slope_full"] = tinfo.get("slope_full", 0.0)
+    entry["gradient_recent"] = tinfo.get("gradient_recent", 0.0)
+    if not require_any_slope:
+        entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
+        entry["epsilon"] = tinfo.get("epsilon")
+        entry["trend_fast"] = tinfo.get("trend_fast", trend)
+        entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
+    else:
+        if tinfo.get("gradient_recent_fast") is not None:
+            entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
+        if tinfo.get("epsilon") is not None:
+            entry["epsilon"] = tinfo.get("epsilon")
+        if tinfo.get("vol_1h_pct") is not None:
+            entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
+    for w_dict, s_key, t_key in (
+        (d222, "slope_3_7m", "trend_3_7m"),
+        (d900, "slope_15m", "trend_15m"),
+        (d9000, "slope_2_5h", "trend_2_5h"),
+    ):
+        if w_dict.get("slope_full") is not None or require_any_slope:
+            entry[s_key] = w_dict.get("slope_full", 0.0) if require_any_slope else w_dict.get("slope_full")
+            entry[t_key] = w_dict.get("final_trend", trend)
+    return True
+
+
+def _set_pos_anchor(
+    pos: Dict[str, Any],
+    px_key: str,
+    pct_key: str,
+    anchor_val: Any,
+    cur_px: float,
+    *,
+    overwrite: bool = True,
+) -> None:
+    """Attach a cost/buy/sell/peak price anchor and its percentage delta to a position dict."""
+    a_f = _parse_finite_float(anchor_val, 0.0)
+    if a_f <= 0:
+        return
+    if not overwrite and pos.get(px_key) is not None:
+        return
+    pos[px_key] = a_f
+    if cur_px > 0:
+        pos[pct_key] = round(((cur_px - a_f) / a_f) * 100.0, 2)
 
 
 def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None) -> Dict[str, Any]:
@@ -760,34 +845,8 @@ class AutonomousAIReconciler:
                 if sym in ("items", "fetchtime", "rest_sync_cursor", "metadata", "counts"):
                     continue
                 if isinstance(tinfo, dict):
-                    px = tinfo.get("current_price", price_map.get(sym))
-                    trend = tinfo.get("final_trend", 0)
-                    growth = tinfo.get("growth_coefficient", 0.0)
-                    slope = tinfo.get("slope_full", 0.0)
-                    dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
-                    d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
-                    d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
-                    d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
-                    entry: Dict[str, Any] = {
-                        "price": px,
-                        "trend": trend,
-                        "growth_coefficient": growth,
-                        "slope_full": slope,
-                        "gradient_recent": tinfo.get("gradient_recent", 0.0),
-                        "gradient_recent_fast": tinfo.get("gradient_recent_fast"),
-                        "epsilon": tinfo.get("epsilon"),
-                        "trend_fast": tinfo.get("trend_fast", trend),
-                        "vol_1h_pct": tinfo.get("vol_1h_pct"),
-                    }
-                    if d222.get("slope_full") is not None:
-                        entry["slope_3_7m"] = d222.get("slope_full")
-                        entry["trend_3_7m"] = d222.get("final_trend", trend)
-                    if d900.get("slope_full") is not None:
-                        entry["slope_15m"] = d900.get("slope_full")
-                        entry["trend_15m"] = d900.get("final_trend", trend)
-                    if d9000.get("slope_full") is not None:
-                        entry["slope_2_5h"] = d9000.get("slope_full")
-                        entry["trend_2_5h"] = d9000.get("final_trend", trend)
+                    entry: Dict[str, Any] = {}
+                    _apply_short_trend_item(entry, tinfo, fallback_price=price_map.get(sym))
                     snapshot.prices_and_trends[sym] = entry
 
         for sym, px in price_map.items():
@@ -1002,39 +1061,7 @@ class AutonomousAIReconciler:
             if not has_slopes and isinstance(trends_items_map, dict):
                 for ck in cand_keys[1:]:
                     tinfo = trends_items_map.get(ck)
-                    if isinstance(tinfo, dict):
-                        dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
-                        d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
-                        d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
-                        d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
-                        if not any(
-                            x is not None
-                            for x in (
-                                d222.get("slope_full"),
-                                d900.get("slope_full"),
-                                d9000.get("slope_full"),
-                                tinfo.get("slope_full"),
-                            )
-                        ):
-                            continue
-                        if _parse_finite_float(entry.get("price"), 0.0) <= 0 and tinfo.get("current_price") is not None:
-                            entry["price"] = tinfo.get("current_price")
-                        entry["trend"] = tinfo.get("final_trend", entry.get("trend", 0))
-                        entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
-                        entry["slope_full"] = tinfo.get("slope_full", 0.0)
-                        entry["gradient_recent"] = tinfo.get("gradient_recent", 0.0)
-                        if tinfo.get("gradient_recent_fast") is not None:
-                            entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
-                        if tinfo.get("epsilon") is not None:
-                            entry["epsilon"] = tinfo.get("epsilon")
-                        entry["slope_3_7m"] = d222.get("slope_full", 0.0)
-                        entry["trend_3_7m"] = d222.get("final_trend", entry["trend"])
-                        entry["slope_15m"] = d900.get("slope_full", 0.0)
-                        entry["trend_15m"] = d900.get("final_trend", entry["trend"])
-                        entry["slope_2_5h"] = d9000.get("slope_full", 0.0)
-                        entry["trend_2_5h"] = d9000.get("final_trend", entry["trend"])
-                        if tinfo.get("vol_1h_pct") is not None:
-                            entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
+                    if isinstance(tinfo, dict) and _apply_short_trend_item(entry, tinfo, require_any_slope=True):
                         has_slopes = True
                         break
             if not has_slopes:
@@ -1241,20 +1268,9 @@ class AutonomousAIReconciler:
                                 snapshot.microstructure[sym][mk] = mv
 
         # 9. Portfolio value, Kraken cycle states, cross-venue snapshot, recent orders/fills & autonomous intents
-        asset_val_path = os.path.join(self.cache_dir, "cache_asset_value.jsonl")
-        if os.path.exists(asset_val_path):
-            try:
-                with open(asset_val_path, "rb") as f:
-                    f.seek(0, os.SEEK_END)
-                    size = f.tell()
-                    f.seek(max(0, size - 2048))
-                    tail_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
-                if tail_lines:
-                    last_av = json.loads(tail_lines[-1])
-                    if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
-                        snapshot.portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
-            except Exception:
-                pass
+        last_av = _read_last_jsonl_dict(os.path.join(self.cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
+        if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
+            snapshot.portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
 
         # 9B. Active DCA cycle states on Kraken, Hyperliquid, and Trading212 (.state_*.json)
         kraken_cycles: Dict[str, Any] = {}
@@ -1333,20 +1349,9 @@ class AutonomousAIReconciler:
         xst_path = os.path.join(kraken_dir, "xstock_state.json")
         xst_data = _read_json(xst_path) if os.path.exists(xst_path) else None
         if isinstance(xst_data, dict):
-            xstock_cfg: Dict[str, str] = {}
-            k_cfg_path = os.path.join(kraken_dir, "config.env")
-            if os.path.exists(k_cfg_path):
-                try:
-                    with open(k_cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                        for raw_line in f:
-                            line = raw_line.split("#", 1)[0].strip()
-                            if line.startswith("XSTOCK_") and "=" in line:
-                                k_part, v_part = line.split("=", 1)
-                                xstock_cfg[k_part.strip()] = v_part.strip().strip("'\"")
-                except Exception:
-                    pass
+            xstock_cfg = load_key_value_conf(kraken_dir, root_dir=kraken_dir)
             known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
-            x_regex = xstock_cfg.get("XSTOCK_REGEX") or "SPCX|SPACEX"
+            x_regex = xstock_cfg.get("xstock_regex") or "SPCX|SPACEX"
             x_holdings: Dict[str, float] = {}
             for ak, av in known_assets.items():
                 ak_str = str(ak).strip()
@@ -1369,12 +1374,12 @@ class AutonomousAIReconciler:
                 else None
             )
             if x_holdings or alloc_info or listed_pair:
-                underlying = (xstock_cfg.get("XSTOCK_YAHOO") or "SPCX").strip().upper()
+                underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
                 t212_sib = f"{underlying}_US_EQ"
-                alloc_px = _parse_finite_float(xstock_cfg.get("XSTOCK_ALLOC_PRICE"), 0.0)
-                tp1_pct = _parse_finite_float(xstock_cfg.get("XSTOCK_TP_ALERT_PCT"), 0.0)
-                tp2_pct = _parse_finite_float(xstock_cfg.get("XSTOCK_TP2_ALERT_PCT"), 0.0)
-                sl_pct = _parse_finite_float(xstock_cfg.get("XSTOCK_SL_ALERT_PCT"), 0.0)
+                alloc_px = _parse_finite_float(xstock_cfg.get("xstock_alloc_price"), 0.0)
+                tp1_pct = _parse_finite_float(xstock_cfg.get("xstock_tp_alert_pct"), 0.0)
+                tp2_pct = _parse_finite_float(xstock_cfg.get("xstock_tp2_alert_pct"), 0.0)
+                sl_pct = _parse_finite_float(xstock_cfg.get("xstock_sl_alert_pct"), 0.0)
                 live_px = 0.0
                 for cand in cache_symbol_variants(listed_pair or underlying):
                     cand_px = _parse_finite_float(
@@ -1414,20 +1419,10 @@ class AutonomousAIReconciler:
 
         # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid spot/perp equity summary)
         for l_dir in self.logs_dirs:
-            ps_path = os.path.join(l_dir, "portfolio_snapshot.jsonl")
-            if os.path.exists(ps_path):
-                try:
-                    with open(ps_path, "rb") as f:
-                        f.seek(0, os.SEEK_END)
-                        size = f.tell()
-                        f.seek(max(0, size - 4096))
-                        ps_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
-                    if ps_lines:
-                        last_ps = json.loads(ps_lines[-1])
-                        if isinstance(last_ps, dict) and isinstance(last_ps.get("hl"), dict):
-                            snapshot.portfolio_summary["hyperliquid_readonly"] = last_ps["hl"]
-                except Exception:
-                    pass
+            last_ps = _read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096)
+            if isinstance(last_ps, dict):
+                if isinstance(last_ps.get("hl"), dict):
+                    snapshot.portfolio_summary["hyperliquid_readonly"] = last_ps["hl"]
                 break
 
         # 9D. Recent fills across Binance (cache_order.json), Kraken (cache_trade_kraken.json), and Hyperliquid
@@ -1477,25 +1472,13 @@ class AutonomousAIReconciler:
                         if pk_val > 0:
                             pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
                         break
-            ro = recent_orders.get(p_sym)
+            ro = next((recent_orders[c] for c in p_variants if isinstance(recent_orders.get(c), dict)), None)
             if isinstance(ro, dict):
-                avg_b = _parse_finite_float(ro.get("active_avg_buy_px"), 0.0)
-                if avg_b > 0:
-                    pos["active_avg_buy_px"] = avg_b
-                    if pos_px_f > 0:
-                        pos["pnl_vs_avg_pct"] = round(((pos_px_f - avg_b) / avg_b) * 100.0, 2)
                 lb = ro.get("last_buy")
-                lb_px = _parse_finite_float(lb.get("price") if isinstance(lb, dict) else None, 0.0)
-                if lb_px > 0:
-                    pos["last_buy_px"] = lb_px
-                    if pos_px_f > 0:
-                        pos["pnl_vs_last_buy_pct"] = round(((pos_px_f - lb_px) / lb_px) * 100.0, 2)
                 ls = ro.get("last_sell")
-                ls_px = _parse_finite_float(ls.get("price") if isinstance(ls, dict) else None, 0.0)
-                if ls_px > 0:
-                    pos["last_sell_px"] = ls_px
-                    if pos_px_f > 0:
-                        pos["chg_vs_last_sell_pct"] = round(((pos_px_f - ls_px) / ls_px) * 100.0, 2)
+                _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
+                _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
+                _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             venue_cyc_maps = (
                 (hyperliquid_cycles, kraken_cycles, t212_cycles)
                 if p_venue == "hyperliquid"
@@ -1513,26 +1496,10 @@ class AutonomousAIReconciler:
                     cyc = next((cyc_map[c] for c in p_variants if isinstance(cyc_map.get(c), dict)), None)
                 if not isinstance(cyc, dict):
                     continue
-                avg_c = _parse_finite_float(cyc.get("avg_cost_px"), 0.0)
-                if "active_avg_buy_px" not in pos and avg_c > 0:
-                    pos["active_avg_buy_px"] = avg_c
-                    if pos_px_f > 0:
-                        pos["pnl_vs_avg_pct"] = round(((pos_px_f - avg_c) / avg_c) * 100.0, 2)
-                lb_c = _parse_finite_float(cyc.get("last_buy_price"), 0.0)
-                if "last_buy_px" not in pos and lb_c > 0:
-                    pos["last_buy_px"] = lb_c
-                    if pos_px_f > 0:
-                        pos["pnl_vs_last_buy_pct"] = round(((pos_px_f - lb_c) / lb_c) * 100.0, 2)
-                ls_c = _parse_finite_float(cyc.get("last_sell_price"), 0.0)
-                if "last_sell_px" not in pos and ls_c > 0:
-                    pos["last_sell_px"] = ls_c
-                    if pos_px_f > 0:
-                        pos["chg_vs_last_sell_pct"] = round(((pos_px_f - ls_c) / ls_c) * 100.0, 2)
-                pk = _parse_finite_float(cyc.get("pos_peak"), 0.0)
-                if pos.get("trailing_peak") is None and pk > 0:
-                    pos["trailing_peak"] = pk
-                    if pos_px_f > 0:
-                        pos["dd_from_peak_pct"] = round(((pos_px_f - pk) / pk) * 100.0, 2)
+                _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+                _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
+                _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
+                _set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -1594,65 +1561,41 @@ class AutonomousAIReconciler:
             if active_mt:
                 snapshot.portfolio_summary["monitortrades_active_state"] = active_mt
 
-        if scope == "equities":
-            eq_syms = set(inst_by_sym.keys()) | set(t212_cycles.keys())
-            snapshot.prices_and_trends = {
-                k: v for k, v in snapshot.prices_and_trends.items() if k in eq_syms
-            }
-            snapshot.microstructure = {}
-            for crypto_key in (
-                "total_value_usdc",
-                "kraken_cycles",
-                "hyperliquid_cycles",
-                "hyperliquid_signal",
-                "hyperliquid_readonly",
-                "recent_orders",
-                "monitortrades_active_state",
-                "trailing_peaks",
-            ):
-                snapshot.portfolio_summary.pop(crypto_key, None)
-            if "recent_ai_intents" in snapshot.portfolio_summary:
-                eq_intents = [
-                    i for i in snapshot.portfolio_summary["recent_ai_intents"]
-                    if isinstance(i, dict) and str(i.get("venue") or "").lower() == "t212"
-                ]
-                if eq_intents:
-                    snapshot.portfolio_summary["recent_ai_intents"] = eq_intents
-                else:
-                    snapshot.portfolio_summary.pop("recent_ai_intents", None)
-            if "active_retry_queue" in snapshot.portfolio_summary:
-                eq_retries = [
-                    r for r in snapshot.portfolio_summary["active_retry_queue"]
-                    if isinstance(r, dict) and str(r.get("venue") or "").lower() == "t212"
-                ]
-                if eq_retries:
-                    snapshot.portfolio_summary["active_retry_queue"] = eq_retries
-                else:
-                    snapshot.portfolio_summary.pop("active_retry_queue", None)
-        elif scope == "crypto":
-            snapshot.prices_and_trends = {
-                k: v for k, v in snapshot.prices_and_trends.items()
-                if not str(k).upper().endswith(("_EQ", "_US_EQ"))
-            }
-            snapshot.portfolio_summary.pop("t212_cycles", None)
-            if "recent_ai_intents" in snapshot.portfolio_summary:
-                crypto_intents = [
-                    i for i in snapshot.portfolio_summary["recent_ai_intents"]
-                    if isinstance(i, dict) and str(i.get("venue") or "").lower() != "t212"
-                ]
-                if crypto_intents:
-                    snapshot.portfolio_summary["recent_ai_intents"] = crypto_intents
-                else:
-                    snapshot.portfolio_summary.pop("recent_ai_intents", None)
-            if "active_retry_queue" in snapshot.portfolio_summary:
-                crypto_retries = [
-                    r for r in snapshot.portfolio_summary["active_retry_queue"]
-                    if isinstance(r, dict) and str(r.get("venue") or "").lower() != "t212"
-                ]
-                if crypto_retries:
-                    snapshot.portfolio_summary["active_retry_queue"] = crypto_retries
-                else:
-                    snapshot.portfolio_summary.pop("active_retry_queue", None)
+        if scope in ("equities", "crypto"):
+            want_t212 = scope == "equities"
+            if want_t212:
+                eq_syms = set(inst_by_sym.keys()) | set(t212_cycles.keys())
+                snapshot.prices_and_trends = {
+                    k: v for k, v in snapshot.prices_and_trends.items() if k in eq_syms
+                }
+                snapshot.microstructure = {}
+                for crypto_key in (
+                    "total_value_usdc",
+                    "kraken_cycles",
+                    "hyperliquid_cycles",
+                    "hyperliquid_signal",
+                    "hyperliquid_readonly",
+                    "recent_orders",
+                    "monitortrades_active_state",
+                    "trailing_peaks",
+                ):
+                    snapshot.portfolio_summary.pop(crypto_key, None)
+            else:
+                snapshot.prices_and_trends = {
+                    k: v for k, v in snapshot.prices_and_trends.items()
+                    if not str(k).upper().endswith(("_EQ", "_US_EQ"))
+                }
+                snapshot.portfolio_summary.pop("t212_cycles", None)
+            for list_key in ("recent_ai_intents", "active_retry_queue"):
+                if list_key in snapshot.portfolio_summary:
+                    filtered_items = [
+                        item for item in snapshot.portfolio_summary[list_key]
+                        if isinstance(item, dict) and (str(item.get("venue") or "").lower() == "t212") == want_t212
+                    ]
+                    if filtered_items:
+                        snapshot.portfolio_summary[list_key] = filtered_items
+                    else:
+                        snapshot.portfolio_summary.pop(list_key, None)
 
         return snapshot
 

@@ -218,6 +218,41 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
     return s.replace("USDC", "USDT") if "USDC" in s else s
 
 
+def resolve_kraken_lookup_symbol(symbol: object) -> str:
+    """Resolve any venue symbol to its canonical Kraken public ``<BASE>USD`` / ``XBTUSD`` lookup pair."""
+    base = canonical_base_asset(symbol)
+    if not base:
+        return ""
+    if base == "BTC":
+        return "XBTUSD"
+    if base == "DOGE":
+        return "XDGUSD"
+    return f"{base}USD"
+
+
+def resolve_cache_dir_path(cache_dir: object) -> str | None:
+    """Resolve a collector ``cache_dir`` argument (e.g. ``'cachedb'``) to its effective directory path."""
+    if not cache_dir or isinstance(cache_dir, bool):
+        return None
+    raw = str(os.fspath(cache_dir)).strip() if isinstance(cache_dir, (str, os.PathLike)) else ""
+    if not raw:
+        return None
+    if raw == "cachedb":
+        return get_cachedb_dir()
+    return raw
+
+
+def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) -> str | None:
+    """Build the disk snapshot path ``<cache_dir>/<prefix>_<SAFE_SYMBOL>.json`` for a symbol collector."""
+    eff_dir = resolve_cache_dir_path(cache_dir)
+    if not eff_dir or not isinstance(symbol, str) or not symbol.strip():
+        return None
+    safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
+    if not safe_sym:
+        return None
+    return os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")
+
+
 def cache_symbol_variants(
     symbol: object,
     *,

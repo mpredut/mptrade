@@ -7,6 +7,7 @@ import math
 import os
 from typing import Any, Dict, Optional, Tuple
 
+from botcore import _parse_bool_flag
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
@@ -448,18 +449,10 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
             if su in ("S", "SELL", "ASK", "A", "SHORT"):
                 return "SELL"
         is_buyer = o.get("isBuyer")
-        if isinstance(is_buyer, bool):
-            return "BUY" if is_buyer else "SELL"
-        if isinstance(is_buyer, (int, float)):
-            if math.isfinite(float(is_buyer)):
-                return "BUY" if float(is_buyer) != 0.0 else "SELL"
-            return ""
-        if isinstance(is_buyer, str):
-            ib_low = is_buyer.strip().lower()
-            if ib_low in ("true", "1", "1.0", "yes", "on"):
-                return "BUY"
-            if ib_low in ("false", "0", "0.0", "no", "off"):
-                return "SELL"
+        if is_buyer is not None:
+            ib_flag = _parse_bool_flag(is_buyer, None)
+            if ib_flag is not None:
+                return "BUY" if ib_flag else "SELL"
         return ""
 
     ordered = sorted(
@@ -550,11 +543,8 @@ def collect_pretrade_telemetry(
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) to provide deep context to the LLM."""
     if cachedb_dir == "cachedb":
-        try:
-            from cachepaths import get_cachedb_dir
-            cachedb_dir = get_cachedb_dir()
-        except Exception:
-            cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+        from cachepaths import get_cachedb_dir
+        cachedb_dir = get_cachedb_dir()
     telemetry: Dict[str, Any] = {}
 
     def _safe_opt_float(val: Any) -> Optional[float]:
@@ -704,8 +694,6 @@ def collect_pretrade_telemetry(
 
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
                 btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items)
-                if not btc_series_24h:
-                    btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "XBTUSD", current_price_items=cur_p_items)
                 btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
                 if btc_m24:
                     vs_parts = []
@@ -728,10 +716,6 @@ def collect_pretrade_telemetry(
                         cross_parts.append(f"alt_btc_dd_high={float(cross_btc['alt_btc_dd_24h_high_pct']):+.2f}%")
                     if cross_btc.get("alt_btc_bounce_24h_low_pct") is not None:
                         cross_parts.append(f"alt_btc_bounce_low={float(cross_btc['alt_btc_bounce_24h_low_pct']):+.2f}%")
-                    if cross_btc.get("beta_btc_24h") is not None:
-                        cross_parts.append(f"beta_24h={cross_btc['beta_btc_24h']}")
-                    if cross_btc.get("corr_btc_24h") is not None:
-                        cross_parts.append(f"corr_24h={cross_btc['corr_btc_24h']}")
                     if vs_parts or cross_parts:
                         rel_str = f"vs_btc({', '.join(vs_parts)})" if vs_parts else ""
                         if cross_parts:
@@ -849,14 +833,9 @@ _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecisio
 
 def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
     """True when LLM pre-trade guards are suppressed via environment flags (backtest/replay/disabled)."""
-    if isinstance(explicit_client, str):
-        exp_b = explicit_client.strip().lower() in ("1", "1.0", "true", "yes", "on")
-    elif isinstance(explicit_client, (int, float)) and not isinstance(explicit_client, bool):
-        exp_b = math.isfinite(float(explicit_client)) and float(explicit_client) != 0.0
-    else:
-        exp_b = bool(explicit_client)
+    exp_b = _parse_bool_flag(explicit_client, False)
     return not exp_b and any(
-        os.environ.get(k, "").strip().lower() in ("1", "1.0", "true", "yes", "on")
+        _parse_bool_flag(os.environ.get(k))
         for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
     )
 

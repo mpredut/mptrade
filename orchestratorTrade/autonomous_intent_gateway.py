@@ -117,30 +117,20 @@ def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
 def _parse_notify_enabled_flag(notify_enabled: Any, conf: Dict[str, str], conf_key: str) -> bool:
     """Validate and coerce an explicit ``notify_enabled`` override or ``conf[conf_key]`` into a bool."""
     if notify_enabled is not None:
-        if isinstance(notify_enabled, str):
-            ne_s = notify_enabled.strip().lower()
-            if ne_s in ("1", "true", "yes", "on", "1.0"):
-                return True
-            if ne_s in ("0", "false", "no", "off", "0.0", ""):
-                return False
-            ne_num = _parse_finite_float(ne_s, float("nan"))
-            if not math.isfinite(ne_num):
-                raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-            return bool(ne_num != 0.0)
         if isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
             raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-        return bool(notify_enabled)
+        if isinstance(notify_enabled, str) and notify_enabled.strip() == "":
+            return False
+        res = _parse_bool_flag(notify_enabled, None)
+        if res is not None:
+            return res
+        raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
     if conf_key not in conf:
         raise KeyError(f"Missing required '{conf_key}' in order_guard.conf")
-    raw_notify = str(conf[conf_key]).strip().lower()
-    if raw_notify in ("1", "true", "yes", "on", "1.0"):
-        return True
-    if raw_notify in ("0", "false", "no", "off", "0.0"):
-        return False
-    notify_num = _parse_finite_float(raw_notify, float("nan"))
-    if not math.isfinite(notify_num):
-        raise ValueError(f"Invalid {conf_key} {conf[conf_key]!r}")
-    return bool(notify_num != 0.0)
+    res = _parse_bool_flag(conf[conf_key], None)
+    if res is not None:
+        return res
+    raise ValueError(f"Invalid {conf_key} {conf[conf_key]!r}")
 
 
 def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
@@ -160,8 +150,8 @@ def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
     return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
 
 
-def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
-    """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
+def _parse_env_file(env_path: str) -> Dict[str, str]:
+    """Parse a key=value env/conf file into an uppercase-keyed dictionary without mutating os.environ."""
     parsed: Dict[str, str] = {}
     if not os.path.exists(env_path):
         return parsed
@@ -173,45 +163,29 @@ def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
                     continue
                 k, v = cleaned.split("=", 1)
                 key = k.strip()
-                if key.lower().startswith("export "):
-                    key = key[7:].strip()
+                if key.lower().startswith("export") and (len(key) == 6 or key[6].isspace()):
+                    key = key[6:].strip()
                 val = v.strip().strip('"').strip("'")
-                if not key:
-                    continue
-                parsed[key.upper()] = val
-                if not key.upper().startswith("STRAT_"):
-                    os.environ.setdefault(key, val)
+                if key:
+                    parsed[key.upper()] = val
     except OSError:
         pass
     return parsed
 
 
+def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
+    """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
+    parsed = _parse_env_file(env_path)
+    for key_u, val in parsed.items():
+        if not key_u.startswith("STRAT_"):
+            os.environ.setdefault(key_u, val)
+    return parsed
+
+
 def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str]]:
     """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS) and listed xStock pairs from kraken/."""
-    cfg_path = os.path.join(workspace_dir, "kraken", "config.env")
-    tradable_pairs = ""
-    cache_pairs = ""
-    if os.path.exists(cfg_path):
-        try:
-            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    cleaned = line.split("#", 1)[0].strip()
-                    if not cleaned or "=" not in cleaned:
-                        continue
-                    k, v = cleaned.split("=", 1)
-                    key = k.strip()
-                    if key.lower().startswith("export "):
-                        key = key[7:].strip()
-                    key_u = key.upper()
-                    val_s = v.strip().strip('"').strip("'")
-                    if key_u == "KRAKEN_TRADABLE_PAIRS":
-                        tradable_pairs = val_s
-                    elif key_u == "KRAKEN_CACHE_PAIRS":
-                        cache_pairs = val_s
-        except OSError:
-            pass
-
-    raw_pairs = tradable_pairs if tradable_pairs else cache_pairs
+    kv = _parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
+    raw_pairs = kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or ""
     out: List[Tuple[str, str, str]] = []
     seen_pairs: set[str] = set()
     for item in raw_pairs.split(","):
@@ -247,25 +221,12 @@ def _discover_t212_equities(workspace_dir: str) -> List[Tuple[str, str, str, str
     out: List[Tuple[str, str, str, str]] = []
     seen: set[str] = set()
     for cfg_path in sorted(glob.glob(os.path.join(glob.escape(t212_dir), "config.*.env"))):
-        try:
-            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    cleaned = line.split("#", 1)[0].strip()
-                    if not cleaned or "=" not in cleaned:
-                        continue
-                    k, v = cleaned.split("=", 1)
-                    key = k.strip()
-                    if key.lower().startswith("export "):
-                        key = key[7:].strip()
-                    if key.upper() in ("T212_TICKER", "STRAT_PAIR"):
-                        ticker = v.strip().strip('"').strip("'").upper()
-                        if ticker and ticker not in seen:
-                            seen.add(ticker)
-                            short = ticker.split("_", 1)[0]
-                            out.append((f"T212_{short}", ticker, ticker, "USD"))
-                        break
-        except OSError:
-            continue
+        kv = _parse_env_file(cfg_path)
+        ticker = (kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            short = ticker.split("_", 1)[0]
+            out.append((f"T212_{short}", ticker, ticker, "USD"))
     return out
 
 
@@ -277,19 +238,8 @@ def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[st
         search_dirs.append(workspace_dir)
     for base_dir in search_dirs:
         for fname in ("order_guard.conf", "config.env", ".env"):
-            fpath = os.path.join(base_dir, fname)
-            if not os.path.exists(fpath):
-                continue
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.split("#", 1)[0].strip()
-                    if not line or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    if k.startswith("export") and (len(k) == 6 or k[6].isspace()):
-                        k = k[6:].strip()
-                    conf[k.lower()] = v.strip().strip('"').strip("'")
+            for k_u, v_s in _parse_env_file(os.path.join(base_dir, fname)).items():
+                conf[k_u.lower()] = v_s
     return conf
 
 

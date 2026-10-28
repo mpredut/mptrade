@@ -11,13 +11,18 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
+from cachepaths import telemetry_cache_file_path
 from intelligence.external.collectors.orderbook_depth import (
+    _DiskBackedSymbolCollector,
+    _clean_dict_float,
+    _effective_now_ts,
     _resolve_binance_lookup_symbol,
     _symbol_variants,
 )
@@ -47,20 +52,8 @@ class WhalePositioningSnapshot:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
-        import math
         if not isinstance(data, dict):
             data = {}
-
-        def _f(key: str, default: float) -> float:
-            raw = data.get(key)
-            if raw is None or isinstance(raw, bool):
-                return default
-            try:
-                val = float(raw)
-                return val if math.isfinite(val) else default
-            except (TypeError, ValueError):
-                return default
-
         fr = data.get("funding_rate")
         fr_val: Optional[float] = None
         if fr is not None and not isinstance(fr, bool):
@@ -76,21 +69,24 @@ class WhalePositioningSnapshot:
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         return cls(
             symbol=sym_str,
-            top_traders_long_ratio=max(0.0, _f("top_traders_long_ratio", 1.0)),
-            top_traders_long_pct=min(1.0, max(0.0, _f("top_traders_long_pct", 0.5))),
-            taker_buy_sell_ratio=max(0.0, _f("taker_buy_sell_ratio", 1.0)),
-            taker_buy_vol_usd=max(0.0, _f("taker_buy_vol_usd", 0.0)),
-            taker_sell_vol_usd=max(0.0, _f("taker_sell_vol_usd", 0.0)),
-            open_interest_usd=max(0.0, _f("open_interest_usd", 0.0)),
-            open_interest_1h_change_pct=_f("open_interest_1h_change_pct", 0.0),
+            top_traders_long_ratio=max(0.0, _clean_dict_float(data, "top_traders_long_ratio", 1.0)),
+            top_traders_long_pct=min(1.0, max(0.0, _clean_dict_float(data, "top_traders_long_pct", 0.5))),
+            taker_buy_sell_ratio=max(0.0, _clean_dict_float(data, "taker_buy_sell_ratio", 1.0)),
+            taker_buy_vol_usd=max(0.0, _clean_dict_float(data, "taker_buy_vol_usd", 0.0)),
+            taker_sell_vol_usd=max(0.0, _clean_dict_float(data, "taker_sell_vol_usd", 0.0)),
+            open_interest_usd=max(0.0, _clean_dict_float(data, "open_interest_usd", 0.0)),
+            open_interest_1h_change_pct=_clean_dict_float(data, "open_interest_1h_change_pct", 0.0),
             divergence_regime=reg_str,
-            ts=max(0.0, _f("ts", 0.0)),
+            ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
             funding_rate=fr_val,
         )
 
 
-class WhalePositioningCollector:
+class WhalePositioningCollector(_DiskBackedSymbolCollector):
     """Collects and caches Binance Futures top trader and open interest metrics."""
+
+    _DISK_FILE_PREFIX = "whale_snapshot"
+    _SNAPSHOT_CLS = WhalePositioningSnapshot
 
     def __init__(
         self,
@@ -98,87 +94,7 @@ class WhalePositioningCollector:
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 300.0,
     ) -> None:
-        import math
-
-        def _clean_ttl(val: Any, default: float) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                vf = float(val)
-                return vf if math.isfinite(vf) and vf >= 0.0 else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
-        self.cache_ttl_sec = _clean_ttl(cache_ttl_sec, 120.0)
-        self.cache_dir = cache_dir
-        self.disk_ttl_sec = _clean_ttl(disk_ttl_sec, 300.0)
-        self._cache: Dict[str, tuple[float, WhalePositioningSnapshot]] = {}
-
-    def _effective_cache_dir(self) -> Optional[str]:
-        if not self.cache_dir:
-            return None
-        if self.cache_dir == "cachedb":
-            try:
-                from cachepaths import get_cachedb_dir
-                return get_cachedb_dir()
-            except Exception:
-                return os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        return self.cache_dir
-
-    def _disk_path(self, symbol: str) -> Optional[str]:
-        cache_dir = self._effective_cache_dir()
-        if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
-            return None
-        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
-        return os.path.join(cache_dir, f"whale_snapshot_{safe_sym}.json")
-
-    @staticmethod
-    def _as_bool_flag(val: Any, default: bool = False) -> bool:
-        import math
-        if val is None:
-            return default
-        if isinstance(val, str):
-            s = val.strip().lower()
-            if s in ("1", "1.0", "true", "yes", "on"):
-                return True
-            if s in ("0", "0.0", "false", "no", "off", "disabled", "nan", ""):
-                return False
-            return default
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return math.isfinite(float(val)) and float(val) != 0.0
-        return bool(val)
-
-    def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[WhalePositioningSnapshot]:
-        from state_io import read_recovering_previous
-        ignore_ttl_b = self._as_bool_flag(ignore_ttl, default=False)
-        max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-        for cand in _symbol_variants(symbol):
-            p = self._disk_path(cand)
-            if not p:
-                continue
-            try:
-                data = read_recovering_previous(p, json.loads, default=None)
-                if not isinstance(data, dict):
-                    continue
-                snapshot = WhalePositioningSnapshot.from_dict(data)
-                if snapshot.ts > 0.0 and 0.0 <= (now - snapshot.ts) < max_age:
-                    self._cache[symbol.strip().upper()] = (snapshot.ts, snapshot)
-                    return snapshot
-                if ignore_ttl_b:
-                    return snapshot
-            except Exception as e:
-                logger.debug("Failed loading whale snapshot from %s: %s", p, e)
-        return None
-
-    def _save_to_disk(self, snapshot: WhalePositioningSnapshot) -> None:
-        p = self._disk_path(snapshot.symbol)
-        if not p:
-            return
-        try:
-            from state_io import save_json_state
-            save_json_state(p, snapshot.to_dict(), indent=2)
-        except Exception as e:
-            logger.debug("Failed writing whale snapshot to %s: %s", p, e)
+        super().__init__(cache_ttl_sec, 120.0, cache_dir, disk_ttl_sec, 300.0)
 
     def _resolve_price_1h_change_pct(self, symbol: str) -> float:
         """Resolve 1-hour price change percentage from cached price history (0 ms local)."""
@@ -188,7 +104,6 @@ class WhalePositioningCollector:
         try:
             sym_u = symbol.upper()
             variants = _symbol_variants(sym_u)
-
             for sym_key in variants:
                 if "/" in sym_key:
                     continue
@@ -209,7 +124,6 @@ class WhalePositioningCollector:
                     elif isinstance(items_dict, list):
                         pts = items_dict
                     if pts and len(pts) >= 2:
-                        import math
                         valid_pts = []
                         for pt in pts:
                             try:
@@ -248,24 +162,15 @@ class WhalePositioningCollector:
 
     def _resolve_cached_funding_rate(self, symbol: str, now: Optional[float] = None) -> Optional[float]:
         """Lookup cached funding rate from derivatives telemetry if available and fresh."""
-        import math
-        cache_dir = self._effective_cache_dir()
-        if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
+        if not self._effective_cache_dir() or not isinstance(symbol, str) or not symbol.strip():
             return None
         try:
-            now_ts = time.time()
-            if now is not None and not isinstance(now, bool):
-                try:
-                    nf = float(now)
-                    if math.isfinite(nf) and nf > 0.0:
-                        now_ts = nf
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            now_ts = _effective_now_ts(now)
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-            variants = _symbol_variants(symbol)
-            for s in variants:
-                clean = s.upper().replace("/", "").replace("-", "").replace("_", "")
-                p = os.path.join(cache_dir, f"derivatives_telemetry_{clean}.json")
+            for s in _symbol_variants(symbol):
+                p = telemetry_cache_file_path(self.cache_dir, "derivatives_telemetry", s)
+                if not p:
+                    continue
                 try:
                     d = read_recovering_previous(p, json.loads, default=None)
                     if not isinstance(d, dict):
@@ -402,33 +307,15 @@ class WhalePositioningCollector:
         now: Optional[float] = None,
     ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
-        import math
         if not isinstance(symbol, str):
             return None
         symbol = symbol.strip().upper()
         if not symbol:
             return None
-        try:
-            now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
-            now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()
-        except (TypeError, ValueError, OverflowError):
-            now = time.time()
-        cached = None
-        for cand in _symbol_variants(symbol):
-            cached = self._cache.get(cand)
-            if cached is not None:
-                break
-        if cached:
-            if isinstance(cached, tuple) and len(cached) >= 2:
-                c_ts = cached[0]
-                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
-                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
-                        return cached[1]
-            elif isinstance(cached, WhalePositioningSnapshot):
-                c_ts = getattr(cached, "ts", None)
-                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
-                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
-                        return cached
+        now = _effective_now_ts(now)
+        cached, fresh = self._lookup_cached(symbol, now)
+        if fresh is not None:
+            return fresh
 
         # Check disk cache before network
         disk_snap = self._load_from_disk(symbol, now)
@@ -450,15 +337,6 @@ class WhalePositioningCollector:
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 
-        def _safe_float(raw: Any, default: float) -> float:
-            if raw is None or isinstance(raw, bool):
-                return default
-            try:
-                val = float(raw)
-                return val if math.isfinite(val) else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
             # 1. Top Trader Long/Short Position Ratio
@@ -469,8 +347,8 @@ class WhalePositioningCollector:
             if not isinstance(data_top, list) or not data_top or not isinstance(data_top[-1], dict):
                 raise ValueError(f"Empty topLongShortPositionRatio response for {lookup_sym}")
 
-            top_ratio = _safe_float(data_top[-1].get("longShortRatio"), 1.0)
-            top_long_pct = _safe_float(data_top[-1].get("longAccount"), 0.5)
+            top_ratio = _clean_dict_float(data_top[-1], "longShortRatio", 1.0)
+            top_long_pct = _clean_dict_float(data_top[-1], "longAccount", 0.5)
 
             # 2. Taker Buy/Sell Volume Ratio
             url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=1h&limit=2"
@@ -480,9 +358,9 @@ class WhalePositioningCollector:
             if not isinstance(data_taker, list) or not data_taker or not isinstance(data_taker[-1], dict):
                 raise ValueError(f"Empty takerlongshortRatio response for {lookup_sym}")
 
-            taker_ratio = _safe_float(data_taker[-1].get("buySellRatio"), 1.0)
-            taker_buy = max(0.0, _safe_float(data_taker[-1].get("buyVol"), 0.0))
-            taker_sell = max(0.0, _safe_float(data_taker[-1].get("sellVol"), 0.0))
+            taker_ratio = _clean_dict_float(data_taker[-1], "buySellRatio", 1.0)
+            taker_buy = max(0.0, _clean_dict_float(data_taker[-1], "buyVol", 0.0))
+            taker_sell = max(0.0, _clean_dict_float(data_taker[-1], "sellVol", 0.0))
 
             # 3. Open Interest History (compute 1h change)
             url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=1h&limit=3"
@@ -492,9 +370,9 @@ class WhalePositioningCollector:
             if not isinstance(data_oi, list) or not data_oi or not isinstance(data_oi[-1], dict):
                 raise ValueError(f"Empty openInterestHist response for {lookup_sym}")
 
-            latest_oi_usd = max(0.0, _safe_float(data_oi[-1].get("sumOpenInterestValue"), 0.0))
+            latest_oi_usd = max(0.0, _clean_dict_float(data_oi[-1], "sumOpenInterestValue", 0.0))
             prev_oi_usd = (
-                max(0.0, _safe_float(data_oi[-2].get("sumOpenInterestValue"), latest_oi_usd))
+                max(0.0, _clean_dict_float(data_oi[-2], "sumOpenInterestValue", latest_oi_usd))
                 if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict))
                 else latest_oi_usd
             )
@@ -538,32 +416,8 @@ class WhalePositioningCollector:
             return snapshot
         except Exception as e:
             logger.warning("Could not fetch whale positioning for %s: %s", symbol, e)
-            if cached:
-                if isinstance(cached, tuple) and len(cached) >= 2:
-                    return cached[1]
-                if isinstance(cached, WhalePositioningSnapshot):
-                    return cached
-            # Try stale disk snapshot as last resort
-            for cand in _symbol_variants(symbol):
-                p = self._disk_path(cand)
-                if p:
-                    try:
-                        data = read_recovering_previous(p, json.loads, default=None)
-                        if isinstance(data, dict):
-                            return WhalePositioningSnapshot.from_dict(data)
-                    except Exception:
-                        pass
-            return None
+            return self._fallback_stale(symbol, cached)
 
     def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for testing and deterministic replays)."""
-        import math
-        if isinstance(snapshot, dict):
-            snapshot = WhalePositioningSnapshot.from_dict(snapshot)
-        if snapshot is None or not isinstance(getattr(snapshot, "symbol", None), str) or not snapshot.symbol.strip():
-            return
-        raw_ts = getattr(snapshot, "ts", None)
-        ts_val = float(raw_ts) if (isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and math.isfinite(float(raw_ts)) and float(raw_ts) > 0.0) else time.time()
-        self._cache[snapshot.symbol.strip().upper()] = (ts_val, snapshot)
-        if self._as_bool_flag(save_to_disk, default=False):
-            self._save_to_disk(snapshot)
+        self._record_item(snapshot, save_to_disk=save_to_disk)

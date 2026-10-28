@@ -141,9 +141,9 @@ class GlobalTelemetryCollector:
         out: List[str] = []
         seen_bases: set[str] = set()
         try:
-            from cachepaths import normalize_cache_base_asset
+            from cachepaths import canonical_base_asset
         except Exception:
-            normalize_cache_base_asset = lambda x: str(x).strip().upper()
+            canonical_base_asset = lambda x: str(x).strip().upper()
         try:
             from instrument_registry import tracked_price_instruments
             all_syms, _, _ = tracked_price_instruments()
@@ -151,7 +151,7 @@ class GlobalTelemetryCollector:
                 s_clean = str(s).strip().upper()
                 if s_clean and not s_clean.endswith(("_EQ", "_US_EQ")) and s_clean not in out:
                     out.append(s_clean)
-                    seen_bases.add(normalize_cache_base_asset(s_clean))
+                    seen_bases.add(canonical_base_asset(s_clean))
         except Exception as e:
             logger.debug("Could not read tracked_price_instruments: %s", e)
             try:
@@ -160,7 +160,7 @@ class GlobalTelemetryCollector:
                     s_clean = str(s).strip().upper()
                     if s_clean and s_clean not in out:
                         out.append(s_clean)
-                        seen_bases.add(normalize_cache_base_asset(s_clean))
+                        seen_bases.add(canonical_base_asset(s_clean))
             except Exception:
                 pass
         try:
@@ -173,7 +173,7 @@ class GlobalTelemetryCollector:
                             _, val = line.split("=", 1)
                             for item in val.split(","):
                                 p = item.strip().strip("'\"").upper()
-                                base = normalize_cache_base_asset(p)
+                                base = canonical_base_asset(p)
                                 if p and base and base not in seen_bases and p not in out:
                                     out.append(p)
                                     seen_bases.add(base)
