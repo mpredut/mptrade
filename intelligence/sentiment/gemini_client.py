@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
 from botcore import _parse_bool_flag, load_dotenv, required_env
+from intelligence.macro_sentiment_ssot import is_cache_fresh, safe_pos_float
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
 from orchestratorOS.agy.topics import (
     TopicSession,
@@ -173,36 +174,13 @@ class GeminiClient:
             return None
         now = time.time()
         selected_model = (model.strip() if isinstance(model, str) and model.strip() else None) or self.model
-        timeout_f = 15.0
-        if timeout_sec is not None and not isinstance(timeout_sec, bool):
-            try:
-                tf = float(timeout_sec)
-                if math.isfinite(tf) and tf > 0.0:
-                    timeout_f = tf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        timeout_sec = timeout_f
-        ttl_f = 0.0
-        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            try:
-                cf = float(cache_ttl_sec)
-                if math.isfinite(cf) and cf > 0.0:
-                    ttl_f = cf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        cache_ttl_sec = ttl_f
+        timeout_sec = safe_pos_float(timeout_sec, 15.0)
+        cache_ttl_sec = safe_pos_float(cache_ttl_sec, 0.0)
 
         if cache_ttl_sec > 0:
             cached = self._cache.get(prompt)
-            if isinstance(cached, (tuple, list)) and len(cached) >= 2:
-                raw_ts = cached[0]
-                if raw_ts is not None and not isinstance(raw_ts, bool):
-                    try:
-                        c_ts = float(raw_ts)
-                        if math.isfinite(c_ts) and 0.0 <= (now - c_ts) < cache_ttl_sec:
-                            return cached[1]
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+            if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now, ttl_sec=cache_ttl_sec):
+                return cached[1]
 
         # 1. Custom runner (used for unit tests)
         if self._custom_runner is not None:
@@ -429,19 +407,18 @@ class GeminiClient:
         cid = cid.strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", cid):
             return
-        conv_db = os.path.join(bot_cli_base, "conversations", f"{cid}.db")
-        for sfx in ("", "-wal", "-shm"):
+        for rel in (
+            f"conversations/{cid}.db",
+            f"conversations/{cid}.db-wal",
+            f"conversations/{cid}.db-shm",
+            f"annotations/{cid}.pbtxt",
+        ):
             try:
-                if os.path.exists(conv_db + sfx):
-                    os.remove(conv_db + sfx)
+                p = os.path.join(bot_cli_base, rel)
+                if os.path.exists(p):
+                    os.remove(p)
             except OSError:
                 pass
-        ann_path = os.path.join(bot_cli_base, "annotations", f"{cid}.pbtxt")
-        try:
-            if os.path.exists(ann_path):
-                os.remove(ann_path)
-        except OSError:
-            pass
         shutil.rmtree(os.path.join(bot_cli_base, "brain", cid), ignore_errors=True)
         sum_db = os.path.join(bot_cli_base, "conversation_summaries.db")
         if os.path.exists(sum_db):

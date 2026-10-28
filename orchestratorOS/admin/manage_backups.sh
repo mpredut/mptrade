@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # manage_backups.sh — Unified script for backup and disaster recovery.
 # Usage:
-#   ./manage_backups.sh local                     # Create a local backup of secrets and state
-#   ./manage_backups.sh remote                    # Create a local backup and upload encrypted to Storj
-#   ./manage_backups.sh restore <secrets_folder>  # Rebuild the machine using a backup folder
+#   ./manage_backups.sh local                     # Create a local full DR backup of secrets, state, and cachedb
+#   ./manage_backups.sh remote                    # Create local full DR backup + upload raw price-only archive to Storj
+#   ./manage_backups.sh pull-prices               # Download and unpack raw price-only archive from Storj into cachedb/
+#   ./manage_backups.sh restore <secrets_folder>  # Rebuild the machine using a backup folder or tarball
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -35,8 +36,16 @@ ensure_rclone_storj_config() {
     if [ -n "$access_key" ] && [ -n "$secret_key" ]; then
         mkdir -p "$HOME/.config/rclone"
         chmod 700 "$HOME/.config/rclone" 2>/dev/null || true
-        if [ ! -f "$HOME/.config/rclone/rclone.conf" ] || ! grep -q '^\[storj\]' "$HOME/.config/rclone/rclone.conf" 2>/dev/null; then
-            cat >> "$HOME/.config/rclone/rclone.conf" <<EOF
+        local conf="$HOME/.config/rclone/rclone.conf"
+        if [ -f "$conf" ] && grep -q '^\[storj\]' "$conf" 2>/dev/null; then
+            # Remove existing [storj] stanza before writing updated credentials
+            awk '
+                /^\[storj\]$/ { skip=1; next }
+                /^\[/ { skip=0 }
+                !skip { print }
+            ' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf"
+        fi
+        cat >> "$conf" <<EOF
 [storj]
 type = s3
 provider = Storj
@@ -44,8 +53,7 @@ access_key_id = ${access_key}
 secret_access_key = ${secret_key}
 endpoint = ${endpoint}
 EOF
-            chmod 600 "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true
-        fi
+        chmod 600 "$conf" 2>/dev/null || true
     fi
 }
 
@@ -110,44 +118,81 @@ backup_local() {
     echo "Tarball: $OUT.tar.gz + history keeping last $KEEP"
 }
 
+backup_price_data_only() {
+    local PRICE_TAR="${1:-$HOME/mptrade-price-data.tar.gz}"
+    cd "$ROOT"
+    local PRICE_FILES
+    PRICE_FILES="$(find cachedb -maxdepth 1 -type f \( \
+        -name 'cache_365_price_*.jsonl' -o \
+        -name 'cache_365_price_*.jsonl.meta' -o \
+        -name 'cache_24_price_*.json' -o \
+        -name 'cache_24_price_*.json.meta' -o \
+        -name 'cache_sparse_price_*.jsonl' -o \
+        -name 'cache_sparse_price_*.jsonl.meta' -o \
+        -name 'cache_prices_multi.json' -o \
+        -name 'cache_prices_multi.json.meta' \
+    \) | sort)"
+    [ -n "$PRICE_FILES" ] || { echo "❌ no raw price files found in cachedb/"; exit 1; }
+
+    printf '%s\n' "$PRICE_FILES" | tar czf "$PRICE_TAR" --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -C "$ROOT" -T -
+    chmod 600 "$PRICE_TAR"
+    local N
+    N="$(printf '%s\n' "$PRICE_FILES" | wc -l)"
+    echo "=== PRICE-ONLY archive: $N raw price files -> $PRICE_TAR ==="
+}
+
 backup_remote() {
     ensure_rclone_storj_config
     local RCLONE="${RCLONE:-$HOME/bin/rclone}"
     command -v "$RCLONE" >/dev/null 2>&1 || RCLONE=rclone
     local BUCKET="${STORJ_BUCKET_RESOLVED:-mptrade-price-data}"
     local DEFAULT_REMOTE="storj:${BUCKET}/"
-    if [ -f "$HOME/.config/rclone/rclone.conf" ] && grep -q '^\[storj-crypt\]' "$HOME/.config/rclone/rclone.conf" 2>/dev/null; then
-        DEFAULT_REMOTE="storj-crypt:"
-    fi
     local REMOTE="${RCLONE_REMOTE:-$DEFAULT_REMOTE}"
-    local BACKUP_NAME="${BACKUP_NAME:-$(basename "$ROOT")-secrets-backup}"
-    local TAR="${BACKUP_TAR:-$HOME/$BACKUP_NAME.tar.gz}"
-    local DATED_NAME="${BACKUP_NAME}-$(date +%Y%m%d).tar.gz"
-    local DATED_TAR="$HOME/$DATED_NAME"
-    local DEST="${REMOTE}${BACKUP_NAME}.tar.gz"
+    local LOCAL_BACKUP_NAME="${BACKUP_NAME:-$(basename "$ROOT")-secrets-backup}"
+    local PRICE_NAME="${PRICE_BACKUP_NAME:-mptrade-price-data}"
+    local PRICE_TAR="$HOME/${PRICE_NAME}.tar.gz"
+    local DATED_NAME="${PRICE_NAME}-$(date +%Y%m%d).tar.gz"
+    local DEST="${REMOTE}${PRICE_NAME}.tar.gz"
     local DEST_DATED="${REMOTE}${DATED_NAME}"
     
-    echo "$(date '+%F %T') === backup_remote ==="
-    backup_local "$HOME/$BACKUP_NAME"
-    [ -f "$TAR" ] || { echo "❌ local tarball missing: $TAR"; exit 1; }
+    echo "$(date '+%F %T') === backup_remote (local full DR + Storj raw price data only) ==="
+    backup_local "$HOME/$LOCAL_BACKUP_NAME"
+    backup_price_data_only "$PRICE_TAR"
+    [ -f "$PRICE_TAR" ] || { echo "❌ price tarball missing: $PRICE_TAR"; exit 1; }
     
     if [[ "$REMOTE" == storj:* ]]; then
-        "$RCLONE" mkdir "${REMOTE%/}" 2>/dev/null || true
+        "$RCLONE" mkdir "${REMOTE%/}" --contimeout 15s --timeout 60s 2>/dev/null || true
     fi
-    "$RCLONE" copyto "$TAR" "$DEST" --transfers 1
-    echo "$(date '+%F %T') ✔ remote upload -> $DEST"
-    if [ -f "$DATED_TAR" ]; then
-        "$RCLONE" copyto "$DATED_TAR" "$DEST_DATED" --transfers 1
-        echo "$(date '+%F %T') ✔ remote dated upload -> $DEST_DATED"
-        local KEEP="${BACKUP_KEEP:-7}"
-        local old_files
-        old_files="$("$RCLONE" lsf "$REMOTE" --include "${BACKUP_NAME}-????????.tar.gz" 2>/dev/null | sort -r | tail -n +"$((KEEP + 1))" || true)"
-        if [ -n "$old_files" ]; then
-            while IFS= read -r old_f; do
-                [ -n "$old_f" ] && "$RCLONE" deletefile "${REMOTE}${old_f}" 2>/dev/null || true
-            done <<< "$old_files"
-        fi
+    "$RCLONE" copyto "$PRICE_TAR" "$DEST" --transfers 1 --retries 3 --low-level-retries 5 --contimeout 15s --timeout 120s
+    echo "$(date '+%F %T') ✔ remote price upload -> $DEST"
+    "$RCLONE" copyto "$PRICE_TAR" "$DEST_DATED" --transfers 1 --retries 3 --low-level-retries 5 --contimeout 15s --timeout 120s
+    echo "$(date '+%F %T') ✔ remote dated price upload -> $DEST_DATED"
+
+    local KEEP="${BACKUP_KEEP:-7}"
+    local old_files
+    old_files="$("$RCLONE" lsf "$REMOTE" --include "${PRICE_NAME}-????????.tar.gz" --contimeout 15s --timeout 60s 2>/dev/null | sort -r | tail -n +"$((KEEP + 1))" || true)"
+    if [ -n "$old_files" ]; then
+        while IFS= read -r old_f; do
+            [ -n "$old_f" ] && "$RCLONE" deletefile "${REMOTE}${old_f}" --contimeout 15s --timeout 60s 2>/dev/null || true
+        done <<< "$old_files"
     fi
+}
+
+pull_remote_price_data() {
+    ensure_rclone_storj_config
+    local RCLONE="${RCLONE:-$HOME/bin/rclone}"
+    command -v "$RCLONE" >/dev/null 2>&1 || RCLONE=rclone
+    local BUCKET="${STORJ_BUCKET_RESOLVED:-mptrade-price-data}"
+    local REMOTE="${RCLONE_REMOTE:-storj:${BUCKET}/}"
+    local PRICE_NAME="${PRICE_BACKUP_NAME:-mptrade-price-data}"
+    local PRICE_TAR="$HOME/${PRICE_NAME}.tar.gz"
+
+    echo "$(date '+%F %T') === pull_remote_price_data from ${REMOTE}${PRICE_NAME}.tar.gz ==="
+    "$RCLONE" copyto "${REMOTE}${PRICE_NAME}.tar.gz" "$PRICE_TAR" --transfers 1 --retries 3 --low-level-retries 5 --contimeout 15s --timeout 120s
+    [ -f "$PRICE_TAR" ] || { echo "❌ failed to download $PRICE_TAR from Storj"; exit 1; }
+    mkdir -p "$ROOT/cachedb"
+    tar xzf "$PRICE_TAR" -C "$ROOT"
+    echo "$(date '+%F %T') ✔ restored raw price archives into $ROOT/cachedb"
 }
 
 log() { echo "[$(date -u +%FT%TZ)] $*"; }
@@ -216,6 +261,12 @@ restore_backup() {
         cp -p "$SECRETS/.host_secrets/piatoken.txt" "$HOME/piatoken.txt" 2>/dev/null || true
         chmod 600 "$HOME/piatoken.txt" 2>/dev/null || true
     fi
+
+    # If high-density 365d price archives are missing from the restored backup, pull them from Storj if available
+    if ! ls "$ROOT"/cachedb/cache_365_price_*.jsonl >/dev/null 2>&1; then
+        echo "    ! 365d price archives missing locally; attempting pull from Storj..."
+        pull_remote_price_data || echo "    ! Storj price pull skipped or unavailable"
+    fi
     
     echo "--- [2/5] venv + dependencies ---"
     local VENV_DIR="$ROOT/myenv"
@@ -249,6 +300,7 @@ restore_backup() {
 case "$cmd" in
     local) backup_local "$@" ;;
     remote) backup_remote "$@" ;;
+    pull-prices) pull_remote_price_data "$@" ;;
     restore) restore_backup "$@" ;;
-    *) echo "Usage: $0 {local|remote|restore}"; exit 1 ;;
+    *) echo "Usage: $0 {local|remote|pull-prices|restore}"; exit 1 ;;
 esac

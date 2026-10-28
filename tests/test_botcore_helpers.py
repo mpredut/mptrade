@@ -135,6 +135,10 @@ class DotenvHelpersTest(unittest.TestCase):
         self.assertEqual(botcore.required_float_env("FLOAT", env), 1.25)
         self.assertEqual(botcore.required_int_env("INT", env), 4)
         self.assertFalse(botcore.required_bool_env("BOOL", env))
+        self.assertEqual(botcore.float_env("FLOAT", env), 1.25)
+        self.assertEqual(botcore.int_env("INT", env), 4)
+        self.assertIsNone(botcore.int_env("FLOAT", env))
+        self.assertIsNone(botcore.int_env("MISSING", env))
 
 
 class BoundNotifierTest(unittest.TestCase):

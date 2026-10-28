@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, int_env
 from cachepaths import get_cachedb_dir
 
 D = get_cachedb_dir()
@@ -364,7 +364,7 @@ def main():
     D = args.data_dir
     os.environ["SHORT_TREND_BENCH_DATA_DIR"] = D
     syms = args.symbols
-    n_workers = min(len(syms), max(1, int(os.environ.get("BENCH_WORKERS", "1"))))
+    n_workers = min(len(syms), max(1, int_env("BENCH_WORKERS") or 1))
     if n_workers <= 1:
         _set_data_dir(D)
         results = [evaluate(s) for s in syms]

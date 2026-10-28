@@ -226,6 +226,14 @@ def float_env(key: str, env: dict | None = None) -> float | None:
     return res if (res is not None and math.isfinite(res)) else None
 
 
+def int_env(key: str, env: dict | None = None) -> int | None:
+    """Read an integer from os.environ or an injected dictionary, ignoring inline comments."""
+    f = float_env(key, env)
+    if f is None or not f.is_integer():
+        return None
+    return int(f)
+
+
 def required_env(key: str, env: dict | None = None) -> str:
     """Return a mandatory setting, rejecting missing, empty, or comment-only values."""
     src = os.environ if env is None else env

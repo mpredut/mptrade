@@ -27,30 +27,25 @@ class FearGreedSnapshot:
     is_extreme_greed: bool               # True if value >= 75
 
 
-from intelligence.macro_sentiment_ssot import get_fear_greed_endpoint_url
+from intelligence.macro_sentiment_ssot import (
+    get_fear_greed_endpoint_url,
+    is_cache_fresh,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_ts,
+    safe_pos_float,
+)
 
 
 class FearGreedCollector:
-    """Fetches and caches the Alternative.me Crypto Fear & Greed Index.
-
-    The index aggregates volatility, market momentum/volume, social media, surveys,
-    dominance, and trends. Updates approximately once per day.
-    """
+    """Fetches and caches the Alternative.me Crypto Fear & Greed Index."""
 
     def __init__(
         self,
         cache_ttl_sec: float = 900.0,
         endpoint_url: Optional[str] = None,
     ) -> None:
-        ttl = 900.0
-        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            try:
-                tf = float(cache_ttl_sec)
-                if math.isfinite(tf) and tf >= 0.0:
-                    ttl = tf
-            except (TypeError, ValueError):
-                pass
-        self.cache_ttl_sec = ttl
+        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 900.0)
         self.endpoint_url = (
             endpoint_url.strip()
             if isinstance(endpoint_url, str) and endpoint_url.strip()
@@ -65,54 +60,28 @@ class FearGreedCollector:
         if not isinstance(payload, dict):
             return None
         data = payload.get("data")
-        if not data or not isinstance(data, list):
+        if not data or not isinstance(data, list) or not isinstance(data[0], dict):
             return None
 
         current = data[0]
-        if not isinstance(current, dict):
+        val_f = safe_float(current.get("value"), float("nan"))
+        if not math.isfinite(val_f):
             return None
-        raw_val = current.get("value")
-        raw_ts = current.get("timestamp")
-        if raw_val is None or isinstance(raw_val, bool):
-            return None
-        try:
-            val_f = float(raw_val)
-            if not math.isfinite(val_f):
-                return None
-            val = max(0, min(100, int(round(val_f))))
-        except (ValueError, TypeError):
-            return None
+        val = max(0, min(100, int(round(val_f))))
+
         raw_cls = current.get("value_classification")
         classification = raw_cls.strip() if isinstance(raw_cls, str) and raw_cls.strip() else "Neutral"
-        ts = time.time()
-        if raw_ts is not None and not isinstance(raw_ts, bool):
-            try:
-                ts_f = float(raw_ts)
-                if math.isfinite(ts_f) and ts_f > 0:
-                    ts = ts_f / 1000.0 if ts_f > 1e11 else ts_f
-            except (ValueError, TypeError, OverflowError):
-                pass
+        ts_f = safe_pos_float(current.get("timestamp"), -1.0)
+        ts = (ts_f / 1000.0 if ts_f > 1e11 else ts_f) if ts_f > 0 else time.time()
 
         history: list[int] = []
         for item in data:
-            if not isinstance(item, dict):
-                continue
-            item_val = item.get("value")
-            if item_val is None or isinstance(item_val, bool):
-                continue
-            try:
-                v_f = float(item_val)
+            if isinstance(item, dict):
+                v_f = safe_float(item.get("value"), float("nan"))
                 if math.isfinite(v_f):
                     history.append(max(0, min(100, int(round(v_f)))))
-            except (ValueError, TypeError):
-                continue
 
-        # Trend over 7 days (history[0] is newest, history[6] or last is ~7 days ago)
-        trend_7d = 0
-        if len(history) >= 7:
-            trend_7d = history[0] - history[6]
-        elif len(history) > 1:
-            trend_7d = history[0] - history[-1]
+        trend_7d = (history[0] - history[6]) if len(history) >= 7 else ((history[0] - history[-1]) if len(history) > 1 else 0)
 
         return FearGreedSnapshot(
             value=val,
@@ -126,34 +95,16 @@ class FearGreedCollector:
 
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:
         """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
-        force_refresh = _parse_bool_flag(force_refresh, False)
-        now = time.time()
-        if now_ts is not None and not isinstance(now_ts, bool):
-            try:
-                nf = float(now_ts)
-                if math.isfinite(nf) and nf > 0.0:
-                    now = nf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        last_ts = 0.0
-        if self._last_fetch_ts is not None and not isinstance(self._last_fetch_ts, bool):
-            try:
-                lf = float(self._last_fetch_ts)
-                if math.isfinite(lf) and lf >= 0.0:
-                    last_ts = lf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        if not force_refresh and self._cached_snapshot and last_ts > 0.0 and 0.0 <= (now - last_ts) < self.cache_ttl_sec:
+        now = resolve_now_ts(now_ts)
+        if self._cached_snapshot and is_cache_fresh(
+            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
+        ):
             return self._cached_snapshot
 
         try:
-            req = urllib.request.Request(
-                self.endpoint_url,
-                headers={"User-Agent": "mptrade-sentiment/1.0"},
-            )
+            req = urllib.request.Request(self.endpoint_url, headers={"User-Agent": "mptrade-sentiment/1.0"})
             with urllib.request.urlopen(req, timeout=5) as resp:
-                raw_bytes = resp.read()
-                data = json.loads(raw_bytes.decode("utf-8"))
+                data = json.loads(resp.read().decode("utf-8"))
 
             snapshot = self.parse_payload(data)
             if snapshot:

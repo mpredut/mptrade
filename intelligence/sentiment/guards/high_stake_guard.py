@@ -9,6 +9,17 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
 from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.macro_sentiment_ssot import (
+    clean_scale,
+    clean_symbol_key,
+    is_cache_fresh,
+    normalize_order_side,
+    obj_attr,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_ts,
+    safe_pos_float,
+)
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
 from state_io import read_recovering_previous
@@ -19,36 +30,22 @@ DEFAULT_MIN_NOTIONAL_USD = 700.0
 DEFAULT_MIN_NOTIONAL_EUR = DEFAULT_MIN_NOTIONAL_USD
 
 
+def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
+    if not isinstance(row, (list, tuple)) or len(row) < 2:
+        return None
+    tf = safe_pos_float(row[0], 0.0)
+    pf = safe_pos_float(row[1], 0.0)
+    if tf <= 0.0 or pf <= 0.0:
+        return None
+    return (tf * 1000.0 if tf < 1e11 else tf), pf
+
+
 def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
     """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
     if not isinstance(series, list) or len(series) < 2:
         return {}
     try:
-        def _to_ms(raw_ts: Any) -> float:
-            if raw_ts is None or isinstance(raw_ts, bool):
-                return 0.0
-            ts_f = float(raw_ts)
-            if not math.isfinite(ts_f) or ts_f <= 0:
-                return 0.0
-            return ts_f * 1000.0 if 0 < ts_f < 1e11 else ts_f
-
-        def _valid_px(raw_p: Any) -> Optional[float]:
-            if raw_p is None or isinstance(raw_p, bool):
-                return None
-            try:
-                pf = float(raw_p)
-                return pf if (math.isfinite(pf) and pf > 0) else None
-            except (TypeError, ValueError):
-                return None
-
-        clean_series = []
-        for row in series:
-            if not isinstance(row, (list, tuple)) or len(row) < 2:
-                continue
-            tms = _to_ms(row[0])
-            p_v = _valid_px(row[1])
-            if tms > 0 and p_v is not None:
-                clean_series.append((tms, p_v))
+        clean_series = [pt for row in series if (pt := _parse_ts_px_row(row)) is not None]
         if len(clean_series) < 2:
             return {}
 
@@ -71,9 +68,6 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     return tms >= min_allowed
             return False
 
-        p1, p3, p5 = _px_ago(1), _px_ago(3), _px_ago(5)
-        p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
-        p360, p720, p1440 = _px_ago(360), _px_ago(720), _px_ago(1440)
         span_ms = now_ms - clean_series[0][0]
         sample_prices = [x[1] for x in clean_series[::max(1, len(clean_series) // 500)]]
         l24 = min(sample_prices) if sample_prices else cur_px
@@ -89,26 +83,22 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             out["span_24h_pct"] = round((h24 / l24 - 1.0) * 100.0, 2)
         if h24 > l24 > 0:
             out["pos_24h_pct"] = round(((cur_px - l24) / (h24 - l24)) * 100.0, 1)
-        if p1 > 0 and span_ms >= 60000.0 and _has_sample_near(1.0, 2.5):
-            out["chg_1m_pct"] = round((cur_px / p1 - 1.0) * 100.0, 2)
-        if p3 > 0 and span_ms >= 180000.0 and _has_sample_near(3.0, 4.0):
-            out["chg_3m_pct"] = round((cur_px / p3 - 1.0) * 100.0, 2)
-        if p5 > 0 and span_ms >= 300000.0 and _has_sample_near(5.0, 6.0):
-            out["chg_5m_pct"] = round((cur_px / p5 - 1.0) * 100.0, 2)
-        if p15 > 0:
-            out["chg_15m_pct"] = round((cur_px / p15 - 1.0) * 100.0, 2)
-        if p30 > 0:
-            out["chg_30m_pct"] = round((cur_px / p30 - 1.0) * 100.0, 2)
-        if p60 > 0:
-            out["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
-        if p180 > 0:
-            out["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
-        if p360 > 0 and span_ms >= 3600000.0 * 4:
-            out["chg_6h_pct"] = round((cur_px / p360 - 1.0) * 100.0, 2)
-        if p720 > 0 and span_ms >= 3600000.0 * 9:
-            out["chg_12h_pct"] = round((cur_px / p720 - 1.0) * 100.0, 2)
-        if p1440 > 0 and span_ms >= 3600000.0 * 18:
-            out["chg_24h_pct"] = round((cur_px / p1440 - 1.0) * 100.0, 2)
+
+        for key, mins, min_span_ms, max_gap_mins in (
+            ("chg_1m_pct", 1.0, 60000.0, 2.5),
+            ("chg_3m_pct", 3.0, 180000.0, 4.0),
+            ("chg_5m_pct", 5.0, 300000.0, 6.0),
+            ("chg_15m_pct", 15.0, 0.0, 0.0),
+            ("chg_30m_pct", 30.0, 0.0, 0.0),
+            ("chg_1h_pct", 60.0, 0.0, 0.0),
+            ("chg_3h_pct", 180.0, 0.0, 0.0),
+            ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
+            ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0),
+            ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
+        ):
+            p_ref = _px_ago(mins)
+            if p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins)):
+                out[key] = round((cur_px / p_ref - 1.0) * 100.0, 2)
 
         recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
         if len(recent_15m) >= 3:
@@ -131,6 +121,23 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         return {}
 
 
+def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
+    if not isinstance(data, dict):
+        return []
+    raw_items = data.get("items", {})
+    if isinstance(raw_items, dict):
+        for k_cand in cands:
+            ser = raw_items.get(k_cand, [])
+            if isinstance(ser, list) and ser:
+                return ser
+        if raw_items:
+            first_val = next(iter(raw_items.values()), [])
+            return first_val if isinstance(first_val, list) else []
+    elif isinstance(raw_items, list):
+        return raw_items
+    return []
+
+
 def load_symbol_price_series(
     cachedb_dir: str,
     symbol: str,
@@ -149,21 +156,8 @@ def load_symbol_price_series(
         for p24_path in (primary_24, *legacy_filenames_for(primary_24)):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            p24_data = read_recovering_previous(p24_path, json.loads, default=None)
-            if not isinstance(p24_data, dict):
-                continue
-            raw_items = p24_data.get("items", {})
-            ser = []
-            if isinstance(raw_items, dict):
-                for k_cand in cands:
-                    ser = raw_items.get(k_cand, [])
-                    if ser:
-                        break
-                if not ser and raw_items:
-                    ser = next(iter(raw_items.values()), [])
-            elif isinstance(raw_items, list):
-                ser = raw_items
-            if isinstance(ser, list) and len(ser) >= 2:
+            ser = _extract_cached_items_series(read_recovering_previous(p24_path, json.loads, default=None), cands)
+            if len(ser) >= 2:
                 series_24h = list(ser)
                 break
         if series_24h:
@@ -172,16 +166,9 @@ def load_symbol_price_series(
     def _span_ms(pts: list) -> float:
         if len(pts) < 2:
             return 0.0
-        try:
-            t0 = float(pts[0][0])
-            t1 = float(pts[-1][0])
-            if t0 < 1e11:
-                t0 *= 1000.0
-            if t1 < 1e11:
-                t1 *= 1000.0
-            return max(0.0, t1 - t0)
-        except Exception:
-            return 0.0
+        p0 = _parse_ts_px_row(pts[0])
+        p1 = _parse_ts_px_row(pts[-1])
+        return max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
 
     # 2. Supplement 24h (when < 18h span) and extract 7d history from cache_365_price_<SYM> / cache_sparse_price_<SYM>
     need_24h_supplement = _span_ms(series_24h) < 3600000.0 * 18
@@ -203,22 +190,10 @@ def load_symbol_price_series(
                 continue
             try:
                 if arch_path.endswith(".json"):
-                    adata = read_recovering_previous(arch_path, json.loads, default=None)
-                    if isinstance(adata, dict):
-                        aitems = adata.get("items", {})
-                        aser: list = []
-                        if isinstance(aitems, dict):
-                            for k in cands:
-                                if k in aitems and isinstance(aitems[k], list) and aitems[k]:
-                                    aser = aitems[k]
-                                    break
-                            if not aser and aitems:
-                                aser = next(iter(aitems.values()), [])
-                        elif isinstance(aitems, list):
-                            aser = aitems
-                        if isinstance(aser, list) and len(aser) >= 2:
-                            archive_pts = list(aser)
-                            break
+                    aser = _extract_cached_items_series(read_recovering_previous(arch_path, json.loads, default=None), cands)
+                    if len(aser) >= 2:
+                        archive_pts = list(aser)
+                        break
                 else:
                     with open(arch_path, "rb") as af:
                         af.seek(0, os.SEEK_END)
@@ -264,30 +239,26 @@ def load_symbol_price_series(
 
     if archive_pts:
         try:
-            last_t = float(archive_pts[-1][0])
-            if last_t < 1e11:
-                last_t *= 1000.0
-            cutoff_24h = last_t - 86400.0 * 1000.0
-            cutoff_7d = last_t - 7.0 * 86400.0 * 1000.0
-            pts_24 = []
-            pts_7d_vals = []
-            for row in archive_pts:
-                rt = float(row[0])
-                rp = float(row[1])
-                if not (math.isfinite(rt) and rt > 0 and math.isfinite(rp) and rp > 0):
-                    continue
-                tms = rt * 1000.0 if rt < 1e11 else rt
-                if tms >= cutoff_7d:
-                    pts_7d_vals.append(rp)
-                if need_24h_supplement and tms >= cutoff_24h:
-                    pts_24.append([tms, rp])
-            if len(pts_7d_vals) >= 2:
-                vals_7d = pts_7d_vals
-            if need_24h_supplement and pts_24:
-                if not series_24h:
-                    series_24h = pts_24
-                else:
-                    series_24h = pts_24 + series_24h
+            last_pt = _parse_ts_px_row(archive_pts[-1])
+            if last_pt is not None:
+                last_t = last_pt[0]
+                cutoff_24h = last_t - 86400.0 * 1000.0
+                cutoff_7d = last_t - 7.0 * 86400.0 * 1000.0
+                pts_24 = []
+                pts_7d_vals = []
+                for row in archive_pts:
+                    pt = _parse_ts_px_row(row)
+                    if pt is None:
+                        continue
+                    tms, rp = pt
+                    if tms >= cutoff_7d:
+                        pts_7d_vals.append(rp)
+                    if need_24h_supplement and tms >= cutoff_24h:
+                        pts_24.append([tms, rp])
+                if len(pts_7d_vals) >= 2:
+                    vals_7d = pts_7d_vals
+                if need_24h_supplement and pts_24:
+                    series_24h = (pts_24 + series_24h) if series_24h else pts_24
         except Exception:
             pass
 
@@ -304,35 +275,16 @@ def load_symbol_price_series(
                 break
             elif cur_item is not None and not isinstance(cur_item, bool):
                 raw_px = cur_item.get("price") or cur_item.get("c") if isinstance(cur_item, dict) else cur_item
-                if isinstance(raw_px, (int, float)) and not isinstance(raw_px, bool):
-                    px_f = float(raw_px)
-                    if math.isfinite(px_f) and px_f > 0 and series_24h:
-                        try:
-                            last_t = float(series_24h[-1][0])
-                            last_tms = last_t * 1000.0 if last_t < 1e11 else last_t
-                            series_24h = list(series_24h) + [[last_tms + 1000.0, px_f]]
-                        except Exception:
-                            pass
-                        break
+                px_f = safe_pos_float(raw_px, 0.0)
+                if px_f > 0.0 and series_24h:
+                    last_pt = _parse_ts_px_row(series_24h[-1])
+                    if last_pt is not None:
+                        series_24h = list(series_24h) + [[last_pt[0] + 1000.0, px_f]]
+                    break
 
     # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] points
     if series_24h:
-        cleaned_24h: list = []
-        for row in series_24h:
-            if not isinstance(row, (list, tuple)) or len(row) < 2:
-                continue
-            raw_t, raw_p = row[0], row[1]
-            if raw_t is None or isinstance(raw_t, bool) or raw_p is None or isinstance(raw_p, bool):
-                continue
-            try:
-                tf = float(raw_t)
-                pf = float(raw_p)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not (math.isfinite(tf) and tf > 0 and math.isfinite(pf) and pf > 0):
-                continue
-            tms = tf * 1000.0 if tf < 1e11 else tf
-            cleaned_24h.append([tms, pf])
+        cleaned_24h = [[pt[0], pt[1]] for row in series_24h if (pt := _parse_ts_px_row(row)) is not None]
         if len(cleaned_24h) >= 2:
             cleaned_24h.sort(key=lambda x: x[0])
             dedup_24h = [cleaned_24h[0]]
@@ -361,23 +313,11 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
     try:
         def _clean_buckets(series: list) -> Dict[int, float]:
-            buckets: Dict[int, float] = {}
-            for row in series:
-                if not isinstance(row, (list, tuple)) or len(row) < 2:
-                    continue
-                raw_t, raw_p = row[0], row[1]
-                if raw_t is None or isinstance(raw_t, bool) or raw_p is None or isinstance(raw_p, bool):
-                    continue
-                try:
-                    tf = float(raw_t)
-                    pf = float(raw_p)
-                except (TypeError, ValueError):
-                    continue
-                if not (math.isfinite(tf) and tf > 0 and math.isfinite(pf) and pf > 0):
-                    continue
-                tms = tf * 1000.0 if tf < 1e11 else tf
-                buckets[int(tms // 300000.0)] = pf
-            return buckets
+            return {
+                int(pt[0] // 300000.0): pt[1]
+                for row in series
+                if (pt := _parse_ts_px_row(row)) is not None
+            }
 
         a_map = _clean_buckets(alt_series)
         b_map = _clean_buckets(btc_series)

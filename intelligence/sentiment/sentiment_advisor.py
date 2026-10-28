@@ -11,18 +11,23 @@ from typing import Any, Dict, List, Optional
 
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
+    clean_scale,
     get_cache_filenames,
+    is_cache_fresh,
     normalize_market_bias,
     normalize_recommended_action,
     normalize_risk_level,
+    obj_attr,
+    obj_float,
     record_dynamic_crisis_terms_from_assessment,
     resolve_global_trading_session,
+    resolve_now_ts,
+    safe_nonneg_ts,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 from orchestratorOS.agy.topics import topic_spec
-from botcore import _parse_bool_flag
 from cachepaths import cache_path
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
@@ -50,19 +55,11 @@ class SentimentAdvisor:
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        cache_ttl_sec: float = DEFAULT_SENTIMENT_INTERVAL_SEC,  # 3 hours base cache by default
+        cache_ttl_sec: float = DEFAULT_SENTIMENT_INTERVAL_SEC,
         cache_file: str = DEFAULT_CACHE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
-        ttl_f = DEFAULT_SENTIMENT_INTERVAL_SEC
-        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            try:
-                cf = float(cache_ttl_sec)
-                if math.isfinite(cf) and cf >= 0.0:
-                    ttl_f = cf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        self.cache_ttl_sec = ttl_f
+        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, DEFAULT_SENTIMENT_INTERVAL_SEC)
         self.cache_file = cache_file
         self._cached_assessment: Optional[SentimentAdvisorAssessment] = None
         self._last_eval_ts: float = 0.0
@@ -70,9 +67,29 @@ class SentimentAdvisor:
 
     def _effective_cache_file(self) -> str:
         if self.cache_file == DEFAULT_CACHE_FILE:
-            primary_name = _SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_advisor_eval.json"
-            return cache_path(primary_name)
+            return cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_advisor_eval.json")
         return self.cache_file
+
+    @staticmethod
+    def _build_assessment(data: Dict[str, Any], ts_override: Optional[float] = None) -> SentimentAdvisorAssessment:
+        raw_risks = data.get("key_risks")
+        key_risks = (
+            [str(r).strip() for r in raw_risks if r is not None and not isinstance(r, bool) and str(r).strip()]
+            if isinstance(raw_risks, (list, tuple))
+            else []
+        )
+        raw_sum = data.get("summary")
+        sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
+        ts_val = ts_override if ts_override is not None else safe_nonneg_ts(data.get("ts", 0.0), 0.0)
+        return SentimentAdvisorAssessment(
+            market_bias=normalize_market_bias(data.get("market_bias"), default="NEUTRAL"),
+            risk_level=normalize_risk_level(data.get("risk_level"), default="MODERATE"),
+            confidence=clean_scale(data.get("confidence", 0.5), default=0.5),
+            summary=sum_str,
+            key_risks=key_risks,
+            recommended_action=normalize_recommended_action(data.get("recommended_action"), default="HOLD"),
+            ts=ts_val,
+        )
 
     def _load_from_disk(self) -> None:
         from state_io import read_recovering_previous
@@ -81,43 +98,7 @@ class SentimentAdvisor:
             data = read_recovering_previous(cache_file, json.loads, default=None)
             if not isinstance(data, dict):
                 return
-            raw_conf = data.get("confidence", 0.5)
-            if raw_conf is None or isinstance(raw_conf, bool):
-                conf_val = 0.5
-            else:
-                try:
-                    conf_val = float(raw_conf)
-                    if not math.isfinite(conf_val) or not (0.0 <= conf_val <= 1.0):
-                        conf_val = 0.5
-                except (TypeError, ValueError):
-                    conf_val = 0.5
-            raw_ts = data.get("ts", 0.0)
-            try:
-                ts_val = float(raw_ts) if not isinstance(raw_ts, bool) else 0.0
-                if not math.isfinite(ts_val) or ts_val < 0.0:
-                    ts_val = 0.0
-            except (TypeError, ValueError):
-                ts_val = 0.0
-            raw_risks = data.get("key_risks")
-            risks_list = (
-                [str(r).strip() for r in raw_risks if r is not None and not isinstance(r, bool) and str(r).strip()]
-                if isinstance(raw_risks, (list, tuple))
-                else []
-            )
-            mb_norm = normalize_market_bias(data.get("market_bias"), default="NEUTRAL")
-            rl_norm = normalize_risk_level(data.get("risk_level"), default="MODERATE")
-            ra_norm = normalize_recommended_action(data.get("recommended_action"), default="HOLD")
-            raw_sum = data.get("summary")
-            sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
-            self._cached_assessment = SentimentAdvisorAssessment(
-                market_bias=mb_norm,
-                risk_level=rl_norm,
-                confidence=conf_val,
-                summary=sum_str,
-                key_risks=risks_list,
-                recommended_action=ra_norm,
-                ts=ts_val,
-            )
+            self._cached_assessment = self._build_assessment(data)
             self._last_eval_ts = self._cached_assessment.ts
         except Exception as e:
             logger.debug("Could not load cached macro file %s: %s", cache_file, e)
@@ -126,8 +107,7 @@ class SentimentAdvisor:
         cache_file = self._effective_cache_file()
         try:
             from state_io import save_json_state
-            payload = asdict(assessment)
-            save_json_state(cache_file, payload, indent=2)
+            save_json_state(cache_file, asdict(assessment), indent=2)
         except Exception as e:
             logger.warning("Could not persist LLM assessment to %s: %s", cache_file, e)
 
@@ -141,29 +121,11 @@ class SentimentAdvisor:
         now_ts: Optional[float] = None,
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
-        force_refresh_b = _parse_bool_flag(force_refresh, False)
-        now = time.time()
-        if now_ts is not None and not isinstance(now_ts, bool):
-            try:
-                nf = float(now_ts)
-                if math.isfinite(nf) and nf > 0.0:
-                    now = nf
-            except (TypeError, ValueError):
-                pass
-        if not force_refresh_b and self._cached_assessment and 0.0 <= (now - self._last_eval_ts) < self.cache_ttl_sec:
+        now = resolve_now_ts(now_ts)
+        if self._cached_assessment and is_cache_fresh(
+            self._last_eval_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
+        ):
             return self._cached_assessment
-
-        def _sf(val: Any, default: float = 0.0) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-                return f if math.isfinite(f) else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
-        def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
-            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
         session_ctx = resolve_global_trading_session(now)
         prompt_context = [
@@ -171,14 +133,14 @@ class SentimentAdvisor:
             f"- Session Flow Profile: {session_ctx.trader_flow_profile}",
         ]
         if fear_greed:
-            fg_val = int(round(_sf(_obj_attr(fear_greed, "value", 50), 50.0)))
-            fg_cls = str(_obj_attr(fear_greed, "classification", None) or "Neutral")
-            fg_t7d = int(round(_sf(_obj_attr(fear_greed, "trend_7d_change", 0), 0.0)))
+            fg_val = int(round(obj_float(fear_greed, "value", 50.0)))
+            fg_cls = str(obj_attr(fear_greed, "classification") or "Neutral")
+            fg_t7d = int(round(obj_float(fear_greed, "trend_7d_change", 0.0)))
             prompt_context.append(f"- Fear & Greed Index: {fg_val}/100 ({fg_cls}), 7d trend change: {fg_t7d:+d}")
         if breadth:
-            mb_adv = _sf(_obj_attr(breadth, "advance_ratio", 0.5), 0.5)
-            mb_med = _sf(_obj_attr(breadth, "median_change_pct", 0.0), 0.0)
-            mb_reg = str(_obj_attr(breadth, "regime", None) or "NEUTRAL")
+            mb_adv = obj_float(breadth, "advance_ratio", 0.5)
+            mb_med = obj_float(breadth, "median_change_pct", 0.0)
+            mb_reg = str(obj_attr(breadth, "regime") or "NEUTRAL")
             prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%, regime: {mb_reg}")
         if whale_telemetry:
             prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
@@ -205,56 +167,26 @@ class SentimentAdvisor:
             "}"
         )
 
-        fg_label = f"F&G={int(round(_sf(_obj_attr(fear_greed, 'value', 50), 50.0)))}" if fear_greed else "Pulse"
-        macro_thread_title = f"{topic_spec('macro_sentiment').title} — {fg_label}"
+        fg_label = f"F&G={int(round(obj_float(fear_greed, 'value', 50.0)))}" if fear_greed else "Pulse"
         resp = self.gemini_client.query_json(
             prompt,
             timeout_sec=25.0,
-            thread_title=macro_thread_title,
+            thread_title=f"{topic_spec('macro_sentiment').title} — {fg_label}",
             topic_key="macro_sentiment",
         )
         if not resp or not isinstance(resp, dict):
             return self._cached_assessment
 
         try:
-            raw_conf = resp.get("confidence")
-            if raw_conf is None or isinstance(raw_conf, bool):
-                conf = 0.5
-            else:
-                try:
-                    conf = float(raw_conf)
-                    if not math.isfinite(conf) or not (0.0 <= conf <= 1.0):
-                        conf = 0.5
-                except (TypeError, ValueError):
-                    conf = 0.5
-            raw_risks = resp.get("key_risks")
-            key_risks = (
-                [str(r).strip() for r in raw_risks if r is not None and not isinstance(r, bool) and str(r).strip()]
-                if isinstance(raw_risks, (list, tuple))
-                else []
-            )
-            mb_norm = normalize_market_bias(resp.get("market_bias"), default="NEUTRAL")
-            rl_norm = normalize_risk_level(resp.get("risk_level"), default="MODERATE")
-            ra_norm = normalize_recommended_action(resp.get("recommended_action"), default="HOLD")
-            raw_sum = resp.get("summary")
-            sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
-            if rl_norm in ("HIGH", "EXTREME") and (sum_str or key_risks):
+            assessment = self._build_assessment(resp, ts_override=now)
+            if assessment.risk_level in ("HIGH", "EXTREME") and (assessment.summary or assessment.key_risks):
                 record_dynamic_crisis_terms_from_assessment(
-                    sum_str,
-                    key_risks,
-                    is_acute_shock=(rl_norm == "EXTREME"),
+                    assessment.summary,
+                    assessment.key_risks,
+                    is_acute_shock=(assessment.risk_level == "EXTREME"),
                     cache_dir=os.path.dirname(os.path.abspath(self._effective_cache_file())),
                     now_ts=now,
                 )
-            assessment = SentimentAdvisorAssessment(
-                market_bias=mb_norm,
-                risk_level=rl_norm,
-                confidence=conf,
-                summary=sum_str,
-                key_risks=key_risks,
-                recommended_action=ra_norm,
-                ts=now,
-            )
             self._cached_assessment = assessment
             self._last_eval_ts = now
             self._save_to_disk(assessment)

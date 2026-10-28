@@ -24,7 +24,12 @@ from intelligence.macro_sentiment_ssot import (
     get_cache_filenames,
     get_specialized_rss_urls,
     has_acute_shock_keywords,
+    is_cache_fresh,
     match_high_severity_keywords,
+    obj_attr,
+    resolve_now_ts,
+    safe_nonneg_ts,
+    safe_pos_float,
 )
 
 logger = logging.getLogger("intelligence.macro.news_feed")
@@ -71,34 +76,16 @@ class NewsFeedCollector:
         self._explicit_rss_url = rss_url if (isinstance(rss_url, str) and rss_url.strip()) else None
         self.rss_url = self._explicit_rss_url or build_dynamic_rss_url()
         self.rss_urls = tuple(rss_urls) if rss_urls else ()
-        ttl = 60.0
-        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            try:
-                tf = float(cache_ttl_sec)
-                if math.isfinite(tf) and tf >= 0.0:
-                    ttl = tf
-            except (TypeError, ValueError):
-                pass
-        rw = DEFAULT_NEWS_ROLLING_WINDOW_SEC
-        if rolling_window_sec is not None and not isinstance(rolling_window_sec, bool):
-            try:
-                rf = float(rolling_window_sec)
-                if math.isfinite(rf) and rf > 0.0:
-                    rw = rf
-            except (TypeError, ValueError):
-                pass
-        self.cache_ttl_sec = ttl
+        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
         self.history_file = history_file
-        self.rolling_window_sec = rw
+        self.rolling_window_sec = safe_pos_float(rolling_window_sec, DEFAULT_NEWS_ROLLING_WINDOW_SEC)
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
-        # Map of normalized title -> (first_seen_ts, NewsHeadline)
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
         self._load_history()
 
     def _cache_dir(self) -> str:
-        eff = self._effective_history_file()
-        return os.path.dirname(os.path.abspath(eff))
+        return os.path.dirname(os.path.abspath(self._effective_history_file()))
 
     def get_active_feed_urls(self) -> Tuple[str, ...]:
         """Resolve specialized editorial RSS feeds + dynamic crisis search URL."""
@@ -110,8 +97,7 @@ class NewsFeedCollector:
 
     def _effective_history_file(self) -> str:
         if self.history_file == DEFAULT_HISTORY_FILE:
-            primary_name = _NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json"
-            return cache_path(primary_name)
+            return cache_path(_NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json")
         return self.history_file
 
     @property
@@ -120,16 +106,34 @@ class NewsFeedCollector:
         return self._aggregated_pool
 
     def _normalize_title(self, title: Any) -> str:
-        if not isinstance(title, str):
-            return ""
-        return re.sub(r"\s+", " ", title.strip().lower())
+        return re.sub(r"\s+", " ", title.strip().lower()) if isinstance(title, str) else ""
+
+    def _coerce_headline(self, item: Any, default_sev: bool = False) -> Optional[NewsHeadline]:
+        if isinstance(item, dict):
+            raw_title = item.get("title")
+            if not isinstance(raw_title, str) or not raw_title.strip():
+                return None
+            kws = item.get("matched_keywords")
+            matched_kws = (
+                tuple(str(k).strip() for k in kws if isinstance(k, str) and str(k).strip())
+                if isinstance(kws, (list, tuple))
+                else ()
+            )
+            raw_src, raw_pub, raw_url = item.get("source"), item.get("pub_date"), item.get("url")
+            return NewsHeadline(
+                title=raw_title.strip(),
+                source=raw_src.strip() if isinstance(raw_src, str) else "",
+                pub_date=raw_pub.strip() if isinstance(raw_pub, str) else "",
+                url=raw_url.strip() if isinstance(raw_url, str) else "",
+                matched_keywords=matched_kws,
+                is_high_severity=self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0)),
+            )
+        return item if isinstance(getattr(item, "title", None), str) else None
 
     def _load_history(self) -> None:
         from state_io import read_recovering_previous
         hist_file = self._effective_history_file()
-        candidates = [hist_file]
-        if "_collect.json" in hist_file:
-            candidates.append(hist_file.replace("_collect.json", "_history.json"))
+        candidates = [hist_file] + ([hist_file.replace("_collect.json", "_history.json")] if "_collect.json" in hist_file else [])
         now = time.time()
         for load_path in candidates:
             try:
@@ -139,40 +143,11 @@ class NewsFeedCollector:
                 for item in data:
                     if not isinstance(item, dict):
                         continue
-                    try:
-                        raw_ts = item.get("first_seen_ts", now)
-                        if raw_ts is None or isinstance(raw_ts, bool):
-                            continue
-                        ts = float(raw_ts)
-                        if not (math.isfinite(ts) and ts > 0.0):
-                            continue
-                    except (TypeError, ValueError):
-                        continue
-                    if 0.0 <= (now - ts) < self.rolling_window_sec:
-                        raw_title = item.get("title")
-                        if not isinstance(raw_title, str) or not raw_title.strip():
-                            continue
-                        kws = item.get("matched_keywords")
-                        matched_kws = (
-                            tuple(str(k).strip() for k in kws if isinstance(k, str) and str(k).strip())
-                            if isinstance(kws, (list, tuple))
-                            else ()
-                        )
-                        raw_src = item.get("source")
-                        raw_pub = item.get("pub_date")
-                        raw_url = item.get("url")
-                        raw_sev = item.get("is_high_severity", False)
-                        is_sev = self._as_bool_flag(raw_sev)
-                        h = NewsHeadline(
-                            title=raw_title.strip(),
-                            source=raw_src.strip() if isinstance(raw_src, str) else "",
-                            pub_date=raw_pub.strip() if isinstance(raw_pub, str) else "",
-                            url=raw_url.strip() if isinstance(raw_url, str) else "",
-                            matched_keywords=matched_kws,
-                            is_high_severity=is_sev,
-                        )
-                        norm = self._normalize_title(h.title)
-                        if norm:
+                    ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
+                    if ts > 0.0 and 0.0 <= (now - ts) < self.rolling_window_sec:
+                        h = self._coerce_headline(item)
+                        norm = self._normalize_title(h.title) if h else ""
+                        if h and norm:
                             self._aggregated_pool[norm] = (ts, h)
                 return
             except Exception as e:
@@ -182,9 +157,8 @@ class NewsFeedCollector:
         hist_file = self._effective_history_file()
         try:
             from state_io import save_json_state
-            payload = []
-            for norm, (ts, h) in self._aggregated_pool.items():
-                payload.append({
+            payload = [
+                {
                     "title": h.title,
                     "source": h.source,
                     "pub_date": h.pub_date,
@@ -192,7 +166,9 @@ class NewsFeedCollector:
                     "matched_keywords": list(h.matched_keywords),
                     "is_high_severity": h.is_high_severity,
                     "first_seen_ts": ts,
-                })
+                }
+                for _, (ts, h) in self._aggregated_pool.items()
+            ]
             save_json_state(hist_file, payload, indent=2)
         except Exception as e:
             logger.debug("Could not save news history to %s: %s", hist_file, e)
@@ -205,44 +181,44 @@ class NewsFeedCollector:
         except Exception:
             return None
 
+    def _build_pool_snapshot(
+        self,
+        pool_values: Any,
+        now: float,
+        cache_dir: Optional[str],
+    ) -> NewsFeedSnapshot:
+        all_headlines = [
+            v[1]
+            for v in sorted(
+                pool_values,
+                key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),
+                reverse=True,
+            )
+        ]
+        high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
+        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
+            [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)],
+            cache_dir=cache_dir,
+        )
+        return NewsFeedSnapshot(
+            headlines=tuple(all_headlines[:35]),
+            total_fetched=len(all_headlines),
+            high_severity_count=len(high_sev),
+            has_critical_shock_keywords=has_shock,
+            ts=now,
+        )
+
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
         cache_dir = self._CacheDirOrNone()
-        # 1. Merge new headlines
-        if isinstance(latest_snapshot, dict):
-            raw_headlines = latest_snapshot.get("headlines")
-        else:
-            raw_headlines = getattr(latest_snapshot, "headlines", None) if latest_snapshot is not None else None
+        raw_headlines = obj_attr(latest_snapshot, "headlines", None)
         if isinstance(raw_headlines, (list, tuple)):
             for h in raw_headlines:
-                if isinstance(h, dict):
-                    raw_title = h.get("title")
-                    if not isinstance(raw_title, str) or not raw_title.strip():
-                        continue
-                    kws = h.get("matched_keywords")
-                    matched_kws = (
-                        tuple(str(k).strip() for k in kws if isinstance(k, str) and str(k).strip())
-                        if isinstance(kws, (list, tuple))
-                        else ()
-                    )
-                    h_obj = NewsHeadline(
-                        title=raw_title.strip(),
-                        source=str(h.get("source") or "").strip(),
-                        pub_date=str(h.get("pub_date") or "").strip(),
-                        url=str(h.get("url") or "").strip(),
-                        matched_keywords=matched_kws,
-                        is_high_severity=self._as_bool_flag(h.get("is_high_severity", len(matched_kws) > 0)),
-                    )
-                else:
-                    raw_title = getattr(h, "title", None)
-                    if not isinstance(raw_title, str):
-                        continue
-                    h_obj = h
-                norm = self._normalize_title(raw_title)
-                if norm and norm not in self._aggregated_pool:
+                h_obj = self._coerce_headline(h)
+                norm = self._normalize_title(h_obj.title) if h_obj else ""
+                if h_obj and norm and norm not in self._aggregated_pool:
                     self._aggregated_pool[norm] = (now, h_obj)
 
-        # 2. Prune old headlines past rolling horizon
         cutoff = now - self.rolling_window_sec
         self._aggregated_pool = {
             k: v
@@ -256,15 +232,8 @@ class NewsFeedCollector:
             and hasattr(v[1], "title")
         }
 
-        # 3. Discover emerging crisis terms across aggregated pool and upgrade matching headlines
         pool_items = [v[1] for v in self._aggregated_pool.values()]
-        discovered = discover_dynamic_terms_from_headlines(
-            pool_items,
-            cache_dir=cache_dir,
-            now_ts=now,
-            persist=True,
-        )
-        if discovered:
+        if discover_dynamic_terms_from_headlines(pool_items, cache_dir=cache_dir, now_ts=now, persist=True):
             for norm_key, (seen_ts, h_item) in list(self._aggregated_pool.items()):
                 title_str = getattr(h_item, "title", "")
                 if not isinstance(title_str, str) or not title_str:
@@ -286,45 +255,16 @@ class NewsFeedCollector:
                     )
 
         self._save_history()
-
-        # 4. Sort pool: high-severity first, then most recent first
-        all_headlines = [
-            v[1]
-            for v in sorted(
-                self._aggregated_pool.values(),
-                key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),
-                reverse=True,
-            )
-        ]
-        high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
-        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
-            [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)],
-            cache_dir=cache_dir,
-        )
-
-        return NewsFeedSnapshot(
-            headlines=tuple(all_headlines[:35]),
-            total_fetched=len(all_headlines),
-            high_severity_count=len(high_sev),
-            has_critical_shock_keywords=has_shock,
-            ts=now,
-        )
+        return self._build_pool_snapshot(self._aggregated_pool.values(), now, cache_dir)
 
     def get_pool_snapshot(self, now_ts: Optional[float] = None) -> NewsFeedSnapshot:
         """Return snapshot of currently aggregated history pool without fetching network."""
         cache_dir = self._CacheDirOrNone()
-        now = time.time()
-        if now_ts is not None and not isinstance(now_ts, bool):
-            try:
-                nf = float(now_ts)
-                if math.isfinite(nf) and nf > 0.0:
-                    now = nf
-            except (TypeError, ValueError):
-                pass
+        now = resolve_now_ts(now_ts)
         cutoff = now - self.rolling_window_sec
-        active_pool = {
-            k: v
-            for k, v in self._aggregated_pool.items()
+        active_values = [
+            v
+            for v in self._aggregated_pool.values()
             if isinstance(v, tuple)
             and len(v) == 2
             and not isinstance(v[0], bool)
@@ -333,27 +273,8 @@ class NewsFeedCollector:
             and cutoff <= float(v[0]) <= (now + 5.0)
             and hasattr(v[1], "title")
             and hasattr(v[1], "is_high_severity")
-        }
-        all_headlines = [
-            v[1]
-            for v in sorted(
-                active_pool.values(),
-                key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),
-                reverse=True,
-            )
         ]
-        high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
-        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
-            [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)],
-            cache_dir=cache_dir,
-        )
-        return NewsFeedSnapshot(
-            headlines=tuple(all_headlines[:35]),
-            total_fetched=len(all_headlines),
-            high_severity_count=len(high_sev),
-            has_critical_shock_keywords=has_shock,
-            ts=now,
-        )
+        return self._build_pool_snapshot(active_values, now, cache_dir)
 
     @staticmethod
     def parse_rss_xml(
@@ -365,14 +286,7 @@ class NewsFeedCollector:
         if not xml_bytes or not isinstance(xml_bytes, (bytes, bytearray, str)):
             return None
 
-        now = time.time()
-        if now_ts is not None and not isinstance(now_ts, bool):
-            try:
-                nf = float(now_ts)
-                if math.isfinite(nf) and nf > 0.0:
-                    now = nf
-            except (TypeError, ValueError, OverflowError):
-                pass
+        now = resolve_now_ts(now_ts)
         try:
             root = ET.fromstring(xml_bytes)
         except Exception as e:
@@ -396,34 +310,18 @@ class NewsFeedCollector:
             title = title_el.text.strip() if title_el is not None and title_el.text else ""
             if not title:
                 continue
-
-            source_el = it.find("source")
-            source = source_el.text.strip() if source_el is not None and source_el.text else channel_source
-
-            date_el = it.find("pubDate")
-            pub_date = date_el.text.strip() if date_el is not None and date_el.text else ""
-
-            link_el = it.find("link")
-            link = link_el.text.strip() if link_el is not None and link_el.text else ""
-
+            source_el, date_el, link_el = it.find("source"), it.find("pubDate"), it.find("link")
             raw_items.append({
                 "title": title,
-                "source": source,
-                "pub_date": pub_date,
-                "url": link,
+                "source": source_el.text.strip() if source_el is not None and source_el.text else channel_source,
+                "pub_date": date_el.text.strip() if date_el is not None and date_el.text else "",
+                "url": link_el.text.strip() if link_el is not None and link_el.text else "",
             })
 
         if not raw_items:
             return None
 
-        # Detect any emerging multi-source crisis terms within this batch
-        emerging_terms = discover_dynamic_terms_from_headlines(
-            raw_items,
-            cache_dir=cache_dir,
-            now_ts=now,
-            persist=bool(cache_dir),
-        )
-
+        emerging_terms = discover_dynamic_terms_from_headlines(raw_items, cache_dir=cache_dir, now_ts=now, persist=bool(cache_dir))
         parsed_headlines: List[NewsHeadline] = []
         for item in raw_items:
             title = item["title"]
@@ -433,8 +331,6 @@ class NewsFeedCollector:
                 if em_term not in matched_list and re.search(r"\b" + re.escape(em_term) + r"\b", lower_title):
                     matched_list.append(em_term)
             matched = tuple(matched_list)
-            is_high = len(matched) > 0
-
             parsed_headlines.append(
                 NewsHeadline(
                     title=title,
@@ -442,16 +338,12 @@ class NewsFeedCollector:
                     pub_date=item["pub_date"],
                     url=item["url"],
                     matched_keywords=matched,
-                    is_high_severity=is_high,
+                    is_high_severity=len(matched) > 0,
                 )
             )
 
         high_sev = [h for h in parsed_headlines if h.is_high_severity]
-        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
-            [h.title for h in high_sev],
-            cache_dir=cache_dir,
-        )
-
+        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords([h.title for h in high_sev], cache_dir=cache_dir)
         return NewsFeedSnapshot(
             headlines=tuple(parsed_headlines[:25]),
             total_fetched=len(parsed_headlines),
@@ -462,44 +354,26 @@ class NewsFeedCollector:
 
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines across specialized feeds and dynamic crisis queries."""
-        force_refresh = self._as_bool_flag(force_refresh)
-        now = time.time()
-        if now_ts is not None and not isinstance(now_ts, bool):
-            try:
-                nf = float(now_ts)
-                if math.isfinite(nf) and nf > 0.0:
-                    now = nf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        last_ts = 0.0
-        if self._last_fetch_ts is not None and not isinstance(self._last_fetch_ts, bool):
-            try:
-                lf = float(self._last_fetch_ts)
-                if math.isfinite(lf) and lf >= 0.0:
-                    last_ts = lf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        if not force_refresh and self._cached_snapshot and last_ts > 0.0 and 0.0 <= (now - last_ts) < self.cache_ttl_sec:
+        now = resolve_now_ts(now_ts)
+        if self._cached_snapshot and is_cache_fresh(
+            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
+        ):
             return self._cached_snapshot
 
         cache_dir = self._CacheDirOrNone()
         if self._explicit_rss_url is None:
             self.rss_url = build_dynamic_rss_url(cache_dir=cache_dir)
 
-        feed_urls = self.get_active_feed_urls()
         collected_headlines: List[NewsHeadline] = []
         any_parsed = False
-
-        for feed_url in feed_urls:
+        for feed_url in self.get_active_feed_urls():
             try:
                 req = urllib.request.Request(
                     feed_url,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) mptrade-macro/1.0"},
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = resp.read()
-
-                latest = self.parse_rss_xml(data, now_ts=now, cache_dir=cache_dir)
+                    latest = self.parse_rss_xml(resp.read(), now_ts=now, cache_dir=cache_dir)
                 if latest:
                     any_parsed = True
                     collected_headlines.extend(latest.headlines)

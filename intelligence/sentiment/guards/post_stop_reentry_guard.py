@@ -22,6 +22,16 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.macro_sentiment_ssot import (
+    check_cooldown_gate,
+    clean_scale,
+    clean_symbol_key,
+    is_cache_fresh,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_ts,
+    safe_pos_float,
+)
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
     collect_pretrade_telemetry,
@@ -55,9 +65,7 @@ class PostStopReentryGuard:
         if val is True:
             return "enforce"
         if isinstance(val, (int, float)) and not isinstance(val, bool):
-            if not math.isfinite(float(val)):
-                return default
-            return "off" if float(val) == 0.0 else "enforce"
+            return default if not math.isfinite(float(val)) else ("off" if float(val) == 0.0 else "enforce")
         raw_m = str(val if val is not None else default).strip().lower()
         if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
             return "off"
@@ -78,24 +86,12 @@ class PostStopReentryGuard:
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-        t_sec = DEFAULT_TIMEOUT_SEC
-        if timeout_sec is not None and not isinstance(timeout_sec, bool):
-            try:
-                tf = float(timeout_sec)
-                if math.isfinite(tf) and tf > 0.0:
-                    t_sec = tf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        self.timeout_sec = t_sec
+        self.timeout_sec = safe_pos_float(timeout_sec, DEFAULT_TIMEOUT_SEC)
         self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
         self.mode = self._normalize_mode(mode, default="enforce")
         self.notify_enabled = self._as_bool_flag(notify_enabled)
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            try:
-                cf = float(cache_ttl_sec)
-                self.cache_ttl_sec = cf if (math.isfinite(cf) and cf >= 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                self.cache_ttl_sec = 0.0
+            self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 0.0)
         elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
             self.cache_ttl_sec = DEFAULT_POST_STOP_CACHE_TTL_SEC
         else:
@@ -118,70 +114,37 @@ class PostStopReentryGuard:
         """Evaluate whether a post-stop bounce is a genuine accumulation recovery or a trap."""
         if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
             return GuardDecision.allow("PostStopReentryGuard", "post_stop_reentry_guard_disabled")
-
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("PostStopReentryGuard", "backtest_mode_exempt")
 
-        def _sf(val: Any, default: float = 0.0) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-                return f if math.isfinite(f) else default
-            except (TypeError, ValueError):
-                return default
-
-        now_in = _sf(now, 0.0)
-        now_ts = now_in if now_in > 0.0 else time.time()
-        safe_sell_px = _sf(last_sell_price, 0.0)
-        safe_sell_ts_f = _sf(last_sell_time_s, 0.0)
+        now_ts = resolve_now_ts(now)
+        safe_sell_px = safe_float(last_sell_price, 0.0)
+        safe_sell_ts_f = safe_float(last_sell_time_s, 0.0)
         safe_sell_ts = int(safe_sell_ts_f) if safe_sell_ts_f > 0.0 else 0
-        cache_key = (
-            str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", ""),
-            round(safe_sell_px, 6),
-            safe_sell_ts,
-        )
+        cache_key = (clean_symbol_key(symbol), round(safe_sell_px, 6), safe_sell_ts)
         if self.cache_ttl_sec > 0:
             cached = _POST_STOP_DECISION_CACHE.get(cache_key)
-            if isinstance(cached, (tuple, list)) and len(cached) >= 2:
-                raw_cts = cached[0]
-                if raw_cts is not None and not isinstance(raw_cts, bool):
-                    try:
-                        c_ts = float(raw_cts)
-                        if math.isfinite(c_ts) and 0.0 <= (now_ts - c_ts) < self.cache_ttl_sec:
-                            return cached[1]
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+            if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec):
+                return cached[1]
 
-        safe_trough = _sf(trough, 0.0)
-        safe_curr_px = _sf(current_price, 0.0)
-        raw_qty = _sf(qty, 1.0)
-        safe_qty = raw_qty if raw_qty > 0.0 else 1.0
-        safe_bounce = _sf(bounce_pct, 0.0)
+        safe_trough = safe_float(trough, 0.0)
+        safe_curr_px = safe_float(current_price, 0.0)
+        safe_qty = safe_pos_float(qty, 1.0)
+        safe_bounce = safe_float(bounce_pct, 0.0)
         drop_after_sl_pct = (
             ((safe_sell_px - safe_trough) / safe_sell_px * 100.0)
             if safe_sell_px > 0 and safe_trough > 0
             else 0.0
         )
         bounce_from_trough_pct = float(safe_bounce * 100.0)
-        notional_in = _sf(notional_eur, -1.0) if notional_eur is not None else -1.0
-        if notional_in > 0.0:
-            notional = notional_in
-        else:
-            notional = float(safe_curr_px * safe_qty)
+        notional_in = safe_pos_float(notional_eur, 0.0)
+        notional = notional_in if notional_in > 0.0 else float(safe_curr_px * safe_qty)
 
-        # Build multi-pillar context
         effective_telemetry = (
             telemetry
             if isinstance(telemetry, dict)
             else collect_pretrade_telemetry(symbol, regime_context=regime_context)
         )
-
-        elapsed_str = ""
-        if safe_sell_ts_f > 0:
-            elapsed_min = max(0.0, (now_ts - safe_sell_ts_f) / 60.0)
-            elapsed_str = f"- Elapsed Time Since Stop-Loss: {elapsed_min:.1f} minutes"
-
         context_items = [
             f"- Symbol: {symbol}",
             f"- Previous Stop-Loss Exit Price: ${safe_sell_px:.4f}",
@@ -190,15 +153,12 @@ class PostStopReentryGuard:
             f"- Proposed Re-entry Quantity: {safe_qty}",
             f"- Estimated Notional Value: €{notional:,.2f} EUR",
         ]
-        if elapsed_str:
-            context_items.append(elapsed_str)
-
+        if safe_sell_ts_f > 0:
+            context_items.append(f"- Elapsed Time Since Stop-Loss: {max(0.0, (now_ts - safe_sell_ts_f) / 60.0):.1f} minutes")
         if isinstance(effective_telemetry, dict) and effective_telemetry:
-            for k, v in effective_telemetry.items():
-                context_items.append(f"- {k}: {v}")
+            context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
 
         context_str = "\n".join(context_items)
-
         prompt = (
             "You are a principal quantitative crypto risk officer.\n"
             f"An automated trading bot previously exited {symbol} on STOP-LOSS and is now evaluating whether "
@@ -225,53 +185,36 @@ class PostStopReentryGuard:
             thread_title=thread_title,
             topic_key="guard_post_stop",
         )
-
-        if not resp or not isinstance(resp, dict):
+        valid_resp = resp if isinstance(resp, dict) and resp else None
+        if valid_resp is None:
             logger.warning(
                 "LLM post-stop re-entry query failed or timed out for %s €%.2f. Fallback: %s",
                 symbol,
                 notional,
                 self.fallback_action,
             )
-            dec = evaluate_llm_guard_response(
-                "PostStopReentryGuard",
-                "post-stop re-entry",
-                None,
-                fallback_action=self.fallback_action,
-                notional_eur=notional,
-            )
-            self._maybe_notify(symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts)
-            if self.mode == "shadow":
-                final_dec = GuardDecision.allow(
-                    "PostStopReentryGuard",
-                    f"shadow_mode ({dec.reason})",
-                    notional_eur=notional,
-                    shadow_decision=dec,
-                )
-            else:
-                final_dec = dec
-            if self.cache_ttl_sec > 0:
-                _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, final_dec)
-            return final_dec
 
-        raw_dec = resp.get("decision")
-        decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
-        raw_reason = resp.get("reason")
-        reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
         dec = evaluate_llm_guard_response(
             "PostStopReentryGuard",
             "post-stop re-entry",
-            resp,
+            valid_resp,
             fallback_action=self.fallback_action,
             notional_eur=notional,
         )
-
         self._maybe_notify(symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts)
 
         if self.mode == "shadow":
+            if valid_resp is None:
+                shadow_msg = f"shadow_mode ({dec.reason})"
+            else:
+                raw_dec = valid_resp.get("decision")
+                decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
+                raw_reason = valid_resp.get("reason")
+                reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
+                shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
             final_dec = GuardDecision.allow(
                 "PostStopReentryGuard",
-                f"shadow_mode (LLM suggested {decision_str}: {reason})",
+                shadow_msg,
                 notional_eur=notional,
                 shadow_decision=dec,
             )
@@ -280,7 +223,6 @@ class PostStopReentryGuard:
 
         if self.cache_ttl_sec > 0:
             _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, final_dec)
-
         return final_dec
 
     def _maybe_notify(
@@ -298,16 +240,8 @@ class PostStopReentryGuard:
             return
         try:
             from notify_engine.alertnotifiers import notify
-            raw_scale = getattr(decision, "suggested_scale", 1.0)
-            scale_f = 1.0
-            if raw_scale is not None and not isinstance(raw_scale, bool):
-                try:
-                    sf = float(raw_scale)
-                    if math.isfinite(sf) and 0.0 <= sf <= 1.0:
-                        scale_f = sf
-                except (TypeError, ValueError, OverflowError):
-                    pass
-            scale_pct = int(round(scale_f * 100))
+
+            scale_pct = int(round(clean_scale(getattr(decision, "suggested_scale", 1.0), 1.0) * 100))
             if not decision.allowed:
                 action_label = "VETO"
             elif decision.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -315,29 +249,11 @@ class PostStopReentryGuard:
             else:
                 action_label = "APPROVED"
 
-            ts = time.time()
-            if now_ts is not None and not isinstance(now_ts, bool):
-                try:
-                    nt_f = float(now_ts)
-                    if math.isfinite(nt_f) and nt_f > 0.0:
-                        ts = nt_f
-                except (TypeError, ValueError, OverflowError):
-                    pass
-            norm_sym = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
-            notify_key = (norm_sym, action_label)
+            ts = resolve_now_ts(now_ts)
+            notify_key = (clean_symbol_key(symbol), action_label)
             cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
-            if cooldown > 0:
-                last_notified = _POST_STOP_NOTIFY_CACHE.get(notify_key)
-                if last_notified is not None and not isinstance(last_notified, bool):
-                    try:
-                        ln_f = float(last_notified)
-                        if math.isfinite(ln_f) and 0.0 <= (ts - ln_f) < cooldown:
-                            return
-                    except (TypeError, ValueError, OverflowError):
-                        pass
-                _POST_STOP_NOTIFY_CACHE[notify_key] = ts
-
-            from orchestratorOS.agy.topics import topic_spec
+            if cooldown > 0 and not check_cooldown_gate(_POST_STOP_NOTIFY_CACHE, notify_key, now_ts=ts, cooldown_sec=cooldown):
+                return
 
             title = f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}"
             body = (
@@ -372,8 +288,7 @@ def get_post_stop_reentry_guard(
         m = margins
     if not isinstance(m, dict) or not m:
         raise KeyError("post_stop_reentry_mode")
-    raw_mode = m.get("post_stop_reentry_mode", "enforce")
-    mode = PostStopReentryGuard._normalize_mode(raw_mode, default="enforce")
+    mode = PostStopReentryGuard._normalize_mode(m.get("post_stop_reentry_mode", "enforce"), default="enforce")
     intel_master = PostStopReentryGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
     llm_master = PostStopReentryGuard._normalize_mode(m.get("llm_guard_mode", "enforce"), default="enforce")
     if intel_master == "off" or llm_master == "off":
@@ -381,23 +296,12 @@ def get_post_stop_reentry_guard(
     elif llm_master == "shadow" and mode == "enforce":
         mode = "shadow"
 
-    def _safe_pos_f(val: Any, default: float) -> float:
-        if val is None or isinstance(val, bool):
-            return default
-        try:
-            f = float(val)
-            return f if (math.isfinite(f) and f >= 0.0) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
-
-    timeout = _safe_pos_f(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
-    if timeout <= 0.0:
-        timeout = DEFAULT_TIMEOUT_SEC
+    timeout = safe_pos_float(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
     raw_fb = m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)
     fallback = str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK
     raw_notify = m.get("post_stop_reentry_notify")
     notify_en = True if raw_notify is None else PostStopReentryGuard._as_bool_flag(raw_notify, default=False)
-    cache_ttl = _safe_pos_f(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
+    cache_ttl = safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
 
     if gemini_client is not None:
         return PostStopReentryGuard(
