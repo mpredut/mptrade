@@ -22,11 +22,11 @@ from binance_api import bapi as api  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
-import symbols as sym  # noqa: E402
 from botcore import safe_float as _f  # noqa: E402
-from instrument_registry import load_registry  # noqa: E402
+from instrument_registry import load_registry, symbols_for  # noqa: E402
+import pricewindow as pw  # noqa: E402
 
-SYMBOLS = [sym.taosymbol, sym.btcsymbol]
+SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
 import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
@@ -84,7 +84,17 @@ def main():
         if not isinstance(snap, dict):
             snap = {}
         px = _f(snap.get("current_price"), 0.0) or _f(api.get_current_price(s), 0.0) or 0.0
-        gr = _f(snap.get("gradient_recent", 0.0), 0.0)
+        target = snap
+        fast_w = pw.fast_trend_window_for_symbol(s)
+        dyn = snap.get("dynamic")
+        if fast_w is not None and isinstance(dyn, dict):
+            w_snap = dyn.get(f"{float(fast_w):g}")
+            if isinstance(w_snap, dict):
+                target = w_snap
+        raw_gc = target.get("growth_coefficient")
+        if raw_gc is None or isinstance(raw_gc, bool):
+            raw_gc = target.get("gradient_recent", 0.0)
+        gr = _f(raw_gc, 0.0)
         avg, net, n_sells, last_buy = position(s)
         free = free_qty(s)
         ref = last_buy or avg   # The bot uses the LAST buy as its reference (TP_REFERENCE="last").

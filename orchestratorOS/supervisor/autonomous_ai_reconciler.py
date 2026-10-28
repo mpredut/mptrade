@@ -318,14 +318,16 @@ def _apply_short_trend_item(
             entry["epsilon"] = tinfo.get("epsilon")
         if tinfo.get("vol_1h_pct") is not None:
             entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
-    for w_dict, s_key, t_key in (
-        (d222, "slope_3_7m", "trend_3_7m"),
-        (d900, "slope_15m", "trend_15m"),
-        (d9000, "slope_2_5h", "trend_2_5h"),
+    for w_dict, s_key, t_key, g_key in (
+        (d222, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
+        (d900, "slope_15m", "trend_15m", "growth_15m"),
+        (d9000, "slope_2_5h", "trend_2_5h", "growth_2_5h"),
     ):
         if w_dict.get("slope_full") is not None or require_any_slope:
             entry[s_key] = w_dict.get("slope_full", 0.0) if require_any_slope else w_dict.get("slope_full")
             entry[t_key] = w_dict.get("final_trend", trend)
+        if w_dict.get("growth_coefficient") is not None:
+            entry[g_key] = w_dict.get("growth_coefficient")
     return True
 
 
@@ -1120,10 +1122,13 @@ class AutonomousAIReconciler:
                         for k_inh in (
                             "slope_3_7m",
                             "trend_3_7m",
+                            "growth_3_7m",
                             "slope_15m",
                             "trend_15m",
+                            "growth_15m",
                             "slope_2_5h",
                             "trend_2_5h",
+                            "growth_2_5h",
                             "gradient_recent_fast",
                             "epsilon",
                             "vol_1h_pct",

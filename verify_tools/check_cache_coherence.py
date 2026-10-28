@@ -89,7 +89,10 @@ def main() -> int:
         ok = -5.0 <= age < STALE_S and px_ok
         if not ok:
             problems.append(f"short_trend {s} age={age:.0f}s px={px}")
-        print(f"   {s:10} age={age:6.0f}s gradient_recent={e.get('gradient_recent')} price={px} -> {'OK' if ok else 'STALE/INVALID'}")
+        print(
+            f"   {s:10} age={age:6.0f}s growth_coefficient={e.get('growth_coefficient')} "
+            f"gradient_recent={e.get('gradient_recent')} price={px} -> {'OK' if ok else 'STALE/INVALID'}"
+        )
 
     # 2. current price
     cp = load("cache_current_price.json") or {}
