@@ -255,6 +255,7 @@ def is_trend_up(symbol, window_seconds=None, now=None):
     """Evaluate upward trend via CacheShortTrendManager (primary snapshot, per-symbol fast window, or dynamic window)."""
     try:
         import cacheManager as cm
+        import pricewindow as pw
         mgr = cm.get_short_trend_manager()
         if window_seconds is None:
             import pricewindow as pw
@@ -1156,7 +1157,15 @@ def _is_trend_gate_deferred(symbol: str, inst: Any = None, side: str = "SELL") -
         return False
     try:
         import cacheManager as cm
+        import pricewindow as pw
         short_tm = cm.get_short_trend_manager()
+        fast_w = pw.fast_trend_window_for_symbol(symbol)
+        if (
+            fast_w is not None
+            and isinstance(short_tm, cm.CacheShortTrendManager)
+            and isinstance(short_tm.get_short_trend_for_window(symbol, fast_w), dict)
+        ):
+            return bool(short_tm.should_wait(side, symbol, window_seconds=fast_w, use_noise_gate=False))
         try:
             return bool(short_tm.should_wait(side, symbol, use_noise_gate=False))
         except TypeError:

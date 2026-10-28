@@ -286,6 +286,47 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertAlmostEqual(vel_fast, vel_ref, places=11)
             self.assertAlmostEqual(acc_fast, acc_ref, places=11)
 
+    def test_trend_gate_deferred_uses_fast_window_for_taousdc(self):
+        import cacheManager as cm
+        import monitortrades as mt
+        mgr = cm.CacheShortTrendManager(["TAOUSDC"])
+        queried = []
+        orig_get_for_win = mgr.get_short_trend_for_window
+        orig_should_wait = mgr.should_wait
+
+        def fake_get_for_win(symbol, window_sec=None):
+            if symbol == "TAOUSDC" and window_sec == 90.0:
+                return {"growth_coefficient": -0.05, "epsilon": 0.01}
+            return None
+
+        def fake_should_wait(side, symbol, window_seconds=None, use_noise_gate=False):
+            queried.append((side, symbol, window_seconds, use_noise_gate))
+            return False
+
+        with unittest.mock.patch.object(cm, "get_short_trend_manager", return_value=mgr), \
+             unittest.mock.patch.object(mgr, "get_short_trend_for_window", side_effect=fake_get_for_win), \
+             unittest.mock.patch.object(mgr, "should_wait", side_effect=fake_should_wait):
+            self.assertFalse(mt._is_trend_gate_deferred("TAOUSDC", side="SELL"))
+            self.assertEqual(queried, [("SELL", "TAOUSDC", 90.0, False)])
+
+    def test_market_api_regime_service_for_reuses_and_caches_services(self):
+        from providers.market_api import MarketApi
+
+        class DummyProvider:
+            name = "dummy"
+            def supports_symbol(self, s):
+                return True
+
+        api_inst = MarketApi([DummyProvider()])
+        s_default = api_inst._regime_service_for(None)
+        s_same = api_inst._regime_service_for(s_default.evaluator.strength_threshold)
+        self.assertIs(s_same, s_default)
+
+        s_custom1 = api_inst._regime_service_for(1.5)
+        s_custom2 = api_inst._regime_service_for(1.5)
+        self.assertIsNot(s_custom1, s_default)
+        self.assertIs(s_custom1, s_custom2)
+
 
 if __name__ == "__main__":
     unittest.main()

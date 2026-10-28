@@ -734,12 +734,22 @@ class Instrument:
             if wait_for_trend:
                 try:
                     import cacheManager as cm
+                    import pricewindow as pw
                     short_tm = cm.get_short_trend_manager()
-                    try:
+                    fast_w = pw.fast_trend_window_for_symbol(self.symbol)
+                    if (
+                        fast_w is not None
+                        and isinstance(short_tm, cm.CacheShortTrendManager)
+                        and isinstance(short_tm.get_short_trend_for_window(self.symbol, fast_w), dict)
+                    ):
                         deferred = short_tm.should_wait(
-                            side_u, self.symbol, use_noise_gate=False)
-                    except TypeError:
-                        deferred = short_tm.should_wait(side_u, self.symbol)
+                            side_u, self.symbol, window_seconds=fast_w, use_noise_gate=False)
+                    else:
+                        try:
+                            deferred = short_tm.should_wait(
+                                side_u, self.symbol, use_noise_gate=False)
+                        except TypeError:
+                            deferred = short_tm.should_wait(side_u, self.symbol)
                     if deferred:
                         print(
                             f"[{self.symbol}] {side_u} deferred by trend; "

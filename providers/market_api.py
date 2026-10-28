@@ -14,6 +14,7 @@ eagerly importing modules that lead back to ``cacheManager`` would create a cycl
 """
 import math
 import time
+from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
 from botcore import _parse_bool_flag
@@ -47,6 +48,7 @@ from market_regime import (
     CompositeMarketRegimeDecision,
     MarketRegimeContext,
     MarketRegimeDecision,
+    MarketRegimeEvaluator,
     MarketRegimeBundle,
     MarketRegimeResolution,
     MarketRegimeService,
@@ -1082,13 +1084,36 @@ class MarketApi:
         service = self._regime_service
         if strength_threshold is None:
             return service
-        return MarketRegimeService(
-            strength_threshold,
+        evaluator = MarketRegimeEvaluator(strength_threshold)
+        base_eval = getattr(service, "evaluator", None)
+        if base_eval is not None and evaluator.strength_threshold == getattr(base_eval, "strength_threshold", None):
+            return service
+        cache = getattr(self, "_threshold_regime_services", None)
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict()
+            self._threshold_regime_services = cache
+        key = (
+            evaluator.strength_threshold,
+            service.cache_ttl_sec,
+            service.negative_cache_ttl_sec,
+            service.cache_max,
+            service.clock,
+        )
+        cached = cache.get(key)
+        if cached is not None:
+            cache.move_to_end(key)
+            return cached
+        created = MarketRegimeService(
+            evaluator.strength_threshold,
             cache_ttl_sec=service.cache_ttl_sec,
             negative_cache_ttl_sec=service.negative_cache_ttl_sec,
             cache_max=service.cache_max,
             clock=service.clock,
         )
+        cache[key] = created
+        while len(cache) > 32:
+            cache.popitem(last=False)
+        return created
 
     def market_regime_context(
         self,
