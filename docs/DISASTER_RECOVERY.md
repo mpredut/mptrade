@@ -42,9 +42,15 @@ sudo /usr/local/sbin/trading-admin status                                       
 The entire deployment is reproducible and path-agnostic:
 
 - **Unified Backup & Restore** (`orchestratorOS/admin/manage_backups.sh`):
-  - `backup local`: Takes a snapshot of all repo secrets (`.env`, `config.env`, `212trading/.env`, `autodeploy.local.conf`), caches (`cachedb/`), state files, Antigravity CLI credentials & project configs (`~/.gemini/antigravity-cli/antigravity-oauth-token`, `settings.json`, `~/.gemini/config/config.json`, `~/.gemini/config/projects/`), SSH keys & config (`~/.ssh/id_ed25519*`, `id_rsa*`, `config`, `authorized_keys`, `known_hosts`), `rclone` configuration (`~/.config/rclone/rclone.conf`), and `~/piatoken.txt` into `$HOME/mptrade-secrets-backup.tar.gz`.
-  - `backup remote`: Uploads encrypted snapshot to Storj.
-  - `restore <tarball_or_folder>`: Rebuilds secrets, Antigravity credentials, SSH keys/config, `rclone` config, and project definitions, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh` (which auto-starts `antigravity-cli-daemon.service` authenticated as `prod-vm`).
+  - `backup local`: Takes a full local DR snapshot of all repo secrets (`.env`, `config.env`, `212trading/.env`, `kraken/.env`, `hyperliquid/.env`, `autodeploy.local.conf`), caches (`cachedb/`), state files, Antigravity CLI credentials & project configs (`~/.gemini/antigravity-cli/antigravity-oauth-token`, `settings.json`, `~/.gemini/config/config.json`, `~/.gemini/config/projects/`), SSH keys & config (`~/.ssh/id_ed25519*`, `id_rsa*`, `config`, `authorized_keys`, `known_hosts`), `rclone` configuration (`~/.config/rclone/rclone.conf`, auto-rendered from `STORJ_ACCESS_KEY` / `STORJ_SECRET_KEY` / `STORJ_ENDPOINT` in `.env`), and `~/piatoken.txt` into `$HOME/mptrade-secrets-backup.tar.gz` (plus 7 daily rotated copies).
+  - `backup remote` (scheduled daily at `03:30 AM` on PROD): Runs `backup local` first, then builds a dedicated **raw price-only archive** (`$HOME/mptrade-price-data.tar.gz`, containing exclusively `cachedb/cache_365_price_*.jsonl`, `cachedb/cache_24_price_*.json`, `cachedb/cache_sparse_price_*.jsonl`, `cachedb/cache_prices_multi.json`, and their `.meta` files — zero `.env` secrets or order/trade state) and uploads both `mptrade-price-data.tar.gz` and `mptrade-price-data-YYYYMMDD.tar.gz` (retaining last 7 days) to the Storj S3 bucket `storj:mptrade-price-data/`.
+  - `pull-prices`: Downloads `storj:mptrade-price-data/mptrade-price-data.tar.gz` from Storj and unpacks the raw high-density price archives directly into `cachedb/`.
+  - `restore <tarball_or_folder>`: Rebuilds secrets, Antigravity credentials, SSH keys/config, `rclone` config, and project definitions, automatically pulls `mptrade-price-data.tar.gz` from Storj if `cachedb/cache_365_price_*.jsonl` is missing locally, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh` (which auto-starts `antigravity-cli-daemon.service` authenticated as `prod-vm`).
+- **Off-Host Daily Pull & Continuous Cache Mirror (DEV + Windows/WSL)**:
+  - **DEV (`192.168.0.138`)**: Synced every 30 minutes from PROD via `offline/runners/refresh_dev.sh` (`rsync` of `cachedb/`).
+  - **Windows + WSL (`Ubuntu-24.04`, `/home/mariusp/mptrade`)**:
+    - Daily at `03:45 AM`, the Windows Scheduled Task `BinanceBackupPull` executes `C:\Users\mariusp\pull-binance-backup.ps1` (`orchestratorOS/admin/windows/pull-binance-backup.ps1`), which downloads `~/mptrade-secrets-backup.tar.gz` from PROD (`192.168.0.144:32238`) to `C:\Users\mariusp\mptrade-secrets-backup.tar.gz`, copies it into WSL (`/home/mariusp/mptrade-secrets-backup.tar.gz`), and invokes `offline/runners/sync_wsl_cache.sh --unpack-backup` to unpack the archive into `/home/mariusp/mptrade-secrets-backup` and `/home/mariusp/mptrade`.
+    - Every 30 minutes (`*/30 * * * *`), WSL cron executes `offline/runners/sync_wsl_cache.sh`, which `rsync`s `cachedb/` from `mptrade-prod` and `*.npz` + `dev_regression_status.json` from `mptrade-dev` into `/home/mariusp/mptrade/cachedb/`.
 - **Fleet Orchestration** (`orchestratorTrade/orchestrator.py`):
   - Supervised by `python_orchestrator.service` (`systemd`).
   - Reads `procs.conf` manifest to spawn all bots in isolated process groups.
@@ -106,12 +112,12 @@ If PIA ever issues a new Dedicated IP token resulting in an IP change:
 See `docs/PROXMOX_DR.md` for hypervisor network and firewall settings.
 - VM 100 must run with **NIC firewall OFF (`firewall=0`)** so PIA's WireGuard TLS handshakes are never dropped.
 
-### 6. Off-Site Backups Notice
+### 6. Off-Site Backups & Multi-Tier DR Topology
 
-Daily backups via `manage_backups.sh local` create `$HOME/mptrade-secrets-backup.tar.gz` and rotate 7 daily copies locally.
-For complete disaster resistance against total VM/hypervisor storage loss:
-- Maintain Proxmox VE backups (vzdump / PBS) of VM 100, OR
-- Periodically copy `~/mptrade-secrets-backup.tar.gz` off-host (e.g., via `scp` or remote storage).
+Daily backups at `03:30 AM` via `manage_backups.sh remote` maintain a 3-tier disaster recovery architecture:
+1. **PROD Local Full DR Archive**: `$HOME/mptrade-secrets-backup.tar.gz` (+ 7 daily copies on PROD) containing all `.env` secrets, SSH/Antigravity/rclone credentials, and `cachedb/`.
+2. **Windows + WSL (`Ubuntu-24.04`) Off-Host Full Mirror**: Pulled daily at `03:45 AM` over SSH by Windows Scheduled Task `BinanceBackupPull` (`pull-binance-backup.ps1`) to `C:\Users\mariusp\mptrade-secrets-backup.tar.gz` and `/home/mariusp/mptrade-secrets-backup.tar.gz`, unpacked into `/home/mariusp/mptrade`, and continuously synced every 30 minutes via `offline/runners/sync_wsl_cache.sh`.
+3. **Storj Cloud Price Archive (`storj:mptrade-price-data/`)**: Holds `mptrade-price-data.tar.gz` (+ 7 daily dated copies) containing **only** raw collected high-density price series (`cache_365_price_*.jsonl`, `cache_24_price_*.json`, `cache_sparse_price_*.jsonl`, `cache_prices_multi.json`) with zero secrets exposed in cloud storage.
 
 ---
 
@@ -126,9 +132,13 @@ When rebuilding on a fresh VM from scratch:
 git clone https://github.com/mpredut/mptrade.git ~/mptrade
 cd ~/mptrade
 
-# 2. Restore secrets and state from backup tarball (or directory)
-# (Automatically unpacks secrets, sets up venv, installs deps, renders units/crontabs, enables linger, and starts services)
+# 2. Restore secrets and state from backup tarball (copied from Windows/WSL or local backup)
+# (Automatically unpacks secrets + cachedb, pulls 365d price archives from Storj if missing,
+#  sets up venv, installs deps, renders units/crontabs, enables linger, and starts services)
 ./orchestratorOS/admin/manage_backups.sh restore ~/mptrade-secrets-backup.tar.gz
+
+# (Optional) To explicitly pull the latest raw price archive from Storj at any time:
+./orchestratorOS/admin/manage_backups.sh pull-prices
 
 # 3. Reboot the VM (applies netplan force-gateway and starts all services cleanly)
 sudo reboot

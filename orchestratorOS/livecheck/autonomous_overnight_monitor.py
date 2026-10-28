@@ -30,7 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, parse_dotenv
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
     gather_basic_os_resources,
@@ -228,13 +228,9 @@ class AutonomousOvernightMonitor:
         for base_dir in search_dirs:
             conf_file = os.path.join(base_dir, "order_guard.conf")
             if os.path.exists(conf_file):
-                with open(conf_file, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        line = line.split("#", 1)[0].strip()
-                        if not line or "=" not in line:
-                            continue
-                        k, v = line.split("=", 1)
-                        modes[k.strip().lower()] = v.strip().strip("\"'").lower()
+                parsed = parse_dotenv(conf_file)
+                for k, v in parsed.items():
+                    modes[k.strip().lower()] = v.strip().strip("\"'").lower()
         if "supervisor_mode" not in modes:
             raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
         return modes

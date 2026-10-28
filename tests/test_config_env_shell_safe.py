@@ -1469,3 +1469,44 @@ def test_datasets_execution_calibration_and_benchmark_hardening():
     assert bev._optional_min([None, True, float("nan"), 2.5, 1.5]) == 1.5
 
 
+def test_backup_sync_common_modular_primitives(tmp_path):
+    scripts = [
+        os.path.join(ROOT, "orchestratorOS", "lib", "backup_sync_common.sh"),
+        os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh"),
+        os.path.join(ROOT, "offline", "runners", "refresh_dev.sh"),
+        os.path.join(ROOT, "offline", "runners", "sync_wsl_cache.sh"),
+    ]
+    for script in scripts:
+        subprocess.run(["bash", "-n", script], check=True)
+
+    fake_home = tmp_path / "home"
+    src_dir = tmp_path / "src_backup"
+    dst_dir = tmp_path / "dst_repo"
+    (src_dir / "cachedb").mkdir(parents=True)
+    (src_dir / ".ssh_backup").mkdir(parents=True)
+    (src_dir / "logs").mkdir(parents=True)
+    (src_dir / "cachedb" / "cache_365_price_BTCUSDC.jsonl").write_text('{"p":1}\n', encoding="utf-8")
+    (src_dir / ".ssh_backup" / "id_ed25519").write_text("secret", encoding="utf-8")
+    (src_dir / "logs" / "prod.log").write_text("log", encoding="utf-8")
+    dst_dir.mkdir(parents=True)
+
+    cmd = (
+        f'export HOME="{fake_home}"; '
+        f'export STORJ_ACCES_KEY="key1"; export STORJ_SECRET_KEY="sec1"; export STORJ_ENDPOINT="Yhttps://gateway.storjshare.io"; '
+        f'source "{os.path.join(ROOT, "orchestratorOS", "lib", "backup_sync_common.sh")}"; '
+        f'ensure_rclone_storj_config; '
+        f'export STORJ_ACCESS_KEY="key2"; ensure_rclone_storj_config; '
+        f'unpack_repo_payload "{src_dir}" "{dst_dir}" --exclude="logs"'
+    )
+    subprocess.run(["bash", "-c", cmd], check=True)
+
+    rclone_conf = (fake_home / ".config" / "rclone" / "rclone.conf").read_text(encoding="utf-8")
+    assert rclone_conf.count("[storj]") == 1
+    assert "access_key_id = key2" in rclone_conf
+    assert "endpoint = https://gateway.storjshare.io" in rclone_conf
+    assert (dst_dir / "cachedb" / "cache_365_price_BTCUSDC.jsonl").is_file()
+    assert not (dst_dir / ".ssh_backup").exists()
+    assert not (dst_dir / "logs").exists()
+
+
+

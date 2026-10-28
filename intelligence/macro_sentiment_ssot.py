@@ -45,7 +45,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, parse_dotenv
 from cachepaths import cache_path
 
 logger = logging.getLogger(__name__)
@@ -93,13 +93,22 @@ def safe_int(val: Any, default: int = 0) -> int:
         return default
 
 
-def clean_scale(val: Any, default: float = 1.0, *, allow_percent: bool = False) -> float:
+def clean_scale(
+    val: Any,
+    default: float = 1.0,
+    *,
+    allow_percent: bool = False,
+    allow_percentage: bool = False,
+    min_positive: bool = False,
+) -> float:
     """Normalize a scale factor into [0.0, 1.0], optionally converting (1.0, 100.0] percentages."""
     f = safe_float(val, -1.0)
-    if f < 0.0:
+    if f < 0.0 or (min_positive and f <= 0.0):
         return default
-    if allow_percent and 1.0 < f <= 100.0:
+    if (allow_percent or allow_percentage) and 1.0 < f <= 100.0:
         f = f / 100.0
+    if min_positive and f <= 0.0:
+        return default
     return f if 0.0 <= f <= 1.0 else default
 
 
@@ -208,17 +217,15 @@ def detect_active_binance_symbols(
         try:
             krk_cfg = os.path.join(_ROOT_DIR, "kraken", "config.env")
             if os.path.exists(krk_cfg):
-                with open(krk_cfg, "r", encoding="utf-8", errors="replace") as f:
-                    for raw_line in f:
-                        line = raw_line.split("#", 1)[0].strip()
-                        if line.startswith("KRAKEN_CACHE_PAIRS") and "=" in line:
-                            _, val = line.split("=", 1)
-                            for item in val.split(","):
-                                p = item.strip().strip("'\"").upper()
-                                base = canonical_base_asset(p)
-                                if p and base and base not in seen_bases and p not in out:
-                                    out.append(p)
-                                    seen_bases.add(base)
+                parsed = parse_dotenv(krk_cfg)
+                val = parsed.get("KRAKEN_CACHE_PAIRS", "")
+                if val:
+                    for item in val.split(","):
+                        p = item.strip().strip("'\"").upper()
+                        base = canonical_base_asset(p)
+                        if p and base and base not in seen_bases and p not in out:
+                            out.append(p)
+                            seen_bases.add(base)
         except Exception:
             pass
     return out if out else list(default)

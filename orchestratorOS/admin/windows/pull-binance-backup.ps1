@@ -1,6 +1,6 @@
 # pull-binance-backup.ps1 — pull the secrets & cache backup from PROD to the local Windows + WSL box,
 # then unpack it in WSL Ubuntu-24.04 and sync live cachedb/ files.
-# Run by the Windows Scheduled Task "BinanceBackupPull" (see docs/DISASTER_RECOVERY.md).
+# Run by the Windows Scheduled Task "BinanceBackupPull" at 03:45 AM (see docs/DISASTER_RECOVERY.md).
 $ErrorActionPreference = 'Stop'
 $key        = "$env:USERPROFILE\.ssh\id_binance"
 $serverUser = if ($env:TRADING_USER) { $env:TRADING_USER } else { 'predut' }
@@ -24,7 +24,11 @@ try {
     Copy-Item -Path $dstLocal -Destination $dstWsl -Force
     Write-Host ("{0} OK - copied into WSL: {1}" -f $stamp, $dstWsl)
     wsl.exe -d Ubuntu-24.04 -u $wslUser -e bash -lc "/home/${wslUser}/mptrade/offline/runners/sync_wsl_cache.sh --unpack-backup >> /home/${wslUser}/mptrade/logs/sync_wsl_cache.log 2>&1"
-    Write-Host ("{0} OK - unpacked and synced cachedb in WSL (/home/{1}/mptrade)" -f $stamp, $wslUser)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ("{0} WARN - WSL sync_wsl_cache.sh exited with code {1}" -f $stamp, $LASTEXITCODE)
+    } else {
+        Write-Host ("{0} OK - unpacked and synced cachedb in WSL (/home/{1}/mptrade)" -f $stamp, $wslUser)
+    }
 } catch {
     Write-Host ("{0} WARN - WSL copy/unpack issue: {1}" -f $stamp, $_.Exception.Message)
 }

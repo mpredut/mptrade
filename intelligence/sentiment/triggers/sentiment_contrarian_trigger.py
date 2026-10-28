@@ -7,9 +7,15 @@ import time
 from typing import Optional, Tuple
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+from intelligence.macro_sentiment_ssot import obj_attr, resolve_now_ts, safe_float, safe_pos_float
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_contrarian_trigger")
+
+
+def _safe_thresh(v, default: int) -> int:
+    f = safe_float(v, -1.0)
+    return int(round(f)) if 0.0 <= f <= 100.0 else default
 
 
 class SentimentContrarianTrigger:
@@ -24,17 +30,6 @@ class SentimentContrarianTrigger:
         extreme_fear_entry: int = 22,
         extreme_greed_exit: int = 85,
     ) -> None:
-        def _safe_thresh(v, default: int) -> int:
-            if v is None or isinstance(v, bool):
-                return default
-            try:
-                f = float(v)
-            except (TypeError, ValueError):
-                return default
-            if not math.isfinite(f) or not (0.0 <= f <= 100.0):
-                return default
-            return int(round(f))
-
         self.extreme_fear_entry = _safe_thresh(extreme_fear_entry, 22)
         self.extreme_greed_exit = _safe_thresh(extreme_greed_exit, 85)
         if self.extreme_fear_entry > self.extreme_greed_exit:
@@ -52,60 +47,27 @@ class SentimentContrarianTrigger:
 
         Returns (signal_type, Optional[TriggerEvent]).
         """
-        if snapshot is None or price is None or isinstance(price, bool):
+        price_f = safe_pos_float(price, 0.0)
+        if snapshot is None or price_f <= 0.0:
             return None, None
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError):
-            return None, None
-        if not (math.isfinite(price_f) and price_f > 0.0):
-            return None, None
-        price = price_f
-
-        now = time.time()
-        if ts is not None and not isinstance(ts, bool):
-            try:
-                tf = float(ts)
-                if math.isfinite(tf) and tf > 0.0:
-                    now = tf
-            except (TypeError, ValueError):
-                pass
-        def _snap_attr(key: str, default=None):
-            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
-
-        raw_val = _snap_attr("value", None)
-        if raw_val is None or isinstance(raw_val, bool):
-            return None, None
-        try:
-            val_f = float(raw_val)
-        except (TypeError, ValueError):
-            return None, None
+        val_f = safe_float(obj_attr(snapshot, "value", None), float("nan"))
         if not math.isfinite(val_f):
             return None, None
+        price = price_f
+        now = resolve_now_ts(ts)
         val = int(round(val_f)) if float(val_f).is_integer() else val_f
-        raw_cls = _snap_attr("classification", None)
+        raw_cls = obj_attr(snapshot, "classification", None)
         cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
-        trend_7d = _snap_attr("trend_7d_change", None)
+        trend_7d = obj_attr(snapshot, "trend_7d_change", None)
 
         # 1. Contrarian ENTRY BUY during Extreme Fear
         if val <= self.extreme_fear_entry:
-            # Check for stabilization if history exists: avoid buying if sentiment is in free-fall (>10 pt drop today)
-            history = _snap_attr("historical_values", None)
+            history = obj_attr(snapshot, "historical_values", None)
             if isinstance(history, (list, tuple)) and len(history) >= 2:
-                h0, h1 = history[0], history[1]
-                if (
-                    h0 is not None
-                    and h1 is not None
-                    and not isinstance(h0, bool)
-                    and not isinstance(h1, bool)
-                ):
-                    try:
-                        recent_drop = float(h1) - float(h0)
-                        if math.isfinite(recent_drop) and recent_drop > 10:
-                            # Still in sharp acceleration of fear, wait for stabilization
-                            return None, None
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+                h0 = safe_float(history[0], float("nan"))
+                h1 = safe_float(history[1], float("nan"))
+                if math.isfinite(h0) and math.isfinite(h1) and (h1 - h0) > 10:
+                    return None, None
 
             strength = round(max(0.60, min(1.0, 1.0 - (val / 100.0))), 2)
             event = TriggerEvent(

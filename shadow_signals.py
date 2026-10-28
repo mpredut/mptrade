@@ -21,17 +21,12 @@ from state_io import atomic_write_json, read_recovering_previous, save_json_stat
 from datetime import date
 
 import numpy as np
+from botcore import float_env
 
 
 def _f_env(name: str, default: float) -> float:
-    try:
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            return default
-        val = float(raw)
-        return val if math.isfinite(val) and val > 0 else default
-    except ValueError:
-        return default
+    val = float_env(name)
+    return val if (val is not None and val > 0.0) else default
 
 
 # Feed Kalman at a subsampled cadence. One-second ticks track minute oscillations

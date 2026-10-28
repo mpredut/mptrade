@@ -463,49 +463,30 @@ def collect_pretrade_telemetry(
     telemetry: Dict[str, Any] = {}
 
     def _safe_opt_float(val: Any) -> Optional[float]:
-        if val is None or isinstance(val, bool):
-            return None
-        try:
-            vf = float(val)
-            return vf if math.isfinite(vf) else None
-        except (TypeError, ValueError, OverflowError):
-            return None
-
-    def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
-        return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+        vf = safe_float(val, float("nan"))
+        return vf if math.isfinite(vf) else None
 
     # 1. Spot Microstructure: Orderbook Depth & Walls (Pillar 2)
     try:
         from external_order_guard import get_orderbook_collector
         ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
         if ob_snap is not None:
-            imb_f = _safe_opt_float(_obj_attr(ob_snap, "imbalance_ratio", None))
+            imb_f = _safe_opt_float(obj_attr(ob_snap, "imbalance_ratio", None))
             if imb_f is not None:
                 bid_pct = max(0, min(100, int(round(imb_f * 100.0))))
                 ask_pct = 100 - bid_pct
                 telemetry["Orderbook Depth Imbalance"] = f"{imb_f:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
-            ask_wall_usd = _safe_opt_float(_obj_attr(ob_snap, "largest_ask_wall_usd", 0.0))
-            ask_wall_px = _safe_opt_float(_obj_attr(ob_snap, "largest_ask_wall_price", 0.0))
-            if (
-                ask_wall_usd is not None
-                and ask_wall_px is not None
-                and ask_wall_usd > 100_000.0
-                and ask_wall_px > 0.0
+            for side_lbl, usd_attr, px_attr in (
+                ("Ask", "largest_ask_wall_usd", "largest_ask_wall_price"),
+                ("Bid", "largest_bid_wall_usd", "largest_bid_wall_price"),
             ):
-                telemetry["Orderbook Ask Wall Ahead"] = f"${ask_wall_usd:,.0f} @ ${ask_wall_px:,.2f}"
-            else:
-                telemetry["Orderbook Ask Wall Ahead"] = "None detected within 2%"
-            bid_wall_usd = _safe_opt_float(_obj_attr(ob_snap, "largest_bid_wall_usd", 0.0))
-            bid_wall_px = _safe_opt_float(_obj_attr(ob_snap, "largest_bid_wall_price", 0.0))
-            if (
-                bid_wall_usd is not None
-                and bid_wall_px is not None
-                and bid_wall_usd > 100_000.0
-                and bid_wall_px > 0.0
-            ):
-                telemetry["Orderbook Bid Wall Ahead"] = f"${bid_wall_usd:,.0f} @ ${bid_wall_px:,.2f}"
-            else:
-                telemetry["Orderbook Bid Wall Ahead"] = "None detected within 2%"
+                w_usd = safe_pos_float(obj_attr(ob_snap, usd_attr, 0.0), 0.0)
+                w_px = safe_pos_float(obj_attr(ob_snap, px_attr, 0.0), 0.0)
+                telemetry[f"Orderbook {side_lbl} Wall Ahead"] = (
+                    f"${w_usd:,.0f} @ ${w_px:,.2f}"
+                    if w_usd > 100_000.0 and w_px > 0.0
+                    else "None detected within 2%"
+                )
     except Exception:
         pass
 
@@ -514,11 +495,11 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_derivatives_collector
         f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
         if f_snap is not None:
-            fr_f = _safe_opt_float(_obj_attr(f_snap, "funding_rate", None))
+            fr_f = _safe_opt_float(obj_attr(f_snap, "funding_rate", None))
             if fr_f is not None:
                 telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
-            oi_f = _safe_opt_float(_obj_attr(f_snap, "open_interest_usd", None))
-            if oi_f is not None and oi_f > 0:
+            oi_f = safe_pos_float(obj_attr(f_snap, "open_interest_usd", None), 0.0)
+            if oi_f > 0.0:
                 telemetry["Derivatives Open Interest"] = f"${oi_f:,.0f}"
     except Exception:
         pass
@@ -528,32 +509,23 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_whale_collector
         w_snap = get_whale_collector().fetch(symbol, allow_network=False)
         if w_snap is not None:
-            lp_f = _safe_opt_float(_obj_attr(w_snap, "top_traders_long_pct", None))
-            lr_f = _safe_opt_float(_obj_attr(w_snap, "top_traders_long_ratio", None))
+            lp_f = _safe_opt_float(obj_attr(w_snap, "top_traders_long_pct", None))
+            lr_f = _safe_opt_float(obj_attr(w_snap, "top_traders_long_ratio", None))
             if lp_f is not None and lr_f is not None:
-                long_pct = lp_f * 100.0
-                telemetry["Whale Positioning"] = f"{long_pct:.1f}% Top Traders Long (L/S ratio: {lr_f:.2f})"
-            tr_f = _safe_opt_float(_obj_attr(w_snap, "taker_buy_sell_ratio", None))
+                telemetry["Whale Positioning"] = f"{lp_f * 100.0:.1f}% Top Traders Long (L/S ratio: {lr_f:.2f})"
+            tr_f = _safe_opt_float(obj_attr(w_snap, "taker_buy_sell_ratio", None))
             if tr_f is not None:
-                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f} (regime: {_obj_attr(w_snap, 'divergence_regime', 'neutral')})"
+                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f} (regime: {obj_attr(w_snap, 'divergence_regime', 'neutral')})"
     except Exception:
         pass
 
     # 4. Technical Trend & Regime (Pillars 0 & 1)
     if regime_context is not None:
         try:
-            if isinstance(regime_context, dict):
-                trend = regime_context.get("resolved_trend") or regime_context.get("regime")
-                dec = regime_context.get("decision")
-            else:
-                trend = getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None)
-                dec = getattr(regime_context, "decision", None)
-            if isinstance(dec, dict):
-                gf = _safe_opt_float(dec.get("gradient"))
-                ef = _safe_opt_float(dec.get("epsilon"))
-            else:
-                gf = _safe_opt_float(getattr(dec, "gradient", None) if dec else None)
-                ef = _safe_opt_float(getattr(dec, "epsilon", None) if dec else None)
+            trend = obj_attr(regime_context, "resolved_trend", None) or obj_attr(regime_context, "regime", None)
+            dec = obj_attr(regime_context, "decision", None)
+            gf = _safe_opt_float(obj_attr(dec, "gradient", None)) if dec is not None else None
+            ef = _safe_opt_float(obj_attr(dec, "epsilon", None)) if dec is not None else None
             trend_str = f"{trend}" if trend else "unspecified"
             if gf is not None and ef is not None:
                 trend_str += f" (gradient={gf:+.4f}, epsilon={ef:.4f})"
@@ -561,13 +533,9 @@ def collect_pretrade_telemetry(
         except Exception:
             pass
 
-    if dur_sec is not None and not isinstance(dur_sec, bool):
-        try:
-            df = float(dur_sec)
-            if math.isfinite(df) and df > 0.0:
-                telemetry["Trend Duration"] = f"{df / 3600.0:.1f} hours"
-        except (TypeError, ValueError, OverflowError):
-            pass
+    df = safe_pos_float(dur_sec, 0.0)
+    if df > 0.0:
+        telemetry["Trend Duration"] = f"{df / 3600.0:.1f} hours"
 
     # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
     from cachepaths import cache_symbol_variants, canonical_base_asset
@@ -611,18 +579,19 @@ def collect_pretrade_telemetry(
                 btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items)
                 btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
                 if btc_m24:
-                    vs_parts = []
-                    for h_lbl, h_k in (
-                        ("5m", "chg_5m_pct"),
-                        ("15m", "chg_15m_pct"),
-                        ("1h", "chg_1h_pct"),
-                        ("3h", "chg_3h_pct"),
-                        ("6h", "chg_6h_pct"),
-                        ("12h", "chg_12h_pct"),
-                        ("24h", "chg_24h_pct"),
-                    ):
-                        if h_k in m24 and h_k in btc_m24:
-                            vs_parts.append(f"{h_lbl}={float(m24[h_k]) - float(btc_m24[h_k]):+.2f}%")
+                    vs_parts = [
+                        f"{h_lbl}={float(m24[h_k]) - float(btc_m24[h_k]):+.2f}%"
+                        for h_lbl, h_k in (
+                            ("5m", "chg_5m_pct"),
+                            ("15m", "chg_15m_pct"),
+                            ("1h", "chg_1h_pct"),
+                            ("3h", "chg_3h_pct"),
+                            ("6h", "chg_6h_pct"),
+                            ("12h", "chg_12h_pct"),
+                            ("24h", "chg_24h_pct"),
+                        )
+                        if h_k in m24 and h_k in btc_m24
+                    ]
                     cross_btc = compute_cross_btc_metrics(alt_series_24h, btc_series_24h)
                     cross_parts = []
                     if cross_btc.get("alt_btc_pos_24h_pct") is not None:
@@ -644,29 +613,17 @@ def collect_pretrade_telemetry(
         st_data = read_recovering_previous(st_path, json.loads, default=None)
         if isinstance(st_data, dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
-            tinfo = None
-            for cand in sym_variants:
-                tinfo = st_items.get(cand)
-                if isinstance(tinfo, dict):
-                    break
+            tinfo = next((st_items.get(cand) for cand in sym_variants if isinstance(st_items.get(cand), dict)), None)
             if isinstance(tinfo, dict):
                 dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
+
                 def _safe_slope(w_key: str) -> float:
                     w_obj = dyn.get(w_key)
-                    if not isinstance(w_obj, dict):
-                        return 0.0
-                    raw_s = w_obj.get("slope_full", 0.0)
-                    if raw_s is None or isinstance(raw_s, bool):
-                        return 0.0
-                    try:
-                        val_s = float(raw_s)
-                        return val_s if math.isfinite(val_s) else 0.0
-                    except (TypeError, ValueError):
-                        return 0.0
-                s37 = _safe_slope("222")
-                s15 = _safe_slope("900")
-                s25h = _safe_slope("9000")
-                telemetry["Dynamic Multi-Window Slopes"] = f"3.7m={s37:+.5f}, 15m={s15:+.5f}, 2.5h={s25h:+.5f}"
+                    return safe_float(w_obj.get("slope_full", 0.0), 0.0) if isinstance(w_obj, dict) else 0.0
+
+                telemetry["Dynamic Multi-Window Slopes"] = (
+                    f"3.7m={_safe_slope('222'):+.5f}, 15m={_safe_slope('900'):+.5f}, 2.5h={_safe_slope('9000'):+.5f}"
+                )
     except Exception:
         pass
 
@@ -678,11 +635,7 @@ def collect_pretrade_telemetry(
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
             if not isinstance(o_items, dict):
                 continue
-            orders_for_sym = []
-            for cand in sym_variants:
-                orders_for_sym = o_items.get(cand, [])
-                if orders_for_sym:
-                    break
+            orders_for_sym = next((o_items.get(cand, []) for cand in sym_variants if o_items.get(cand)), [])
             fills = extract_symbol_recent_fills(orders_for_sym)
             if fills:
                 break
@@ -700,8 +653,7 @@ def collect_pretrade_telemetry(
     # 5. Macro Sentiment Bias & Fear/Greed Index (Pillar 3)
     try:
         for m_file in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
-            m_path = os.path.join(cachedb_dir, m_file)
-            m_data = read_recovering_previous(m_path, json.loads, default=None)
+            m_data = read_recovering_previous(os.path.join(cachedb_dir, m_file), json.loads, default=None)
             if isinstance(m_data, dict):
                 bias = str(m_data.get("market_bias") or "").strip()
                 risk = str(m_data.get("risk_level") or "").strip()
@@ -714,8 +666,7 @@ def collect_pretrade_telemetry(
 
     try:
         for fg_file in ("fear_greed_collect.json", "fear_greed_cache.json"):
-            fg_path = os.path.join(cachedb_dir, fg_file)
-            fg_data = read_recovering_previous(fg_path, json.loads, default=None)
+            fg_data = read_recovering_previous(os.path.join(cachedb_dir, fg_file), json.loads, default=None)
             if isinstance(fg_data, dict):
                 val = fg_data.get("value", "")
                 label = fg_data.get("classification", "")
@@ -728,8 +679,7 @@ def collect_pretrade_telemetry(
 
     # 6. Geopolitical Threat Shield (Pillar 4)
     try:
-        g_path = os.path.join(cachedb_dir, "geopolitical_threat_eval.json")
-        g_data = read_recovering_previous(g_path, json.loads, default=None)
+        g_data = read_recovering_previous(os.path.join(cachedb_dir, "geopolitical_threat_eval.json"), json.loads, default=None)
         if isinstance(g_data, dict):
             level = g_data.get("threat_level", "")
             if level is not None and not isinstance(level, bool) and str(level).strip() != "":
@@ -739,8 +689,6 @@ def collect_pretrade_telemetry(
 
     return telemetry
 
-
-import time
 
 DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = 600.0
 _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecision]] = {}
@@ -764,14 +712,7 @@ def evaluate_llm_guard_response(
     notional_eur: float,
 ) -> GuardDecision:
     """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
-    safe_notional = 0.0
-    if notional_eur is not None and not isinstance(notional_eur, bool):
-        try:
-            nf = float(notional_eur)
-            if math.isfinite(nf) and nf >= 0.0:
-                safe_notional = nf
-        except (TypeError, ValueError, OverflowError):
-            safe_notional = 0.0
+    safe_notional = safe_nonneg_ts(notional_eur, 0.0)
     fb_norm = str(fallback_action or "allow").strip().lower()
     if not resp or not isinstance(resp, dict):
         if fb_norm in ("veto", "block"):
@@ -786,19 +727,8 @@ def evaluate_llm_guard_response(
     decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
     raw_reason = resp.get("reason")
     reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
-    raw_scale = resp.get("suggested_scale")
     default_scale = 0.5 if decision_str == "DOWNSCALE" else 1.0
-    if raw_scale is None or isinstance(raw_scale, bool):
-        scale = default_scale
-    else:
-        try:
-            scale = float(raw_scale)
-            if math.isfinite(scale) and 1.0 < scale <= 100.0:
-                scale = scale / 100.0
-            if not math.isfinite(scale) or not (0.0 <= scale <= 1.0):
-                scale = default_scale
-        except (TypeError, ValueError):
-            scale = default_scale
+    scale = clean_scale(resp.get("suggested_scale"), default_scale, allow_percentage=True)
 
     if decision_str in ("REJECTED", "REJECT", "VETO", "BLOCK", "DENIED", "DENY"):
         return GuardDecision.veto(
@@ -810,10 +740,9 @@ def evaluate_llm_guard_response(
     if decision_str == "DOWNSCALE":
         if scale <= 0.0 or scale >= 1.0:
             scale = 0.5
-        clamped_scale = max(0.1, min(1.0, scale))
         return GuardDecision.downscale(
             guard_name,
-            scale=clamped_scale,
+            scale=max(0.1, min(1.0, scale)),
             reason=f"Gemini downscaled {action_label}: {reason}",
             notional_eur=safe_notional,
             gemini_reason=reason,
@@ -824,7 +753,6 @@ def evaluate_llm_guard_response(
         notional_eur=safe_notional,
         gemini_reason=reason,
     )
-
 
 
 class HighStakeGuard:
@@ -846,28 +774,14 @@ class HighStakeGuard:
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-
-        def _pos_f(val: Any, default: float) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0.0) else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
         raw_min = min_notional_usd if min_notional_usd is not None else min_notional_eur
-        resolved_min = _pos_f(raw_min, DEFAULT_MIN_NOTIONAL_USD)
+        resolved_min = safe_pos_float(raw_min, DEFAULT_MIN_NOTIONAL_USD)
         self.min_notional_usd = resolved_min
         self.min_notional_eur = resolved_min
-        self.timeout_sec = _pos_f(timeout_sec, 25.0)
+        self.timeout_sec = safe_pos_float(timeout_sec, 25.0)
         self.fallback_action = str(fallback_action or "allow").strip().lower()
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            try:
-                cf = float(cache_ttl_sec)
-                self.cache_ttl_sec = cf if (math.isfinite(cf) and cf >= 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                self.cache_ttl_sec = 0.0
+            self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 0.0)
         elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
             self.cache_ttl_sec = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
         else:
@@ -887,39 +801,16 @@ class HighStakeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
-        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm in ("B", "BUY", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
+        side_norm = normalize_order_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")
 
-        # 2. Compute effective notional value in EUR/USD
-        notional = 0.0
-        fallback_to_px_qty = notional_eur is None
-        if notional_eur is not None and not isinstance(notional_eur, bool):
-            try:
-                nf = float(notional_eur)
-                if math.isfinite(nf):
-                    if nf > 0.0:
-                        notional = nf
-                    else:
-                        fallback_to_px_qty = True
-            except (TypeError, ValueError):
-                notional = 0.0
-        if fallback_to_px_qty and notional <= 0.0:
-            if (
-                price is not None and not isinstance(price, bool)
-                and qty is not None and not isinstance(qty, bool)
-            ):
-                try:
-                    pf = float(price)
-                    qf = float(qty)
-                    if math.isfinite(pf) and math.isfinite(qf) and pf > 0.0 and qf > 0.0:
-                        notional = pf * qf
-                except (TypeError, ValueError):
-                    notional = 0.0
+        notional = safe_pos_float(notional_eur, 0.0)
+        if notional <= 0.0 and (notional_eur is None or safe_float(notional_eur, float("nan")) <= 0.0):
+            pf = safe_pos_float(price, 0.0)
+            qf = safe_pos_float(qty, 0.0)
+            if pf > 0.0 and qf > 0.0:
+                notional = pf * qf
         if not math.isfinite(notional) or notional < self.min_notional_eur:
             return GuardDecision.allow(
                 "HighStakeGuard",
@@ -930,29 +821,13 @@ class HighStakeGuard:
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
 
-        now_ts = time.time()
-        if now is not None and not isinstance(now, bool):
-            try:
-                now_f = float(now)
-                if math.isfinite(now_f) and now_f > 0.0:
-                    now_ts = now_f
-            except (TypeError, ValueError):
-                pass
-        sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
-        cache_key = (sym_norm, side_norm, int(notional // 100.0))
+        now_ts = resolve_now_ts(now)
+        cache_key = (clean_symbol_key(symbol), side_norm, int(notional // 100.0))
         if self.cache_ttl_sec > 0:
             cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
-            if isinstance(cached, (tuple, list)) and len(cached) >= 2:
-                raw_cts = cached[0]
-                if raw_cts is not None and not isinstance(raw_cts, bool):
-                    try:
-                        c_ts = float(raw_cts)
-                        if math.isfinite(c_ts) and 0.0 <= (now_ts - c_ts) < self.cache_ttl_sec:
-                            return cached[1]
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+            if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec):
+                return cached[1]
 
-        # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM
         effective_telemetry = telemetry if isinstance(telemetry, dict) else collect_pretrade_telemetry(
             symbol, regime_context=regime_context, dur_sec=dur_sec
         )
@@ -964,11 +839,9 @@ class HighStakeGuard:
             f"- Total Notional Value: €{notional:,.2f} EUR",
         ]
         if isinstance(effective_telemetry, dict) and effective_telemetry:
-            for k, v in effective_telemetry.items():
-                context_items.append(f"- {k}: {v}")
+            context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
 
         context_str = "\n".join(context_items)
-
         if side_norm == "BUY":
             action_desc = "HIGH-VALUE BUY order"
             risk_context = (
@@ -1023,25 +896,14 @@ class HighStakeGuard:
                 notional,
                 self.fallback_action,
             )
-            dec = evaluate_llm_guard_response(
-                "HighStakeGuard",
-                f"high-stake {side_norm}",
-                None,
-                fallback_action=self.fallback_action,
-                notional_eur=notional,
-            )
-            if self.cache_ttl_sec > 0:
-                _HIGH_STAKE_DECISION_CACHE[cache_key] = (now_ts, dec)
-            return dec
 
         dec = evaluate_llm_guard_response(
             "HighStakeGuard",
             f"high-stake {side_norm}",
-            resp,
+            resp or None,
             fallback_action=self.fallback_action,
             notional_eur=notional,
         )
-
         if self.cache_ttl_sec > 0:
             _HIGH_STAKE_DECISION_CACHE[cache_key] = (now_ts, dec)
         return dec

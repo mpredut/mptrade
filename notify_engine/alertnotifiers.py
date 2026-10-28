@@ -18,7 +18,7 @@ from typing import Any, Optional
 # Import your modules
 import log
 from lock import FileLock
-from botcore import _parse_bool_flag, float_env
+from botcore import _parse_bool_flag, float_env, int_env
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -59,19 +59,8 @@ _TRADE_MARKERS = (
 
 
 def _positive_int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or isinstance(raw, bool):
-        return default
-    s = str(raw).strip()
-    if not s:
-        return default
-    try:
-        f = float(s)
-        if not math.isfinite(f) or not f.is_integer() or int(f) < 0:
-            return default
-        return int(f)
-    except (TypeError, ValueError, OverflowError):
-        return default
+    val = int_env(name)
+    return val if (val is not None and val >= 0) else default
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:

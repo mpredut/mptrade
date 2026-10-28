@@ -3,7 +3,7 @@ import os
 import time
 import threading
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, parse_dotenv
 
 # Configuration cache.
 config_cache = {}
@@ -18,42 +18,27 @@ def _parse_bool(value, default: bool = False) -> bool:
 
 
 def _read_properties_file(path: str) -> dict:
-    result = {}
     if not path or isinstance(path, (bool, int)):
-        return result
+        return {}
     try:
         if not os.path.exists(path):
-            return result
-        with open(path, "r", encoding="utf-8") as file:
-            for line in file:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    if line.startswith("export ") or line.startswith("export\t"):
-                        line = line[6:].strip()
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if value.startswith(("'", '"')):
-                        q = value[0]
-                        close_idx = value.find(q, 1)
-                        if close_idx != -1:
-                            tail = value[close_idx + 1:].strip()
-                            if not tail or tail.startswith("#"):
-                                value = value[1:close_idx].strip()
-                            else:
-                                value = value.split("#", 1)[0].strip().strip("'").strip('"')
-                        else:
-                            value = value.split("#", 1)[0].strip().strip("'").strip('"')
-                    else:
-                        value = value.split("#", 1)[0].strip()
-                    if value.lower() in ("true", "1", "yes", "on", "y", "t"):
-                        value = True
-                    elif value.lower() in ("false", "0", "no", "off", "n", "f"):
-                        value = False
-                    result[key] = value
+            return {}
+        raw = parse_dotenv(path)
+        out = {}
+        for k, v in raw.items():
+            if isinstance(v, str):
+                low = v.strip().lower()
+                if low in ("true", "1", "yes", "on", "y", "t"):
+                    out[k] = True
+                elif low in ("false", "0", "no", "off", "n", "f"):
+                    out[k] = False
+                else:
+                    out[k] = v
+            else:
+                out[k] = v
+        return out
     except Exception:
-        pass
-    return result
+        return {}
 
 
 def load_config():

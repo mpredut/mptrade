@@ -8,18 +8,13 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from botcore import float_env
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 
 
 def _f_env(name: str, default: float) -> float:
-    try:
-        raw = os.environ.get(name, "").split("#", 1)[0].strip()
-        if not raw:
-            return default
-        val = float(raw)
-        return val if (math.isfinite(val) and val > 0.0) else default
-    except (ValueError, TypeError, OverflowError):
-        return default
+    val = float_env(name)
+    return val if (val is not None and val > 0.0) else default
 
 
 KALMAN_QR = _f_env("SHADOW_KALMAN_QR", 0.0005)
