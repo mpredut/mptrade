@@ -46,9 +46,12 @@ def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optiona
 def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Read cached (p90_days, median_days, gaussian_horizon_days=T*(1+exceed_percent)) in 0 ms without network I/O."""
     try:
-        from intelligence.internal.state.survival import _effective_t_cache_file, _lookup_t_cache_entry
-        from state_io import read_recovering_previous
-        data = read_recovering_previous(_effective_t_cache_file(), json.loads, default=None)
+        from intelligence.internal.state.survival import (
+            _effective_t_cache_file,
+            _lookup_t_cache_entry,
+            _read_t_cache_dict,
+        )
+        data = _read_t_cache_dict(_effective_t_cache_file())
         if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):

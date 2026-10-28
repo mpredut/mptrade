@@ -183,6 +183,8 @@ class ParabolicSurgeGuard:
                 surge_start_px = running_anchor
                 surge_extreme_px = window_pts[0][1]
                 surge_extreme_ts = window_pts[0][0]
+                post_surge_anchor: Optional[float] = None
+                rearmed_after_pullback = False
                 for t, p in window_pts:
                     if side_u == "BUY":
                         if p < running_anchor:
@@ -192,6 +194,43 @@ class ParabolicSurgeGuard:
                         if p > running_anchor:
                             running_anchor = p
                         move_pct = (running_anchor - p) / running_anchor * 100.0 if running_anchor > 0 else 0.0
+
+                    if best_move_pct >= threshold and surge_extreme_px > 0:
+                        extends_extreme = (p >= surge_extreme_px) if side_u == "BUY" else (p <= surge_extreme_px)
+                        if extends_extreme:
+                            best_move_pct = max(best_move_pct, move_pct)
+                            surge_extreme_px = p
+                            surge_extreme_ts = t
+                            post_surge_anchor = None
+                            continue
+                        retrace_pct = (
+                            (surge_extreme_px - p) / surge_extreme_px * 100.0
+                            if side_u == "BUY"
+                            else (p - surge_extreme_px) / surge_extreme_px * 100.0
+                        )
+                        if retrace_pct >= self.pullback_required_pct:
+                            if post_surge_anchor is None:
+                                post_surge_anchor = p
+                            else:
+                                post_surge_anchor = (
+                                    min(post_surge_anchor, p) if side_u == "BUY" else max(post_surge_anchor, p)
+                                )
+                        if post_surge_anchor is not None and post_surge_anchor > 0:
+                            re_move_pct = (
+                                (p - post_surge_anchor) / post_surge_anchor * 100.0
+                                if side_u == "BUY"
+                                else (post_surge_anchor - p) / post_surge_anchor * 100.0
+                            )
+                            if re_move_pct >= threshold:
+                                running_anchor = post_surge_anchor
+                                best_move_pct = re_move_pct
+                                surge_start_px = post_surge_anchor
+                                surge_extreme_px = p
+                                surge_extreme_ts = t
+                                post_surge_anchor = None
+                                rearmed_after_pullback = True
+                                continue
+
                     if move_pct >= best_move_pct:
                         best_move_pct = move_pct
                         surge_start_px = running_anchor
@@ -200,7 +239,7 @@ class ParabolicSurgeGuard:
                 if best_move_pct >= threshold:
                     st["surge_active"] = True
                     st["surge_start_px"] = surge_start_px
-                    if was_active:
+                    if was_active and not rearmed_after_pullback:
                         st["peak"] = max(st["peak"], surge_extreme_px) if side_u == "BUY" else min(st["peak"], surge_extreme_px)
                     else:
                         st["peak"] = surge_extreme_px

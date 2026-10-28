@@ -1177,14 +1177,34 @@ def _resolve_cachedb_dir() -> str:
     return get_cachedb_dir()
 
 
+_JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
+
+
 def _read_json_recovering(path: str) -> Optional[dict]:
     from cachepaths import resolve_cachedb_filepath
     from state_io import previous_generation_path, read_recovering_previous
 
     resolved = str(resolve_cachedb_filepath(path))
     backup_path = previous_generation_path(resolved)
-    if not os.path.exists(resolved) and not os.path.exists(backup_path):
+    st_main = None
+    st_bak = None
+    try:
+        st = os.stat(resolved)
+        st_main = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        pass
+    try:
+        sb = os.stat(backup_path)
+        st_bak = (sb.st_mtime_ns, sb.st_size)
+    except OSError:
+        pass
+    if st_main is None and st_bak is None:
         return None
+
+    sig = (st_main, st_bak, id(read_recovering_previous), id(json.load))
+    cached = _JSON_RECOVERING_MEMO.get(resolved)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
 
     def _loader(candidate: str) -> dict:
         with open(candidate, "r", encoding="utf-8") as f:
@@ -1193,7 +1213,12 @@ def _read_json_recovering(path: str) -> Optional[dict]:
             raise ValueError("cache payload must be a dict")
         return payload
 
-    return read_recovering_previous(resolved, _loader, backup_path=backup_path)
+    res = read_recovering_previous(resolved, _loader, backup_path=backup_path)
+    if isinstance(res, dict):
+        if len(_JSON_RECOVERING_MEMO) > 32:
+            _JSON_RECOVERING_MEMO.clear()
+        _JSON_RECOVERING_MEMO[resolved] = (sig, res)
+    return res
 
 
 def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
@@ -1337,6 +1362,33 @@ def _read_cached_price_history(
             cand_symbols.append(c)
 
     def _extract_valid_ticks(raw_items: Any) -> None:
+        if isinstance(raw_items, list) and len(raw_items) > 512:
+            tail_buf: List[Tuple[float, float]] = []
+            older_streak = 0
+            for item in reversed(raw_items):
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    if isinstance(item[0], bool) or isinstance(item[1], bool):
+                        continue
+                    try:
+                        ts_raw = float(item[0])
+                        px = float(item[1])
+                        if not (math.isfinite(ts_raw) and math.isfinite(px)):
+                            continue
+                        ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                        if ts_sec < cutoff_ts:
+                            older_streak += 1
+                            if older_streak >= 64:
+                                break
+                            continue
+                        older_streak = 0
+                        if ts_sec <= (now_ts + 5.0) and px > 0:
+                            tail_buf.append((ts_sec, px))
+                    except (ValueError, TypeError, OverflowError):
+                        continue
+            tail_buf.reverse()
+            history.extend(tail_buf)
+            return
+
         for item in raw_items or []:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
                 if isinstance(item[0], bool) or isinstance(item[1], bool):

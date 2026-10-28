@@ -144,6 +144,17 @@ class TestIntelligenceGuards(unittest.TestCase):
         self.assertEqual(dec2.brake_action, BrakeAction.DEFER_WAIT)
         self.assertIn("parabolic_surge_active", dec2.reason)
 
+    def test_parabolic_surge_guard_second_surge_after_pullback(self):
+        guard = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
+        symbol = "TAOUSDC"
+        # First surge: 100 -> 106 (+6.0%), then crash to 95 (-10.38% pullback >= 1.5%),
+        # then a second +4.5% vertical surge from 95 -> 99.275.
+        hist = [(1000.0, 100.0), (1200.0, 106.0), (1500.0, 95.0), (1800.0, 99.275)]
+        dec = guard.check(symbol, "BUY", 99.275, price_history=hist, now=1800.0)
+        self.assertFalse(dec.allowed)
+        self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
+        self.assertAlmostEqual(dec.metadata["peak"], 99.275, places=3)
+
     def test_weibull_exhaustion_guard(self):
         guard = WeibullExhaustionGuard(default_p90_days=7.0, policy="downscale", exhausted_scale=0.25)
         symbol = "BTCUSDC"
