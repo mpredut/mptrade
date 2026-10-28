@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
-from botcore import parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
 from kraken import market_data as kraken_market_data  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         "runtime": {
             "pair": pair,
             "strategy_mode": cfg.get("STRATEGY_MODE", "avg_tp"),
-            "execute_live": str(cfg.get("STRAT_EXECUTE", "false") or "").strip().lower() in ("1", "true", "yes", "on"),
+            "execute_live": _parse_bool_flag(cfg.get("STRAT_EXECUTE"), False),
         },
         "strategy_params": dataclasses.asdict(params),
         "fee_pct_per_leg": args.fee,

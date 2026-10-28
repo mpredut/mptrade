@@ -156,7 +156,36 @@ def normalize_cache_base_asset(symbol: object) -> str:
             break
     if s in ("XXBT", "XXBTZ"):
         return "XBT"
+    if s in ("XETH", "XETHZ"):
+        return "ETH"
+    if s in ("XXDG",):
+        return "XDG"
     return s
+
+
+_CANONICAL_BASE_ALIASES: dict[str, str] = {
+    "XBT": "BTC",
+    "XXBT": "BTC",
+    "XXBTZ": "BTC",
+    "XETH": "ETH",
+    "XETHZ": "ETH",
+    "XDG": "DOGE",
+    "XXDG": "DOGE",
+}
+_CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "BTC": ("XBT",),
+    "XBT": ("BTC",),
+    "ETH": ("XETH",),
+    "XETH": ("ETH",),
+    "DOGE": ("XDG",),
+    "XDG": ("DOGE",),
+}
+
+
+def canonical_base_asset(symbol: object) -> str:
+    """Return the venue-agnostic canonical ticker for any symbol (e.g. XBTUSD -> BTC, SPCXx.T -> SPCX)."""
+    base = normalize_cache_base_asset(symbol)
+    return _CANONICAL_BASE_ALIASES.get(base, base)
 
 
 def resolve_binance_lookup_symbol(symbol: object) -> str:
@@ -168,9 +197,7 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
         return ""
     if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
         return "USDCUSDT"
-    base = normalize_cache_base_asset(s)
-    if base in ("XBT", "XXBTZ"):
-        return "BTCUSDT"
+    base = canonical_base_asset(s)
     if base and base != s:
         return f"{base}USDT"
     return s.replace("USDC", "USDT") if "USDC" in s else s
@@ -202,13 +229,10 @@ def cache_symbol_variants(
                 variants.append(cand)
     if cleaned != "USDCUSDT":
         base = normalize_cache_base_asset(raw)
-        if base == "XXBTZ":
-            base = "XBT"
         bases = [base] if base else []
-        if base == "XBT":
-            bases.append("BTC")
-        elif base == "BTC":
-            bases.append("XBT")
+        for eq_b in _CROSS_VENUE_BASE_EQUIVALENTS.get(base, ()):
+            if eq_b not in bases:
+                bases.append(eq_b)
         for b in bases:
             for suffix in quotes:
                 cand = f"{b}{suffix}"

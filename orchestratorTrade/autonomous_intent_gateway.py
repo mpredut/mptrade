@@ -30,6 +30,8 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from botcore import _parse_bool_flag
+
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -204,7 +206,7 @@ def _discover_hyperliquid_spot(workspace_dir: str) -> List[Tuple[str, str, str]]
     if not os.path.exists(cfg_path):
         return []
     kv = _load_env_file_defaults(cfg_path)
-    if kv.get("HL_LIVE_ORDERS", "").strip().lower() not in ("1", "true", "yes", "on", "1.0"):
+    if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
         return []
     token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
     if not token:

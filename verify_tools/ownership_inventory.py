@@ -23,11 +23,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from botcore import parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
 
 
-_TRUE = {"1", "yes", "true", "on", "da"}
+_truthy = _parse_bool_flag
 
 
 @dataclass(frozen=True)
@@ -50,17 +50,6 @@ class Owner:
         if require_running:
             return self.live_enabled and self.running is True
         return self.configured and self.live_enabled
-
-
-def _truthy(value, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    raw = str(value).split("#", 1)[0].split(";", 1)[0].strip().lower()
-    if not raw:
-        return default
-    return raw in _TRUE or raw == "1.0"
 
 
 def _env(*paths: Path) -> dict[str, str]:

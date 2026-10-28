@@ -21,7 +21,7 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import parse_dotenv
+from botcore import parse_dotenv, required_env, required_float_env
 import importlib.util
 
 _orig_sys_path = list(sys.path)
@@ -104,21 +104,18 @@ def main(argv: list[str] | None = None) -> int:
         if k.startswith("HL_") or (k.startswith("STRAT_") and k not in cfg):
             cfg[k] = v
 
-    coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper() or "HYPE"
-    direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()
+    coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
+    direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
     if direction not in ("long", "short"):
-        direction = "long"
-    fee_pct = args.fee if args.fee is not None else extract_cfg_float(cfg, "HL_FEE_PCT", 0.035)
+        parser.error(f"Invalid direction: {direction!r}")
+    fee_pct = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
     if not math.isfinite(fee_pct) or fee_pct < 0:
         parser.error("--fee cannot be negative")
 
     if args.engine == "spot":
         strat_params = SpotStratParams.from_env(env=cfg)
     else:
-        try:
-            strat_params = StratParams.from_env(env=cfg)
-        except Exception:
-            strat_params = StratParams.from_dict(cfg, direction=direction)
+        strat_params = StratParams.from_env(env=cfg)
         if args.fee is not None:
             strat_params = dataclasses.replace(strat_params, fee_pct=fee_pct)
 

@@ -45,9 +45,10 @@ def canonical_rest_model(model_name: str) -> str:
     """Map arbitrary LLM model names (Gemini, Argon, GPT-OSS, Claude) to a canonical Google AI Studio REST model."""
     if not isinstance(model_name, str) or not model_name.strip():
         return "gemini-2.5-flash"
-    cleaned = model_name.strip()
-    if any(k in cleaned.lower() for k in ("gemini", "argon")):
-        return cleaned.replace("-low", "").replace("-medium", "").replace("-high", "")
+    cleaned = model_name.strip().lower()
+    base = cleaned.replace("-low", "").replace("-medium", "").replace("-high", "")
+    if base.startswith(("gemini-2.5", "gemini-2.0", "gemini-1.5")):
+        return base
     return "gemini-2.5-flash"
 
 

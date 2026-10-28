@@ -31,14 +31,14 @@ if _ROOT not in sys.path:
 try:
     from kraken.kraken_common import (log, required_bool_env, required_env,
                                       required_int_env, load_env_stack,
-                                      single_instance)
+                                      single_instance, _parse_bool_flag)
     from kraken.kraken_client import KrakenClient, KrakenError
     from kraken.market_data import check_pair_listing, get_price, pair_available
     from kraken.notify import notify
 except ImportError:
     from kraken_common import (log, required_bool_env, required_env,
                                required_int_env, load_env_stack,
-                               single_instance)
+                               single_instance, _parse_bool_flag)
     from kraken_client import KrakenClient, KrakenError
     from market_data import check_pair_listing, get_price, pair_available
     from notify import notify
@@ -105,7 +105,7 @@ def main() -> int:
     label       = required_env("SYMBOL_LABEL")
     strategy_execution = required_bool_env("STRAT_EXECUTE")
     strat_dry = kraken_strategy_dry_run(args.paper, strategy_execution)
-    observe_only = str(os.environ.get("KRAKEN_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "true", "yes", "on")
+    observe_only = _parse_bool_flag(os.environ.get("KRAKEN_BOT_OBSERVE_ONLY"), False)
     interval    = max(args.interval, 15)
 
     # --- one-shot commands ---

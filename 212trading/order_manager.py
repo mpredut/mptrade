@@ -150,27 +150,7 @@ def _marker_path(ticker: str, *, test: bool = False) -> str:
 
 
 def _read_or_migrate_marker(ticker: str, marker_path: str) -> dict | None:
-    record = _read_marker(marker_path)
-    if record is not None or marker_path == ORDER_MARKER:
-        return record
-
-    # The old global file was named for SPCX. Migrate it only when its payload
-    # proves the same ticker; an unrelated/unknown marker must never be guessed.
-    legacy = _read_marker(ORDER_MARKER)
-    if legacy is None:
-        return None
-    raw_order = legacy.get("order")
-    order_dict = raw_order if isinstance(raw_order, dict) else {}
-    legacy_ticker = str(
-        legacy.get("ticker")
-        or order_dict.get("ticker")
-        or ""
-    ).upper()
-    if legacy_ticker != ticker.upper():
-        return None
-    _persist_marker(legacy, marker_path)
-    log(f"  [ORDER] marker legacy migrat conservator: {marker_path}")
-    return legacy
+    return _read_marker(marker_path)
 
 
 def _persist_marker(record: dict, path: str) -> None:

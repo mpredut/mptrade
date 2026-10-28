@@ -31,7 +31,7 @@ if _ROOT_DIR not in sys.path:
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import load_dotenv
-from cachepaths import cache_symbol_variants, normalize_cache_base_asset
+from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
     compute_24h_price_metrics,
@@ -210,6 +210,337 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     decisions.sort(key=_sort_key)
     return decisions
+
+
+def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None) -> Dict[str, Any]:
+    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) from a price series."""
+    if not isinstance(vals, list) or len(vals) < 2 or vals[0] <= 0:
+        return {}
+    raw_low, raw_high, cur_v = min(vals), max(vals), vals[-1]
+    l7_v = round(raw_low, decimals) if decimals is not None else raw_low
+    h7_v = round(raw_high, decimals) if decimals is not None else raw_high
+    metrics: Dict[str, Any] = {
+        "chg_7d_pct": round(((cur_v - vals[0]) / vals[0]) * 100.0, 2),
+        "low_7d": l7_v,
+        "high_7d": h7_v,
+    }
+    if h7_v > 0:
+        metrics["dd_7d_high_pct"] = round((cur_v / h7_v - 1.0) * 100.0, 2)
+    if l7_v > 0:
+        metrics["bounce_7d_low_pct"] = round((cur_v / l7_v - 1.0) * 100.0, 2)
+        metrics["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
+    if h7_v > l7_v > 0:
+        metrics["pos_7d_pct"] = round(((cur_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
+    return metrics
+
+
+def _load_symbol_microstructure(
+    cache_dir: str,
+    sym: str,
+    read_json_fn: Any,
+) -> Optional[Dict[str, Any]]:
+    """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
+    sym_cands = cache_symbol_variants(sym)
+    ob = next(
+        (
+            d
+            for cand in sym_cands
+            for d in (read_json_fn(os.path.join(cache_dir, f"orderbook_depth_{cand}.json")),)
+            if isinstance(d, dict)
+        ),
+        None,
+    )
+    deriv = next(
+        (
+            d
+            for cand in sym_cands
+            for d in (read_json_fn(os.path.join(cache_dir, f"derivatives_telemetry_{cand}.json")),)
+            if isinstance(d, dict)
+        ),
+        None,
+    )
+    whale = next(
+        (
+            d
+            for cand in sym_cands
+            for d in (read_json_fn(os.path.join(cache_dir, f"whale_snapshot_{cand}.json")),)
+            if isinstance(d, dict)
+        ),
+        None,
+    )
+    if not (ob or deriv or whale):
+        return None
+    m_info: Dict[str, Any] = {}
+    if isinstance(ob, dict):
+        m_info["ob_imbalance"] = ob.get("imbalance_ratio")
+        bd_f = _parse_finite_float(ob.get("bid_depth_usd"), -1.0)
+        ad_f = _parse_finite_float(ob.get("ask_depth_usd"), -1.0)
+        bw_f = _parse_finite_float(ob.get("largest_bid_wall_usd"), -1.0)
+        aw_f = _parse_finite_float(ob.get("largest_ask_wall_usd"), -1.0)
+        m_info["bid_depth_usd"] = round(bd_f, 0) if bd_f >= 0 else None
+        m_info["ask_depth_usd"] = round(ad_f, 0) if ad_f >= 0 else None
+        m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
+        m_info["bid_wall_usd"] = round(bw_f, 0) if bw_f >= 0 else None
+        m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
+        m_info["ask_wall_usd"] = round(aw_f, 0) if aw_f >= 0 else None
+    if isinstance(deriv, dict):
+        m_info["funding_rate"] = deriv.get("funding_rate")
+        m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
+        m_info["oi_usd"] = deriv.get("open_interest_usd")
+    if isinstance(whale, dict):
+        m_info["whale_long_pct"] = whale.get("top_traders_long_pct")
+        m_info["whale_long_ratio"] = whale.get("top_traders_long_ratio")
+        m_info["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
+        m_info["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
+        m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
+        m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
+        m_info["divergence_regime"] = whale.get("divergence_regime")
+    return m_info
+
+
+def _parse_venue_cycle_state(
+    st_data: Dict[str, Any],
+    symbol: str,
+    prices_and_trends: Dict[str, Any],
+    *,
+    avg_decimals: int = 6,
+) -> Dict[str, Any]:
+    """Normalize a venue cycle `.state_*.json` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
+    qty = _parse_finite_float(st_data.get("qty"), 0.0)
+    raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
+    cost = _parse_finite_float(raw_cost, 0.0)
+    avg_cost = round(cost / qty, avg_decimals) if qty > 1e-12 and cost > 0 else None
+    px_f = 0.0
+    for cand in cache_symbol_variants(symbol):
+        cand_px = _parse_finite_float((prices_and_trends.get(cand) or {}).get("price"), 0.0)
+        if cand_px > 0:
+            px_f = cand_px
+            break
+    dd_pct = round(((px_f - avg_cost) / avg_cost) * 100.0, 2) if avg_cost and px_f > 0 else None
+    last_buy_px = (
+        st_data.get("last_buy_price")
+        if st_data.get("last_buy_price") is not None
+        else st_data.get("last_open_price")
+    )
+    cyc_entry: Dict[str, Any] = {
+        "qty": round(qty, 6),
+        "cost_usd": round(cost, 2),
+        "avg_cost_px": avg_cost,
+        "entry_price": st_data.get("entry_price"),
+        "last_buy_price": last_buy_px,
+        "last_sell_price": st_data.get("last_sell_price"),
+        "last_exit_kind": st_data.get("last_exit_kind"),
+        "dca_buys": st_data.get("dca_buys"),
+        "dd_pct": dd_pct,
+    }
+    pos_peak = st_data.get("pos_peak") or st_data.get("trail_peak")
+    if pos_peak is not None:
+        cyc_entry["pos_peak"] = pos_peak
+    realized_pnl = _parse_finite_float(st_data.get("realized_pnl"), 0.0)
+    if abs(realized_pnl) > 1e-9:
+        cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
+    tp_sold = st_data.get("tp_sold")
+    if isinstance(tp_sold, list) and tp_sold:
+        cyc_entry["tp_sold_levels"] = tp_sold
+    raw_orders = st_data.get("orders")
+    if isinstance(raw_orders, list) and raw_orders:
+        close_orders = [
+            {
+                "side": o.get("side"),
+                "px": o.get("px") or o.get("price") or o.get("limit"),
+                "sz": o.get("sz") or o.get("qty"),
+                "role": o.get("role") or o.get("kind"),
+            }
+            for o in raw_orders
+            if isinstance(o, dict)
+        ]
+        if close_orders:
+            cyc_entry["resting_orders"] = close_orders
+    return cyc_entry
+
+
+def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
+    """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
+    extra_parts: List[str] = []
+    if cyc.get("pos_peak") is not None:
+        extra_parts.append(f"pos_peak={cyc.get('pos_peak')}")
+    if cyc.get("realized_pnl_usd") is not None:
+        extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
+    if cyc.get("tp_sold_levels"):
+        extra_parts.append(f"tp_sold={cyc.get('tp_sold_levels')}")
+    if cyc.get("resting_orders"):
+        extra_parts.append(f"resting_orders={cyc.get('resting_orders')}")
+    extra_sfx = f", {', '.join(extra_parts)}" if extra_parts else ""
+    return (
+        f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
+        f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
+        f"last_buy={cyc.get('last_buy_price')}, last_sell={cyc.get('last_sell_price')} "
+        f"({cyc.get('last_exit_kind')}), dca_buys={cyc.get('dca_buys')}, dd={cyc.get('dd_pct')}%{extra_sfx}"
+    )
+
+
+def _build_cross_market_context(
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    series_24h_by_sym: Dict[str, list],
+    all_t212_cycles: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compute cross-asset synchronization, dispersion, and Crypto <-> US Equities correlation/bellwethers."""
+    ctx: Dict[str, Any] = {}
+
+    # Deduplicate symbols by canonical base asset so multi-venue siblings (HYPEUSDC/HYPEUSD) count once
+    by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    for sym, pinfo in sorted(prices_and_trends.items()):
+        if not isinstance(pinfo, dict):
+            continue
+        b_canon = canonical_base_asset(sym)
+        if not b_canon:
+            continue
+        prev = by_base.get(b_canon)
+        if prev is None or (
+            sym.endswith(("USDC", "_US_EQ", "_EQ")) and not prev[0].endswith(("USDC", "_US_EQ", "_EQ"))
+        ) or len(pinfo) > len(prev[1]):
+            by_base[b_canon] = (sym, pinfo)
+
+    # 1. Multi-asset synchronization & dispersion pattern across tracked assets
+    chg_15m_list: List[Tuple[str, float]] = []
+    chg_1h_list: List[Tuple[str, float]] = []
+    chg_24h_list: List[Tuple[str, float]] = []
+    for _, (sym, pinfo) in sorted(by_base.items()):
+        c15 = _parse_finite_float(pinfo.get("chg_15m_pct"), None)
+        c1h = _parse_finite_float(pinfo.get("chg_1h_pct"), None)
+        c24 = _parse_finite_float(pinfo.get("chg_24h_pct"), None)
+        if c15 is not None:
+            chg_15m_list.append((sym, c15))
+        if c1h is not None:
+            chg_1h_list.append((sym, c1h))
+        if c24 is not None:
+            chg_24h_list.append((sym, c24))
+
+    sync_pat: Dict[str, Any] = {}
+    if chg_15m_list:
+        adv15 = sum(1 for _, v in chg_15m_list if v > 0)
+        sync_pat["advancing_15m"] = f"{adv15}/{len(chg_15m_list)}"
+        sync_pat["advancing_15m_ratio"] = round(adv15 / len(chg_15m_list), 2)
+    if chg_1h_list:
+        adv1h = sum(1 for _, v in chg_1h_list if v > 0)
+        sync_pat["advancing_1h"] = f"{adv1h}/{len(chg_1h_list)}"
+        sync_pat["advancing_1h_ratio"] = round(adv1h / len(chg_1h_list), 2)
+        s1h = sorted(chg_1h_list, key=lambda kv: kv[1])
+        sync_pat["leader_1h"] = {"symbol": s1h[-1][0], "chg_1h_pct": s1h[-1][1]}
+        sync_pat["laggard_1h"] = {"symbol": s1h[0][0], "chg_1h_pct": s1h[0][1]}
+        sync_pat["dispersion_1h_pct"] = round(s1h[-1][1] - s1h[0][1], 2)
+    if chg_24h_list:
+        adv24 = sum(1 for _, v in chg_24h_list if v > 0)
+        sync_pat["advancing_24h"] = f"{adv24}/{len(chg_24h_list)}"
+        sync_pat["advancing_24h_ratio"] = round(adv24 / len(chg_24h_list), 2)
+        s24 = sorted(chg_24h_list, key=lambda kv: kv[1])
+        sync_pat["leader_24h"] = {"symbol": s24[-1][0], "chg_24h_pct": s24[-1][1]}
+        sync_pat["laggard_24h"] = {"symbol": s24[0][0], "chg_24h_pct": s24[0][1]}
+        sync_pat["dispersion_24h_pct"] = round(s24[-1][1] - s24[0][1], 2)
+    if sync_pat:
+        ctx["market_sync_pattern"] = sync_pat
+
+    # 2. Crypto bellwethers summary (gives Trading212 Equities AI 24/7 visibility into BTC, TAO AI proxy, HYPE, ADA)
+    crypto_bellwethers: Dict[str, Any] = {}
+    for b_canon, (sym, pinfo) in sorted(by_base.items()):
+        if sym.endswith(("_EQ", "_US_EQ")):
+            continue
+        px_f = _parse_finite_float(pinfo.get("price"), 0.0)
+        if px_f <= 0:
+            continue
+        cb_entry: Dict[str, Any] = {"symbol": sym, "price": px_f}
+        for k_copy in ("chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct", "slope_15m", "kalman_vel"):
+            if pinfo.get(k_copy) is not None:
+                cb_entry[k_copy] = pinfo.get(k_copy)
+        m_info = microstructure.get(sym)
+        if not isinstance(m_info, dict):
+            m_info = next(
+                (mv for mk, mv in microstructure.items() if canonical_base_asset(mk) == b_canon and isinstance(mv, dict)),
+                None,
+            )
+        if isinstance(m_info, dict):
+            for mk_copy in ("ob_imbalance", "whale_long_pct", "divergence_regime", "funding_rate"):
+                if m_info.get(mk_copy) is not None:
+                    cb_entry[mk_copy] = m_info.get(mk_copy)
+        crypto_bellwethers[b_canon] = cb_entry
+    if crypto_bellwethers:
+        ctx["crypto_bellwethers"] = crypto_bellwethers
+
+    # 3. US Equities / Tech & AI bellwethers summary (gives Crypto AI visibility into NVDA_US_EQ, SPCX_US_EQ, RGNT_US_EQ)
+    equity_bellwethers: Dict[str, Any] = {}
+    eq_syms = sorted(
+        {s for s in prices_and_trends if str(s).upper().endswith(("_EQ", "_US_EQ"))}
+        | {s for s in all_t212_cycles if str(s).upper().endswith(("_EQ", "_US_EQ"))}
+    )
+    for eq_sym in eq_syms:
+        pinfo = prices_and_trends.get(eq_sym) if isinstance(prices_and_trends.get(eq_sym), dict) else {}
+        t_cyc = all_t212_cycles.get(eq_sym) if isinstance(all_t212_cycles.get(eq_sym), dict) else {}
+        eq_entry: Dict[str, Any] = {"symbol": eq_sym}
+        if pinfo.get("price") is not None:
+            eq_entry["price"] = pinfo.get("price")
+        for k_copy in ("chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct", "pos_24h_pct", "slope_15m"):
+            if pinfo.get(k_copy) is not None:
+                eq_entry[k_copy] = pinfo.get(k_copy)
+        if t_cyc:
+            eq_entry["t212_cycle"] = {
+                k: t_cyc.get(k)
+                for k in ("qty", "avg_cost_px", "entry_price", "last_buy_price", "dd_pct")
+                if t_cyc.get(k) is not None
+            }
+        if len(eq_entry) > 1:
+            equity_bellwethers[eq_sym] = eq_entry
+    if equity_bellwethers:
+        ctx["equity_bellwethers"] = equity_bellwethers
+
+    # 4. Realized 24h Cross-Asset Correlations & Beta (Equities <-> BTC/TAO and Crypto <-> BTC)
+    series_by_base: Dict[str, Tuple[str, list]] = {}
+    for s_key, ser in sorted(series_24h_by_sym.items()):
+        if not isinstance(ser, list) or len(ser) < 2:
+            continue
+        b_c = canonical_base_asset(s_key)
+        if b_c not in series_by_base or s_key.endswith(("USDC", "_US_EQ", "_EQ")):
+            series_by_base[b_c] = (s_key, ser)
+
+    cross_corrs: Dict[str, Any] = {}
+    btc_ser_pair = series_by_base.get("BTC")
+    tao_ser_pair = series_by_base.get("TAO")
+
+    for b_c, (s_key, ser) in sorted(series_by_base.items()):
+        if b_c == "BTC":
+            continue
+        if btc_ser_pair is not None:
+            cm = compute_cross_btc_metrics(ser, btc_ser_pair[1])
+            if isinstance(cm, dict) and (cm.get("corr_btc_24h") is not None or cm.get("beta_btc_24h") is not None):
+                p_a = _parse_finite_float((prices_and_trends.get(s_key) or {}).get("chg_24h_pct"), None)
+                p_b = _parse_finite_float((prices_and_trends.get(btc_ser_pair[0]) or {}).get("chg_24h_pct"), None)
+                pair_entry: Dict[str, Any] = {
+                    "corr_24h": cm.get("corr_btc_24h"),
+                    "beta_24h": cm.get("beta_btc_24h"),
+                    "ratio_pos_24h_pct": cm.get("alt_btc_pos_24h_pct"),
+                }
+                if p_a is not None and p_b is not None:
+                    pair_entry["spread_24h_pct"] = round(p_a - p_b, 2)
+                cross_corrs[f"{s_key}_vs_BTC"] = pair_entry
+        if s_key.startswith("NVDA") and tao_ser_pair is not None:
+            cm_tao = compute_cross_btc_metrics(ser, tao_ser_pair[1])
+            if isinstance(cm_tao, dict) and (cm_tao.get("corr_btc_24h") is not None or cm_tao.get("beta_btc_24h") is not None):
+                p_nvda = _parse_finite_float((prices_and_trends.get(s_key) or {}).get("chg_24h_pct"), None)
+                p_tao = _parse_finite_float((prices_and_trends.get(tao_ser_pair[0]) or {}).get("chg_24h_pct"), None)
+                tao_entry: Dict[str, Any] = {
+                    "corr_24h": cm_tao.get("corr_btc_24h"),
+                    "beta_24h": cm_tao.get("beta_btc_24h"),
+                    "ratio_pos_24h_pct": cm_tao.get("alt_btc_pos_24h_pct"),
+                }
+                if p_nvda is not None and p_tao is not None:
+                    tao_entry["spread_24h_pct"] = round(p_nvda - p_tao, 2)
+                cross_corrs[f"{s_key}_vs_TAO"] = tao_entry
+
+    if cross_corrs:
+        ctx["cross_asset_correlations_24h"] = cross_corrs
+
+    return ctx
+
 
 
 @dataclass

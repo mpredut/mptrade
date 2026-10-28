@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 import importlib.util
 
-from botcore import parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
 _orig_sys_path = list(sys.path)
 try:
     if str(T212_DIR) not in sys.path:
@@ -230,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             "yahoo_symbol": symbol,
             "interval": args.interval,
             "interval_minutes": interval_minutes,
-            "execute_live": str(config.get("STRAT_EXECUTE", "false") or "").strip().lower() in ("1", "true", "yes", "on"),
+            "execute_live": _parse_bool_flag(config.get("STRAT_EXECUTE"), False),
         },
         "strategy_params": dataclasses.asdict(params),
         "fx_model": fx_metadata,
