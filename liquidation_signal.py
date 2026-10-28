@@ -62,7 +62,8 @@ WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up this long.
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
-from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
+from botcore import safe_pos_float as _safe_pos_float
+from cachepaths import canonical_base_asset
 
 _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
 
@@ -205,11 +206,9 @@ class LiquidationSignal:
                     side = _SHORT
                 else:
                     continue
-                if isinstance(item.get("v"), bool) or isinstance(item.get("p"), bool):
-                    continue
-                vol = float(item["v"])
-                px = float(item["p"])
-                if not (math.isfinite(vol) and vol > 0 and math.isfinite(px) and px > 0):
+                vol = _safe_pos_float(item.get("v"), None)
+                px = _safe_pos_float(item.get("p"), None)
+                if vol is None or px is None:
                     continue
                 notional = vol * px
                 if not math.isfinite(notional) or notional <= 0:
@@ -239,6 +238,10 @@ class LiquidationSignal:
         last_ts = 0.0
         with self._lock:
             items = list(self._events.get(symbol, ()))
+            if not items and symbol:
+                canon_base = canonical_base_asset(symbol)
+                if canon_base:
+                    items = list(self._events.get(f"{canon_base}USDT", ()))
         for ts, side, notional in items:
             if ts < cutoff:
                 continue

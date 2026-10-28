@@ -20,7 +20,9 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import utils
-from providers.base import MarketDataProvider
+from botcore import safe_nonneg_float, safe_pos_float
+from cachepaths import canonical_base_asset
+from providers.base import MarketDataProvider, normalize_side
 from providers.strategy_executor import PairPrecision
 
 # Strip the quote suffix to obtain the base asset (BTCUSDC -> BTC). This was
@@ -93,14 +95,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._series = dict(price_series) if isinstance(price_series, dict) else {}
         self._cursor: Dict[str, int] = {s: 0 for s in self._series if isinstance(s, str)}
         self._last_ts: Dict[str, float] = {}
-        if fee_pct is None or isinstance(fee_pct, bool):
-            self._fee_pct = 0.1
-        else:
-            try:
-                fp_f = float(fee_pct)
-                self._fee_pct = fp_f if (math.isfinite(fp_f) and fp_f >= 0.0) else 0.1
-            except (TypeError, ValueError, OverflowError):
-                self._fee_pct = 0.1
+        self._fee_pct = safe_nonneg_float(fee_pct, default=0.1)
         self._orders: Dict[str, List[dict]] = {s: [] for s in self._series if isinstance(s, str)}
         self._orders_version: int = 0
         self._orders_cache: Dict[Tuple[str, Optional[str]], Tuple[int, float, float, List[dict]]] = {}
@@ -112,6 +107,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
                 continue
             base = _base_asset(s).upper()
             self._asset_to_symbol[base] = s
+            canon = canonical_base_asset(base)
+            if canon:
+                self._asset_to_symbol.setdefault(canon, s)
             self._precisions[s] = PairPrecision(
                 price_decimals=2, volume_decimals=4, order_min=0.0,
                 base_asset=base,
@@ -197,13 +195,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
         idx = self._cursor.get(symbol, 0)
         if not series or idx == 0:
             return None
-        if lookback_h is None or isinstance(lookback_h, bool):
-            return []
-        try:
-            lb_val = float(lookback_h)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(lb_val) or lb_val < 0:
+        lb_val = safe_nonneg_float(lookback_h, default=None)
+        if lb_val is None:
             return []
         cutoff = series[idx - 1][0] - lb_val * 3600
         return [{"timestamp": int(ts * 1000), "price": p}
@@ -217,24 +210,21 @@ class ReplayMarketDataProvider(MarketDataProvider):
         asset_norm = str(asset).strip().upper()
         if not asset_norm:
             return 0.0
-        sym = self._asset_to_symbol.get(asset_norm)
+        sym = self._asset_to_symbol.get(asset_norm) or self._asset_to_symbol.get(canonical_base_asset(asset_norm))
         if sym is not None:
             return self._positions.get(sym, (0.0, 0.0))[0]
+        canon_target = canonical_base_asset(asset_norm)
         for symbol in self._series:
-            if _base_asset(symbol).upper() == asset_norm:
+            base_u = _base_asset(symbol).upper()
+            if base_u == asset_norm or (canon_target and canonical_base_asset(base_u) == canon_target):
                 self._asset_to_symbol[asset_norm] = symbol
                 return self._positions.get(symbol, (0.0, 0.0))[0]
         return 0.0
 
     def has_orders_since(self, symbol: str, since_s: float) -> bool:
         """Fast O(1) check whether any order for ``symbol`` exists within ``since_s``."""
-        if since_s is None or isinstance(since_s, bool):
-            return False
-        try:
-            since_val = float(since_s)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(since_val) or since_val < 0:
+        since_val = safe_nonneg_float(since_s, default=None)
+        if since_val is None:
             return False
         orders = self._orders.get(symbol)
         if not orders:
@@ -243,13 +233,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return orders[-1]["timestamp"] >= cutoff_ms
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        if since_s is None or isinstance(since_s, bool):
-            return []
-        try:
-            since_val = float(since_s)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(since_val) or since_val < 0:
+        since_val = safe_nonneg_float(since_s, default=None)
+        if since_val is None:
             return []
         orders = self._orders.get(symbol)
         if not orders:
@@ -260,12 +245,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
             return []
         if isinstance(side, bool):
             return []
-        side_u = str(side or "").strip().upper() or None
-        if side_u in ("B", "BID", "LONG"):
-            side_u = "BUY"
-        elif side_u in ("A", "S", "ASK", "SHORT"):
-            side_u = "SELL"
-        elif side_u is not None and side_u not in ("BUY", "SELL"):
+        side_u = normalize_side(side) if side is not None and str(side).strip() else None
+        if side_u is not None and side_u not in ("BUY", "SELL"):
             return []
         cache_key = (symbol, side_u)
         cached = self._orders_cache.get(cache_key)
@@ -302,43 +283,25 @@ class ReplayMarketDataProvider(MarketDataProvider):
         Update position quantity/average cost and order history. See the module
         documentation for fidelity limitations.
         """
-        if isinstance(side, bool):
+        side = normalize_side(side)
+        price_f = safe_pos_float(price, default=None)
+        qty_f = safe_pos_float(qty, default=None)
+        if side not in ("BUY", "SELL") or price_f is None or qty_f is None:
             return None
-        side = str(side or "").strip().upper()
-        if side in ("B", "BID", "LONG"):
-            side = "BUY"
-        elif side in ("A", "S", "ASK", "SHORT"):
-            side = "SELL"
-        if side not in ("BUY", "SELL") or isinstance(price, bool) or isinstance(qty, bool):
-            return None
-        try:
-            price = float(price)
-            qty_f = float(qty)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not (price == price and abs(price) != float("inf") and price > 0):
-            return None
-        if not (qty_f == qty_f and abs(qty_f) != float("inf") and qty_f > 0):
-            return None
-        qty = self.round_quantity(symbol, qty_f)
-        if not (qty == qty and abs(qty) != float("inf") and qty > 0):
+        price = price_f
+        qty = safe_pos_float(self.round_quantity(symbol, qty_f), default=None)
+        if qty is None:
             return None
         ts_ms = int(self.now(symbol) * 1000)
         pos_qty, pos_cost = self._positions.get(symbol, (0.0, 0.0))
-        cur_px = self.get_current_price(symbol)
-        valid_cur = (
-            cur_px is not None
-            and not isinstance(cur_px, bool)
-            and math.isfinite(float(cur_px))
-            and float(cur_px) > 0
-        )
+        cur_px = safe_pos_float(self.get_current_price(symbol), default=None)
         if side == "BUY":
-            fill_px = min(price, float(cur_px)) if valid_cur else price
+            fill_px = min(price, cur_px) if cur_px is not None else price
             executed_qty = qty
             pos_qty += executed_qty
             pos_cost += executed_qty * fill_px
         else:
-            fill_px = max(price, float(cur_px)) if valid_cur else price
+            fill_px = max(price, cur_px) if cur_px is not None else price
             executed_qty = min(qty, pos_qty)
             if executed_qty <= 0:
                 return None

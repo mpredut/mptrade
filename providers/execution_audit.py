@@ -175,7 +175,7 @@ class AuditedStrategyExecutor:
     def _norm_symbol_key(symbol: object) -> str:
         if symbol is None or isinstance(symbol, bool):
             return ""
-        return str(symbol).strip().upper()
+        return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
 
     @staticmethod
     def _norm_order_id_key(order_id: object) -> str:
@@ -222,26 +222,10 @@ class AuditedStrategyExecutor:
                                  reference_price: Optional[float] = None,
                                  client_order_id: Optional[str] = None,
                                  cache_permit=None) -> str:
-        from .base import _clean_single_order_id
-        clean_cid = (
-            _clean_single_order_id(client_order_id)
-            if not isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset))
-            else None
-        )
-        client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
-        is_market = _parse_bool_flag(market, False)
-        fields = {
-            "side": str(side).lower(), "qty": qty, "price": price,
-            "market": is_market, "kind": kind,
-            "reference_price": reference_price,
-            "client_order_id": client_order_id,
-        }
-        self.audit.record("submit_requested", intent_id=intent_id, venue=self.name,
-                          symbol=symbol, **fields)
         outcome = self.submit_outcome_with_intent(
-            intent_id, symbol, side, qty, price, market=is_market, kind=kind,
+            intent_id, symbol, side, qty, price, market=market, kind=kind,
             reference_price=reference_price, client_order_id=client_order_id,
-            cache_permit=cache_permit, _requested_recorded=True,
+            cache_permit=cache_permit,
         )
         if outcome.state == "refused":
             raise SubmissionRefused(outcome.reason)

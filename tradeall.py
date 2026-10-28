@@ -31,7 +31,8 @@ from pricewindow import (
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (load_dotenv as _load_dotenv,
-                     required_bool_env, required_float_env, required_int_env)
+                     required_bool_env, required_float_env, required_int_env,
+                     safe_pos_float)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -193,7 +194,11 @@ def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
     action = normalize_side(action) or str(action or "").upper()
     sym_norm = str(symbol or "").strip().upper()
-    symbol = sym_norm if sym_norm in KALMAN_MODES else symbol
+    sym_clean = sym_norm.replace("/", "").replace("-", "").replace("_", "")
+    if sym_norm in KALMAN_MODES:
+        symbol = sym_norm
+    elif sym_clean in KALMAN_MODES:
+        symbol = sym_clean
     mode = KALMAN_MODES[symbol]
     if mode == "off" or _kalman_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
@@ -226,17 +231,16 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     to the real balance.
     """
     action = normalize_side(action) or str(action or "").upper()
-    symbol = str(symbol or "").strip().upper()
-    try:
-        price = float(price)
-    except (TypeError, ValueError):
+    sym_u = str(symbol or "").strip().upper()
+    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    symbol = sym_clean if (sym_u not in TRADEALL_FIRE_SYMBOLS and sym_clean in TRADEALL_FIRE_SYMBOLS) else sym_u
+    price_f = safe_pos_float(price, default=None)
+    if price_f is None:
         print(f"[TRADEALL] order refused: price invalid {price!r}")
         return None
+    price = price_f
     if action not in {"BUY", "SELL"}:
         print(f"[TRADEALL] order refused: side invalid {action!r}")
-        return None
-    if not math.isfinite(price) or price <= 0:
-        print(f"[TRADEALL] order refused: price invalid {price!r}")
         return None
 
     # Symbol allowlist: a coin can be trend-tracked without being traded here
@@ -274,7 +278,9 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     and records newly placed order IDs.
     """
     action = normalize_side(action) or str(action or "").upper()
-    symbol = str(symbol or "").strip().upper()
+    sym_u = str(symbol or "").strip().upper()
+    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    symbol = sym_clean if (sym_u not in TRADEALL_FIRE_SYMBOLS and sym_clean in TRADEALL_FIRE_SYMBOLS) else sym_u
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
     if order_ids is None:
@@ -286,25 +292,20 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
         return order_ids
 
     num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
-    quote = (split_symbol_assets(symbol) or ("", ""))[1] if str(symbol).upper().endswith(("USDC", "USDT", "EUR", "GBP", "BTC")) else ""
+    quote = (split_symbol_assets(symbol) or ("", ""))[1]
 
     # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
     # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
-    try:
-        if isinstance(proposed_price, bool) or isinstance(current_price, bool):
-            raise ValueError("bool price")
-        prop_f = float(proposed_price)
-        curr_f = float(current_price)
-        if not (math.isfinite(prop_f) and prop_f > 0 and math.isfinite(curr_f) and curr_f > 0):
-            base_price = float("nan")
-        else:
-            base_price = (
-                min(prop_f, curr_f * 0.999)
-                if action == "BUY"
-                else max(prop_f, curr_f * 1.001)
-            )
-    except (TypeError, ValueError, OverflowError):
+    prop_f = safe_pos_float(proposed_price, default=None)
+    curr_f = safe_pos_float(current_price, default=None)
+    if prop_f is None or curr_f is None:
         base_price = float("nan")
+    else:
+        base_price = (
+            min(prop_f, curr_f * 0.999)
+            if action == "BUY"
+            else max(prop_f, curr_f * 1.001)
+        )
 
     # Pre-submit gate check: if _fire_order will deterministically refuse this
     # signal (invalid parameters, not in TRADEALL_FIRE_SYMBOLS, or blocked by
@@ -722,24 +723,8 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     eps_fn = getattr(price_window, "get_noise_epsilon", None)
     eps_val = eps_fn() if callable(eps_fn) else 0.0
     n_samp = len(getattr(price_window, "prices", ()))
-    raw_ws = getattr(price_window, "window_seconds", None)
-    raw_sr = getattr(price_window, "sample_rate_sec", None)
-    win_sec = (
-        float(raw_ws)
-        if isinstance(raw_ws, (int, float))
-        and not isinstance(raw_ws, bool)
-        and math.isfinite(float(raw_ws))
-        and float(raw_ws) > 0
-        else 222.0
-    )
-    sr_sec = (
-        float(raw_sr)
-        if isinstance(raw_sr, (int, float))
-        and not isinstance(raw_sr, bool)
-        and math.isfinite(float(raw_sr))
-        and float(raw_sr) > 0
-        else 1.0
-    )
+    win_sec = safe_pos_float(getattr(price_window, "window_seconds", None), default=222.0)
+    sr_sec = safe_pos_float(getattr(price_window, "sample_rate_sec", None), default=1.0)
     return {
         "symbol": symbol,
         "final_trend": gradient,
