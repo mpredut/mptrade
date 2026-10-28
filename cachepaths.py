@@ -140,7 +140,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "notification_queue.",
             "procs.conf.reload.",
         ),
-        "suffixes": (".heartbeat",),
+        "suffixes": (".heartbeat", "_eval.json"),
     },
 }
 
