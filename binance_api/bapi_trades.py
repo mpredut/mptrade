@@ -10,6 +10,7 @@ from state_io import atomic_write_json
 # Repository imports.
 import utils as u
 import symbols as sym
+from botcore import safe_int
 from . import bapi as api
 from providers.base import (
     extract_order_fee,
@@ -233,15 +234,8 @@ def aggregate_trades(trades):
     return aggregated_list
     
 def _clean_non_neg_int(val, default: int = 0) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        if math.isfinite(f) and f >= 0:
-            return int(f)
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return default
+    i = safe_int(val, default=None)
+    return i if (i is not None and i >= 0) else default
 
 
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):

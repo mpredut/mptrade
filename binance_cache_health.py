@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from botcore import load_dotenv, required_float_env
+from botcore import load_dotenv, required_float_env, safe_pos_int
 from state_io import atomic_write_json
 
 
@@ -108,15 +108,7 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
 
 
 def _clean_now_ms(now_ms: Optional[int]) -> int:
-    if now_ms is None or isinstance(now_ms, bool):
-        return _now_ms()
-    try:
-        val = float(now_ms)
-        if math.isfinite(val) and val > 0:
-            return int(val)
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return _now_ms()
+    return safe_pos_int(now_ms, default=None) or _now_ms()
 
 
 def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,

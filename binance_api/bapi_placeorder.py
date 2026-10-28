@@ -29,7 +29,15 @@ import binance_cache_health
 # Load versioned, non-secret tuning parameters before reading the environment below.
 # ``botcore.load_dotenv`` never overwrites variables already set in the real environment;
 # it only fills missing values, matching tradeall_config.env and monitortrades_config.env.
-from botcore import _parse_bool_flag, load_dotenv as _load_dotenv, required_float_env, required_int_env
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv as _load_dotenv,
+    required_float_env,
+    required_int_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 _load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "bapi_placeorder_config.env"))
 
@@ -277,13 +285,8 @@ def _require_submit_permit_headroom(status):
     cache_ages = (status.order_age_sec, status.trade_age_sec)
     parsed_ages = []
     for age in cache_ages:
-        if age is None or isinstance(age, bool):
-            raise SubmissionRefused("account_cache_not_fresh")
-        try:
-            age_f = float(age)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise SubmissionRefused("account_cache_not_fresh") from exc
-        if not math.isfinite(age_f) or age_f < 0.0:
+        age_f = safe_nonneg_float(age, default=None)
+        if age_f is None:
             raise SubmissionRefused("account_cache_not_fresh")
         parsed_ages.append(age_f)
     if (
@@ -300,21 +303,19 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
                                       market=False, kind=None, api_client=None):
     """Authorize one narrowly scoped submit after a complete cache validation."""
     market = _parse_bool_flag(market, False)
-    if side is None or isinstance(side, bool) or symbol is None or isinstance(symbol, bool):
+    side_str = str(_normalize_side(side or "")).strip().upper()
+    symbol_str = str(symbol or "").strip().upper()
+    qty_f = safe_pos_float(qty, default=None)
+    price_f = None if market else safe_pos_float(price, default=None)
+    if (
+        side_str not in {"BUY", "SELL"}
+        or not symbol_str
+        or qty_f is None
+        or (not market and price_f is None)
+    ):
         raise SubmissionRefused("invalid_order_parameters")
-    side = str(_normalize_side(side)).strip().upper()
-    symbol = str(symbol).strip().upper()
-    if isinstance(qty, bool) or (not market and isinstance(price, bool)):
-        raise SubmissionRefused("invalid_order_parameters")
-    try:
-        qty = float(qty)
-        price = None if market else float(price)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SubmissionRefused("invalid_order_parameters") from exc
-    if (side not in {"BUY", "SELL"} or not symbol
-            or not math.isfinite(qty) or qty <= 0
-            or (not market and (not math.isfinite(price) or price <= 0))):
-        raise SubmissionRefused("invalid_order_parameters")
+    qty = qty_f
+    price = price_f
     if not cfg.is_trade_enabled():
         raise SubmissionRefused("trading_disabled")
     # Reject near-stale state before metadata I/O, then charge that I/O by
@@ -411,28 +412,14 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
     """Single low-level dispatch after common filter normalization."""
     market = _parse_bool_flag(market, False)
     side = "" if order_type is None or isinstance(order_type, bool) else str(_normalize_side(order_type))
-    if isinstance(qty, bool) or (not market and isinstance(price, bool)):
-        raise SubmissionRefused("invalid_order_parameters")
-    try:
-        qty_f = float(qty)
-        price_f = None if market else float(price)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SubmissionRefused("invalid_order_parameters") from exc
-    if (
-        not math.isfinite(qty_f)
-        or qty_f <= 0
-        or (not market and (price_f is None or not math.isfinite(price_f) or price_f <= 0))
-    ):
+    qty_f = safe_pos_float(qty, default=None)
+    price_f = None if market else safe_pos_float(price, default=None)
+    if qty_f is None or (not market and price_f is None):
         raise SubmissionRefused("invalid_order_parameters")
     cancel_price = None
     if cancel_opposite_requested_price is not None:
-        if isinstance(cancel_opposite_requested_price, bool):
-            raise SubmissionRefused("invalid_opposing_cancel_request")
-        try:
-            cancel_price = float(cancel_opposite_requested_price)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise SubmissionRefused("invalid_opposing_cancel_request") from exc
-        if not math.isfinite(cancel_price) or cancel_price <= 0:
+        cancel_price = safe_pos_float(cancel_opposite_requested_price, default=None)
+        if cancel_price is None:
             raise SubmissionRefused("invalid_opposing_cancel_request")
         if cache_permit is None:
             # Smart cancellation is authorized only as part of the exact
@@ -596,15 +583,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     )
 
     try:
-        current_price = api.get_current_price(symbol)
-        cp_val = None
-        if current_price is not None and not isinstance(current_price, bool):
-            try:
-                cand_cp = float(current_price)
-                if math.isfinite(cand_cp) and cand_cp > 0:
-                    cp_val = cand_cp
-            except (TypeError, ValueError, OverflowError):
-                cp_val = None
+        cp_val = safe_pos_float(api.get_current_price(symbol), default=None)
         price_f = float(price)
         if cp_val is not None:
             if order_type == "BUY":
@@ -658,16 +637,12 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                     module=caller_module,
                     reference_mode=eff_ref_mode,
                 )
-                tb_sec = 0.0
-                if time_back_in_seconds is not None and not isinstance(time_back_in_seconds, bool):
-                    try:
-                        tbf = float(time_back_in_seconds)
-                        if math.isfinite(tbf) and tbf > 0.0:
-                            tb_sec = tbf
-                    except (TypeError, ValueError, OverflowError):
-                        tb_sec = 0.0
-                if not ref_window or not math.isfinite(float(ref_window)) or float(ref_window) <= 0:
+                tb_sec = safe_pos_float(time_back_in_seconds, default=0.0) or 0.0
+                ref_win_f = safe_pos_float(ref_window, default=None)
+                if ref_win_f is None:
                     ref_window = tb_sec if tb_sec > 0.0 else float(PLACE_ORDER_SAFEBACK_SEC)
+                else:
+                    ref_window = ref_win_f
 
                 fetch_window = max(tb_sec, float(ref_window or 0))
                 time_limit = float(time.time() * 1000) - (ref_window * 1000)
@@ -896,27 +871,15 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price,
                                      cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
     cancel_opposite = _parse_bool_flag(cancel_opposite, True)
-    if isinstance(order_type, bool) or isinstance(price, bool):
-        raise SubmissionRefused("invalid_order_parameters")
     order_type = str(_normalize_side(order_type or "")).strip().upper()
-    try:
-        price = float(price)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SubmissionRefused("invalid_order_parameters") from exc
-    if not math.isfinite(price) or price <= 0:
+    px = safe_pos_float(price, default=None)
+    if not order_type or px is None:
         raise SubmissionRefused("invalid_order_parameters")
+    price = px
     if cancel_opposite:
         cancel_opposite_orders(order_type, symbol, price)
-    current_price = api.get_current_price(symbol)
-    try:
-        cp = (
-            float(current_price)
-            if current_price is not None and not isinstance(current_price, bool)
-            else None
-        )
-    except (TypeError, ValueError, OverflowError):
-        cp = None
-    if cp is not None and math.isfinite(cp) and cp > 0:
+    cp = safe_pos_float(api.get_current_price(symbol), default=None)
+    if cp is not None:
         if order_type == "BUY":
             price = min(price, cp) * 0.999
         elif order_type == "SELL":
@@ -947,13 +910,8 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
     if not math.isfinite(req_f) or req_f <= 0:
         raise ValueError("requested_price must be finite and positive")
     requested_price = req_f
-    if current_price is None or isinstance(current_price, bool):
-        return requested_price
-    try:
-        cp = float(current_price)
-    except (TypeError, ValueError, OverflowError):
-        return requested_price
-    if not math.isfinite(cp) or cp <= 0:
+    cp = safe_pos_float(current_price, default=None)
+    if cp is None:
         return requested_price
     if side == "SELL":
         return max(requested_price, cp)

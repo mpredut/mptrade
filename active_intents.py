@@ -9,11 +9,12 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 from dataclasses import dataclass
 from typing import Iterable
 
-from botcore import _parse_bool_flag, safe_float as _finite_float
+from botcore import _parse_bool_flag, safe_float, safe_float as _finite_float, safe_nonneg_float, safe_pos_float
 from cachepaths import normalize_venue_name
 from providers.base import _clean_single_order_id, normalize_side
 
@@ -55,10 +56,8 @@ def _first(row: dict, *names):
         value = row.get(name)
         if value is None or isinstance(value, (bool, dict, list, tuple, set)):
             continue
-        if isinstance(value, float):
-            import math
-            if not math.isfinite(value):
-                continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
         if isinstance(value, str):
             s = value.strip()
             if not s or s.lower() in _INVALID_SCALAR_STRINGS:
@@ -78,14 +77,8 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     intent_id = _clean_id(_first(row, "intent_id", "client_order_id", "order_id", "id", "txid")) or client_order_id or order_id
     side = _first(row, "side", "start_side")
     quantity = _first(row, "requested_qty", "qty", "quantity", "vol", "sz", "size")
-    qty_f = _finite_float(quantity, default=None)
-    if (
-        not intent_id
-        or not side
-        or isinstance(side, bool)
-        or qty_f is None
-        or qty_f <= 0
-    ):
+    qty_f = safe_pos_float(quantity, default=None)
+    if not intent_id or not side or isinstance(side, bool) or qty_f is None:
         return None
     side_str = normalize_side(side)
     if side_str not in {"BUY", "SELL"}:

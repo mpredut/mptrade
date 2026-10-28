@@ -9,6 +9,7 @@ from binance.exceptions import BinanceAPIException
 # MYLIB
 from .bapi_client import client
 import symbols as sym
+from botcore import safe_int, safe_pos_int, safe_nonneg_float, safe_pos_float
 from providers.base import (
     extract_order_price,
     extract_order_qty,
@@ -38,29 +39,17 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
             raise ValueError("symbol must be a non-empty string")
         return []
     symbol = symbol.strip().upper()
-    if start_time_ms is None or isinstance(start_time_ms, bool):
+    start_i = safe_int(start_time_ms, default=None)
+    if start_i is None:
         if strict:
             raise ValueError("start_time_ms must be a valid timestamp")
         return []
-    try:
-        start_f = float(start_time_ms)
-        if not math.isfinite(start_f) or start_f < 0:
-            if strict:
-                raise ValueError("start_time_ms must be a finite non-negative timestamp")
-            return []
-        start_time_ms = int(start_f)
-    except (TypeError, ValueError, OverflowError) as exc:
+    if start_i < 0:
         if strict:
-            raise ValueError("start_time_ms must be a valid timestamp") from exc
+            raise ValueError("start_time_ms must be a finite non-negative timestamp")
         return []
-    if isinstance(limit, bool) or limit is None:
-        limit = 1000
-    else:
-        try:
-            lim_f = float(limit)
-            limit = min(1000, max(1, int(lim_f))) if math.isfinite(lim_f) and lim_f > 0 else 1000
-        except (TypeError, ValueError, OverflowError):
-            limit = 1000
+    start_time_ms = start_i
+    limit = min(1000, max(1, safe_pos_int(limit, default=1000)))
     out = []
     from_id = None
     while True:
@@ -131,12 +120,10 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
         order_type = _normalize_side(order_type)
         sym.validate_symbols(symbol)
         sym.validate_ordertype(order_type)
-        if startTime is None or isinstance(startTime, bool):
+        start_i = safe_int(startTime, default=None)
+        if start_i is None or start_i < 0:
             raise ValueError("startTime must be a valid timestamp")
-        start_f = float(startTime)
-        if not math.isfinite(start_f) or start_f < 0:
-            raise ValueError("startTime must be a valid timestamp")
-        startTime = int(start_f)
+        startTime = start_i
 
         end_time = int(time.time() * 1000)  # ms
 
@@ -229,13 +216,8 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
 
 
 def get_recent_filled_orders(order_type, symbol, max_age_seconds):
-    if max_age_seconds is None or isinstance(max_age_seconds, bool):
-        return []
-    try:
-        max_age_val = float(max_age_seconds)
-    except (TypeError, ValueError, OverflowError):
-        return []
-    if not math.isfinite(max_age_val) or max_age_val < 0:
+    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
+    if max_age_val is None:
         return []
     # Convert duration to an absolute millisecond start time. Passing duration directly
     # would query from approximately 1970 and return incorrect data.
@@ -298,13 +280,8 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         return []
 
     #print(f" orders_for_symbol {orders_for_symbol}")
-    try:
-        if max_age_seconds is None or isinstance(max_age_seconds, bool):
-            return []
-        max_age_val = float(max_age_seconds)
-    except (TypeError, ValueError, OverflowError):
-        return []
-    if not math.isfinite(max_age_val) or max_age_val < 0:
+    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
+    if max_age_val is None:
         return []
     current_time_ms = int(time.time() * 1000)
     max_age_ms = max_age_val * 1000.0  # convert to ms
@@ -335,14 +312,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
 
 # The default aggregation window is the previous 24 hours.
 def get_total_traded_stats(symbol, period_seconds=86400):
-    period_val = 86400
-    if period_seconds is not None and not isinstance(period_seconds, bool):
-        try:
-            cand_p = float(period_seconds)
-            if math.isfinite(cand_p) and cand_p > 0:
-                period_val = cand_p
-        except (TypeError, ValueError, OverflowError):
-            pass
+    period_val = safe_pos_float(period_seconds, default=86400.0) or 86400.0
     trades = get_trade_orders(order_type=None, symbol=symbol, max_age_seconds=period_val)
 
     stats = {
@@ -355,16 +325,9 @@ def get_total_traded_stats(symbol, period_seconds=86400):
             continue
         side = _normalize_side(t.get('side'))
         if side in stats:
-            raw_px = t.get('price')
-            raw_qty = t.get('quantity', t.get('qty'))
-            if isinstance(raw_px, bool) or isinstance(raw_qty, bool):
-                continue
-            try:
-                px_f = float(raw_px)
-                qty_f = float(raw_qty)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not math.isfinite(px_f) or not math.isfinite(qty_f) or px_f <= 0 or qty_f <= 0:
+            px_f = safe_pos_float(t.get('price'), default=None)
+            qty_f = safe_pos_float(t.get('quantity', t.get('qty')), default=None)
+            if px_f is None or qty_f is None:
                 continue
             stats[side]['total_quantity'] += qty_f
             stats[side]['total_value'] += px_f * qty_f

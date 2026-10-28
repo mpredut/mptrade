@@ -6,6 +6,7 @@ import math
 import time
 from typing import Any
 
+from botcore import safe_pos_float, safe_pos_int
 from providers.base import (
     extract_order_price,
     extract_order_side,
@@ -14,24 +15,11 @@ from providers.base import (
 
 
 def _is_positive_finite(val: Any) -> bool:
-    if isinstance(val, bool) or val is None:
-        return False
-    try:
-        f = float(val)
-        return math.isfinite(f) and f > 0
-    except (TypeError, ValueError, OverflowError):
-        return False
+    return safe_pos_float(val, default=None) is not None
 
 
 def _clean_now_ms(now_ms: Any) -> int:
-    if now_ms is not None and not isinstance(now_ms, bool):
-        try:
-            f = float(now_ms)
-            if math.isfinite(f) and f > 0:
-                return int(f)
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return int(time.time() * 1000)
+    return safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
 
 
 def parse_order_execution_report(

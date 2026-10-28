@@ -18,6 +18,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
+from botcore import safe_float
 from cachepaths import telemetry_cache_file_path
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
@@ -54,15 +55,7 @@ class WhalePositioningSnapshot:
     def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
         if not isinstance(data, dict):
             data = {}
-        fr = data.get("funding_rate")
-        fr_val: Optional[float] = None
-        if fr is not None and not isinstance(fr, bool):
-            try:
-                cand = float(fr)
-                if math.isfinite(cand):
-                    fr_val = cand
-            except (TypeError, ValueError):
-                fr_val = None
+        fr_val = safe_float(data.get("funding_rate"), default=None)
         raw_sym = data.get("symbol")
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         raw_reg = data.get("divergence_regime")
