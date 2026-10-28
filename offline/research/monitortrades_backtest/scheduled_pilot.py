@@ -51,19 +51,14 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from botcore import _parse_bool_flag, float_env
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
 
 def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or isinstance(raw, bool):
-        return default
-    try:
-        val = float(str(raw).strip())
-        return val if math.isfinite(val) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+    val = float_env(name)
+    return default if val is None else val
 
 
 def _safe_f(val, default: float | None = 0.0) -> float | None:
@@ -73,6 +68,7 @@ def _safe_f(val, default: float | None = 0.0) -> float | None:
         res = float(val)
         return res if math.isfinite(res) else default
     except (TypeError, ValueError, OverflowError):
+        return default
         return default
 
 
@@ -508,7 +504,7 @@ def main():
                      help="where to write the proposals in --propose mode (default backtest_proposals.json)")
     args = ap.parse_args()
 
-    if os.environ.get("PILOT_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+    if _parse_bool_flag(os.environ.get("PILOT_DISABLED"), False):
         print("[scheduled_pilot] PILOT_DISABLED=true -- leaving without doing anything")
         return
 
@@ -734,7 +730,7 @@ def main():
         with atomic_text_writer(args.propose_out) as f:
             json.dump(proposals, f, indent=2, default=str)
         print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
-        if proposals and os.environ.get("PILOT_NOTIFY_PROPOSALS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):
             # notify user that new proposals are available to review and apply
             try:
                 from dotenv import load_dotenv

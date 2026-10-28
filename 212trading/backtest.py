@@ -184,45 +184,50 @@ def main() -> int:
     ap.add_argument("--trail-min-profit", type=float, default=None, help="min profit %% to arm trailing")
     args = ap.parse_args()
 
-    if args.profile:
-        from ipo_common import load_t212_environment
-        cfg_file = os.path.join(T212_DIR, f"config.{args.profile.lower()}.env")
-        if not os.path.exists(cfg_file):
-            print(f"! profile config not found: {cfg_file}")
-            return 1
-        load_t212_environment(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
+    profile = args.profile.lower() if args.profile else "nvda"
+    from ipo_common import load_t212_environment
+    cfg_file = os.path.join(T212_DIR, f"config.{profile}.env")
+    if not os.path.exists(cfg_file):
+        print(f"! profile config not found: {cfg_file}")
+        return 1
+    load_t212_environment(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
 
-    budget = args.budget if args.budget is not None else float(os.environ.get("STRAT_MAX_BUDGET", "2000"))
-    entry_pct = float(os.environ.get("STRAT_ENTRY_PCT", "10"))
-    dca_pct = float(os.environ.get("STRAT_DCA_PCT", "10"))
-    entry = args.entry if args.entry is not None else (budget * entry_pct / 100.0)
-    dca = args.dca if args.dca is not None else (budget * dca_pct / 100.0)
-    disc = args.disc if args.disc is not None else float(os.environ.get("STRAT_ENTRY_DISCOUNT_PCT", "0.2"))
-    drop = args.drop if args.drop is not None else float(os.environ.get("STRAT_DCA_DROP_PCT", "2.0"))
-    tp = args.tp if args.tp is not None else float(os.environ.get("STRAT_TAKEPROFIT_PCT", "1.5"))
-    sl = args.sl if args.sl is not None else float(os.environ.get("STRAT_STOP_LOSS_PCT", "10.0"))
-    fee = args.fee if args.fee is not None else float(os.environ.get("STRAT_FX_FEE_PCT", "0.15"))
-    sym = args.sym if (args.sym != "NVDA" or not os.environ.get("YAHOO_SYMBOL")) else os.environ.get("YAHOO_SYMBOL", "NVDA")
+    from botcore import (
+        _parse_bool_flag,
+        float_env,
+        required_env,
+        required_float_env,
+        required_int_env,
+    )
 
-    mdb_raw = os.environ.get("STRAT_MAX_DCA_BUYS", "10").strip().lower()
+    budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET")
+    entry_pct = float_env("STRAT_ENTRY_PCT")
+    dca_pct = float_env("STRAT_DCA_PCT")
+    entry = args.entry if args.entry is not None else ((budget * entry_pct / 100.0) if entry_pct is not None else required_float_env("STRAT_ENTRY"))
+    dca = args.dca if args.dca is not None else ((budget * dca_pct / 100.0) if dca_pct is not None else required_float_env("STRAT_DCA"))
+    disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT")
+    drop = args.drop if args.drop is not None else required_float_env("STRAT_DCA_DROP_PCT")
+    tp = args.tp if args.tp is not None else required_float_env("STRAT_TAKEPROFIT_PCT")
+    sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT")
+    fee = args.fee if args.fee is not None else required_float_env("STRAT_FX_FEE_PCT")
+    sym = args.sym if (args.sym != "NVDA" or not os.environ.get("YAHOO_SYMBOL")) else required_env("YAHOO_SYMBOL")
+
+    mdb_raw = (os.environ.get("STRAT_MAX_DCA_BUYS") or "auto").strip().lower()
     if args.maxdca is not None:
         maxdca = args.maxdca
     elif mdb_raw in ("auto", "buget", "budget"):
         maxdca = max(0, int((budget - entry) // dca)) if dca > 0 else 0
     else:
-        try:
-            maxdca = int(float(mdb_raw))
-        except ValueError:
-            maxdca = 10
+        maxdca = required_int_env("STRAT_MAX_DCA_BUYS")
 
     sl_mhdsl = args.mhdsl if args.mhdsl is not None else (
-        os.environ.get("STRAT_SL_MHDSL_ENABLED", "false").lower() in ("true", "1", "yes")
+        _parse_bool_flag(os.environ.get("STRAT_SL_MHDSL_ENABLED"), default=False)
     )
     tp_mdhtp = args.mdhtp if args.mdhtp is not None else (
-        os.environ.get("STRAT_TP_MDHTP_ENABLED", "false").lower() in ("true", "1", "yes")
+        _parse_bool_flag(os.environ.get("STRAT_TP_MDHTP_ENABLED"), default=False)
     )
-    trail_pct = args.trail if args.trail is not None else float(os.environ.get("STRAT_TRAIL_PCT", "0"))
-    trail_min_profit = args.trail_min_profit if args.trail_min_profit is not None else float(os.environ.get("STRAT_TRAIL_MIN_PROFIT_PCT", "5"))
+    trail_pct = args.trail if args.trail is not None else (float_env("STRAT_TRAIL_PCT") or 0.0)
+    trail_min_profit = args.trail_min_profit if args.trail_min_profit is not None else (float_env("STRAT_TRAIL_MIN_PROFIT_PCT") or 0.0)
 
     ohlc = fetch_candles(sym, args.range, args.interval)
     if len(ohlc) < 20:

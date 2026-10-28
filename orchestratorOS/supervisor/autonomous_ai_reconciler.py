@@ -517,14 +517,17 @@ class AutonomousAIReconciler:
                         "gradient_recent_fast": tinfo.get("gradient_recent_fast"),
                         "epsilon": tinfo.get("epsilon"),
                         "trend_fast": tinfo.get("trend_fast", trend),
-                        "slope_3_7m": d222.get("slope_full", 0.0),
-                        "trend_3_7m": d222.get("final_trend", trend),
-                        "slope_15m": d900.get("slope_full", 0.0),
-                        "trend_15m": d900.get("final_trend", trend),
-                        "slope_2_5h": d9000.get("slope_full", 0.0),
-                        "trend_2_5h": d9000.get("final_trend", trend),
                         "vol_1h_pct": tinfo.get("vol_1h_pct"),
                     }
+                    if d222.get("slope_full") is not None:
+                        entry["slope_3_7m"] = d222.get("slope_full")
+                        entry["trend_3_7m"] = d222.get("final_trend", trend)
+                    if d900.get("slope_full") is not None:
+                        entry["slope_15m"] = d900.get("slope_full")
+                        entry["trend_15m"] = d900.get("final_trend", trend)
+                    if d9000.get("slope_full") is not None:
+                        entry["slope_2_5h"] = d9000.get("slope_full")
+                        entry["trend_2_5h"] = d9000.get("final_trend", trend)
                     snapshot.prices_and_trends[sym] = entry
 
         for sym, px in price_map.items():
@@ -734,8 +737,8 @@ class AutonomousAIReconciler:
             cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
 
             # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD, BTCUSDC -> XBTUSD) when missing
-            has_slopes = bool(
-                entry.get("slope_3_7m") or entry.get("slope_15m") or entry.get("slope_2_5h")
+            has_slopes = any(
+                entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")
             )
             if not has_slopes and isinstance(trends_items_map, dict):
                 for ck in cand_keys[1:]:
@@ -745,7 +748,15 @@ class AutonomousAIReconciler:
                         d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
                         d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
                         d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
-                        if not (d222.get("slope_full") or d900.get("slope_full") or d9000.get("slope_full") or tinfo.get("slope_full")):
+                        if not any(
+                            x is not None
+                            for x in (
+                                d222.get("slope_full"),
+                                d900.get("slope_full"),
+                                d9000.get("slope_full"),
+                                tinfo.get("slope_full"),
+                            )
+                        ):
                             continue
                         if _parse_finite_float(entry.get("price"), 0.0) <= 0 and tinfo.get("current_price") is not None:
                             entry["price"] = tinfo.get("current_price")
@@ -770,8 +781,8 @@ class AutonomousAIReconciler:
             if not has_slopes:
                 for ck in cand_keys[1:]:
                     sib = snapshot.prices_and_trends.get(ck)
-                    if isinstance(sib, dict) and (
-                        sib.get("slope_3_7m") or sib.get("slope_15m") or sib.get("slope_2_5h")
+                    if isinstance(sib, dict) and any(
+                        sib.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")
                     ):
                         for k_inh in (
                             "slope_3_7m",

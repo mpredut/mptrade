@@ -20,6 +20,7 @@ from bisect import insort, bisect_left
 import numpy as np
 from scipy.stats import linregress
 
+from botcore import float_env
 import utils as u
 
 # ── Window constants ──────────────────────────────────────────────────────────
@@ -66,11 +67,8 @@ SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
 
 
 def _env_float(name: str, default: float) -> float:
-    try:
-        val = float(os.environ.get(name, default))
-        return val if math.isfinite(val) else default
-    except (TypeError, ValueError):
-        return default
+    val = float_env(name)
+    return default if val is None else val
 
 
 def _resolve_step_wols_power(estimator_name: str = None) -> float:

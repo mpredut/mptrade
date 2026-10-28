@@ -29,12 +29,11 @@ sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from offline.research.monitortrades_backtest import scheduled_pilot as sp  # noqa: E402
-from botcore import parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, load_dotenv, parse_dotenv  # noqa: E402
 
 # Load .env + config.env so the notifications (PHONE_ALERT_URL/NTFY_TOPIC from .env)
 # work — apply runs standalone, not through the fleet (which loads them at startup).
 try:
-    from dotenv import load_dotenv
     load_dotenv(os.path.join(ROOT, ".env"))
     load_dotenv(os.path.join(ROOT, "config.env"))
 except Exception:  # noqa: BLE001
@@ -68,7 +67,7 @@ def main():
                      help="show what it would apply, without writing config or committing")
     args = ap.parse_args()
 
-    if os.environ.get("APPLY_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+    if _parse_bool_flag(os.environ.get("APPLY_DISABLED"), False):
         print("[apply] APPLY_DISABLED=true -- exiting without doing anything")
         return
 

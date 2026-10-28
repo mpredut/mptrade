@@ -141,24 +141,31 @@ def main() -> int:
     args = ap.parse_args()
 
     import os as _os
+    from botcore import (
+        float_env as _float_env,
+        load_dotenv as _botcore_load_dotenv,
+        required_env as _required_env,
+        required_float_env as _required_float_env,
+        required_int_env as _required_int_env,
+    )
     _hl_dir = _os.path.dirname(_os.path.abspath(__file__))
     try:
-        _load_dotenv(_os.path.join(_hl_dir, ".env"))
-        _load_dotenv(_os.path.join(_hl_dir, "config.env"))
+        _botcore_load_dotenv(_os.path.join(_hl_dir, "config.env"))
+        _botcore_load_dotenv(_os.path.join(_hl_dir, ".env"))
     except Exception:
         pass
 
-    coin = args.coin or _os.environ.get("HL_COIN", "HYPE")
-    direction = args.direction or _os.environ.get("HL_DIRECTION", "long")
-    entry = args.entry if args.entry is not None else float(_os.environ.get("STRAT_ENTRY", "50"))
-    dca = args.dca if args.dca is not None else float(_os.environ.get("STRAT_DCA", "30"))
-    disc = args.disc if args.disc is not None else float(_os.environ.get("STRAT_ENTRY_DISCOUNT_PCT", "0.2"))
-    drop = args.drop if args.drop is not None else float(_os.environ.get("STRAT_DCA_DROP_PCT", "2.0"))
-    tp = args.tp if args.tp is not None else float(_os.environ.get("STRAT_TAKEPROFIT_PCT", "1.0"))
-    maxdca = args.maxdca if args.maxdca is not None else int(float(_os.environ.get("STRAT_MAX_DCA_BUYS", "10")))
-    budget = args.budget if args.budget is not None else float(_os.environ.get("STRAT_MAX_BUDGET", "500"))
-    fee = args.fee if args.fee is not None else float(_os.environ.get("HL_FEE_PCT", "0.045"))
-    sl = args.sl if args.sl is not None else float(_os.environ.get("STRAT_STOP_LOSS_PCT", "0.0"))
+    coin = args.coin or _required_env("HL_COIN")
+    direction = args.direction or _required_env("HL_DIRECTION")
+    entry = args.entry if args.entry is not None else _required_float_env("STRAT_ENTRY")
+    dca = args.dca if args.dca is not None else _required_float_env("STRAT_DCA")
+    disc = args.disc if args.disc is not None else _required_float_env("STRAT_ENTRY_DISCOUNT_PCT")
+    drop = args.drop if args.drop is not None else _required_float_env("STRAT_DCA_DROP_PCT")
+    tp = args.tp if args.tp is not None else _required_float_env("STRAT_TAKEPROFIT_PCT")
+    maxdca = args.maxdca if args.maxdca is not None else _required_int_env("STRAT_MAX_DCA_BUYS")
+    budget = args.budget if args.budget is not None else _required_float_env("STRAT_MAX_BUDGET")
+    fee = args.fee if args.fee is not None else _required_float_env("HL_FEE_PCT")
+    sl = args.sl if args.sl is not None else (_float_env("STRAT_STOP_LOSS_PCT") or 0.0)
 
     records = fetch_ohlc_candles(coin, "1h", lookback_hours=args.days * 24 + 5, drop_incomplete=True)
     ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
