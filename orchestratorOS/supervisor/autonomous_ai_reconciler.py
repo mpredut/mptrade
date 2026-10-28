@@ -1071,7 +1071,6 @@ class AutonomousAIReconciler:
             else (trends_data if isinstance(trends_data, dict) else {})
         )
         for sym, entry in list(snapshot.prices_and_trends.items()):
-            base_prefix = normalize_cache_base_asset(sym)
             cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
 
             # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD, BTCUSDC -> XBTUSD) when missing
@@ -1172,18 +1171,7 @@ class AutonomousAIReconciler:
                         for pt in m_series
                         if isinstance(pt, list) and len(pt) > 1 and _parse_finite_float(pt[1], 0.0) > 0
                     ]
-                    if len(vals) >= 2:
-                        l7_v, h7_v, cur7_v = min(vals), max(vals), vals[-1]
-                        entry["chg_7d_pct"] = round(((cur7_v - vals[0]) / vals[0]) * 100.0, 2)
-                        entry["low_7d"] = l7_v
-                        entry["high_7d"] = h7_v
-                        if h7_v > 0:
-                            entry["dd_7d_high_pct"] = round((cur7_v / h7_v - 1.0) * 100.0, 2)
-                        if l7_v > 0:
-                            entry["bounce_7d_low_pct"] = round((cur7_v / l7_v - 1.0) * 100.0, 2)
-                            entry["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
-                        if h7_v > l7_v > 0:
-                            entry["pos_7d_pct"] = round(((cur7_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
+                    entry.update(_compute_7d_range_metrics(vals))
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         series_24h_by_sym: Dict[str, list] = {}
@@ -1193,7 +1181,6 @@ class AutonomousAIReconciler:
             else {}
         )
         for sym in list(snapshot.prices_and_trends.keys()):
-            base_sym = normalize_cache_base_asset(sym)
             matched_series_24h, arch_vals_7d = load_symbol_price_series(
                 self.cache_dir, sym, current_price_items=cur_p_items
             )
@@ -1209,19 +1196,7 @@ class AutonomousAIReconciler:
                 snapshot.prices_and_trends[sym]["price"] = arch_vals_7d[-1]
             m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
             if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
-                l7_v, h7_v, cur7_v = min(arch_vals_7d), max(arch_vals_7d), arch_vals_7d[-1]
-                snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
-                    ((cur7_v - arch_vals_7d[0]) / arch_vals_7d[0]) * 100.0, 2
-                )
-                snapshot.prices_and_trends[sym]["low_7d"] = l7_v
-                snapshot.prices_and_trends[sym]["high_7d"] = h7_v
-                if h7_v > 0:
-                    snapshot.prices_and_trends[sym]["dd_7d_high_pct"] = round((cur7_v / h7_v - 1.0) * 100.0, 2)
-                if l7_v > 0:
-                    snapshot.prices_and_trends[sym]["bounce_7d_low_pct"] = round((cur7_v / l7_v - 1.0) * 100.0, 2)
-                    snapshot.prices_and_trends[sym]["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
-                if h7_v > l7_v > 0:
-                    snapshot.prices_and_trends[sym]["pos_7d_pct"] = round(((cur7_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
+                snapshot.prices_and_trends[sym].update(_compute_7d_range_metrics(arch_vals_7d))
             if not m24 and sym in inst_by_sym:
                 # Fallback for standalone Kraken/Hyperliquid/T212 pairs without a cachedb/cache_24_price_* file
                 prov = getattr(inst_by_sym[sym], "_provider", None)
@@ -1246,20 +1221,7 @@ class AutonomousAIReconciler:
                                 for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ()))
                                 if ts >= cutoff_7d and float(px) > 0
                             ]
-                            if len(vals_7d) >= 2:
-                                l7_v, h7_v, cur7_v = min(vals_7d), max(vals_7d), vals_7d[-1]
-                                snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
-                                    ((cur7_v - vals_7d[0]) / vals_7d[0]) * 100.0, 2
-                                )
-                                snapshot.prices_and_trends[sym]["low_7d"] = l7_v
-                                snapshot.prices_and_trends[sym]["high_7d"] = h7_v
-                                if h7_v > 0:
-                                    snapshot.prices_and_trends[sym]["dd_7d_high_pct"] = round((cur7_v / h7_v - 1.0) * 100.0, 2)
-                                if l7_v > 0:
-                                    snapshot.prices_and_trends[sym]["bounce_7d_low_pct"] = round((cur7_v / l7_v - 1.0) * 100.0, 2)
-                                    snapshot.prices_and_trends[sym]["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
-                                if h7_v > l7_v > 0:
-                                    snapshot.prices_and_trends[sym]["pos_7d_pct"] = round(((cur7_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
+                            snapshot.prices_and_trends[sym].update(_compute_7d_range_metrics(vals_7d))
                     except Exception:
                         pass
                 elif str(getattr(inst_by_sym[sym], "provider_name", "")).lower() == "t212":
@@ -1287,19 +1249,9 @@ class AutonomousAIReconciler:
                                 matched_series_24h = pts_24h
                             vals_5d = [pt[1] for pt in pts_5d]
                             if len(vals_5d) >= 2 and "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
-                                l5_v, h5_v, cur5_v = round(min(vals_5d), 4), round(max(vals_5d), 4), vals_5d[-1]
-                                snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
-                                    ((cur5_v - vals_5d[0]) / vals_5d[0]) * 100.0, 2
+                                snapshot.prices_and_trends[sym].update(
+                                    _compute_7d_range_metrics(vals_5d, decimals=4)
                                 )
-                                snapshot.prices_and_trends[sym]["low_7d"] = l5_v
-                                snapshot.prices_and_trends[sym]["high_7d"] = h5_v
-                                if h5_v > 0:
-                                    snapshot.prices_and_trends[sym]["dd_7d_high_pct"] = round((cur5_v / h5_v - 1.0) * 100.0, 2)
-                                if l5_v > 0:
-                                    snapshot.prices_and_trends[sym]["bounce_7d_low_pct"] = round((cur5_v / l5_v - 1.0) * 100.0, 2)
-                                    snapshot.prices_and_trends[sym]["span_7d_pct"] = round((h5_v / l5_v - 1.0) * 100.0, 2)
-                                if h5_v > l5_v > 0:
-                                    snapshot.prices_and_trends[sym]["pos_7d_pct"] = round(((cur5_v - l5_v) / (h5_v - l5_v)) * 100.0, 1)
                     except Exception:
                         pass
             if m24:
@@ -1315,56 +1267,13 @@ class AutonomousAIReconciler:
                     elif c1h <= -0.25:
                         snapshot.prices_and_trends[sym]["trend"] = -1
 
-            sym_cands = cache_symbol_variants(sym)
-            ob = None
-            for cand in sym_cands:
-                ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{cand}.json"))
-                if isinstance(ob, dict):
-                    break
-            deriv = None
-            for cand in sym_cands:
-                deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{cand}.json"))
-                if isinstance(deriv, dict):
-                    break
-            whale = None
-            for cand in sym_cands:
-                whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{cand}.json"))
-                if isinstance(whale, dict):
-                    break
-            if ob or deriv or whale:
-                m_info: Dict[str, Any] = {}
-                if isinstance(ob, dict):
-                    m_info["ob_imbalance"] = ob.get("imbalance_ratio")
-                    bd_f = _parse_finite_float(ob.get("bid_depth_usd"), -1.0)
-                    ad_f = _parse_finite_float(ob.get("ask_depth_usd"), -1.0)
-                    bw_f = _parse_finite_float(ob.get("largest_bid_wall_usd"), -1.0)
-                    aw_f = _parse_finite_float(ob.get("largest_ask_wall_usd"), -1.0)
-                    m_info["bid_depth_usd"] = round(bd_f, 0) if bd_f >= 0 else None
-                    m_info["ask_depth_usd"] = round(ad_f, 0) if ad_f >= 0 else None
-                    m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
-                    m_info["bid_wall_usd"] = round(bw_f, 0) if bw_f >= 0 else None
-                    m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
-                    m_info["ask_wall_usd"] = round(aw_f, 0) if aw_f >= 0 else None
-                if isinstance(deriv, dict):
-                    m_info["funding_rate"] = deriv.get("funding_rate")
-                    m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
-                    m_info["oi_usd"] = deriv.get("open_interest_usd")
-                if isinstance(whale, dict):
-                    m_info["whale_long_pct"] = whale.get("top_traders_long_pct")
-                    m_info["whale_long_ratio"] = whale.get("top_traders_long_ratio")
-                    m_info["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
-                    m_info["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
-                    m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
-                    m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
-                    m_info["divergence_regime"] = whale.get("divergence_regime")
+            m_info = _load_symbol_microstructure(self.cache_dir, sym, _read_json)
+            if m_info:
                 snapshot.microstructure[sym] = m_info
 
         # Also harvest reference microstructure files in cachedb/ (e.g. ADAUSD from KRAKEN_CACHE_PAIRS)
         if os.path.isdir(self.cache_dir):
-            covered_micro_bases = {
-                "BTC" if normalize_cache_base_asset(k) in ("BTC", "XBT") else normalize_cache_base_asset(k)
-                for k in snapshot.microstructure
-            }
+            covered_micro_bases = {canonical_base_asset(k) for k in snapshot.microstructure}
             ref_micro_syms: List[str] = []
             for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
                 for mpath in sorted(glob.glob(os.path.join(self.cache_dir, f"{pfx}*.json"))):
@@ -1372,65 +1281,13 @@ class AutonomousAIReconciler:
                     msym = mfname[len(pfx) : -len(".json")].upper()
                     if not msym or not msym.isalnum() or msym in snapshot.microstructure or msym in ref_micro_syms:
                         continue
-                    mbase = "BTC" if normalize_cache_base_asset(msym) in ("BTC", "XBT") else normalize_cache_base_asset(msym)
+                    mbase = canonical_base_asset(msym)
                     if mbase not in covered_micro_bases:
                         ref_micro_syms.append(msym)
                         covered_micro_bases.add(mbase)
             for msym in ref_micro_syms:
-                sym_cands = cache_symbol_variants(msym)
-                ob = next(
-                    (
-                        d
-                        for cand in sym_cands
-                        for d in (_read_json(os.path.join(self.cache_dir, f"orderbook_depth_{cand}.json")),)
-                        if isinstance(d, dict)
-                    ),
-                    None,
-                )
-                deriv = next(
-                    (
-                        d
-                        for cand in sym_cands
-                        for d in (_read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{cand}.json")),)
-                        if isinstance(d, dict)
-                    ),
-                    None,
-                )
-                whale = next(
-                    (
-                        d
-                        for cand in sym_cands
-                        for d in (_read_json(os.path.join(self.cache_dir, f"whale_snapshot_{cand}.json")),)
-                        if isinstance(d, dict)
-                    ),
-                    None,
-                )
-                if ob or deriv or whale:
-                    m_info_ref: Dict[str, Any] = {}
-                    if isinstance(ob, dict):
-                        m_info_ref["ob_imbalance"] = ob.get("imbalance_ratio")
-                        bd_f = _parse_finite_float(ob.get("bid_depth_usd"), -1.0)
-                        ad_f = _parse_finite_float(ob.get("ask_depth_usd"), -1.0)
-                        bw_f = _parse_finite_float(ob.get("largest_bid_wall_usd"), -1.0)
-                        aw_f = _parse_finite_float(ob.get("largest_ask_wall_usd"), -1.0)
-                        m_info_ref["bid_depth_usd"] = round(bd_f, 0) if bd_f >= 0 else None
-                        m_info_ref["ask_depth_usd"] = round(ad_f, 0) if ad_f >= 0 else None
-                        m_info_ref["bid_wall_px"] = ob.get("largest_bid_wall_price")
-                        m_info_ref["bid_wall_usd"] = round(bw_f, 0) if bw_f >= 0 else None
-                        m_info_ref["ask_wall_px"] = ob.get("largest_ask_wall_price")
-                        m_info_ref["ask_wall_usd"] = round(aw_f, 0) if aw_f >= 0 else None
-                    if isinstance(deriv, dict):
-                        m_info_ref["funding_rate"] = deriv.get("funding_rate")
-                        m_info_ref["pred_funding_rate"] = deriv.get("predicted_funding_rate")
-                        m_info_ref["oi_usd"] = deriv.get("open_interest_usd")
-                    if isinstance(whale, dict):
-                        m_info_ref["whale_long_pct"] = whale.get("top_traders_long_pct")
-                        m_info_ref["whale_long_ratio"] = whale.get("top_traders_long_ratio")
-                        m_info_ref["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
-                        m_info_ref["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
-                        m_info_ref["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
-                        m_info_ref["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
-                        m_info_ref["divergence_regime"] = whale.get("divergence_regime")
+                m_info_ref = _load_symbol_microstructure(self.cache_dir, msym, _read_json)
+                if m_info_ref:
                     snapshot.microstructure[msym] = m_info_ref
 
         # 8A. Symmetric cross-venue & sibling symbol synchronization (Binance <-> Kraken <-> Hyperliquid <-> T212/xStocks)
@@ -1471,7 +1328,7 @@ class AutonomousAIReconciler:
             (
                 ser
                 for s_key, ser in series_24h_by_sym.items()
-                if normalize_cache_base_asset(s_key) in ("BTC", "XBT") and ser
+                if canonical_base_asset(s_key) == "BTC" and ser
             ),
             None,
         )
@@ -1483,7 +1340,7 @@ class AutonomousAIReconciler:
                 btc_series_24h = btc_fb
         if btc_series_24h:
             for sym, alt_ser in series_24h_by_sym.items():
-                if sym.endswith(("_EQ", "_US_EQ")) or normalize_cache_base_asset(sym) in ("BTC", "XBT"):
+                if sym.endswith(("_EQ", "_US_EQ")) or canonical_base_asset(sym) == "BTC":
                     continue
                 cross_m = compute_cross_btc_metrics(alt_ser, btc_series_24h)
                 if cross_m and sym in snapshot.prices_and_trends:
@@ -1517,33 +1374,9 @@ class AutonomousAIReconciler:
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
-                qty = _parse_finite_float(st_data.get("qty"), 0.0)
-                cost = _parse_finite_float(st_data.get("cost"), 0.0)
-                avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
-                px_f = 0.0
-                for cand in cache_symbol_variants(pair_name):
-                    cand_px = _parse_finite_float(
-                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
-                    )
-                    if cand_px > 0:
-                        px_f = cand_px
-                        break
-                dd_pct = (
-                    round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
-                    if avg_cost and px_f > 0
-                    else None
+                kraken_cycles[pair_name] = _parse_venue_cycle_state(
+                    st_data, pair_name, snapshot.prices_and_trends, avg_decimals=6
                 )
-                kraken_cycles[pair_name] = {
-                    "qty": round(qty, 6),
-                    "cost_usd": round(cost, 2),
-                    "avg_cost_px": avg_cost,
-                    "entry_price": st_data.get("entry_price"),
-                    "last_buy_price": st_data.get("last_buy_price"),
-                    "last_sell_price": st_data.get("last_sell_price"),
-                    "last_exit_kind": st_data.get("last_exit_kind"),
-                    "dca_buys": st_data.get("dca_buys"),
-                    "dd_pct": dd_pct,
-                }
         if kraken_cycles:
             snapshot.portfolio_summary["kraken_cycles"] = kraken_cycles
 
@@ -1572,64 +1405,22 @@ class AutonomousAIReconciler:
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
-                qty = _parse_finite_float(st_data.get("qty"), 0.0)
-                cost = _parse_finite_float(st_data.get("cost"), 0.0)
-                avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
-                px_f = 0.0
-                for cand in cache_symbol_variants(pair_name):
-                    cand_px = _parse_finite_float(
-                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
-                    )
-                    if cand_px > 0:
-                        px_f = cand_px
-                        break
-                dd_pct = (
-                    round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
-                    if avg_cost and px_f > 0
-                    else None
+                hyperliquid_cycles[pair_name] = _parse_venue_cycle_state(
+                    st_data, pair_name, snapshot.prices_and_trends, avg_decimals=6
                 )
-                last_buy_px = (
-                    st_data.get("last_buy_price")
-                    if st_data.get("last_buy_price") is not None
-                    else st_data.get("last_open_price")
-                )
-                cyc_entry: Dict[str, Any] = {
-                    "qty": round(qty, 6),
-                    "cost_usd": round(cost, 2),
-                    "avg_cost_px": avg_cost,
-                    "entry_price": st_data.get("entry_price"),
-                    "last_buy_price": last_buy_px,
-                    "last_sell_price": st_data.get("last_sell_price"),
-                    "last_exit_kind": st_data.get("last_exit_kind"),
-                    "dca_buys": st_data.get("dca_buys"),
-                    "dd_pct": dd_pct,
-                    "pos_peak": st_data.get("pos_peak") or st_data.get("trail_peak"),
-                }
-                raw_orders = st_data.get("orders")
-                if isinstance(raw_orders, list) and raw_orders:
-                    close_orders = [
-                        {
-                            "side": o.get("side"),
-                            "px": o.get("px") or o.get("price") or o.get("limit"),
-                            "sz": o.get("sz") or o.get("qty"),
-                            "role": o.get("role") or o.get("kind"),
-                        }
-                        for o in raw_orders
-                        if isinstance(o, dict)
-                    ]
-                    if close_orders:
-                        cyc_entry["resting_orders"] = close_orders
-                hyperliquid_cycles[pair_name] = cyc_entry
+            hl_sig = _read_json(os.path.join(hl_dir, "signal.json"))
+            if isinstance(hl_sig, dict) and hl_sig:
+                snapshot.portfolio_summary["hyperliquid_signal"] = hl_sig
         if hyperliquid_cycles:
             snapshot.portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
 
-        t212_cycles: Dict[str, Any] = {}
+        all_t212_cycles: Dict[str, Any] = {}
         t212_dir = os.path.join(self.workspace_dir, "212trading")
         has_active_t212 = any(
             str(getattr(inst, "provider_name", "")).lower() == "t212"
             for inst in inst_by_sym.values()
         )
-        if has_active_t212 and os.path.isdir(t212_dir):
+        if os.path.isdir(t212_dir):
             for st_path in sorted(glob.glob(os.path.join(t212_dir, ".state_*.json"))):
                 fname = os.path.basename(st_path)
                 if fname.startswith(".."):
@@ -1640,35 +1431,10 @@ class AutonomousAIReconciler:
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
-                qty = _parse_finite_float(st_data.get("qty"), 0.0)
-                raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
-                cost = _parse_finite_float(raw_cost, 0.0)
-                avg_cost = round(cost / qty, 4) if qty > 1e-12 and cost > 0 else None
-                px_f = 0.0
-                for cand in cache_symbol_variants(ticker):
-                    cand_px = _parse_finite_float(
-                        (snapshot.prices_and_trends.get(cand) or {}).get("price"), 0.0
-                    )
-                    if cand_px > 0:
-                        px_f = cand_px
-                        break
-                dd_pct = (
-                    round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
-                    if avg_cost and px_f > 0
-                    else None
+                all_t212_cycles[ticker] = _parse_venue_cycle_state(
+                    st_data, ticker, snapshot.prices_and_trends, avg_decimals=4
                 )
-                t212_cycles[ticker] = {
-                    "qty": round(qty, 6),
-                    "cost_usd": round(cost, 2),
-                    "avg_cost_px": avg_cost,
-                    "entry_price": st_data.get("entry_price"),
-                    "last_buy_price": st_data.get("last_buy_price"),
-                    "last_sell_price": st_data.get("last_sell_price"),
-                    "last_exit_kind": st_data.get("last_exit_kind"),
-                    "dca_buys": st_data.get("dca_buys"),
-                    "dd_pct": dd_pct,
-                    "pos_peak": st_data.get("pos_peak") or st_data.get("trail_peak"),
-                }
+        t212_cycles = dict(all_t212_cycles) if has_active_t212 else {}
         if t212_cycles:
             snapshot.portfolio_summary["t212_cycles"] = t212_cycles
 
@@ -1741,27 +1507,20 @@ class AutonomousAIReconciler:
                     xst_summary["live_price"] = live_px
                     if alloc_px > 0:
                         xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
-                sib_cyc = t212_cycles.get(t212_sib)
-                if not isinstance(sib_cyc, dict):
-                    sib_st_path = os.path.join(t212_dir, f".state_{t212_sib}.json")
-                    sib_st = _read_json(sib_st_path) if os.path.exists(sib_st_path) else None
-                    if isinstance(sib_st, dict):
-                        s_qty = _parse_finite_float(sib_st.get("qty"), 0.0)
-                        s_cost = _parse_finite_float(
-                            sib_st.get("cost_usd") if sib_st.get("cost_usd") is not None else sib_st.get("cost"),
-                            0.0,
-                        )
-                        sib_cyc = {
-                            "qty": round(s_qty, 6),
-                            "cost_usd": round(s_cost, 2),
-                            "avg_cost_px": round(s_cost / s_qty, 4) if s_qty > 1e-12 and s_cost > 0 else None,
-                            "entry_price": sib_st.get("entry_price"),
-                            "last_buy_price": sib_st.get("last_buy_price"),
-                            "dca_buys": sib_st.get("dca_buys"),
-                        }
+                sib_cyc = all_t212_cycles.get(t212_sib)
                 if isinstance(sib_cyc, dict):
                     xst_summary["t212_sibling_cycle"] = sib_cyc
                 snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
+
+        # 9B-CrossMarket. Build cross-market synchronization, dispersion & Crypto <-> US Equities context before scope filtering
+        cross_market_ctx = _build_cross_market_context(
+            snapshot.prices_and_trends,
+            snapshot.microstructure,
+            series_24h_by_sym,
+            all_t212_cycles,
+        )
+        if cross_market_ctx:
+            snapshot.portfolio_summary["cross_market_context"] = cross_market_ctx
 
         # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid spot/perp equity summary)
         for l_dir in self.logs_dirs:
@@ -1955,6 +1714,7 @@ class AutonomousAIReconciler:
                 "total_value_usdc",
                 "kraken_cycles",
                 "hyperliquid_cycles",
+                "hyperliquid_signal",
                 "hyperliquid_readonly",
                 "recent_orders",
                 "monitortrades_active_state",
@@ -2246,7 +2006,7 @@ class AutonomousAIReconciler:
             btc_entry = next(
                 (
                     entry for k, entry in sensors.prices_and_trends.items()
-                    if isinstance(entry, dict) and normalize_cache_base_asset(k) in ("BTC", "XBT")
+                    if isinstance(entry, dict) and canonical_base_asset(k) == "BTC"
                 ),
                 None,
             )
@@ -2256,9 +2016,7 @@ class AutonomousAIReconciler:
             for s_k, s_v in sorted(sensors.prices_and_trends.items()):
                 if not isinstance(s_v, dict):
                     continue
-                b_raw = normalize_cache_base_asset(s_k)
-                b_canon = "BTC" if b_raw in ("BTC", "XBT") else b_raw
-                grouped_3a.setdefault(b_canon, []).append((s_k, s_v))
+                grouped_3a.setdefault(canonical_base_asset(s_k), []).append((s_k, s_v))
 
             for _, sym_group in sorted(grouped_3a.items(), key=lambda kv: kv[1][0][0]):
                 sym_group.sort(
@@ -2346,9 +2104,8 @@ class AutonomousAIReconciler:
                             pos15_sfx = f" pos_15m={pinfo['pos_15m_pct']}%" if pinfo.get("pos_15m_pct") is not None else ""
                             tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
                         extras.append(tape_str)
-                base_asset = normalize_cache_base_asset(sym)
                 is_crypto = not sym.endswith(("_EQ", "_US_EQ"))
-                if is_crypto and base_asset not in ("BTC", "XBT"):
+                if is_crypto and canonical_base_asset(sym) != "BTC":
                     vs_btc_parts: List[str] = []
                     if btc_entry:
                         for h_lbl, h_k in (
@@ -2459,16 +2216,14 @@ class AutonomousAIReconciler:
             for sym, minfo in sorted_3b:
                 if not isinstance(minfo, dict):
                     continue
-                b_raw_3b = normalize_cache_base_asset(sym)
-                b_canon_3b = "BTC" if b_raw_3b in ("BTC", "XBT") else b_raw_3b
+                b_canon_3b = canonical_base_asset(sym)
                 if b_canon_3b in seen_3b_bases:
                     continue
                 seen_3b_bases.add(b_canon_3b)
                 sib_3b = [
                     other_s
                     for other_s in sensors.microstructure
-                    if other_s != sym
-                    and ("BTC" if normalize_cache_base_asset(other_s) in ("BTC", "XBT") else normalize_cache_base_asset(other_s)) == b_canon_3b
+                    if other_s != sym and canonical_base_asset(other_s) == b_canon_3b
                 ]
                 sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
                 cur_px = _parse_finite_float((sensors.prices_and_trends.get(sym) or {}).get("price"), 0.0)
@@ -2549,35 +2304,41 @@ class AutonomousAIReconciler:
             if ps.get("kraken_cycles"):
                 context_items.append("  * Kraken Active Cycle Cost & Drawdown Anchors:")
                 for k_sym, kc in sorted(ps["kraken_cycles"].items()):
-                    context_items.append(
-                        f"    - [kraken] {k_sym}: qty={kc.get('qty')}, cost=${kc.get('cost_usd')}, "
-                        f"avg_cost={kc.get('avg_cost_px')}, entry_px={kc.get('entry_price')}, "
-                        f"last_buy={kc.get('last_buy_price')}, last_sell={kc.get('last_sell_price')} "
-                        f"({kc.get('last_exit_kind')}), dca_buys={kc.get('dca_buys')}, dd={kc.get('dd_pct')}%"
-                    )
+                    context_items.append(_format_venue_cycle_line("kraken", k_sym, kc))
             if ps.get("hyperliquid_cycles"):
                 context_items.append("  * Hyperliquid Active Cycle Cost & Drawdown Anchors:")
                 for h_sym, hc in sorted(ps["hyperliquid_cycles"].items()):
-                    context_items.append(
-                        f"    - [hyperliquid] {h_sym}: qty={hc.get('qty')}, cost=${hc.get('cost_usd')}, "
-                        f"avg_cost={hc.get('avg_cost_px')}, entry_px={hc.get('entry_price')}, "
-                        f"last_buy={hc.get('last_buy_price')}, last_sell={hc.get('last_sell_price')} "
-                        f"({hc.get('last_exit_kind')}), dca_buys={hc.get('dca_buys')}, dd={hc.get('dd_pct')}%"
-                    )
+                    context_items.append(_format_venue_cycle_line("hyperliquid", h_sym, hc))
+            if ps.get("hyperliquid_signal"):
+                context_items.append(f"  * Hyperliquid Bot Signal Telemetry (hyperliquid/signal.json): {ps['hyperliquid_signal']}")
             if ps.get("t212_cycles"):
                 context_items.append("  * Trading212 Active Cycle Cost & Drawdown Anchors:")
                 for t_sym, tc in sorted(ps["t212_cycles"].items()):
-                    context_items.append(
-                        f"    - [t212] {t_sym}: qty={tc.get('qty')}, cost=${tc.get('cost_usd')}, "
-                        f"avg_cost={tc.get('avg_cost_px')}, entry_px={tc.get('entry_price')}, "
-                        f"last_buy={tc.get('last_buy_price')}, last_sell={tc.get('last_sell_price')} "
-                        f"({tc.get('last_exit_kind')}), dca_buys={tc.get('dca_buys')}, dd={tc.get('dd_pct')}%"
-                    )
+                    context_items.append(_format_venue_cycle_line("t212", t_sym, tc))
             if ps.get("kraken_xstocks"):
                 xs = ps["kraken_xstocks"]
                 context_items.append(
                     f"  * Kraken xStocks Pre-IPO Holdings (READ-ONLY on Kraken — NOT API-tradable; cross-venue SpaceX exposure for Trading212 {xs.get('t212_sibling')}): {xs}"
                 )
+            if ps.get("cross_market_context"):
+                cmc = ps["cross_market_context"]
+                if isinstance(cmc, dict):
+                    if cmc.get("market_sync_pattern"):
+                        context_items.append(
+                            f"  * Multi-Asset Synchronization, Leader/Laggard & Dispersion Pattern: {cmc['market_sync_pattern']}"
+                        )
+                    if cmc.get("crypto_bellwethers") and getattr(spec, "asset_scope", "all") == "equities":
+                        context_items.append(
+                            f"  * Cross-Market 24/7 Crypto & AI Bellwethers (BTC, TAO decentralized AI proxy for NVDA_US_EQ, HYPE, ADA): {cmc['crypto_bellwethers']}"
+                        )
+                    if cmc.get("equity_bellwethers") and getattr(spec, "asset_scope", "all") != "equities":
+                        context_items.append(
+                            f"  * Cross-Market US Equities & Tech/AI Bellwethers (Trading212 NVDA_US_EQ, SPCX_US_EQ, RGNT_US_EQ): {cmc['equity_bellwethers']}"
+                        )
+                    if cmc.get("cross_asset_correlations_24h"):
+                        context_items.append(
+                            f"  * Realized 24h Cross-Asset Correlation, Beta & Spread Matrix (Equities <-> Crypto & AI Proxies): {cmc['cross_asset_correlations_24h']}"
+                        )
             if ps.get("hyperliquid_readonly"):
                 context_items.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
             for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):

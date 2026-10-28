@@ -1744,10 +1744,16 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     3. Kraken xStock holdings (SPCXx.T) and allocation parameters are harvested into kraken_xstocks
        and exposed in both crypto and equities (t212) scopes, linked with SPCX_US_EQ.
     """
-    from cachepaths import cache_symbol_variants, normalize_cache_base_asset
+    from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_cache_base_asset
     from orchestratorTrade.autonomous_intent_gateway import _discover_kraken_cache_pairs
 
     assert normalize_cache_base_asset("SPCXx.T") == "SPCX"
+    assert canonical_base_asset("XBTUSD") == "BTC"
+    assert canonical_base_asset("XXBTZUSD") == "BTC"
+    assert canonical_base_asset("BTCUSDC") == "BTC"
+    assert canonical_base_asset("HYPEUSDC") == "HYPE"
+    assert canonical_base_asset("SPCXx.T") == "SPCX"
+    assert canonical_base_asset("NVDA_US_EQ") == "NVDA"
     assert "SPCX_US_EQ" in cache_symbol_variants("SPCXUSD")
     assert "SPCXUSD" in cache_symbol_variants("SPCX_US_EQ")
 
@@ -1787,8 +1793,14 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
             "entry_price": 59.052968,
             "dca_buys": 0,
             "last_open_price": 59.052968,
+            "realized_pnl": 18.45,
+            "tp_sold": [1, 2],
             "orders": [{"oid": 359202348244, "side": "sell", "px": 59.347, "sz": 1.66, "role": "close"}],
         }),
+        encoding="utf-8",
+    )
+    (hl_dir / "signal.json").write_text(
+        json.dumps({"regime": "BULLISH_FLOW", "score": 0.78}),
         encoding="utf-8",
     )
     (hl_dir / ".state_dn_HYPE.json").write_text(
@@ -1805,10 +1817,45 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
         }),
         encoding="utf-8",
     )
-    (cache_dir / "cache_current_price.json").write_text(
-        json.dumps({"items": {"HYPEUSD": 62.0, "HYPEUSDC": 62.062, "SPCX_US_EQ": 170.1}}),
+    (t212_dir / ".state_NVDA_US_EQ.json").write_text(
+        json.dumps({
+            "qty": 3.0,
+            "cost_usd": 360.0,
+            "entry_price": 120.0,
+            "last_buy_price": 120.0,
+            "dca_buys": 1,
+        }),
         encoding="utf-8",
     )
+    now_ms = int(time.time() * 1000)
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({
+            "items": {
+                "BTCUSDC": 85000.0,
+                "TAOUSDC": 340.0,
+                "HYPEUSD": 62.0,
+                "HYPEUSDC": 62.062,
+                "SPCX_US_EQ": 170.1,
+                "NVDA_US_EQ": 132.0,
+            }
+        }),
+        encoding="utf-8",
+    )
+    for sym_s, base_px, pct_step in (
+        ("BTCUSDC", 82000.0, 0.0015),
+        ("TAOUSDC", 310.0, 0.0030),
+        ("HYPEUSDC", 58.0, 0.0025),
+        ("NVDA_US_EQ", 125.0, 0.0020),
+        ("SPCX_US_EQ", 162.0, 0.0010),
+    ):
+        pts = [
+            [now_ms - (24 - i) * 3_600_000, round(base_px * (1.0 + i * pct_step), 4)]
+            for i in range(25)
+        ]
+        (cache_dir / f"cache_24_price_{sym_s}.json").write_text(
+            json.dumps({"items": {sym_s: pts}}),
+            encoding="utf-8",
+        )
     (cache_dir / "orderbook_depth_HYPEUSD.json").write_text(
         json.dumps({"imbalance_ratio": 0.61, "bid_depth_usd": 120000, "ask_depth_usd": 78000}),
         encoding="utf-8",
@@ -1827,7 +1874,10 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "DN_HYPEUSDC" not in hl_cyc
     assert hl_cyc["HYPEUSDC"]["qty"] == 1.66
     assert hl_cyc["HYPEUSDC"]["last_buy_price"] == 59.052968
+    assert hl_cyc["HYPEUSDC"]["realized_pnl_usd"] == 18.45
+    assert hl_cyc["HYPEUSDC"]["tp_sold_levels"] == [1, 2]
     assert hl_cyc["HYPEUSDC"]["resting_orders"][0]["px"] == 59.347
+    assert snap_crypto.portfolio_summary["hyperliquid_signal"]["regime"] == "BULLISH_FLOW"
 
     # Reference microstructure for ADAUSD is harvested even when ADAUSD is not traded
     assert snap_crypto.microstructure["ADAUSD"]["ob_imbalance"] == 0.44
@@ -1842,11 +1892,24 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert xs_crypto["pnl_vs_alloc_pct"] == 20.0
     assert xs_crypto["t212_sibling_cycle"]["qty"] == 2.442965
 
+    # Verify cross_market_context is populated for both crypto and equities scopes
+    cmc_crypto = snap_crypto.portfolio_summary.get("cross_market_context", {})
+    assert "market_sync_pattern" in cmc_crypto
+    assert cmc_crypto["market_sync_pattern"]["advancing_24h_ratio"] == 1.0
+    assert "NVDA_US_EQ" in cmc_crypto.get("equity_bellwethers", {})
+    assert cmc_crypto["equity_bellwethers"]["NVDA_US_EQ"]["t212_cycle"]["qty"] == 3.0
+    assert "NVDA_US_EQ_vs_BTC" in cmc_crypto.get("cross_asset_correlations_24h", {})
+    assert "NVDA_US_EQ_vs_TAO" in cmc_crypto.get("cross_asset_correlations_24h", {})
+
     snap_eq = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="equities")
     assert "kraken_xstocks" in snap_eq.portfolio_summary
     assert snap_eq.portfolio_summary["kraken_xstocks"]["holdings"]["SPCXx.T"] == 15.74655
+    cmc_eq = snap_eq.portfolio_summary.get("cross_market_context", {})
+    assert "BTC" in cmc_eq.get("crypto_bellwethers", {})
+    assert "TAO" in cmc_eq.get("crypto_bellwethers", {})
+    assert "NVDA_US_EQ_vs_TAO" in cmc_eq.get("cross_asset_correlations_24h", {})
 
-    # Verify prompt deduplicates HYPEUSDC + HYPEUSD in Sections 3 and 3B while showing sibling venue price
+    # Verify prompt deduplicates HYPEUSDC + HYPEUSD in Sections 3 and 3B while showing sibling venue price & cross-market context
     captured_prompt = {}
     reconciler.gemini_auditor = GeminiClient(
         custom_runner=lambda prompt, model, timeout: (
@@ -1859,6 +1922,14 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "\n  * HYPEUSD: Price=" not in u_prompt
     assert "* HYPEUSDC (HYPEUSD): ob_imbalance=0.61" in u_prompt
     assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
+    assert "realized_pnl=$18.45, tp_sold=[1, 2]" in u_prompt
     assert "READ-ONLY on Kraken — NOT API-tradable" in u_prompt
+    assert "Cross-Market US Equities & Tech/AI Bellwethers" in u_prompt
+    assert "Realized 24h Cross-Asset Correlation, Beta & Spread Matrix" in u_prompt
+
+    reconciler.synthesize_and_diagnose(snap_eq, LogEventSummary(0, 0, 0), topic_key="auto_sharetrade_executor")
+    eq_prompt = captured_prompt["u"]
+    assert "Cross-Market 24/7 Crypto & AI Bellwethers" in eq_prompt
+    assert "NVDA_US_EQ_vs_TAO" in eq_prompt
 
 
