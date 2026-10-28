@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 from offline.backtests.comparison import (
     dominates as _dominates,
     format_comparison_markdown,
@@ -91,16 +91,7 @@ def default_candidates() -> list[Candidate]:
 
 
 _as_bool = _parse_bool_flag
-
-
-def _safe_f(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        vf = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return vf if math.isfinite(vf) else default
+_safe_f = safe_float
 
 
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:

@@ -4,19 +4,15 @@ import json
 import math
 import os
 import statistics as st
+import sys
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from botcore import safe_float
 
-
-def _safe_f(val, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+_safe_f = safe_float
 
 
 def _load_jsonl_dicts(path: str) -> list[dict]:

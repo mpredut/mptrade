@@ -13,19 +13,15 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
+from botcore import safe_float
+
 
 def _finite_float(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
+    return safe_float(value, default=None)
 
 
 def _safe_tolerance(value: Any, default: float = 1e-10) -> float:
-    parsed = _finite_float(value)
+    parsed = safe_float(value, default=None)
     return parsed if (parsed is not None and parsed >= 0.0) else default
 
 

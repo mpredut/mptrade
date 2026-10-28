@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import deque
 import math
 from typing import Any, Literal
-from botcore import safe_float as _safe_float
+from botcore import safe_float as _safe_float, safe_int as _safe_int
 from intelligence.internal.triggers.trigger_event import (
     TriggerEvent,
     TriggerAction,
@@ -23,13 +23,8 @@ from intelligence.internal.triggers.trigger_event import (
 
 
 def _safe_pos_int(val: Any, default: int) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return max(1, int(f)) if (math.isfinite(f) and f >= 1.0) else default
-    except (TypeError, ValueError):
-        return default
+    i = _safe_int(val, default=None)
+    return max(1, i) if (i is not None and i >= 1) else default
 
 
 class MeanReversionTrigger:

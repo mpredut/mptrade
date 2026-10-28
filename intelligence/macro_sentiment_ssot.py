@@ -45,7 +45,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
-from botcore import _parse_bool_flag, parse_dotenv, safe_float
+from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_int
 from cachepaths import cache_path, resolve_cachedb_filepath
 
 logger = logging.getLogger(__name__)
@@ -69,17 +69,6 @@ def safe_nonneg_ts(val: Any, default: float = 0.0) -> float:
     """Safely coerce ``val`` to a non-negative finite float (>= 0.0)."""
     f = safe_float(val, -1.0)
     return f if f >= 0.0 else default
-
-
-def safe_int(val: Any, default: int = 0) -> int:
-    """Safely coerce ``val`` to finite int, rejecting booleans."""
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return int(f) if math.isfinite(f) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def clean_scale(

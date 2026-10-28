@@ -35,7 +35,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env
+from botcore import _parse_bool_flag, float_env, safe_float
 from cachepaths import cache_path
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
@@ -51,12 +51,13 @@ SBS = 12 * 24 * 3600 + 60   # The same default as live (MT_GUARD_WINDOW_DAYS=12)
 FEE_PCT = 0.1
 
 
+def _safe_nonneg_f(val, default: float = 0.0) -> float:
+    f = safe_float(val, default=None)
+    return f if (f is not None and f >= 0.0) else default
+
+
 def _live_mt_params(section):
-    """Read the CURRENT mt.* parameters from a section of instruments.conf —
-    NOT a hardcoded copy (found today, 23 Jul: SYMBOLS was a frozen copy from
-    from before mt.buy_budget/mt.max_budget were added — scheduled_pilot.py tested
-    without that protection, producing a false catastrophic result of -$200k on a
-    "buy again" with qty=1 whole BTC, which was not modelled correctly because of it)."""
+    """Read the CURRENT mt.* parameters from a section of instruments.conf."""
     import configparser
     cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
     cp.read(os.path.join(ROOT, "instruments.conf"), encoding="utf-8")
@@ -233,19 +234,8 @@ def run_symbol(
     inst = Instrument(name=symbol, symbol=symbol, provider="replay",
                       base=base, quote="USDC", params=dict(params), api=api)
 
-    import math
-
-    def _safe_nonneg_f(val, default: float) -> float:
-        if val is None or isinstance(val, bool):
-            return default
-        try:
-            f = float(val)
-            return f if (math.isfinite(f) and f >= 0.0) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
-
-    maxage_days = _safe_nonneg_f(params.get("mt.maxage_days"), 7.0)
-    if maxage_days <= 0.0:
+    maxage_days = safe_float(params.get("mt.maxage_days"), default=7.0)
+    if maxage_days is None or maxage_days <= 0.0:
         maxage_days = 7.0
     maxage_s = max(60, int(maxage_days * 24 * 3600))
 

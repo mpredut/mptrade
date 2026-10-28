@@ -461,10 +461,7 @@ def collect_pretrade_telemetry(
         from cachepaths import get_cachedb_dir
         cachedb_dir = get_cachedb_dir()
     telemetry: Dict[str, Any] = {}
-
-    def _safe_opt_float(val: Any) -> Optional[float]:
-        vf = safe_float(val, float("nan"))
-        return vf if math.isfinite(vf) else None
+    _safe_opt_float = lambda val: safe_float(val, None)
 
     # 1. Spot Microstructure: Orderbook Depth & Walls (Pillar 2)
     try:

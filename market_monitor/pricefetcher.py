@@ -18,7 +18,7 @@ import log
 import utils as u
 import symbols as sym
 from binance_api import bapi as api
-from botcore import required_env
+from botcore import required_env, safe_int
 
 # Import the base classes from cacheManager
 from cacheManager import CacheManagerInterface, CacheFactory, _should_poll_for_manager
@@ -1064,15 +1064,8 @@ CachePriceMulti = CacheAllPriceFetcherManager
 PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
 
 def _safe_max_symbols(val, default: int = MAX_MONITORED_SYMBOLS) -> int:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError):
-        return default
-    if not math.isfinite(f) or int(f) <= 0:
-        return default
-    return int(f)
+    i = safe_int(val, default=None)
+    return i if (i is not None and i > 0) else default
 
 
 def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbols: Optional[int] = None):

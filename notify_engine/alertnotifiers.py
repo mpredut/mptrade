@@ -18,7 +18,7 @@ from typing import Any, Optional
 # Import your modules
 import log
 from lock import FileLock
-from botcore import _parse_bool_flag, float_env, int_env, safe_float as _safe_float
+from botcore import _parse_bool_flag, float_env, int_env, safe_float as _safe_float, safe_int as _safe_int
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -64,16 +64,10 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def _safe_pos_int(val: Any, default: int = 1) -> int:
-    if val is None or isinstance(val, bool):
+    f = _safe_float(val, default=None)
+    if f is None or not f.is_integer() or f < 1:
         return default
-    try:
-        f = float(val)
-        if not math.isfinite(f) or not f.is_integer():
-            return default
-        i = int(f)
-        return i if i >= 1 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+    return int(f)
 
 
 _as_bool_flag = _parse_bool_flag

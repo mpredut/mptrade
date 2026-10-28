@@ -21,7 +21,7 @@ from bisect import insort, bisect_left
 import numpy as np
 from scipy.stats import linregress
 
-from botcore import float_env
+from botcore import float_env, safe_float
 import utils as u
 
 # ── Window constants ──────────────────────────────────────────────────────────
@@ -299,18 +299,12 @@ class PriceTrendAnalyzer:
 
 
 def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
-    if sample_rate_sec is None or isinstance(sample_rate_sec, bool):
+    sr = safe_float(sample_rate_sec, default=None)
+    rs = safe_float(recent_sec, default=None)
+    if sr is None or sr <= 0 or rs is None:
         return 2
-    try:
-        sr = float(sample_rate_sec)
-        if not math.isfinite(sr) or sr <= 0:
-            return 2
-        ratio = float(recent_sec) / sr
-        if not math.isfinite(ratio):
-            return 2
-        return max(2, int(ratio))
-    except (TypeError, ValueError, OverflowError):
-        return 2
+    ratio = rs / sr
+    return max(2, int(ratio)) if math.isfinite(ratio) else 2
 
 
 def instant_trend_from_prices(

@@ -15,7 +15,7 @@ import os
 import re
 from typing import Any, Dict, NamedTuple, Optional, Set
 
-from botcore import _parse_bool_flag, required_int_env, safe_int as _safe_int
+from botcore import _parse_bool_flag, required_int_env, safe_float
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
 from orchestratorOS.agy.summary_store import (
     get_thread_step_count,
@@ -238,6 +238,13 @@ def format_topic_history_prefix(
     lines = ["[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
     lines += [f"- [{h.get('utc', '')}] {h.get('summary', '')}" for h in history]
     return "\n".join(lines) + "\n\n"
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    f = safe_float(val, default=None)
+    if f is None:
+        return default
+    return int(round(f))
 
 
 def prepare_topic_session(

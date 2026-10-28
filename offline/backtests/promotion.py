@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 
+from botcore import safe_float, safe_int
+
 
 @dataclass(frozen=True)
 class PromotionThresholds:
@@ -51,17 +53,8 @@ def _identity(report: dict) -> tuple:
 
 def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
     """P(X >= wins), X~Binomial(wins+losses, 0.5), ignoring ties."""
-    def _safe_nonneg_int(val) -> int:
-        if val is None or isinstance(val, bool):
-            return 0
-        try:
-            f = float(val)
-            return max(0, int(f)) if math.isfinite(f) else 0
-        except (TypeError, ValueError, OverflowError):
-            return 0
-
-    w = _safe_nonneg_int(wins)
-    l = _safe_nonneg_int(losses)
+    w = max(0, safe_int(wins, 0))
+    l = max(0, safe_int(losses, 0))
     active = w + l
     if active == 0:
         return 1.0
@@ -70,13 +63,7 @@ def _one_sided_sign_pvalue(wins: int, losses: int) -> float:
 
 
 def _finite(value) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if math.isfinite(parsed) else None
+    return safe_float(value, default=None)
 
 
 def _diff(left, right) -> float:

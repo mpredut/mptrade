@@ -51,7 +51,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env
+from botcore import _parse_bool_flag, float_env, safe_float
 from cachepaths import cache_path
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
@@ -62,14 +62,7 @@ def _env_float(name: str, default: float) -> float:
     return default if val is None else val
 
 
-def _safe_f(val, default: float | None = 0.0) -> float | None:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-        return res if math.isfinite(res) else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+_safe_f = safe_float
 
 
 INSTRUMENTS_CONF = os.path.join(ROOT, "instruments.conf")

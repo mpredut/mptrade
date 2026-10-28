@@ -13,7 +13,7 @@ from collections import defaultdict
 # Repository integrations.
 import log
 import utils as u
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 
 # ============================================
 # Global configuration
@@ -43,28 +43,14 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 
 
 _as_bool_flag = _parse_bool_flag
+_safe_num = safe_float
 
 
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
-    if days_back is None or isinstance(days_back, bool):
-        return float(default)
-    try:
-        d = float(days_back)
-    except (TypeError, ValueError, OverflowError):
-        return float(default)
-    if not math.isfinite(d) or d <= 0:
+    d = safe_float(days_back, default=None)
+    if d is None or d <= 0:
         return float(default)
     return min(d, 3650.0)
-
-
-def _safe_num(val, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return f if math.isfinite(f) else default
 
 
 def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:

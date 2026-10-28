@@ -32,6 +32,7 @@ from botcore import (
     required_env,
     required_float_env,
     required_int_env,
+    safe_float,
 )
 from cachepaths import cache_path
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1406,16 +1407,10 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
 
 def _safe_tier_attempt(attempts_map, key):
     raw_val = attempts_map.get(key) if isinstance(attempts_map, dict) else None
-    if raw_val is None or isinstance(raw_val, bool):
+    f = safe_float(raw_val, default=None)
+    if f is None or not f.is_integer():
         return 1
-    try:
-        val_f = float(raw_val)
-        if not math.isfinite(val_f) or not val_f.is_integer():
-            return 1
-        val = int(val_f)
-    except (TypeError, ValueError, OverflowError):
-        return 1
-    return max(0, val) + 1
+    return max(0, int(f)) + 1
 
 
 def _submit_sell_tier(symbol, current_price, tier, state):

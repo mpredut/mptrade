@@ -36,17 +36,12 @@ import math
 from state_io import load_json_state, save_json_state
 
 
+from botcore import _parse_bool_flag, safe_float
+
+
 def _safe_nonneg_float(val, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) and f >= 0.0 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-from botcore import _parse_bool_flag
+    f = safe_float(val, default=None)
+    return f if (f is not None and f >= 0.0) else default
 
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
