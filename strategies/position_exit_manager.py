@@ -1046,6 +1046,38 @@ class PositionExitManager:
             metadata={"priority": 3, "loss": price_decrease, "sl_timer_expired": sl_episode_expired},
         )
 
+    def _check_hard_tp_spike(
+        self,
+        snapshot: PositionSnapshot,
+        now: float,
+    ) -> Optional[ExitDecision]:
+        if not (
+            self.config.hard_tp_enabled
+            and 0 < self.config.hard_tp_frac <= 1.0
+            and self.config.hard_tp_pct > 0
+            and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
+        ):
+            return None
+        symbol = snapshot.symbol
+        last_hard = safe_pos_float(self.hard_tp_last.get(symbol), 0.0)
+        if last_hard > now:
+            last_hard = 0.0
+            self.hard_tp_last.pop(symbol, None)
+        if last_hard <= 0 or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
+            reason = (
+                f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
+                f"selling {self.config.hard_tp_frac*100:.0f}%)"
+            )
+            return ExitDecision(
+                action=ExitAction.PARTIAL_SELL,
+                should_exit=True,
+                reason=reason,
+                forced=True,
+                sell_fraction=self.config.hard_tp_frac,
+                metadata={"priority": 0, "gain": snapshot.gain_ratio},
+            )
+        return None
+
     def evaluate_take_profit(
         self,
         snapshot: PositionSnapshot,
@@ -1633,11 +1665,11 @@ class PositionExitManager:
         current_price = float(snapshot.current_price)
         buy_price = float(snapshot.avg_buy_price)
 
-        # Check Hard TP (Spike Exit) first
-        if self.config.hard_tp_enabled and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct):
-            tp_spike = self.evaluate_take_profit(snapshot, custom_threshold=tp_threshold)
-            if tp_spike.action == ExitAction.PARTIAL_SELL:
-                return tp_spike
+        # Check Hard TP (Spike Exit) first without mutating tp_ride_state if on cooldown
+        tp_spike = self._check_hard_tp_spike(snapshot, _resolve_now_s(snapshot.current_time_s))
+        if tp_spike is not None:
+            _clear_smart_sl(snapshot.symbol, snapshot.provider)
+            return tp_spike
 
         # Check Stop-Loss (unless an active MDHTP profit ride is in progress, in which
         # case evaluate_take_profit must fire mdhtp_profit_floor_breached immediately)

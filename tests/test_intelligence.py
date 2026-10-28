@@ -773,6 +773,36 @@ def test_survival_metrics_returns_gaussian_horizon_days_and_respects_allow_netwo
         mock_est.assert_not_called()
 
 
+def test_position_exit_manager_evaluate_hard_tp_cooldown_does_not_double_initiate_ride():
+    from strategies.position_exit_manager import (
+        ExitAction,
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+    )
+
+    cfg = PositionExitConfig(
+        hard_tp_enabled=True,
+        hard_tp_pct=0.20,
+        hard_tp_frac=0.50,
+        hard_tp_cooldown_sec=3600.0,
+        gain_threshold=0.07,
+        tp_trend_ride_enabled=True,
+    )
+    mgr = PositionExitManager(config=cfg)
+    mgr.record_hard_tp("TAOUSDC", timestamp=1000.0)
+    snap = PositionSnapshot(
+        symbol="TAOUSDC",
+        current_price=125.0,
+        avg_buy_price=100.0,
+        current_time_s=1100.0,
+        trend_up=True,
+    )
+    dec = mgr.evaluate(snap)
+    assert dec.action == ExitAction.HOLD
+    assert dec.metadata.get("state") == "initiated"
+
+
 if __name__ == "__main__":
     unittest.main()
 

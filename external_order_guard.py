@@ -163,7 +163,7 @@ def check_external_order_guards(
                 taker_downscale_threshold=downscale_tk,
                 taker_downscaled_scale=downscaled_scale,
             )
-            w_dec = w_guard.check(symbol, order_side, snapshot=w_snap)
+            w_dec = w_guard.check(symbol, order_side, snapshot=w_snap, now=now_ts)
             w_scale = _clean_scale(getattr(w_dec, "suggested_scale", 1.0))
             if not w_dec.allowed or w_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[WHALE_GUARD_SHADOW]" if whale_mode == "shadow" else "[WHALE_GUARD_ENFORCE]"
@@ -196,7 +196,7 @@ def check_external_order_guards(
                 max_sell_imbalance=max_imb,
                 whale_wall_usd_limit=wall_limit,
             )
-            ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap)
+            ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap, now=now_ts)
             ob_scale = _clean_scale(getattr(ob_dec, "suggested_scale", 1.0))
             if not ob_dec.allowed or ob_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[ORDERBOOK_GUARD_SHADOW]" if ob_mode == "shadow" else "[ORDERBOOK_GUARD_ENFORCE]"
@@ -232,7 +232,7 @@ def check_external_order_guards(
                 crowding_policy=f_policy,
                 crowded_scale=f_scale,
             )
-            f_dec = f_guard.check(symbol, order_side, telemetry=f_snap)
+            f_dec = f_guard.check(symbol, order_side, telemetry=f_snap, now=now_ts)
             f_sval = _clean_scale(getattr(f_dec, "suggested_scale", 1.0))
             if not f_dec.allowed or f_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[FUNDING_GUARD_SHADOW]" if funding_mode == "shadow" else "[FUNDING_GUARD_ENFORCE]"
