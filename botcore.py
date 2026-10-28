@@ -226,6 +226,12 @@ def safe_float(val: object, default: float | None = 0.0) -> float | None:
         return default
 
 
+def safe_pos_float(val: object, default: float | None = 0.0) -> float | None:
+    """Safely coerce ``val`` to a strictly positive finite float, otherwise return ``default``."""
+    f = safe_float(val, default=None)
+    return f if (f is not None and f > 0.0) else default
+
+
 def safe_int(val: object, default: int | None = 0) -> int | None:
     """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
     f = safe_float(val, default=None)

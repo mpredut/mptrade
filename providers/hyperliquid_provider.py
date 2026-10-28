@@ -112,7 +112,10 @@ class HyperliquidProvider(MarketDataProvider):
     def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None):
         if isinstance(token, bool):
             raise ValueError(f"invalid Hyperliquid token: {token!r}")
-        self._token = str(token or "HYPE").strip().upper() or "HYPE"
+        raw_tok = str(token or "HYPE").strip().upper() or "HYPE"
+        if raw_tok != "USDC" and raw_tok.endswith("USDC") and len(raw_tok) > 4:
+            raw_tok = raw_tok[:-4].rstrip("/-_") or raw_tok
+        self._token = raw_tok
         self._live_enabled = live_enabled
         self._lock = threading.Lock()
         self._client = None          # HLClient read-only (lazy)
@@ -302,10 +305,11 @@ class HyperliquidProvider(MarketDataProvider):
             if not isinstance(balances, list):
                 return None
             target_coins = [asset_u]
-            if asset_u != "USDC" and asset_u.endswith("USDC") and len(asset_u) > 4:
-                stem = asset_u[:-4].rstrip("/-_")
-                if stem and stem not in target_coins:
-                    target_coins.append(stem)
+            if asset_u not in {"USDC", "USDT", "USD"}:
+                from cachepaths import canonical_base_asset
+                canon = canonical_base_asset(asset_u)
+                if canon and canon not in target_coins:
+                    target_coins.append(canon)
             for target_coin in target_coins:
                 for b in balances:
                     if not isinstance(b, dict):

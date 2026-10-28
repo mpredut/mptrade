@@ -225,8 +225,17 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     if not matches:
         return
     if quote:
-        pref = [(k, v) for k, v in matches
-                if (v.get("wsname") or k).upper().endswith("/" + quote.upper())]
+        q_up = str(quote).strip().upper()
+        q_cands = {q_up, f"Z{q_up}", f"X{q_up}"}
+        pref = [
+            (k, v)
+            for k, v in matches
+            if (
+                str(v.get("quote") or "").strip().upper() in q_cands
+                or (v.get("wsname") or k).upper().endswith("/" + q_up)
+                or str(v.get("altname") or k).strip().upper().endswith(q_up)
+            )
+        ]
         if pref:
             matches = pref
     k, v = matches[0]

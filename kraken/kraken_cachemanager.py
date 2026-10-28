@@ -107,18 +107,7 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 
 
 def _clean_cache_id(val: object) -> str | None:
-    if isinstance(val, (list, tuple)):
-        return None
-    cleaned = _clean_single_order_id(val)
-    if cleaned is None:
-        return None
-    try:
-        f = float(cleaned)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return cleaned
+    return _clean_single_order_id(val)
 
 
 def _normalize(txid, tr):
@@ -264,8 +253,10 @@ def _ledger_to_fills(ledger):
             continue
         if not (math.isfinite(ba) and math.isfinite(qa)) or ba == 0.0 or qa == 0.0:
             continue
-        raw_base = str(base["asset"]).upper()
-        if raw_base.endswith(".F"):
+        raw_base = str(base["asset"]).strip().upper()
+        if raw_base.endswith("X.T") and len(raw_base) > 3:
+            raw_base = raw_base[:-3]
+        elif raw_base.endswith((".F", ".S", ".T")) and len(raw_base) > 2:
             raw_base = raw_base[:-2]
         quote_ccy = _QUOTE[str(quote["asset"]).upper()]
         raw_symbol = raw_base + quote_ccy

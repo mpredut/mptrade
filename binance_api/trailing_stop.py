@@ -50,9 +50,15 @@ from order_retry import (
     propagate_submission_refusal,
 )
 
-from trailing_core import TrailingCore, should_sell  # noqa: E402  (re-export should_sell for tests/compatibility)
+from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+    TrailingCore,
+    build_trailing_order_intent,
+    reconcile_trailing_pending_order,
+    should_sell,
+    sync_trailing_retry_count,
+)
 from botcore import (_parse_bool_flag, load_dotenv, log, required_bool_env, required_float_env,
-                     required_int_env, safe_float, single_instance)  # noqa: E402
+                     required_int_env, safe_float, safe_pos_float, single_instance)  # noqa: E402
 from cachepaths import cache_path  # noqa: E402
 
 DEFAULT_STATE = cache_path("trailing_state.json")
@@ -283,14 +289,7 @@ class TrailingStop:
     def _free_qty(self, balances: list, asset: str) -> float:
         for bal in balances or []:
             if isinstance(bal, dict) and bal.get("asset") == asset:
-                raw_free = bal.get("free", 0.0)
-                if isinstance(raw_free, bool) or raw_free is None:
-                    return 0.0
-                try:
-                    qty = float(raw_free)
-                    return qty if math.isfinite(qty) and qty >= 0 else 0.0
-                except (TypeError, ValueError, OverflowError):
-                    return 0.0
+                return max(0.0, safe_float(bal.get("free", 0.0), 0.0))
         return 0.0
 
     # -- instant trend from cacheManager for optional filters ------------------
@@ -301,11 +300,10 @@ class TrailingStop:
             import cacheManager as cm
             snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
             if snap:
-                raw_val = snap.get('gradient_recent', snap.get('slope_small', 0.0))
-                if isinstance(raw_val, bool) or raw_val is None:
-                    return 0.0
-                val = float(raw_val)
-                return val if math.isfinite(val) else 0.0
+                raw_val = snap.get('growth_coefficient')
+                if raw_val is None or isinstance(raw_val, bool):
+                    raw_val = snap.get('gradient_recent', snap.get('slope_small', 0.0))
+                return safe_float(raw_val, 0.0)
         except Exception:
             pass
         return 0.0
@@ -389,14 +387,7 @@ class TrailingStop:
         return False
 
     def price(self, pair: str):
-        value = self.api.get_current_price(pair)
-        if value is None or isinstance(value, bool):
-            return None
-        try:
-            value = float(value)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        return value if math.isfinite(value) and value > 0 else None
+        return safe_pos_float(self.api.get_current_price(pair), None)
 
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
@@ -404,97 +395,27 @@ class TrailingStop:
     _safe_float = staticmethod(safe_float)
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
-        raw_attempt = self._retry_counts.get((pair, action), 0)
-        attempt = max(0, int(self._safe_float(raw_attempt, 0.0))) + 1
-        qty_f = self._safe_float(qty, 0.0)
-        price_f = self._safe_float(price, 0.0)
-        raw_anchor = metadata.get("anchor", price_f)
-        anchor_f = self._safe_float(raw_anchor, price_f)
-        intent_id = (
-            f"trailing:binance:{key}:{action}:{qty_f:.8f}:{price_f:.8f}:"
-            f"{anchor_f:.8f}"
-        )
-        if attempt > 1:
-            intent_id = f"{intent_id}:a{attempt}"
-        return self.order_lifecycle.new_intent(
-            intent_id=intent_id,
-            client_order_id=intent_client_order_id("Binance", intent_id),
-            symbol=pair, side="SELL" if action == "SELL" else "BUY",
-            requested_qty=qty_f, requested_price=price_f, kind=f"TRAIL_{action}",
-            attempt=attempt,
-            metadata={"action": action, "asset": asset, **metadata},
+        return build_trailing_order_intent(
+            self.order_lifecycle,
+            self._retry_counts,
+            venue_slug="binance",
+            venue_label="Binance",
+            action=action,
+            key=key,
+            asset=asset,
+            pair=pair,
+            qty=qty,
+            price=price,
+            **metadata,
         )
 
     def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
-        st = getattr(persist, "st", None)
-        if not isinstance(st, dict):
-            return
-        rc = st.get("retry_counts")
-        if isinstance(rc, dict) and action in rc:
-            raw_rc = rc[action]
-            persisted = max(0, int(self._safe_float(raw_rc, 0.0)))
-            retry_key = (pair, action)
-            cur_rc = self._retry_counts.get(retry_key, 0)
-            cur_rc_i = max(0, int(self._safe_float(cur_rc, 0.0)))
-            if persisted > cur_rc_i:
-                self._retry_counts[retry_key] = persisted
+        sync_trailing_retry_count(self._retry_counts, pair, action, persist)
 
     def reconcile_pending(self, pending, persist):
-        if not isinstance(pending, dict):
-            return None
-        result = self.order_lifecycle.reconcile(pending, persist=persist)
-        raw_pair = pending.get("symbol") if isinstance(pending, dict) else None
-        pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
-        raw_meta = pending.get("metadata") if isinstance(pending, dict) else None
-        meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-        raw_act = (pending.get("action") if isinstance(pending, dict) else None) or meta_dict.get("action")
-        action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
-        retry_key = (pair, action)
-        st = getattr(persist, "st", None)
-        rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
-        raw_rc_act = rc.get(action, 0)
-        raw_att = pending.get("attempt")
-        rc_act = max(0, int(self._safe_float(raw_rc_act, 0.0)))
-        att_val = max(1, int(self._safe_float(raw_att, 1.0)))
-        cur_rc = self._retry_counts.get(retry_key, 0)
-        cur_rc_i = max(0, int(self._safe_float(cur_rc, 0.0)))
-        attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
-        if result.outcome in ("absent", "retryable"):
-            new_count = attempt_base + 1
-            self._retry_counts[retry_key] = new_count
-            if isinstance(st, dict):
-                if not isinstance(st.get("retry_counts"), dict):
-                    st["retry_counts"] = {}
-                st["retry_counts"][action] = new_count
-                persist(None)
-        elif result.outcome == "terminal":
-            raw_filled = getattr(result.status, "filled_qty", 0.0)
-            raw_req = pending.get("submitted_qty") or pending.get("requested_qty") or 0.0
-            try:
-                filled_f = float(0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else raw_filled)
-                filled = filled_f if (math.isfinite(filled_f) and filled_f >= 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                filled = 0.0
-            try:
-                req_f = float(0.0 if (raw_req is None or isinstance(raw_req, bool)) else raw_req)
-                req_qty = req_f if (math.isfinite(req_f) and req_f >= 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                req_qty = 0.0
-            st_name = str(getattr(result.status, "status", "") or "").lower()
-            if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
-                new_count = attempt_base + 1
-                self._retry_counts[retry_key] = new_count
-                if isinstance(st, dict):
-                    if not isinstance(st.get("retry_counts"), dict):
-                        st["retry_counts"] = {}
-                    st["retry_counts"][action] = new_count
-            else:
-                self._retry_counts.pop(retry_key, None)
-                if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
-                    st["retry_counts"].pop(action, None)
-                    if not st["retry_counts"]:
-                        st.pop("retry_counts", None)
-        return result
+        return reconcile_trailing_pending_order(
+            self.order_lifecycle, self._retry_counts, pending, persist,
+        )
 
     def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty, bypass_guards=None):
         """Submit through Instrument without losing its typed refusal state."""

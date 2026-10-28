@@ -41,11 +41,26 @@ if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.
     sys.modules["common"] = _common_mod
     _c_spec.loader.exec_module(_common_mod)
 log = _common_mod.log
+load_hl_local = _common_mod.load_hl_local
 required_env = _common_mod.required_env
 required_float_env = _common_mod.required_float_env
 required_int_env = _common_mod.required_int_env
+safe_float = _common_mod.safe_float
+safe_pos_float = _common_mod.safe_pos_float
 
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
+
+
+def _normalize_signal_trend(raw: object) -> str:
+    """Normalize a signal trend token ('up'/'bull'/'bullish'/'long' -> 'up', 'down'/'bear'/'bearish'/'short' -> 'down')."""
+    if not isinstance(raw, str):
+        return "neutral"
+    t = raw.strip().lower()
+    if t in ("up", "bull", "bullish", "long"):
+        return "up"
+    if t in ("down", "bear", "bearish", "short"):
+        return "down"
+    return "neutral"
 
 
 def _builtin_trend(client, coin: str) -> dict:
@@ -55,16 +70,10 @@ def _builtin_trend(client, coin: str) -> dict:
     if fast <= 0 or slow <= 0 or not math.isfinite(band) or band < 0:
         return {**NEUTRAL, "source": "builtin(insuf. date)"}
     candles = client.candles(coin, "1h", lookback_hours=slow + 6)
-    closes: list[float] = []
-    for c in candles or []:
-        if not isinstance(c, dict) or "c" not in c or isinstance(c.get("c"), bool):
-            continue
-        try:
-            v = float(c["c"])
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(v) and v > 0:
-            closes.append(v)
+    closes = [
+        v for c in (candles or [])
+        if isinstance(c, dict) and (v := safe_pos_float(c.get("c"), 0.0)) > 0
+    ]
     if len(closes) < max(fast, slow):
         return {**NEUTRAL, "source": "builtin(insuf. date)"}
     mf = statistics.mean(closes[-fast:])
@@ -91,32 +100,16 @@ def _file_signal(path: str) -> dict:
     ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60
     if ts is not None:
-        if isinstance(ts, bool):
+        ts_f = safe_pos_float(ts, 0.0)
+        if ts_f <= 0:
             return {**NEUTRAL, "source": "file(expirat)"}
-        try:
-            ts_f = float(ts)
-        except (TypeError, ValueError, OverflowError):
-            return {**NEUTRAL, "source": "file(expirat)"}
-        if math.isfinite(ts_f) and ts_f >= 100_000_000_000.0:
+        if ts_f >= 100_000_000_000.0:
             ts_f /= 1000.0
         age = time.time() - ts_f
-        if not math.isfinite(max_age) or max_age <= 0 or not math.isfinite(ts_f) or ts_f <= 0 or age > max_age or age < -60.0:
+        if not math.isfinite(max_age) or max_age <= 0 or age > max_age or age < -60.0:
             return {**NEUTRAL, "source": "file(expirat)"}
-    raw_tr = d.get("trend", "neutral")
-    tr = raw_tr.strip().lower() if isinstance(raw_tr, str) else "neutral"
-    if tr not in ("up", "down", "neutral"):
-        tr = "neutral"
-    raw_conf = d.get("confidence", 0)
-    if isinstance(raw_conf, bool):
-        conf = 0.0
-    else:
-        try:
-            conf = float(raw_conf or 0)
-        except (TypeError, ValueError, OverflowError):
-            conf = 0.0
-    if not math.isfinite(conf):
-        conf = 0.0
-    conf = max(0.0, min(1.0, conf))
+    tr = _normalize_signal_trend(d.get("trend", "neutral"))
+    conf = max(0.0, min(1.0, safe_float(d.get("confidence", 0), 0.0)))
     return {"trend": tr, "confidence": conf, "source": "file"}
 
 
@@ -128,14 +121,7 @@ def get_signal(client, coin: str) -> dict:
         try:
             from price_analysis import signal as analysis_signal
         except ImportError:
-            import importlib.util
-
-            spec = importlib.util.spec_from_file_location(
-                "hyperliquid_price_analysis", os.path.join(_HERE, "price_analysis.py")
-            )
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            analysis_signal = mod.signal
+            analysis_signal = load_hl_local("price_analysis").signal
         return analysis_signal(client, coin)
     if src == "file":
         return _file_signal(required_env("SIGNAL_FILE"))

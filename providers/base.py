@@ -129,7 +129,11 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     if (
         not text
         or text.startswith("-")
-        or text.lower() in {"0", "0.0", "-0", "+0", "+0.0", "-0.0", "nan", "inf", "-inf", "+inf", "none", "null"}
+        or text.lower() in {
+            "0", "0.0", "-0", "+0", "+0.0", "-0.0",
+            "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
+            "none", "null",
+        }
     ):
         return None
     if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
@@ -138,12 +142,6 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
         return None
     if text.startswith("+") and text[1:].isdigit():
         text = text[1:]
-    try:
-        f = float(text)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
     return text
 
 

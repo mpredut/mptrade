@@ -33,6 +33,7 @@ if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.
     _c_spec.loader.exec_module(_common_mod)
 load_env_stack = _common_mod.load_env_stack
 required_int_env = _common_mod.required_int_env
+safe_pos_float = _common_mod.safe_pos_float
 
 load_env_stack(os.path.join(_HERE, ".env"))
 
@@ -199,11 +200,7 @@ def signal(client, coin: str) -> dict:
     # Confidence combines relative hourly slope and trend duration.
     last_px = None
     try:
-        raw_mid = client.mid(coin)
-        if raw_mid is not None and not isinstance(raw_mid, bool):
-            px_f = float(raw_mid)
-            if math.isfinite(px_f) and px_f > 0:
-                last_px = px_f
+        last_px = safe_pos_float(client.mid(coin), None)
     except Exception:  # noqa: BLE001
         pass
     slope_pct_h = abs(res["current_slope_h"]) / last_px * 100 if last_px is not None else 0.0

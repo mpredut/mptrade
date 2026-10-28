@@ -36,6 +36,7 @@ if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.
     sys.modules["common"] = _common_mod
     _c_spec.loader.exec_module(_common_mod)
 log = _common_mod.log
+safe_float = _common_mod.safe_float
 
 try:
     import eth_account
@@ -72,6 +73,31 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     max_dec = (6 if is_perp else 8) - int(dec_f)
     px = float(f"{px:.5g}")           # five significant figures
     return round(px, max(max_dec, 0))
+
+
+def _parse_order_response(res: object, *, include_avg_px: bool = False) -> tuple[bool, int | None, str]:
+    """Extract (ok, oid, status_message) from a Hyperliquid Exchange.order payload."""
+    if not isinstance(res, dict) or res.get("status") != "ok":
+        return False, None, str(res)
+    resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
+    data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
+    statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
+    if not statuses or not isinstance(statuses[0], dict):
+        return False, None, str(res)
+    st = statuses[0]
+    if "resting" in st and isinstance(st["resting"], dict):
+        return True, st["resting"].get("oid"), "resting"
+    if "filled" in st and isinstance(st["filled"], dict):
+        filled = st["filled"]
+        msg = (
+            f"filled {filled.get('totalSz')} @ {filled.get('avgPx')}"
+            if include_avg_px
+            else f"filled {filled.get('totalSz')}"
+        )
+        return True, filled.get("oid"), msg
+    if "error" in st:
+        return False, None, str(st["error"])
+    return True, None, str(st)
 
 
 def _force_timeout(api_obj, seconds: float = 30.0) -> None:
@@ -199,22 +225,25 @@ class HLClient:
             return False
         return coin.strip() in self._meta()
 
-    def mid(self, coin: str) -> float | None:
-        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+    def _mid_for_key(self, key: str, label: str) -> float | None:
+        if isinstance(key, bool) or not isinstance(key, str) or not key.strip():
             return None
-        coin = coin.strip()
+        key = key.strip()
         try:
             mids = self.info.all_mids()
             if not isinstance(mids, dict):
                 return None
-            v = mids.get(coin)
+            v = mids.get(key)
             if v is None or isinstance(v, bool):
                 return None
             px = float(v)
             return px if math.isfinite(px) and px > 0.0 else None
         except Exception as e:  # noqa: BLE001
-            log(f"  ! mid({coin}) failed: {e}")
+            log(f"  ! {label}({key}) failed: {e}")
             return None
+
+    def mid(self, coin: str) -> float | None:
+        return self._mid_for_key(coin, "mid")
 
     # ----- account (read-only, address only) ----------------------------------
     def _user_state(self) -> dict:
@@ -323,21 +352,7 @@ class HLClient:
 
     def spot_mid(self, pair: str) -> float | None:
         """Return the spot price for an @index pair, e.g. @107 = HYPE/USDC."""
-        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
-            return None
-        pair = pair.strip()
-        try:
-            mids = self.info.all_mids()
-            if not isinstance(mids, dict):
-                return None
-            v = mids.get(pair)
-            if v is None or isinstance(v, bool):
-                return None
-            px = float(v)
-            return px if math.isfinite(px) and px > 0.0 else None
-        except Exception as e:  # noqa: BLE001
-            log(f"  ! spot_mid({pair}) failed: {e}")
-            return None
+        return self._mid_for_key(pair, "spot_mid")
 
     def spot_balance_strict(self, token: str) -> float:
         """Return spot balance while propagating API errors; see position_strict."""
@@ -416,20 +431,10 @@ class HLClient:
             ms = st.get("marginSummary", {}) if isinstance(st, dict) else {}
             if not isinstance(ms, dict):
                 ms = {}
-
-            def _num(raw) -> float:
-                if raw is None or isinstance(raw, bool):
-                    return 0.0
-                try:
-                    val = float(raw)
-                except (TypeError, ValueError, OverflowError):
-                    return 0.0
-                return val if math.isfinite(val) else 0.0
-
             return {
-                "accountValue": _num(ms.get("accountValue")),
-                "totalMarginUsed": _num(ms.get("totalMarginUsed")),
-                "withdrawable": _num(st.get("withdrawable") if isinstance(st, dict) else 0.0),
+                "accountValue": safe_float(ms.get("accountValue"), 0.0),
+                "totalMarginUsed": safe_float(ms.get("totalMarginUsed"), 0.0),
+                "withdrawable": safe_float(st.get("withdrawable") if isinstance(st, dict) else 0.0, 0.0),
             }
         except Exception:  # noqa: BLE001
             return {}
@@ -519,21 +524,7 @@ class HLClient:
             )
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)
-        if not isinstance(res, dict) or res.get("status") != "ok":
-            return False, None, str(res)
-        resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
-        data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
-        statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
-        if not statuses or not isinstance(statuses[0], dict):
-            return False, None, str(res)
-        st = statuses[0]
-        if "resting" in st and isinstance(st["resting"], dict):
-            return True, st["resting"].get("oid"), "resting"
-        if "filled" in st and isinstance(st["filled"], dict):
-            return True, st["filled"].get("oid"), f"filled {st['filled'].get('totalSz')}"
-        if "error" in st:
-            return False, None, str(st["error"])
-        return True, None, str(st)
+        return _parse_order_response(res, include_avg_px=False)
 
     # ----- signed trading -----------------------------------------------------
     def set_leverage(self, coin: str, leverage: int) -> None:
@@ -582,21 +573,7 @@ class HLClient:
                                       {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)
-        if not isinstance(res, dict) or res.get("status") != "ok":
-            return False, None, str(res)
-        resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
-        data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
-        statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
-        if not statuses or not isinstance(statuses[0], dict):
-            return False, None, str(res)
-        st = statuses[0]
-        if "resting" in st and isinstance(st["resting"], dict):
-            return True, st["resting"].get("oid"), "resting"
-        if "filled" in st and isinstance(st["filled"], dict):
-            return True, st["filled"].get("oid"), f"filled {st['filled'].get('totalSz')} @ {st['filled'].get('avgPx')}"
-        if "error" in st:
-            return False, None, str(st["error"])
-        return True, None, str(st)
+        return _parse_order_response(res, include_avg_px=True)
 
     def cancel(self, coin: str, oid: int) -> bool:
         if (

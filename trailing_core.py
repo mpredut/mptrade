@@ -44,6 +44,110 @@ def _safe_nonneg_float(val, default: float = 0.0) -> float:
     return f if (f is not None and f >= 0.0) else default
 
 
+def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:
+    """Restore in-memory retry count from persisted state when higher."""
+    st = getattr(persist, "st", None)
+    if not isinstance(st, dict):
+        return
+    rc = st.get("retry_counts")
+    if isinstance(rc, dict) and action in rc:
+        persisted = max(0, int(safe_float(rc[action], 0.0)))
+        retry_key = (pair, action)
+        cur_rc_i = max(0, int(safe_float(retry_counts.get(retry_key, 0), 0.0)))
+        if persisted > cur_rc_i:
+            retry_counts[retry_key] = persisted
+
+
+def build_trailing_order_intent(
+    order_lifecycle,
+    retry_counts: dict,
+    *,
+    venue_slug: str,
+    venue_label: str,
+    action: str,
+    key: str,
+    asset: str,
+    pair: str,
+    qty: float,
+    price: float,
+    **metadata,
+) -> dict:
+    """Build a deterministic TrackedOrderLifecycle intent for a trailing SELL or REBUY."""
+    from providers.execution_audit import intent_client_order_id
+
+    raw_attempt = retry_counts.get((pair, action), 0)
+    attempt = max(0, int(safe_float(raw_attempt, 0.0))) + 1
+    qty_f = safe_float(qty, 0.0)
+    price_f = safe_float(price, 0.0)
+    anchor_f = safe_float(metadata.get("anchor", price_f), price_f)
+    intent_id = (
+        f"trailing:{venue_slug}:{key}:{action}:{qty_f:.8f}:{price_f:.8f}:"
+        f"{anchor_f:.8f}"
+    )
+    if attempt > 1:
+        intent_id = f"{intent_id}:a{attempt}"
+    return order_lifecycle.new_intent(
+        intent_id=intent_id,
+        client_order_id=intent_client_order_id(venue_label, intent_id),
+        symbol=pair,
+        side="SELL" if action == "SELL" else "BUY",
+        requested_qty=qty_f,
+        requested_price=price_f,
+        kind=f"TRAIL_{action}",
+        attempt=attempt,
+        metadata={"action": action, "asset": asset, **metadata},
+    )
+
+
+def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pending, persist):
+    """Reconcile a pending trailing order and update in-memory/persisted retry counters."""
+    if not isinstance(pending, dict):
+        return None
+    result = order_lifecycle.reconcile(pending, persist=persist)
+    raw_pair = pending.get("symbol")
+    pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
+    raw_meta = pending.get("metadata")
+    meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
+    raw_act = pending.get("action") or meta_dict.get("action")
+    action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
+    retry_key = (pair, action)
+    st = getattr(persist, "st", None)
+    rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
+    rc_act = max(0, int(safe_float(rc.get(action, 0), 0.0)))
+    att_val = max(1, int(safe_float(pending.get("attempt"), 1.0)))
+    cur_rc_i = max(0, int(safe_float(retry_counts.get(retry_key, 0), 0.0)))
+    attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
+    if result.outcome in ("absent", "retryable"):
+        new_count = attempt_base + 1
+        retry_counts[retry_key] = new_count
+        if isinstance(st, dict):
+            if not isinstance(st.get("retry_counts"), dict):
+                st["retry_counts"] = {}
+            st["retry_counts"][action] = new_count
+            persist(None)
+    elif result.outcome == "terminal":
+        filled = _safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)
+        req_qty = _safe_nonneg_float(
+            pending.get("submitted_qty") or pending.get("requested_qty") or 0.0,
+            0.0,
+        )
+        st_name = str(getattr(result.status, "status", "") or "").lower()
+        if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
+            new_count = attempt_base + 1
+            retry_counts[retry_key] = new_count
+            if isinstance(st, dict):
+                if not isinstance(st.get("retry_counts"), dict):
+                    st["retry_counts"] = {}
+                st["retry_counts"][action] = new_count
+        else:
+            retry_counts.pop(retry_key, None)
+            if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
+                st["retry_counts"].pop(action, None)
+                if not st["retry_counts"]:
+                    st.pop("retry_counts", None)
+    return result
+
+
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
     if isinstance(current, bool) or isinstance(peak, bool) or isinstance(trail_pct, bool):

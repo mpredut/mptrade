@@ -37,13 +37,14 @@ for _mod_name in ("common", "notify", "hl_client", "market_data", "signals"):
 from common import (
     _parse_bool_flag,
     log, are_close, load_env_stack, required_env, required_float_env,
-    required_int_env, required_bool_env,
+    required_int_env, required_bool_env, safe_float, safe_pos_float,
 )
 from notify import notify
+from providers.base import _clean_single_order_id
 from state_io import atomic_write_json, load_json_state, save_json_state
 from hl_client import HLClient, HLError
 from market_data import get_price
-from signals import get_signal
+from signals import _normalize_signal_trend, get_signal
 
 load_env_stack(os.path.join(_HERE, ".env"))
 HL_FEE_PCT = required_float_env("HL_FEE_PCT")
@@ -201,26 +202,7 @@ def _new_state() -> dict:
 
 
 def _clean_oid(val: object) -> str | None:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set)):
-        return None
-    if isinstance(val, int):
-        return str(val) if val > 0 else None
-    if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0:
-            return None
-        return str(int(val)) if val == int(val) else str(val)
-    text = str(val).strip()
-    if not text or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}:
-        return None
-    try:
-        f = float(text)
-        if not math.isfinite(f) or f <= 0:
-            return None
-        if text.endswith(".0") and f == int(f):
-            return str(int(f))
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return text
+    return _clean_single_order_id(val)
 
 
 def _sanitize_state(raw: dict) -> dict:
@@ -228,38 +210,15 @@ def _sanitize_state(raw: dict) -> dict:
     if isinstance(raw, dict):
         merged.update(raw)
     for k in ("qty", "cost", "spent", "realized_gross", "realized_net", "fees_total"):
-        val = merged.get(k, 0.0)
-        if isinstance(val, bool) or val is None:
-            merged[k] = 0.0
-        else:
-            try:
-                vf = float(val)
-                merged[k] = vf if math.isfinite(vf) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                merged[k] = 0.0
+        merged[k] = safe_float(merged.get(k, 0.0), 0.0)
     for k in ("qty", "cost", "spent", "fees_total"):
         if merged[k] < 0.0:
             merged[k] = 0.0
     for k, default_i in (("cycle", 1), ("cycles_completed", 0), ("wins", 0), ("dca_buys", 0)):
-        val = merged.get(k, default_i)
-        if isinstance(val, bool) or val is None:
-            merged[k] = default_i
-        else:
-            try:
-                vi = int(float(val))
-                merged[k] = max(default_i if k == "cycle" else 0, vi)
-            except (TypeError, ValueError, OverflowError):
-                merged[k] = default_i
+        vf = safe_float(merged.get(k, default_i), None)
+        merged[k] = max(default_i if k == "cycle" else 0, int(vf)) if vf is not None else default_i
     for k in ("entry_price", "last_open_price"):
-        val = merged.get(k)
-        if val is None or isinstance(val, bool):
-            merged[k] = None
-        else:
-            try:
-                vf = float(val)
-                merged[k] = vf if (math.isfinite(vf) and vf > 0.0) else None
-            except (TypeError, ValueError, OverflowError):
-                merged[k] = None
+        merged[k] = safe_pos_float(merged.get(k), None)
     raw_orders = merged.get("orders")
     clean_orders = []
     if isinstance(raw_orders, list):
@@ -270,34 +229,17 @@ def _sanitize_state(raw: dict) -> dict:
             clean_oid = _clean_oid(raw_oid)
             if clean_oid is None:
                 continue
-            raw_px = o.get("px")
-            raw_sz = o.get("sz")
-            if isinstance(raw_px, bool) or isinstance(raw_sz, bool):
-                continue
-            try:
-                px_f = float(raw_px)
-                sz_f = float(raw_sz)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not (math.isfinite(px_f) and px_f > 0.0 and math.isfinite(sz_f) and sz_f > 0.0):
+            px_f = safe_pos_float(o.get("px"), 0.0)
+            sz_f = safe_pos_float(o.get("sz"), 0.0)
+            if px_f <= 0.0 or sz_f <= 0.0:
                 continue
             o_copy = dict(o)
             o_copy["oid"] = int(clean_oid) if (isinstance(raw_oid, (int, float)) and clean_oid.isdigit()) else clean_oid
             o_copy["px"] = px_f
             o_copy["sz"] = sz_f
-            raw_amt = o_copy.get("amount", 0.0)
-            try:
-                amt_f = 0.0 if (raw_amt is None or isinstance(raw_amt, bool)) else float(raw_amt)
-                o_copy["amount"] = amt_f if (math.isfinite(amt_f) and amt_f >= 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                o_copy["amount"] = 0.0
+            o_copy["amount"] = max(0.0, safe_float(o_copy.get("amount", 0.0), 0.0))
             if "ts" in o_copy and o_copy.get("ts") is not None:
-                raw_ts = o_copy.get("ts")
-                try:
-                    ts_f = 0.0 if isinstance(raw_ts, bool) else float(raw_ts)
-                    o_copy["ts"] = ts_f if (math.isfinite(ts_f) and ts_f >= 0.0) else 0.0
-                except (TypeError, ValueError, OverflowError):
-                    o_copy["ts"] = 0.0
+                o_copy["ts"] = max(0.0, safe_float(o_copy.get("ts"), 0.0))
             if "dca_counted" in o_copy:
                 o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
             clean_orders.append(o_copy)
@@ -767,6 +709,8 @@ class Strategy:
                 else:
                     sig = get_signal(self.client, self.coin)
                     trend = sig.get("trend") if isinstance(sig, dict) else sig
+                if trend != "__any__":
+                    trend = _normalize_signal_trend(trend)
                 want = "up" if self.sign > 0 else "down"   # long requires up; short requires down
                 if trend != "__any__" and trend != want:
                     if not self.replay_mode:

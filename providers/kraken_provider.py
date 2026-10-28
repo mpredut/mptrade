@@ -62,7 +62,8 @@ def _split_kraken_pair(value: str) -> tuple[str, str]:
     """Split a Kraken pair or bare asset into ``(canonical_base, canonical_quote)``."""
     if not isinstance(value, str):
         return "", ""
-    key = "".join(ch for ch in value.upper() if ch.isalnum())
+    raw = value.strip()
+    key = "".join(ch for ch in raw.upper() if ch.isalnum())
     if not key:
         return "", ""
     quote = next(
@@ -70,17 +71,15 @@ def _split_kraken_pair(value: str) -> tuple[str, str]:
         "",
     )
     if not quote:
-        base = key
+        base_raw = raw
+    elif "/" in raw:
+        base_raw = raw.split("/", 1)[0].strip()
+    elif raw.upper().endswith(quote):
+        base_raw = raw[: -len(quote)].strip(" -_/")
     else:
-        base = key[:-len(quote)]
-        if len(base) == 5 and base.startswith("X") and base.endswith("Z") and base[:-1] in _LEGACY_KRAKEN_X_BASES:
-            base = base[:-1]
-    if base in _LEGACY_KRAKEN_X_BASES:
-        base = base[1:]
-    if base == "XBT":
-        base = "BTC"
-    elif base == "XDG":
-        base = "DOGE"
+        base_raw = key[: -len(quote)]
+    from cachepaths import canonical_base_asset
+    base = canonical_base_asset(base_raw) or "".join(ch for ch in base_raw.upper() if ch.isalnum())
     if quote == "XBT":
         quote = "BTC"
     return base, quote
@@ -110,17 +109,21 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
     if not raw:
         return []
     asset_u = raw.upper()
-    candidates: List[str] = [raw, asset_u, "X" + asset_u, "Z" + asset_u, asset_u + ".F", f"{asset_u}x.T", f"{asset_u}X.T"]
+    candidates: List[str] = [
+        raw, asset_u, "X" + asset_u, "Z" + asset_u,
+        asset_u + ".F", asset_u + ".S", f"{asset_u}x.T", f"{asset_u}X.T", f"{asset_u}x",
+    ]
     if asset_u in {"BTC", "XBT", "XXBT"}:
         candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
     elif asset_u in {"DOGE", "XDG", "XXDG"}:
         candidates.extend(["DOGE", "XDG", "XXDG", "XDG.F", "XXDG.F"])
     elif len(asset_u) == 4 and (asset_u in _LEGACY_KRAKEN_X_BASES or asset_u.startswith("Z")):
         stripped = asset_u[1:]
-        candidates.extend([stripped, f"{stripped}.F"])
-    if asset_u.endswith("X.T") and len(asset_u) > 3:
-        stem = asset_u[:-3]
-        candidates.extend([stem, f"{stem}x.T"])
+        candidates.extend([stripped, f"{stripped}.F", f"{stripped}.S"])
+    from cachepaths import canonical_base_asset
+    canon = canonical_base_asset(raw)
+    if canon and canon != asset_u:
+        candidates.extend([canon, f"{canon}.F", f"{canon}.S", f"{canon}x.T", f"{canon}X.T", f"{canon}x"])
     return list(dict.fromkeys(candidates))
 
 
