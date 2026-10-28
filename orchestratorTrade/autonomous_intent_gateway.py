@@ -383,11 +383,24 @@ class AutonomousIntentGateway:
                         ev = str(rec.get("event") or "")
                         if ev == "submit_accepted":
                             matched_records.setdefault(iid, rec)
-                        elif ev == "order_terminal":
+                        elif ev in ("order_terminal", "order_terminal_retry"):
                             v_stat = str(rec.get("venue_status") or "").upper()
                             l_stat = str(rec.get("status") or "").lower()
-                            if v_stat in ("FILLED", "PARTIALLY_FILLED") or l_stat in ("closed", "filled", "partially_filled"):
+                            f_qty = safe_pos_float(
+                                rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
+                                0.0,
+                            )
+                            if (
+                                v_stat in ("FILLED", "PARTIALLY_FILLED")
+                                or l_stat in ("closed", "filled", "partially_filled")
+                                or f_qty > 0.0
+                            ):
                                 matched_records[iid] = rec
+                            elif matched_records.get(iid, {}).get("event") == "submit_accepted":
+                                prev_oid = matched_records[iid].get("order_id")
+                                cur_oid = rec.get("order_id")
+                                if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
+                                    matched_records.pop(iid, None)
             except OSError:
                 continue
 
@@ -669,7 +682,7 @@ class AutonomousIntentGateway:
         # Fallback to cache_24_price_<SYM>.json / cache_365_price_<SYM>.jsonl / cache_sparse_price_<SYM>.jsonl
         try:
             from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
-            ser_24h, _ = load_symbol_price_series(self.cache_dir, str(inst.symbol or ""))
+            ser_24h, _ = load_symbol_price_series(self.cache_dir, str(inst.symbol or ""), include_7d=False)
             if ser_24h:
                 px_f = float(ser_24h[-1][1])
                 if math.isfinite(px_f) and px_f > 0:

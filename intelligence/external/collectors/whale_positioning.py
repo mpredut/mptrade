@@ -103,7 +103,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             return 0.0
         try:
             from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
-            series_24h, _ = load_symbol_price_series(cache_dir, symbol.upper())
+            series_24h, _ = load_symbol_price_series(cache_dir, symbol.upper(), include_7d=False)
             if len(series_24h) >= 2:
                 now_ms = float(series_24h[-1][0])
                 target_ms = now_ms - 3_600_000.0

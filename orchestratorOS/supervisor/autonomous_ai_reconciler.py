@@ -279,7 +279,13 @@ def _apply_short_trend_item(
 ) -> bool:
     """Populate short/dynamic trend slopes (3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
     dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
+    d90 = dyn.get("90", {}) if isinstance(dyn.get("90"), dict) else {}
     d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
+    if d222.get("slope_full") is None:
+        if tinfo.get("slope_full") is not None:
+            d222 = tinfo
+        elif d90.get("slope_full") is not None:
+            d222 = d90
     d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
     d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
     if require_any_slope and not any(
@@ -894,7 +900,8 @@ class AutonomousAIReconciler:
                 lt_win = _read_json(lt_path)
                 if not isinstance(lt_win, dict):
                     continue
-                w222 = lt_win.get("222") if isinstance(lt_win.get("222"), dict) else {}
+                w90 = lt_win.get("90") if isinstance(lt_win.get("90"), dict) else {}
+                w222 = lt_win.get("222") if isinstance(lt_win.get("222"), dict) else w90
                 w900 = lt_win.get("900") if isinstance(lt_win.get("900"), dict) else {}
                 w9000 = lt_win.get("9000") if isinstance(lt_win.get("9000"), dict) else {}
                 entry = snapshot.prices_and_trends.setdefault(
@@ -1169,7 +1176,7 @@ class AutonomousAIReconciler:
             else {}
         )
         btc_series_24h, _ = load_symbol_price_series(
-            self.cache_dir, "BTCUSDC", current_price_items=cur_p_items
+            self.cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
         )
         for sym in list(snapshot.prices_and_trends.keys()):
             matched_series_24h, arch_vals_7d = load_symbol_price_series(

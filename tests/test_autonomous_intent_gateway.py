@@ -634,4 +634,82 @@ def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp
     assert clamped_t212 == pytest.approx(5.11 * 150.0)
 
 
+def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_trend(temp_workspace):
+    import json
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import _apply_short_trend_item
+
+    ws, cache_dir = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    intents = [
+        {"intent_id": "id_canceled", "symbol": "BTCUSDC", "decision": "BUY", "status": "FAILED"},
+        {"intent_id": "id_partial_retry", "symbol": "ETHUSDC", "decision": "BUY", "status": "FAILED"},
+    ]
+    audit_dir = os.path.join(ws, "logger", "execution_audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    audit_file = os.path.join(audit_dir, "execution_audit_2026-10-28.jsonl")
+    with open(audit_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "submit_accepted",
+            "intent_id": "id_canceled",
+            "order_id": "ord_101",
+            "symbol": "BTCUSDC",
+            "side": "buy",
+            "qty": 0.01,
+            "ts": 1793000001.0,
+        }) + "\n")
+        f.write(json.dumps({
+            "event": "order_terminal",
+            "intent_id": "id_canceled",
+            "order_id": "ord_101",
+            "symbol": "BTCUSDC",
+            "side": "buy",
+            "filled_qty": 0.0,
+            "status": "canceled",
+            "venue_status": "CANCELED",
+            "ts": 1793000005.0,
+        }) + "\n")
+        f.write(json.dumps({
+            "event": "order_terminal_retry",
+            "intent_id": "id_partial_retry",
+            "order_id": "ord_202",
+            "symbol": "ETHUSDC",
+            "side": "buy",
+            "filled_qty": 0.25,
+            "cost": 650.0,
+            "status": "canceled",
+            "venue_status": "EXPIRED",
+            "ts": 1793000010.0,
+        }) + "\n")
+
+    assert gw.reconcile_intents(intents) is True
+    assert intents[0]["status"] == "FAILED"
+    assert intents[1]["status"] == "EXECUTED"
+    assert intents[1]["execution_payload"]["executedQty"] == "0.25"
+
+    # Verify 90s/900s published window structure populates 3.7m fast slope from top-level tinfo
+    tinfo_90_900 = {
+        "current_price": 412.5,
+        "final_trend": 1,
+        "slope_full": 0.0021,
+        "growth_coefficient": 0.42,
+        "dynamic": {
+            "90": {"slope_full": 0.0035, "final_trend": 1},
+            "900": {"slope_full": 0.0014, "final_trend": 1},
+        },
+    }
+    entry = {}
+    assert _apply_short_trend_item(entry, tinfo_90_900) is True
+    assert entry["slope_3_7m"] == pytest.approx(0.0021)
+    assert entry["slope_15m"] == pytest.approx(0.0014)
+
+    with open(os.path.join(cache_dir, "cache_short_trend.json"), "w", encoding="utf-8") as f:
+        json.dump({"items": {"TAOUSDC": tinfo_90_900}}, f)
+    telem = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=cache_dir)
+    assert "3.7m=+0.00210" in telem.get("Dynamic Multi-Window Slopes", "")
+    assert "15m=+0.00140" in telem.get("Dynamic Multi-Window Slopes", "")
+
+
+
 

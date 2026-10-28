@@ -142,6 +142,8 @@ def load_symbol_price_series(
     cachedb_dir: str,
     symbol: str,
     current_price_items: Optional[Dict[str, Any]] = None,
+    *,
+    include_7d: bool = True,
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
     from cachepaths import cache_symbol_variants, legacy_filenames_for, resolve_cachedb_filepath
@@ -174,7 +176,7 @@ def load_symbol_price_series(
     need_24h_supplement = _span_ms(series_24h) < 3600000.0 * 18
     archive_pts: list = []
     cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
-    for cand in cands:
+    for cand in (cands if (include_7d or need_24h_supplement) else ()):
         base_names = (
             f"cache_365_price_{cand}.jsonl",
             f"cache_365_price_{cand}.json",
@@ -540,7 +542,9 @@ def collect_pretrade_telemetry(
     try:
         cur_p_data = read_recovering_previous(os.path.join(cachedb_dir, "cache_current_price.json"), json.loads, default=None)
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
-        alt_series_24h, _ = load_symbol_price_series(cachedb_dir, symbol, current_price_items=cur_p_items)
+        alt_series_24h, _ = load_symbol_price_series(
+            cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=False
+        )
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
         if m24:
             h_parts = []
@@ -573,7 +577,9 @@ def collect_pretrade_telemetry(
             telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
 
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
-                btc_series_24h, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items)
+                btc_series_24h, _ = load_symbol_price_series(
+                    cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
+                )
                 btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
                 if btc_m24:
                     vs_parts = [
@@ -614,12 +620,17 @@ def collect_pretrade_telemetry(
             if isinstance(tinfo, dict):
                 dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
 
-                def _safe_slope(w_key: str) -> float:
+                def _safe_slope(w_key: str, fallback_obj: Optional[Dict[str, Any]] = None) -> float:
                     w_obj = dyn.get(w_key)
+                    if not isinstance(w_obj, dict) or w_obj.get("slope_full") is None:
+                        w_obj = fallback_obj
                     return safe_float(w_obj.get("slope_full", 0.0), 0.0) if isinstance(w_obj, dict) else 0.0
 
+                fast_fallback = tinfo if tinfo.get("slope_full") is not None else (
+                    dyn.get("90") if isinstance(dyn.get("90"), dict) else None
+                )
                 telemetry["Dynamic Multi-Window Slopes"] = (
-                    f"3.7m={_safe_slope('222'):+.5f}, 15m={_safe_slope('900'):+.5f}, 2.5h={_safe_slope('9000'):+.5f}"
+                    f"3.7m={_safe_slope('222', fast_fallback):+.5f}, 15m={_safe_slope('900'):+.5f}, 2.5h={_safe_slope('9000'):+.5f}"
                 )
     except Exception:
         pass
