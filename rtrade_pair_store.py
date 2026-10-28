@@ -26,8 +26,8 @@ _INVALID_STORE_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "in
 
 class RTradePairStore:
     def __init__(self, path=None, terminal_retention=200):
-        root = os.path.dirname(os.path.abspath(__file__))
-        self.path = path or os.path.join(root, "cachedb", "rtrade_pairs.json")
+        from cachepaths import cache_path
+        self.path = path or cache_path("rtrade_pairs_state.json")
         self.lock_path = self.path + ".lock"
         if isinstance(terminal_retention, (bool, dict, list, tuple, set)) or terminal_retention is None:
             ret_i = 200

@@ -1571,7 +1571,7 @@ class AutonomousAIReconciler:
                 _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
 
-        intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
+        intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents_state.json"))
         if isinstance(intents_data, list) and intents_data:
             snapshot.portfolio_summary["recent_ai_intents"] = [
                 {

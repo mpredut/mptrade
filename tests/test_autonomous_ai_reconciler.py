@@ -1379,7 +1379,7 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
 
     # Verify scope="equities" vs scope="crypto" filters recent_ai_intents and active_retry_queue
     now_ts = time.time()
-    with open(os.path.join(cache_dir, "autonomous_trade_intents.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "autonomous_trade_intents_state.json"), "w", encoding="utf-8") as f:
         json.dump([
             {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "status": "EXECUTED", "suggested_notional_usd": 100.0, "timestamp": now_ts},
             {"decision": "BUY", "symbol": "SPCX_US_EQ", "venue": "t212", "status": "EXECUTED", "suggested_notional_usd": 50.0, "timestamp": now_ts},

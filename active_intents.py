@@ -27,7 +27,7 @@ class StateSource:
 DEFAULT_SOURCES = (
     StateSource("global_outbox", "cachedb/order_retry_queue.jsonl", True),
     StateSource("assetguardian", "cachedb/assetguardian_state.json"),
-    StateSource("rtrade", "cachedb/rtrade_pairs.json"),
+    StateSource("rtrade", "cachedb/rtrade_pairs_state.json"),
     StateSource("binance_trailing", "cachedb/trailing_state.json"),
     StateSource("kraken", "kraken/.state_*.json"),
     StateSource("kraken_trailing", "kraken/trailing_state.json"),
@@ -328,7 +328,7 @@ def format_summary(result: dict) -> str:
 
 def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     """Return normalized active intents and read errors without mutating sources."""
-    from cachepaths import resolve_cachedb_filepath
+    from cachepaths import legacy_filenames_for, resolve_cachedb_filepath
 
     root = os.path.abspath(root)
     intents = []
@@ -340,6 +340,11 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
         if not matched_paths and spec.pattern.startswith("cachedb/"):
             resolved_pat = str(resolve_cachedb_filepath(os.path.join(root, spec.pattern)))
             matched_paths = sorted(glob.glob(resolved_pat))
+            if not matched_paths:
+                for leg_p in legacy_filenames_for(resolved_pat):
+                    matched_paths = sorted(glob.glob(leg_p))
+                    if matched_paths:
+                        break
         for path in matched_paths:
             if _is_backup(path):
                 continue

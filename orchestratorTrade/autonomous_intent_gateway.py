@@ -273,7 +273,7 @@ class AutonomousIntentGateway:
     ) -> None:
         self.workspace_dir = workspace_dir or ROOT_DIR
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
-        self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents.json")
+        self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents_state.json")
 
         conf = self._load_conf()
 

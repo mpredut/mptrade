@@ -11,6 +11,8 @@ EXACT_LEGACY_FILENAMES = {
     "cache_current_price.json": ("cache_currentprice.json",),
     "cache_short_trend.json": ("cache_instant_trend.json",),
     "cache_long_trend.json": ("cache_price_long_trend.json",),
+    "rtrade_pairs_state.json": ("rtrade_pairs.json",),
+    "autonomous_trade_intents_state.json": ("autonomous_trade_intents.json",),
 }
 PREFIX_LEGACY_FILENAMES = (
     ("cache_sparse_price_", ("cache_price_sparse_", "cache_price_")),
@@ -109,12 +111,14 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "suffixes": (),
     },
-    "bots": {
+    "state": {
         "exact": (
+            "assetguardian_state.json",
             "mt_state.json",
             "trailing_state.json",
             "smart_stop_loss_state.json",
-            "autonomous_trade_intents.json",
+            "rtrade_pairs_state.json",
+            "autonomous_trade_intents_state.json",
         ),
         "prefixes": (
             "assetguardian_state",
@@ -122,9 +126,9 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "mt_state.",
             "trailing_state.",
             "smart_stop_loss_state.",
-            "autonomous_trade_intents.",
+            "autonomous_trade_intents",
         ),
-        "suffixes": (),
+        "suffixes": ("_state.json",),
     },
     "system/heartbeat": {
         "exact": (),
@@ -335,6 +339,9 @@ def organize_cachedb_subdomains(
     sys_dir = os.path.join(base, "system")
     if os.path.isdir(sys_dir):
         scan_dirs.append((sys_dir, {"heartbeat"}))
+    legacy_bots_dir = os.path.join(base, "bots")
+    if os.path.isdir(legacy_bots_dir):
+        scan_dirs.append((legacy_bots_dir, set()))
     for scan_dir, skip_names in scan_dirs:
         for entry in sorted(os.listdir(scan_dir)):
             if entry in skip_names:
@@ -346,7 +353,13 @@ def organize_cachedb_subdomains(
             dst_dir = os.path.join(base, *sub.split("/"))
             if os.path.abspath(scan_dir) == os.path.abspath(dst_dir):
                 continue
-            dst = os.path.join(dst_dir, entry)
+            target_entry = entry
+            for new_exact, old_exacts in EXACT_LEGACY_FILENAMES.items():
+                for old_ex in old_exacts:
+                    if entry == old_ex or entry.startswith(old_ex + "."):
+                        target_entry = new_exact + entry[len(old_ex):]
+                        break
+            dst = os.path.join(dst_dir, target_entry)
             try:
                 if os.path.isdir(src) and not os.path.islink(src):
                     if remove_stale_staging:
@@ -381,9 +394,14 @@ def organize_cachedb_subdomains(
                         os.unlink(src)
                 else:
                     os.replace(src, dst)
-                moved[sub].append(entry)
+                moved[sub].append(target_entry)
             except OSError:
                 pass
+    if os.path.isdir(legacy_bots_dir):
+        try:
+            os.rmdir(legacy_bots_dir)
+        except OSError:
+            pass
     return moved
 
 
