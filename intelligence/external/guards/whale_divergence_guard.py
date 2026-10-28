@@ -10,21 +10,18 @@ import math
 from typing import Any, Optional
 
 from botcore import _parse_bool_flag
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    fetch_guard_snapshot,
+    normalize_guard_side,
+    safe_guard_float as _safe_float,
+    snap_attr,
+)
 from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
-
-
-def _safe_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 _safe_bool = _parse_bool_flag
@@ -64,21 +61,14 @@ class WhaleDivergenceGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
-        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm in ("B", "BUY", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
+        side_norm = normalize_guard_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="WhaleDivergenceGuard",
                 reason="unsupported_side_allowed",
             )
         if snapshot is None and self.collector is not None:
-            try:
-                snapshot = self.collector.fetch(symbol, now=now) if now is not None else self.collector.fetch(symbol)
-            except TypeError:
-                snapshot = self.collector.fetch(symbol)
+            snapshot = fetch_guard_snapshot(self.collector, symbol, now=now)
 
         if snapshot is None:
             return GuardDecision.allow(
@@ -86,13 +76,10 @@ class WhaleDivergenceGuard:
                 reason="no_whale_snapshot_data",
             )
 
-        def _snap_attr(key: str, default: Any = None) -> Any:
-            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
-
-        regime = str(_snap_attr("divergence_regime") or "neutral").strip().lower()
-        oi_1h = _safe_float(_snap_attr("open_interest_1h_change_pct"), 0.0)
-        taker_ratio = _safe_float(_snap_attr("taker_buy_sell_ratio"), 1.0)
-        top_long_pct = _safe_float(_snap_attr("top_traders_long_pct"), 0.5)
+        regime = str(snap_attr(snapshot, "divergence_regime") or "neutral").strip().lower()
+        oi_1h = _safe_float(snap_attr(snapshot, "open_interest_1h_change_pct"), 0.0)
+        taker_ratio = _safe_float(snap_attr(snapshot, "taker_buy_sell_ratio"), 1.0)
+        top_long_pct = _safe_float(snap_attr(snapshot, "top_traders_long_pct"), 0.5)
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":

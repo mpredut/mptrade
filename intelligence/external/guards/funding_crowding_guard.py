@@ -10,21 +10,18 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    fetch_guard_snapshot,
+    normalize_guard_side,
+    safe_guard_float as _safe_float,
+    snap_attr,
+)
 from intelligence.external.collectors.derivatives_telemetry import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )
-
-
-def _safe_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 class FundingCrowdingGuard:
@@ -56,21 +53,14 @@ class FundingCrowdingGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
-        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm in ("B", "BUY", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
+        side_norm = normalize_guard_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="FundingCrowdingGuard",
                 reason="unsupported_side_allowed",
             )
         if telemetry is None and self.collector is not None:
-            try:
-                telemetry = self.collector.fetch(symbol, now=now) if now is not None else self.collector.fetch(symbol)
-            except TypeError:
-                telemetry = self.collector.fetch(symbol)
+            telemetry = fetch_guard_snapshot(self.collector, symbol, now=now)
 
         if telemetry is None:
             return GuardDecision.allow(
@@ -78,8 +68,7 @@ class FundingCrowdingGuard:
                 reason="no_telemetry_data",
             )
 
-        raw_fr = telemetry.get("funding_rate") if isinstance(telemetry, dict) else getattr(telemetry, "funding_rate", None)
-        fr = _safe_float(raw_fr, 0.0)
+        fr = _safe_float(snap_attr(telemetry, "funding_rate"), 0.0)
 
         # 1. Entering BUY when market is hyper-crowded long
         if side_norm == "BUY" and fr >= self.max_long_funding_rate:

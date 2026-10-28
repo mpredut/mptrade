@@ -4,7 +4,12 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple
 
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    clean_guard_symbol_key,
+    normalize_guard_side,
+    safe_pos_guard_float,
+)
 
 
 class ParabolicSurgeGuard:
@@ -22,21 +27,10 @@ class ParabolicSurgeGuard:
         window_seconds: float = 7200.0,  # 2 hours
         vol_multiplier: float = 3.0,
     ):
-        def _pos_float(val, default: float, allow_zero: bool = False) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-            except (TypeError, ValueError):
-                return default
-            if not math.isfinite(f) or (f < 0.0 if allow_zero else f <= 0.0):
-                return default
-            return f
-
-        self.surge_threshold_pct = _pos_float(surge_threshold_pct, 4.0)
-        self.pullback_required_pct = _pos_float(pullback_required_pct, 1.5, allow_zero=True)
-        self.window_seconds = _pos_float(window_seconds, 7200.0)
-        self.vol_multiplier = _pos_float(vol_multiplier, 3.0, allow_zero=True)
+        self.surge_threshold_pct = safe_pos_guard_float(surge_threshold_pct, 4.0)
+        self.pullback_required_pct = safe_pos_guard_float(pullback_required_pct, 1.5, allow_zero=True)
+        self.window_seconds = safe_pos_guard_float(window_seconds, 7200.0)
+        self.vol_multiplier = safe_pos_guard_float(vol_multiplier, 3.0, allow_zero=True)
 
         # symbol -> {"peak": float, "surge_active": bool, "surge_start_px": float, "ts": float}
         self._states: Dict[str, dict] = {}
@@ -51,11 +45,7 @@ class ParabolicSurgeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
-        side_u = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_u in ("B", "BUY", "BID", "LONG"):
-            side_u = "BUY"
-        elif side_u in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_u = "SELL"
+        side_u = normalize_guard_side(side)
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
 
@@ -106,7 +96,7 @@ class ParabolicSurgeGuard:
             except (TypeError, ValueError):
                 pass
 
-        sym_norm = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym_norm = clean_guard_symbol_key(symbol)
         state_key = sym_norm if side_u == "BUY" else f"{sym_norm}:SELL"
         raw_st = self._states.get(state_key)
         if not isinstance(raw_st, dict):

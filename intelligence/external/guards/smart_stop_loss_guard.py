@@ -29,6 +29,11 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
 from cachepaths import cache_path
+from intelligence.internal.guards.guard_decision import (
+    clean_guard_symbol_key,
+    safe_guard_float as _safe_float,
+    snap_attr as _obj_attr,
+)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -51,16 +56,6 @@ _LAST_DEFER_ALERT_TS: Dict[str, float] = {}
 _LAST_TIMEOUT_ALERT_TS: Dict[str, float] = {}
 _RECOVERY_COOLDOWN_SEC: float = required_float_env("SMART_SL_COOLDOWN_SEC")
 _PENDING_RECOVERIES: list[Dict[str, Any]] = []
-
-
-def _safe_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 def _resolve_now(now: Any) -> float:
@@ -132,7 +127,7 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
                         and sts > 1_000_000_000
                         and -5.0 <= (now_curr - sts) < 3600.0
                     ):
-                        norm_k = str(k or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+                        norm_k = clean_guard_symbol_key(k)
                         if norm_k:
                             clean_data[norm_k] = v
             _GRACE_TRACKER.clear()
@@ -307,11 +302,7 @@ class SmartStopLossGuard:
             - should_execute = False -> Defer stop-loss for this tick (grace period active).
         """
         now_ts = _resolve_now(now)
-        sym_key = (
-            symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
-            if isinstance(symbol, str)
-            else ""
-        )
+        sym_key = clean_guard_symbol_key(symbol)
         is_sim = _is_simulated_provider(provider)
         price_decrease = _safe_float(price_decrease, 0.0)
         lost_threshold = _safe_float(lost_threshold, 0.0)
@@ -376,9 +367,6 @@ class SmartStopLossGuard:
                 ob_snap = ob_col.fetch(sym_key, allow_network=False, now=now_ts)
             except TypeError:
                 ob_snap = ob_col.fetch(sym_key, allow_network=False)
-
-        def _obj_attr(obj: Any, key: str, default: Any = None) -> Any:
-            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
         top_long_pct = _safe_float(_obj_attr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
         taker_ratio = _safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
@@ -565,11 +553,7 @@ class SmartStopLossGuard:
         """Called when price decrease drops back below or equal to threshold."""
         if not _GRACE_TRACKER and (_LOADED_STATE_FILE_KEY is not None or _is_simulated_provider(provider)):
             return False
-        sym_key = (
-            symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
-            if isinstance(symbol, str)
-            else ""
-        )
+        sym_key = clean_guard_symbol_key(symbol)
         if not sym_key:
             return False
         is_sim_call = _is_simulated_provider(provider)
@@ -640,13 +624,7 @@ class SmartStopLossGuard:
                 "ts": now_ts,
             }
 
-            if isinstance(batch, str):
-                batch_b = batch.strip().lower() not in ("0", "0.0", "false", "no", "off", "disabled", "nan", "")
-            elif isinstance(batch, (int, float)) and not isinstance(batch, bool):
-                batch_b = math.isfinite(float(batch)) and float(batch) != 0.0
-            else:
-                batch_b = bool(batch)
-            if batch_b:
+            if _parse_bool_flag(batch, True):
                 _PENDING_RECOVERIES.append(rec_event)
             else:
                 _dispatch_recovery_alerts([rec_event])
@@ -744,11 +722,7 @@ def clear_smart_stop_loss_if_recovered(
 
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
-    sym_key = (
-        symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
-        if isinstance(symbol, str)
-        else ""
-    )
+    sym_key = clean_guard_symbol_key(symbol)
     if not sym_key:
         return
     is_sim_call = _is_simulated_provider(provider)

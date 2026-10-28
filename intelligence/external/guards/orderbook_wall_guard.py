@@ -9,21 +9,18 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    fetch_guard_snapshot,
+    normalize_guard_side,
+    safe_guard_float as _safe_float,
+    snap_attr,
+)
 from intelligence.external.collectors.orderbook_depth import (
     OrderbookDepthCollector,
     OrderbookSnapshot,
 )
-
-
-def _safe_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 class OrderbookWallGuard:
@@ -52,21 +49,14 @@ class OrderbookWallGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order book liquidity and limit walls."""
-        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm in ("B", "BUY", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
+        side_norm = normalize_guard_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="OrderbookWallGuard",
                 reason="unsupported_side_allowed",
             )
         if snapshot is None and self.collector is not None:
-            try:
-                snapshot = self.collector.fetch(symbol, now=now) if now is not None else self.collector.fetch(symbol)
-            except TypeError:
-                snapshot = self.collector.fetch(symbol)
+            snapshot = fetch_guard_snapshot(self.collector, symbol, now=now)
 
         if snapshot is None:
             return GuardDecision.allow(
@@ -74,14 +64,11 @@ class OrderbookWallGuard:
                 reason="no_orderbook_snapshot",
             )
 
-        def _snap_attr(key: str, default: Any = None) -> Any:
-            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
-
-        imb = _safe_float(_snap_attr("imbalance_ratio"), 0.5)
-        ask_wall_usd = _safe_float(_snap_attr("largest_ask_wall_usd"), 0.0)
-        ask_wall_px = _safe_float(_snap_attr("largest_ask_wall_price"), 0.0)
-        bid_wall_usd = _safe_float(_snap_attr("largest_bid_wall_usd"), 0.0)
-        bid_wall_px = _safe_float(_snap_attr("largest_bid_wall_price"), 0.0)
+        imb = _safe_float(snap_attr(snapshot, "imbalance_ratio"), 0.5)
+        ask_wall_usd = _safe_float(snap_attr(snapshot, "largest_ask_wall_usd"), 0.0)
+        ask_wall_px = _safe_float(snap_attr(snapshot, "largest_ask_wall_price"), 0.0)
+        bid_wall_usd = _safe_float(snap_attr(snapshot, "largest_bid_wall_usd"), 0.0)
+        bid_wall_px = _safe_float(snap_attr(snapshot, "largest_bid_wall_price"), 0.0)
 
         # 1. Evaluate BUY side against ask walls and heavy ask imbalance
         if side_norm == "BUY":

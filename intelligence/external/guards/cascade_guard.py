@@ -10,26 +10,18 @@ import math
 import time
 from typing import Any, Optional
 
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    normalize_guard_side,
+    safe_guard_float as _safe_float,
+    safe_pos_guard_float as _safe_pos_float,
+    snap_attr,
+)
 from intelligence.external.collectors.bybit_liquidations import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
-
-
-def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _safe_pos_float(val: Any, default: float) -> float:
-    f = _safe_float(val, default)
-    return f if f > 0.0 else default
 
 
 class LiquidationCascadeGuard:
@@ -58,11 +50,7 @@ class LiquidationCascadeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether an active cascade prevents order execution."""
-        side_norm = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_norm in ("B", "BUY", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
+        side_norm = normalize_guard_side(side)
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="LiquidationCascadeGuard",
@@ -85,10 +73,8 @@ class LiquidationCascadeGuard:
                 reason="no_liquidation_data",
             )
 
-        raw_long = summary.get("long_liq_usd") if isinstance(summary, dict) else getattr(summary, "long_liq_usd", None)
-        raw_short = summary.get("short_liq_usd") if isinstance(summary, dict) else getattr(summary, "short_liq_usd", None)
-        long_liq = _safe_float(raw_long, 0.0)
-        short_liq = _safe_float(raw_short, 0.0)
+        long_liq = _safe_float(snap_attr(summary, "long_liq_usd"), 0.0)
+        short_liq = _safe_float(snap_attr(summary, "short_liq_usd"), 0.0)
 
         # 1. BUY: If long liquidations in the short window exceed the cascade threshold, it's an active knife
         if side_norm == "BUY" and long_liq >= self.max_active_cascade_usd:

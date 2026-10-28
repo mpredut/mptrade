@@ -53,13 +53,17 @@ from providers.execution_audit import (  # noqa: E402
     intent_client_order_id,
 )
 from providers.base import extract_order_side  # noqa: E402
-from providers.kraken_provider import KrakenProvider, _kraken_pair_matches  # noqa: E402
+from providers.kraken_provider import (  # noqa: E402
+    KrakenProvider,
+    _kraken_balance_asset_candidates,
+    _kraken_pair_matches,
+)
 from order_retry import (  # noqa: E402
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
 )
 from credentials import kraken_credentials  # noqa: E402
-from cachepaths import cache_path  # noqa: E402
+from cachepaths import cache_path, cache_symbol_variants  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
 CACHE_TREND = cache_path("cache_short_trend.json")
@@ -166,13 +170,14 @@ class KrakenTrailing:
         bx_map = self._balance_ex_map()
         if not isinstance(bx_map, dict):
             return None
-        asset_clean = asset.strip().upper()
-        candidates = [asset, asset_clean, f"X{asset_clean}", f"Z{asset_clean}", f"{asset_clean}.F"]
-        if asset_clean == "BTC":
-            candidates.extend(["XBT", "XXBT", "XBT.F", "XXBT.F"])
+        candidates = _kraken_balance_asset_candidates(asset)
         for key in candidates:
             entry = bx_map.get(key)
             if isinstance(entry, dict):
+                return entry
+        cands_up = {c.upper() for c in candidates}
+        for k_raw, entry in bx_map.items():
+            if str(k_raw).strip().upper() in cands_up and isinstance(entry, dict):
                 return entry
         return None
 
@@ -204,15 +209,8 @@ class KrakenTrailing:
             if not isinstance(data, dict):
                 return 0.0
             items_map = data.get("items") if isinstance(data.get("items"), dict) else data
-            raw = str(pair or "").strip().upper()
-            cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
-            base = cleaned
-            for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
-                if base.endswith(quote) and len(base) > len(quote):
-                    base = base[: -len(quote)]
-                    break
             snap = None
-            for cand in (pair, raw, cleaned, f"{base}USDC", f"{base}USDT", f"{base}USD", base):
+            for cand in [pair] + cache_symbol_variants(pair):
                 if cand and isinstance(items_map.get(cand), dict):
                     snap = items_map[cand]
                     break

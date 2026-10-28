@@ -74,22 +74,9 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
-        if not isinstance(symbol, str):
-            return None
-        symbol = symbol.strip().upper()
-        if not symbol:
-            return None
-        now = _effective_now_ts(now)
-        cached, fresh = self._lookup_cached(symbol, now)
-        if fresh is not None:
-            return fresh
-
-        disk_snap = self._load_from_disk(symbol, now)
-        if disk_snap is not None:
-            return disk_snap
-
-        if not self._as_bool_flag(allow_network, default=True):
-            return None
+        symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        if not should_fetch or symbol is None:
+            return ready
 
         # Use USDT-perp pair as proxy for non-USDT quotes
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
@@ -125,9 +112,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
                 open_interest_usd=oi_usd,
                 ts=now,
             )
-            self._cache[symbol] = (now, telemetry)
-            self._save_to_disk(telemetry)
-            return telemetry
+            return self._commit_snapshot(symbol, now, telemetry)
         except Exception as e:
             logger.warning("Could not fetch derivatives telemetry for %s: %s", symbol, e)
             return self._fallback_stale(symbol, cached)

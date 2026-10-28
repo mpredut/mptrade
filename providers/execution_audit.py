@@ -77,7 +77,10 @@ def _json_safe_value(val: Any) -> Any:
 
 def new_intent_id(venue: str, symbol: str, kind: Optional[str] = None) -> str:
     """Create a unique intent ID before submission; callers persist it as needed."""
-    prefix = "-".join((_slug(venue).lower(), _slug(symbol), _slug(kind or "order").lower()))
+    from cachepaths import normalize_venue_name
+    v_slug = _slug(venue).lower()
+    v_norm = normalize_venue_name(v_slug) or v_slug
+    prefix = "-".join((v_norm, _slug(symbol), _slug(kind or "order").lower()))
     return f"{prefix}-{uuid.uuid4().hex}"
 
 
@@ -89,6 +92,7 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     """
     if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)):
         return None
+    from cachepaths import normalize_venue_name
     from .base import _clean_single_order_id
     raw = _clean_single_order_id(intent_id)
     if not raw:
@@ -96,7 +100,8 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     match = _UUID_HEX_SUFFIX.search(raw)
     token = (match.group(1).lower() if match else
              hashlib.blake2s(raw.encode("utf-8"), digest_size=16).hexdigest())
-    normalized_venue = _slug(venue).lower()
+    v_slug = _slug(venue).lower()
+    normalized_venue = normalize_venue_name(v_slug) or v_slug
     if normalized_venue == "kraken":
         return token                         # cl_ord_id: UUID without hyphens
     if normalized_venue == "binance":

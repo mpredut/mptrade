@@ -1468,11 +1468,20 @@ class MarketApi:
                         break
             except Exception:
                 inst_params = {}
-        if base is None:
+        if base is None or quote is None:
             try:
-                base = u.base_asset(symbol)
+                from providers.quantity import resolve_assets
+                res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)
+                if base is None and res_base:
+                    base = res_base
+                if quote is None and res_quote:
+                    quote = res_quote
             except Exception:
-                base = None
+                if base is None:
+                    try:
+                        base = u.base_asset(symbol)
+                    except Exception:
+                        base = None
         sym_str = str(symbol or "").strip() if not isinstance(symbol, bool) else ""
         if quote is None and base and sym_str.upper().startswith(base.upper()) and sym_str.upper() != base.upper():
             quote = sym_str[len(base):].lstrip("/-_").strip() or None   # For example, BTCUSDC or HYPE/USDC gives BTC/HYPE and USDC.
@@ -1501,7 +1510,12 @@ class MarketApi:
             name = name.name
         if isinstance(name, bool) or not isinstance(name, str):
             return None
-        return self._by_name.get(name.strip().lower())
+        key = name.strip().lower()
+        found = self._by_name.get(key)
+        if found is not None:
+            return found
+        from cachepaths import normalize_venue_name
+        return self._by_name.get(normalize_venue_name(key))
 
     @property
     def providers(self) -> List[MarketDataProvider]:

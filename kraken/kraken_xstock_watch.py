@@ -33,14 +33,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from kraken.kraken_common import (
-        log, load_env_stack, single_instance, required_env,
+        _parse_bool_flag, log, load_env_stack, single_instance, required_env,
         required_float_env, required_bool_env,
     )
     from kraken.notify import notify
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
     from kraken_common import (
-        log, load_env_stack, single_instance, required_env,
+        _parse_bool_flag, log, load_env_stack, single_instance, required_env,
         required_float_env, required_bool_env,
     )
     from notify import notify
@@ -61,20 +61,6 @@ def _default_state() -> dict:
         "alerted_pair": False, "alerted_tp": False, "alerted_tp2": False, "alerted_sl": False,
         "bot_pid": None, "alerted_need_price": False,
     }
-
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val) if math.isfinite(val) else default
-    if isinstance(val, str):
-        s = val.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
-            return False
-    return default
 
 
 def _load_state() -> dict:

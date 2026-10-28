@@ -265,23 +265,9 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
-        if not isinstance(symbol, str):
-            return None
-        symbol = symbol.strip().upper()
-        if not symbol:
-            return None
-        now = _effective_now_ts(now)
-        cached, fresh = self._lookup_cached(symbol, now)
-        if fresh is not None:
-            return fresh
-
-        # Check disk cache before network
-        disk_snap = self._load_from_disk(symbol, now)
-        if disk_snap is not None:
-            return disk_snap
-
-        if not self._as_bool_flag(allow_network, default=True):
-            return None
+        symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        if not should_fetch or symbol is None:
+            return ready
 
         p1h_f = 0.0
         if price_1h_change_pct is not None and not isinstance(price_1h_change_pct, bool):
@@ -369,9 +355,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 ts=now,
                 funding_rate=funding_rate,
             )
-            self._cache[symbol] = (now, snapshot)
-            self._save_to_disk(snapshot)
-            return snapshot
+            return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:
             logger.warning("Could not fetch whale positioning for %s: %s", symbol, e)
             return self._fallback_stale(symbol, cached)

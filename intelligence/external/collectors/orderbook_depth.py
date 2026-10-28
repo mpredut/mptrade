@@ -197,6 +197,31 @@ class _DiskBackedSymbolCollector:
         if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(item)
 
+    def _prepare_fetch(
+        self,
+        symbol: Any,
+        allow_network: Any,
+        now: Optional[float],
+    ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
+        if not isinstance(symbol, str):
+            return None, 0.0, None, None, False
+        sym_clean = symbol.strip().upper()
+        if not sym_clean:
+            return None, 0.0, None, None, False
+        now_f = _effective_now_ts(now)
+        cached, fresh = self._lookup_cached(sym_clean, now_f)
+        if fresh is not None:
+            return sym_clean, now_f, cached, fresh, False
+        disk_snap = self._load_from_disk(sym_clean, now_f)
+        if disk_snap is not None:
+            return sym_clean, now_f, cached, disk_snap, False
+        return sym_clean, now_f, cached, None, self._as_bool_flag(allow_network, default=True)
+
+    def _commit_snapshot(self, symbol: str, now: float, snapshot: Any) -> Any:
+        self._cache[symbol] = (now, snapshot)
+        self._save_to_disk(snapshot)
+        return snapshot
+
 
 @dataclass(frozen=True)
 class OrderbookSnapshot:
@@ -261,22 +286,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         now: Optional[float] = None,
     ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance or Kraken public API."""
-        if not isinstance(symbol, str):
-            return None
-        symbol = symbol.strip().upper()
-        if not symbol:
-            return None
-        now = _effective_now_ts(now)
-        cached, fresh = self._lookup_cached(symbol, now)
-        if fresh is not None:
-            return fresh
-
-        disk_snap = self._load_from_disk(symbol, now)
-        if disk_snap is not None:
-            return disk_snap
-
-        if not (True if allow_network is None else self._as_bool_flag(allow_network, default=False)):
-            return None
+        symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
+        if not should_fetch or symbol is None:
+            return ready
 
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
@@ -388,9 +400,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 largest_ask_wall_price=max_ask_px,
                 ts=now,
             )
-            self._cache[symbol] = (now, snapshot)
-            self._save_to_disk(snapshot)
-            return snapshot
+            return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:
             logger.warning("Could not fetch orderbook depth for %s: %s", symbol, e)
             return self._fallback_stale(symbol, cached)

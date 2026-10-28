@@ -11,6 +11,9 @@ from .base import _clean_single_order_id
 
 
 QUOTE_SUFFIXES = ("USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
+_LEGACY_KRAKEN_X_BASES = frozenset({
+    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP", "XMLN",
+})
 
 
 def _clean_fill_id(val: object) -> str:
@@ -106,10 +109,19 @@ def resolve_assets(symbol: str, base: Optional[str] = None,
     for suffix in QUOTE_SUFFIXES:
         if symbol_u.endswith(suffix) and len(symbol_u) > len(suffix):
             stem = symbol_u[:-len(suffix)].rstrip("/-_")
+            if (
+                len(stem) == 5
+                and stem.startswith("X")
+                and stem.endswith("Z")
+                and stem[:-1] in _LEGACY_KRAKEN_X_BASES
+            ):
+                stem = stem[:-1]
             if stem:
                 return base_u or stem, quote_u or suffix
-    if symbol_u.endswith(("_US_EQ", "_EQ")):
-        return base_u or symbol_u, quote_u or "USD"
+    if symbol_u.endswith(("_US_EQ", "_EQ", "X.T")):
+        raw_sym = "" if isinstance(symbol, bool) else str(symbol or "").strip()
+        eff_base = base_u or (raw_sym if raw_sym.endswith("x.T") else symbol_u)
+        return eff_base, quote_u or "USD"
     return base_u or symbol_u, quote_u
 
 

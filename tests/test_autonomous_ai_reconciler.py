@@ -2340,6 +2340,47 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert submitted["venue"] == "hyperliquid"
     assert submitted["status"] == "OBSERVED_SHADOW"
 
+    # 8. ExecutionAudit, MarketApi.provider_by_name, resolve_assets, and Kraken balance candidates normalize venue/asset aliases
+    from providers.execution_audit import intent_client_order_id, new_intent_id
+    from providers.kraken_provider import _kraken_balance_asset_candidates
+    from providers.market_api import api as market_api
+    from providers.quantity import resolve_assets
+    from intelligence.internal.guards.guard_decision import (
+        clean_guard_symbol_key,
+        normalize_guard_side,
+        safe_guard_float,
+        safe_pos_guard_float,
+        snap_attr,
+    )
+
+    hl_intent = new_intent_id("hl", "HYPEUSDC", "buy")
+    assert hl_intent.startswith("hyperliquid-HYPEUSDC-buy-")
+    assert intent_client_order_id("hl", hl_intent).startswith("0x")
+    assert intent_client_order_id("bin", hl_intent).startswith("SD_")
+    assert len(intent_client_order_id("krk", hl_intent)) == 32
+    assert intent_client_order_id("trading212", hl_intent) is None
+
+    for alias, expected_name in (("hl", "Hyperliquid"), ("krk", "Kraken"), ("bin", "Binance"), ("trading212", "T212"), ("212", "T212")):
+        prov_obj = market_api.provider_by_name(alias)
+        if prov_obj is not None:
+            assert prov_obj.name == expected_name
+
+    assert resolve_assets("XXBTZUSD") == ("XXBT", "USD")
+    assert resolve_assets("XXDGZUSD") == ("XXDG", "USD")
+    assert resolve_assets("XETHZUSD") == ("XETH", "USD")
+    assert resolve_assets("SPCXx.T") == ("SPCXx.T", "USD")
+    assert "ETH" in _kraken_balance_asset_candidates("XETH")
+    assert "USD" in _kraken_balance_asset_candidates("ZUSD")
+    assert "SPCX" in _kraken_balance_asset_candidates("SPCXx.T")
+
+    assert normalize_guard_side("long") == "BUY"
+    assert normalize_guard_side("short") == "SELL"
+    assert clean_guard_symbol_key("hype/usdc") == "HYPEUSDC"
+    assert snap_attr({"x": 42}, "x") == 42
+    assert safe_guard_float("3.5", 0.0) == 3.5
+    assert safe_pos_guard_float("-1.0", 2.0) == 2.0
+
+
 
 
 

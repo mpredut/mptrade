@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import math
 from typing import Any, Optional, Sequence
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    normalize_guard_side,
+    safe_guard_float as _safe_float,
+    snap_attr,
+)
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.internal.state.persistence import (
     _extract_finite_prices,
@@ -16,16 +22,6 @@ from intelligence.internal.state.persistence import (
     calculate_hurst_exponent,
     classify_hurst_regime,
 )
-
-
-def _safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 class TrendSignificanceGuard:
@@ -58,22 +54,18 @@ class TrendSignificanceGuard:
                 guard_name="TrendSignificanceGuard",
                 reason="not_an_entry_trigger",
             )
-        raw_action = trigger.get("action") if isinstance(trigger, dict) else getattr(trigger, "action", None)
-        raw_side = trigger.get("side") if isinstance(trigger, dict) else getattr(trigger, "side", None)
+        raw_action = snap_attr(trigger, "action")
+        raw_side = snap_attr(trigger, "side")
         action_u = (
             raw_action.value
             if isinstance(raw_action, TriggerAction)
             else ("" if isinstance(raw_action, bool) or raw_action is None else str(raw_action).strip().upper())
         )
-        side_u = (
+        side_u = normalize_guard_side(
             raw_side.value
             if isinstance(raw_side, TriggerSide)
-            else ("" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().upper())
+            else ("" if isinstance(raw_side, bool) or raw_side is None else str(raw_side))
         )
-        if side_u in ("B", "BUY", "BID", "LONG"):
-            side_u = TriggerSide.BUY.value
-        elif side_u in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_u = TriggerSide.SELL.value
         if action_u != TriggerAction.ENTRY.value or side_u == TriggerSide.HOLD.value or side_u not in (TriggerSide.BUY.value, TriggerSide.SELL.value):
             return GuardDecision.allow(
                 guard_name="TrendSignificanceGuard",

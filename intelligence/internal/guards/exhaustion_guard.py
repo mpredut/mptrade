@@ -4,17 +4,11 @@ from __future__ import annotations
 import math
 from typing import Any, Optional, Tuple
 
-from intelligence.internal.guards.guard_decision import GuardDecision
-
-
-def _pos_finite(val: Any, default: Optional[float] = None) -> Optional[float]:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if (math.isfinite(f) and f > 0.0) else default
-    except (TypeError, ValueError):
-        return default
+from intelligence.internal.guards.guard_decision import (
+    GuardDecision,
+    normalize_guard_side,
+    safe_pos_guard_float as _pos_finite,
+)
 
 
 def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float, float]:
@@ -86,11 +80,7 @@ class WeibullExhaustionGuard:
         if self.policy == "off":
             return GuardDecision.allow("WeibullExhaustionGuard", "weibull_policy_off")
 
-        side_u = str(side or "").strip().upper() if isinstance(side, str) else ""
-        if side_u in ("B", "BUY", "BID", "LONG"):
-            side_u = "BUY"
-        elif side_u in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_u = "SELL"
+        side_u = normalize_guard_side(side)
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("WeibullExhaustionGuard", "unsupported_side")
 

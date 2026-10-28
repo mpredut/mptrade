@@ -103,6 +103,26 @@ def _kraken_pair_matches(expected: str, actual: str) -> bool:
     return True
 
 
+def _kraken_balance_asset_candidates(asset: str) -> List[str]:
+    """Return ordered Kraken Balance/BalanceEx lookup keys for an asset or xStock ticker."""
+    raw = str(asset or "").strip() if not isinstance(asset, bool) else ""
+    if not raw:
+        return []
+    asset_u = raw.upper()
+    candidates: List[str] = [raw, asset_u, "X" + asset_u, "Z" + asset_u, asset_u + ".F", f"{asset_u}x.T", f"{asset_u}X.T"]
+    if asset_u in {"BTC", "XBT", "XXBT"}:
+        candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
+    elif asset_u in {"DOGE", "XDG", "XXDG"}:
+        candidates.extend(["DOGE", "XDG", "XXDG", "XDG.F", "XXDG.F"])
+    elif len(asset_u) == 4 and (asset_u in _LEGACY_KRAKEN_X_BASES or asset_u.startswith("Z")):
+        stripped = asset_u[1:]
+        candidates.extend([stripped, f"{stripped}.F"])
+    if asset_u.endswith("X.T") and len(asset_u) > 3:
+        stem = asset_u[:-3]
+        candidates.extend([stem, f"{stem}x.T"])
+    return list(dict.fromkeys(candidates))
+
+
 def _normalize_kraken_fill(raw: dict) -> dict:
     """Normalize a Kraken fill while preserving ordertxid/orderId for order-level aggregation."""
     norm = _normalize_order(raw)
@@ -313,14 +333,9 @@ class KrakenProvider(MarketDataProvider):
     def free_balance(self, asset: str) -> Optional[float]:
         if not asset or isinstance(asset, bool) or not str(asset).strip():
             return None
-        asset_u = str(asset).strip().upper()
         try:
             bal = self._client().balance() or {}
-            candidates = [asset_u, "X" + asset_u, "Z" + asset_u, asset_u + ".F"]
-            if asset_u in {"BTC", "XBT"}:
-                candidates.extend(["BTC", "XBT", "XXBT", "XBT.F", "XXBT.F"])
-            elif asset_u in {"DOGE", "XDG"}:
-                candidates.extend(["DOGE", "XDG", "XXDG", "XDG.F", "XXDG.F"])
+            candidates = _kraken_balance_asset_candidates(asset)
             for key in candidates:
                 if key in bal:
                     raw_val = bal[key]
@@ -330,7 +345,7 @@ class KrakenProvider(MarketDataProvider):
                     if not math.isfinite(val) or val < 0.0:
                         return None
                     return val
-            cands_up = {c.upper() for c in candidates} | {f"{asset_u}X.T"}
+            cands_up = {c.upper() for c in candidates}
             for k_raw, raw_val in bal.items():
                 if str(k_raw).strip().upper() in cands_up:
                     if isinstance(raw_val, bool):
