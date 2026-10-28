@@ -792,36 +792,28 @@ class AutonomousAIReconciler:
             return snapshot
 
         # 1. Fear & Greed sensor
-        for fg_name in ("fear_greed_collect.json", "fear_greed_cache.json"):
-            fg_path = os.path.join(self.cache_dir, fg_name)
-            data = _read_json(fg_path)
-            if isinstance(data, dict) and data:
-                snapshot.fear_greed = _with_age_min(data, fg_path)
-                break
+        fg_path = os.path.join(self.cache_dir, "fear_greed_collect.json")
+        data = _read_json(fg_path)
+        if isinstance(data, dict) and data:
+            snapshot.fear_greed = _with_age_min(data, fg_path)
 
         # 2. Market Breadth sensor
-        for mb_name in ("market_breadth_collect.json", "market_breadth_cache.json"):
-            mb_path = os.path.join(self.cache_dir, mb_name)
-            data = _read_json(mb_path)
-            if isinstance(data, dict) and data:
-                snapshot.market_breadth = _with_age_min(data, mb_path)
-                break
+        mb_path = os.path.join(self.cache_dir, "market_breadth_collect.json")
+        data = _read_json(mb_path)
+        if isinstance(data, dict) and data:
+            snapshot.market_breadth = _with_age_min(data, mb_path)
 
         # 3. Macro Sentiment Advisor sensor
-        for sa_name in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
-            sa_path = os.path.join(self.cache_dir, sa_name)
-            data = _read_json(sa_path)
-            if isinstance(data, dict) and data:
-                snapshot.sentiment_advisor = _with_age_min(data, sa_path)
-                break
+        sa_path = os.path.join(self.cache_dir, "sentiment_advisor_eval.json")
+        data = _read_json(sa_path)
+        if isinstance(data, dict) and data:
+            snapshot.sentiment_advisor = _with_age_min(data, sa_path)
 
         # 4. Geopolitical Threat Shield sensor + live 1-minute Breaking News RSS feed
-        for gt_name in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
-            gt_path = os.path.join(self.cache_dir, gt_name)
-            data = _read_json(gt_path)
-            if isinstance(data, dict) and data:
-                snapshot.geopolitical_threat = _with_age_min(data, gt_path)
-                break
+        gt_path = os.path.join(self.cache_dir, "geopolitical_threat_eval.json")
+        data = _read_json(gt_path)
+        if isinstance(data, dict) and data:
+            snapshot.geopolitical_threat = _with_age_min(data, gt_path)
 
         news_data = _read_json(os.path.join(self.cache_dir, "news_feed_collect.json"))
         if isinstance(news_data, list) and news_data:

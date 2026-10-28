@@ -708,7 +708,7 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 # ============================================================================
 
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
-    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_dynamic_lexicon.json"
+    fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
     return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname))) if cache_dir else cache_path(fname)
 
 

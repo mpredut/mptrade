@@ -652,28 +652,24 @@ def collect_pretrade_telemetry(
 
     # 5. Macro Sentiment Bias & Fear/Greed Index (Pillar 3)
     try:
-        for m_file in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
-            m_data = read_recovering_previous(os.path.join(cachedb_dir, m_file), json.loads, default=None)
-            if isinstance(m_data, dict):
-                bias = str(m_data.get("market_bias") or "").strip()
-                risk = str(m_data.get("risk_level") or "").strip()
-                action = str(m_data.get("recommended_action") or "").strip()
-                if bias or risk or action:
-                    telemetry["Macro Sentiment Bias"] = f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
-                    break
+        m_data = read_recovering_previous(os.path.join(cachedb_dir, "sentiment_advisor_eval.json"), json.loads, default=None)
+        if isinstance(m_data, dict):
+            bias = str(m_data.get("market_bias") or "").strip()
+            risk = str(m_data.get("risk_level") or "").strip()
+            action = str(m_data.get("recommended_action") or "").strip()
+            if bias or risk or action:
+                telemetry["Macro Sentiment Bias"] = f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
     except Exception:
         pass
 
     try:
-        for fg_file in ("fear_greed_collect.json", "fear_greed_cache.json"):
-            fg_data = read_recovering_previous(os.path.join(cachedb_dir, fg_file), json.loads, default=None)
-            if isinstance(fg_data, dict):
-                val = fg_data.get("value", "")
-                label = fg_data.get("classification", "")
-                if val is not None and not isinstance(val, bool) and str(val).strip() != "":
-                    lbl_str = str(label).strip() if (label is not None and not isinstance(label, bool)) else ""
-                    telemetry["Fear & Greed Index"] = f"{val} ({lbl_str})"
-                    break
+        fg_data = read_recovering_previous(os.path.join(cachedb_dir, "fear_greed_collect.json"), json.loads, default=None)
+        if isinstance(fg_data, dict):
+            val = fg_data.get("value", "")
+            label = fg_data.get("classification", "")
+            if val is not None and not isinstance(val, bool) and str(val).strip() != "":
+                lbl_str = str(label).strip() if (label is not None and not isinstance(label, bool)) else ""
+                telemetry["Fear & Greed Index"] = f"{val} ({lbl_str})"
     except Exception:
         pass
 

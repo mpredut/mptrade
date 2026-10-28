@@ -70,16 +70,25 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "macro": {
         "exact": (
+            "macro_lexicon_collect.json",
             "macro_dynamic_lexicon.json",
             "sentiment_advisor_eval.json",
             "macro_advisor_eval.json",
             "gemini_macro_advisor.json",
+            "geopolitical_threat_eval.json",
+            "fear_greed_collect.json",
+            "fear_greed_cache.json",
+            "market_breadth_collect.json",
+            "market_breadth_cache.json",
+            "news_feed_collect.json",
+            "news_feed_history.json",
         ),
         "prefixes": (
             "fear_greed_",
             "market_breadth_",
             "news_feed_",
             "geopolitical_threat_",
+            "macro_lexicon_",
             "macro_dynamic_lexicon.",
             "sentiment_advisor_eval.",
             "macro_advisor_eval.",
@@ -90,9 +99,6 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "orders": {
         "exact": (
             "binance_account_cache_health.json",
-            "orders.db",
-            "trades.db",
-            "cache.db",
         ),
         "prefixes": (
             "cache_order",
@@ -100,9 +106,6 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "cache_asset_value",
             "order_retry_",
             "binance_account_cache_health.",
-            "orders.db.",
-            "trades.db.",
-            "cache.db.",
         ),
         "suffixes": (),
     },

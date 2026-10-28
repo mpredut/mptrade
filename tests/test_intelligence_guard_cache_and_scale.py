@@ -4052,9 +4052,9 @@ def test_iteration18_macro_analyzer_resilience_and_external_collectors_now_propa
     )
     assert analyzer.shadow_notify is False
 
-    # Corrupt primary fear_greed_collect.json, valid fear_greed_cache.json
+    # Corrupt primary fear_greed_collect.json, valid .previous
     (tmp_path / "fear_greed_collect.json").write_text("{corrupt", encoding="utf-8")
-    (tmp_path / "fear_greed_cache.json").write_text(
+    (tmp_path / "fear_greed_collect.json.previous").write_text(
         json.dumps(
             {
                 "value": 18,

@@ -191,7 +191,7 @@ class AutonomousOvernightMonitor:
             }
 
         # 2. Macro Sentiment Advisor
-        macro = _read("sentiment_advisor_eval.json") or _read("macro_advisor_eval.json")
+        macro = _read("sentiment_advisor_eval.json")
         if macro:
             sensors["sentiment_advisor"] = {
                 "market_bias": str(macro.get("market_bias") or "NEUTRAL"),
@@ -212,11 +212,11 @@ class AutonomousOvernightMonitor:
             }
 
         # 4. Fear & Greed & Market Breadth
-        fg = _read("fear_greed_collect.json") or _read("fear_greed_cache.json")
+        fg = _read("fear_greed_collect.json")
         if fg:
             sensors["fear_greed"] = parse_finite_float(fg.get("value"), None)
 
-        mb = _read("market_breadth_collect.json") or _read("market_breadth_cache.json")
+        mb = _read("market_breadth_collect.json")
         if mb:
             sensors["market_breadth"] = parse_finite_float(mb.get("advance_ratio"), None)
 

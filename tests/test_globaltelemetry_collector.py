@@ -130,7 +130,7 @@ def test_collector_run_cycle_mocked(temp_cache_dir):
         assert hb["symbols"] == ["BTCUSDC"]
 
         # Cache file verifications
-        fg_path = os.path.join(temp_cache_dir, "fear_greed_cache.json")
+        fg_path = os.path.join(temp_cache_dir, "fear_greed_collect.json")
         assert os.path.exists(fg_path)
         with open(fg_path, "r", encoding="utf-8") as f:
             fg_data = json.load(f)

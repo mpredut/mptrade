@@ -736,12 +736,12 @@ class TestEnrichedPretradeTelemetry:
         # Create dummy cache files
         cachedb = tmp_path / "cachedb"
         cachedb.mkdir()
-        (cachedb / "macro_advisor_eval.json").write_text(json.dumps({
+        (cachedb / "sentiment_advisor_eval.json").write_text(json.dumps({
             "market_bias": "CAUTION",
             "risk_level": "HIGH",
             "recommended_action": "TRIM_PROFITS",
         }))
-        (cachedb / "fear_greed_cache.json").write_text(json.dumps({
+        (cachedb / "fear_greed_collect.json").write_text(json.dumps({
             "value": 72,
             "classification": "Greed",
         }))

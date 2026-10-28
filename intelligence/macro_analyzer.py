@@ -119,17 +119,12 @@ class MacroAnalyzer:
                 return nc.get_pool_snapshot()
 
         news_snap = None
-        for fname in ("news_feed_collect.json", "news_feed_history.json"):
-            cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, fname)))
-            if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
-                nc = NewsFeedCollector(history_file=cand_path)
-                if getattr(nc, "_aggregated_pool", None) or getattr(nc, "_history", None):
-                    return _snap(nc)
-                if news_snap is None:
-                    news_snap = _snap(nc)
+        cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
+        if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
+            nc = NewsFeedCollector(history_file=cand_path)
+            news_snap = _snap(nc)
         if news_snap is None:
-            default_news_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
-            news_snap = _snap(NewsFeedCollector(history_file=default_news_path))
+            news_snap = _snap(NewsFeedCollector(history_file=cand_path))
         return news_snap
 
     def _maybe_notify_assessment(
@@ -286,11 +281,9 @@ class MacroAnalyzer:
         retry_ttl = safe_pos_float(getattr(self.geopolitical_analyzer, "fallback_retry_ttl_sec", 120.0), 120.0)
 
         news_snap = None
-        for fname in ("news_feed_collect.json", "news_feed_history.json"):
-            cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, fname)))
-            if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
-                news_snap = self._load_news_snapshot(current_ts, explicit_now=now)
-                break
+        cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
+        if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
+            news_snap = self._load_news_snapshot(current_ts, explicit_now=now)
 
         headlines_changed = False
         if news_snap is not None:

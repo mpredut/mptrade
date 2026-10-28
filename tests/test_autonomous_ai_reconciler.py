@@ -57,11 +57,11 @@ def test_reconciler_invalid_supervisor_mode_fails_fast(temp_env):
 
 def test_harvest_sensors_telemetry(temp_env):
     workspace, cache_dir, _ = temp_env
-    fg_file = os.path.join(cache_dir, "fear_greed_cache.json")
+    fg_file = os.path.join(cache_dir, "fear_greed_collect.json")
     with open(fg_file, "w", encoding="utf-8") as f:
         json.dump({"value": 72, "classification": "Greed"}, f)
 
-    mb_file = os.path.join(cache_dir, "market_breadth_cache.json")
+    mb_file = os.path.join(cache_dir, "market_breadth_collect.json")
     with open(mb_file, "w", encoding="utf-8") as f:
         json.dump({"advance_ratio": 0.65, "regime": "bull"}, f)
 
@@ -785,7 +785,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
             },
             f,
         )
-    with open(os.path.join(cache_dir, "market_breadth_cache.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "market_breadth_collect.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "advance_ratio": 0.18,
@@ -1454,7 +1454,7 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
     # 4. AutonomousOvernightMonitor sanitizes sensor floats, strips quotes in order_guard.conf, and parses latest_overnight.log
     with open(os.path.join(cache_dir, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
         json.dump({"threat_level": None, "risk_score": True, "summary": None}, f)
-    with open(os.path.join(cache_dir, "fear_greed_cache.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "fear_greed_collect.json"), "w", encoding="utf-8") as f:
         json.dump({"value": "bad_val"}, f)
     mon = AutonomousOvernightMonitor(workspace_dir=workspace)
     assert mon.get_autonomous_modes()["supervisor_mode"] == "shadow"

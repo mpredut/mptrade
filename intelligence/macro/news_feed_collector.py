@@ -133,9 +133,8 @@ class NewsFeedCollector:
     def _load_history(self) -> None:
         from state_io import read_recovering_previous
         hist_file = self._effective_history_file()
-        candidates = [hist_file] + ([hist_file.replace("_collect.json", "_history.json")] if "_collect.json" in hist_file else [])
         now = time.time()
-        for load_path in candidates:
+        for load_path in (hist_file,):
             try:
                 data = read_recovering_previous(load_path, json.loads, default=None)
                 if not isinstance(data, list):
