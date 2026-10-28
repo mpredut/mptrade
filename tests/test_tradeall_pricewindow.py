@@ -434,13 +434,13 @@ class TestPriceWindowGetTrend(unittest.TestCase):
                     self.assertGreater(gradient * expected, 0)
                     self.assertEqual(final_trend, 1 if growth > 0 else -1)
 
-        with self.subTest("gc is Step-WOLS cubic on the median-filtered window (default SSOT)"):
+        with self.subTest("gc is Step-WOLS on the median-filtered window (default SSOT)"):
             import pricewindow as pw_mod
             prices = [100 + i for i in range(20)]
             pw = _window(prices)
             _, gc, sf, gr = pw.get_short_trend()
-            self.assertEqual(pw_mod.SHORT_TREND_ESTIMATOR, pw_mod.SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC)
-            self.assertAlmostEqual(gc, pw_mod.step_wols_cubic_slope(prices, pw.sample_rate_sec), places=10)
+            self.assertIn(pw_mod.SHORT_TREND_ESTIMATOR, (pw_mod.SHORT_TREND_ESTIMATOR_STEP_WOLS, pw_mod.SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC))
+            self.assertAlmostEqual(gc, pw_mod.step_wols_slope(prices, pw.sample_rate_sec), places=10)
 
         with self.subTest("legacy estimator keeps gc = (sf + gr) / 2 for rollback"):
             import pricewindow as pw_mod

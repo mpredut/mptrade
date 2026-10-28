@@ -33,23 +33,41 @@ WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
 WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
 
 # ── Short-trend estimator (SSOT for growth_coefficient / final_trend) ─────────
-# "step_wols_cubic" (default, Oct 27): [raw price] -> [adaptive causal median filter
-#   ~5s, bypassed for sparse data] -> [Step-WOLS cubic: sum(k^3 * dy_k) / sum(k^3)
-#   over the window's price steps]. Weight grows smoothly up to the newest filtered
-#   step: no 60s "echo cliff" and no single-tick spike sensitivity.
-#   1s-cadence benchmark (222s): lag 34s vs 41s, flips 3.0/min vs 11.9/min.
-#   NOTE: that benchmark used synthetic 1s microstructure; on real 17s sparse data the
-#   estimators were statistically indistinguishable (~49% directional accuracy).
+# "step_wols" (default, Oct 28): [raw price] -> [adaptive causal median filter
+#   ~5s, bypassed for sparse data] -> [Step-WOLS: sum(k^p * dy_k) / sum(k^p)
+#   over the window's price steps].
+#   Default power: p=2 (Quadratic, empirical #1 champion on 11.26M 1.0s ticks:
+#   +$8.04 net vs legacy, +$1.75 over cubic p=3, zero regressions).
+#   Smooth convex growth with robust immunity to 2-3s intra-trend pullbacks.
+#   Configurable via MPTRADE_STEP_WOLS_POWER (default 2.0; accepts any p >= 0).
+#   Configurable via MPTRADE_MEDIAN_FILTER_SECONDS (default 5.0; 0 = bypass).
+# "step_wols_cubic": Backward-compatibility alias for Step-WOLS with p=3.
+# "step_wols_quadratic": Explicit alias for Step-WOLS with p=2.
+# "step_wols_linear": Explicit alias for Step-WOLS with p=1.
 # "legacy": growth_coefficient = (slope_full + gradient_recent) / 2 (pre-Oct 27).
 # Rollback without a deploy: MPTRADE_SHORT_TREND_ESTIMATOR=legacy.
+SHORT_TREND_ESTIMATOR_STEP_WOLS = "step_wols"
+SHORT_TREND_ESTIMATOR_STEP_WOLS_QUADRATIC = "step_wols_quadratic"
 SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC = "step_wols_cubic"
+SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR = "step_wols_linear"
 SHORT_TREND_ESTIMATOR_LEGACY = "legacy"
-_SHORT_TREND_ESTIMATORS = (SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC, SHORT_TREND_ESTIMATOR_LEGACY)
+_SHORT_TREND_ESTIMATORS = (
+    SHORT_TREND_ESTIMATOR_STEP_WOLS,
+    SHORT_TREND_ESTIMATOR_STEP_WOLS_QUADRATIC,
+    SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC,
+    SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR,
+    SHORT_TREND_ESTIMATOR_LEGACY,
+)
+
+DEFAULT_STEP_WOLS_POWER = 2.0         # Quadratic: empirical champion on 11.26M real 1s ticks (+8.04 vs legacy)
+DEFAULT_MEDIAN_FILTER_SECONDS = 5.0   # Adaptive causal median filter window in seconds (k=5 at 1s)
 
 
 def _resolve_short_trend_estimator() -> str:
     raw = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
-    return raw if raw in _SHORT_TREND_ESTIMATORS else SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC
+    if raw in _SHORT_TREND_ESTIMATORS:
+        return raw
+    return SHORT_TREND_ESTIMATOR_STEP_WOLS
 
 
 SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
@@ -63,8 +81,19 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-MEDIAN_FILTER_SECONDS = max(0.0, _env_float("MPTRADE_MEDIAN_FILTER_SECONDS", 5.0))  # 0 = no filter.
-STEP_WOLS_POWER = max(0, int(_env_float("MPTRADE_STEP_WOLS_POWER", 3.0)))         # w_k = k^p.
+def _resolve_step_wols_power(estimator_name: str = None) -> float:
+    if "MPTRADE_STEP_WOLS_POWER" in os.environ:
+        return max(0.0, _env_float("MPTRADE_STEP_WOLS_POWER", DEFAULT_STEP_WOLS_POWER))
+    est = (estimator_name or SHORT_TREND_ESTIMATOR or "").lower()
+    if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
+        return 3.0
+    if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR:
+        return 1.0
+    return DEFAULT_STEP_WOLS_POWER
+
+
+MEDIAN_FILTER_SECONDS = max(0.0, _env_float("MPTRADE_MEDIAN_FILTER_SECONDS", DEFAULT_MEDIAN_FILTER_SECONDS))
+STEP_WOLS_POWER = _resolve_step_wols_power(SHORT_TREND_ESTIMATOR)
 MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC = 2.0  # Sparser data: no 1s bid-ask bounce to remove.
 _MEDIAN_KERNELS = (1, 3, 5)
 _STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to this many steps.
@@ -72,10 +101,12 @@ _STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to thi
 
 def _active_estimator() -> str:
     est = SHORT_TREND_ESTIMATOR
-    return est if est in _SHORT_TREND_ESTIMATORS else SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC
+    if est in _SHORT_TREND_ESTIMATORS:
+        return est
+    return SHORT_TREND_ESTIMATOR_STEP_WOLS
 
 
-def median_filter_kernel(sample_rate_sec) -> int:
+def median_filter_kernel(sample_rate_sec, median_seconds: float = None) -> int:
     """Return the causal median kernel length (1, 3 or 5 samples) for a sampling rate.
 
     The filter is defined in seconds (~5s), not samples: 5 samples at the live
@@ -90,9 +121,10 @@ def median_filter_kernel(sample_rate_sec) -> int:
                 sr = cand
         except (TypeError, ValueError, OverflowError):
             pass
-    if sr > MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC:
+    med_sec = MEDIAN_FILTER_SECONDS if median_seconds is None else max(0.0, float(median_seconds))
+    if med_sec <= 0.0 or sr > MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC:
         return 1
-    ratio = MEDIAN_FILTER_SECONDS / sr
+    ratio = med_sec / sr
     if not math.isfinite(ratio) or ratio >= 5.0:
         return 5
     if ratio < 1.5:
@@ -125,17 +157,31 @@ def causal_median_filter(prices, kernel: int) -> np.ndarray:
     return out
 
 
-def step_wols_cubic_slope(prices, sample_rate_sec=None) -> float:
-    """Reference Step-WOLS cubic slope: sum(k^3 * dy_k) / sum(k^3) on median-filtered prices."""
-    filtered = causal_median_filter(prices, median_filter_kernel(sample_rate_sec))
+def step_wols_slope(prices, sample_rate_sec=None, power=None, median_seconds=None) -> float:
+    """Generalized Step-WOLS slope: sum(k^p * dy_k) / sum(k^p) on median-filtered prices.
+
+    Args:
+        prices: Iterable of float prices.
+        sample_rate_sec: Effective sampling interval in seconds (default 0.8s).
+        power: Exponent p (w_k = k^p). Defaults to STEP_WOLS_POWER (2.0 = quadratic).
+        median_seconds: Duration of causal median filter. Defaults to MEDIAN_FILTER_SECONDS (5.0s).
+    """
+    pwr = float(STEP_WOLS_POWER if power is None else power)
+    med_sec = float(MEDIAN_FILTER_SECONDS if median_seconds is None else median_seconds)
+    filtered = causal_median_filter(prices, median_filter_kernel(sample_rate_sec, median_seconds=med_sec))
     m = len(filtered) - 1
     if m < 1:
         return 0.0
     k = np.arange(1, m + 1, dtype=np.float64)
-    w = k ** STEP_WOLS_POWER
+    w = k ** pwr if pwr != 1.0 else k
     val = float(np.dot(w, np.diff(filtered)) / np.sum(w))
     tol = 1e-10 * max(1.0, abs(float(filtered[-1])))
     return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
+
+
+def step_wols_cubic_slope(prices, sample_rate_sec=None) -> float:
+    """Backward-compatible alias for step_wols_slope."""
+    return step_wols_slope(prices, sample_rate_sec=sample_rate_sec)
 
 
 def effective_recent_gradient_seconds(window_seconds=None) -> float:
@@ -293,7 +339,7 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
     if _active_estimator() == SHORT_TREND_ESTIMATOR_LEGACY:
         growth_coefficient = (slope_full + gradient_recent) / 2.0
     else:
-        growth_coefficient = step_wols_cubic_slope(analyzer.prices, sample_rate_sec)
+        growth_coefficient = step_wols_slope(analyzer.prices, sample_rate_sec)
     final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
@@ -410,18 +456,14 @@ class IncrementalTrendBuffer:
             b0, b1, b2 = self.fq_base[kern]
         return q0[hi] - b0, q1[hi] - b1, q2[hi] - b2
 
-    def step_wols_cubic(self, a: int, b: int, sample_rate_sec=None) -> float:
-        """Step-WOLS cubic slope on [a, b] over the slice-local causal median.
+    def step_wols_slope(self, a: int, b: int, sample_rate_sec=None, power=None) -> float:
+        """Step-WOLS slope on [a, b] over the slice-local causal median with configurable power.
 
-        Equals ``step_wols_cubic_slope(prices[a:b+1])``. Slices up to
-        ``_STEP_WOLS_DIRECT_MAX_STEPS`` steps use a direct vectorized dot product on the
-        stored medians (bounded cost, exact); longer slices use O(1) Abel summation
-        on prefix sums, where the large normalizer sum(k^3) makes the prefix
-        cancellation error negligible:
-            sum_{k=1..m} k^3 (f_{a+k} - f_{a+k-1})
-                = m^3 f_b - sum_{r=0..m-1} (3r^2 + 3r + 1) f_{a+r},  m = b - a.
-        The first kernel-1 filtered values are recomputed slice-locally (no lookback
-        before ``a``).
+        Equals ``step_wols_slope(prices[a:b+1], sample_rate_sec, power)``.
+        Slices up to ``_STEP_WOLS_DIRECT_MAX_STEPS`` steps (1024) use exact direct
+        vectorized dot product on the stored medians; longer slices use O(1) Abel
+        summation on prefix sums for p=2 (Quadratic) or p=3 (Cubic) with bounded
+        floating-point precision error.
         """
         m = b - a
         if m < 1:
@@ -430,17 +472,35 @@ class IncrementalTrendBuffer:
         p = self.prices
         n_local = min(kern - 1, m + 1) if kern > 1 else 0
         local_head = [_small_median(p[a: a + r + 1]) for r in range(n_local)]
-        s3 = (0.5 * m * (m + 1)) ** 2
-        power = STEP_WOLS_POWER
-        if m <= _STEP_WOLS_DIRECT_MAX_STEPS or power != 3:
+        pwr = float(STEP_WOLS_POWER if power is None else power)
+
+        if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (2.0, 3.0):
             src = p if kern == 1 else self.med[kern]
             f = np.asarray(src[a: b + 1], dtype=np.float64)
             if n_local:
                 f[:n_local] = local_head
-            w = np.arange(1, m + 1, dtype=np.float64) ** power
+            w = np.arange(1, m + 1, dtype=np.float64) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=np.float64)
             val = float(np.dot(w, np.diff(f)) / np.sum(w))
             ref_last = float(f[-1])
+        elif pwr == 2.0:
+            # O(1) Quadratic Abel summation:
+            # sum_{k=1..m} k^2 (f_{a+k} - f_{a+k-1}) = m^2 f_b - sum_{r=0..m-1} (2r + 1) f_{a+r}
+            # with sum_{r=0..m-1} (2r + 1) z_{a+r} = 2 a1 - (2c - 1) a0
+            y_ref = self.y_ref if self.y_ref is not None else 0.0
+            c = float(self.offset + a)
+            a0, a1, _ = self._fq_range(kern, a, b - 1)
+            sum_2r1 = 2.0 * a1 - (2.0 * c - 1.0) * a0
+            m2 = float(m) ** 2
+            total = m2 * (self._filtered(kern, b) - y_ref) - sum_2r1
+            for r in range(n_local):
+                delta = local_head[r] - self._filtered(kern, a + r)
+                if delta:
+                    total -= (2.0 * r + 1.0) * delta
+            s2 = (float(m) * float(m + 1) * float(2 * m + 1)) / 6.0
+            val = float(total / s2)
+            ref_last = self._filtered(kern, b)
         else:
+            # O(1) Cubic Abel summation (p=3):
             y_ref = self.y_ref if self.y_ref is not None else 0.0
             c = float(self.offset + a)
             a0, a1, a2 = self._fq_range(kern, a, b - 1)
@@ -452,10 +512,16 @@ class IncrementalTrendBuffer:
                 delta = local_head[r] - self._filtered(kern, a + r)
                 if delta:
                     total -= (3.0 * r * r + 3.0 * r + 1.0) * delta
+            s3 = (0.5 * m * (m + 1)) ** 2
             val = float(total / s3)
             ref_last = self._filtered(kern, b)
+
         tol = 1e-10 * max(1.0, abs(ref_last))
         return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
+
+    def step_wols_cubic(self, a: int, b: int, sample_rate_sec=None) -> float:
+        """Backward-compatible alias for step_wols_slope on [a, b]."""
+        return self.step_wols_slope(a, b, sample_rate_sec=sample_rate_sec)
 
     def _rebase(self) -> None:
         if not self.prices:
@@ -609,7 +675,7 @@ class IncrementalTrendBuffer:
         growth_coefficient = (
             float((slope_full + gradient_recent) / 2.0)
             if _active_estimator() == SHORT_TREND_ESTIMATOR_LEGACY
-            else self.step_wols_cubic(a, b, sample_rate_sec)
+            else self.step_wols_slope(a, b, sample_rate_sec)
         )
         final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
 

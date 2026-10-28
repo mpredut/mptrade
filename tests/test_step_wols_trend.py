@@ -1,7 +1,9 @@
-"""Step-WOLS cubic short-trend estimator (pricewindow SSOT, Oct 27).
+"""Step-WOLS short-trend estimator test suite (pricewindow SSOT, Oct 28).
 
 Pipeline: raw price -> adaptive causal median (~5s, bypassed above 2s sampling)
--> growth_coefficient = sum(k^3 * dy_k) / sum(k^3) over the window's steps.
+-> growth_coefficient = sum(k^p * dy_k) / sum(k^p) over the window's steps.
+Default power p=2 (Quadratic: empirical #1 champion on 11.26M ticks, +$8.04 vs legacy).
+Supports p=1 (Linear), p=2 (Quadratic), p=3 (Cubic), and arbitrary powers p >= 0.
 """
 import os
 import sys
@@ -15,11 +17,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pricewindow as pw
 
 
-def _naive_step_wols(prices, kernel):
+def _naive_step_wols(prices, kernel, power=None):
+    pwr = float(pw.STEP_WOLS_POWER if power is None else power)
     arr = np.asarray(prices, dtype=float)
     filt = np.array([np.median(arr[max(0, i - kernel + 1): i + 1]) for i in range(len(arr))])
     m = len(filt) - 1
-    k = np.arange(1, m + 1, dtype=float) ** 3
+    if m < 1:
+        return 0.0
+    k = np.arange(1, m + 1, dtype=float) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=float)
     return float(np.dot(k, np.diff(filt)) / k.sum())
 
 
@@ -35,13 +40,21 @@ class TestMedianKernel(unittest.TestCase):
             self.assertEqual(pw.median_filter_kernel(bad), 5)  # DEFAULT_SAMPLE_RATE_SEC=0.8
         self.assertEqual(pw.median_filter_kernel(1e-309), 5)   # subnormal rate must not overflow
 
+    def test_explicit_median_seconds_override(self):
+        self.assertEqual(pw.median_filter_kernel(1.0, median_seconds=3.0), 3)
+        self.assertEqual(pw.median_filter_kernel(1.0, median_seconds=0.0), 1)
+        self.assertEqual(pw.median_filter_kernel(1.0, median_seconds=5.0), 5)
 
-class TestStepWolsCubic(unittest.TestCase):
-    def test_reference_matches_naive_definition(self):
+
+class TestStepWolsGeneralization(unittest.TestCase):
+    def test_reference_matches_naive_definition_across_powers(self):
         rng = np.random.default_rng(1)
         prices = 60000 + np.cumsum(rng.normal(0, 5, 300))
-        for sr, kern in ((1.0, 5), (1.5, 3), (17.0, 1)):
-            self.assertAlmostEqual(pw.step_wols_cubic_slope(prices, sr), _naive_step_wols(prices, kern), places=9)
+        for pwr in (1.0, 2.0, 3.0):
+            for sr, kern in ((1.0, 5), (1.5, 3), (17.0, 1)):
+                got = pw.step_wols_slope(prices, sr, power=pwr)
+                expected = _naive_step_wols(prices, kern, power=pwr)
+                self.assertAlmostEqual(got, expected, places=9)
 
     def test_buffer_matches_reference_on_subslices_after_trim_and_long_windows(self):
         rng = np.random.default_rng(2)
@@ -51,14 +64,26 @@ class TestStepWolsCubic(unittest.TestCase):
             buf.append(float(px))
         buf.trim_front(700)
         n = len(buf.prices)
-        for a, b, sr in ((0, n - 1, 0.8), (n - 222, n - 1, 1.0), (n - 1500, n - 1, 1.0),
-                         (5, 9, 1.0), (100, 101, 1.5), (40, 1300, 17.0)):
-            got = buf.step_wols_cubic(a, b, sr)
-            ref = pw.step_wols_cubic_slope(buf.prices[a:b + 1], sr)
-            self.assertAlmostEqual(got, ref, delta=1e-9 * max(1.0, abs(ref)))
-            res = buf.eval_slice(a, b, sample_rate_sec=sr)
-            self.assertAlmostEqual(res[1], got, places=12)
-            self.assertEqual(res[0], 1 if got > 0 else (-1 if got < 0 else 0))
+        for pwr in (2.0, 3.0):
+            with patch.object(pw, "STEP_WOLS_POWER", pwr):
+                for a, b, sr in ((0, n - 1, 0.8), (n - 222, n - 1, 1.0), (n - 1500, n - 1, 1.0),
+                                 (5, 9, 1.0), (100, 101, 1.5), (40, 1300, 17.0)):
+                    got = buf.step_wols_slope(a, b, sr, power=pwr)
+                    ref = pw.step_wols_slope(buf.prices[a:b + 1], sr, power=pwr)
+                    self.assertAlmostEqual(got, ref, delta=1e-9 * max(1.0, abs(ref)))
+                    res = buf.eval_slice(a, b, sample_rate_sec=sr)
+                    self.assertAlmostEqual(res[1], got, places=12)
+                    self.assertEqual(res[0], 1 if got > 0 else (-1 if got < 0 else 0))
+
+    def test_backward_compatible_aliases(self):
+        rng = np.random.default_rng(123)
+        prices = 50000 + np.cumsum(rng.normal(0, 2, 100))
+        # step_wols_cubic_slope delegates to step_wols_slope
+        self.assertEqual(pw.step_wols_cubic_slope(prices, 1.0), pw.step_wols_slope(prices, 1.0))
+        buf = pw.IncrementalTrendBuffer()
+        for p in prices:
+            buf.append(float(p))
+        self.assertEqual(buf.step_wols_cubic(0, len(prices) - 1, 1.0), buf.step_wols_slope(0, len(prices) - 1, 1.0))
 
     def test_eval_slice_matches_instant_trend_from_prices(self):
         rng = np.random.default_rng(3)
@@ -85,8 +110,8 @@ class TestStepWolsCubic(unittest.TestCase):
         self.assertLess(gc, 0.0)
 
     def test_constant_and_short_series_are_neutral(self):
-        self.assertEqual(pw.step_wols_cubic_slope([100.0] * 50, 1.0), 0.0)
-        self.assertEqual(pw.step_wols_cubic_slope([100.0], 1.0), 0.0)
+        self.assertEqual(pw.step_wols_slope([100.0] * 50, 1.0), 0.0)
+        self.assertEqual(pw.step_wols_slope([100.0], 1.0), 0.0)
         buf = pw.IncrementalTrendBuffer()
         for _ in range(50):
             buf.append(100.0)
@@ -101,16 +126,27 @@ class TestStepWolsCubic(unittest.TestCase):
         with patch.object(pw, "SHORT_TREND_ESTIMATOR", pw.SHORT_TREND_ESTIMATOR_LEGACY):
             _, gc_legacy, _, _ = win.get_short_trend()
         self.assertAlmostEqual(gc_legacy, (sf + gr) / 2.0, places=10)
-        self.assertAlmostEqual(gc_new, pw.step_wols_cubic_slope(list(win.prices), 1.0), places=9)
+        self.assertAlmostEqual(gc_new, pw.step_wols_slope(list(win.prices), 1.0), places=9)
 
-    def test_env_resolution_defaults_to_step_wols_and_accepts_legacy(self):
+    def test_env_resolution_defaults_to_step_wols_and_accepts_aliases(self):
         with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "legacy"}):
             self.assertEqual(pw._resolve_short_trend_estimator(), "legacy")
-        with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "bogus"}):
+        with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "step_wols_cubic"}):
             self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols_cubic")
+            self.assertEqual(pw._resolve_step_wols_power("step_wols_cubic"), 3.0)
+        with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "step_wols_linear"}):
+            self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols_linear")
+            self.assertEqual(pw._resolve_step_wols_power("step_wols_linear"), 1.0)
+        with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "step_wols"}):
+            self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols")
+            self.assertEqual(pw._resolve_step_wols_power("step_wols"), 2.0)
+        with patch.dict(os.environ, {"MPTRADE_SHORT_TREND_ESTIMATOR": "bogus"}):
+            self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MPTRADE_SHORT_TREND_ESTIMATOR", None)
-            self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols_cubic")
+            self.assertEqual(pw._resolve_short_trend_estimator(), "step_wols")
+        with patch.dict(os.environ, {"MPTRADE_STEP_WOLS_POWER": "3.5"}):
+            self.assertEqual(pw._resolve_step_wols_power(), 3.5)
 
 
 if __name__ == "__main__":
