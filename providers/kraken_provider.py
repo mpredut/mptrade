@@ -476,13 +476,12 @@ class KrakenProvider(MarketDataProvider):
         trades = res.get("trades")
         if not isinstance(trades, dict):
             raise ProviderError(f"TradesHistory({symbol}): trades mapping in payload is invalid")
-        su = str(symbol).strip().upper()
         rows = []
         for tr in trades.values():
             if not isinstance(tr, dict):
                 continue
             p = str(tr.get("pair", "")).upper()
-            if not (_kraken_pair_matches(symbol, p) or su in p or (p and p in su)):
+            if not _kraken_pair_matches(symbol, p):
                 continue
             rows.append(_normalize_kraken_fill(tr))
         return rows

@@ -207,9 +207,9 @@ def extract_order_side(order: Any) -> str:
     )
     if raw_side is not None and str(raw_side).strip():
         s = str(raw_side).strip().upper()
-        if s in ("B", "BUY", "BID", "LONG"):
+        if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
             return "BUY"
-        if s in ("A", "S", "SELL", "ASK", "SHORT"):
+        if s in ("A", "S", "SELL", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
             return "SELL"
         return s
     raw_type = order.get("type")

@@ -25,7 +25,21 @@ import os
 import re
 import time
 import urllib.parse
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
+
+if TYPE_CHECKING:
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
 try:
     from zoneinfo import ZoneInfo
@@ -33,8 +47,6 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 from cachepaths import cache_path
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -816,6 +828,7 @@ def did_cross_session_checkpoint(
 # 4. Context-Adaptive Dynamic Interval Calculators
 # ============================================================================
 
+
 def compute_dynamic_sentiment_interval(
     base_interval_sec: float = DEFAULT_SENTIMENT_INTERVAL_SEC,
     last_eval_ts: float = 0.0,
@@ -956,6 +969,7 @@ def load_cached_fear_greed_snapshot(
 ) -> Optional[FearGreedSnapshot]:
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
     from botcore import _parse_bool_flag
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from state_io import read_recovering_previous
 
     eval_now = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())

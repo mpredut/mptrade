@@ -2171,5 +2171,72 @@ def test_extract_current_price_item_instrument_resolution_and_trailing_state_nor
     assert pos_by_sym["TAOUSDC"]["dd_from_peak_pct"] == -5.0
 
 
+def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(tmp_path):
+    from cachepaths import normalize_venue_name
+    from intelligence.sentiment.guards.high_stake_guard import extract_symbol_recent_fills
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import _normalize_trading_decisions
+    from providers.kraken_provider import _kraken_pair_matches
+
+    # 1. Venue alias normalization
+    assert normalize_venue_name("trading212") == "t212"
+    assert normalize_venue_name("TRADING_212") == "t212"
+    assert normalize_venue_name("212") == "t212"
+    assert normalize_venue_name("hl") == "hyperliquid"
+    assert normalize_venue_name("Hyper_Liquid") == "hyperliquid"
+    assert normalize_venue_name("krk") == "kraken"
+    assert normalize_venue_name("bin") == "binance"
+
+    # 2. _normalize_trading_decisions sorts by confidence before deduplicating canonical base + venue alias
+    plan = {
+        "trading_decisions": [
+            {"venue": "hl", "symbol": "HYPE", "action": "BUY", "confidence": 0.88, "notional_usd": 40.0},
+            {"venue": "hyperliquid", "symbol": "HYPEUSDC", "decision": "BUY", "confidence": 0.96, "notional_usd": 80.0},
+            {"venue": "trading212", "symbol": "SPCX_US_EQ", "side": "SELL", "confidence": 0.91, "notional_usd": 50.0},
+        ]
+    }
+    decs = _normalize_trading_decisions(plan)
+    assert len(decs) == 2
+    assert decs[0]["venue"] == "hyperliquid"
+    assert decs[0]["symbol"] == "HYPEUSDC"
+    assert decs[0]["decision"] == "BUY"
+    assert decs[0]["confidence"] == 0.96
+    assert decs[1]["venue"] == "t212"
+    assert decs[1]["decision"] == "SELL"
+
+    # 3. _kraken_pair_matches prevents substring collision (ETHUSD vs WETHUSD, BTCUSD vs WBTCUSD)
+    assert _kraken_pair_matches("ETHUSD", "WETHUSD") is False
+    assert _kraken_pair_matches("WETHUSD", "ETHUSD") is False
+    assert _kraken_pair_matches("BTCUSD", "WBTCUSD") is False
+    assert _kraken_pair_matches("HYPEUSD", "HYPE") is True
+    assert _kraken_pair_matches("HYPE", "HYPEUSD") is True
+    assert _kraken_pair_matches("DOGEUSD", "XXDGZUSD") is True
+    assert _kraken_pair_matches("BTCUSD", "XXBTZUSD") is True
+
+    # 4. Cross-venue extract_symbol_recent_fills (Kraken + Hyperliquid)
+    now_s = 1_700_000_000.0
+    orders_list = [
+        {
+            "closetm": now_s - 600,
+            "descr": {"type": "buy", "price": "40.0"},
+            "vol_exec": "2.5",
+            "cost": "100.0",
+        },
+        {
+            "time": int((now_s - 300) * 1000),
+            "dir": "Close Long",
+            "px": "44.0",
+            "sz": "2.5",
+        },
+    ]
+    fills_summary = extract_symbol_recent_fills(orders_list)
+    assert fills_summary is not None
+    assert fills_summary["last_action_side"] == "SELL"
+    assert fills_summary["last_buy"]["price"] == 40.0
+    assert fills_summary["last_buy"]["qty"] == 2.5
+    assert fills_summary["last_sell"]["price"] == 44.0
+    assert fills_summary["last_sell"]["qty"] == 2.5
+
+
+
 
 

@@ -17,6 +17,7 @@ import math
 import importlib
 from typing import Optional, List
 
+from botcore import _parse_bool_flag
 from .base import MarketDataProvider, _normalize_order, bool_env, env_value
 from .strategy_executor import (
     OrderNotFound,
@@ -62,24 +63,6 @@ def _definitive_submit_failure(status: int, payload) -> bool:
 
 def _live() -> bool:
     return bool_env("T212_LIVE_ORDERS")
-
-
-def _parse_bool_flag(val: object, default: bool = False) -> bool:
-    fb = default if isinstance(default, bool) else False
-    if isinstance(val, bool):
-        return val
-    if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
-        return fb
-    if isinstance(val, (int, float)):
-        if isinstance(val, float) and not math.isfinite(val):
-            return fb
-        return bool(val)
-    s = str(val).strip().lower()
-    if s in {"1", "true", "yes", "on", "y", "t"}:
-        return True
-    if s in {"0", "false", "no", "off", "n", "f"}:
-        return False
-    return fb
 
 
 class T212Provider(MarketDataProvider):

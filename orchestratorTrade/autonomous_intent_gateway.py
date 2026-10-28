@@ -39,7 +39,12 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from cachepaths import cache_symbol_variants, canonical_base_asset, split_symbol_assets
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    normalize_venue_name,
+    split_symbol_assets,
+)
 
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
@@ -475,15 +480,14 @@ class AutonomousIntentGateway:
         """Load enabled instruments filtered by asset_scope ('crypto' | 'equities' | 'all')."""
         scope = (asset_scope or "all").strip().lower()
         ws_inst_conf = os.path.join(self.workspace_dir, "instruments.conf")
-        if only_workspace_conf and not os.path.exists(ws_inst_conf):
-            return {}
-
-        try:
-            from instruments_config import load_instruments
-            raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
-        except Exception as e:
-            logger.error("Failed loading instrument registry: %s", e)
-            return {}
+        raw_map: Dict[str, Any] = {}
+        if os.path.exists(ws_inst_conf) or not only_workspace_conf:
+            try:
+                from instruments_config import load_instruments
+                raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
+            except Exception as e:
+                logger.error("Failed loading instrument registry: %s", e)
+                return {}
 
         active_map: Dict[str, Any] = {}
         if scope in ("all", "crypto"):
@@ -593,25 +597,28 @@ class AutonomousIntentGateway:
             return None
         if isinstance(venue, bool):
             return None
-        venue_norm = venue.strip().lower() if isinstance(venue, str) and venue.strip() else None
+        venue_norm = normalize_venue_name(venue) or None
         req_base = canonical_base_asset(symbol)
 
         def _inst_base_norm(inst: Any) -> str:
             raw_b = getattr(inst, "base", None) or getattr(inst, "symbol", "")
             return canonical_base_asset(str(raw_b))
 
+        def _inst_venue_norm(inst: Any) -> str:
+            return normalize_venue_name(str(getattr(inst, "provider_name", "")))
+
         # 1. Match strictly within the specified venue (never cross-venue fallback)
         if venue_norm:
             for inst in active_values:
-                if _norm_sym(inst.symbol) == sym_norm and inst.provider_name.lower() == venue_norm:
+                if _norm_sym(inst.symbol) == sym_norm and _inst_venue_norm(inst) == venue_norm:
                     return inst
             if req_base:
                 for inst in active_values:
-                    if inst.provider_name.lower() == venue_norm and _inst_base_norm(inst) == req_base:
+                    if _inst_venue_norm(inst) == venue_norm and _inst_base_norm(inst) == req_base:
                         return inst
             for inst in active_values:
                 inst_sym_n = _norm_sym(inst.symbol)
-                if inst.provider_name.lower() == venue_norm and (
+                if _inst_venue_norm(inst) == venue_norm and (
                     inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n)
                 ):
                     return inst
@@ -734,7 +741,7 @@ class AutonomousIntentGateway:
         if not math.isfinite(bal) or bal < 0.0:
             return True, desired_usd, "Wallet balance check skipped (non-finite)"
 
-        venue_l = str(getattr(inst, "provider_name", "")).lower()
+        venue_l = normalize_venue_name(str(getattr(inst, "provider_name", "")))
         buy_buf = 0.95 if venue_l == "hyperliquid" else 0.998
         if decision == "BUY":
             avail_usd = bal * buy_buf
@@ -808,7 +815,7 @@ class AutonomousIntentGateway:
         elif raw_venue is None or not str(raw_venue).strip():
             venue = "binance"
         else:
-            venue = str(raw_venue).strip().lower()
+            venue = normalize_venue_name(str(raw_venue)) or str(raw_venue).strip().lower()
         now = time.time()
 
         if decision not in ("BUY", "SELL"):
@@ -1035,7 +1042,7 @@ class AutonomousIntentGateway:
         raw_sym = decision.get("symbol", "")
         symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
         raw_venue = decision.get("venue", "")
-        venue = "" if isinstance(raw_venue, bool) or raw_venue is None else str(raw_venue).strip().lower()
+        venue = "" if isinstance(raw_venue, bool) or raw_venue is None else normalize_venue_name(str(raw_venue))
         if not symbol or not venue:
             logger.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
             return None

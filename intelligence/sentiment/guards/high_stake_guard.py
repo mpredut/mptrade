@@ -441,76 +441,39 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     valid = [o for o in orders_list if isinstance(o, dict)]
     if not valid:
         return None
+    from providers.base import (
+        extract_order_price,
+        extract_order_qty,
+        extract_order_side,
+        extract_timestamp_ms,
+    )
 
     def _safe_order_ts(o: Dict[str, Any]) -> float:
-        raw_t = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
-        if raw_t is None or isinstance(raw_t, bool):
-            return 0.0
-        try:
-            tf = float(raw_t)
-            return tf if math.isfinite(tf) else 0.0
-        except (TypeError, ValueError):
-            return 0.0
-
-    def _order_side(o: Dict[str, Any]) -> str:
-        raw_s = o.get("side") if o.get("side") is not None else o.get("type")
-        if isinstance(raw_s, str):
-            su = raw_s.strip().upper()
-            if su in ("B", "BUY", "BID", "LONG"):
-                return "BUY"
-            if su in ("S", "SELL", "ASK", "A", "SHORT"):
-                return "SELL"
-        is_buyer = o.get("isBuyer")
-        if is_buyer is not None:
-            ib_flag = _parse_bool_flag(is_buyer, None)
-            if ib_flag is not None:
-                return "BUY" if ib_flag else "SELL"
-        return ""
+        ts_ms = extract_timestamp_ms(o, default=None)
+        return float(ts_ms) if ts_ms is not None else 0.0
 
     ordered = sorted(
         enumerate(valid),
         key=lambda item: (_safe_order_ts(item[1]), item[0]),
     )
     chron = [o for _, o in ordered]
-    last_buy = next((o for o in reversed(chron) if _order_side(o) == "BUY"), None)
-    last_sell = next((o for o in reversed(chron) if _order_side(o) == "SELL"), None)
+    last_buy = next((o for o in reversed(chron) if extract_order_side(o) == "BUY"), None)
+    last_sell = next((o for o in reversed(chron) if extract_order_side(o) == "SELL"), None)
     last_any = chron[-1]
 
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
-        q_raw = (
-            o.get("quantity")
-            if o.get("quantity") is not None
-            else (o.get("qty") if o.get("qty") is not None else o.get("executedQty"))
-        )
-        p_raw = o.get("price")
-        ts_raw = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
-        try:
-            q_f = float(q_raw) if (q_raw is not None and not isinstance(q_raw, bool)) else 0.0
-            if not math.isfinite(q_f):
-                q_f = 0.0
-        except (TypeError, ValueError):
-            q_f = 0.0
-        try:
-            p_f = float(p_raw) if (p_raw is not None and not isinstance(p_raw, bool)) else 0.0
-            if not math.isfinite(p_f):
-                p_f = 0.0
-        except (TypeError, ValueError):
-            p_f = 0.0
-        if p_f <= 0 and q_f > 0 and o.get("cummulativeQuoteQty") is not None and not isinstance(o.get("cummulativeQuoteQty"), bool):
-            try:
-                cq = float(o["cummulativeQuoteQty"])
-                if math.isfinite(cq) and cq > 0:
-                    p_f = round(cq / q_f, 6)
-            except (TypeError, ValueError, ZeroDivisionError):
-                p_f = 0.0
-        return (p_f if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
+        p_f = extract_order_price(o, default=0.0)
+        q_f = extract_order_qty(o, default=0.0)
+        ts_ms = extract_timestamp_ms(o, default=None)
+        ts_raw = ts_ms if ts_ms is not None else (o.get("timestamp") if o.get("timestamp") is not None else o.get("time"))
+        return (round(p_f, 6) if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
 
     cost_qty = 0.0
     active_avg = 0.0
     buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
     for o in chron:
-        side_o = _order_side(o)
+        side_o = extract_order_side(o)
         p_f, q_f, ts_raw = _norm_fill(o)
         if side_o == "BUY":
             buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
@@ -530,7 +493,7 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     lb_norm = _norm_fill(last_buy) if last_buy else (None, None, None)
     ls_norm = _norm_fill(last_sell) if last_sell else (None, None, None)
     return {
-        "last_action_side": _order_side(last_any) or last_any.get("side"),
+        "last_action_side": extract_order_side(last_any) or last_any.get("side"),
         "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
         "last_buy": (
             {"price": lb_norm[0], "qty": lb_norm[1], "ts_ms": lb_norm[2]}

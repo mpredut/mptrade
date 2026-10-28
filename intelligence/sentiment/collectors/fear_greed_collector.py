@@ -27,6 +27,9 @@ class FearGreedSnapshot:
     is_extreme_greed: bool               # True if value >= 75
 
 
+from intelligence.macro_sentiment_ssot import get_fear_greed_endpoint_url
+
+
 class FearGreedCollector:
     """Fetches and caches the Alternative.me Crypto Fear & Greed Index.
 
@@ -37,7 +40,7 @@ class FearGreedCollector:
     def __init__(
         self,
         cache_ttl_sec: float = 900.0,
-        endpoint_url: str = "https://api.alternative.me/fng/?limit=14",
+        endpoint_url: Optional[str] = None,
     ) -> None:
         ttl = 900.0
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
@@ -48,7 +51,11 @@ class FearGreedCollector:
             except (TypeError, ValueError):
                 pass
         self.cache_ttl_sec = ttl
-        self.endpoint_url = endpoint_url
+        self.endpoint_url = (
+            endpoint_url.strip()
+            if isinstance(endpoint_url, str) and endpoint_url.strip()
+            else get_fear_greed_endpoint_url()
+        )
         self._cached_snapshot: Optional[FearGreedSnapshot] = None
         self._last_fetch_ts: float = 0.0
 

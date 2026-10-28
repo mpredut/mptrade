@@ -35,7 +35,15 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     normalize_cache_base_asset,
+    normalize_venue_name,
     split_symbol_assets,
+)
+from providers.base import (
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_orig_qty,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
@@ -186,34 +194,52 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract and deduplicate single or multi-coin trading decisions from Gemini's JSON plan."""
     if not isinstance(plan, dict):
         return []
-    decisions: List[Dict[str, Any]] = []
-    seen_keys: set[Tuple[str, str, str]] = set()
 
-    raw_multi = plan.get("market_trading_decisions")
+    raw_multi = None
+    for k in ("market_trading_decisions", "trading_decisions", "decisions"):
+        if isinstance(plan.get(k), list):
+            raw_multi = plan.get(k)
+            break
     raw_single = plan.get("market_trading_decision")
-    candidates = [
+    candidates: List[Dict[str, Any]] = []
+    for item in (
         *(raw_multi if isinstance(raw_multi, list) else ()),
         *([raw_single] if isinstance(raw_single, dict) and raw_single else ()),
-    ]
-    for item in candidates:
+    ):
         if isinstance(item, dict):
-            key = (
-                str(item.get("venue") or "").strip().lower(),
-                str(item.get("symbol") or "").strip().upper(),
-                str(item.get("decision") or "HOLD").strip().upper(),
-            )
-            if key not in seen_keys:
-                seen_keys.add(key)
-                decisions.append(item)
+            d = dict(item)
+            raw_side = str(
+                d.get("decision") or d.get("action") or d.get("side") or "HOLD"
+            ).strip().upper()
+            d["decision"] = raw_side
+            v_norm = normalize_venue_name(d.get("venue"))
+            if v_norm:
+                d["venue"] = v_norm
+            candidates.append(d)
 
-    # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first.
+    # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first,
+    # before deduplicating so the highest-confidence entry per (venue, canonical_symbol, side) wins.
     def _sort_key(d: Dict[str, Any]) -> Tuple[int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
         conf = _parse_finite_float(d.get("confidence"), 0.0)
         return (-is_action, -conf)
 
-    decisions.sort(key=_sort_key)
+    candidates.sort(key=_sort_key)
+
+    decisions: List[Dict[str, Any]] = []
+    seen_keys: set[Tuple[str, str, str]] = set()
+    for item in candidates:
+        sym_raw = str(item.get("symbol") or "").strip().upper()
+        sym_canon = canonical_base_asset(sym_raw) or sym_raw
+        key = (
+            normalize_venue_name(item.get("venue")),
+            sym_canon,
+            str(item.get("decision") or "HOLD").strip().upper(),
+        )
+        if key not in seen_keys:
+            seen_keys.add(key)
+            decisions.append(item)
     return decisions
 
 
@@ -900,8 +926,11 @@ class AutonomousAIReconciler:
         venue_quote_cash: Dict[str, Dict[str, Any]] = {}
         inst_by_sym: Dict[str, Any] = {}
         load_tradable_fn = getattr(self.intent_gateway, "load_tradable_instruments", None)
-        has_inst_source = os.path.exists(os.path.join(self.workspace_dir, "instruments.conf")) or (
-            scope == "equities" and os.path.isdir(os.path.join(self.workspace_dir, "212trading"))
+        has_inst_source = (
+            os.path.exists(os.path.join(self.workspace_dir, "instruments.conf"))
+            or os.path.exists(os.path.join(self.workspace_dir, "kraken", "config.env"))
+            or os.path.exists(os.path.join(self.workspace_dir, "hyperliquid", "config.env"))
+            or (scope == "equities" and os.path.isdir(os.path.join(self.workspace_dir, "212trading")))
         )
         if callable(load_tradable_fn) and has_inst_source:
             try:
@@ -1037,11 +1066,11 @@ class AutonomousAIReconciler:
                                         open_orders_list.append({
                                             "venue": venue,
                                             "symbol": sym,
-                                            "side": str(oo.get("side") or oo.get("type") or "").upper(),
-                                            "price": oo.get("price"),
-                                            "origQty": oo.get("origQty") or oo.get("vol") or oo.get("qty"),
-                                            "executedQty": oo.get("executedQty") or oo.get("vol_exec") or 0,
-                                            "orderId": oo.get("orderId") or oo.get("id"),
+                                            "side": extract_order_side(oo) or str(oo.get("side") or oo.get("type") or "").upper(),
+                                            "price": extract_order_price(oo) or oo.get("price"),
+                                            "origQty": extract_orig_qty(oo) or oo.get("origQty") or oo.get("vol") or oo.get("qty"),
+                                            "executedQty": oo.get("executedQty") if oo.get("executedQty") is not None else (oo.get("vol_exec") or 0),
+                                            "orderId": extract_order_id(oo) or oo.get("orderId") or oo.get("id"),
                                         })
                         except Exception:
                             pass
@@ -2260,7 +2289,7 @@ class AutonomousAIReconciler:
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} using the complete "
                 "macro sentiment, geopolitical risk, live breaking news, multi-horizon price evolution "
-                "(15m/30m/1h/3h/6h/12h/24h/7d, range geometry, relative vs_btc deltas, and alt_btc_24h beta/correlation), "
+                "(1m/3m/5m/15m/30m/1h/3h/6h/12h/24h/7d, 15m tick tape, 24h & 7d range geometry, relative vs_btc deltas, and alt_btc_24h range geometry), "
                 "dynamic slopes, volatility, and real wallet/account balances + "
                 "cycle entry anchors above.\n"
                 "   - FULL AI AUTHORITY & QUANTITATIVE GUIDANCE (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "

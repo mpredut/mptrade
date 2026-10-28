@@ -32,6 +32,13 @@ class MarketBreadthSnapshot:
     ts: float
 
 
+from intelligence.macro_sentiment_ssot import (
+    get_breadth_excluded_bases,
+    get_breadth_quote_suffixes,
+    get_market_breadth_endpoint_url,
+)
+
+
 class MarketBreadthCollector:
     """Computes real-time market-wide breadth and sentiment dispersion from liquid pairs."""
 
@@ -39,7 +46,7 @@ class MarketBreadthCollector:
         self,
         cache_ttl_sec: float = 60.0,
         min_volume_usd: float = 5_000_000.0,
-        endpoint_url: str = "https://api.binance.com/api/v3/ticker/24hr",
+        endpoint_url: Optional[str] = None,
     ) -> None:
         ttl = 60.0
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
@@ -59,7 +66,11 @@ class MarketBreadthCollector:
                 pass
         self.cache_ttl_sec = ttl
         self.min_volume_usd = mv
-        self.endpoint_url = endpoint_url
+        self.endpoint_url = (
+            endpoint_url.strip()
+            if isinstance(endpoint_url, str) and endpoint_url.strip()
+            else get_market_breadth_endpoint_url()
+        )
         self._cached_snapshot: Optional[MarketBreadthSnapshot] = None
         self._last_fetch_ts: float = 0.0
 
@@ -89,6 +100,9 @@ class MarketBreadthCollector:
                     min_vol = mv_f
             except (ValueError, TypeError):
                 pass
+        quote_suffixes = get_breadth_quote_suffixes()
+        excluded_bases = get_breadth_excluded_bases()
+        excluded_suffixes = tuple(f"{b}{q}" for b in excluded_bases for q in quote_suffixes)
         filtered: List[Tuple[str, float]] = []
 
         for item in tickers:
@@ -98,10 +112,10 @@ class MarketBreadthCollector:
             if not isinstance(raw_sym, str):
                 continue
             symbol = raw_sym.strip().upper()
-            if not symbol.endswith("USDT"):
+            if not symbol.endswith(quote_suffixes):
                 continue
-            # Exclude leveraged tokens or stablecoin pairs
-            if any(sym_part in symbol for sym_part in ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT", "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "EURUSDT")):
+            # Exclude leveraged tokens or stablecoin pairs configured in macro_intelligence.conf
+            if any(sym_part in symbol for sym_part in excluded_suffixes):
                 continue
 
             raw_qv = item.get("quoteVolume", 0.0)
