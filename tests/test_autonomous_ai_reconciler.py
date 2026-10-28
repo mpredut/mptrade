@@ -1447,3 +1447,124 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
     assert last_w == 280.0
 
 
+def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
+    workspace, cache_dir, _ = temp_env
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+        AutonomousAIReconciler,
+        TelemetrySensorSnapshot,
+    )
+    from orchestratorOS.agy.topics import topic_spec
+    from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
+
+    # 1. compute_24h_price_metrics computes chg_24h_pct when series spans >= 6h
+    now_ms = 1_700_000_000_000.0
+    series_24h = [
+        [now_ms - 24 * 3600 * 1000, 100.0],
+        [now_ms - 3 * 3600 * 1000, 105.0],
+        [now_ms - 1 * 3600 * 1000, 108.0],
+        [now_ms - 15 * 60 * 1000, 109.0],
+        [now_ms, 110.0],
+    ]
+    m24 = compute_24h_price_metrics(series_24h)
+    assert m24.get("chg_24h_pct") == 10.0
+    assert m24.get("chg_1h_pct") == 1.85
+
+    # Series shorter than 6h omits chg_24h_pct
+    series_short = [
+        [now_ms - 3 * 3600 * 1000, 100.0],
+        [now_ms, 105.0],
+    ]
+    m_short = compute_24h_price_metrics(series_short)
+    assert "chg_24h_pct" not in m_short
+
+    # 2. Test synthesize_and_diagnose prompt generation with vs_btc and capital rotation guidance
+    captured_prompts = []
+
+    def mock_query(prompt, **kwargs):
+        captured_prompts.append(prompt)
+        return json.dumps({
+            "summary": "Market rotation test",
+            "market_trading_decisions": [{"decision": "HOLD", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.9}],
+        })
+
+    auditor = MagicMock()
+    auditor.query_json.side_effect = mock_query
+
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir=cache_dir,
+        logs_dirs=[],
+        gemini_auditor=auditor,
+        mode="shadow",
+    )
+
+    sensors = TelemetrySensorSnapshot(
+        prices_and_trends={
+            "BTCUSDC": {
+                "price": 85000.0,
+                "trend": 1,
+                "growth_coefficient": 0.02,
+                "chg_15m_pct": 0.5,
+                "chg_30m_pct": 0.8,
+                "chg_1h_pct": 2.0,
+                "chg_3h_pct": 3.0,
+                "chg_24h_pct": 5.0,
+                "low_24h": 80000.0,
+                "high_24h": 86000.0,
+            },
+            "TAOUSDC": {
+                "price": 260.0,
+                "trend": 1,
+                "growth_coefficient": 0.01,
+                "chg_15m_pct": 0.2,
+                "chg_30m_pct": 0.4,
+                "chg_1h_pct": 1.0,
+                "chg_3h_pct": 2.5,
+                "chg_24h_pct": 8.0,
+                "low_24h": 240.0,
+                "high_24h": 270.0,
+            },
+            "AAPL_US_EQ": {
+                "price": 230.0,
+                "trend": 0,
+                "growth_coefficient": 0.0,
+                "chg_15m_pct": 0.1,
+                "chg_30m_pct": 0.2,
+                "chg_1h_pct": 0.5,
+                "chg_3h_pct": 0.6,
+                "chg_24h_pct": 1.0,
+                "low_24h": 228.0,
+                "high_24h": 232.0,
+            },
+        }
+    )
+
+    trade_spec = topic_spec("auto_trade_executor")
+    reconciler.synthesize_and_diagnose(sensors, trade_spec, topic_key="auto_cryptotrade_executor")
+    assert len(captured_prompts) == 1
+    prompt = captured_prompts[0]
+
+    # Verify vs_btc on TAOUSDC: 1h delta = 1.0 - 2.0 = -1.00%, 24h delta = 8.0 - 5.0 = +3.00%
+    assert "vs_btc(1h=-1.00%, 24h=+3.00%)" in prompt
+    # Verify BTC does not have vs_btc
+    btc_line = [ln for ln in prompt.splitlines() if "BTCUSDC" in ln][0]
+    assert "vs_btc" not in btc_line
+    # Verify equities do not have vs_btc
+    eq_line = [ln for ln in prompt.splitlines() if "AAPL_US_EQ" in ln][0]
+    assert "vs_btc" not in eq_line
+    # Verify capital rotation principles in prompt
+    assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE (BTC DOMINANCE & ROTATION DYNAMICS)" in prompt
+    assert "Phase 1 (BTC Breakout & Dominance Expansion)" in prompt
+    assert "Phase 2 (BTC Consolidation at Plateau)" in prompt
+    assert "Phase 3 (Altcoin Expansion / Altseason)" in prompt
+    assert "Structural BTC Breakdown Rule" in prompt
+
+    # Verify equities topic does NOT include crypto rotation principles
+    eq_spec = topic_spec("auto_sharetrade_executor")
+    reconciler.synthesize_and_diagnose(sensors, eq_spec, topic_key="auto_sharetrade_executor")
+    assert len(captured_prompts) == 2
+    eq_prompt = captured_prompts[1]
+    assert "INTER-MARKET CAPITAL ROTATION PRINCIPLE" not in eq_prompt
+
+
+

@@ -1500,6 +1500,11 @@ class AutonomousAIReconciler:
 
         if sensors.prices_and_trends:
             context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):")
+            btc_cand_keys = ("BTCUSDC", "BTCUSDT", "BTCUSD", "BTC_USD", "BTC")
+            btc_entry = next((sensors.prices_and_trends[k] for k in btc_cand_keys if isinstance(sensors.prices_and_trends.get(k), dict)), None)
+            btc_1h = _parse_finite_float(btc_entry.get("chg_1h_pct"), None) if btc_entry else None
+            btc_24h = _parse_finite_float(btc_entry.get("chg_24h_pct"), None) if btc_entry else None
+
             for sym, pinfo in sorted(sensors.prices_and_trends.items()):
                 if not isinstance(pinfo, dict):
                     continue
@@ -1522,13 +1527,30 @@ class AutonomousAIReconciler:
                     if px_f > 0 and l24_f > 0 and h24_f > l24_f:
                         pos24 = round(((px_f - l24_f) / (h24_f - l24_f)) * 100.0, 1)
                         pos24_sfx = f" pos_24h={pos24}%"
+                    c24_part = ""
+                    if "chg_24h_pct" in pinfo:
+                        c24_val = _parse_finite_float(pinfo.get("chg_24h_pct"), 0.0)
+                        c24_part = f"24h={c24_val:+.2f}% "
                     extras.append(
                         f"15m={_parse_finite_float(pinfo.get('chg_15m_pct'), 0.0):+.2f}% "
                         f"30m={_parse_finite_float(pinfo.get('chg_30m_pct'), 0.0):+.2f}% "
                         f"1h={_parse_finite_float(pinfo.get('chg_1h_pct'), 0.0):+.2f}% "
                         f"3h={_parse_finite_float(pinfo.get('chg_3h_pct'), 0.0):+.2f}% "
+                        f"{c24_part}"
                         f"24h_range=[{l24}, {h24}]{pos24_sfx}"
                     )
+                if not sym.startswith("BTC") and not sym.endswith(("_EQ", "_US_EQ")):
+                    vs_btc_parts: List[str] = []
+                    if btc_1h is not None and "chg_1h_pct" in pinfo:
+                        alt_1h = _parse_finite_float(pinfo.get("chg_1h_pct"), None)
+                        if alt_1h is not None:
+                            vs_btc_parts.append(f"1h={alt_1h - btc_1h:+.2f}%")
+                    if btc_24h is not None and "chg_24h_pct" in pinfo:
+                        alt_24h = _parse_finite_float(pinfo.get("chg_24h_pct"), None)
+                        if alt_24h is not None:
+                            vs_btc_parts.append(f"24h={alt_24h - btc_24h:+.2f}%")
+                    if vs_btc_parts:
+                        extras.append(f"vs_btc({', '.join(vs_btc_parts)})")
                 if "chg_7d_pct" in pinfo:
                     l7, h7 = pinfo.get("low_7d"), pinfo.get("high_7d")
                     l7_f = _parse_finite_float(l7, 0.0)
@@ -1756,6 +1778,24 @@ class AutonomousAIReconciler:
             )
             venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
             ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
+            rotation_guidance = (
+                ""
+                if is_equities
+                else (
+                    "     * INTER-MARKET CAPITAL ROTATION PRINCIPLE (BTC DOMINANCE & ROTATION DYNAMICS): Crypto capital flows "
+                    "follow a multi-phase liquidity cycle across market expansions:\n"
+                    "       - Phase 1 (BTC Breakout & Dominance Expansion): Institutional capital leads first into Bitcoin. "
+                    "Altcoin returns relative to BTC (`vs_btc`) may temporarily lag or show negative short-term deltas (1h/24h). "
+                    "Do NOT panic-sell high-conviction altcoins on shallow lag while BTC's macro structure remains firmly bullish.\n"
+                    "       - Phase 2 (BTC Consolidation at Plateau): Once BTC breaks major resistance and enters a stable, low-volatility "
+                    "consolidation range at high levels, capital rotates from BTC into major and high-beta altcoins. This is the prime "
+                    "accumulation and holding window for altcoins.\n"
+                    "       - Phase 3 (Altcoin Expansion / Altseason): Altcoins experience explosive multi-day upside momentum and outpace "
+                    "BTC (`vs_btc` turns sharply positive). Exploit this expansion to harvest profits in tranches at major resistance/ask walls.\n"
+                    "       - Structural BTC Breakdown Rule: If BTC breaks major structural support downwards with high volume or macro shock, "
+                    "defensive de-risking across altcoins takes priority due to altcoins' high downside beta (2x-3x magnification of BTC drawdowns).\n"
+                )
+            )
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} using the complete "
                 "macro sentiment, geopolitical risk, live breaking news, multi-horizon price evolution "
@@ -1779,6 +1819,7 @@ class AutonomousAIReconciler:
                 "recovery/inflection after a prior exit, or confirmed momentum breakouts (scaling in across cycles while "
                 "avoiding immediate whipsaw buybacks at the same price right after a take-profit SELL unless a structural "
                 "breakout is confirmed).\n"
+                f"{rotation_guidance}"
                 f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
                 "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "

@@ -63,6 +63,8 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             return clean_series[0][1]
 
         p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
+        p1440 = _px_ago(1440)
+        span_ms = now_ms - clean_series[0][0]
         sample_prices = [x[1] for x in clean_series[::max(1, len(clean_series) // 500)]]
         out: Dict[str, Any] = {
             "low_24h": min(sample_prices) if sample_prices else cur_px,
@@ -76,6 +78,8 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             out["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
         if p180 > 0:
             out["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
+        if p1440 > 0 and span_ms >= 3600000.0 * 6:
+            out["chg_24h_pct"] = round((cur_px / p1440 - 1.0) * 100.0, 2)
         return out
     except Exception:
         return {}
