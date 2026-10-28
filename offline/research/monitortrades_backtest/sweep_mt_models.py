@@ -73,29 +73,8 @@ def compute_all_signals(
     n = b - a + 1
     m = b - a
     valid = n >= 2
-
-    y_ref = px[0]
-    dy_ref = px - y_ref
-    k_idx = np.arange(N, dtype=np.float64)
-
-    P0 = np.cumsum(dy_ref)
-    P1 = np.cumsum(k_idx * dy_ref)
-    P2 = np.cumsum(dy_ref * dy_ref)
-
-    def _range_sum(P, lo, hi):
-        prev = np.where(lo > 0, P[np.maximum(0, lo - 1)], 0.0)
-        return P[hi] - prev
-
-    s0 = _range_sum(P0, a, b)
-    s1 = _range_sum(P1, a, b)
-    s2 = _range_sum(P2, a, b)
-
     n_f = n.astype(np.float64)
     m_f = np.maximum(1.0, m.astype(np.float64))
-    ss_y = s2 - (s0 * s0) / n_f
-    cov_xy = s1 - (a.astype(np.float64) + 0.5 * (n_f - 1.0)) * s0
-    denom_ols = np.maximum(1.0, n_f * (n_f * n_f - 1.0))
-    slope_full = np.where(valid & (ss_y > 1e-18), (12.0 * cov_xy) / denom_ols, 0.0)
 
     recent_sec = pw.effective_recent_gradient_seconds(None)
     r_arr = np.maximum(2, (recent_sec / np.maximum(1e-9, sr)).astype(np.int64))
@@ -110,53 +89,96 @@ def compute_all_signals(
     gradient_recent = np.where(n > r_arr, gr_sub, gr_all)
     gradient_recent = np.where(np.abs(gradient_recent) <= 1e-12, 0.0, gradient_recent)
 
-    gc_legacy = np.where(valid, 0.5 * (slope_full + gradient_recent), 0.0)
+    g_int = np.zeros(N, dtype=np.float64)
+    if N >= 3:
+        g_int[1:-1] = 0.5 * (px[2:] - px[:-2])
+
+    slope_full = np.zeros(N, dtype=np.float64)
+    gc_sw1 = np.zeros(N, dtype=np.float64)
+    gc_sw2 = np.zeros(N, dtype=np.float64)
+    gc_sw3 = np.zeros(N, dtype=np.float64)
+    eps = np.zeros(N, dtype=np.float64)
+
+    # Chunked prefix sums prevent float64 precision loss when k^2 * dy exceeds 2^53 on long series
+    CHUNK = 4096
+    for hi_start in range(0, N, CHUNK):
+        hi_end = min(N, hi_start + CHUNK)
+        lo_start = int(np.min(a[hi_start:hi_end]))
+        px_sub = px[lo_start:hi_end]
+        g_sub = g_int[lo_start:hi_end]
+        L = len(px_sub)
+
+        y_ref = px_sub[0]
+        dy = px_sub - y_ref
+        k_loc = np.arange(L, dtype=np.float64)
+
+        P0 = np.cumsum(dy)
+        P1 = np.cumsum(k_loc * dy)
+        P2 = np.cumsum(dy * dy)
+        Q2 = np.cumsum(k_loc * k_loc * dy)
+        PG2 = np.cumsum(g_sub * g_sub)
+
+        def _rsum(P, lo, hi):
+            prev = np.where(lo > 0, P[np.maximum(0, lo - 1)], 0.0)
+            return P[hi] - prev
+
+        a_loc = a[hi_start:hi_end] - lo_start
+        b_loc = b[hi_start:hi_end] - lo_start
+        bm1_loc = np.maximum(0, b_loc - 1)
+        ap1_loc = np.minimum(L - 1, a_loc + 1)
+        m_sub = m_f[hi_start:hi_end]
+        n_sub = n_f[hi_start:hi_end]
+        val_sub = valid[hi_start:hi_end]
+
+        s0 = _rsum(P0, a_loc, b_loc)
+        s1 = _rsum(P1, a_loc, b_loc)
+        s2 = _rsum(P2, a_loc, b_loc)
+        ss_y = s2 - (s0 * s0) / n_sub
+        cov_xy = s1 - (a_loc.astype(np.float64) + 0.5 * (n_sub - 1.0)) * s0
+        denom_ols = np.maximum(1.0, n_sub * (n_sub * n_sub - 1.0))
+        slope_full[hi_start:hi_end] = np.where(val_sub & (ss_y > 1e-18), (12.0 * cov_xy) / denom_ols, 0.0)
+
+        a0 = _rsum(P0, a_loc, bm1_loc)
+        a1 = _rsum(P1, a_loc, bm1_loc)
+        a2 = _rsum(Q2, a_loc, bm1_loc)
+        c_f = a_loc.astype(np.float64)
+        dy_b = dy[b_loc]
+
+        # p=1:
+        total_p1 = m_sub * dy_b - a0
+        s1_w = 0.5 * m_sub * (m_sub + 1.0)
+        gc_sw1[hi_start:hi_end] = np.where(val_sub, total_p1 / s1_w, 0.0)
+
+        # p=2:
+        sum_2r1 = 2.0 * a1 - (2.0 * c_f - 1.0) * a0
+        total_p2 = (m_sub * m_sub) * dy_b - sum_2r1
+        s2_w = (m_sub * (m_sub + 1.0) * (2.0 * m_sub + 1.0)) / 6.0
+        gc_sw2[hi_start:hi_end] = np.where(val_sub, total_p2 / s2_w, 0.0)
+
+        # p=3:
+        sum_r2 = a2 - 2.0 * c_f * a1 + c_f * c_f * a0
+        sum_r1 = a1 - c_f * a0
+        total_p3 = (m_sub ** 3) * dy_b - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
+        s3_w = (0.5 * m_sub * (m_sub + 1.0)) ** 2
+        gc_sw3[hi_start:hi_end] = np.where(val_sub, total_p3 / s3_w, 0.0)
+
+        # Epsilon (population std of np.gradient(px[a:b+1])):
+        g0 = px_sub[ap1_loc] - px_sub[a_loc]
+        gn = px_sub[b_loc] - px_sub[bm1_loc]
+        sum_g2 = g0 * g0 + (PG2[bm1_loc] - PG2[a_loc]) + gn * gn
+        mean_g = sum_g_all[hi_start:hi_end] / n_sub
+        var_g = np.maximum(0.0, sum_g2 / n_sub - mean_g * mean_g)
+        eps[hi_start:hi_end] = np.where(n_sub >= 3, np.sqrt(var_g), 0.0)
+
     tol_raw = 1e-10 * np.maximum(1.0, np.abs(px[b]))
+    gc_legacy = np.where(valid, 0.5 * (slope_full + gradient_recent), 0.0)
     gc_legacy = np.where(np.abs(gc_legacy) <= tol_raw, 0.0, gc_legacy)
-
-    Q2 = np.cumsum(k_idx * k_idx * dy_ref)
-    a0 = _range_sum(P0, a, b_m1)
-    a1 = _range_sum(P1, a, b_m1)
-    a2 = _range_sum(Q2, a, b_m1)
-    c_f = a.astype(np.float64)
-
-    # p=1:
-    total_p1 = m_f * dy_ref[b] - a0
-    s1_w = 0.5 * m_f * (m_f + 1.0)
-    gc_sw1 = np.where(valid, total_p1 / s1_w, 0.0)
     gc_sw1 = np.where(np.abs(gc_sw1) <= tol_raw, 0.0, gc_sw1)
-
-    # p=2:
-    sum_2r1 = 2.0 * a1 - (2.0 * c_f - 1.0) * a0
-    total_p2 = (m_f * m_f) * dy_ref[b] - sum_2r1
-    s2_w = (m_f * (m_f + 1.0) * (2.0 * m_f + 1.0)) / 6.0
-    gc_sw2 = np.where(valid, total_p2 / s2_w, 0.0)
     gc_sw2 = np.where(np.abs(gc_sw2) <= tol_raw, 0.0, gc_sw2)
-
-    # p=3:
-    sum_r2 = a2 - 2.0 * c_f * a1 + c_f * c_f * a0
-    sum_r1 = a1 - c_f * a0
-    total_p3 = (m_f ** 3) * dy_ref[b] - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
-    s3_w = (0.5 * m_f * (m_f + 1.0)) ** 2
-    gc_sw3 = np.where(valid, total_p3 / s3_w, 0.0)
     gc_sw3 = np.where(np.abs(gc_sw3) <= tol_raw, 0.0, gc_sw3)
 
     sym_p = pw.step_wols_power_for_symbol(symbol)
     gc_diff = gc_sw3 if sym_p >= 2.5 else gc_sw2
-
-    # Epsilon (population std of np.gradient(px[a:b+1]))
-    pg2 = np.zeros(N, dtype=np.float64)
-    if N >= 3:
-        g_int = 0.5 * (px[2:] - px[:-2])
-        cs_g2 = np.cumsum(g_int * g_int)
-        pg2[1:-1] = cs_g2
-        pg2[-1] = cs_g2[-1]
-    g0 = px[a_p1] - px[a]
-    gn = px[b] - px[b_m1]
-    sum_g2 = g0 * g0 + (pg2[b_m1] - pg2[a]) + gn * gn
-    mean_g = sum_g_all / n_f
-    var_g = np.maximum(0.0, sum_g2 / n_f - mean_g * mean_g)
-    eps = np.where(n >= 3, np.sqrt(var_g), 0.0)
 
     scale_inv = np.where(m_f > 10.0, np.sqrt(10.0 / m_f), 1.0)
 
