@@ -538,18 +538,13 @@ class CacheShortTrendManager(CacheManagerInterface):
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
         primary_key = _dynamic_window_key(primary)
-        existing_primary = (
-            published_dyn.get(primary_key)
-            if isinstance(published_dyn.get(primary_key), dict)
-            else {}
-        )
         published_dyn[primary_key] = dict(
             final_trend=gradient,
             growth_coefficient=gc,
             slope_full=slope_full,
             gradient_recent=gradient_recent,
             epsilon=eps_primary,
-            n_samples=existing_primary.get("n_samples", len(pwin.prices)),
+            n_samples=len(pwin.prices),
             window_seconds=float(primary),
             sample_rate_sec=float(pwin.sample_rate_sec),
             current_price=current_price,
@@ -1842,6 +1837,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                 return False
 
         snap = self.get_fresh_snapshot(symbol, now=now)
+        if snap is None and window_seconds is not None:
+            snap = self.get_short_trend_for_window(
+                symbol, window_seconds, now=now
+            )
         if snap is None:
             return False   # Unknown or stale data executes immediately.
         if fast:

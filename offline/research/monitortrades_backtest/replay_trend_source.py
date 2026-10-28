@@ -73,10 +73,15 @@ class ReplayTrendSource:
             except (TypeError, ValueError, OverflowError):
                 pass
         self.window_seconds = w_sec
-        self._windows: Dict[str, pw.PriceWindow] = {
-            s: pw.PriceWindow(s, window_size=200, window_seconds=self.window_seconds)
-            for s in symbols
-        }
+        is_default_w = math.isclose(w_sec, DEFAULT_WINDOW_SECONDS, rel_tol=0.0, abs_tol=1e-6)
+        self._windows: Dict[str, pw.PriceWindow] = {}
+        for s in symbols:
+            sym_w = self.window_seconds
+            if is_default_w:
+                fast_w = pw.fast_trend_window_for_symbol(s)
+                if fast_w is not None and fast_w > 0.0:
+                    sym_w = float(fast_w)
+            self._windows[s] = pw.PriceWindow(s, window_size=200, window_seconds=sym_w)
         self._prev_ts: Dict[str, Optional[float]] = {s: None for s in symbols}
         self._cached_trend_up: Dict[str, Optional[bool]] = {s: None for s in symbols}
 
@@ -255,8 +260,14 @@ class DynamicReplayTrendSource:
         prices, sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 2:
             return False
+        eps = (
+            float(np.std(np.gradient(np.asarray(prices, dtype=np.float64))))
+            if len(prices) >= 3
+            else 0.0
+        )
         return _is_trend_up_tuple(
             _instant_trend_from_slice(prices, sample_rate, symbol=symbol),
+            eps=eps,
             n_samples=len(prices),
         )
 
@@ -311,10 +322,13 @@ class DynamicReplayTrendSource:
                         ek = cand_ek
                 except (TypeError, ValueError, OverflowError):
                     pass
-            eps = float(ek * np.std(np.gradient(arr)))
+            m_steps = float(len(prices) - 1)
+            scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
+            eps = float(ek * scale * np.std(np.gradient(arr)))
             if abs(g) <= eps:
                 return True
-        side_str = "" if isinstance(side, bool) or side is None else str(side).strip().upper()
+        side_raw = "" if isinstance(side, bool) or side is None else str(side).strip().upper()
+        side_str = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
         if side_str == "BUY":
             return g < 0
         if side_str == "SELL":

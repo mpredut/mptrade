@@ -250,6 +250,22 @@ class TestStepWolsGeneralization(unittest.TestCase):
             self.assertFalse(mt.is_trend_up("BTCUSDC"))
             self.assertEqual(queried, [("fallback", "BTCUSDC", None)])
 
+    def test_replay_trend_source_fast_window_and_dynamic_noise_gate(self):
+        from offline.research.monitortrades_backtest.replay_trend_source import (
+            DynamicReplayTrendSource,
+            ReplayTrendSource,
+        )
+        rts = ReplayTrendSource(["TAOUSDC", "BTCUSDC"])
+        self.assertEqual(rts._windows["TAOUSDC"].window_seconds, 90.0)
+        self.assertAlmostEqual(rts._windows["BTCUSDC"].window_seconds, 222.0, places=6)
+
+        drts = DynamicReplayTrendSource(["TAOUSDC"])
+        # Oscillating noisy prices with tiny positive final step: gc is tiny (< 0.25 * eps) -> False
+        for i, p in enumerate([100.0, 102.0, 98.0, 102.0, 98.0, 100.01]):
+            drts.advance("TAOUSDC", 1000.0 + i * 10.0, p)
+        self.assertFalse(drts.is_trend_up_at("TAOUSDC", 60.0))
+        self.assertTrue(drts.should_wait("TAOUSDC", "B", 60.0, use_noise_gate=True))
+
 
 if __name__ == "__main__":
     unittest.main()
