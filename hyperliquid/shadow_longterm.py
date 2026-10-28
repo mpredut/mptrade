@@ -98,7 +98,9 @@ def _fetch_with_ts(_pair: str, interval: int):
         _hlc_spec.loader.exec_module(_hlc_mod)
     HLClient = _hlc_mod.HLClient
 
-    token = os.environ.get("HL_SPOT_TOKEN") or "HYPE"
+    _load_config()
+    from botcore import required_env
+    token = required_env("HL_SPOT_TOKEN")
     client = HLClient.public()  # the unsigned client cannot submit orders
     candles = client.candles(token, "4h", lookback_hours=5000 * 4)
     parsed: list[tuple[int, float, float, float, float]] = []

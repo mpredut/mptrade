@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
-from botcore import load_dotenv, required_float_env
+from botcore import _parse_bool_flag, load_dotenv, required_float_env
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -93,71 +93,65 @@ class GeopoliticalThreatAnalyzer:
     def _load_from_disk(self) -> None:
         from state_io import read_recovering_previous
         state_file = self._effective_state_file()
-        candidates = [
-            state_file,
-            state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json"),
-        ]
-        for cand in candidates:
-            try:
-                data = read_recovering_previous(cand, json.loads, default=None)
-                if not isinstance(data, dict):
-                    continue
-                raw_summary = data.get("summary")
-                summary_str = raw_summary.strip() if isinstance(raw_summary, str) else ""
-                raw_fb = data.get("is_fallback")
-                if raw_fb is None:
-                    is_fb = "LLM fallback" in summary_str
-                else:
-                    is_fb = self._as_bool_flag(raw_fb)
-                raw_risk = data.get("risk_score", 0.1)
-                if raw_risk is None or isinstance(raw_risk, bool):
-                    risk_val = 0.1
-                else:
-                    try:
-                        risk_val = float(raw_risk)
-                        if not math.isfinite(risk_val) or not (0.0 <= risk_val <= 1.0):
-                            risk_val = 0.1
-                    except (TypeError, ValueError):
-                        risk_val = 0.1
-                raw_ts = data.get("ts", 0.0)
-                try:
-                    ts_val = float(raw_ts) if not isinstance(raw_ts, bool) else 0.0
-                    if not math.isfinite(ts_val) or ts_val < 0.0:
-                        ts_val = 0.0
-                except (TypeError, ValueError):
-                    ts_val = 0.0
-                raw_hl = data.get("headlines_analyzed")
-                hl_cnt = 0
-                if raw_hl is not None and not isinstance(raw_hl, bool):
-                    try:
-                        hl_f = float(raw_hl)
-                        if math.isfinite(hl_f):
-                            hl_cnt = int(hl_f)
-                    except (TypeError, ValueError, OverflowError):
-                        hl_cnt = 0
-                raw_tl = data.get("threat_level")
-                tl_norm = raw_tl.strip().upper() if isinstance(raw_tl, str) else "NORMAL"
-                if tl_norm not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
-                    tl_norm = "NORMAL"
-                raw_rb = data.get("recommended_brake")
-                rb_norm = raw_rb.strip().upper() if isinstance(raw_rb, str) else "NONE"
-                if rb_norm not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
-                    rb_norm = "NONE"
-                self._cached_assessment = GeopoliticalThreatAssessment(
-                    threat_level=tl_norm,
-                    risk_score=risk_val,
-                    summary=summary_str,
-                    recommended_brake=rb_norm,
-                    headlines_analyzed=max(0, hl_cnt),
-                    ts=ts_val,
-                    is_fallback=is_fb,
-                )
-                self._last_eval_ts = self._cached_assessment.ts
-                raw_digest = data.get("headlines_digest")
-                self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
+        try:
+            data = read_recovering_previous(state_file, json.loads, default=None)
+            if not isinstance(data, dict):
                 return
-            except Exception as e:
-                logger.debug("Could not load cached geopolitical state %s: %s", cand, e)
+            raw_summary = data.get("summary")
+            summary_str = raw_summary.strip() if isinstance(raw_summary, str) else ""
+            raw_fb = data.get("is_fallback")
+            if raw_fb is None:
+                is_fb = "LLM fallback" in summary_str
+            else:
+                is_fb = self._as_bool_flag(raw_fb)
+            raw_risk = data.get("risk_score", 0.1)
+            if raw_risk is None or isinstance(raw_risk, bool):
+                risk_val = 0.1
+            else:
+                try:
+                    risk_val = float(raw_risk)
+                    if not math.isfinite(risk_val) or not (0.0 <= risk_val <= 1.0):
+                        risk_val = 0.1
+                except (TypeError, ValueError):
+                    risk_val = 0.1
+            raw_ts = data.get("ts", 0.0)
+            try:
+                ts_val = float(raw_ts) if not isinstance(raw_ts, bool) else 0.0
+                if not math.isfinite(ts_val) or ts_val < 0.0:
+                    ts_val = 0.0
+            except (TypeError, ValueError):
+                ts_val = 0.0
+            raw_hl = data.get("headlines_analyzed")
+            hl_cnt = 0
+            if raw_hl is not None and not isinstance(raw_hl, bool):
+                try:
+                    hl_f = float(raw_hl)
+                    if math.isfinite(hl_f):
+                        hl_cnt = int(hl_f)
+                except (TypeError, ValueError, OverflowError):
+                    hl_cnt = 0
+            raw_tl = data.get("threat_level")
+            tl_norm = raw_tl.strip().upper() if isinstance(raw_tl, str) else "NORMAL"
+            if tl_norm not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
+                tl_norm = "NORMAL"
+            raw_rb = data.get("recommended_brake")
+            rb_norm = raw_rb.strip().upper() if isinstance(raw_rb, str) else "NONE"
+            if rb_norm not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
+                rb_norm = "NONE"
+            self._cached_assessment = GeopoliticalThreatAssessment(
+                threat_level=tl_norm,
+                risk_score=risk_val,
+                summary=summary_str,
+                recommended_brake=rb_norm,
+                headlines_analyzed=max(0, hl_cnt),
+                ts=ts_val,
+                is_fallback=is_fb,
+            )
+            self._last_eval_ts = self._cached_assessment.ts
+            raw_digest = data.get("headlines_digest")
+            self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
+        except Exception as e:
+            logger.debug("Could not load cached geopolitical state %s: %s", state_file, e)
 
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
         state_file = self._effective_state_file()
@@ -166,20 +160,12 @@ class GeopoliticalThreatAnalyzer:
             data = asdict(assessment)
             data["headlines_digest"] = self._last_headlines_digest
             save_json_state(state_file, data, indent=2)
-            # Write legacy file during migration
-            legacy = state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
-            if legacy != state_file:
-                save_json_state(legacy, data, indent=2)
         except Exception as e:
             logger.warning("Could not persist geopolitical state to %s: %s", state_file, e)
 
     @staticmethod
     def _as_bool_flag(val: Any) -> bool:
-        if isinstance(val, str):
-            return val.strip().lower() in ("1", "1.0", "true", "yes", "on")
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return math.isfinite(float(val)) and float(val) != 0.0
-        return bool(val)
+        return _parse_bool_flag(val, False)
 
     def assess(
         self,

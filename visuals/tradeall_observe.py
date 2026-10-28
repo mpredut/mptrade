@@ -45,11 +45,9 @@ try:
     from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
     from intelligence import get_kalman_state_path
+from cachepaths import cache_path, get_cachedb_dir
 LOGGER_DIR = os.path.join(ROOT, "logger")
-CACHE_TREND_PATH = os.path.join(
-    os.environ.get("MPTRADE_CACHEDB_DIR", os.path.join(ROOT, "cachedb")),
-    "cache_short_trend.json",
-)
+CACHE_TREND_PATH = cache_path("cache_short_trend.json")
 
 # Dedicated live-mode output directory (PNGs and HTML), deliberately separated
 # from the repository. Unlike ROOT, it contains only generated charts and never
@@ -245,7 +243,7 @@ def load_price_samples(symbol, days_back):
 
 
 def _cachedb_dir() -> str:
-    return os.environ.get("MPTRADE_CACHEDB_DIR", os.path.join(ROOT, "cachedb"))
+    return get_cachedb_dir()
 
 
 def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):

@@ -132,14 +132,6 @@ class SentimentAdvisor:
             from state_io import save_json_state
             payload = asdict(assessment)
             save_json_state(cache_file, payload, indent=2)
-            # Write legacy files during migration
-            for legacy_name in ("macro_advisor_eval.json", "gemini_macro_advisor.json"):
-                legacy_path = cache_file.replace("sentiment_advisor_eval.json", legacy_name)
-                if legacy_path != cache_file:
-                    try:
-                        save_json_state(legacy_path, payload, indent=2)
-                    except Exception:
-                        pass
         except Exception as e:
             logger.warning("Could not persist LLM assessment to %s: %s", cache_file, e)
 

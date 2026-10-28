@@ -831,14 +831,12 @@ def collect_pretrade_telemetry(
 
     # 6. Geopolitical Threat Shield (Pillar 4)
     try:
-        for g_file in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
-            g_path = os.path.join(cachedb_dir, g_file)
-            g_data = read_recovering_previous(g_path, json.loads, default=None)
-            if isinstance(g_data, dict):
-                level = g_data.get("threat_level", "")
-                if level is not None and not isinstance(level, bool) and str(level).strip() != "":
-                    telemetry["Geopolitical Threat Level"] = str(level).strip()
-                    break
+        g_path = os.path.join(cachedb_dir, "geopolitical_threat_eval.json")
+        g_data = read_recovering_previous(g_path, json.loads, default=None)
+        if isinstance(g_data, dict):
+            level = g_data.get("threat_level", "")
+            if level is not None and not isinstance(level, bool) and str(level).strip() != "":
+                telemetry["Geopolitical Threat Level"] = str(level).strip()
     except Exception:
         pass
 

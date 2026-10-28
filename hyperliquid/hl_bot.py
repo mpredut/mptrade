@@ -38,6 +38,7 @@ log = _common_mod.log
 single_instance = _common_mod.single_instance
 required_env = _common_mod.required_env
 required_bool_env = _common_mod.required_bool_env
+_parse_bool_flag = _common_mod._parse_bool_flag
 from strategies.spot_engine import Strategy, StratParams
 from providers.hyperliquid_provider import HyperliquidProvider
 
@@ -72,7 +73,7 @@ def main() -> int:
     strategy_enabled = required_bool_env("STRAT_EXECUTE")
     venue_enabled = required_bool_env("HL_LIVE_ORDERS")
     strat_dry = args.paper or not (strategy_enabled and venue_enabled)
-    observe_only = str(os.environ.get("HL_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "1.0", "true", "yes", "on")
+    observe_only = _parse_bool_flag(os.environ.get("HL_BOT_OBSERVE_ONLY"), False)
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()
         single_instance(f"hl_bot_{args.test_strategy.strip()}")

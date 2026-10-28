@@ -276,12 +276,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 4. Pillar 4: Geopolitical Threat Shield
     try:
-        geo_data = None
-        for geo_fname in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
-            cand_geo = read_recovering_previous(os.path.join(cache_dir, geo_fname), json.loads, default=None)
-            if isinstance(cand_geo, dict):
-                geo_data = cand_geo
-                break
+        geo_data = read_recovering_previous(os.path.join(cache_dir, "geopolitical_threat_eval.json"), json.loads, default=None)
         if isinstance(geo_data, dict):
             geo_ts = _safe_float(geo_data.get("ts"), 0.0)
             geo_age = (now - geo_ts) if geo_ts > 0.0 else float("inf")

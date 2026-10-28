@@ -568,6 +568,7 @@ class LogEventSummary:
     warning_count: int
     critical_events: List[str] = field(default_factory=list)
     guard_interventions: List[str] = field(default_factory=list)
+    persistent_errors: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -31,10 +31,7 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
-FALLBACK_MODELS_RAW = os.environ.get(
-    "LLM_FALLBACK_MODELS",
-    "gemini-3.8-flash-medium,gemini-3.8-flash-low,gemini-4-argon-low,gpt-oss-120b-medium,claude-sonnet-5-5-low",
-)
+FALLBACK_MODELS_RAW = required_env("LLM_FALLBACK_MODELS")
 DEFAULT_FALLBACK_MODELS = tuple(
     m.strip() for m in FALLBACK_MODELS_RAW.split(",") if m.strip()
 )
@@ -380,36 +377,45 @@ class GeminiClient:
 
         # 3. Direct REST API fallback if API key is provided
         if self.api_key:
-            try:
-                clean_model = canonical_rest_model(selected_model)
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={self.api_key}"
-                body = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1000},
-                }
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(body).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-                    resp_data = json.loads(resp.read().decode("utf-8"))
-                    candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
-                    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
-                        return None
-                    content_obj = candidates[0].get("content")
-                    parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
-                    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
-                        return None
-                    raw_text = parts[0].get("text")
-                    text = raw_text.strip() if isinstance(raw_text, str) else ""
-                    if not text:
-                        return None
-                    if cache_ttl_sec > 0:
-                        self._cache[prompt] = (now, text)
-                    return text
-            except Exception as e:
-                logger.error("Gemini REST API error: %s", e)
+            rest_candidates: list[str] = []
+            for mc in self.get_model_candidates(selected_model):
+                rc = canonical_rest_model(mc)
+                if rc not in rest_candidates:
+                    rest_candidates.append(rc)
+            for r_default in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"):
+                if r_default not in rest_candidates:
+                    rest_candidates.append(r_default)
+
+            for r_model in rest_candidates:
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{r_model}:generateContent?key={self.api_key}"
+                    body = {
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1000},
+                    }
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(body).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                        resp_data = json.loads(resp.read().decode("utf-8"))
+                        candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
+                        if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                            continue
+                        content_obj = candidates[0].get("content")
+                        parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
+                        if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+                            continue
+                        raw_text = parts[0].get("text")
+                        text = raw_text.strip() if isinstance(raw_text, str) else ""
+                        if not text:
+                            continue
+                        if cache_ttl_sec > 0:
+                            self._cache[prompt] = (now, text)
+                        return text
+                except Exception as e:
+                    logger.warning("Gemini REST API attempt with model %s failed: %s", r_model, e)
 
         return None
 
