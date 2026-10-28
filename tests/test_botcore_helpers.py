@@ -504,5 +504,32 @@ def test_t212_requires_both_halves():
         t212_credentials(values={"T212_API_KEY": "key-only"})
 
 
+def test_monitororder_ttl_and_ordered_id_set():
+    import monitororder
+    # Custom TTL parsing
+    ttl = monitororder.resolve_effective_order_ttl("123", "client_456", custom_ttl_map={"123": "300"})
+    assert ttl == 300.0
+    ttl_invalid = monitororder.resolve_effective_order_ttl("123", "client_456", custom_ttl_map={"123": -10})
+    assert ttl_invalid == monitororder.DEFAULT_ORDER_TTL_SEC
+
+    # _OrderedIdSet trim
+    s = monitororder._OrderedIdSet()
+    for i in range(10):
+        s.add(str(i))
+    assert len(s) == 10
+    s.trim(5)
+    assert len(s) == 5
+    assert list(s) == ["5", "6", "7", "8", "9"]
+
+
+def test_kraken_cache_touch_ws_fetchtimes():
+    import kraken.kraken_cachemanager as kcm
+    cache = {"items": {"TAOUSDC": []}, "fetchtime": {}}
+    kcm._touch_ws_fetchtimes(cache, 1700000000)
+    assert cache["fetchtime"]["TAOUSDC"] == 1700000000
+    kcm._touch_ws_fetchtimes(cache, "invalid")
+    assert cache["fetchtime"]["TAOUSDC"] > 0
+
+
 if __name__ == "__main__":
     unittest.main()

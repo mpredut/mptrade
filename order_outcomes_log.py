@@ -15,7 +15,7 @@ import os
 import time
 from datetime import datetime
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 from intelligence.macro_sentiment_ssot import obj_attr as _regime_attr
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -36,20 +36,15 @@ def _sanitize_outcome_field(value):
 
 
 def _clean_numeric_field(value):
-    if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
         return ""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else ""
-    if isinstance(value, int):
+    f = safe_float(value, default=None)
+    if f is None:
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value
     s = str(value).strip()
-    if not s or s.lower() in _INVALID_LOG_STRINGS:
-        return ""
-    try:
-        f = float(s)
-        return s if math.isfinite(f) else ""
-    except (TypeError, ValueError, OverflowError):
-        return ""
+    return s if s.lower() not in _INVALID_LOG_STRINGS else ""
 
 
 def _clean_bool_field(value) -> str:
@@ -94,14 +89,8 @@ def log_order_outcome(
             regime_context, (bool, int, float, str, bytes, list, tuple, set, frozenset)
         ):
             strength_val = _regime_attr(regime_context, "strength", None)
-            strength_str = ""
-            if strength_val is not None and not isinstance(strength_val, bool):
-                try:
-                    sf = float(strength_val)
-                    if math.isfinite(sf):
-                        strength_str = f"{sf:.4f}"
-                except (TypeError, ValueError, OverflowError):
-                    strength_str = ""
+            sf = safe_float(strength_val, default=None)
+            strength_str = f"{sf:.4f}" if sf is not None else ""
             reg_raw = _regime_attr(regime_context, "regime", "")
             src_raw = _regime_attr(regime_context, "source", "")
             rsn_raw = _regime_attr(regime_context, "reason", "")

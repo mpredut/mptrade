@@ -36,8 +36,11 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
-from kraken_common import (_parse_bool_flag, load_env_stack, log, required_env,
-                           required_float_env, single_instance)
+from kraken_common import (
+    _parse_bool_flag, load_env_stack, log, required_env,
+    required_float_env, safe_float, safe_nonneg_float, safe_pos_float,
+    safe_pos_int, single_instance,
+)
 from kraken_client import KrakenClient
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
@@ -169,14 +172,8 @@ def _load_initial_cache(path):
                 clean_id = _clean_cache_id(row.get("id"))
                 if clean_id is None:
                     continue
-                raw_t = row.get("time")
-                if raw_t is None or isinstance(raw_t, bool):
-                    continue
-                try:
-                    t_f = float(raw_t)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if not math.isfinite(t_f) or t_f <= 0:
+                t_f = safe_pos_float(row.get("time"), None)
+                if t_f is None:
                     continue
                 row_copy = dict(row)
                 row_copy["id"] = clean_id
@@ -190,16 +187,14 @@ def _load_initial_cache(path):
                 valid_rows.append(row_copy)
             valid_rows.sort(key=lambda t: t["time"])
             clean_items[str(k)] = valid_rows
+        clean_fetchtime = {}
+        for k, v in loaded["fetchtime"].items():
+            v_f = safe_nonneg_float(v, None)
+            if v_f is not None:
+                clean_fetchtime[str(k)] = v_f
         return {
             "items": clean_items,
-            "fetchtime": {
-                str(k): v
-                for k, v in loaded["fetchtime"].items()
-                if isinstance(v, (int, float))
-                and not isinstance(v, bool)
-                and math.isfinite(float(v))
-                and float(v) >= 0
-            },
+            "fetchtime": clean_fetchtime,
         }
     return {"items": {}, "fetchtime": {}}
 
@@ -242,16 +237,9 @@ def _ledger_to_fills(ledger):
         )
         if not quote or not base or str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
             continue
-        raw_ba = base.get("amount") if isinstance(base, dict) else None
-        raw_qa = quote.get("amount") if isinstance(quote, dict) else None
-        if isinstance(raw_ba, bool) or isinstance(raw_qa, bool):
-            continue
-        try:
-            ba = float(raw_ba)
-            qa = float(raw_qa)
-        except (KeyError, ValueError, TypeError, OverflowError):
-            continue
-        if not (math.isfinite(ba) and math.isfinite(qa)) or ba == 0.0 or qa == 0.0:
+        ba = safe_float(base.get("amount") if isinstance(base, dict) else None, None)
+        qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)
+        if ba is None or qa is None or ba == 0.0 or qa == 0.0:
             continue
         raw_base = str(base["asset"]).strip().upper()
         if raw_base.endswith("X.T") and len(raw_base) > 3:
@@ -276,19 +264,14 @@ def _ledger_to_fills(ledger):
             "isBuyer": is_buyer,                          # receiving base means a purchase
             "side": "BUY" if is_buyer else "SELL",
         }
-        try:
-            raw_qf = quote.get("fee", 0.0)
-            raw_bf = base.get("fee", 0.0)
-            q_fee = 0.0 if raw_qf is None or isinstance(raw_qf, bool) else abs(float(raw_qf))
-            b_fee = 0.0 if raw_bf is None or isinstance(raw_bf, bool) else abs(float(raw_bf))
-            if math.isfinite(q_fee) and q_fee > 0:
-                fill["fee"] = q_fee
-                fill["feeAsset"] = quote_ccy
-            elif math.isfinite(b_fee) and b_fee > 0:
-                fill["fee"] = b_fee
-                fill["feeAsset"] = raw_base
-        except (ValueError, TypeError, OverflowError):
-            pass
+        q_fee = safe_nonneg_float(quote.get("fee"), 0.0)
+        b_fee = safe_nonneg_float(base.get("fee"), 0.0)
+        if q_fee > 0:
+            fill["fee"] = q_fee
+            fill["feeAsset"] = quote_ccy
+        elif b_fee > 0:
+            fill["fee"] = b_fee
+            fill["feeAsset"] = raw_base
         fills.append(fill)
     return fills
 
@@ -361,16 +344,7 @@ def _merge_rest_into(client, cache):
 
 def _touch_ws_fetchtimes(cache, now_ms=None):
     """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
-    if (
-        now_ms is None
-        or isinstance(now_ms, bool)
-        or not isinstance(now_ms, (int, float))
-        or not math.isfinite(float(now_ms))
-        or float(now_ms) <= 0
-    ):
-        now_ms = int(time.time() * 1000)
-    else:
-        now_ms = int(now_ms)
+    now_ms = safe_pos_int(now_ms, None) or int(time.time() * 1000)
     configured = [sym for sym in (PAIRS or ()) if sym and sym != "*"]
     for sym in configured:
         cache["items"].setdefault(sym, [])

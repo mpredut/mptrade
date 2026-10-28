@@ -31,7 +31,12 @@ from providers.strategy_executor import SubmissionRefused
 import order_retry
 import accepted_order_persistence
 import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibility with test patches
-from botcore import load_dotenv as _load_dotenv, required_float_env, required_int_env
+from botcore import (
+    load_dotenv as _load_dotenv,
+    required_float_env,
+    required_int_env,
+    safe_nonneg_float,
+)
 
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
 
@@ -72,14 +77,9 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     for candidate_key in (oid_str, cid_str):
         if not candidate_key:
             continue
-        custom_ttl = custom_map.get(candidate_key)
-        if custom_ttl is not None and not isinstance(custom_ttl, bool):
-            try:
-                val = float(custom_ttl)
-                if math.isfinite(val) and val > 0:
-                    return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
-            except (TypeError, ValueError, OverflowError):
-                pass
+        val = _safe_pos_float(custom_map.get(candidate_key), None)
+        if val is not None:
+            return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
 
     # 2. Module default based on owner
     if (not owner or isinstance(owner, bool)) and cid_str:
@@ -232,16 +232,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         print(f"For {symbol} there are no open {order_type} orders to begin with.")
         return
     
-    current_price = api.get_current_price(symbol)
-    if current_price is None or isinstance(current_price, bool):
-        print("Could not obtain the current price.")
-        return
-    try:
-        current_price = float(current_price)
-    except (TypeError, ValueError, OverflowError):
-        print("Could not obtain the current price.")
-        return
-    if not math.isfinite(current_price) or current_price <= 0:
+    current_price = _safe_pos_float(api.get_current_price(symbol), None)
+    if current_price is None:
         print("Could not obtain the current price.")
         return
     
@@ -328,17 +320,10 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 
-        init_px = initial_prices.get(order_id)
-        init_px_valid = False
-        if init_px is not None and not isinstance(init_px, bool):
-            try:
-                init_px_f = float(init_px)
-                if math.isfinite(init_px_f) and init_px_f > 0:
-                    initial_prices[order_id] = init_px_f
-                    init_px_valid = True
-            except (TypeError, ValueError, OverflowError):
-                init_px_valid = False
-        if not init_px_valid:
+        init_px_f = _safe_pos_float(initial_prices.get(order_id), None)
+        if init_px_f is not None:
+            initial_prices[order_id] = init_px_f
+        else:
             _remember_initial_price(initial_prices, order_id, float(price))
 
         difference_percent = abs(current_price - price) / price * 100
@@ -372,12 +357,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):
-                try:
-                    rounded = float(round_px(symbol, new_price))
-                    if math.isfinite(rounded) and rounded > 0:
-                        effective_new_price = rounded
-                except Exception:
-                    pass
+                rounded = _safe_pos_float(round_px(symbol, new_price), None)
+                if rounded is not None:
+                    effective_new_price = rounded
             if (
                 abs(effective_new_price - float(price)) <= 1e-12
                 or abs(new_price - float(price)) <= 1e-12
@@ -387,31 +369,17 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     f"{price}; skipping redundant cancel/replace."
                 )
                 continue
-            try:
-                raw_orig = order.get("quantity", order.get("origQty", order.get("qty")))
-                if isinstance(raw_orig, bool):
-                    raise TypeError("boolean origQty")
-                original_quantity = float(raw_orig)
-                if "remainingQty" in order:
-                    if isinstance(order["remainingQty"], bool):
-                        raise TypeError("boolean remainingQty")
-                    quantity = float(order["remainingQty"])
-                else:
-                    quantity = extract_remaining_qty(order, default=original_quantity)
-            except (TypeError, ValueError, OverflowError):
+            original_quantity = _safe_pos_float(
+                order.get("quantity", order.get("origQty", order.get("qty"))), None
+            )
+            quantity = (
+                _safe_pos_float(order.get("remainingQty"), None)
+                if "remainingQty" in order
+                else _safe_pos_float(extract_remaining_qty(order, default=original_quantity), None)
+            )
+            if not original_quantity or not quantity:
                 print(
-                    f"Order {order_id} has an invalid remaining quantity; "
-                    "it is not canceled or replaced."
-                )
-                continue
-            if (
-                not math.isfinite(quantity)
-                or quantity <= 0
-                or not math.isfinite(original_quantity)
-                or original_quantity <= 0
-            ):
-                print(
-                    f"Order {order_id} has no unfilled quantity; "
+                    f"Order {order_id} has an invalid or unfilled remaining quantity; "
                     "it is not canceled or replaced."
                 )
                 continue
@@ -555,19 +523,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 continue
 
-            try:
-                raw_filled = getattr(status, "filled_qty", 0.0)
-                if isinstance(raw_filled, bool):
-                    raise TypeError("boolean filled_qty")
-                filled_quantity = float(raw_filled or 0.0)
-                if not math.isfinite(filled_quantity) or filled_quantity < 0.0:
-                    raise ValueError("invalid filled_qty")
-                quantity = max(0.0, original_quantity - filled_quantity)
-            except (TypeError, ValueError, OverflowError):
-                order_retry.complete_claim(
-                    replacement_claim, "status_error",
-                    failure_reason="invalid_final_filled_quantity")
-                continue
+            filled_quantity = safe_nonneg_float(getattr(status, "filled_qty", 0.0), 0.0)
+            quantity = max(0.0, original_quantity - filled_quantity)
             activation = order_retry.activate_claimed_replacement(
                 replacement_claim, quantity)
             if activation == "resolved":
@@ -671,11 +628,11 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
     # Keep tracking set sizes bounded over long continuous execution
     if len(_notified_placed_order_ids) > MAX_TRACKED_ORDER_IDS:
-        _notified_placed_order_ids.difference_update(list(_notified_placed_order_ids)[:-5000])
+        _notified_placed_order_ids.trim(5000)
     if len(_notified_expired_order_ids) > MAX_TRACKED_ORDER_IDS:
-        _notified_expired_order_ids.difference_update(list(_notified_expired_order_ids)[:-5000])
+        _notified_expired_order_ids.trim(5000)
     if len(_derived_replacement_order_ids) > MAX_TRACKED_ORDER_IDS:
-        _derived_replacement_order_ids.difference_update(list(_derived_replacement_order_ids)[:-5000])
+        _derived_replacement_order_ids.trim(5000)
 
 
 
