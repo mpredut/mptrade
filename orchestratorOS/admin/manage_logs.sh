@@ -31,8 +31,10 @@ done
 if command -v logrotate >/dev/null 2>&1; then
   : > "$CONF_FILE"
   for d in "${STREAM_DIRS[@]}"; do
+    log_glob="\"$ROOT/$d/*.log\""
+    [ "$d" = "logs" ] && log_glob="\"$ROOT/logger/*.log\" \"$ROOT/logs/*.log\""
     cat >> "$CONF_FILE" <<EOF
-"$ROOT/$d/*.log" {
+$log_glob {
     daily
     maxsize $LOG_MAX_SIZE
     rotate $LOG_ROTATE_COUNT
@@ -49,12 +51,15 @@ EOF
 fi
 
 # 3. Direct size-cap fallback (truncate any single active log > 200MB if logrotate skipped it)
-for d in "${STREAM_DIRS[@]}"; do
-  find "$ROOT/$d" -maxdepth 1 -type f -name "*.log" -size +200M | while read -r biglog; do
-    ts="$(date '+%Y%m%d_%H%M%S')"
-    base="$(basename "$biglog")"
-    gzip -c "$biglog" > "$ROOT/$d/archive/${base}.${ts}.gz" && : > "$biglog"
-  done
+for d in logger "${STREAM_DIRS[@]}"; do
+  target_arch="$ROOT/${d/logger/logs}/archive"
+  if [ -d "$ROOT/$d" ]; then
+    find "$ROOT/$d" -maxdepth 1 -type f -name "*.log" -size +200M | while read -r biglog; do
+      ts="$(date '+%Y%m%d_%H%M%S')"
+      base="$(basename "$biglog")"
+      gzip -c "$biglog" > "$target_arch/${base}.${ts}.gz" && : > "$biglog"
+    done
+  fi
 done
 
 # 4. Enforce retention window on archived .gz logs and /tmp test artifacts

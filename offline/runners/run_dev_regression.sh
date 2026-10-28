@@ -31,6 +31,8 @@ do_watch() {
     else
         echo "[dev_ci_watcher $(date '+%F %T')] Regression currently in flight; queueing run_dev_regression.sh..."
     fi
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
     nohup "$RUNNER_DIR/run_dev_regression.sh" run </dev/null >/dev/null 2>&1 &
 }
 
@@ -98,6 +100,7 @@ do_run() {
     exec 7>"/tmp/dev_ci_watcher.lock"
     flock -w 45 7 && dev_local_git_sync "$DEV_CODE_BRANCH" >/dev/null 2>&1 || true
     flock -u 7 2>/dev/null || true
+    exec 7>&-
 
     local commit_hash commit_short commit_msg start_ts start_iso rc=0 duration prev_status
     commit_hash="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
@@ -117,7 +120,7 @@ do_run() {
     echo "[dev_regression $start_iso] Starting regression on commit $commit_short: $commit_msg" | tee -a "$LOG_FILE"
     unset BACKTEST_MODE REPLAY_MODE DISABLE_EXTERNAL_NOTIFICATIONS DISABLE_GEMINI_LLM
 
-    "$PYTHON_BIN" -m pytest tests/ -q > "$LOG_FILE.run" 2>&1 || rc=$?
+    ( exec 8>&-; "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
     duration=$(($(date +%s) - start_ts))
     cat "$LOG_FILE.run" >> "$LOG_FILE"
     prev_status="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"

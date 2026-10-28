@@ -153,7 +153,7 @@ restore_backup() {
     [ -f "$SECRETS/.rclone_backup/rclone.conf" ] && copy_if_exists "$SECRETS/.rclone_backup" "$HOME/.config/rclone" rclone.conf && chmod 600 "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true
     [ -f "$SECRETS/.host_secrets/piatoken.txt" ] && copy_if_exists "$SECRETS/.host_secrets" "$HOME" piatoken.txt && chmod 600 "$HOME/piatoken.txt" 2>/dev/null || true
 
-    if ! ls "$ROOT"/cachedb/prices/cache_365_price_*.jsonl "$ROOT"/cachedb/cache_365_price_*.jsonl >/dev/null 2>&1; then
+    if [ -z "$(find "$ROOT/cachedb" -maxdepth 2 -name 'cache_365_price_*.jsonl' -print -quit 2>/dev/null)" ]; then
         echo "    ! 365d price archives missing locally; attempting pull from Storj..."
         pull_remote_price_data || echo "    ! Storj price pull skipped or unavailable"
     fi

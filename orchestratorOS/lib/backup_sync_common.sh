@@ -86,14 +86,22 @@ dev_ssh() {
 }
 
 dev_local_git_sync() {  # [$1=branch]
-    local branch="${1:-${DEV_CODE_BRANCH:-main}}"
+    local branch="${1:-${DEV_CODE_BRANCH:-main}}" before after
     git -C "$ROOT" checkout -- offline/research/*_results.json 2>/dev/null || true
     GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2}" \
-        timeout 30 git -C "$ROOT" fetch -q origin "$branch" && git -C "$ROOT" reset --hard "origin/$branch"
+        timeout 30 git -C "$ROOT" fetch -q origin "$branch" || return 1
+    before="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "")"
+    after="$(git -C "$ROOT" rev-parse "origin/$branch" 2>/dev/null || echo "")"
+    if [ -n "$after" ] && [ "$before" != "$after" ]; then
+        echo "Updating ${before:0:8}..${after:0:8}"
+        git -C "$ROOT" reset --hard "origin/$branch"
+    else
+        echo "Already up to date."
+    fi
 }
 
 dev_remote_git_pull() {
-    dev_ssh "cd ~/$DEV_PATH && if flock -n /tmp/dev_regression.lock flock -w 45 /tmp/dev_ci_watcher.lock bash -c 'source orchestratorOS/lib/backup_sync_common.sh && dev_local_git_sync ${DEV_CODE_BRANCH:-main}'; then :; else echo 'Regression currently in flight; deferred git pull until lock is released.'; fi"
+    dev_ssh "cd ~/$DEV_PATH && exec 8>/tmp/dev_regression.lock && if ! flock -n 8; then echo 'Regression currently in flight; deferred git pull until lock is released.'; else flock -w 45 /tmp/dev_ci_watcher.lock bash -c 'source orchestratorOS/lib/backup_sync_common.sh && dev_local_git_sync ${DEV_CODE_BRANCH:-main}'; fi"
 }
 
 dev_launch_regression_bg() {
