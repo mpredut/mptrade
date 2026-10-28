@@ -3,8 +3,8 @@
 # Storj rclone transport, cachedb rsync, and DEV SSH orchestration across PROD, DEV, and WSL.
 
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=orchestratorOS/lib/env_common.sh
-source "$_LIB_DIR/env_common.sh"
+# shellcheck source=orchestratorOS/lib/os_notify.sh
+source "$_LIB_DIR/os_notify.sh"
 
 SSH_FAST="${SSH_FAST:-ssh -o BatchMode=yes -o ConnectTimeout=10}"
 
@@ -85,12 +85,19 @@ dev_ssh() {
     ssh -o BatchMode=yes -o ConnectTimeout="${DEV_SSH_TIMEOUT:-5}" -p "$DEV_PORT" "$DEV_USER@$DEV_HOST" "$@"
 }
 
+dev_local_git_sync() {  # [$1=branch]
+    local branch="${1:-${DEV_CODE_BRANCH:-main}}"
+    git -C "$ROOT" checkout -- offline/research/*_results.json 2>/dev/null || true
+    GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2}" \
+        timeout 30 git -C "$ROOT" fetch -q origin "$branch" && git -C "$ROOT" reset --hard "origin/$branch"
+}
+
 dev_remote_git_pull() {
-    dev_ssh "cd ~/$DEV_PATH && if flock -n /tmp/dev_regression.lock flock -w 45 /tmp/dev_ci_watcher.lock env GIT_SSH_COMMAND='ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2' timeout 45 git pull --ff-only origin $DEV_CODE_BRANCH; then :; else echo 'Regression currently in flight; deferred git pull until lock is released.'; fi"
+    dev_ssh "cd ~/$DEV_PATH && if flock -n /tmp/dev_regression.lock flock -w 45 /tmp/dev_ci_watcher.lock bash -c 'source orchestratorOS/lib/backup_sync_common.sh && dev_local_git_sync ${DEV_CODE_BRANCH:-main}'; then :; else echo 'Regression currently in flight; deferred git pull until lock is released.'; fi"
 }
 
 dev_launch_regression_bg() {
-    dev_ssh "nohup bash -c 'cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh' </dev/null >/dev/null 2>&1 &" || true
+    dev_ssh "nohup bash -c 'cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh run' </dev/null >/dev/null 2>&1 &" || true
 }
 
 dev_sync_regression_status() {

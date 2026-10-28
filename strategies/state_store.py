@@ -8,7 +8,7 @@ duplicate entry.
 from __future__ import annotations
 
 from collections.abc import Callable
-import math
+from botcore import _parse_bool_flag
 from state_io import StateReadError, load_json_state, save_json_state
 
 
@@ -23,14 +23,7 @@ class JsonStateStore:
         self.default_factory = default_factory
         self.label = label
         self.logger = logger
-        if isinstance(fail_closed, str):
-            self.fail_closed = fail_closed.strip().lower() not in (
-                "0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"
-            )
-        elif isinstance(fail_closed, float) and not math.isfinite(fail_closed):
-            self.fail_closed = True
-        else:
-            self.fail_closed = bool(fail_closed)
+        self.fail_closed = False if fail_closed is None else _parse_bool_flag(fail_closed, True)
 
     def load(self) -> dict:
         try:

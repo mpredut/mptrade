@@ -15,6 +15,4 @@ done
 
 [ -f "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh" ] && source "$RUNNER_DIR/../../orchestratorOS/lib/backup_sync_common.sh"
 
-export BACKTEST_MODE=1
-export DISABLE_EXTERNAL_NOTIFICATIONS=1
-export DISABLE_GEMINI_LLM=1
+export BACKTEST_MODE=1 DISABLE_EXTERNAL_NOTIFICATIONS=1 DISABLE_GEMINI_LLM=1

@@ -65,10 +65,12 @@ Backtesting and simulation execution scripts.
   Unified cache and repository synchronization script supporting two targets:
   - `sync_cache_to.sh dev`: Runs every 30 minutes on PROD to fast-forward `main` on DEV and `rsync` live `cachedb/` data from PROD $\rightarrow$ DEV.
   - `sync_cache_to.sh wsl [--unpack-backup]`: Runs every 30 minutes via WSL cron (and at `03:45 AM` with `--unpack-backup` from `pull-binance-backup.ps1`) to unpack the daily PROD backup archive and `rsync` live `cachedb/` data from PROD and `.npz` archives from DEV into `/home/mariusp/mptrade/cachedb/` on WSL.
-- **`run_backtest_cycle.sh`** (now includes `publish_proposals.sh`)
-  Executes the full end-to-end backtest cycle: runs the simulation pilot in `--propose` mode, checks the results, and publishes them securely to the `backtest-proposals` git branch (via a dedicated git worktree) without dirtying the `main` branch working tree.
-- **`trigger_backtest_dev.sh`**
-  Initiates `run_backtest_cycle.sh` on the DEV machine remotely.
+- **`run_backtest_cycle.sh`** (`[local|remote]`)
+  Unified end-to-end backtest proposal cycle:
+  - `local` (default, on DEV): runs `scheduled_pilot.py --propose` and publishes proposals to the `backtest-proposals` git branch via a dedicated git worktree.
+  - `remote` (from PROD): runs `sync_cache_to.sh dev`, triggers `run_backtest_cycle.sh local` on DEV over SSH, and runs `apply_proposals.py` on PROD.
+- **`run_dev_regression.sh`** (`{run|watch|trigger [--wait]|check}`)
+  Unified DEV CI regression controller: runs the full pytest suite on DEV (`run`), watches `origin/main` from cron every 2 minutes (`watch`), triggers remote DEV execution (`trigger`, aliased by `trigger_dev_regression.sh`), and inspects status (`check`, aliased by `check_dev_regression.sh`).
 - **`run_backtest_parallel.sh`** & **`run_financial_baseline.sh`**
   Execution wrappers for historical validation and financial sanity checking of the simulation environment.
 

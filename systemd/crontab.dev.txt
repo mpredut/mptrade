@@ -9,4 +9,4 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 0 4 * * 0 cd $HOME/mptrade && ./offline/runners/run_overnight_master_suite.sh >> logs/cron_master_suite.log 2>&1
 
 # Continuous regression CI watcher: checks origin/main every 2 minutes and runs regression on changes
-*/2 * * * * cd $HOME/mptrade && ./offline/runners/dev_ci_watcher.sh >> logs/dev_ci_watcher.log 2>&1
+*/2 * * * * cd $HOME/mptrade && ./offline/runners/run_dev_regression.sh watch >> logs/dev_ci_watcher.log 2>&1

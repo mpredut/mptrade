@@ -151,7 +151,7 @@ case "${1:-watchdog}" in
   watchdog)       do_watchdog ;;
   restart)        do_restart "${2:-manual}" ;;
   status)         do_status ;;
-  update)         do_update ;;
+  update|cron-update) do_update ;;
   ui-sync)        do_ui_sync ;;
   clean-logs)     do_clean_logs ;;
   clean-sessions) do_clean_sessions "${2:-14}" ;;

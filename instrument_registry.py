@@ -105,7 +105,8 @@ def load_registry(path=None):
         values = dict(cp.items(name))
         core = {key: _required(values, key, name) for key in sorted(CORE)}
         core["enabled"] = _boolean(core["enabled"], "enabled", name)
-        core["provider"] = core["provider"].casefold()
+        from cachepaths import normalize_venue_name
+        core["provider"] = normalize_venue_name(core["provider"]) or core["provider"].casefold()
         for key, allowed in (("isolation", {"own_ledger", "dedicated"}),
                              ("market_hours", {"24x7", "rth"})):
             core[key] = core[key].casefold()
@@ -148,9 +149,10 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     if provider is None:
         prov_norm = None
     else:
+        from cachepaths import normalize_venue_name
         p_raw = getattr(provider, "name", None)
         p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else str(provider))
-        prov_norm = str(p_str).strip().casefold()
+        prov_norm = normalize_venue_name(p_str)
         if not prov_norm:
             raise ValueError(f"Invalid provider: {provider!r}")
     role_norm = str(role or "").strip().casefold() if (role is not None and not isinstance(role, bool)) else None

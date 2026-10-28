@@ -114,7 +114,7 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
 
 
 def _clean_single_order_id(val: Any) -> Optional[str]:
-    if val is None or isinstance(val, (bool, dict, set, frozenset)):
+    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, float):
         if not math.isfinite(val) or not val.is_integer() or val <= 0:
@@ -123,12 +123,6 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     if isinstance(val, int):
         if val <= 0:
             return None
-    if isinstance(val, (list, tuple)):
-        for item in val:
-            cleaned = _clean_single_order_id(item)
-            if cleaned is not None:
-                return cleaned
-        return None
     if not isinstance(val, (str, int)):
         return None
     text = str(val).strip()
@@ -155,13 +149,19 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
     """
     if order is None or isinstance(order, bool):
         return default
+    if isinstance(order, (list, tuple)):
+        for item in order:
+            cleaned = extract_order_id(item)
+            if cleaned is not None:
+                return cleaned
+        return default
     if hasattr(order, "order_id") and hasattr(order, "state"):
         cleaned = _clean_single_order_id(getattr(order, "order_id", None))
         return cleaned if cleaned is not None else default
     if isinstance(order, dict):
         for key in _ORDER_ID_KEYS:
             if key in order:
-                cleaned = _clean_single_order_id(order[key])
+                cleaned = extract_order_id(order[key])
                 if cleaned is not None:
                     return cleaned
         return default

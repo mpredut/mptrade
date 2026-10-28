@@ -1,28 +1,18 @@
 #!/usr/bin/env bash
-# run_all.sh — the whole continuous grid on DEV (~2.5h on 4 cores): data, grid + report,
-# selection/fine/fee wave + report, finite-cash wave. Results in $GRID_OUT
-# (default offline/results/kraken_continuous_grid). Start it detached, e.g.
-#   setsid nohup offline/research/kraken_continuous_grid/run_all.sh > /dev/null 2>&1 &
+# run_all.sh — runs the full Kraken continuous multi-asset grid (waves 1..3 + reports) on DEV.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../../.." && pwd)"
-if [ -x "$ROOT/myenv/bin/python" ]; then
-    PY="$ROOT/myenv/bin/python"
-elif [ -x "$ROOT/.venv/bin/python" ]; then
-    PY="$ROOT/.venv/bin/python"
-else
-    PY=python3
-fi
+# shellcheck source=../../../orchestratorOS/lib/env_common.sh
+source "$HERE/../../../orchestratorOS/lib/env_common.sh"
+
 OUT="${GRID_OUT:-$ROOT/offline/results/kraken_continuous_grid}"
-mkdir -p "$OUT"
-cd "$ROOT"
-rm -f "$OUT/results.jsonl"      # grid.py resumes from an existing file; start clean
-DEFAULT_WORKERS="$(nproc 2>/dev/null || echo 4)"
-"$PY" "$HERE/fetch_data.py" > "$OUT/fetch.log" 2>&1
-WORKERS="${WORKERS:-$DEFAULT_WORKERS}" "$PY" "$HERE/grid.py" > "$OUT/grid.log" 2>&1
-"$PY" "$HERE/report.py" > "$OUT/report.log" 2>&1
-WORKERS="${WORKERS:-$DEFAULT_WORKERS}" "$PY" "$HERE/grid2.py" > "$OUT/grid2.log" 2>&1
-"$PY" "$HERE/report2.py" > "$OUT/report2.log" 2>&1
-WORKERS="${WORKERS:-$DEFAULT_WORKERS}" "$PY" "$HERE/grid3.py" > "$OUT/grid3.log" 2>&1
-"$PY" "$HERE/report3.py" > "$OUT/report3.log" 2>&1
+mkdir -p "$OUT" && cd "$ROOT"
+rm -f "$OUT/results.jsonl"
+export WORKERS="${WORKERS:-$(nproc 2>/dev/null || echo 4)}"
+
+"$PYTHON_BIN" "$HERE/fetch_data.py" > "$OUT/fetch.log" 2>&1
+for sfx in "" 2 3; do
+    "$PYTHON_BIN" "$HERE/grid${sfx}.py" > "$OUT/grid${sfx}.log" 2>&1
+    "$PYTHON_BIN" "$HERE/report${sfx}.py" > "$OUT/report${sfx}.log" 2>&1
+done
 echo "done: $OUT/REPORT.md $OUT/REPORT2.md $OUT/REPORT3.md"

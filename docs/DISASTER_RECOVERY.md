@@ -63,8 +63,8 @@ The entire deployment is reproducible and path-agnostic:
   - Installs direct gateway routing drop-in `netplan-99-force-gateway.yaml`.
   - Installs logrotate cap for PIA daemon debug log (`logrotate-pia-daemon.conf`).
   - Installs user-level `antigravity-cli-daemon.service` along with its drop-ins (`antigravity-cli-daemon.service.d/override.conf` waiting on VPN readiness via `wait_for_vpn.sh`, and `antigravity-cli-daemon.service.d/store-fix.conf` running `orchestratorOS/admin/agy_store_fix.py pre/post` to keep the Web UI conversation summary store synchronized), plus the isolated headless bot wrapper `~/.local/bin/agy-bot` (`systemd/agy-bot`, using `~/agy_bot_home` so automated bot prompts never overwrite the human Web UI store), and enables user lingering (`loginctl enable-linger`).
-  - Sets up dynamic crontabs (`systemd/crontab.prod.txt` and `systemd/crontab.root.prod.txt`) including `manage_agy.sh`, `autonomous_ai_reconciler.py`, `sync_cache_to.sh dev` (every 30m PROD $\rightarrow$ DEV sync), and `trigger_backtest_dev.sh` (02:00 / 14:00 backtest runs on DEV).
-  - DEV machine (`192.168.0.138`) crontab (`systemd/crontab.dev.txt`) maintains automated continuous CI regression testing (`dev_ci_watcher.sh` & `run_dev_regression.sh`).
+  - Sets up dynamic crontabs (`systemd/crontab.prod.txt` and `systemd/crontab.root.prod.txt`) including `manage_agy.sh`, `autonomous_ai_reconciler.py`, `sync_cache_to.sh dev` (every 30m PROD $\rightarrow$ DEV sync), and `run_backtest_cycle.sh remote` (02:00 / 14:00 backtest runs on DEV).
+  - DEV machine (`192.168.0.138`) crontab (`systemd/crontab.dev.txt`) maintains automated continuous CI regression testing (`run_dev_regression.sh watch` & `run_dev_regression.sh run`).
 - **VPN Supervisor** (`orchestratorOS/livecheck/pia_supervisor.sh`):
   - Reads `PIA_USER`, `PIA_PASS`, `PIA_DIP_TOKEN_FRANKFURT`, and `PIA_DIP_TOKEN_BELGIUM` directly from `.env` (fail-fast).
   - Automatically authenticates `piactl`, registers both Dedicated IP tokens (Frankfurt Primary `192.109.159.105` + Belgium Fallback `85.122.194.79`), and configures port forwarding on startup.
