@@ -1801,6 +1801,7 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
     assert snap.portfolio_summary["kraken_cycles"]["XBTUSD"]["dd_pct"] == 6.0
 
     # 3. Verify gateway resolves BTCUSD -> XBTUSD on Kraken and falls back to cache_24_price when cache_current_price is absent
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
     fake_kraken_xbt = SimpleNamespace(
         name="KRAKEN_XBT",
@@ -2309,6 +2310,35 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     assert pos_by_venue_sym[("hyperliquid", "HYPEUSDC")]["last_buy_px"] == 38.0
     assert pos_by_venue_sym[("kraken", "HYPEUSD")]["active_avg_buy_px"] == 25.0
     assert pos_by_venue_sym[("kraken", "HYPEUSD")]["last_buy_px"] == 25.0
+
+    # 7. alt_btc_24h range geometry is populated without beta/corr, and submit() honors notional_usd + TOPIC_ALIASES
+    now_ms = int(now_s * 1000)
+    (cache_dir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": [[now_ms - i * 300_000, 80000.0 + i * 50.0] for i in range(10, -1, -1)]}),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_24_price_HYPEUSDC.json").write_text(
+        json.dumps({"items": [[now_ms - i * 300_000, 40.0 + i * 0.2] for i in range(10, -1, -1)]}),
+        encoding="utf-8",
+    )
+    snap2 = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
+    hype_pinfo = snap2.prices_and_trends["HYPEUSDC"]
+    assert hype_pinfo.get("alt_btc_pos_24h_pct") is not None
+    assert "beta_btc_24h" not in hype_pinfo
+    assert "corr_btc_24h" not in hype_pinfo
+
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
+    submitted = gw.submit(
+        {"action": "BUY", "symbol": "HYPEUSDC", "venue": "hl", "confidence": 0.94, "notional_usd": 55.0},
+        source="auto_trade_executor",
+        max_mode="shadow",
+        instruments_map={"HYPERLIQUID_HYPE": hl_inst},
+    )
+    assert submitted is not None
+    assert submitted["suggested_notional_usd"] == 55.0
+    assert submitted["venue"] == "hyperliquid"
+    assert submitted["status"] == "OBSERVED_SHADOW"
 
 
 

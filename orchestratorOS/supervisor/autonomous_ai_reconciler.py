@@ -48,6 +48,7 @@ from providers.base import (
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
     compute_24h_price_metrics,
+    compute_cross_btc_metrics,
     extract_symbol_recent_fills,
     load_symbol_price_series,
 )
@@ -215,6 +216,11 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
             v_norm = normalize_venue_name(d.get("venue"))
             if v_norm:
                 d["venue"] = v_norm
+            if d.get("suggested_notional_usd") is None:
+                for nk in ("notional_usd", "amount_usd", "size_usd"):
+                    if d.get(nk) is not None:
+                        d["suggested_notional_usd"] = d[nk]
+                        break
             candidates.append(d)
 
     # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first,
@@ -1168,6 +1174,9 @@ class AutonomousAIReconciler:
             if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict)
             else {}
         )
+        btc_series_24h, _ = load_symbol_price_series(
+            self.cache_dir, "BTCUSDC", current_price_items=cur_p_items
+        )
         for sym in list(snapshot.prices_and_trends.keys()):
             matched_series_24h, arch_vals_7d = load_symbol_price_series(
                 self.cache_dir, sym, current_price_items=cur_p_items
@@ -1252,6 +1261,16 @@ class AutonomousAIReconciler:
                         snapshot.prices_and_trends[sym]["trend"] = 1
                     elif c1h <= -0.25:
                         snapshot.prices_and_trends[sym]["trend"] = -1
+                if (
+                    matched_series_24h
+                    and btc_series_24h
+                    and not sym.endswith(("_EQ", "_US_EQ"))
+                    and canonical_base_asset(sym) != "BTC"
+                ):
+                    cross_btc = compute_cross_btc_metrics(matched_series_24h, btc_series_24h)
+                    for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct"):
+                        if cross_btc.get(ck) is not None:
+                            snapshot.prices_and_trends[sym][ck] = cross_btc[ck]
 
             m_info = _load_symbol_microstructure(self.cache_dir, sym, _read_json)
             if m_info:
@@ -2711,7 +2730,11 @@ class AutonomousAIReconciler:
         is_sys_error = self._is_system_os_error_report(report)
         is_any_error = is_bot_error or is_sys_error
 
-        spec = topic_spec(topic_key) if topic_key in TOPIC_SPECS else topic_spec("auto_technical_repair")
+        spec = (
+            topic_spec(topic_key)
+            if (topic_key in TOPIC_SPECS or topic_key in TOPIC_ALIASES)
+            else topic_spec("auto_technical_repair")
+        )
         if is_bot_error:
             title = f"🚨 {spec.bracket_tag} ERROR Issues: {issues_cnt} | Actions: {actions_cnt}"
             target_topic = self.ntfy_topic_error or self.ntfy_topic or "ntfy-error-1978"

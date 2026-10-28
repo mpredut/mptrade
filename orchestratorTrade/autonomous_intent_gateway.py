@@ -805,7 +805,9 @@ class AutonomousIntentGateway:
         if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
             raw_iid = f"intent_{int(time.time())}"
         intent_id = str(raw_iid).strip()
-        raw_dec = intent.get("decision", "HOLD")
+        raw_dec = intent.get("decision")
+        if raw_dec is None:
+            raw_dec = intent.get("action") if intent.get("action") is not None else intent.get("side", "HOLD")
         decision = "" if isinstance(raw_dec, bool) or raw_dec is None else str(raw_dec).strip().upper()
         raw_sym = intent.get("symbol", "")
         symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
@@ -839,7 +841,7 @@ class AutonomousIntentGateway:
 
         inst = self.resolve_instrument(symbol, venue=venue, instruments_map=instruments_map)
         if not inst or (
-            str(getattr(inst, "provider_name", "")).lower() != "t212"
+            normalize_venue_name(str(getattr(inst, "provider_name", ""))) != "t212"
             and str(getattr(inst, "symbol", "")).upper().endswith("BTC")
         ):
             logger.warning("[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",
@@ -850,7 +852,13 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        suggested_usd = _parse_finite_float(intent.get("suggested_notional_usd"), self.max_notional_usd)
+        raw_notional = intent.get("suggested_notional_usd")
+        if raw_notional is None:
+            for nk in ("notional_usd", "amount_usd", "size_usd"):
+                if intent.get(nk) is not None:
+                    raw_notional = intent.get(nk)
+                    break
+        suggested_usd = _parse_finite_float(raw_notional, self.max_notional_usd)
         effective_usd = max(self.min_notional_usd, min(suggested_usd, self.max_notional_usd))
 
         price = self._get_live_price(inst)
@@ -875,10 +883,10 @@ class AutonomousIntentGateway:
             if raw_thesis is None or isinstance(raw_thesis, bool) or not str(raw_thesis).strip()
             else str(raw_thesis).strip()
         )
-        from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
+        from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
         raw_src = intent.get("created_by")
         src_topic = "" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip()
-        if src_topic in TOPIC_SPECS:
+        if src_topic in TOPIC_SPECS or src_topic in TOPIC_ALIASES:
             trade_tag = topic_spec(src_topic).bracket_tag
         elif venue == "t212":
             trade_tag = topic_spec("auto_sharetrade_executor").bracket_tag
@@ -1034,7 +1042,9 @@ class AutonomousIntentGateway:
         """
         if not isinstance(decision, dict):
             return None
-        raw_side = decision.get("decision", "HOLD")
+        raw_side = decision.get("decision")
+        if raw_side is None:
+            raw_side = decision.get("action") if decision.get("action") is not None else decision.get("side", "HOLD")
         side = "" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().upper()
         if side not in ("BUY", "SELL"):
             logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, side)
@@ -1051,7 +1061,13 @@ class AutonomousIntentGateway:
             logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
                         source, side, symbol, confidence, self.min_confidence)
             return None
-        notional = _parse_finite_float(decision.get("suggested_notional_usd"), self.max_notional_usd)
+        raw_notional = decision.get("suggested_notional_usd")
+        if raw_notional is None:
+            for nk in ("notional_usd", "amount_usd", "size_usd"):
+                if decision.get(nk) is not None:
+                    raw_notional = decision.get(nk)
+                    break
+        notional = _parse_finite_float(raw_notional, self.max_notional_usd)
         notional = max(self.min_notional_usd, min(notional, self.max_notional_usd))
 
         now = time.time()

@@ -44,6 +44,7 @@ from credentials import CredentialConfigurationError, kraken_credentials
 from cachepaths import cache_path
 from instrument_registry import symbols_for
 from providers.base import (
+    _clean_single_order_id,
     extract_order_fee,
     extract_order_id,
     extract_order_price,
@@ -106,28 +107,18 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 
 
 def _clean_cache_id(val: object) -> str | None:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+    if isinstance(val, (list, tuple)):
         return None
-    if isinstance(val, int):
-        return str(val) if val > 0 else None
-    if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0 or val != int(val):
-            return None
-        return str(int(val))
-    if not isinstance(val, str):
-        return None
-    text = val.strip()
-    if not text or text.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
+    cleaned = _clean_single_order_id(val)
+    if cleaned is None:
         return None
     try:
-        f = float(text)
+        f = float(cleaned)
         if not math.isfinite(f) or f <= 0:
             return None
-        if text.endswith(".0") and f == int(f):
-            return str(int(f))
     except (TypeError, ValueError, OverflowError):
         pass
-    return text
+    return cleaned
 
 
 def _normalize(txid, tr):
