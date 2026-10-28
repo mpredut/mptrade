@@ -18,7 +18,15 @@ import os
 import time
 import math
 import json
-from botcore import _parse_bool_flag, parse_dotenv
+from botcore import (
+    _parse_bool_flag,
+    parse_dotenv,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
 from intelligence.macro_sentiment_ssot import safe_pos_float as _clean_pos_float
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
@@ -276,15 +284,7 @@ def resolve_high_stake_min_notional_usd(
 ) -> float:
     """Resolve the unified high-stake notional threshold (high_stake_min_notional_usd) from margins."""
     if isinstance(margins, dict) and "high_stake_min_notional_usd" in margins:
-        raw_val = margins["high_stake_min_notional_usd"]
-        if raw_val is not None and not isinstance(raw_val, bool):
-            try:
-                f = float(raw_val)
-                if math.isfinite(f) and f > 0.0:
-                    return f
-            except (TypeError, ValueError):
-                pass
-        return 700.0
+        return safe_pos_float(margins.get("high_stake_min_notional_usd"), default=700.0) or 700.0
     if require_key:
         raise KeyError("high_stake_min_notional_usd")
     return 700.0
@@ -543,16 +543,7 @@ def symbol_regime_context(
     benchmark_symbol: Optional[str] = None,
 ) -> MarketRegimeContext:
     """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
-    now_ts: Optional[float] = None
-    if now is not None and not isinstance(now, bool):
-        try:
-            nf = float(now)
-            if math.isfinite(nf) and nf >= 0.0:
-                now_ts = nf
-        except (TypeError, ValueError):
-            pass
-    if now_ts is None:
-        now_ts = time.time()
+    now_ts = safe_nonneg_float(now, default=None) or time.time()
     decision = symbol_regime(
         symbol,
         provider=provider,
@@ -742,15 +733,9 @@ def get_weight_proxy_cfg(provider_name):
 def _order_ts_qty_price(o):
     if not isinstance(o, dict):
         return 0.0, 0.0, 0.0
-    ts = extract_timestamp_s(o, default=0.0) or 0.0
-    qty = extract_order_qty(o, default=0.0)
-    px = extract_order_price(o, default=0.0)
-    if not math.isfinite(ts) or ts < 0.0:
-        ts = 0.0
-    if not math.isfinite(qty) or qty < 0.0:
-        qty = 0.0
-    if not math.isfinite(px) or px < 0.0:
-        px = 0.0
+    ts = safe_nonneg_float(extract_timestamp_s(o, default=0.0), default=0.0) or 0.0
+    qty = safe_nonneg_float(extract_order_qty(o, default=0.0), default=0.0) or 0.0
+    px = safe_nonneg_float(extract_order_price(o, default=0.0), default=0.0) or 0.0
     return ts, qty, px
 
 
@@ -881,13 +866,8 @@ def window_reference(
     for BUY and SELL according to the resolved difficulty mode ('on'/'strict', 'average',
     'last', 'hybrid', 'dynamic', or 'off').
     Return None for an empty or disabled window. Read errors propagate so the caller fails closed."""
-    if window_s is None or isinstance(window_s, bool):
-        return None
-    try:
-        window_s_f = float(window_s)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(window_s_f) or window_s_f <= 0:
+    window_s_f = safe_pos_float(window_s, default=None)
+    if window_s_f is None:
         return None
     side = _normalize_side_token(order_type)
     eff_mode = get_profit_guard_mode_cfg(
@@ -981,13 +961,8 @@ def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded
     """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
     w = min(1.0, _clean_pos_float(weight, 0.0))
     px = _clean_pos_float(price, 0.0)
-    if required_qty is None or isinstance(required_qty, bool):
-        return 0.0
-    try:
-        req = float(required_qty)
-    except (TypeError, ValueError):
-        return 0.0
-    if math.isnan(req) or req <= 0.0 or w <= 0.0 or px <= 0.0:
+    req = safe_pos_float(required_qty, default=0.0) or 0.0
+    if req <= 0.0 or w <= 0.0 or px <= 0.0:
         return 0.0
     avail = _clean_pos_float(available_qty, 0.0)
     traded = _clean_pos_float(traded_24h_value, 0.0)
@@ -1021,14 +996,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     )
     available = _clean_pos_float(available_qty, 0.0)
     px_clean = _clean_pos_float(price, 0.0)
-    if required_qty is None or isinstance(required_qty, bool):
-        req_clean = 0.0
-    else:
-        try:
-            rf = float(required_qty)
-            req_clean = rf if (not math.isnan(rf) and rf > 0.0) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            req_clean = 0.0
+    req_clean = safe_pos_float(required_qty, default=0.0) or 0.0
     adjusted = compute_weight_capped_qty(weight, px_clean, req_clean, available, traded_value)
     total_ref = traded_value + available * px_clean
     max_trade_value = total_ref * weight
@@ -1082,14 +1050,11 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     order_type = _normalize_side_token(order_type)
     if order_type not in ("BUY", "SELL"):
         return False, "invalid_side"
-    resolved_max_trades = None
-    if max_daily_trades is not None and not isinstance(max_daily_trades, bool):
-        try:
-            mt_f = float(max_daily_trades)
-            if math.isfinite(mt_f) and mt_f >= 0 and mt_f == int(mt_f):
-                resolved_max_trades = int(mt_f)
-        except (TypeError, ValueError, OverflowError):
-            resolved_max_trades = None
+    resolved_max_trades = safe_int(max_daily_trades, default=None)
+    if isinstance(max_daily_trades, float) and not max_daily_trades.is_integer():
+        resolved_max_trades = None
+    elif resolved_max_trades is not None and resolved_max_trades < 0:
+        resolved_max_trades = None
     max_daily_trades = (
         resolved_max_trades
         if resolved_max_trades is not None

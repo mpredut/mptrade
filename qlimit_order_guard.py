@@ -19,6 +19,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from botcore import safe_nonneg_float
 from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, safe_pos_float
 from providers.base import normalize_side
 
@@ -60,14 +61,9 @@ def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) ->
                 p90_d = safe_pos_float(ent.get("p90_d"), 0.0) or None
                 med_d = safe_pos_float(ent.get("median_d"), 0.0) or None
                 t_val = safe_pos_float(ent.get("T"), 0.0) or None
-                ex_pct = 0.4
-                if exceed_percent is not None and not isinstance(exceed_percent, bool):
-                    try:
-                        ep_f = float(exceed_percent)
-                        if math.isfinite(ep_f) and ep_f >= 0.0:
-                            ex_pct = ep_f
-                    except (TypeError, ValueError):
-                        pass
+                ex_pct = safe_nonneg_float(exceed_percent, default=0.4)
+                if ex_pct is None:
+                    ex_pct = 0.4
                 gauss_h = round(t_val * (1.0 + ex_pct), 4) if t_val is not None else None
                 return p90_d, med_d, gauss_h
     except Exception:
