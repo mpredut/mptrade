@@ -11,7 +11,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from cachepaths import resolve_cachedb_filepath  # noqa: E402
+from cachepaths import cache_symbol_variants, resolve_cachedb_filepath  # noqa: E402
+from orchestratorTrade.autonomous_intent_gateway import extract_current_price_item  # noqa: E402
 from state_io import previous_generation_path, read_recovering_previous  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
@@ -62,7 +63,12 @@ def main() -> int:
     it = raw_st.get("items") if isinstance(raw_st.get("items"), dict) else raw_st
     print(f"-- cache_short_trend.json: {sorted(it.keys())}")
     for s in exp:
-        e = it.get(s)
+        e = None
+        for cand in cache_symbol_variants(s, include_original=True, include_base=True):
+            cand_entry = it.get(cand)
+            if isinstance(cand_entry, dict) and cand_entry:
+                e = cand_entry
+                break
         if not isinstance(e, dict) or not e:
             problems.append(f"short_trend MISSING {s}")
             print(f"   {s:10} IS MISSING")
@@ -87,37 +93,62 @@ def main() -> int:
 
     # 2. current price
     cp = load("cache_current_price.json") or {}
-    # format: {'fetchtime': {...}, 'items': {symbol: [[ts_ms, price]]}} (or directly per symbol)
+    # format: {'fetchtime': {...}, 'items': {symbol: price_or_rows}} (or directly per symbol)
     raw_items = cp.get("items", cp) if isinstance(cp, dict) else {}
     items = raw_items if isinstance(raw_items, dict) else {}
+    raw_fetchtime = cp.get("fetchtime") if isinstance(cp, dict) else {}
+    fetchtime_map = raw_fetchtime if isinstance(raw_fetchtime, dict) else {}
     print(f"-- cache_current_price.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")
     for s in exp:
-        entries = items.get(s)
-        if not entries or not isinstance(entries, list):
+        entries = None
+        matched_key = s
+        for cand in cache_symbol_variants(s, include_original=True, include_base=True):
+            if cand in items and items.get(cand) is not None:
+                entries = items.get(cand)
+                matched_key = cand
+                break
+        if entries is None or (isinstance(entries, (list, dict, str)) and not entries):
             problems.append(f"currentprice MISSING {s}")
             print(f"   {s:10} IS MISSING")
             continue
-        last_entry = entries[-1]
-        if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
+
+        px_val = extract_current_price_item(entries) or 0.0
+        ts_raw = None
+        if isinstance(entries, list):
+            last_entry = entries[-1] if entries else None
+            if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
+                problems.append(f"currentprice INVALID {s}")
+                print(f"   {s:10} IS INVALID")
+                continue
+            ts_raw = last_entry[0]
+        elif isinstance(entries, dict):
+            ts_raw = (
+                entries.get("ts")
+                or entries.get("timestamp")
+                or entries.get("time")
+                or fetchtime_map.get(matched_key)
+                or fetchtime_map.get(s)
+            )
+        else:
+            ts_raw = fetchtime_map.get(matched_key) or fetchtime_map.get(s)
+
+        if px_val <= 0:
             problems.append(f"currentprice INVALID {s}")
             print(f"   {s:10} IS INVALID")
             continue
-        ts_ms, price = last_entry[0], last_entry[1]
+
         try:
-            ts_ms_val = float(ts_ms) if ts_ms is not None and not isinstance(ts_ms, bool) else 0.0
-            px_val = float(price) if price is not None and not isinstance(price, bool) else 0.0
+            ts_ms_val = float(ts_raw) if ts_raw is not None and not isinstance(ts_raw, bool) else 0.0
             if not math.isfinite(ts_ms_val):
                 ts_ms_val = 0.0
-            if not math.isfinite(px_val):
-                px_val = 0.0
         except (TypeError, ValueError):
-            ts_ms_val, px_val = 0.0, 0.0
+            ts_ms_val = 0.0
         ts_sec_val = (ts_ms_val / 1000.0 if ts_ms_val > 1e11 else ts_ms_val) if ts_ms_val > 0 else 0.0
         age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
         ok = -5.0 <= age < STALE_S and px_val > 0
         if not ok:
             problems.append(f"currentprice {s} age={age:.0f}s")
-        print(f"   {s:10} age={age:6.0f}s price={price} -> {'OK' if ok else 'STALE'}")
+        print(f"   {s:10} age={age:6.0f}s price={px_val} -> {'OK' if ok else 'STALE'}")
 
     print()
     if problems:

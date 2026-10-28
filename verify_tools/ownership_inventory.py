@@ -114,8 +114,15 @@ def _running(pattern: str | None, commands: list[str] | None) -> bool | None:
 
 
 def _split_symbol(symbol: str, base: str = "", quote: str = "") -> tuple[str, str]:
+    from cachepaths import split_symbol_assets
     resolved_base, resolved_quote = resolve_assets(
         symbol, base=base or None, quote=quote or None)
+    if not resolved_quote and not base and not quote:
+        sb, sq = split_symbol_assets(symbol) or ("", "")
+        if sb:
+            resolved_base = sb
+        if sq:
+            resolved_quote = sq
     return resolved_base, resolved_quote or ""
 
 
@@ -278,7 +285,8 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             mt_role = values.get("role.mt")
             if mt_role is not None and not _truthy(mt_role):
                 continue
-            venue = values.get("provider", "unknown").strip().lower()
+            from cachepaths import normalize_venue_name
+            venue = normalize_venue_name(values.get("provider", "unknown")) or "unknown"
             symbol = values.get("symbol", section).strip()
             enabled = (
                 _truthy(values.get("enabled"), True)

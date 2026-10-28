@@ -12,7 +12,8 @@ from instrument_registry import select_instruments, symbols_for
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
 import order_outcomes_log
-from providers.base import extract_order_id
+from providers.base import extract_order_id, normalize_side
+from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 
 from pricewindow import (
@@ -190,7 +191,7 @@ KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plung
 
 def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
-    action = str(action or "").upper()
+    action = normalize_side(action) or str(action or "").upper()
     sym_norm = str(symbol or "").strip().upper()
     symbol = sym_norm if sym_norm in KALMAN_MODES else symbol
     mode = KALMAN_MODES[symbol]
@@ -224,7 +225,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     ``qty=None`` uses the QuantityDecision maximum under Binance policy, clamped
     to the real balance.
     """
-    action = str(action or "").upper()
+    action = normalize_side(action) or str(action or "").upper()
     symbol = str(symbol or "").strip().upper()
     try:
         price = float(price)
@@ -272,7 +273,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     cancels expired orders on the venue, applies side-specific strategic pricing,
     and records newly placed order IDs.
     """
-    action = str(action or "").upper()
+    action = normalize_side(action) or str(action or "").upper()
     symbol = str(symbol or "").strip().upper()
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
@@ -285,7 +286,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
         return order_ids
 
     num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
-    quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "")
+    quote = (split_symbol_assets(symbol) or ("", ""))[1] if str(symbol).upper().endswith(("USDC", "USDT", "EUR", "GBP", "BTC")) else ""
 
     # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
     # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.

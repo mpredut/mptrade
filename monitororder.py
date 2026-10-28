@@ -22,7 +22,9 @@ from providers.base import (
     extract_order_qty,
     extract_remaining_qty,
     extract_timestamp_s,
+    normalize_side,
 )
+from cachepaths import split_symbol_assets
 from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
@@ -98,8 +100,8 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
         qty = _safe_pos_float(quantity, 0.0)
         px = _safe_pos_float(price, 0.0)
         val = px * qty
-        quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
-        side = str(order_type).upper()
+        quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
+        side = normalize_side(order_type) or str(order_type).upper()
         owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
         owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -184,8 +186,8 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         qty = _safe_pos_float(quantity, 0.0)
         px = _safe_pos_float(price, 0.0)
         val = px * qty
-        quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
-        side = str(order_type).upper()
+        quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
+        side = normalize_side(order_type) or str(order_type).upper()
         owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
         owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
         print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
@@ -220,13 +222,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     """
     if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         return
-    if isinstance(order_type, bool) or not isinstance(order_type, str):
-        return
-    order_type_u = order_type.strip().upper()
-    if order_type_u == "B":
-        order_type_u = "BUY"
-    elif order_type_u == "S":
-        order_type_u = "SELL"
+    order_type_u = normalize_side(order_type)
     if order_type_u not in ("BUY", "SELL"):
         return
     order_type = order_type_u

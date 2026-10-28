@@ -2072,6 +2072,44 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert n_sys["action"] == "REBOOT_SYSTEM"
     assert n_sys["venue"] == "system"
 
+    n_cancel = normalize_repair_action(
+        {"action": "CANCEL_STALE_ORDER", "provider": "Trading212", "symbol": "SPCX_US_EQ", "orderId": 778899.0},
+        str(tmp_path),
+    )
+    assert n_cancel["action"] == "CANCEL_STALE_ORDER"
+    assert n_cancel["venue"] == "t212"
+    assert n_cancel["order_id"] == "778899"
+
+    # check_cache_coherence supports scalar + fetchtime, dict, and list currentprice entries + cross-venue variants
+    import verify_tools.check_cache_coherence as ccc
+    now_s = time.time()
+    with (
+        patch.object(ccc, "expected_symbols", return_value=["BTCUSDC", "HYPEUSD", "SPCX_US_EQ"]),
+        patch.object(
+            ccc,
+            "load",
+            side_effect=lambda name: (
+                {
+                    "items": {
+                        "BTCUSDC": {"ts": now_s - 5, "current_price": 65000.0, "gradient_recent": 0.1},
+                        "HYPEUSDC": {"ts": now_s - 5, "current_price": 42.5, "gradient_recent": 0.2},
+                        "SPCX": {"ts": now_s - 5, "current_price": 12.3, "gradient_recent": 0.05},
+                    }
+                }
+                if name == "cache_short_trend.json"
+                else {
+                    "fetchtime": {"BTCUSDC": now_s - 3, "HYPEUSDC": now_s - 4},
+                    "items": {
+                        "BTCUSDC": 65000.0,
+                        "HYPEUSDC": {"price": 42.5, "ts": now_s - 4},
+                        "SPCX": [[(now_s - 2) * 1000.0, 12.3]],
+                    },
+                }
+            ),
+        ),
+    ):
+        assert ccc.main() == 0
+
     for sys_act in ("RESTART_FLEET", "RESTART_VPN", "PIN_DNS", "REBOOT_SYSTEM"):
         cmd_desc = build_system_admin_command(sys_act, admin_bin="/nonexistent/trading-admin")
         assert cmd_desc is not None

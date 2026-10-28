@@ -422,12 +422,9 @@ def normalize_repair_action(act: Any, workspace_dir: str) -> Dict[str, Any]:
     action_type = "" if isinstance(raw_action, bool) or raw_action is None else str(raw_action).strip().upper()
     action_type = ACTION_SYNONYM_MAP.get(action_type, action_type) or "NONE"
 
-    raw_venue = act.get("venue")
-    venue = (
-        "binance"
-        if isinstance(raw_venue, bool) or raw_venue is None or not str(raw_venue).strip()
-        else str(raw_venue).strip().lower()
-    )
+    raw_venue = act.get("venue") if act.get("venue") is not None else act.get("provider")
+    from cachepaths import normalize_venue_name
+    venue = normalize_venue_name(raw_venue, default="binance")
 
     raw_sym = (
         act.get("symbol")
@@ -438,8 +435,13 @@ def normalize_repair_action(act: Any, workspace_dir: str) -> Dict[str, Any]:
     )
     symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip()
 
-    raw_oid = act.get("order_id")
-    order_id = "" if isinstance(raw_oid, bool) or raw_oid is None else str(raw_oid).strip()
+    raw_oid = (
+        act.get("order_id")
+        if act.get("order_id") is not None
+        else (act.get("orderId") if act.get("orderId") is not None else act.get("oid"))
+    )
+    from providers.base import extract_order_id
+    order_id = extract_order_id(raw_oid, default="") or ""
 
     raw_reason = act.get("reason")
     reason = "" if isinstance(raw_reason, bool) or raw_reason is None else str(raw_reason)
