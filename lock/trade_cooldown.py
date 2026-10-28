@@ -24,7 +24,10 @@ import contextlib
 import configparser
 
 from .cooldown import Cooldown
-from providers.base import normalize_side as _norm_side
+from providers.base import (
+    _clean_single_order_id,
+    normalize_side as _norm_side,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))          # = lock/
 STATE_FILE = os.path.join(BASE_DIR, "trade_cooldown.json")     # runtime state (gitignored)
@@ -61,34 +64,8 @@ def _cooldown():
     return _cd
 
 
-_INVALID_COOLDOWN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0", "none", "null", "nan", "inf", "-inf", "+inf"}
-
-
 def _clean_pair_id(pair_id):
-    if pair_id is None or isinstance(pair_id, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(pair_id, int):
-        return str(pair_id) if pair_id > 0 else None
-    if isinstance(pair_id, float):
-        if not math.isfinite(pair_id) or pair_id <= 0 or not pair_id.is_integer():
-            return None
-        return str(int(pair_id))
-    s = str(pair_id).strip()
-    if s.lower() in _INVALID_COOLDOWN_ID_STRINGS or s.startswith("-"):
-        return None
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-        s = s[:-2]
-    if s.startswith("+") and s[1:].isdigit():
-        s = s[1:]
-    if s.isdigit():
-        return str(int(s)) if int(s) > 0 else None
-    try:
-        f = float(s)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return s if s and s.lower() not in _INVALID_COOLDOWN_ID_STRINGS else None
+    return _clean_single_order_id(pair_id)
 
 
 def _valid_pair_id(pair_id) -> bool:
@@ -96,30 +73,13 @@ def _valid_pair_id(pair_id) -> bool:
 
 
 def _clean_order_id_meta(val):
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, int):
+    if isinstance(val, int) and not isinstance(val, bool):
         return val if val > 0 else None
     if isinstance(val, float):
         if not math.isfinite(val) or val <= 0.0 or not val.is_integer():
             return None
         return int(val)
-    s = str(val).strip()
-    if s.lower() in _INVALID_COOLDOWN_ID_STRINGS or s.startswith("-"):
-        return None
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-        s = s[:-2]
-    if s.startswith("+") and s[1:].isdigit():
-        s = s[1:]
-    if s.isdigit():
-        return str(int(s)) if int(s) > 0 else None
-    try:
-        f = float(s)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return s if s and s.lower() not in _INVALID_COOLDOWN_ID_STRINGS else None
+    return _clean_single_order_id(val)
 
 
 

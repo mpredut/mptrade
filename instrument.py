@@ -18,7 +18,7 @@ from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
 from providers.base import extract_order_id, normalize_side
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.strategy_executor import SubmissionRefused
@@ -431,23 +431,10 @@ class Instrument:
         smart = _parse_bool_flag(kwargs.pop("smart", True), True)
         regime_context = kwargs.pop("regime_context", None)
         raw_applied_scale = kwargs.pop("applied_scale", None)
-        caller_applied_scale = 1.0
-        if raw_applied_scale is not None and not isinstance(raw_applied_scale, bool):
-            try:
-                cas_f = float(raw_applied_scale)
-                if math.isfinite(cas_f) and 0.0 < cas_f < 1.0:
-                    caller_applied_scale = cas_f
-            except (TypeError, ValueError, OverflowError):
-                pass
+        cas_f = safe_pos_float(raw_applied_scale, default=None)
+        caller_applied_scale = cas_f if (cas_f is not None and cas_f < 1.0) else 1.0
         applied_scale = caller_applied_scale
-        profit_margin = None
-        if caller_profit_margin is not None and not isinstance(caller_profit_margin, bool):
-            try:
-                pm_f = float(caller_profit_margin)
-                if math.isfinite(pm_f):
-                    profit_margin = pm_f
-            except (TypeError, ValueError, OverflowError):
-                profit_margin = None
+        profit_margin = safe_float(caller_profit_margin, default=None)
         # Reconstruct this call exactly for retry after bypass/smart were popped;
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
@@ -674,15 +661,7 @@ class Instrument:
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             # Balance, fee, and venue filters are mechanics, not optional profit
             # policy. Apply them even when an emergency flow bypasses profit/weight.
-            raw_hours = kwargs.get("hours", 5)
-            hours_f = 5.0
-            if raw_hours is not None and not isinstance(raw_hours, bool):
-                try:
-                    hf = float(raw_hours)
-                    if math.isfinite(hf) and hf > 0.0:
-                        hours_f = hf
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            hours_f = safe_pos_float(kwargs.get("hours", 5), default=5.0)
             decision = self._provider.quantity_decision(
                 self.symbol, side_u, quantity_price, qty,
                 base=base_asset, quote=quote_asset,
@@ -696,14 +675,7 @@ class Instrument:
             )
             qty = decision.final_qty
             raw_dec_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
-            dec_scale = 1.0
-            if raw_dec_scale is not None and not isinstance(raw_dec_scale, bool):
-                try:
-                    dsf = float(raw_dec_scale)
-                    if math.isfinite(dsf) and dsf > 0.0:
-                        dec_scale = dsf
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            dec_scale = safe_pos_float(raw_dec_scale, default=1.0)
             applied_scale = min(float(caller_applied_scale), dec_scale)
             if qty <= 0:
                 print(f"[{self.symbol}] {side_u} qty refused: "
@@ -764,13 +736,11 @@ class Instrument:
             # Supports configurable action: 'defer' (postpones retry), 'scale' (scales down risk),
             # or observational pass-through.
             check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(bypassed_guards)
-            medium_trend_action = kwargs.get("medium_trend_action")
-            if medium_trend_action is None and hasattr(self, "params") and isinstance(self.params, dict):
-                medium_trend_action = self.params.get("medium_trend_action")
-            if isinstance(medium_trend_action, str):
-                medium_trend_action = medium_trend_action.strip().lower()
-            else:
-                medium_trend_action = None
+            medium_trend_action = (
+                medium_trend_action_cfg.strip().lower()
+                if isinstance(medium_trend_action_cfg, str)
+                else None
+            )
             gt2_context = regime_context
             if (
                 check_medium_trend
@@ -808,18 +778,7 @@ class Instrument:
                     reason = "medium_trend_deferred"
                     return None
                 elif medium_trend_action == "scale" and adverse_medium_trend:
-                    raw_mt_scale = kwargs.get("medium_trend_scale")
-                    if raw_mt_scale is None and hasattr(self, "params") and isinstance(self.params, dict):
-                        raw_mt_scale = self.params.get("medium_trend_scale")
-                    if raw_mt_scale is None or isinstance(raw_mt_scale, bool):
-                        scale_factor = 0.5
-                    else:
-                        try:
-                            scale_factor = float(raw_mt_scale)
-                            if not math.isfinite(scale_factor):
-                                scale_factor = 0.5
-                        except (TypeError, ValueError):
-                            scale_factor = 0.5
+                    scale_factor = safe_float(medium_trend_scale_cfg, default=0.5)
                     if scale_factor <= 0.0:
                         reason = "medium_trend_qty_zero"
                         return None
@@ -1254,10 +1213,7 @@ class Instrument:
         """Return the venue minimum order quantity; ``0`` means no known minimum."""
         try:
             raw = self._provider.min_order_qty(self.symbol)
-            if raw is None or isinstance(raw, bool):
-                return 0.0
-            val = float(raw)
-            return val if (math.isfinite(val) and val > 0.0) else 0.0
+            return safe_pos_float(raw, default=0.0)
         except Exception:  # noqa: BLE001
             return 0.0
 

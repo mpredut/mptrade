@@ -42,6 +42,7 @@ from cachepaths import (
     PREFIX_LEGACY_FILENAMES as _PREFIX_LEGACY_FILENAMES,
     legacy_filenames_for as _legacy_filenames_for,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
+    normalize_venue_name,
 )
 import cacheintegrity as _cache_integrity
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
@@ -65,6 +66,7 @@ from providers.base import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
+    normalize_side,
     normalize_timestamp_ms,
 )
 
@@ -2507,13 +2509,12 @@ class CacheTradeManager(CacheManagerInterface):
         self.sync_account_reader_if_needed()
         if not isinstance(order_type, str):
             return None
-        side_raw = order_type.strip().upper()
-        side_u = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
+        side_u = normalize_side(order_type)
         if side_u not in ("BUY", "SELL"):
             return None
         want_buyer = (side_u == "SELL")   # The opposite of SELL is BUY.
         sym_u = str(symbol or "").strip().upper()
-        sym_clean = sym_u.replace("/", "")
+        sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
         latest_key = None
         latest_price = None
         with self.lock:
@@ -2526,7 +2527,7 @@ class CacheTradeManager(CacheManagerInterface):
             for trade in bucket:
                 if (
                     not self._is_valid_item(trade)
-                    or str(trade["symbol"]).strip().upper().replace("/", "") != sym_clean
+                    or str(trade["symbol"]).strip().upper().replace("/", "").replace("-", "").replace("_", "") != sym_clean
                     or trade["isBuyer"] != want_buyer
                 ):
                     continue
@@ -3460,7 +3461,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         if not key or not value:
             raise ValueError("symbol and provider_name must be non-empty")
         previous = self._provider_names.get(key)
-        if previous is not None and previous.lower() != value.lower():
+        if previous is not None and normalize_venue_name(previous) != normalize_venue_name(value):
             raise ValueError(
                 f"conflicting providers for {key}: {previous} and {value}"
             )
@@ -3473,7 +3474,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def provider_name_for(self, symbol: str):
         sym_u = str(symbol or "").strip().upper()
-        return self._provider_names.get(sym_u) or self._provider_names.get(sym_u.replace("/", ""))
+        sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+        return self._provider_names.get(sym_u) or self._provider_names.get(sym_clean)
 
     def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
         now = time.time()
@@ -3706,7 +3708,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         if not math.isfinite(max_age) or max_age <= 0:
             raise ValueError("max_age_sec must be finite and positive")
         sym_u = str(symbol or "").strip().upper()
-        sym_clean = sym_u.replace("/", "")
+        sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
         with self.lock:
             entries = (
                 self.cache.get(symbol)
@@ -3733,7 +3735,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     def get_price(self, symbol: str):
         """Return ``[timestamp_ms, price]``, forcing HTTP when missing or stale."""
         sym_u = str(symbol or "").strip().upper()
-        sym_clean = sym_u.replace("/", "")
+        sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
         target_sym = symbol
         with self.lock:
             if symbol in self.cache:

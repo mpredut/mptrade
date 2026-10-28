@@ -21,8 +21,9 @@ from botcore import (
     required_bool_env,
     required_int_env,
     safe_float,
+    safe_pos_float as _clean_pos_float,
 )
-from intelligence.macro_sentiment_ssot import safe_pos_float as _clean_pos_float
+from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -246,22 +247,10 @@ def slope_tolerance_per_(symbol, price,
                               ):
     min_tol = 0.0005
     max_tol = 2000.0
-    if price is None or isinstance(price, bool):
+    price_f = _clean_pos_float(price, None)
+    if price_f is None:
         return min_tol
-    try:
-        price_f = float(price)
-    except (TypeError, ValueError, OverflowError):
-        return min_tol
-    if not math.isfinite(price_f) or price_f <= 0.0:
-        return min_tol
-    base_f = 0.0015
-    if base_tolerance is not None and not isinstance(base_tolerance, bool):
-        try:
-            bf = float(base_tolerance)
-            if math.isfinite(bf) and bf > 0.0:
-                base_f = bf
-        except (TypeError, ValueError, OverflowError):
-            pass
+    base_f = _clean_pos_float(base_tolerance, 0.0015)
     relative_tolerance = base_f * price_f
     adaptive_tolerance = min(max(relative_tolerance, min_tol), max_tol)
     return adaptive_tolerance
@@ -423,13 +412,8 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
 
 def format_duration(seconds):
     """Convert seconds to the human-readable ``Xd Yh Zm`` format."""
-    if seconds is None or isinstance(seconds, bool):
-        return "0m"
-    try:
-        sec_f = float(seconds)
-    except (TypeError, ValueError, OverflowError):
-        return "0m"
-    if not math.isfinite(sec_f) or sec_f <= 0:
+    sec_f = _clean_pos_float(seconds, None)
+    if sec_f is None:
         return "0m"
     days = int(sec_f // 86400)
     hours = int((sec_f % 86400) // 3600)
@@ -854,11 +838,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         return None
     if not isinstance(order_type, str):
         return None
-    side_u = order_type.strip().upper()
-    if side_u == "B":
-        side_u = "BUY"
-    elif side_u == "S":
-        side_u = "SELL"
+    side_u = normalize_side(order_type)
     if side_u not in ("BUY", "SELL"):
         return None
     if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
@@ -878,7 +858,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
 
     all_trend_data = cm.get_cache_manager("LongTrend").cache
     sym_u = (symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "")
+    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
     items = (
         all_trend_data.get(symbol)
         or all_trend_data.get(sym_u)
@@ -1048,23 +1028,11 @@ def get_trade_weight(T, trend_len, trend, order_type,
         return np.array([]), np.array([])
     T = T_f
     trend_len = trend_len_f
-    def _clean_param(val, default):
-        if val is None or isinstance(val, bool):
-            return default
-        try:
-            vf = float(val)
-            return vf if math.isfinite(vf) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
-    exceed_percent = max(0.0, _clean_param(exceed_percent, 0.4))
-    max_against_trend = max(0.0, _clean_param(max_against_trend, 0.15))
-    peak_weight = max(0.0, _clean_param(peak_weight, 0.95))
-    min_weight = max(0.0, _clean_param(min_weight, 0.02))
-    side_u = order_type.strip().upper()
-    if side_u == "B":
-        side_u = "BUY"
-    elif side_u == "S":
-        side_u = "SELL"
+    exceed_percent = max(0.0, safe_float(exceed_percent, 0.4))
+    max_against_trend = max(0.0, safe_float(max_against_trend, 0.15))
+    peak_weight = max(0.0, safe_float(peak_weight, 0.95))
+    min_weight = max(0.0, safe_float(min_weight, 0.02))
+    side_u = normalize_side(order_type)
     if side_u not in ("BUY", "SELL"):
         return np.array([]), np.array([])
     trend_norm = trend.strip().lower()

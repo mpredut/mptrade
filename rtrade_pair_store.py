@@ -8,15 +8,15 @@ import os
 import threading
 import time
 
-from botcore import _parse_bool_flag
-from providers.base import _clean_single_order_id
+from botcore import _parse_bool_flag, safe_pos_float
+from providers.base import _clean_single_order_id, normalize_side
 from lock import FileLock
 from state_io import atomic_write_json
 
 
 def rtrade_client_order_id(pair_id, side, kind="limit"):
     raw_pair = str(pair_id if pair_id is not None else "").strip()
-    raw_side = str(side if side is not None else "").strip().upper()
+    raw_side = normalize_side(side) if side is not None else ""
     raw_kind = str(kind if kind is not None else "limit").strip()
     raw = f"{raw_pair}:{raw_side}:{raw_kind}".encode("utf-8")
     return "RT_" + hashlib.blake2s(raw, digest_size=16).hexdigest()
@@ -50,21 +50,31 @@ class RTradePairStore:
 
     @staticmethod
     def _finite_positive(value, field):
-        if isinstance(value, bool):
-            raise ValueError(f"invalid rtrade pair-store {field}")
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid rtrade pair-store {field}") from exc
-        if not math.isfinite(parsed) or parsed <= 0:
+        parsed = safe_pos_float(value, default=None)
+        if parsed is None:
             raise ValueError(f"invalid rtrade pair-store {field}")
         return parsed
+
+    @staticmethod
+    def _new_pair_record(symbol, pair_id: str, start_side: str, qty: float, now: float) -> dict:
+        return {
+            "symbol": str(symbol).strip() if isinstance(symbol, str) else symbol,
+            "pair_id": pair_id,
+            "start_side": normalize_side(start_side),
+            "qty": qty,
+            "phase": "reserved",
+            "terminal": False,
+            "intents": {},
+            "state": None,
+            "created_ts": now,
+            "updated_ts": now,
+        }
 
     @classmethod
     def _validate_intent(cls, pair_id, symbol, key, intent):
         if not isinstance(intent, dict):
             raise ValueError(f"invalid rtrade intent {key!r}: expected an object")
-        side = str(intent.get("side") or "").upper()
+        side = normalize_side(intent.get("side"))
         kind = str(intent.get("kind") or "")
         if side not in {"BUY", "SELL"} or not kind or key != f"{kind}:{side}":
             raise ValueError(f"invalid rtrade intent identity {key!r}")
@@ -269,16 +279,12 @@ class RTradePairStore:
 
     def begin(self, symbol, pair_id, start_side, qty):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
-        sym_clean = str(symbol).strip() if isinstance(symbol, str) else symbol
         pid_clean = str(pair_id).strip() if isinstance(pair_id, str) else pair_id
-        side_clean = str(start_side).strip().upper() if isinstance(start_side, str) else start_side
         now = time.time()
         def op(pairs):
-            pairs[pid_clean] = {
-                "symbol": sym_clean, "pair_id": pid_clean, "start_side": side_clean,
-                "qty": qty_f, "phase": "reserved", "terminal": False,
-                "intents": {}, "state": None, "created_ts": now, "updated_ts": now,
-            }
+            pairs[pid_clean] = self._new_pair_record(
+                symbol, pid_clean, start_side, qty_f, now
+            )
         self.mutate(op)
 
     def intent(self, pair_id, side, price, qty, client_order_id, kind="limit",
@@ -288,7 +294,7 @@ class RTradePairStore:
         coid = self._clean_store_id(client_order_id)
         if not coid:
             raise ValueError(f"invalid rtrade intent client ID for {pair_id!r}")
-        side_u = str(side or "").strip().upper()
+        side_u = normalize_side(side)
         kind_s = str(kind or "limit").strip()
         pid_clean = str(pair_id).strip() if isinstance(pair_id, str) else pair_id
         def op(pairs):
@@ -297,14 +303,9 @@ class RTradePairStore:
             if rec is None:
                 if not symbol:
                     raise KeyError(f"unknown pair: {pid_clean}")
-                rec = pairs[pid_clean] = {
-                    "symbol": str(symbol).strip() if isinstance(symbol, str) else symbol,
-                    "pair_id": pid_clean,
-                    "start_side": str(start_side or side_u).strip().upper(),
-                    "qty": qty_f, "phase": "reserved", "terminal": False,
-                    "intents": {}, "state": None,
-                    "created_ts": now, "updated_ts": now,
-                }
+                rec = pairs[pid_clean] = self._new_pair_record(
+                    symbol, pid_clean, start_side or side_u, qty_f, now
+                )
             key = f"{kind_s}:{side_u}"
             value = {
                 "side": side_u, "price": price_f, "qty": qty_f,
@@ -327,7 +328,7 @@ class RTradePairStore:
         in the JSON so an older checkout can still recover records written by the
         new coordinator.
         """
-        side = str(side or "").strip().upper()
+        side = normalize_side(side)
         kind = str(kind or "").strip()
         pid_clean = str(pair_id).strip() if isinstance(pair_id, str) else pair_id
         key = f"{kind}:{side}"
@@ -357,14 +358,9 @@ class RTradePairStore:
             if rec is None:
                 if not symbol:
                     raise KeyError(f"unknown pair: {pid_clean}")
-                rec = pairs[pid_clean] = {
-                    "symbol": str(symbol).strip() if isinstance(symbol, str) else symbol,
-                    "pair_id": pid_clean,
-                    "start_side": str(start_side or side).strip().upper(),
-                    "qty": requested_qty, "phase": "reserved",
-                    "terminal": False, "intents": {}, "state": None,
-                    "created_ts": now, "updated_ts": now,
-                }
+                rec = pairs[pid_clean] = self._new_pair_record(
+                    symbol, pid_clean, start_side or side, requested_qty, now
+                )
 
             value["side"] = side
             value["kind"] = kind
@@ -385,7 +381,7 @@ class RTradePairStore:
         clean_oid = self._clean_store_id(order_id)
         if not clean_oid:
             raise ValueError(f"invalid rtrade accepted order_id: {order_id!r}")
-        side_u = str(side or "").strip().upper()
+        side_u = normalize_side(side)
         kind_s = str(kind or "limit").strip()
         pid_clean = str(pair_id).strip() if isinstance(pair_id, str) else pair_id
         def op(pairs):
