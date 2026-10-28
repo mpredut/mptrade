@@ -255,8 +255,12 @@ def trigger_indices(ts, px, lo, hi, lookback_s, thr_bps, sign, min_gap_s):
 
 
 def evaluate(sym):
+    sys.stderr.write(f"[bench] loading {sym}...\n")
+    sys.stderr.flush()
     ts, px = load_series(sym)
     N = len(ts)
+    sys.stderr.write(f"[bench] evaluating {sym} ({N:,} ticks)...\n")
+    sys.stderr.flush()
     t_split = ts[0] + IS_FRAC * (ts[-1] - ts[0])
     i_split = int(np.searchsorted(ts, t_split))
 
@@ -362,28 +366,36 @@ def main():
                     if k == "raw":
                         continue
                     a.setdefault(k, []).append(v)
-    if os.environ.get("BENCH_ONLY"):
-        base = "LEGACY (sf+gr)/2"
-        rng = np.random.default_rng(0)
-        print("\n>>> PAIRED BOOTSTRAP vs LEGACY: edge diff (bps/decision), 95% CI, per symbol & period <<<")
-        for sym, N, res in results:
-            for c in res:
-                if c == base:
-                    continue
-                cells = []
-                for s in ("IS", "OOS"):
-                    comps = []
-                    for ci in range(3):
-                        d = res[c][s]["raw"][ci] - res[base][s]["raw"][ci]
-                        comps.append(d)
-                    point = sum(float(np.mean(d)) for d in comps)
-                    boots = np.zeros(2000)
-                    for d in comps:
-                        idx = rng.integers(0, len(d), size=(2000, len(d)))
-                        boots += d[idx].mean(axis=1)
-                    lo, hi = np.percentile(boots, [2.5, 97.5])
-                    cells.append(f"{s} {point:+.2f} [{lo:+.2f},{hi:+.2f}]")
-                print(f"{sym:<8} {c:<18} " + " | ".join(cells))
+    base = "LEGACY (sf+gr)/2"
+    rng = np.random.default_rng(0)
+    boot_cands = list(results[0][2].keys()) if os.environ.get("BENCH_ONLY") else [
+        "SW p1 med1", "SW p2 med1", "SW p3 med1",
+        "SW p2 med5", "SW p3 med5", "EXP hl30 med1",
+        "SW p2 + ER0.05", "SW p3 + ER0.05",
+        "SW p2 + NoiseGate0.05", "SW p2 + NoiseGate0.1", "SW p2 + NoiseGate0.25",
+        "SW p3 + NoiseGate0.05", "SW p3 + NoiseGate0.1", "SW p3 + NoiseGate0.25",
+        "SW p3 + Platt0.55", "SW p3 + Platt0.6",
+        "HYBRID p2 ER0.05+NG0.05", "HYBRID p3 ER0.05+NG0.05", "HYBRID p3 ER0.1+NG0.1",
+    ]
+    print("\n>>> PAIRED BOOTSTRAP vs LEGACY: edge diff (bps/decision), 95% CI, per symbol & period <<<")
+    for sym, N, res in results:
+        for c in boot_cands:
+            if c == base or c not in res or base not in res:
+                continue
+            cells = []
+            for s in ("IS", "OOS"):
+                comps = []
+                for ci in range(3):
+                    d = res[c][s]["raw"][ci] - res[base][s]["raw"][ci]
+                    comps.append(d)
+                point = sum(float(np.mean(d)) for d in comps)
+                boots = np.zeros(2000)
+                for d in comps:
+                    idx = rng.integers(0, len(d), size=(2000, len(d)))
+                    boots += d[idx].mean(axis=1)
+                lo, hi = np.percentile(boots, [2.5, 97.5])
+                cells.append(f"{s} {point:+.2f} [{lo:+.2f},{hi:+.2f}]")
+            print(f"{sym:<8} {c:<24} " + " | ".join(cells))
     hdr = (f"{'Candidate':<20}|{'edgeIS':>7}{'edgeOOS':>8}|{'buyOOS':>7}{'sellOOS':>8}{'rideOOS':>8}|"
            f"{'sp60':>6}{'sp180':>7}{'hit%':>6}|{'flip/m':>7}{'lagMed':>7}{'lagAvg':>7}")
     print("\n>>> MEAN ACROSS SYMBOLS, sorted by IN-SAMPLE edge (bps per decision) <<<")
