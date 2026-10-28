@@ -576,9 +576,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                 from intelligence.internal.state.volatility import (
                     calculate_volatility_1h,
                 )
-                v1h = calculate_volatility_1h(
-                    list(w_big.prices), w_big.sample_rate_sec
-                )
+                with getattr(w_big, "_lock", threading.RLock()):
+                    v1h = calculate_volatility_1h(
+                        w_big.prices, w_big.sample_rate_sec
+                    )
             except Exception:
                 pass
 

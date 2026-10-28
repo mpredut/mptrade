@@ -178,6 +178,48 @@ class TestStepWolsGeneralization(unittest.TestCase):
             {"growth_coefficient": 0.04, "epsilon": 1.0, "n_samples": 222}
         ))
 
+    def test_get_recent_gradient_o1_telescoped_parity(self):
+        rng = np.random.default_rng(7)
+        for n_pts in (2, 15, 60, 222):
+            sample_px = [float(x) for x in (300.0 + np.cumsum(rng.normal(0, 0.4, n_pts)))]
+            win = pw.PriceWindow("TAOUSDC", 300, sample_rate_sec=1.0, window_seconds=222.0)
+            for px in sample_px:
+                win.process_price(px)
+            grad_ref = np.gradient(np.array(sample_px))
+            r = win.recent_n
+            expected = float(np.mean(grad_ref[-r:])) if len(grad_ref) >= r else float(np.mean(grad_ref))
+            self.assertAlmostEqual(win.get_recent_gradient(), expected, places=11)
+            # Also verify fallback when prices deque is replaced directly
+            win.prices.append(sample_px[-1] + 1.25)
+            grad_ref2 = np.gradient(np.array(list(win.prices)))
+            expected2 = float(np.mean(grad_ref2[-r:])) if len(grad_ref2) >= r else float(np.mean(grad_ref2))
+            self.assertAlmostEqual(win.get_recent_gradient(), expected2, places=11)
+
+    def test_volatility_1h_uses_o1_trend_buf_via_price_deque(self):
+        from intelligence.internal.state.volatility import calculate_volatility_1h
+        rng = np.random.default_rng(11)
+        sample_px = [float(x) for x in (60000.0 + np.cumsum(rng.normal(0, 15.0, 400)))]
+        win = pw.PriceWindow("BTCUSDC", 500, sample_rate_sec=1.0, window_seconds=9000.0)
+        for px in sample_px:
+            win.process_price(px)
+        self.assertIs(getattr(win.prices, "_trend_buf", None), win._trend_buf)
+        v_fast = calculate_volatility_1h(win.prices, win.sample_rate_sec)
+        v_list = calculate_volatility_1h(list(win.prices), win.sample_rate_sec)
+        self.assertIsNotNone(v_fast)
+        self.assertAlmostEqual(v_fast, v_list, places=4)
+
+    def test_rtrade_effective_trend_filter_k_scale_invariance(self):
+        import rtrade
+        with patch.object(rtrade, "RTRADE_TREND_FILTER_K", 2.0):
+            self.assertEqual(rtrade._effective_trend_filter_k(None), 2.0)
+            self.assertEqual(rtrade._effective_trend_filter_k({}), 2.0)
+            self.assertEqual(rtrade._effective_trend_filter_k({"n_samples": 11}), 2.0)
+            self.assertAlmostEqual(
+                rtrade._effective_trend_filter_k({"n_samples": 901}),
+                2.0 * math.sqrt(10.0 / 900.0),
+                places=9,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -974,6 +974,23 @@ def _trend_too_strong(symbol):
     return stand_aside
 
 
+def _effective_trend_filter_k(snapshot) -> float:
+    """Scale RTRADE_TREND_FILTER_K by sqrt(10 / m) for dense multi-step dynamic windows."""
+    base_k = float(RTRADE_TREND_FILTER_K)
+    if not isinstance(snapshot, dict):
+        return base_k
+    raw_n = snapshot.get("n_samples")
+    if raw_n is None or isinstance(raw_n, bool):
+        return base_k
+    try:
+        m_steps = float(raw_n) - 1.0
+        if math.isfinite(m_steps) and m_steps > 10.0:
+            return base_k * math.sqrt(10.0 / m_steps)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return base_k
+
+
 def _market_regime_decision(symbol) -> MarketRegimeDecision:
     """Adapt the existing cache source to the provider-neutral regime evaluator."""
     if not RTRADE_TREND_FILTER_ENABLED:
@@ -992,7 +1009,7 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
     return mkt.market_regime(
         symbol, horizon="short", snapshot=dyn or {},
         snapshot_source="cache24_dynamic",
-        strength_threshold=RTRADE_TREND_FILTER_K,
+        strength_threshold=_effective_trend_filter_k(dyn),
         allow_fallback=RTRADE_TREND_OHLC_FALLBACK_ENABLED)
 
 

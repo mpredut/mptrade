@@ -989,19 +989,34 @@ class PriceWindow:
             return len(self.prices)
 
     def get_recent_gradient(self) -> float:
-        """Return recent momentum as mean gradient over the latest samples.
+        """Return recent momentum as mean gradient over the latest samples in O(1).
 
         This inexpensive silent path supplies the fast per-tick buy/sell gate.
         """
+        r = max(2, int(self.recent_n))
         with self._lock:
-            prices = list(self.prices)
-        if len(prices) < 2:
-            return 0.0
-        grad = np.gradient(np.array(prices))
-        n = self.recent_n
-        if len(grad) >= n:
-            return float(np.mean(grad[-n:]))
-        return float(np.mean(grad))
+            n = len(self.prices)
+            if n < 2:
+                return 0.0
+            blen = len(self._trend_buf.prices)
+            if (
+                blen >= n
+                and self._trend_buf.prices[blen - n] == self.prices[0]
+                and self._trend_buf.prices[-1] == self.prices[-1]
+            ):
+                p = self._trend_buf.prices
+                a = blen - n
+                b = blen - 1
+            else:
+                p = self.prices
+                a = 0
+                b = n - 1
+            if n > r:
+                val = ((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r)
+            else:
+                sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
+                val = sum_g_all / n
+        return float(val)
 
     def get_noise_epsilon(self, k: float = 1.0) -> float:
         """Noise threshold INFORMED by the volatility of the window:

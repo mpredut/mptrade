@@ -789,8 +789,12 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
     started_at = (_finite_float(defer.get("started_at"), positive=True)
                   if same_intent else None)
     try:
-        should_wait = bool(
-            cm.get_short_trend_manager().should_wait(side, symbol))
+        short_tm = cm.get_short_trend_manager()
+        try:
+            should_wait = bool(
+                short_tm.should_wait(side, symbol, use_noise_gate=False))
+        except TypeError:
+            should_wait = bool(short_tm.should_wait(side, symbol))
     except Exception as exc:
         print(f"[{symbol}] Trend defer unavailable; continue submit: {exc}")
         should_wait = False
