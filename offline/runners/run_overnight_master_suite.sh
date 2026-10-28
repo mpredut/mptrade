@@ -30,8 +30,8 @@ START_SEC=$(date +%s); PASSED_STEPS=0; FAILED_STEPS=0; STEP_REPORT_LINES=""
 
 run_step() {  # $1=id $2=name $3=cmd
     local id="$1" name="$2" cmd="$3" t0 rc=0 dt
-    echo -e "\n--------------------------------------------------------------------------------\n[STEP $id] START: $name ($(date '+%T')) | CMD: $cmd\n--------------------------------------------------------------------------------"
-    t0=$(date +%s); eval "$cmd" || rc=$?; dt=$(( $(date +%s) - t0 ))
+    printf '\n--------------------------------------------------------------------------------\n[STEP %s] START: %s (%s) | CMD: %s\n--------------------------------------------------------------------------------\n' "$id" "$name" "$(date '+%T')" "$cmd"
+    t0=$(date +%s); ( exec 9>&-; eval "$cmd" ) || rc=$?; dt=$(( $(date +%s) - t0 ))
     if [ "$rc" -eq 0 ]; then
         PASSED_STEPS=$((PASSED_STEPS + 1))
         STEP_REPORT_LINES+="| \`$id\` | $name | PASS | ${dt}s |"$'\n'
@@ -44,9 +44,10 @@ run_step() {  # $1=id $2=name $3=cmd
 }
 
 run_wf_pair() {  # $1=base_id $2=comp_id $3=label $4=out_subdir $5=filename_glob $6=wf_args [$7=cmp_args]
-    local out="$RESULTS_DIR/$4"
+    local out="$RESULTS_DIR/$4" report=""
     run_step "$1" "$3 Walk-Forward Baseline" "$PYTHON_BIN offline/runners/walk_forward.py $6 --output-dir $out"
-    run_step "$2" "$3 Candidate Comparison" "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \"\$(find \"$out\" -maxdepth 2 -name '$5' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)\" ${7:-}"
+    report="$(find "$out" -maxdepth 2 -name "$5" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)"
+    run_step "$2" "$3 Candidate Comparison" "[ -n \"$report\" ] && $PYTHON_BIN offline/runners/walk_forward.py --mode compare \"$report\" ${7:-}"
 }
 
 # STEP 0: Market Intelligence 4-Pillar Backtest, Chop Benchmark & Numerical Parity

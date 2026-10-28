@@ -13,8 +13,15 @@ TRADING_GROUP="$(id -gn "$TRADING_USER")"
 TRADING_HOME="$(getent passwd "$TRADING_USER" | cut -d: -f6)"
 [ -n "$TRADING_HOME" ] || { echo "Home missing for $TRADING_USER" >&2; exit 1; }
 
-REPO_ROOT="$ROOT" source "$ROOT/orchestratorOS/lib/env_common.sh"
-PYTHON="${TRADING_PYTHON:-${PYTHON_BIN:-}}"
+if [ -n "${TRADING_PYTHON:-}" ]; then
+  PYTHON="$TRADING_PYTHON"
+else
+  unset VENV PYTHON_BIN
+  REPO_ROOT="$ROOT"
+  source "$SCRIPT_DIR/../orchestratorOS/lib/env_common.sh"
+  PYTHON=""
+  [[ "${PYTHON_BIN:-}" == "$ROOT/"* ]] && PYTHON="$PYTHON_BIN"
+fi
 [ -x "$PYTHON" ] || { echo "No trading Python found; set TRADING_PYTHON or create .venv/myenv." >&2; exit 1; }
 
 if [ "${1:-}" = "--render-only" ]; then
@@ -58,7 +65,7 @@ test "$(id -u)" -eq 0 || { echo "Run this installer with sudo." >&2; exit 1; }
 for unit in python_orchestrator.service pia.service piavpn.service; do
   install -m 0644 "$TMP_DIR/$unit" "/etc/systemd/system/$unit"
 done
-install -d -m 0755 /etc/systemd/resolved.conf.d /etc/ssh/sshd_config.d /etc/sysctl.d /etc/logrotate.d /etc/sudoers.d
+install -d -m 0755 /etc/systemd/resolved.conf.d /etc/ssh/sshd_config.d /etc/sysctl.d /etc/netplan /etc/logrotate.d /etc/sudoers.d
 install -m 0644 "$SYSTEMD_DIR/resolved-20-trading-cache.conf" /etc/systemd/resolved.conf.d/20-trading-cache.conf
 install -m 0644 "$SYSTEMD_DIR/sshd-20-trading.conf" /etc/ssh/sshd_config.d/20-trading.conf
 install -m 0644 "$SYSTEMD_DIR/sysctl-90-disable-ipv6.conf" /etc/sysctl.d/90-disable-ipv6.conf
@@ -81,7 +88,9 @@ crontab -u root "$TMP_DIR/crontab.root.prod.txt"
 
 loginctl enable-linger "$TRADING_USER" 2>/dev/null || true
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 \
-  "$TRADING_HOME/.config/systemd/user/antigravity-cli-daemon.service.d" "$TRADING_HOME/.local/bin"
+  "$TRADING_HOME/.config" "$TRADING_HOME/.config/systemd" "$TRADING_HOME/.config/systemd/user" \
+  "$TRADING_HOME/.config/systemd/user/antigravity-cli-daemon.service.d" \
+  "$TRADING_HOME/.local" "$TRADING_HOME/.local/bin"
 for u in antigravity-cli-daemon.service antigravity-cli-daemon.service.d/override.conf antigravity-cli-daemon.service.d/store-fix.conf; do
   install -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0644 "$TMP_DIR/$u" "$TRADING_HOME/.config/systemd/user/$u"
 done
