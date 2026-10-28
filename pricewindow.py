@@ -1185,14 +1185,13 @@ class PriceWindow:
             n_win = len(self.prices)
             blen = len(self._trend_buf.prices)
             if (
-                n_samples is not None
-                and blen >= n_win
+                blen >= n_win
                 and n_win > 0
                 and self._trend_buf.prices[blen - n_win] == self.prices[0]
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
-                take = min(n_samples, n_win)
-                prices = self._trend_buf.prices[-take:]
+                take = min(n_samples, n_win) if n_samples is not None else n_win
+                prices = self._trend_buf.prices[blen - take : blen]
             else:
                 prices = list(self.prices)
                 if n_samples is not None:
@@ -1201,18 +1200,27 @@ class PriceWindow:
         if n < 3:
             return 0.0, 0.0
 
-        p0 = prices[0]
-        if p0 <= 0:
+        p0 = float(prices[0])
+        if p0 <= 0.0 or not math.isfinite(p0):
             return 0.0, 0.0
 
-        t_minutes = np.arange(n) * (rate / 60.0)
-        y_pct = ((np.array(prices) - p0) / p0) * 100.0
-
         try:
-            a, b, _ = np.polyfit(t_minutes, y_pct, 2)
-            t_end = t_minutes[-1]
-            velocity = float(2.0 * a * t_end + b)
-            acceleration = float(2.0 * a)
+            arr = np.asarray(prices, dtype=np.float64)
+            if not np.all(np.isfinite(arr)):
+                return 0.0, 0.0
+            dp = arr - p0
+            n_f = float(n)
+            mu = 0.5 * (n_f - 1.0)
+            u = np.arange(n, dtype=np.float64) - mu
+            v1 = (n_f * n_f - 1.0) / 12.0
+            d1 = n_f * v1
+            d2 = (n_f * (n_f * n_f - 1.0) * (n_f * n_f - 4.0)) / 180.0
+            scale_pct = 100.0 / p0
+            c1 = scale_pct * float(np.dot(u, dp)) / d1
+            c2 = scale_pct * float(np.dot(u * u - v1, dp)) / d2
+            dt_min = rate / 60.0
+            velocity = float((c1 + c2 * (n_f - 1.0)) / dt_min)
+            acceleration = float((2.0 * c2) / (dt_min * dt_min))
             if not (math.isfinite(velocity) and math.isfinite(acceleration)):
                 return 0.0, 0.0
             return velocity, acceleration

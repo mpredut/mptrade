@@ -266,6 +266,26 @@ class TestStepWolsGeneralization(unittest.TestCase):
         self.assertFalse(drts.is_trend_up_at("TAOUSDC", 60.0))
         self.assertTrue(drts.should_wait("TAOUSDC", "B", 60.0, use_noise_gate=True))
 
+    def test_calculate_acceleration_o1_orthogonal_polynomial_parity(self):
+        rng = np.random.default_rng(19)
+        sample_px = [float(x) for x in (280.0 + np.cumsum(rng.normal(0.05, 0.2, 200)))]
+        win = pw.PriceWindow("TAOUSDC", 150, sample_rate_sec=1.0, window_seconds=150.0)
+        for px in sample_px:
+            win.process_price(px)
+        for w_sec in (10.0, 90.0, 180.0, None):
+            vel_fast, acc_fast = win.calculate_acceleration(window_sec=w_sec)
+            prices = list(win.prices)
+            if w_sec is not None:
+                n_s = max(int(round(float(w_sec) / 1.0)), 3)
+                prices = prices[-n_s:]
+            t_min = np.arange(len(prices)) * (1.0 / 60.0)
+            y_pct = ((np.array(prices) - prices[0]) / prices[0]) * 100.0
+            a, b, _ = np.polyfit(t_min, y_pct, 2)
+            vel_ref = float(2.0 * a * t_min[-1] + b)
+            acc_ref = float(2.0 * a)
+            self.assertAlmostEqual(vel_fast, vel_ref, places=11)
+            self.assertAlmostEqual(acc_fast, acc_ref, places=11)
+
 
 if __name__ == "__main__":
     unittest.main()

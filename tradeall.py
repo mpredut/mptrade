@@ -719,6 +719,9 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     logic("BIG", True, symbol, gradient, slope_big, trend_state_big, current_price, regime_ctx=regime_ctx)
 
     # Cross-process snapshot aligned with CacheShortTrendManager SSOT.
+    eps_fn = getattr(price_window, "get_noise_epsilon", None)
+    eps_val = eps_fn() if callable(eps_fn) else 0.0
+    n_samp = len(getattr(price_window, "prices", ()))
     return {
         "symbol": symbol,
         "final_trend": gradient,
@@ -728,6 +731,8 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
         "slope_small": slope,
         "slope_big": slope_big,
         "pos": pos,
+        "epsilon": eps_val,
+        "n_samples": n_samp,
         "current_price": current_price,
         "ts": time.time(),
     }
@@ -867,7 +872,7 @@ class TrendCoordinator:
                 kalman_fields = self._kalman_state.update(
                     symbol, time.time(), current_price,
                     epsilon=win.get_noise_epsilon(),
-                    big_prices=list(win_big.prices),
+                    big_prices=win_big.prices,
                     big_sample_rate=win_big.sample_rate_sec,
                 ) or {}
                 new_ktrend = kalman_fields.get("kalman_trend")
