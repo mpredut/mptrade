@@ -36,6 +36,15 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertEqual(decision.gradient, 0.5)
         self.assertTrue(decision.fresh)
 
+        # When both growth_coefficient and gradient_recent are present, SSOT growth_coefficient takes precedence
+        ssot_decision = self.evaluator.evaluate({
+            "growth_coefficient": 0.6,
+            "gradient_recent": -0.3,
+            "epsilon": 0.1,
+        })
+        self.assertEqual(ssot_decision.regime, "bull")
+        self.assertEqual(ssot_decision.gradient, 0.6)
+
     def test_exposure_adversity_is_symmetric(self):
         bull = self.evaluator.evaluate({"gradient_recent": 0.5, "epsilon": 0.1})
         bear = self.evaluator.evaluate({"gradient_recent": -0.5, "epsilon": 0.1})

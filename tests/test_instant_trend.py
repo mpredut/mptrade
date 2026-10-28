@@ -370,9 +370,11 @@ class TestComputation(unittest.TestCase):
         self.m.evaluate_full("BTCUSDT")
         snap = self.m.get_snapshot("BTCUSDT")
         self.assertIsNotNone(snap)
-        for key in ("final_trend", "slope_full", "gradient_recent",
-                    "slope_small", "slope_big", "slope_max_min", "pos", "epsilon"):
+        for key in ("final_trend", "growth_coefficient", "slope_full", "gradient_recent",
+                    "slope_small", "slope_big", "pos", "epsilon"):
             self.assertIn(key, snap)
+        for removed_key in ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct"):
+            self.assertNotIn(removed_key, snap)
 
     def test_failed_full_eval_preserves_primed_stale_snapshot(self):
         filename = os.path.join(self.tmp, "stale_trend.json")
@@ -1972,6 +1974,19 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
         self.assertTrue(stm.should_wait("BUY", "BTCUSDT", use_noise_gate=False, now=now_sec))
         self.assertFalse(stm.should_wait("SELL", "BTCUSDT", use_noise_gate=False, now=now_sec))
+
+        # Case C: sub-noise positive growth_coefficient (<= UPWARD_EPSILON_K * epsilon) is rejected as flat/noise
+        stm.update_snapshot(
+            "BTCUSDT",
+            slope_full=0.05,
+            gradient_recent=0.05,
+            growth_coefficient=0.05,
+            final_trend=1,
+            epsilon=1.0,
+            current_price=60000.0,
+            ts=now_sec,
+        )
+        self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
 
 
 if __name__ == "__main__":

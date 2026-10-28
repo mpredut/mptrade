@@ -61,9 +61,16 @@ def simulate(ohlc, P):
     """CLI compatibility wrapper over the same ``Strategy.step`` used live."""
     if not isinstance(P, dict):
         raise ValueError("simulate requires a parameter dict P")
-    budget = float(P.get("budget", P.get("max_budget", 500.0)))
-    raw_entry = P.get("entry", P.get("entry_amount"))
-    raw_dca = P.get("dca", P.get("dca_amount"))
+
+    def _p_val(keys: tuple[str, ...], default: object) -> object:
+        for k in keys:
+            if k in P and P[k] is not None:
+                return P[k]
+        return default
+
+    budget = float(_p_val(("budget", "max_budget"), 500.0))  # type: ignore[arg-type]
+    raw_entry = _p_val(("entry", "entry_amount"), None)
+    raw_dca = _p_val(("dca", "dca_amount"), None)
     entry_pct = float(
         P["entry_pct"]
         if P.get("entry_pct") is not None
@@ -76,46 +83,46 @@ def simulate(ohlc, P):
     )
 
     env_overrides = {
-        "STRATEGY_MODE": str(P.get("mode") or os.environ.get("STRATEGY_MODE") or "avg_tp"),
-        "STRAT_CURRENCY": str(P.get("currency") or os.environ.get("STRAT_CURRENCY") or "USD"),
-        "YAHOO_SYMBOL": str(P.get("sym") or P.get("yahoo_sym") or os.environ.get("YAHOO_SYMBOL") or "REPLAY"),
+        "STRATEGY_MODE": str(_p_val(("mode",), os.environ.get("STRATEGY_MODE") or "avg_tp")),
+        "STRAT_CURRENCY": str(_p_val(("currency",), os.environ.get("STRAT_CURRENCY") or "USD")),
+        "YAHOO_SYMBOL": str(_p_val(("sym", "yahoo_sym"), os.environ.get("YAHOO_SYMBOL") or "REPLAY")),
         "STRAT_ENTRY_PCT": str(entry_pct),
         "STRAT_DCA_PCT": str(dca_pct),
-        "STRAT_ENTRY_DISCOUNT_PCT": str(P.get("disc", P.get("entry_discount_pct", 0.3))),
-        "STRAT_DCA_DROP_PCT": str(P.get("drop", P.get("dca_drop_pct", 2.0))),
-        "STRAT_TAKEPROFIT_PCT": str(P.get("tp", P.get("takeprofit_pct", 1.5))),
-        "STRAT_MAX_DCA_BUYS": str(P.get("maxdca", P.get("max_dca_buys", 10))),
+        "STRAT_ENTRY_DISCOUNT_PCT": str(_p_val(("disc", "entry_discount_pct"), 0.3)),
+        "STRAT_DCA_DROP_PCT": str(_p_val(("drop", "dca_drop_pct"), 2.0)),
+        "STRAT_TAKEPROFIT_PCT": str(_p_val(("tp", "takeprofit_pct"), 1.5)),
+        "STRAT_MAX_DCA_BUYS": str(_p_val(("maxdca", "max_dca_buys"), 10)),
         "STRAT_MAX_BUDGET": str(budget),
-        "STRAT_FX_FEE_PCT": str(P.get("fee", P.get("fx_fee_pct", os.environ.get("STRAT_FX_FEE_PCT", "0.15")))),
-        "STRAT_STOP_LOSS_PCT": str(P.get("sl", P.get("stop_loss_pct", os.environ.get("STRAT_STOP_LOSS_PCT", "0.0")))),
-        "STRAT_CHECK_MINUTES": str(P.get("check_min") or os.environ.get("STRAT_CHECK_MINUTES") or "1"),
-        "STRAT_ORDER_TTL_MIN": str(P.get("ttl_min") or os.environ.get("STRAT_ORDER_TTL_MIN") or "10"),
-        "STRAT_REENTRY_DROP_PCT": str(P.get("reentry_drop", os.environ.get("STRAT_REENTRY_DROP_PCT", "0"))),
-        "STRAT_REENTRY_TOLERANCE_PCT": str(P.get("reentry_tol", os.environ.get("STRAT_REENTRY_TOLERANCE_PCT", "0.05"))),
-        "STRAT_LOSS_ALERT_STEP": str(P.get("loss_alert_step", os.environ.get("STRAT_LOSS_ALERT_STEP", "1"))),
-        "STRAT_LADDER_MIN_FREE": str(P.get("ladder_min_free", os.environ.get("STRAT_LADDER_MIN_FREE", "6"))),
-        "STRAT_SL_REBUY_ENABLED": str(P.get("sl_rebuy_enabled", os.environ.get("STRAT_SL_REBUY_ENABLED", "false"))).lower(),
-        "STRAT_SL_REBUY_BOUNCE_PCT": str(P.get("sl_rebuy_bounce", os.environ.get("STRAT_SL_REBUY_BOUNCE_PCT", "1.2"))),
-        "STRAT_DCA_TREND_GATE_PCT": str(P.get("dca_trend_gate", os.environ.get("STRAT_DCA_TREND_GATE_PCT", "0"))),
-        "STRAT_TRAIL_PCT": str(P.get("trail_pct", os.environ.get("STRAT_TRAIL_PCT", "0"))),
-        "STRAT_TRAIL_MIN_PROFIT_PCT": str(P.get("trail_min_profit", os.environ.get("STRAT_TRAIL_MIN_PROFIT_PCT", "5"))),
-        "STRAT_SL_MHDSL_ENABLED": str(P.get("sl_mhdsl_enabled", os.environ.get("STRAT_SL_MHDSL_ENABLED", "false"))).lower(),
-        "STRAT_TP_MDHTP_ENABLED": str(P.get("tp_mdhtp_enabled", os.environ.get("STRAT_TP_MDHTP_ENABLED", "false"))).lower(),
-        "STRAT_REENTRY_HYBRID_ENABLED": str(P.get("reentry_hybrid_enabled", os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "false"))).lower(),
-        "STRAT_REENTRY_PEAK_RELATIVE": str(P.get("reentry_peak_relative", os.environ.get("STRAT_REENTRY_PEAK_RELATIVE", "false"))).lower(),
-        "STRAT_REENTRY_PULLBACK_PCT": str(P.get("reentry_pullback_pct", os.environ.get("STRAT_REENTRY_PULLBACK_PCT", "1.5"))),
-        "STRAT_REENTRY_PULLBACK_ADAPTIVE": str(P.get("reentry_pullback_adaptive", os.environ.get("STRAT_REENTRY_PULLBACK_ADAPTIVE", "false"))).lower(),
-        "STRAT_REENTRY_PULLBACK_K": str(P.get("reentry_pullback_k", os.environ.get("STRAT_REENTRY_PULLBACK_K", "1.0"))),
-        "STRAT_REENTRY_PULLBACK_MIN": str(P.get("reentry_pullback_min", os.environ.get("STRAT_REENTRY_PULLBACK_MIN", "0.8"))),
-        "STRAT_REENTRY_PULLBACK_MAX": str(P.get("reentry_pullback_max", os.environ.get("STRAT_REENTRY_PULLBACK_MAX", "4.0"))),
-        "STRAT_REENTRY_TTL_HOURS": str(P.get("reentry_ttl_hours", os.environ.get("STRAT_REENTRY_TTL_HOURS", "0.0"))),
-        "STRAT_SL_DISASTER_BUFFER_RATIO": str(P.get("sl_disaster_buffer_ratio", os.environ.get("STRAT_SL_DISASTER_BUFFER_RATIO", "0.30"))),
-        "STRAT_SL_DISASTER_BUFFER_MAX_PCT": str(P.get("sl_disaster_buffer_max_pct", os.environ.get("STRAT_SL_DISASTER_BUFFER_MAX_PCT", "15.0"))),
-        "STRAT_SL_TREND_DEFER_MAX_SEC": str(P.get("sl_trend_defer_max_sec", os.environ.get("STRAT_SL_TREND_DEFER_MAX_SEC", "220.0"))),
-        "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": str(P.get("sl_bounce_min_recovery_pct", os.environ.get("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", "0.40"))),
-        "STRAT_SL_BOUNCE_PULLBACK_PCT": str(P.get("sl_bounce_pullback_pct", os.environ.get("STRAT_SL_BOUNCE_PULLBACK_PCT", "0.30"))),
-        "STRAT_SL_STRUCTURAL_BREAK_ENABLED": str(P.get("sl_structural_break_enabled", os.environ.get("STRAT_SL_STRUCTURAL_BREAK_ENABLED", "true"))).lower(),
-        "STRAT_TP_STAGNATION_MAX_SEC": str(P.get("tp_stagnation_max_sec", os.environ.get("STRAT_TP_STAGNATION_MAX_SEC", "1080.0"))),
+        "STRAT_FX_FEE_PCT": str(_p_val(("fee", "fx_fee_pct"), os.environ.get("STRAT_FX_FEE_PCT", "0.15"))),
+        "STRAT_STOP_LOSS_PCT": str(_p_val(("sl", "stop_loss_pct"), os.environ.get("STRAT_STOP_LOSS_PCT", "0.0"))),
+        "STRAT_CHECK_MINUTES": str(_p_val(("check_min",), os.environ.get("STRAT_CHECK_MINUTES") or "1")),
+        "STRAT_ORDER_TTL_MIN": str(_p_val(("ttl_min",), os.environ.get("STRAT_ORDER_TTL_MIN") or "10")),
+        "STRAT_REENTRY_DROP_PCT": str(_p_val(("reentry_drop",), os.environ.get("STRAT_REENTRY_DROP_PCT", "0"))),
+        "STRAT_REENTRY_TOLERANCE_PCT": str(_p_val(("reentry_tol",), os.environ.get("STRAT_REENTRY_TOLERANCE_PCT", "0.05"))),
+        "STRAT_LOSS_ALERT_STEP": str(_p_val(("loss_alert_step",), os.environ.get("STRAT_LOSS_ALERT_STEP", "1"))),
+        "STRAT_LADDER_MIN_FREE": str(_p_val(("ladder_min_free",), os.environ.get("STRAT_LADDER_MIN_FREE", "6"))),
+        "STRAT_SL_REBUY_ENABLED": str(_p_val(("sl_rebuy_enabled",), os.environ.get("STRAT_SL_REBUY_ENABLED", "false"))).lower(),
+        "STRAT_SL_REBUY_BOUNCE_PCT": str(_p_val(("sl_rebuy_bounce",), os.environ.get("STRAT_SL_REBUY_BOUNCE_PCT", "1.2"))),
+        "STRAT_DCA_TREND_GATE_PCT": str(_p_val(("dca_trend_gate",), os.environ.get("STRAT_DCA_TREND_GATE_PCT", "0"))),
+        "STRAT_TRAIL_PCT": str(_p_val(("trail_pct",), os.environ.get("STRAT_TRAIL_PCT", "0"))),
+        "STRAT_TRAIL_MIN_PROFIT_PCT": str(_p_val(("trail_min_profit",), os.environ.get("STRAT_TRAIL_MIN_PROFIT_PCT", "5"))),
+        "STRAT_SL_MHDSL_ENABLED": str(_p_val(("sl_mhdsl_enabled",), os.environ.get("STRAT_SL_MHDSL_ENABLED", "false"))).lower(),
+        "STRAT_TP_MDHTP_ENABLED": str(_p_val(("tp_mdhtp_enabled",), os.environ.get("STRAT_TP_MDHTP_ENABLED", "false"))).lower(),
+        "STRAT_REENTRY_HYBRID_ENABLED": str(_p_val(("reentry_hybrid_enabled",), os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "false"))).lower(),
+        "STRAT_REENTRY_PEAK_RELATIVE": str(_p_val(("reentry_peak_relative",), os.environ.get("STRAT_REENTRY_PEAK_RELATIVE", "false"))).lower(),
+        "STRAT_REENTRY_PULLBACK_PCT": str(_p_val(("reentry_pullback_pct",), os.environ.get("STRAT_REENTRY_PULLBACK_PCT", "1.5"))),
+        "STRAT_REENTRY_PULLBACK_ADAPTIVE": str(_p_val(("reentry_pullback_adaptive",), os.environ.get("STRAT_REENTRY_PULLBACK_ADAPTIVE", "false"))).lower(),
+        "STRAT_REENTRY_PULLBACK_K": str(_p_val(("reentry_pullback_k",), os.environ.get("STRAT_REENTRY_PULLBACK_K", "1.0"))),
+        "STRAT_REENTRY_PULLBACK_MIN": str(_p_val(("reentry_pullback_min",), os.environ.get("STRAT_REENTRY_PULLBACK_MIN", "0.8"))),
+        "STRAT_REENTRY_PULLBACK_MAX": str(_p_val(("reentry_pullback_max",), os.environ.get("STRAT_REENTRY_PULLBACK_MAX", "4.0"))),
+        "STRAT_REENTRY_TTL_HOURS": str(_p_val(("reentry_ttl_hours",), os.environ.get("STRAT_REENTRY_TTL_HOURS", "0.0"))),
+        "STRAT_SL_DISASTER_BUFFER_RATIO": str(_p_val(("sl_disaster_buffer_ratio",), os.environ.get("STRAT_SL_DISASTER_BUFFER_RATIO", "0.30"))),
+        "STRAT_SL_DISASTER_BUFFER_MAX_PCT": str(_p_val(("sl_disaster_buffer_max_pct",), os.environ.get("STRAT_SL_DISASTER_BUFFER_MAX_PCT", "15.0"))),
+        "STRAT_SL_TREND_DEFER_MAX_SEC": str(_p_val(("sl_trend_defer_max_sec",), os.environ.get("STRAT_SL_TREND_DEFER_MAX_SEC", "220.0"))),
+        "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": str(_p_val(("sl_bounce_min_recovery_pct",), os.environ.get("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", "0.40"))),
+        "STRAT_SL_BOUNCE_PULLBACK_PCT": str(_p_val(("sl_bounce_pullback_pct",), os.environ.get("STRAT_SL_BOUNCE_PULLBACK_PCT", "0.30"))),
+        "STRAT_SL_STRUCTURAL_BREAK_ENABLED": str(_p_val(("sl_structural_break_enabled",), os.environ.get("STRAT_SL_STRUCTURAL_BREAK_ENABLED", "true"))).lower(),
+        "STRAT_TP_STAGNATION_MAX_SEC": str(_p_val(("tp_stagnation_max_sec",), os.environ.get("STRAT_TP_STAGNATION_MAX_SEC", "1080.0"))),
         "STRAT_TP_LADDER": str(os.environ.get("STRAT_TP_LADDER", "")),
         "STRAT_TP_LADDER_CURVE": str(os.environ.get("STRAT_TP_LADDER_CURVE", "linear")),
     }

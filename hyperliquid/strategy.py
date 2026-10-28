@@ -149,13 +149,13 @@ class StratParams:
                 return raw
             if isinstance(raw, str):
                 s = raw.strip().lower()
-                if s in ("1", "true", "yes", "on"):
+                if s in ("1", "1.0", "true", "yes", "on"):
                     return True
-                if s in ("0", "false", "no", "off", ""):
+                if s in ("0", "0.0", "false", "no", "off", ""):
                     return False
                 raise ValueError(f"invalid boolean string for {key}: {raw!r}")
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-                if raw in (0, 1):
+                if math.isfinite(float(raw)) and float(raw) in (0.0, 1.0):
                     return bool(raw)
                 raise ValueError(f"invalid numeric boolean for {key}: {raw!r}")
             raise ValueError(f"invalid boolean value for {key}: {raw!r}")
@@ -229,7 +229,7 @@ def _parse_bool_flag(val: object, default: bool = False) -> bool:
         return bool(val) if math.isfinite(val) else default
     if isinstance(val, str):
         s = val.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
             return False

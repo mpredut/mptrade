@@ -2,7 +2,9 @@
 cache_short_trend.json, which is written LIVE), for monitortrades backtests.
 
 It uses EXACTLY the same PriceWindow class (pricewindow.py) and formula
-(get_instant_trend: (slope_full + gradient_recent)/2 -> semn) ca live
+(get_short_trend: growth_coefficient from pricewindow.SHORT_TREND_ESTIMATOR — since
+27 Oct the median-filtered Step-WOLS cubic; legacy (slope_full + gradient_recent)/2 via
+MPTRADE_SHORT_TREND_ESTIMATOR=legacy -> semn) ca live
 (cacheManager.py, after the 29 Jul race fix — see below; identical also to
 tradeall.handle_symbol's own formula), fed by hand from the replay ticks
 — the same pattern already used by offline/backtests/tradeall.py for its windows.
@@ -113,7 +115,7 @@ class ReplayTrendSource:
         if win is None or len(win.prices) < 2:
             res = False
         else:
-            res = _is_trend_up_tuple(win.get_short_trend())
+            res = _is_trend_up_tuple(win.get_short_trend(), eps=win.get_noise_epsilon(k=1.0))
         if window_seconds is None:
             self._cached_trend_up[symbol] = res
         return res
@@ -138,9 +140,14 @@ class ReplayTrendSource:
 SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (user, 29 iul)
 
 
-def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float]) -> bool:
+UPWARD_EPSILON_K = 0.25
+
+
+def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float], eps: float = 0.0) -> bool:
     """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
     final_trend, gc, _slope_full, _gradient_recent = trend_tuple
+    if isinstance(eps, (int, float)) and not isinstance(eps, bool) and math.isfinite(eps) and eps > 0.0:
+        return gc > UPWARD_EPSILON_K * eps
     return gc > 0 or (gc == 0 and final_trend > 0)
 
 

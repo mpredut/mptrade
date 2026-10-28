@@ -6296,5 +6296,93 @@ def test_batch47_binance_and_kraken_adapters_hardening(tmp_path, monkeypatch):
     backtest_trail.run_intraday("BTCUSD", tz_offset=0)
 
 
+def test_batch48_hyperliquid_and_t212_hardening(monkeypatch):
+    import importlib.util
+    import os
+    from types import SimpleNamespace
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(root_dir, "hyperliquid")
+    t212_dir = os.path.join(root_dir, "212trading")
+
+    def _load_mod(mod_name: str, folder: str, file_name: str):
+        import sys
+        spec = importlib.util.spec_from_file_location(mod_name, os.path.join(folder, file_name))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    hl_client = _load_mod("hl_client_b48", hl_dir, "hl_client.py")
+    hl_strat = _load_mod("hl_strat_b48", hl_dir, "strategy.py")
+
+    # 1. HLClient.funding_rate and position_full validate/strip coin and reject None funding
+    dummy_hl = object.__new__(hl_client.HLClient)
+    dummy_hl.address = "0x1234"
+    dummy_hl.info = SimpleNamespace(
+        meta_and_asset_ctxs=lambda: (
+            {"universe": [{"name": "HYPE"}, {"name": "SOL"}]},
+            [{"funding": "0.000125"}, {"funding": None}],
+        ),
+        user_state=lambda addr: {
+            "assetPositions": [{"position": {"coin": "HYPE", "szi": "10.0", "entryPx": "25.0"}}]
+        },
+    )
+    assert dummy_hl.funding_rate("  HYPE  ") == 0.000125
+    assert dummy_hl.funding_rate("SOL") is None
+    assert dummy_hl.funding_rate(True) is None  # type: ignore[arg-type]
+    assert dummy_hl.position_full("  HYPE  ") == {"coin": "HYPE", "szi": "10.0", "entryPx": "25.0"}
+    assert dummy_hl.position_full(False) is None  # type: ignore[arg-type]
+
+    # 2. hyperliquid.strategy.StratParams.from_dict and _parse_bool_flag accept "1.0" and "0.0"
+    assert hl_strat._parse_bool_flag("1.0") is True
+    assert hl_strat._parse_bool_flag("0.0", default=True) is False
+    hl_p = hl_strat.StratParams.from_dict({"enable_takeprofit": "0.0", "signal_gate": "1.0"})
+    assert hl_p.enable_takeprofit is False
+    assert hl_p.signal_gate is True
+
+    # 3. 212trading modules: t212_client.place_market_order, price_alert._parse_armed_flag,
+    #    strategy._parse_bool_flag, and backtest.simulate with None-valued optional keys
+    t212_client_mod = _load_mod("t212_client_b48", t212_dir, "t212_client.py")
+    price_alert_mod = _load_mod("t212_price_alert_b48", t212_dir, "price_alert.py")
+    t212_strat_mod = _load_mod("t212_strat_b48", t212_dir, "strategy.py")
+    t212_bt_mod = _load_mod("t212_bt_b48", t212_dir, "backtest.py")
+
+    assert price_alert_mod._parse_armed_flag("1.0", default=False) is True
+    assert price_alert_mod._parse_armed_flag("0.0", default=True) is False
+    assert t212_strat_mod._parse_bool_flag("1.0", default=False) is True
+    assert t212_strat_mod._parse_bool_flag("0.0", default=True) is False
+
+    c212 = t212_client_mod.T212Client(
+        "key123", "sec123", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0
+    )
+    captured_payloads = []
+    monkeypatch.setattr(c212, "_place_order", lambda ep, payload: (captured_payloads.append(payload) or (200, {"id": 1})))
+    c212.place_market_order("NVDA_US_EQ", 1.5, extended_hours=float("nan"))  # type: ignore[arg-type]
+    c212.place_market_order("NVDA_US_EQ", 1.5, extended_hours="1.0")  # type: ignore[arg-type]
+    assert captured_payloads[0]["extendedHours"] is False
+    assert captured_payloads[1]["extendedHours"] is True
+
+    ohlc_bars = [(100.0, 102.0, 99.0, 101.0)] * 10
+    res_bt = t212_bt_mod.simulate(
+        ohlc_bars,
+        {
+            "budget": 1000.0,
+            "entry": None,
+            "dca": None,
+            "disc": None,
+            "drop": None,
+            "tp": None,
+            "sl": None,
+            "sl_rebuy_enabled": None,
+            "sl_mhdsl_enabled": None,
+            "tp_mdhtp_enabled": None,
+        },
+    )
+    assert isinstance(res_bt, dict)
+    assert res_bt["initial_capital"] == 1000.0
+
+
+
 
 

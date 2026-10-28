@@ -108,7 +108,7 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     isin = (cfg.get("EXPECTED_ISIN") or "").strip()
     strat_enabled = required_bool_env("STRAT_ENABLED", cfg)
     strat_dry = force_paper or not required_bool_env("STRAT_EXECUTE", cfg)
-    observe_only = str(cfg.get("T212_BOT_OBSERVE_ONLY") or os.environ.get("T212_BOT_OBSERVE_ONLY") or "").strip().lower() in ("1", "true", "yes", "on")
+    observe_only = str(cfg.get("T212_BOT_OBSERVE_ONLY") or os.environ.get("T212_BOT_OBSERVE_ONLY") or "").strip().lower() in ("1", "1.0", "true", "yes", "on")
     interval = required_float_env("POLL_SECONDS", cfg)
     if not (interval >= 30 and interval <= 86400):
         raise ValueError("POLL_SECONDS must be a finite number between 30 and 86400")
@@ -162,8 +162,8 @@ def main() -> int:
         log(f"=== {len(assets)} assets ===")
         for n, p in assets:
             c = parse_dotenv(p)
-            real = c.get("STRAT_EXECUTE", "").strip().lower() == "true" and not args.paper
-            on = c.get("STRAT_ENABLED", "").strip().lower() == "true"
+            real = c.get("STRAT_EXECUTE", "").strip().lower() in ("1", "1.0", "true", "yes", "on") and not args.paper
+            on = c.get("STRAT_ENABLED", "").strip().lower() in ("1", "1.0", "true", "yes", "on")
             log(f"  {n:<8} {c.get('T212_TICKER','?'):<14} "
                 f"{'STRAT' if on else 'OFF':<6} {'⚠ REAL' if real else 'PAPER'}")
         return 0

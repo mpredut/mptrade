@@ -693,13 +693,8 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     print(f"small slope {slope}")
     gradient, gradient_coff, slope_full, gradient_recent = price_window.get_short_trend()
 
-    slope_max_min = analyzer.calculate_slope_max_min()
     if slope * gradient < 0:
         print(f"ALERT slope1 = {slope} gradient = {gradient}")
-    if slope * slope_max_min < 0:
-        print(f"ALERT slope2 = {slope} calculate_slope_max_min() = {slope_max_min}")
-    if gradient * slope_max_min < 0:
-        print(f"ALERT gradient = {gradient} calculate_slope_max_min() = {slope_max_min}")
     if slope == 0:
         count = count + 1
     else:
@@ -722,8 +717,7 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     slope_big, price_diff = analyzer_big.check_price_change(PRICE_CHANGE_THRESHOLD_BIG_EUR)
     logic("BIG", True, symbol, gradient, slope_big, trend_state_big, current_price, regime_ctx=regime_ctx)
 
-    # Cross-process snapshot. ``monitortrades`` consumes only ``slope_small`` and
-    # ``final_trend`` through ``is_trend_up``; other fields serve other consumers.
+    # Cross-process snapshot aligned with CacheShortTrendManager SSOT.
     return {
         "symbol": symbol,
         "final_trend": gradient,
@@ -732,7 +726,6 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
         "gradient_recent": gradient_recent,
         "slope_small": slope,
         "slope_big": slope_big,
-        "slope_max_min": slope_max_min,
         "pos": pos,
         "current_price": current_price,
         "ts": time.time(),

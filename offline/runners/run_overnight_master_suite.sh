@@ -172,18 +172,6 @@ run_step "2E_COMP" "Binance BTCUSDC 240m Candidate Comparison" \
         $RESULTS_DIR/binance_wf/BTCUSDC_240m_baseline.json"
 
 # ------------------------------------------------------------------------------
-# STEP 3: Kraken Adaptive Volatility & Reentry Multiplier Sweeps
-# ------------------------------------------------------------------------------
-run_step "3A" "Kraken K-Multiplier Sweep (K_REENTRY & K_DCA)" \
-    "$PYTHON_BIN offline/research/kraken_adaptive_thresholds/sweep_k_multiplier.py"
-
-run_step "3B" "Kraken Adaptive DCA Verification" \
-    "$PYTHON_BIN offline/research/kraken_adaptive_thresholds/verify_adaptive_dca.py"
-
-run_step "3C" "Kraken Adaptive Reentry Verification" \
-    "$PYTHON_BIN offline/research/kraken_adaptive_thresholds/verify_adaptive_reentry.py"
-
-# ------------------------------------------------------------------------------
 # STEP 4: Comprehensive Multi-Factor & Multi-Variable Strategy Sweeps
 # ------------------------------------------------------------------------------
 run_step "4A" "Comprehensive 30-Candidate Multi-Factor Strategy Sweep" \
@@ -195,35 +183,8 @@ run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (969
 run_step "4C" "Hybrid Re-Entry Ablation Suite (11 Crypto Assets & US Equities)" \
     "$PYTHON_BIN offline/research/hybrid_reentry/run_suite.py && $PYTHON_BIN offline/research/hybrid_reentry/run_equities.py && $PYTHON_BIN offline/research/hybrid_reentry/report.py"
 
-run_step "4D" "MHDSL & RSI-Oversold DCA Filter Replay Comparisons" \
-    "$PYTHON_BIN offline/research/compare_mhdsl_reentry_replay.py && $PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_rsi_dca_filter.py"
-
-# ------------------------------------------------------------------------------
-# STEP 5: TradeAll Trigger Gate Experiments
-# ------------------------------------------------------------------------------
-run_step "5A" "TradeAll Trend Gate Experiment" \
-    "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_trend_gate.py"
-
-run_step "5B" "TradeAll Quality Signal Regression Experiment" \
-    "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_quality_signal.py"
-
-run_step "5C" "TradeAll RSI & Bollinger Experiment" \
-    "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_rsi_bollinger.py"
-
-run_step "5D" "TradeAll Dual Timeframe Experiment" \
-    "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_dual_timeframe.py"
-
-run_step "5E" "TradeAll 329-Day Sparse Quality Signal Retry-Limit Experiment" \
-    "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_quality_signal_v2.py"
-
-# ------------------------------------------------------------------------------
-# STEP 6: TradeAll Adaptive Thresholds & Kalman Lag Sweeps
-# ------------------------------------------------------------------------------
-run_step "6A" "TradeAll Adaptive Thresholds Sweep (K*vol_1h)" \
-    "$PYTHON_BIN offline/research/tradeall_adaptive_thresholds/run_backtest_adaptive.py"
-
-run_step "6B" "TradeAll Kalman Filter Sampling Lag Sweep (20s/60s/90s/150s)" \
-    "$PYTHON_BIN offline/research/tradeall_kalman_lag/run_kalman_lag_sweep.py"
+run_step "4D" "MHDSL Reentry Replay Comparisons" \
+    "$PYTHON_BIN offline/research/compare_mhdsl_reentry_replay.py"
 
 # ------------------------------------------------------------------------------
 # STEP 7: Monitortrades Binance Replay Backtest (BTC & TAO over 392 days)

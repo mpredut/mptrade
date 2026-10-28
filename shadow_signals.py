@@ -210,14 +210,12 @@ class KalmanStateTracker:
             k = self._last_kfields.get(
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
-            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            v1h = self._last_vol_fields.get(symbol)
             return {
                 "kalman_vel": k["vel"],
                 "kalman_vel_std": k["vel_std"],
                 "kalman_trend": k["trend"],
                 "vol_1h_pct": v1h,
-                "adapt_reentry_pct": adapt_re,
-                "adapt_dca_pct": adapt_dca,
             }
         try:
             ts = float(ts)
@@ -226,27 +224,23 @@ class KalmanStateTracker:
             k = self._last_kfields.get(
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
-            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            v1h = self._last_vol_fields.get(symbol)
             return {
                 "kalman_vel": k["vel"],
                 "kalman_vel_std": k["vel_std"],
                 "kalman_trend": k["trend"],
                 "vol_1h_pct": v1h,
-                "adapt_reentry_pct": adapt_re,
-                "adapt_dca_pct": adapt_dca,
             }
         if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
             k = self._last_kfields.get(
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
-            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            v1h = self._last_vol_fields.get(symbol)
             return {
                 "kalman_vel": k["vel"],
                 "kalman_vel_std": k["vel_std"],
                 "kalman_trend": k["trend"],
                 "vol_1h_pct": v1h,
-                "adapt_reentry_pct": adapt_re,
-                "adapt_dca_pct": adapt_dca,
             }
         sr_val = 1.0
         if big_sample_rate is not None and not isinstance(big_sample_rate, bool):
@@ -304,17 +298,16 @@ class KalmanStateTracker:
                 last_vol_t = -1e18
             if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
                 v1h = vol_1h_pct(big_prices, big_sample_rate)
-                adapt_re, adapt_dca = adaptive_thresholds(v1h, k_reentry=K_REENTRY, k_dca=K_DCA)
                 self._last_vol_time[symbol] = ts
-                self._last_vol_fields[symbol] = (v1h, adapt_re, adapt_dca)
+                self._last_vol_fields[symbol] = v1h
             else:
-                v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+                v1h = self._last_vol_fields.get(symbol)
         else:
-            v1h = adapt_re = adapt_dca = None
+            v1h = None
         fields = {
             "kalman_vel": k["vel"], "kalman_vel_std": k["vel_std"],
             "kalman_trend": k["trend"],
-            "vol_1h_pct": v1h, "adapt_reentry_pct": adapt_re, "adapt_dca_pct": adapt_dca,
+            "vol_1h_pct": v1h,
         }
         self._state[symbol] = {**fields, "ts": ts, "price": price}
         self._write_state(ts)

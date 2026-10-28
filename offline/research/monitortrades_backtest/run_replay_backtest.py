@@ -158,10 +158,13 @@ def prewarm_trend_series(
         if cur_len < 2:
             tape.append(False)
         else:
-            ft, _gc, _sf, gr, _ = buf.eval_slice(
+            ft, gc, _sf, _gr, eps = buf.eval_slice(
                 blen - cur_len, blen - 1, sample_rate_sec=sample_rate, eps_k=1.0
             )
-            tape.append(gr > 0 or (gr == 0 and ft > 0))
+            if eps > 0.0:
+                tape.append(gc > 0.25 * eps)
+            else:
+                tape.append(gc > 0.0 or (gc == 0.0 and ft > 0))
     res = tuple(tape)
     _TREND_TAPE_CACHE[key] = res
     return res

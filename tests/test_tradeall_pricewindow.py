@@ -434,10 +434,20 @@ class TestPriceWindowGetTrend(unittest.TestCase):
                     self.assertGreater(gradient * expected, 0)
                     self.assertEqual(final_trend, 1 if growth > 0 else -1)
 
-        with self.subTest("gc is average of sf and gr"):
-            pw = _window([100 + i for i in range(20)])
+        with self.subTest("gc is Step-WOLS cubic on the median-filtered window (default SSOT)"):
+            import pricewindow as pw_mod
+            prices = [100 + i for i in range(20)]
+            pw = _window(prices)
             _, gc, sf, gr = pw.get_short_trend()
-            self.assertAlmostEqual(gc, (sf + gr) / 2.0, places=10)
+            self.assertEqual(pw_mod.SHORT_TREND_ESTIMATOR, pw_mod.SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC)
+            self.assertAlmostEqual(gc, pw_mod.step_wols_cubic_slope(prices, pw.sample_rate_sec), places=10)
+
+        with self.subTest("legacy estimator keeps gc = (sf + gr) / 2 for rollback"):
+            import pricewindow as pw_mod
+            with patch.object(pw_mod, "SHORT_TREND_ESTIMATOR", pw_mod.SHORT_TREND_ESTIMATOR_LEGACY):
+                pw = _window([100 + i for i in range(20)])
+                _, gc, sf, gr = pw.get_short_trend()
+                self.assertAlmostEqual(gc, (sf + gr) / 2.0, places=10)
 
         with self.subTest("neutral series return zero trend"):
             for label, prices in (("single", [100.0]), ("constant", [100.0] * 20)):
@@ -483,15 +493,6 @@ class TestPriceWindowMinMax(unittest.TestCase):
                 pw.process_price(p)
             self.assertEqual(len(pw.prices), 3)
             self.assertNotIn(10, pw.prices)
-
-        with self.subTest("proximities"):
-            analyzer = ta.WindowAnalyzer(_window([100, 200]))
-            cases = (("midpoint", 150, 0.5, 0.5), ("minimum", 100, 0.0, 1.0))
-            for label, price, expected_min, expected_max in cases:
-                with self.subTest(position=label):
-                    min_proximity, max_proximity = analyzer.calculate_proximities(price)
-                    self.assertAlmostEqual(min_proximity, expected_min, places=5)
-                    self.assertAlmostEqual(max_proximity, expected_max, places=5)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -809,14 +810,20 @@ class TestWindowAnalyzer(unittest.TestCase):
     def test_window_analyzer_integration_and_api_surface(self):
         with self.subTest("api surface is lean"):
             pw = _window([100, 110, 105])
+            an = ta.WindowAnalyzer(pw)
             for method in ("calculate_proximities", "calculate_slope_max_min",
-                           "check_price_change", "evaluate_buy_sell_opportunity",
+                           "calculate_positions", "_analyze_price_movement",
+                           "evaluate_buy_sell_opportunity",
                            "get_trend", "get_instant_trend"):
                 with self.subTest(absent=method):
                     self.assertFalse(hasattr(pw, method))
+                    self.assertFalse(hasattr(an, method))
             for method in ("get_min", "get_max", "get_short_trend"):
                 with self.subTest(present=method):
                     self.assertTrue(hasattr(pw, method))
+            for method in ("check_price_change", "calculate_acceleration"):
+                with self.subTest(analyzer_present=method):
+                    self.assertTrue(hasattr(an, method))
 
     def test_analyzer_gradients_and_noise(self):
         with self.subTest("recent gradient cases"):
@@ -846,15 +853,6 @@ class TestWindowAnalyzer(unittest.TestCase):
             self.assertLess(calm.get_noise_epsilon(), wild.get_noise_epsilon())
             self.assertEqual(insufficient, 0.0)
 
-        with self.subTest("slope max min cases"):
-            for label, prices, positive in (
-                ("up", [100 + i for i in range(20)], True),
-                ("constant", [100.0] * 10, False),
-            ):
-                with self.subTest(case=label):
-                    slope = ta.WindowAnalyzer(_window(prices)).calculate_slope_max_min()
-                    self.assertGreater(slope, 0) if positive else self.assertEqual(slope, 0)
-
     def test_analyzer_price_movement_and_evaluations(self):
         with self.subTest("check price change cases"):
             cases = (
@@ -868,36 +866,6 @@ class TestWindowAnalyzer(unittest.TestCase):
                     self.assertEqual(slope, 0) if expect_zero else self.assertNotEqual(slope, 0)
                     if expected_pos is not None:
                         self.assertEqual(position, expected_pos)
-
-        with self.subTest("evaluate buy sell cases"):
-            cases = (
-                ("directional", [100 + i for i in range(20)], 120.0, None, None),
-                ("below-threshold", [100.0, 100.01, 100.02], 100.02, 5.0, "HOLD"),
-            )
-            for label, prices, current, threshold, expected in cases:
-                with self.subTest(case=label):
-                    analyzer = ta.WindowAnalyzer(_window(prices))
-                    if threshold is None:
-                        action, _, _, _ = analyzer.evaluate_buy_sell_opportunity(current)
-                    else:
-                        action, _, _, _ = analyzer.evaluate_buy_sell_opportunity(
-                            current, threshold_percent=threshold)
-                    self.assertIn(action, ("BUY", "SELL", "HOLD"))
-                    if expected is not None:
-                        self.assertEqual(action, expected)
-
-        with self.subTest("calculate positions returns fractions"):
-            pw = _window([100 + i for i in range(10)])
-            an = ta.WindowAnalyzer(pw)
-            min_pos, max_pos = an.calculate_positions()
-            self.assertIsNotNone(min_pos)
-            self.assertIsNotNone(max_pos)
-
-        with self.subTest("analyze price movement returns tuple"):
-            pw = _window([100 + i for i in range(20)])
-            an = ta.WindowAnalyzer(pw)
-            result = an._analyze_price_movement(100, 0, 119, 19, 119, 19, 19.0)
-            self.assertEqual(len(result), 2)
 
         with self.subTest("analyzer shares window mutation"):
             pw = _window([100, 101, 102])
@@ -960,9 +928,10 @@ class TestTrendCoordinator(unittest.TestCase):
             cached = coord.get_cached_trend("BTCUSDT")
             for key in ("final_trend", "growth_coefficient", "slope_full",
                         "gradient_recent", "slope_small", "slope_big",
-                        "slope_max_min", "pos", "current_price", "ts"):
+                        "pos", "current_price", "ts"):
                 with self.subTest(field=key):
                     self.assertIn(key, cached)
+            self.assertNotIn("slope_max_min", cached)
             self.assertFalse(coord._dirty["BTCUSDT"])
             self.assertIn("BTCUSDT", coord.get_all_cached_trends())
             manager_snapshot = self.mgr.get_snapshot("BTCUSDT")
@@ -1065,7 +1034,7 @@ class TestTrendCoordinator(unittest.TestCase):
                 try:
                     coord.evaluate("BTCUSDT")
                     self.mgr.get_short_trend("BTCUSDT")
-                    self.mgr.get_analyzer("BTCUSDT").calculate_slope_max_min()
+                    self.mgr.get_analyzer("BTCUSDT").check_price_change(0.7)
                 except Exception as e:
                     errors.append(("reader", e))
 

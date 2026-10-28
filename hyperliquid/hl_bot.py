@@ -72,7 +72,7 @@ def main() -> int:
     strategy_enabled = required_bool_env("STRAT_EXECUTE")
     venue_enabled = required_bool_env("HL_LIVE_ORDERS")
     strat_dry = args.paper or not (strategy_enabled and venue_enabled)
-    observe_only = str(os.environ.get("HL_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "true", "yes", "on")
+    observe_only = str(os.environ.get("HL_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "1.0", "true", "yes", "on")
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()
         single_instance(f"hl_bot_{args.test_strategy.strip()}")

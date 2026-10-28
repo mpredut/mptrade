@@ -38,6 +38,15 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
     if not isinstance(path, str) or not path.strip() or not isinstance(symbol, str) or not symbol.strip():
         return out
     if not os.path.isfile(path):
+        try:
+            import cachepaths
+            for legacy_path in cachepaths.legacy_filenames_for(path):
+                if os.path.isfile(legacy_path):
+                    path = legacy_path
+                    break
+        except Exception:
+            pass
+    if not os.path.isfile(path):
         return out
     with open(path, encoding="utf-8") as f:
         for line in f:

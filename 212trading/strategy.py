@@ -106,9 +106,9 @@ def _parse_bool_flag(val: object, default: bool = False) -> bool:
         return bool(val) if math.isfinite(val) else default
     if isinstance(val, str):
         norm = val.strip().lower()
-        if norm in ("1", "true", "yes", "on", "y"):
+        if norm in ("1", "1.0", "true", "yes", "on", "y", "t"):
             return True
-        if norm in ("0", "false", "no", "off", "n", "", "none", "null", "nan"):
+        if norm in ("0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"):
             return False
     return default
 
@@ -554,8 +554,8 @@ class Strategy:
         self.ticker = ticker
         self.yahoo_sym = params.yahoo_sym or t212_to_yahoo(ticker)
         self.p = params
-        self.dry_run = dry_run
-        self.observe_only = bool(observe_only)
+        self.dry_run = _parse_bool_flag(dry_run, True)
+        self.observe_only = _parse_bool_flag(observe_only, False)
         self.desktop = desktop
         self.ccy = params.currency
         self.replay_mode = replay_mode or (clock is not None)
@@ -2174,7 +2174,7 @@ class Strategy:
                 elif decision is not None and decision.action == ExitAction.HOLD:
                     if self.ticker in self.exit_manager.tp_ride_state:
                         ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
-                        peak_px = ride_state.get("peak_price", price)
+                        peak_px = _clean_pos_float(ride_state.get("peak_price")) or price
                         self.s["trail_peak"] = peak_px
                         self._cancel_open("SELL")
                         log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")

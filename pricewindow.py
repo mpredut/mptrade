@@ -5,17 +5,24 @@ Extracted from ``tradeall`` for reuse without trading decisions.
 
 Contains ``PriceTrendAnalyzer`` regression/EMA/gradient calculations, a lean sliding
 ``PriceWindow`` with volatility-informed noise epsilon, and composed trading metrics.
+
+Short-trend SSOT (``growth_coefficient`` / ``final_trend``) is computed by the
+estimator selected in ``SHORT_TREND_ESTIMATOR`` (default: adaptive causal median
+filter followed by Step-WOLS cubic; see the constants block below).
 """
 import builtins
 import math
+import os
 import threading
 from collections import deque
 from bisect import insort, bisect_left
 
 import numpy as np
 from scipy.stats import linregress
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
+# [DEPRECATED / REFERENCE ONLY — DO NOT IMPORT/CALL]
+# Kept for reference alongside commented-out polynomial_regression_trend.
+# from sklearn.preprocessing import PolynomialFeatures
+# from sklearn.linear_model import LinearRegression
 
 import utils as u
 
@@ -24,6 +31,111 @@ DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.
 RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for primary 222s window).
 WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
 WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
+
+# ── Short-trend estimator (SSOT for growth_coefficient / final_trend) ─────────
+# "step_wols_cubic" (default, Oct 27): [raw price] -> [adaptive causal median filter
+#   ~5s, bypassed for sparse data] -> [Step-WOLS cubic: sum(k^3 * dy_k) / sum(k^3)
+#   over the window's price steps]. Weight grows smoothly up to the newest filtered
+#   step: no 60s "echo cliff" and no single-tick spike sensitivity.
+#   1s-cadence benchmark (222s): lag 34s vs 41s, flips 3.0/min vs 11.9/min.
+#   NOTE: that benchmark used synthetic 1s microstructure; on real 17s sparse data the
+#   estimators were statistically indistinguishable (~49% directional accuracy).
+# "legacy": growth_coefficient = (slope_full + gradient_recent) / 2 (pre-Oct 27).
+# Rollback without a deploy: MPTRADE_SHORT_TREND_ESTIMATOR=legacy.
+SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC = "step_wols_cubic"
+SHORT_TREND_ESTIMATOR_LEGACY = "legacy"
+_SHORT_TREND_ESTIMATORS = (SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC, SHORT_TREND_ESTIMATOR_LEGACY)
+
+
+def _resolve_short_trend_estimator() -> str:
+    raw = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
+    return raw if raw in _SHORT_TREND_ESTIMATORS else SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC
+
+
+SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        val = float(os.environ.get(name, default))
+        return val if math.isfinite(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
+MEDIAN_FILTER_SECONDS = max(0.0, _env_float("MPTRADE_MEDIAN_FILTER_SECONDS", 5.0))  # 0 = no filter.
+STEP_WOLS_POWER = max(0, int(_env_float("MPTRADE_STEP_WOLS_POWER", 3.0)))         # w_k = k^p.
+MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC = 2.0  # Sparser data: no 1s bid-ask bounce to remove.
+_MEDIAN_KERNELS = (1, 3, 5)
+_STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to this many steps.
+
+
+def _active_estimator() -> str:
+    est = SHORT_TREND_ESTIMATOR
+    return est if est in _SHORT_TREND_ESTIMATORS else SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC
+
+
+def median_filter_kernel(sample_rate_sec) -> int:
+    """Return the causal median kernel length (1, 3 or 5 samples) for a sampling rate.
+
+    The filter is defined in seconds (~5s), not samples: 5 samples at the live
+    0.8-1.0s cadence, 3 samples up to 2s, and bypassed (1) for sparser data where a
+    multi-sample median would only add lag.
+    """
+    sr = DEFAULT_SAMPLE_RATE_SEC
+    if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
+        try:
+            cand = float(sample_rate_sec)
+            if math.isfinite(cand) and cand > 0:
+                sr = cand
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if sr > MEDIAN_FILTER_BYPASS_SAMPLE_RATE_SEC:
+        return 1
+    ratio = MEDIAN_FILTER_SECONDS / sr
+    if not math.isfinite(ratio) or ratio >= 5.0:
+        return 5
+    if ratio < 1.5:
+        return 1
+    k = int(round(ratio))
+    if k % 2 == 0:
+        k -= 1
+    return max(3, min(5, k))
+
+
+def _small_median(vals) -> float:
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return float(s[mid]) if n % 2 else 0.5 * (s[mid - 1] + s[mid])
+
+
+def causal_median_filter(prices, kernel: int) -> np.ndarray:
+    """Slice-local causal median: out[i] = median(prices[max(0, i-k+1) .. i])."""
+    arr = np.asarray(prices, dtype=np.float64)
+    if kernel <= 1 or len(arr) == 0:
+        return arr.copy()
+    out = np.empty_like(arr)
+    head = min(kernel - 1, len(arr))
+    for i in range(head):
+        out[i] = _small_median(arr[: i + 1])
+    if len(arr) >= kernel:
+        from numpy.lib.stride_tricks import sliding_window_view
+        out[kernel - 1:] = np.median(sliding_window_view(arr, kernel), axis=-1)
+    return out
+
+
+def step_wols_cubic_slope(prices, sample_rate_sec=None) -> float:
+    """Reference Step-WOLS cubic slope: sum(k^3 * dy_k) / sum(k^3) on median-filtered prices."""
+    filtered = causal_median_filter(prices, median_filter_kernel(sample_rate_sec))
+    m = len(filtered) - 1
+    if m < 1:
+        return 0.0
+    k = np.arange(1, m + 1, dtype=np.float64)
+    w = k ** STEP_WOLS_POWER
+    val = float(np.dot(w, np.diff(filtered)) / np.sum(w))
+    tol = 1e-10 * max(1.0, abs(float(filtered[-1])))
+    return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
 
 
 def effective_recent_gradient_seconds(window_seconds=None) -> float:
@@ -89,43 +201,45 @@ class PriceTrendAnalyzer:
         trend_line = slope * x + intercept
         return trend_line, slope, r_value
 
-    def polynomial_regression_trend(self, degree=2):
-        if len(self.prices) < 2:
-            return [], []
-        deg_int = 2
-        if degree is not None and not isinstance(degree, bool):
-            try:
-                df = float(degree)
-                if math.isfinite(df) and df.is_integer() and int(df) >= 1:
-                    deg_int = int(df)
-            except (TypeError, ValueError, OverflowError):
-                deg_int = 2
-        x = np.arange(len(self.prices)).reshape(-1, 1)
-        y = np.array(self.prices)
-        poly_features = PolynomialFeatures(degree=deg_int)
-        x_poly = poly_features.fit_transform(x)
-
-        model = LinearRegression().fit(x_poly, y)
-        trend_poly = model.predict(x_poly)
-        return trend_poly, model.coef_
-
-    def exponential_moving_average(self, span=5):
-        prices_list = list(self.prices)
-        if not prices_list:
-            return []
-        span_f = 5.0
-        if span is not None and not isinstance(span, bool):
-            try:
-                sf = float(span)
-                if math.isfinite(sf) and sf > 0:
-                    span_f = sf
-            except (TypeError, ValueError, OverflowError):
-                pass
-        ema = [prices_list[0]]
-        alpha = 2.0 / (span_f + 1.0)
-        for price in prices_list[1:]:
-            ema.append(alpha * price + (1 - alpha) * ema[-1])
-        return ema
+    # ── [DEPRECATED / REFERENCE ONLY — DO NOT CALL (SSOT: PriceWindow.get_short_trend)] ──
+    # Preserved for historical reference only; must not be invoked by production or test code.
+    # def polynomial_regression_trend(self, degree=2):
+    #     if len(self.prices) < 2:
+    #         return [], []
+    #     deg_int = 2
+    #     if degree is not None and not isinstance(degree, bool):
+    #         try:
+    #             df = float(degree)
+    #             if math.isfinite(df) and df.is_integer() and int(df) >= 1:
+    #                 deg_int = int(df)
+    #         except (TypeError, ValueError, OverflowError):
+    #             deg_int = 2
+    #     x = np.arange(len(self.prices)).reshape(-1, 1)
+    #     y = np.array(self.prices)
+    #     poly_features = PolynomialFeatures(degree=deg_int)
+    #     x_poly = poly_features.fit_transform(x)
+    #
+    #     model = LinearRegression().fit(x_poly, y)
+    #     trend_poly = model.predict(x_poly)
+    #     return trend_poly, model.coef_
+    #
+    # def exponential_moving_average(self, span=5):
+    #     prices_list = list(self.prices)
+    #     if not prices_list:
+    #         return []
+    #     span_f = 5.0
+    #     if span is not None and not isinstance(span, bool):
+    #         try:
+    #             sf = float(span)
+    #             if math.isfinite(sf) and sf > 0:
+    #                 span_f = sf
+    #         except (TypeError, ValueError, OverflowError):
+    #             pass
+    #     ema = [prices_list[0]]
+    #     alpha = 2.0 / (span_f + 1.0)
+    #     for price in prices_list[1:]:
+    #         ema.append(alpha * price + (1 - alpha) * ema[-1])
+    #     return ema
 
     def calculate_gradient(self):
         if len(self.prices) < 2:
@@ -174,7 +288,12 @@ def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
         gradient_recent = float(np.mean(gradient_lst[-recent_n:]))
     else:
         gradient_recent = float(np.mean(gradient_lst)) if len(gradient_lst) else 0.0
-    growth_coefficient = (slope_full + gradient_recent) / 2.0
+    if abs(gradient_recent) <= 1e-12:
+        gradient_recent = 0.0
+    if _active_estimator() == SHORT_TREND_ESTIMATOR_LEGACY:
+        growth_coefficient = (slope_full + gradient_recent) / 2.0
+    else:
+        growth_coefficient = step_wols_cubic_slope(analyzer.prices, sample_rate_sec)
     final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
@@ -201,6 +320,11 @@ class IncrementalTrendBuffer:
         self.base_p1 = 0.0
         self.base_p2 = 0.0
         self.y_ref = None
+        # Step-WOLS cubic support: causal medians (kernels 3/5) and, per kernel
+        # (1 = raw), prefix sums of z, J*z, J^2*z with z = filtered - y_ref, J global index.
+        self.med = {3: [], 5: []}
+        self.fq = {k: ([], [], []) for k in _MEDIAN_KERNELS}
+        self.fq_base = {k: [0.0, 0.0, 0.0] for k in _MEDIAN_KERNELS}
 
     def clear(self):
         self.timestamps.clear()
@@ -214,6 +338,12 @@ class IncrementalTrendBuffer:
         self.offset = 0
         self.base_p0 = self.base_p1 = self.base_p2 = 0.0
         self.y_ref = None
+        for lst in self.med.values():
+            lst.clear()
+        for k in _MEDIAN_KERNELS:
+            for lst in self.fq[k]:
+                lst.clear()
+            self.fq_base[k] = [0.0, 0.0, 0.0]
 
     def append(self, price: float, ts_ms: int = 0) -> None:
         if price is None or isinstance(price, bool) or isinstance(ts_ms, bool):
@@ -252,6 +382,80 @@ class IncrementalTrendBuffer:
             self.plr2.append(self.plr2[-1] if i > 0 else 0.0)
         prev_np = self.nonpos[-1] if i > 0 else 0
         self.nonpos.append(prev_np + (1 if y <= 0.0 else 0))
+        for kern in _MEDIAN_KERNELS:
+            if kern == 1:
+                fval = y
+            else:
+                fval = _small_median(self.prices[max(0, i - kern + 1): i + 1])
+                self.med[kern].append(fval)
+            z = fval - self.y_ref
+            q0, q1, q2 = self.fq[kern]
+            if i > 0:
+                b0, b1, b2 = q0[-1], q1[-1], q2[-1]
+            else:
+                b0, b1, b2 = self.fq_base[kern]
+            q0.append(b0 + z)
+            q1.append(b1 + k * z)
+            q2.append(b2 + float(k) * float(k) * z)
+
+    def _filtered(self, kern: int, j: int) -> float:
+        return self.prices[j] if kern == 1 else self.med[kern][j]
+
+    def _fq_range(self, kern: int, lo: int, hi: int):
+        """Return (sum z, sum J*z, sum J^2*z) over buffer indices [lo, hi]."""
+        q0, q1, q2 = self.fq[kern]
+        if lo > 0:
+            b0, b1, b2 = q0[lo - 1], q1[lo - 1], q2[lo - 1]
+        else:
+            b0, b1, b2 = self.fq_base[kern]
+        return q0[hi] - b0, q1[hi] - b1, q2[hi] - b2
+
+    def step_wols_cubic(self, a: int, b: int, sample_rate_sec=None) -> float:
+        """Step-WOLS cubic slope on [a, b] over the slice-local causal median.
+
+        Equals ``step_wols_cubic_slope(prices[a:b+1])``. Slices up to
+        ``_STEP_WOLS_DIRECT_MAX_STEPS`` steps use a direct vectorized dot product on the
+        stored medians (bounded cost, exact); longer slices use O(1) Abel summation
+        on prefix sums, where the large normalizer sum(k^3) makes the prefix
+        cancellation error negligible:
+            sum_{k=1..m} k^3 (f_{a+k} - f_{a+k-1})
+                = m^3 f_b - sum_{r=0..m-1} (3r^2 + 3r + 1) f_{a+r},  m = b - a.
+        The first kernel-1 filtered values are recomputed slice-locally (no lookback
+        before ``a``).
+        """
+        m = b - a
+        if m < 1:
+            return 0.0
+        kern = median_filter_kernel(sample_rate_sec)
+        p = self.prices
+        n_local = min(kern - 1, m + 1) if kern > 1 else 0
+        local_head = [_small_median(p[a: a + r + 1]) for r in range(n_local)]
+        s3 = (0.5 * m * (m + 1)) ** 2
+        power = STEP_WOLS_POWER
+        if m <= _STEP_WOLS_DIRECT_MAX_STEPS or power != 3:
+            src = p if kern == 1 else self.med[kern]
+            f = np.asarray(src[a: b + 1], dtype=np.float64)
+            if n_local:
+                f[:n_local] = local_head
+            w = np.arange(1, m + 1, dtype=np.float64) ** power
+            val = float(np.dot(w, np.diff(f)) / np.sum(w))
+            ref_last = float(f[-1])
+        else:
+            y_ref = self.y_ref if self.y_ref is not None else 0.0
+            c = float(self.offset + a)
+            a0, a1, a2 = self._fq_range(kern, a, b - 1)
+            sum_r2 = a2 - 2.0 * c * a1 + c * c * a0
+            sum_r1 = a1 - c * a0
+            m3 = float(m) ** 3
+            total = m3 * (self._filtered(kern, b) - y_ref) - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
+            for r in range(n_local):
+                delta = local_head[r] - self._filtered(kern, a + r)
+                if delta:
+                    total -= (3.0 * r * r + 3.0 * r + 1.0) * delta
+            val = float(total / s3)
+            ref_last = self._filtered(kern, b)
+        tol = 1e-10 * max(1.0, abs(ref_last))
+        return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
 
     def _rebase(self) -> None:
         if not self.prices:
@@ -281,6 +485,14 @@ class IncrementalTrendBuffer:
         self.base_p0 = self.p0[idx - 1]
         self.base_p1 = self.p1[idx - 1]
         self.base_p2 = self.p2[idx - 1]
+        for kern in _MEDIAN_KERNELS:
+            q0, q1, q2 = self.fq[kern]
+            self.fq_base[kern] = [q0[idx - 1], q1[idx - 1], q2[idx - 1]]
+            del q0[:idx]
+            del q1[:idx]
+            del q2[:idx]
+        for lst in self.med.values():
+            del lst[:idx]
         del self.timestamps[:idx]
         del self.prices[:idx]
         del self.p0[:idx]
@@ -394,7 +606,11 @@ class IncrementalTrendBuffer:
         if abs(gradient_recent) <= 1e-12:
             gradient_recent = 0.0
 
-        growth_coefficient = float((slope_full + gradient_recent) / 2.0)
+        growth_coefficient = (
+            float((slope_full + gradient_recent) / 2.0)
+            if _active_estimator() == SHORT_TREND_ESTIMATOR_LEGACY
+            else self.step_wols_cubic(a, b, sample_rate_sec)
+        )
         final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
 
         if n < 3:
@@ -485,13 +701,33 @@ class PriceWindow:
         self._trend_buf = IncrementalTrendBuffer()
         self.prices = _PriceDeque(maxlen=self.window_size)
         self.prices._trend_buf = self._trend_buf
-        self.sorted_prices = []
+        self._sorted_prices_cache = []
+        self._sorted_prices_dirty = False
         self._cached_eval_key = None
         self._cached_eval_val = None
 
         if initial_prices:
             for price in initial_prices[-self.window_size:]:
                 self.process_price(price)
+
+    @property
+    def sorted_prices(self):
+        """Lazily materialize sorted prices only when min/max queries require them."""
+        with self._lock:
+            if (
+                self._sorted_prices_dirty
+                or self._sorted_prices_cache is None
+                or len(self._sorted_prices_cache) != len(self.prices)
+            ):
+                self._sorted_prices_cache = sorted(self.prices)
+                self._sorted_prices_dirty = False
+            return self._sorted_prices_cache
+
+    @sorted_prices.setter
+    def sorted_prices(self, value):
+        with self._lock:
+            self._sorted_prices_cache = list(value) if value is not None else []
+            self._sorted_prices_dirty = False
 
     @property
     def recent_n(self) -> int:
@@ -528,17 +764,9 @@ class PriceWindow:
                 self.prices._maxlen = new_size
                 if len(self.prices) > new_size:
                     drop = len(self.prices) - new_size
-                    if drop <= 64 and len(self.sorted_prices) == len(self.prices):
-                        for _ in range(drop):
-                            oldest_price = self.prices.popleft()
-                            idx = bisect_left(self.sorted_prices, oldest_price)
-                            if idx < len(self.sorted_prices) and self.sorted_prices[idx] == oldest_price:
-                                del self.sorted_prices[idx]
-                    else:
-                        kept = list(self.prices)[-new_size:]
-                        self.prices.clear()
-                        self.prices.extend(kept)
-                        self.sorted_prices = sorted(kept)
+                    for _ in range(drop):
+                        self.prices.popleft()
+                    self._sorted_prices_dirty = True
                     if len(self._trend_buf.prices) - new_size >= max(512, new_size):
                         self._trend_buf.trim_front(len(self._trend_buf.prices) - new_size)
 
@@ -628,23 +856,14 @@ class PriceWindow:
         if not isinstance(price, (int, float)):
             price = price_f
         with self._lock:
-            if len(self.prices) >= self.window_size:
-                while len(self.prices) >= self.window_size:
-                    oldest_price = self.prices.popleft()
-                    index = bisect_left(self.sorted_prices, oldest_price)
-                    if index < len(self.sorted_prices) and self.sorted_prices[index] == oldest_price:
-                        del self.sorted_prices[index]
-                    else:
-                        print("HAHAHAHAA")
+            while len(self.prices) >= self.window_size:
+                self.prices.popleft()
 
             self.prices.append(price)
-            insort(self.sorted_prices, price)
+            self._sorted_prices_dirty = True
             self._trend_buf.append(price)
             if len(self._trend_buf.prices) - len(self.prices) >= max(512, self.window_size):
                 self._trend_buf.trim_front(len(self._trend_buf.prices) - len(self.prices))
-
-            if len(self.sorted_prices) != len(self.prices):
-                print("XXXXXXXXXXXXXXXXXXX")
 
     def get_newest_index(self):
         return len(self.prices) - 1 if self.prices else None
@@ -796,7 +1015,8 @@ class PriceWindow:
                 and self._trend_buf.prices[blen - n] == self.prices[0]
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
-                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds)
+                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
+                       _active_estimator())
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     return float(k_val * self._cached_eval_val[4])
                 res = self._trend_buf.eval_slice(
@@ -826,7 +1046,8 @@ class PriceWindow:
                 blen >= n
                 and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
             ):
-                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds)
+                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
+                       _active_estimator())
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
                 else:
@@ -935,46 +1156,48 @@ class WindowAnalyzer:
     def calculate_acceleration(self, window_sec: float = 90.0) -> tuple[float, float]:
         return self.window.calculate_acceleration(window_sec)
 
-    def calculate_slope_max_min(self):
-        w = self.window
-        if len(w.sorted_prices) < 2:
-            return 0
-        min_price, min_index = w.get_min_and_index()
-        max_price, max_index = w.get_max_and_index()
-        if min_price is None or max_price is None or max_index == min_index:
-            return 0
-        return (max_price - min_price) / (max_index - min_index)
-
-    def calculate_proximities(self, current_price):
-        if current_price is None or isinstance(current_price, bool):
-            return 0, 0
-        try:
-            cp = float(current_price)
-        except (TypeError, ValueError, OverflowError):
-            return 0, 0
-        if not math.isfinite(cp):
-            return 0, 0
-        w = self.window
-        min_price, _ = w.get_min_and_index()
-        max_price, _ = w.get_max_and_index()
-        if min_price is None or max_price is None or max_price == min_price:
-            return 0, 0
-        min_proximity = (cp - min_price) / (max_price - min_price)
-        max_proximity = (max_price - cp) / (max_price - min_price)
-        if not (math.isfinite(min_proximity) and math.isfinite(max_proximity)):
-            return 0, 0
-        return max(min_proximity, 0), max(max_proximity, 0)
-
-    def calculate_positions(self):
-        w = self.window
-        min_price, min_index = w.get_min_and_index()
-        max_price, max_index = w.get_max_and_index()
-        win_size = getattr(w, "window_size", 0)
-        if isinstance(win_size, bool) or not isinstance(win_size, (int, float)) or not math.isfinite(win_size) or win_size <= 0:
-            return None, None
-        min_position = min_index / win_size if min_index is not None else None
-        max_position = max_index / win_size if max_index is not None else None
-        return min_position, max_position
+    # ── [DEPRECATED / REFERENCE ONLY — DO NOT CALL (SSOT: PriceWindow.get_short_trend)] ──
+    # Preserved for historical reference only; must not be invoked by production or test code.
+    # def calculate_slope_max_min(self):
+    #     w = self.window
+    #     if len(w.sorted_prices) < 2:
+    #         return 0
+    #     min_price, min_index = w.get_min_and_index()
+    #     max_price, max_index = w.get_max_and_index()
+    #     if min_price is None or max_price is None or max_index == min_index:
+    #         return 0
+    #     return (max_price - min_price) / (max_index - min_index)
+    #
+    # def calculate_proximities(self, current_price):
+    #     if current_price is None or isinstance(current_price, bool):
+    #         return 0, 0
+    #     try:
+    #         cp = float(current_price)
+    #     except (TypeError, ValueError, OverflowError):
+    #         return 0, 0
+    #     if not math.isfinite(cp):
+    #         return 0, 0
+    #     w = self.window
+    #     min_price, _ = w.get_min_and_index()
+    #     max_price, _ = w.get_max_and_index()
+    #     if min_price is None or max_price is None or max_price == min_price:
+    #         return 0, 0
+    #     min_proximity = (cp - min_price) / (max_price - min_price)
+    #     max_proximity = (max_price - cp) / (max_price - min_price)
+    #     if not (math.isfinite(min_proximity) and math.isfinite(max_proximity)):
+    #         return 0, 0
+    #     return max(min_proximity, 0), max(max_proximity, 0)
+    #
+    # def calculate_positions(self):
+    #     w = self.window
+    #     min_price, min_index = w.get_min_and_index()
+    #     max_price, max_index = w.get_max_and_index()
+    #     win_size = getattr(w, "window_size", 0)
+    #     if isinstance(win_size, bool) or not isinstance(win_size, (int, float)) or not math.isfinite(win_size) or win_size <= 0:
+    #         return None, None
+    #     min_position = min_index / win_size if min_index is not None else None
+    #     max_position = max_index / win_size if max_index is not None else None
+    #     return min_position, max_position
 
     def check_price_change(self, threshold):
         if threshold is None or isinstance(threshold, bool):
@@ -1010,113 +1233,17 @@ class WindowAnalyzer:
             return -price_diff_newest if price_diff_max > price_diff_min else price_diff_newest, 0
         return 0, 0
 
-    def _analyze_price_movement(self, min_price, min_index, max_price, max_index,
-                                newest_price, newest_index, price_diff):
-        # Retain the earlier complex logic for possible future development.
-        price_diff_min = u.calculate_difference_percent(min_price, newest_price)
-        price_diff_max = u.calculate_difference_percent(max_price, newest_price)
-        grow = price_diff_max < price_diff_min
-
-        slope_min = u.slope(min_price, min_index, newest_price, newest_index)
-        slope_max = u.slope(max_price, max_index, newest_price, newest_index)
-        slope_max_min = slope_max if abs(slope_max) > abs(slope_min) else slope_min
-        print(f"retun1 {slope_max_min}, {price_diff}")
-        return slope_max_min, price_diff
-
-        # Intentionally preserved legacy code below.
-        diff_min_max_close = u.are_close(price_diff_max, price_diff_min, 1.0)
-        if diff_min_max_close:
-            if min_index < max_index:
-                grow = 1
-                print(f"retun2 {-slope_max}, {price_diff}")
-                return -slope_max, price_diff
-            else:
-                grow = 0
-                print(f"retun3 {slope_min}, {price_diff}")
-                return slope_min, price_diff
-
-        min_position, max_position = self.calculate_positions()
-        min_loc = 1
-        if min_position < 0.3 or u.are_close(min_position, 0.3):
-            min_loc = 0
-        if min_position > 0.7 or u.are_close(min_position, 0.7):
-            min_loc = 2
-
-        max_loc = 1
-        if max_position > 0.7 or u.are_close(max_position, 0.7):
-            max_loc = 2
-        if max_position < 0.3 or u.are_close(max_position, 0.3):
-            max_loc = 0
-
-        if grow:
-            if min_loc == 0:
-                return slope_min, price_diff
-            if min_loc == 1 and max_loc == 2:
-                return slope_max_min, price_diff
-            else:
-                print("OUTLIER!! but can indicate something will come!!!")
-        else:
-            if min_loc == 2:
-                return slope_max, price_diff
-            if min_loc == 1 and max_loc == 0:
-                return slope_max_min, price_diff
-            else:
-                print("OUTLIER!! but can indicate something will come!!!")
-
-        return 0, 1
-
-    def evaluate_buy_sell_opportunity(self, current_price, threshold_percent=1, decrease_percent=3.7):
-        if current_price is None or isinstance(current_price, bool):
-            return 'HOLD', 0.0, 0.0, 0.0
-        try:
-            current_price = float(current_price)
-        except (TypeError, ValueError, OverflowError):
-            return 'HOLD', 0.0, 0.0, 0.0
-        if not (math.isfinite(current_price) and current_price > 0):
-            return 'HOLD', 0.0, 0.0, 0.0
-        thresh_val = 1.0
-        if threshold_percent is not None and not isinstance(threshold_percent, bool):
-            try:
-                tf = float(threshold_percent)
-                if math.isfinite(tf):
-                    thresh_val = tf
-            except (TypeError, ValueError, OverflowError):
-                thresh_val = 1.0
-        threshold_percent = thresh_val
-        dec_val = 3.7
-        if decrease_percent is not None and not isinstance(decrease_percent, bool):
-            try:
-                df = float(decrease_percent)
-                if math.isfinite(df):
-                    dec_val = df
-            except (TypeError, ValueError, OverflowError):
-                dec_val = 3.7
-        decrease_percent = dec_val
-        w = self.window
-        slope = self.calculate_slope_max_min()
-        min_price, min_index = w.get_min_and_index()
-        max_price, max_index = w.get_max_and_index()
-        print(f"Min price: {min_price} at index: {min_index} Max price: {max_price} at index: {max_index}")
-
-        price_change_percent = (max_price - min_price) / min_price * 100 if min_price and max_price else 0
-        print(f"Price change percent: {price_change_percent:.2f} slope: {slope:.4f} "
-              f"Market trending: {'upwards' if slope > 0 else 'downwards'}")
-
-        if price_change_percent < threshold_percent and not u.are_close(price_change_percent, threshold_percent):
-            return 'HOLD', current_price, price_change_percent, slope
-
-        min_position, max_position = self.calculate_positions()
-        if min_position is None or max_position is None:
-            return 'HOLD', current_price, price_change_percent, slope
-        if slope > 0:
-            if max_position > 0.8 or u.are_close(max_position, 0.8, target_tolerance_percent=1.0):
-                proposed_price = current_price * 0.995
-                return 'BUY', proposed_price, price_change_percent, slope
-        else:
-            if min_position < 0.2 or u.are_close(min_position, 0.2, target_tolerance_percent=1.0):
-                proposed_price = current_price * 1.005
-                return 'SELL', proposed_price, price_change_percent, slope
-
-        remaining_decrease_percent = max(0, decrease_percent - price_change_percent)
-        proposed_price = current_price * (1 - remaining_decrease_percent / 100)
-        return 'BUY', proposed_price, price_change_percent, slope
+    # ── [DEPRECATED / REFERENCE ONLY — DO NOT CALL (SSOT: PriceWindow.get_short_trend)] ──
+    # Preserved for historical reference only; must not be invoked by production or test code.
+    # def _analyze_price_movement(self, min_price, min_index, max_price, max_index,
+    #                             newest_price, newest_index, price_diff):
+    #     price_diff_min = u.calculate_difference_percent(min_price, newest_price)
+    #     price_diff_max = u.calculate_difference_percent(max_price, newest_price)
+    #     grow = price_diff_max < price_diff_min
+    #     slope_min = u.slope(min_price, min_index, newest_price, newest_index)
+    #     slope_max = u.slope(max_price, max_index, newest_price, newest_index)
+    #     slope_max_min = slope_max if abs(slope_max) > abs(slope_min) else slope_min
+    #     return slope_max_min, price_diff
+    #
+    # def evaluate_buy_sell_opportunity(self, current_price, threshold_percent=1, decrease_percent=3.7):
+    #     pass

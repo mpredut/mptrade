@@ -281,6 +281,15 @@ def load_ticks_history(symbol, start_ts, end_ts):
     """Reads cache_sparse_price_{symbol}.jsonl — a long history, SPARSE."""
     path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
     if not os.path.exists(path):
+        try:
+            import cachepaths
+            for legacy_path in cachepaths.legacy_filenames_for(path):
+                if os.path.exists(legacy_path):
+                    path = legacy_path
+                    break
+        except Exception:
+            pass
+    if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
     yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
 
@@ -292,7 +301,27 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         path = filename
     else:
         path = os.path.join(ROOT, "cachedb", f"cache_24_price_{symbol}.json")
+        if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
+            alt_jsonl = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
+            try:
+                import cachepaths
+                for cand in (alt_jsonl, *cachepaths.legacy_filenames_for(alt_jsonl)):
+                    if os.path.exists(cand):
+                        path = cand
+                        break
+            except Exception:
+                if os.path.exists(alt_jsonl):
+                    path = alt_jsonl
     if str(path).endswith(".jsonl"):
+        if not os.path.exists(path):
+            try:
+                import cachepaths
+                for legacy_path in cachepaths.legacy_filenames_for(path):
+                    if os.path.exists(legacy_path):
+                        path = legacy_path
+                        break
+            except Exception:
+                pass
         if not os.path.exists(path):
             raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
         yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
@@ -321,15 +350,9 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
 
 
 def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=None, quiet=False,
-                 kalman_primary=False, threshold_provider=None, trend_gate_timeout_sec=None,
+                 kalman_primary=False, trend_gate_timeout_sec=None,
                  trend_gate_max_wait_sec=3600.0):
-    """threshold_provider is OPTIONAL (default None = the OLD behaviour, unchanged:
-    uses the fixed ta.PRICE_CHANGE_THRESHOLD_EUR/_BIG_EUR). If given, it is a callable
-    threshold_provider(window_small, window_big) -> (thr_small, thr_big), called on
-    EVERY tick BEFORE check_price_change() — that way an experiment can test
-    DYNAMIC thresholds (e.g. adaptive on volatility) without copying the whole loop
-    (23 Jul: offline/research/tradeall_adaptive_thresholds/ had done exactly that before, with
-    the risk that its own loop would silently diverge from this, the "official" one, over time)."""
+    """Run offline replay backtest for tradeall.py on historical or dense cache24 ticks."""
     safe_run_id = str(run_id or "").strip().replace("/", "_").replace("\\", "_")
     if not safe_run_id or safe_run_id in (".", ".."):
         raise ValueError(f"Invalid run_id: {run_id!r}")
@@ -442,7 +465,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         prev_ktrend = 0
         state_interval = 5000 if speed == "fast" else 100
         last_state = None
-        slope = slope_big = gradient = _gr = 0.0
+        slope = slope_big = gradient = _gc = _sf = _gr = 0.0
         fast_kalman_only = bool(kalman_primary and speed == "fast" and quiet)
         with open(price_path, "a", encoding="utf-8") as price_f, \
              open(broker.path, "a", encoding="utf-8") as outcome_f, \
@@ -467,10 +490,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 price_f.write(f"{ts}|{symbol}|{price}\n")
     
                 if not fast_kalman_only:
-                    if threshold_provider is not None:
-                        thr_small, thr_big = threshold_provider(window_small, window_big)
-                    else:
-                        thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
+                    thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
     
                     slope, _pos = analyzer_small.check_price_change(thr_small)
                     gradient, _gc, _sf, _gr = window_small.get_short_trend()
@@ -520,6 +540,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     try:
                         last_state = {symbol: {
                             "current_price": price, "final_trend": gradient,
+                            "growth_coefficient": _gc, "slope_full": _sf,
                             "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
                             "epsilon": window_small.get_noise_epsilon(), "ts": ts,
                             **shadow_fields,
@@ -537,19 +558,17 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             try:
                 if fast_kalman_only:
                     slope, _ = analyzer_small.check_price_change(ta.PRICE_CHANGE_THRESHOLD_EUR)
-                    gradient, _, _, _gr = window_small.get_short_trend()
+                    gradient, _gc, _sf, _gr = window_small.get_short_trend()
                     slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
                 if not shadow.compute_vol and shadow_fields:
                     v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
-                    adapt_re, adapt_dca = shadow_signals.adaptive_thresholds(v1h)
                     shadow_fields = {
                         **shadow_fields,
                         "vol_1h_pct": v1h,
-                        "adapt_reentry_pct": adapt_re,
-                        "adapt_dca_pct": adapt_dca,
                     }
                 last_state = {symbol: {
                     "current_price": price, "final_trend": gradient,
+                    "growth_coefficient": _gc, "slope_full": _sf,
                     "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
                     "epsilon": window_small.get_noise_epsilon(), "ts": ts,
                     **shadow_fields,

@@ -374,6 +374,9 @@ class HLClient:
 
     def funding_rate(self, coin: str) -> float | None:
         """Return the current hourly perpetual funding rate; positive means longs pay shorts."""
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return None
+        coin = coin.strip()
         try:
             meta, ctxs = self.info.meta_and_asset_ctxs()
             universe = (meta.get("universe") or []) if isinstance(meta, dict) else []
@@ -382,9 +385,9 @@ class HLClient:
             for i, a in enumerate(universe):
                 if isinstance(a, dict) and a.get("name") == coin and i < len(ctxs) and isinstance(ctxs[i], dict):
                     raw_f = ctxs[i].get("funding")
-                    if isinstance(raw_f, bool):
+                    if raw_f is None or isinstance(raw_f, bool):
                         return None
-                    rate = float(raw_f or 0.0)
+                    rate = float(raw_f)
                     return rate if math.isfinite(rate) else None
         except Exception as e:  # noqa: BLE001
             log(f"  ! funding_rate({coin}) failed: {e}")
@@ -392,6 +395,9 @@ class HLClient:
 
     def position_full(self, coin: str) -> dict | None:
         """Return the complete perpetual position including szi, entryPx, liquidationPx, and PnL."""
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return None
+        coin = coin.strip()
         try:
             for ap in (self._user_state().get("assetPositions") or []):
                 if not isinstance(ap, dict):

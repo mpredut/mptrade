@@ -801,8 +801,10 @@ def format_state_text(entry, header, pending=None, exposure=None):
         except (TypeError, ValueError):
             v1h_f = float("nan")
         if math.isfinite(v1h_f):
-            text += (f"\nvol 1h:    {v1h_f:.2f}% → re:{entry.get('adapt_reentry_pct', '?')}% "
-                     f"dca:{entry.get('adapt_dca_pct', '?')}%")
+            text += f"\nvol 1h:    {v1h_f:.2f}%"
+            if entry.get("adapt_reentry_pct") is not None or entry.get("adapt_dca_pct") is not None:
+                text += (f" → re:{entry.get('adapt_reentry_pct', '?')}% "
+                         f"dca:{entry.get('adapt_dca_pct', '?')}%")
     if pending:
         text += f"\npending:   {pending}"
     if exposure:

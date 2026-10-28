@@ -187,28 +187,13 @@ CacheLongTrend = CacheLongTrendManager
 
 def _short_trend_symbol_variants(symbol) -> list:
     """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
-    if not isinstance(symbol, str):
-        return [symbol]
-    raw = symbol.strip().upper()
-    if not raw:
-        return [symbol]
-    cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
-    if cleaned == "USDCUSDT":
-        out = [symbol]
-        for cand in (raw, cleaned):
-            if cand and cand not in out:
-                out.append(cand)
-        return out
-    base = cleaned
-    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD", "RON", "GBP"):
-        if base.endswith(quote) and len(base) > len(quote):
-            base = base[: -len(quote)]
-            break
-    out = [symbol]
-    for cand in (raw, cleaned, f"{base}USDC", f"{base}USDT", f"{base}USD", base):
-        if cand and cand not in out:
-            out.append(cand)
-    return out
+    from cachepaths import cache_symbol_variants
+    return cache_symbol_variants(
+        symbol,
+        include_original=True,
+        include_base=True,
+        quotes=("USDC", "USDT", "USD"),
+    )
 
 
 class CacheShortTrendManager(CacheManagerInterface):
@@ -222,6 +207,7 @@ class CacheShortTrendManager(CacheManagerInterface):
     """
 
     EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
+    UPWARD_EPSILON_K  = 0.25    # Minimum growth_coefficient / epsilon ratio to confirm upward trend above noise.
     FAVORABLE_REL_EPS = 1e-5    # Price-relative fallback when epsilon is absent.
     TREND_STALE_SEC   = 15.0    # Do not delay based on older snapshots.
     # Percentage thresholds are scale-invariant and configurable per window or symbol.
@@ -583,18 +569,14 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         w_big = wins.get(self.window_seconds[-1])
         v1h = None
-        adapt_re = None
-        adapt_dca = None
         if w_big is not None:
             try:
                 from intelligence.internal.state.volatility import (
-                    adaptive_thresholds,
                     calculate_volatility_1h,
                 )
                 v1h = calculate_volatility_1h(
                     list(w_big.prices), w_big.sample_rate_sec
                 )
-                adapt_re, adapt_dca = adaptive_thresholds(v1h)
             except Exception:
                 pass
 
@@ -608,12 +590,9 @@ class CacheShortTrendManager(CacheManagerInterface):
             slope_small=slopes[self.window_seconds[0]],     # Smallest.
             slope_big=slopes[self.window_seconds[-1]],      # Largest.
             slopes={f"{int(s)}": v for s, v in slopes.items()},
-            slope_max_min=pan.calculate_slope_max_min(),
             pos=primary_pos,
             epsilon=eps_primary,
             vol_1h_pct=v1h,
-            adapt_reentry_pct=adapt_re,
-            adapt_dca_pct=adapt_dca,
             current_price=current_price,
             ts=observed_at,
             dynamic=published_dyn,
@@ -1318,7 +1297,9 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     @staticmethod
     def _eval_upward_formula(data) -> bool:
-        """Single canonical upward-trend formula (SSOT) aligned with should_wait (GT_S): growth_coefficient > 0."""
+        """Single canonical upward-trend formula (SSOT) aligned with should_wait (GT_S):
+        growth_coefficient > UPWARD_EPSILON_K * epsilon (when epsilon > 0).
+        """
         if not isinstance(data, dict):
             return False
         for key in (
@@ -1326,6 +1307,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             "gradient_recent",
             "slope_small",
             "final_trend",
+            "epsilon",
         ):
             val = data.get(key)
             if val is None:
@@ -1339,12 +1321,18 @@ class CacheShortTrendManager(CacheManagerInterface):
             if not math.isfinite(fval):
                 return False
 
+        raw_eps = data.get("epsilon")
+        eps = float(raw_eps) if raw_eps is not None and float(raw_eps) > 0.0 else 0.0
+        noise_floor = eps * CacheShortTrendManager.UPWARD_EPSILON_K
+
         raw_gc = data.get("growth_coefficient")
         if raw_gc is not None:
             gc = float(raw_gc)
+            if gc != 0.0:
+                return gc > noise_floor
             raw_ft = data.get("final_trend", 0.0)
             ft = float(0.0 if raw_ft is None else raw_ft)
-            return gc > 0 or (gc == 0 and ft > 0)
+            return eps == 0.0 and ft > 0
 
         raw_slope = data.get("gradient_recent")
         if raw_slope is None:
@@ -1352,7 +1340,9 @@ class CacheShortTrendManager(CacheManagerInterface):
         raw_gradient = data.get("final_trend", 0.0)
         slope = float(0.0 if raw_slope is None else raw_slope)
         gradient = float(0.0 if raw_gradient is None else raw_gradient)
-        return slope > 0 or (slope == 0 and gradient > 0)
+        if slope != 0.0:
+            return slope > noise_floor
+        return eps == 0.0 and gradient > 0
 
     def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
         """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""

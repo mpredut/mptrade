@@ -50,7 +50,7 @@ def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
         return bool(raw_armed) if math.isfinite(raw_armed) else default
     if isinstance(raw_armed, str):
         s = raw_armed.strip().lower()
-        if s in {"1", "true", "yes", "on", "y", "t"}:
+        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
             return False
