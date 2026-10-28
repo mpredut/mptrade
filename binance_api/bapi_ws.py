@@ -29,6 +29,7 @@ from typing import Dict, Optional, Set, Callable
 
 import symbols as sym
 import utils as u
+from botcore import _parse_bool_flag, safe_float
 
 try:
     from keys.apikeys import api_key_ws
@@ -62,35 +63,12 @@ class _Cmd:
 
 
 def _as_bool(value, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
-        return bool(default)
-    if isinstance(value, (int, float)):
-        try:
-            f = float(value)
-        except (TypeError, ValueError, OverflowError):
-            return bool(default)
-        if not math.isfinite(f):
-            return bool(default)
-        return f != 0.0
-    s = str(value).strip().lower()
-    if s in {"1", "1.0", "true", "yes", "on"}:
-        return True
-    if s in {"0", "0.0", "false", "no", "off", ""}:
-        return False
-    return bool(default)
+    return _parse_bool_flag(value, default=bool(default))
 
 
 def _sanitize_timeout(timeout, default: float = WS_STOP_TIMEOUT) -> float:
-    if timeout is not None and not isinstance(timeout, bool):
-        try:
-            t_f = float(timeout)
-            if math.isfinite(t_f) and t_f >= 0.0:
-                return t_f
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return float(default)
+    t_f = safe_float(timeout, default=default)
+    return t_f if t_f >= 0.0 else float(default)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

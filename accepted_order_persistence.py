@@ -7,6 +7,7 @@ import time
 
 import alertnotifiers as alert
 from botcore import load_dotenv, required_float_env, required_int_env
+from providers.base import _clean_single_order_id as _clean_id
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -27,27 +28,6 @@ if (not math.isfinite(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
         "and <= 5")
 
 
-_INVALID_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
-
-
-def _clean_id(val) -> str | None:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, (int, float)):
-        if not math.isfinite(val) or val <= 0:
-            return None
-        if isinstance(val, float) and val.is_integer():
-            val = int(val)
-    s = str(val).strip()
-    if s.lower() in _INVALID_ID_STRINGS:
-        return None
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-        s = s[:-2]
-    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
-        return None
-    if s.startswith("+") and s[1:].isdigit():
-        s = s[1:]
-    return s if s and s.lower() not in _INVALID_ID_STRINGS else None
 
 
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:

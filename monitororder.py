@@ -16,12 +16,14 @@ from binance_api import bapi as api
 from binance_api import bapi_placeorder as po
 from binance_api import order_id_context as rc
 from providers.base import (
+    _clean_single_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_remaining_qty,
     extract_timestamp_s,
 )
+from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
@@ -47,33 +49,9 @@ MODULE_ORDER_TTLS = {
 }
 
 
-_INVALID_MONITOR_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
-
-
 def _clean_monitor_id(val) -> str:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return ""
-    cleaned = extract_order_id(val, default="") or ""
-    s = cleaned.strip()
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-        s = s[:-2]
-    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
-        return ""
-    if s.startswith("+") and s[1:].isdigit():
-        s = s[1:]
-    if s.lower() in _INVALID_MONITOR_ID_STRINGS:
-        return ""
-    return s
-
-
-def _safe_pos_float(val, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) and f >= 0.0 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+    cleaned = _clean_single_order_id(val)
+    return cleaned if cleaned is not None else ""
 
 
 def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_ttl_map=None) -> float:

@@ -19,6 +19,7 @@ import time
 import math
 import json
 from botcore import _parse_bool_flag, parse_dotenv
+from intelligence.macro_sentiment_ssot import safe_pos_float as _clean_pos_float
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
@@ -527,16 +528,6 @@ def symbol_regime(
         return resolution.decision
     except Exception:
         return svc.evaluator.unknown("regime_resolution_failed")
-
-
-def _clean_pos_float(val: Any, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if (math.isfinite(f) and f > 0.0) else default
-    except (TypeError, ValueError):
-        return default
 
 
 def symbol_regime_context(

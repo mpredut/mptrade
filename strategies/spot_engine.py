@@ -23,6 +23,7 @@ from botcore import (
     required_float_env, required_int_env, required_bool_env, safe_float,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
+from providers.base import _clean_single_order_id
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError, StrategyExecutor
 from order_retry import (
@@ -71,35 +72,7 @@ def _clean_finite_float(val: object) -> float | None:
     return safe_float(val, default=None)
 
 
-def _clean_order_id(val: object) -> str | None:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, int):
-        return str(val) if val > 0 else None
-    if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0 or not val.is_integer():
-            return None
-        return str(int(val))
-    text = str(val).strip()
-    if (
-        not text
-        or text.startswith("-")
-        or text.lower() in {"nan", "none", "null", "inf", "-inf", "+inf", "0", "0.0", "-0", "+0", "-0.0", "+0.0"}
-    ):
-        return None
-    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
-        text = text[:-2]
-    if text.startswith("+") and text[1:].isdigit():
-        text = text[1:]
-    if text.isdigit():
-        return str(int(text)) if int(text) > 0 else None
-    try:
-        f = float(text)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return text
+_clean_order_id = _clean_single_order_id
 
 
 def state_path_for(pair: str, state_dir: str | None = None) -> str:

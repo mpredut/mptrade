@@ -27,13 +27,8 @@ def _read_properties_file(path: str) -> dict:
         out = {}
         for k, v in raw.items():
             if isinstance(v, str):
-                low = v.strip().lower()
-                if low in ("true", "1", "yes", "on", "y", "t"):
-                    out[k] = True
-                elif low in ("false", "0", "no", "off", "n", "f"):
-                    out[k] = False
-                else:
-                    out[k] = v
+                b = _parse_bool_flag(v, default=None)
+                out[k] = b if b is not None else v
             else:
                 out[k] = v
         return out

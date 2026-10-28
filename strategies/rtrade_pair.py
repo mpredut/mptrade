@@ -14,64 +14,12 @@ import uuid
 from typing import Callable, Optional, Protocol
 
 from botcore import _parse_bool_flag
+from providers.base import _clean_single_order_id
 
 
 _MAX_LIMIT_REVISION = 1_000_000
-_INVALID_PAIR_IDS = {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "none", "null", "inf", "-inf", "+inf"}
-
-
-def _clean_pair_id(val: object) -> Optional[str]:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, int):
-        return str(val) if val > 0 else None
-    if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0 or not val.is_integer():
-            return None
-        return str(int(val))
-    text = str(val).strip()
-    if text.lower() in _INVALID_PAIR_IDS or text.startswith("-"):
-        return None
-    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
-        text = text[:-2]
-    if text.startswith("+") and text[1:].isdigit():
-        text = text[1:]
-    if text.isdigit():
-        return str(int(text)) if int(text) > 0 else None
-    try:
-        f = float(text)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return text if text and text.lower() not in _INVALID_PAIR_IDS else None
-
-
-def _clean_ticket_order_id(val: object) -> Optional[str]:
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, int):
-        return str(val) if val > 0 else None
-    if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0 or not val.is_integer():
-            return None
-        return str(int(val))
-    text = str(val).strip()
-    if not text or text.startswith("-") or text.lower() in _INVALID_PAIR_IDS:
-        return None
-    if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
-        text = text[:-2]
-    if text.startswith("+") and text[1:].isdigit():
-        text = text[1:]
-    if text.isdigit():
-        return str(int(text)) if int(text) > 0 else None
-    try:
-        f = float(text)
-        if not math.isfinite(f) or f <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return text
+_clean_pair_id = _clean_single_order_id
+_clean_ticket_order_id = _clean_single_order_id
 
 
 @dataclass

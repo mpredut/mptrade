@@ -17,7 +17,7 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env
+    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
     import os as _os
@@ -28,7 +28,14 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env
+    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float
+
+from providers.base import _clean_single_order_id
+
+
+def _clean_nonneg(val: object, default: float) -> float:
+    f = safe_float(val, default=default)
+    return f if f is not None and f >= 0.0 else default
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -61,23 +68,14 @@ class T212Client:
         self._last_order = 0.0
         self._backoff_until = 0.0
         self._fetch_fail: dict[str, float] = {}
-        def _clean_nonneg(val: object, default: float) -> float:
-            if isinstance(val, bool) or val is None:
-                return default
-            try:
-                f = float(val)
-            except (TypeError, ValueError, OverflowError):
-                return default
-            return f if (math.isfinite(f) and f >= 0.0) else default
-
-        self._min_gap = _clean_nonneg(
-            required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec,
-            0.0,
+        min_gap_val = safe_float(
+            required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec, 0.0
         )
-        self._order_min_gap = _clean_nonneg(
-            required_float_env("T212_ORDER_MIN_GAP_SEC") if order_min_gap_sec is None else order_min_gap_sec,
-            0.0,
+        self._min_gap = min_gap_val if min_gap_val is not None and min_gap_val >= 0.0 else 0.0
+        ord_gap_val = safe_float(
+            required_float_env("T212_ORDER_MIN_GAP_SEC") if order_min_gap_sec is None else order_min_gap_sec, 0.0
         )
+        self._order_min_gap = ord_gap_val if ord_gap_val is not None and ord_gap_val >= 0.0 else 0.0
         # Brief shared account-level caches coalesce redundant per-asset thread
         # reads. A six-second TTL stays above the approximate five-second limits
         # on portfolio and order endpoints.
@@ -294,26 +292,7 @@ class T212Client:
 
     @staticmethod
     def _clean_order_id(order_id: object) -> str | None:
-        if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set, frozenset)):
-            return None
-        if isinstance(order_id, float):
-            if not math.isfinite(order_id) or not order_id.is_integer():
-                return None
-            order_id = int(order_id)
-        if isinstance(order_id, int) and order_id <= 0:
-            return None
-        if not isinstance(order_id, (str, int)):
-            return None
-        s = str(order_id).strip()
-        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-            s = s[:-2]
-        if not s or s.lower() in {"0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "inf", "-inf", "+inf", "none", "null"}:
-            return None
-        if s.lstrip("+-").isdigit() and int(s) <= 0:
-            return None
-        if s.startswith("+") and s[1:].isdigit():
-            s = s[1:]
-        return s
+        return _clean_single_order_id(order_id)
 
     def get_historical_order(self, order_id) -> dict | None:
         """Find a terminal order in the first history page.

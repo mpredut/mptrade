@@ -17,6 +17,7 @@ import utils as u
 import symbols as sym
 from botcore import (_parse_bool_flag, load_dotenv as _load_dotenv, required_bool_env,
                      required_int_env)
+from intelligence.macro_sentiment_ssot import safe_pos_float as _clean_pos_float
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -166,16 +167,6 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
     for i in range(window - 1, len(prices)):
         wma[i] = np.sum(prices[i - window + 1:i + 1] * weights) / weight_sum
     return wma
-
-
-def _clean_pos_float(val, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) and f > 0.0 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 # Weighted moving average (WMA).
