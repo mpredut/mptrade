@@ -87,7 +87,6 @@ def _variants(interval: int):
 
 def _fetch_with_ts(_pair: str, interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm candles")
-    import math
     _hlc_mod = sys.modules.get("hl_client")
     _hlc_file = getattr(_hlc_mod, "__file__", None) if _hlc_mod is not None else None
     if _hlc_mod is None or (isinstance(_hlc_file, str) and os.path.dirname(os.path.abspath(_hlc_file)) != HERE):

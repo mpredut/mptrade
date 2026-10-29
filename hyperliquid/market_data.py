@@ -7,7 +7,6 @@ Price comes from public all_mids; available means the coin is in the perpetual u
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import time
