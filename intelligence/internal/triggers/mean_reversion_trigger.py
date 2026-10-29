@@ -12,6 +12,7 @@ NOTE & RESEARCH FINDINGS (from docs/archive/RSI_BOLLINGER_REVIEW_2026-09-14.md):
 from __future__ import annotations
 
 from collections import deque
+import statistics
 from typing import Literal
 from botcore import safe_float, safe_pos_float, safe_pos_int
 from intelligence.internal.triggers.trigger_event import (
@@ -70,8 +71,8 @@ class MeanReversionTrigger:
             self._seed_gains.append((gain, loss))
             if len(self._seed_gains) < self.rsi_period:
                 return None
-            self.avg_gain = sum(g for g, _ in self._seed_gains) / self.rsi_period
-            self.avg_loss = sum(l for _, l in self._seed_gains) / self.rsi_period
+            self.avg_gain = statistics.fmean(g for g, _ in self._seed_gains)
+            self.avg_loss = statistics.fmean(l for _, l in self._seed_gains)
         else:
             self.avg_gain = (self.avg_gain * (self.rsi_period - 1) + gain) / self.rsi_period
             self.avg_loss = (self.avg_loss * (self.rsi_period - 1) + loss) / self.rsi_period
@@ -85,14 +86,12 @@ class MeanReversionTrigger:
         self.bb_buf.append(price)
         if len(self.bb_buf) < self.bb_period:
             return None
-            
-        n = len(self.bb_buf)
-        mean = sum(self.bb_buf) / n
-        var = sum((p - mean) ** 2 for p in self.bb_buf) / n
-        sd = var ** 0.5
+
+        mean = statistics.fmean(self.bb_buf)
+        sd = statistics.pstdev(self.bb_buf, mu=mean)
         if sd == 0.0:
             return 0.5
-            
+
         upper = mean + self.bb_k * sd
         lower = mean - self.bb_k * sd
         if upper == lower:
