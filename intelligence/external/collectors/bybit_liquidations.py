@@ -20,6 +20,7 @@ import websockets
 
 from botcore import safe_nonneg_float, safe_pos_float
 from intelligence.external.collectors.orderbook_depth import _symbol_variants
+from providers.base import normalize_side
 
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
 
@@ -35,6 +36,15 @@ WS_CLOSE_TIMEOUT = 2
 WS_RETRY_INITIAL = 1.0
 WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0
+
+
+def _normalize_liq_side(raw_side: Any) -> Optional[str]:
+    norm = normalize_side(raw_side)
+    if norm == "BUY":
+        return "LONG"
+    if norm == "SELL":
+        return "SHORT"
+    return None
 
 
 @dataclass(frozen=True)
@@ -182,23 +192,14 @@ class BybitLiquidationCollector:
                 symbol = raw_sym.strip().upper().replace("/", "").replace("-", "").replace("_", "")
                 if not symbol:
                     continue
-                raw_s = item["S"]
-                if not isinstance(raw_s, str):
+                side = _normalize_liq_side(item.get("S"))
+                if side is None:
                     continue
-                raw_side = raw_s.strip().upper()
-                if raw_side in ("BUY", "LONG", "B", "BID"):
-                    side = "LONG"
-                elif raw_side in ("SELL", "SHORT", "S", "ASK", "A"):
-                    side = "SHORT"
-                else:
+                v = safe_pos_float(item.get("v"), default=None)
+                p = safe_pos_float(item.get("p"), default=None)
+                if v is None or p is None:
                     continue
-                raw_v = item["v"]
-                raw_p = item["p"]
-                if isinstance(raw_v, bool) or isinstance(raw_p, bool):
-                    continue
-                notional = float(raw_v) * float(raw_p)
-                if not math.isfinite(notional) or notional <= 0:
-                    continue
+                notional = v * p
             except (KeyError, ValueError, TypeError):
                 continue
             with self._lock:
@@ -211,25 +212,17 @@ class BybitLiquidationCollector:
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
         notional = safe_pos_float(notional_usd, default=None)
-        if notional is None or not isinstance(symbol, str) or not isinstance(side, str):
+        if notional is None or not isinstance(symbol, str):
             return
         sym_norm = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
         if not sym_norm:
             return
-        raw_side = side.strip().upper()
-        if raw_side in ("LONG", "BUY", "B", "BID"):
-            side_norm = "LONG"
-        elif raw_side in ("SHORT", "SELL", "S", "ASK", "A"):
-            side_norm = "SHORT"
-        else:
+        side_norm = _normalize_liq_side(side)
+        if side_norm is None:
             return
-        if ts is not None:
-            ts_f = safe_pos_float(ts, default=None)
-            if ts_f is None:
-                return
-            now = ts_f
-        else:
-            now = time.time()
+        now = safe_pos_float(ts, default=None) if ts is not None else time.time()
+        if now is None:
+            return
         with self._lock:
             dq = self._events.setdefault(sym_norm, deque())
             dq.append((now, side_norm, notional))

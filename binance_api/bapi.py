@@ -7,7 +7,14 @@ import threading
 import signal
 
 #### MYLIB
-from botcore import _parse_bool_flag, load_dotenv as _load_dotenv, required_float_env
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv as _load_dotenv,
+    required_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 import symbols as sym
 
 from .bapi_client import client
@@ -76,12 +83,12 @@ def update_price(symbol):
     symbol = symbol.strip().upper()
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
-        raw_px = ticker["price"]
+        raw_px = ticker["price"] if isinstance(ticker, dict) else None
         if isinstance(raw_px, bool):
             raise TypeError(f"invalid boolean ticker price: {raw_px!r}")
-        price = float(raw_px)
-        if not math.isfinite(price) or price <= 0:
-            raise ValueError(f"invalid ticker price: {price!r}")
+        price = safe_pos_float(raw_px, default=None)
+        if price is None:
+            raise ValueError(f"invalid ticker price: {raw_px!r}")
     except Exception as e:
         print(f"update_price: An unexpected error occurred: {e}")
         return None
@@ -105,18 +112,10 @@ def get_current_price(symbol):
         and cached is not None
         and not isinstance(cached, bool)
     ):
-        try:
-            age = now - float(cached_at)
-            cached_f = float(cached)
-            if (
-                math.isfinite(age)
-                and math.isfinite(cached_f)
-                and cached_f > 0
-                and 0 <= age < BINANCE_REST_PRICE_CACHE_TTL_SEC
-            ):
-                return cached_f
-        except (TypeError, ValueError, OverflowError):
-            pass
+        age = safe_nonneg_float(now - float(cached_at), default=None)
+        cached_f = safe_pos_float(cached, default=None)
+        if age is not None and cached_f is not None and age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
+            return cached_f
 
     # A failed refresh returns None. It deliberately does not extend the timestamp
     # of an older quote, so repeated outages cannot keep stale data apparently fresh.
@@ -147,9 +146,9 @@ def get_free_balance(asset: str):
         raw_free = (asset_info or {}).get("free", 0)
         if isinstance(raw_free, bool):
             raise TypeError(f"invalid boolean free balance: {raw_free!r}")
-        free_val = float(raw_free)
-        if not math.isfinite(free_val) or free_val < 0:
-            raise ValueError(f"invalid free balance: {free_val!r}")
+        free_val = safe_nonneg_float(raw_free, default=None)
+        if free_val is None:
+            raise ValueError(f"invalid free balance: {raw_free!r}")
         return free_val
     except Exception as e:
         print(f"get_free_balance: Error for {asset}: {e}")
@@ -169,14 +168,9 @@ def get_account_assets_balances(raise_errors=False):
             raw_locked = balance.get("locked", 0.0)
             if isinstance(raw_free, bool) or isinstance(raw_locked, bool):
                 raise TypeError(f"invalid boolean balance fields: {balance!r}")
-            free_qty = float(raw_free)
-            locked_qty = float(raw_locked)
-            if (
-                not math.isfinite(free_qty)
-                or free_qty < 0
-                or not math.isfinite(locked_qty)
-                or locked_qty < 0
-            ):
+            free_qty = safe_nonneg_float(raw_free, default=None)
+            locked_qty = safe_nonneg_float(raw_locked, default=None)
+            if free_qty is None or locked_qty is None:
                 raise ValueError(f"invalid non-finite or negative balance: {balance!r}")
             total_qty = free_qty + locked_qty
             raw_asset = balance.get("asset")
@@ -378,13 +372,8 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
-    if expire_time is None or isinstance(expire_time, bool):
-        return
-    try:
-        expire_val = float(expire_time)
-    except (TypeError, ValueError, OverflowError):
-        return
-    if not math.isfinite(expire_val) or expire_val <= 0:
+    expire_val = safe_pos_float(expire_time, default=None)
+    if expire_val is None:
         return
     
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
@@ -419,13 +408,8 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
 
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
-    if max_age_seconds is None or isinstance(max_age_seconds, bool):
-        return
-    try:
-        max_age_val = float(max_age_seconds)
-    except (TypeError, ValueError, OverflowError):
-        return
-    if not math.isfinite(max_age_val) or max_age_val < 0:
+    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
+    if max_age_val is None:
         return
     
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
@@ -499,26 +483,18 @@ def _get_symbol_price_safe(symbol):
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
         raw_px = (ticker or {}).get("price") if isinstance(ticker, dict) else None
-        if raw_px is None or isinstance(raw_px, bool):
-            return None
-        price = float(raw_px)
-        return price if math.isfinite(price) and price > 0 else None
+        return safe_pos_float(raw_px, default=None)
     except Exception:
         return None
 
 
 def _convert_to_usdc(asset, amount):
-    if amount is None or isinstance(amount, bool):
-        return 0.0
     if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
         return 0.0
+    amt_f = safe_pos_float(amount, default=0.0)
+    if amt_f <= 0:
+        return 0.0
     asset_clean = asset.strip().upper()
-    try:
-        amt_f = float(amount)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(amt_f) or amt_f <= 0:
-        return 0.0
     if asset_clean in {"USDC", "USD"}:
         return amt_f
 
@@ -540,14 +516,7 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
     use_cache = _parse_bool_flag(use_cache, True)
     raise_errors = _parse_bool_flag(raise_errors, False)
     now = time.time()
-    ttl_f = float(ASSET_VALUE_CACHE_TTL_SECONDS)
-    if cache_ttl_seconds is not None and not isinstance(cache_ttl_seconds, bool):
-        try:
-            cand_ttl = float(cache_ttl_seconds)
-            if math.isfinite(cand_ttl) and cand_ttl >= 0:
-                ttl_f = cand_ttl
-        except (TypeError, ValueError, OverflowError):
-            pass
+    ttl_f = safe_nonneg_float(cache_ttl_seconds, default=float(ASSET_VALUE_CACHE_TTL_SECONDS))
     if use_cache:
         with _asset_value_cache_lock:
             if (

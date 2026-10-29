@@ -16,10 +16,9 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.macro_sentiment_ssot import (
     resolve_now_ts as _effective_now_ts,
-    safe_float,
     safe_nonneg_ts as _clean_nonneg_float,
     safe_pos_float as _clean_pos_float,
 )
@@ -86,16 +85,10 @@ class _DiskBackedSymbolCollector:
             if cached is not None:
                 break
         if cached:
-            if isinstance(cached, tuple) and len(cached) >= 2:
-                c_ts = cached[0]
-                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
-                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
-                        return cached, cached[1]
-            elif self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
-                c_ts = getattr(cached, "ts", None)
-                if isinstance(c_ts, (int, float)) and not isinstance(c_ts, bool) and math.isfinite(float(c_ts)):
-                    if 0.0 <= (now - float(c_ts)) < self.cache_ttl_sec:
-                        return cached, cached
+            c_ts = cached[0] if isinstance(cached, tuple) and len(cached) >= 2 else getattr(cached, "ts", None)
+            c_ts_f = safe_float(c_ts, default=None)
+            if c_ts_f is not None and 0.0 <= (now - c_ts_f) < self.cache_ttl_sec:
+                return cached, (cached[1] if isinstance(cached, tuple) else cached)
         return cached, None
 
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[Any]:
@@ -150,17 +143,7 @@ class _DiskBackedSymbolCollector:
             item = self._SNAPSHOT_CLS.from_dict(item)
         if item is None or not isinstance(getattr(item, "symbol", None), str) or not item.symbol.strip():
             return
-        raw_ts = getattr(item, "ts", None)
-        ts_val = (
-            float(raw_ts)
-            if (
-                isinstance(raw_ts, (int, float))
-                and not isinstance(raw_ts, bool)
-                and math.isfinite(float(raw_ts))
-                and float(raw_ts) > 0.0
-            )
-            else time.time()
-        )
+        ts_val = safe_pos_float(getattr(item, "ts", None), default=None) or time.time()
         self._cache[item.symbol.strip().upper()] = (ts_val, item)
         if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(item)
@@ -299,15 +282,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 for item in rows:
                     if not isinstance(item, (list, tuple)) or len(item) < 2:
                         continue
-                    p, q = item[0], item[1]
-                    if p is None or q is None or isinstance(p, bool) or isinstance(q, bool):
-                        continue
-                    try:
-                        pf, qf = float(p), float(q)
-                        if math.isfinite(pf) and pf > 0.0 and math.isfinite(qf) and qf > 0.0:
-                            out.append((pf, qf))
-                    except (TypeError, ValueError, OverflowError):
-                        continue
+                    pf = safe_pos_float(item[0], default=None)
+                    qf = safe_pos_float(item[1], default=None)
+                    if pf is not None and qf is not None:
+                        out.append((pf, qf))
                 return out
 
             bids = _parse_side(data.get("bids"))

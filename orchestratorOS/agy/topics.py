@@ -20,7 +20,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import _parse_bool_flag, required_int_env, safe_float
+from botcore import _parse_bool_flag, required_int_env, safe_float, safe_int, safe_pos_int
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
 from orchestratorOS.agy.summary_store import (
     get_thread_step_count,
@@ -245,11 +245,7 @@ def format_topic_history_prefix(
     return "\n".join(lines) + "\n\n"
 
 
-def _safe_int(val: Any, default: int = 0) -> int:
-    f = safe_float(val, default=None)
-    if f is None:
-        return default
-    return int(round(f))
+_safe_int = safe_int
 
 
 def prepare_topic_session(
@@ -264,16 +260,8 @@ def prepare_topic_session(
     base = resolve_bot_cli_base(cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
-    if isinstance(compact_steps, bool):
-        raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
-    try:
-        compact_steps_f = float(compact_steps)
-        if not math.isfinite(compact_steps_f) or not compact_steps_f.is_integer():
-            raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
-        compact_steps_i = int(compact_steps_f)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}") from exc
-    if compact_steps_i <= 0:
+    compact_steps_i = safe_pos_int(compact_steps, default=None)
+    if compact_steps_i is None or (isinstance(compact_steps, float) and not compact_steps.is_integer()):
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
 
     reg = load_topic_registry(registry_path)
