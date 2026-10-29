@@ -1237,13 +1237,17 @@ class Strategy:
                     continue
                 st = status.status
                 terminal = st in ("closed", "canceled", "expired")
-                total_vol = safe_nonneg_float(status.filled_qty or 0.0, default=None)
-                total_fee = safe_float(status.fee or 0.0, default=None)
+                total_vol = 0.0 if status.filled_qty is None else safe_nonneg_float(status.filled_qty, default=None)
+                total_fee = 0.0 if status.fee is None else safe_float(status.fee, default=None)
                 ord_px = safe_pos_float(o.get("price"), default=None)
                 if total_vol is None or total_fee is None or ord_px is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
-                total_cost = safe_nonneg_float(status.cost or total_vol * ord_px, default=None)
+                if status.cost is None:
+                    total_cost = total_vol * ord_px
+                else:
+                    raw_cost = safe_nonneg_float(status.cost, default=None)
+                    total_cost = (total_vol * ord_px) if raw_cost == 0.0 and total_vol > 0 else raw_cost
                 if total_cost is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
@@ -1255,7 +1259,8 @@ class Strategy:
                 applied_vol = safe_nonneg_float(o.get("applied_vol"), 0.0)
                 applied_cost = safe_nonneg_float(o.get("applied_cost"), 0.0)
                 applied_fee = safe_float(o.get("applied_fee"), 0.0)
-                eps = max(1e-12, float(o["vol"]) * 1e-12)
+                ord_vol = safe_pos_float(o.get("vol"), default=0.0) or 0.0
+                eps = max(1e-12, ord_vol * 1e-12)
                 if total_vol + eps < applied_vol or total_cost + eps < applied_cost:
                     log(f"  ! [STRAT] status {o['txid']} regressed cumulatively "
                         f"(vol {total_vol}<{applied_vol}) — not reapplying")
@@ -1274,9 +1279,10 @@ class Strategy:
                     fill_order = dict(o)
                     if o["side"] == "buy":
                         # ``amount`` is the order's nominal cap; partial fills consume it proportionally.
+                        ord_amt = safe_nonneg_float(o.get("amount"), default=0.0) or 0.0
                         fill_order["amount"] = (
-                            float(o.get("amount") or 0.0) * delta_vol / float(o["vol"])
-                            if float(o["vol"]) > 0 else delta_cost
+                            ord_amt * delta_vol / ord_vol
+                            if ord_vol > 0 else delta_cost
                         )
                         if applied_vol > eps and fill_order.get("kind") in {"DCA", "TREND_ENTRY"}:
                             fill_order["kind"] = f"{fill_order['kind']}_PARTIAL"
@@ -1360,6 +1366,18 @@ class Strategy:
             if final:
                 self._finalize_cycle_if_flat(o, price)
 
+    def _seed_post_exit_anchors(self, price: float, exit_kind: str | None, exit_ts: float) -> None:
+        """Initialize post-sale price and timestamp anchors after a cycle closes."""
+        self.s["last_sell_price"] = price   # reentry rule must not buy back higher
+        self.s["last_exit_kind"] = exit_kind  # TP/STOP enables stop-aware reentry
+        self.s["sl_low"] = price            # Initial low for post-stop bounce reentry.
+        self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
+        self.s["post_sell_trough"] = price  # Initial trough for post-sale bear bounce tracking.
+        self.s["last_sell_ts"] = exit_ts
+        if self.exit_manager is not None:
+            self.exit_manager.clear_state(self.pair)
+            self.exit_manager.bind_state(self.s)
+
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
         """Close a cycle once, only after terminal exit status."""
         # Dust left by _dust_safe_qty must not keep a cycle open. Apply the threshold
@@ -1385,15 +1403,8 @@ class Strategy:
         self.s = _new_state()
         (self.s["realized_gross"], self.s["realized_net"],
          self.s["fees_total"], self.s["cycle"]) = keep
-        self.s["last_sell_price"] = price   # reentry rule must not buy back higher
-        self.s["last_exit_kind"] = o.get("kind")   # TP/STOP enables stop-aware reentry
-        self.s["sl_low"] = price            # Initial low for post-stop bounce reentry.
-        self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
-        self.s["post_sell_trough"] = price  # Initial trough for post-sale bear bounce tracking.
-        self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
-        if self.exit_manager is not None:
-            self.exit_manager.clear_state(self.pair)
-            self.exit_manager.bind_state(self.s)
+        exit_ts = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
+        self._seed_post_exit_anchors(price, o.get("kind"), exit_ts)
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
@@ -1702,6 +1713,23 @@ class Strategy:
     _HOURLY_VOL_CACHE: dict = {}
     _REPLAY_CACHE_MAX = 262144
 
+    @staticmethod
+    def _scaled_log_return_vol_pct(returns: list[float], steps_per_hour: float) -> float | None:
+        """Return sample standard deviation of log returns scaled to 1 hour (in %), or None if < 19 samples."""
+        n_r = len(returns)
+        if n_r < 19 or steps_per_hour <= 0:
+            return None
+        mean_r = sum(returns) / n_r
+        var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
+        return math.sqrt(var_r) * math.sqrt(steps_per_hour) * 100.0
+
+    def _resolve_reentry_vol_1h_pct(self) -> float | None:
+        """Resolve 1-hour volatility (%) from shadow ticks with non-replay cache fallback."""
+        vol = self._shadow_vol_1h()
+        if vol is None and not self.replay_mode:
+            vol = resolve_cached_volatility_1h_pct(self.pair)
+        return vol
+
     def _shadow_vol_1h(self) -> float | None:
         """Return one-hour volatility from local tick history, or None during warm-up."""
         sp = self._shadow_prices
@@ -1731,13 +1759,9 @@ class Strategy:
         pts = list(sp)
         rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, n_sp)
                 if pts[i - 1][1] > 0 and pts[i][1] > 0]
-        n_r = len(rets)
-        if n_r < 19:
+        val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
+        if val is None:
             return None
-        mean_r = sum(rets) / n_r
-        var_r = sum((r - mean_r) ** 2 for r in rets) / (n_r - 1)
-        std = math.sqrt(var_r)
-        val = std * math.sqrt(3600.0 / mean_dt) * 100.0
         if self.replay_mode:
             self._shadow_vol_cache_key = cache_key
             self._shadow_vol_cache_val = val
@@ -1749,9 +1773,7 @@ class Strategy:
     def _shadow_reentry_line(self, price: float, lsp: float, prag_fix: float) -> None:
         try:
             k_re = self.p.shadow_k_reentry
-            vol = self._shadow_vol_1h()
-            if vol is None and not self.replay_mode:
-                vol = resolve_cached_volatility_1h_pct(self.pair)
+            vol = self._resolve_reentry_vol_1h_pct()
             if vol is None:
                 log(f"  [SHADOW] adaptive threshold: warm-up ({len(self._shadow_prices)}/20 points)")
                 return
@@ -1775,9 +1797,7 @@ class Strategy:
             return self.p.reentry_drop_pct, "fix"
         k_re = self.p.shadow_k_reentry
         try:
-            vol = self._shadow_vol_1h()
-            if vol is None and not self.replay_mode:
-                vol = resolve_cached_volatility_1h_pct(self.pair)
+            vol = self._resolve_reentry_vol_1h_pct()
         except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
             log(f"  [REENTRY-ADAPTIVE] calculation error ({e}) — fallback to fixed")
             return self.p.reentry_drop_pct, "fix (fallback, error)"
@@ -1796,9 +1816,7 @@ class Strategy:
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
         try:
-            vol = self._shadow_vol_1h()
-            if vol is None and not self.replay_mode:
-                vol = resolve_cached_volatility_1h_pct(self.pair)
+            vol = self._resolve_reentry_vol_1h_pct()
         except Exception as e:
             log(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")
             vol = None
@@ -1935,18 +1953,7 @@ class Strategy:
             for previous, current in zip(closes_slice, closes_slice[1:])
             if previous > 0 and current > 0
         ]
-        n_r = len(returns)
-        if n_r < 19:
-            val = None
-        else:
-            mean_r = sum(returns) / n_r
-            var_r = 0.0
-            for r in returns:
-                diff = r - mean_r
-                var_r += diff * diff
-            var_r /= (n_r - 1)
-            std = math.sqrt(var_r)
-            val = std * math.sqrt(60.0 / itv_f) * 100.0
+        val = Strategy._scaled_log_return_vol_pct(returns, 60.0 / itv_f)
         if len(Strategy._HOURLY_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
             Strategy._HOURLY_VOL_CACHE.clear()
         Strategy._HOURLY_VOL_CACHE[cache_key] = val
@@ -2397,12 +2404,10 @@ class Strategy:
                     self.s["qty"] = 0.0
                     self.s["cost"] = 0.0
                     self.s["spent"] = 0.0
+                    self.s["cycle_fees"] = 0.0
                     self.s["dca_buys"] = 0
                     self.s["entry_price"] = None
                     self.s["last_buy_price"] = None
-                    self.s["last_sell_price"] = price
-                    self.s["last_exit_kind"] = "TP"
-                    self.s["last_sell_ts"] = clean_ts if clean_ts is not None else self._now()
                     self.s["entry_ts"] = None
                     self.s["trail_peak"] = None
                     self.s["trail_stop"] = None
@@ -2418,9 +2423,8 @@ class Strategy:
                     self.s["sl_episode_state"] = {}
                     self.s["tp_ride_state"] = {}
                     self.s["reentry_state"] = {}
-                    if self.exit_manager is not None:
-                        self.exit_manager.clear_state(self.pair)
-                        self.exit_manager.bind_state(self.s)
+                    exit_ts = clean_ts if clean_ts is not None else self._now()
+                    self._seed_post_exit_anchors(price, "TP", exit_ts)
                     self.s["ledger_reconcile_required"] = False
                     self._save()
                 else:

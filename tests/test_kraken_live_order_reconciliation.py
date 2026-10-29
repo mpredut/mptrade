@@ -289,6 +289,43 @@ class KrakenStatePersistenceTest(unittest.TestCase):
             self.assertEqual(saved["qty"], 1.25)
             self.assertEqual(os.listdir(tmp), ["state.json"])
 
+    def test_reconcile_rejects_boolean_status_fields_and_ledger_reconcile_resets_exit_anchors(self):
+        from types import SimpleNamespace
+        state = strat._new_state()
+        state["orders"].append(_buy_order())
+        engine = _strategy(state=state)
+        for bad_status in (
+            SimpleNamespace(status="closed", filled_qty=False, cost=100.0, fee=0.0),
+            SimpleNamespace(status="closed", filled_qty=1.0, cost=False, fee=0.0),
+            SimpleNamespace(status="closed", filled_qty=1.0, cost=100.0, fee=False),
+        ):
+            engine.client.order_status.return_value = bad_status
+            engine.reconcile(100.0)
+            self.assertEqual(engine.s["qty"], 0.0)
+            self.assertEqual(len(engine.s["orders"]), 1)
+
+        # Ledger reconciliation when position is closed externally resets post-sell anchors
+        state2 = strat._new_state()
+        state2["qty"] = 2.0
+        state2["cost"] = 140.0
+        state2["spent"] = 140.0
+        state2["cycle_fees"] = 1.25
+        state2["post_sell_peak"] = 50.0
+        state2["post_sell_trough"] = 40.0
+        state2["sl_low"] = 35.0
+        state2["ledger_reconcile_required"] = True
+        engine2 = _strategy(state=state2)
+        engine2.client.free_balance.return_value = 0.0
+        engine2.step(93.30, timestamp=1793289000.0)
+        self.assertEqual(engine2.s["qty"], 0.0)
+        self.assertEqual(engine2.s["cycle_fees"], 0.0)
+        self.assertEqual(engine2.s["last_sell_price"], 93.30)
+        self.assertEqual(engine2.s["post_sell_peak"], 93.30)
+        self.assertEqual(engine2.s["post_sell_trough"], 93.30)
+        self.assertEqual(engine2.s["sl_low"], 93.30)
+        self.assertEqual(engine2.s["last_sell_ts"], 1793289000.0)
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
