@@ -13,8 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, wait
 
 
 # my imports
-import log
-import alertnotifiers as alert
 import utils as u
 import symbols as sym
 from instrument_registry import single_symbol_for

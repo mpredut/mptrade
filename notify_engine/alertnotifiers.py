@@ -14,7 +14,6 @@ from state_io import read_recovering_previous, save_json_state
 from typing import Any, Optional
 
 # Import your modules
-import log
 from lock import FileLock
 from botcore import (
     _parse_bool_flag,
