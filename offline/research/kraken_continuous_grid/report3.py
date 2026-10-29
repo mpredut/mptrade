@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Aggregate results3.jsonl (finite 3900 USD cash, continuous history) into REPORT3.md."""
-import json
 import os
 import statistics as st
 import sys

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Aggregate results2.jsonl (wave 2) into REPORT2.md."""
-import json
 import os
 import statistics as st
 import sys

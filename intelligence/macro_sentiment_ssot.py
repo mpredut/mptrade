@@ -49,7 +49,7 @@ from botcore import (
     parse_dotenv,
     safe_float,
     safe_int,
-    safe_nonneg_float,
+    safe_nonneg_float,  # re-exported for intelligence.sentiment.guards
     safe_nonneg_float as safe_nonneg_ts,
     safe_pos_float,
 )

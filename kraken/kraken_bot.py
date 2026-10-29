@@ -30,16 +30,16 @@ if _ROOT not in sys.path:
 try:
     from kraken.kraken_common import (log, required_bool_env, required_env,
                                       required_int_env, load_env_stack,
-                                      single_instance, _parse_bool_flag, safe_pos_float)
+                                      single_instance, safe_pos_float)
     from kraken.kraken_client import KrakenClient, KrakenError
-    from kraken.market_data import check_pair_listing, get_price, pair_available
+    from kraken.market_data import check_pair_listing, get_price
     from kraken.notify import notify
 except ImportError:
     from kraken_common import (log, required_bool_env, required_env,
                                required_int_env, load_env_stack,
-                               single_instance, _parse_bool_flag, safe_pos_float)
+                               single_instance, safe_pos_float)
     from kraken_client import KrakenClient, KrakenError
-    from market_data import check_pair_listing, get_price, pair_available
+    from market_data import check_pair_listing, get_price
     from notify import notify
 from strategies.spot_engine import Strategy, StratParams
 

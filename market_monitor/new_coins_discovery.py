@@ -8,8 +8,6 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod
 
-# Repository integrations.
-import log
 from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_pos_int
 
 # ============================================
