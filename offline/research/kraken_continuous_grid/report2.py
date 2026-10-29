@@ -68,10 +68,10 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         if not s:
             continue
         sums = {
-            c: sum(_safe_f((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get(c), 0.0) for x in s)
+            c: sum(safe_float((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get(c), 0.0) for x in s)
             for c in cands
         }
-        sel_sum = sum(_safe_f(x.get("pick_ret"), 0.0) for x in s)
+        sel_sum = sum(safe_float(x.get("pick_ret"), 0.0) for x in s)
         for c, v in sums.items():
             tot[c] += v
         tot["__selector__"] += sel_sum
@@ -84,8 +84,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         top = ", ".join(f"{k}:{v}" for k, v in sorted(picks.items(), key=lambda kv: -kv[1])[:3])
         live_sum = sums.get("live", 0.0)
         beat_cnt = sum(
-            _safe_f(x.get("pick_ret"), 0.0)
-            > _safe_f((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get("live"), float("-inf"))
+            safe_float(x.get("pick_ret"), 0.0)
+            > safe_float((x.get("oos") if isinstance(x.get("oos"), dict) else {}).get("live"), float("-inf"))
             for x in s
         )
         L.append(f"| {r['asset']} | {len(s)} | {sel_sum:+.1f} | {live_sum:+.1f} | {best} ({best_sum:+.1f}) | "
@@ -112,8 +112,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         if not assets or not all(a in d and isinstance(d[a].get("full"), dict) for a in assets):
             return None
         live = by.get(("live", "std"), {})
-        full = [_safe_f(d[a]["full"].get("ret"), float("nan")) for a in assets]
-        dd = [_safe_f(d[a]["full"].get("dd"), float("nan")) for a in assets]
+        full = [safe_float(d[a]["full"].get("ret"), float("nan")) for a in assets]
+        dd = [safe_float(d[a]["full"].get("dd"), float("nan")) for a in assets]
         if not all(math.isfinite(x) for x in full + dd):
             return None
         w90_means = []
@@ -128,8 +128,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 w90_means.append(st.mean(w90_valid))
                 w90pos_vals.append(100.0 * sum(v > 0 for v in w90_valid) / len(w90_valid))
         beat_live = sum(
-            _safe_f(d[a]["full"].get("ret"), float("-inf"))
-            > _safe_f((live.get(a, {}).get("full") or {}).get("ret") if isinstance(live.get(a, {}).get("full"), dict) else None, float("-inf"))
+            safe_float(d[a]["full"].get("ret"), float("-inf"))
+            > safe_float((live.get(a, {}).get("full") or {}).get("ret") if isinstance(live.get(a, {}).get("full"), dict) else None, float("-inf"))
             for a in assets
         )
         return {"cfg": key[0], "fee": key[1],

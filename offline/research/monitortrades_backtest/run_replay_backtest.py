@@ -35,7 +35,9 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float as _safe_nonneg_f
+from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float
+
+_safe_nonneg_f = safe_nonneg_float
 from cachepaths import cache_path
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
@@ -352,7 +354,7 @@ def run_symbol(
         n_seeds = 1
         n_ticks = 0
 
-        trail_pct = _safe_nonneg_f(params.get("trailing.pct"), 0.0)
+        trail_pct = safe_nonneg_float(params.get("trailing.pct"), 0.0)
         trail_ratio = trail_pct / 100.0
         trail_peak = first_price
         min_trail_trigger_ratio = float("inf")

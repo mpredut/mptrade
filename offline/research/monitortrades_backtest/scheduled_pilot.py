@@ -164,8 +164,8 @@ def _edge(pnl):
     comparable between different windows (unlike the raw net)."""
     if not isinstance(pnl, dict):
         return 0.0
-    net = _safe_f(pnl.get("net"), 0.0)
-    bh = _safe_f(pnl.get("buy_hold"), 0.0)
+    net = safe_float(pnl.get("net"), 0.0)
+    bh = safe_float(pnl.get("buy_hold"), 0.0)
     return float(net) - float(bh)
 
 
@@ -239,8 +239,8 @@ def _run_one(symbol, base, params, series):
             rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
         return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
-    net_v = _safe_f(res.get("net"), None) if isinstance(res, dict) else None
-    bh_v = _safe_f(res.get("buy_hold"), None) if isinstance(res, dict) else None
+    net_v = safe_float(res.get("net"), default=None) if isinstance(res, dict) else None
+    bh_v = safe_float(res.get("buy_hold"), default=None) if isinstance(res, dict) else None
     out = {"net": net_v, "buy_hold": bh_v} if (net_v is not None and bh_v is not None) else None
     _RUN_ONE_CACHE[ck] = out
     diag = dict(

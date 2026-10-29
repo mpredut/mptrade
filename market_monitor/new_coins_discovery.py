@@ -41,6 +41,9 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
     "derivative", "derivatives", "xstock", "stock", "etf", "futures"
 }
 
+_safe_num = safe_float
+_as_bool_flag = _parse_bool_flag
+
 
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
     d = safe_pos_float(days_back, default=None)

@@ -26,7 +26,17 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import float_env, parse_dotenv, safe_float as _safe_f, safe_int as _safe_int, safe_pos_float
+from botcore import (
+    float_env,
+    parse_dotenv,
+    safe_float,
+    safe_int,
+    safe_nonneg_int,
+    safe_pos_float,
+)
+
+_safe_f = safe_float
+_safe_int = safe_int
 from strategies import spot_dca as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
 
@@ -42,10 +52,10 @@ _orig_step = strat.Strategy.step
 
 def _step(self, price, *args, **kwargs):
     s = self.s
-    if _safe_f(s.get("qty"), 0.0) <= 1e-12:
+    if safe_float(s.get("qty"), 0.0) <= 1e-12:
         if FLAGS["peak"] and s.get("last_exit_kind") == "TP" and s.get("last_sell_price"):
-            p_f = _safe_f(price, 0.0)
-            lsp_f = _safe_f(s.get("last_sell_price"), 0.0)
+            p_f = safe_pos_float(price, 0.0)
+            lsp_f = safe_pos_float(s.get("last_sell_price"), 0.0)
             if p_f > 0.0 and lsp_f > 0.0:
                 s["last_sell_price"] = max(lsp_f, p_f)
     return _orig_step(self, price, *args, **kwargs)
@@ -178,22 +188,24 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
         m = rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
                           warmup_ohlc=w_ohlc, initial_cash=initial_cash)
-        tot = _safe_f(m.get("total"), 0.0)
+        tot = safe_float(m.get("total"), 0.0)
         if initial_cash is not None:
-            ic = _safe_f(initial_cash, 0.0)
+            ic = safe_pos_float(initial_cash, 0.0)
             funding = m.get("funding") if isinstance(m.get("funding"), dict) else {}
+            min_cash_raw = funding.get("minimum_cash")
+            min_cash = safe_float(min_cash_raw, default=ic) if min_cash_raw is not None else ic
             return {"ret": round(tot / ic * 100, 2) if ic > 0 else 0.0,
-                    "dd": round(_safe_f(m.get("max_drawdown_pct"), 0.0), 2),
-                    "cyc": max(0, _safe_int(m.get("cycles"), 0)),
-                    "refused": max(0, _safe_int(funding.get("refused_buys"), 0)),
-                    "min_cash": _safe_f(funding.get("minimum_cash"), ic) if funding.get("minimum_cash") is not None else ic}
-        budget = _safe_f(params.effective_max_budget(), 0.0)
-        p0 = _safe_f(ohlc[0][3], 0.0)
-        p1 = _safe_f(ohlc[-1][3], 0.0)
+                    "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 2),
+                    "cyc": safe_nonneg_int(m.get("cycles"), default=0),
+                    "refused": safe_nonneg_int(funding.get("refused_buys"), default=0),
+                    "min_cash": min_cash}
+        budget = safe_pos_float(params.effective_max_budget(), 0.0)
+        p0 = safe_pos_float(ohlc[0][3], 0.0)
+        p1 = safe_float(ohlc[-1][3], 0.0)
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
-                "dd": round(_safe_f(m.get("max_drawdown_pct"), 0.0), 3),
-                "cyc": max(0, _safe_int(m.get("cycles"), 0)),
-                "expo": round(_safe_f(m.get("exposure_pct"), 0.0), 1),
+                "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 3),
+                "cyc": safe_nonneg_int(m.get("cycles"), default=0),
+                "expo": round(safe_float(m.get("exposure_pct"), 0.0), 1),
                 "bh": round((p1 / p0 - 1) * 100, 3) if p0 > 0 else 0.0}
     finally:
         FLAGS["peak"] = False

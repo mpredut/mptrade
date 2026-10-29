@@ -26,7 +26,11 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall, calculate_hurst_exponent as hurst_rs  # noqa: E402
-from botcore import safe_float as _safe_f, safe_pos_float as _safe_pos_f, safe_int as _safe_int  # noqa: E402
+from botcore import safe_float, safe_pos_float, safe_int, safe_pos_int  # noqa: E402
+
+_safe_f = safe_float
+_safe_pos_f = safe_pos_float
+_safe_int = safe_int
 
 HORIZON_H = 24
 WARMUP = 240            # history hours required for features; Hurst uses 240h
@@ -43,9 +47,9 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     vol24 = float(np.std(np.diff(logp[i - 24:i + 1])))
     vol72 = float(np.std(np.diff(logp[i - 72:i + 1])))
     _, mk_z_raw, _ = mann_kendall(px[i - 24:i + 1])
-    mk_z = _safe_f(mk_z_raw, 0.0)
+    mk_z = safe_float(mk_z_raw, 0.0)
     h_raw = hurst_rs(px[i - WARMUP:i + 1])
-    h = _safe_f(h_raw, 0.5)
+    h = safe_float(h_raw, 0.5)
     d = np.diff(px[i - 14:i + 1])
     up, dn = d[d > 0].sum(), -d[d < 0].sum()
     rsi = 100.0 * up / (up + dn) if up + dn > 0 else 50.0
@@ -62,7 +66,7 @@ def _to_price_array(px) -> np.ndarray:
         items = list(px)
     except TypeError:
         return np.empty(0, dtype=float)
-    cleaned = [_safe_f(item, np.nan) for item in items]
+    cleaned = [safe_float(item, default=np.nan) for item in items]
     return np.asarray(cleaned, dtype=float).reshape(-1)
 
 
@@ -101,9 +105,8 @@ def walk_forward(X, y_dir, y_mag, train_frac=0.7, refit_every=168):
             "mae_move_pct": 0.0,
             "mae_baseline_pct": 0.0,
         }
-    refit_every = max(1, _safe_int(refit_every, 168))
-    frac = _safe_f(train_frac, 0.7)
-    frac = min(max(float(frac if frac is not None else 0.7), 0.05), 0.95)
+    refit_every = safe_pos_int(refit_every, default=168)
+    frac = min(max(safe_float(train_frac, default=0.7), 0.05), 0.95)
     start = min(max(1, int(n * frac)), n)
     acc = {"lindy": [], "logit": [], "boost": []}
     mag_err, mag_base = [], []
@@ -142,15 +145,15 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
-    boost_acc = _safe_f(rep.get("boost"), None) if isinstance(rep, dict) else None
-    logit_acc = _safe_f(rep.get("logit"), None) if isinstance(rep, dict) else None
-    lindy_acc = _safe_f(rep.get("lindy"), None) if isinstance(rep, dict) else None
+    boost_acc = safe_float(rep.get("boost"), default=None) if isinstance(rep, dict) else None
+    logit_acc = safe_float(rep.get("logit"), default=None) if isinstance(rep, dict) else None
+    lindy_acc = safe_float(rep.get("lindy"), default=None) if isinstance(rep, dict) else None
     use_boost = boost_acc is not None and logit_acc is not None and boost_acc >= logit_acc
     px_arr = _to_price_array(px)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     raw_row = _feat_row(len(px_arr) - 1, logp, px_arr) if len(px_arr) > WARMUP else [0.0] * len(FEATURES)
-    clean_row = [_safe_f(v, 0.0) for v in raw_row]
+    clean_row = [safe_float(v, 0.0) for v in raw_row]
     row = np.array([clean_row], dtype=float)
     unique_classes = np.unique(y_dir) if len(y_dir) > 0 else np.array([], dtype=int)
     if len(X) > 0 and len(unique_classes) >= 2:
@@ -214,7 +217,7 @@ def main() -> int:
                 json.dump(out, f, indent=2)
             print(f"  -> {args.out}: trend={out['trend']} conf={out['confidence']} "
                   f"estimated move {out['expected_move_pct']:+.2f}% / {HORIZON_H}h")
-        loop_min = _safe_pos_f(args.loop, default=None)
+        loop_min = safe_pos_float(args.loop, default=None)
         if loop_min is None:
             return 0
         time.sleep(loop_min * 60)

@@ -29,7 +29,10 @@ try:
     sys.modules[_rp_spec.name] = rp
     _rp_spec.loader.exec_module(rp)
     strat = rp._strat
-    from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int  # noqa: E402
+    from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float  # noqa: E402
+
+    _safe_f = safe_float
+    _safe_int = safe_int
 finally:
     sys.path[:] = _orig_sys_path
 
@@ -39,10 +42,10 @@ _orig_step = strat.Strategy.step
 
 def _step(self, price, *args, **kwargs):
     s = self.s
-    if (FLAGS["peak"] and _safe_f(s.get("qty"), 0.0) <= 1e-9 and s.get("last_sell_price")
+    if (FLAGS["peak"] and safe_float(s.get("qty"), 0.0) <= 1e-9 and s.get("last_sell_price")
             and not s.get("sl_rebuy")):
-        p_f = _safe_f(price, 0.0)
-        lsp_f = _safe_f(s.get("last_sell_price"), 0.0)
+        p_f = safe_pos_float(price, 0.0)
+        lsp_f = safe_pos_float(s.get("last_sell_price"), 0.0)
         if p_f > 0.0 and lsp_f > 0.0:
             s["last_sell_price"] = max(lsp_f, p_f)
     return _orig_step(self, price, *args, **kwargs)
@@ -135,9 +138,9 @@ def params_for(profile, variant):
     cfg = dict(PROFILES[profile])
     over, peak = VARIANTS[variant]
     cfg.update(over)
-    if peak and _safe_f(cfg.get("STRAT_REENTRY_DROP_PCT"), 0.0) <= 0:
-        pb = _safe_f(cfg.get("STRAT_REENTRY_PULLBACK_PCT"), 0.0)
-        cfg["STRAT_REENTRY_DROP_PCT"] = str(pb if pb > 0 else 2.0)
+    if peak and safe_float(cfg.get("STRAT_REENTRY_DROP_PCT"), 0.0) <= 0:
+        pb = safe_pos_float(cfg.get("STRAT_REENTRY_PULLBACK_PCT"), default=2.0)
+        cfg["STRAT_REENTRY_DROP_PCT"] = str(pb)
     cfg["STRAT_DCA_TREND_GATE_PCT"] = "0"   # the gate needs 5m bars; neutral on 1h/1d
     return strat.StratParams.from_env(cfg), peak
 
@@ -155,15 +158,15 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
         m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
                           warmup_ohlc=ohlc[:WARM],
                           timestamps=ts[WARM:])
-        budget = _safe_f(params.max_budget, 0.0)
-        tot = _safe_f(m.get("total"), 0.0)
-        p0 = _safe_f(ohlc[WARM][3], 0.0)
-        p1 = _safe_f(ohlc[-1][3], 0.0)
+        budget = safe_pos_float(params.max_budget, 0.0)
+        tot = safe_float(m.get("total"), 0.0)
+        p0 = safe_pos_float(ohlc[WARM][3], 0.0)
+        p1 = safe_float(ohlc[-1][3], 0.0)
         return {"ret": round(tot / budget * 100, 3) if budget > 0 else 0.0,
-                "dd": round(_safe_f(m.get("max_drawdown_pct"), 0.0), 3),
-                "cyc": max(0, _safe_int(m.get("cycles"), 0)),
-                "expo": round(_safe_f(m.get("exposure_pct"), 0.0), 1),
-                "fills": max(0, _safe_int(m.get("fills"), 0)),
+                "dd": round(safe_float(m.get("max_drawdown_pct"), 0.0), 3),
+                "cyc": safe_nonneg_int(m.get("cycles"), default=0),
+                "expo": round(safe_float(m.get("exposure_pct"), 0.0), 1),
+                "fills": safe_nonneg_int(m.get("fills"), default=0),
                 "bh": round((p1 / p0 - 1) * 100, 2) if p0 > 0 else 0.0}
     finally:
         FLAGS["peak"] = False

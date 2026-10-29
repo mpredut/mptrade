@@ -59,13 +59,13 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 continue
             if any(not isinstance(d[a].get(fee), dict) for a in assets):
                 continue
-            ret = [_safe_f(d[a][fee].get("ret"), float("nan")) for a in assets]
-            dd = [_safe_f(d[a][fee].get("dd"), float("nan")) for a in assets]
+            ret = [safe_float(d[a][fee].get("ret"), default=float("nan")) for a in assets]
+            dd = [safe_float(d[a][fee].get("dd"), default=float("nan")) for a in assets]
             if not all(math.isfinite(x) for x in ret + dd):
                 continue
             live_cfg = by.get("live", {})
-            live = [_safe_f((live_cfg.get(a, {}).get(fee) or {}).get("ret"), float("-inf")) for a in assets]
-            refused = [_safe_f(d[a][fee].get("refused"), 0.0) for a in assets]
+            live = [safe_float((live_cfg.get(a, {}).get(fee) or {}).get("ret"), default=float("-inf")) for a in assets]
+            refused = [safe_float(d[a][fee].get("refused"), default=0.0) for a in assets]
             score = st.median(r / max(x, 1.0) for r, x in zip(ret, dd)) if ret else 0.0
             items.append((score if math.isfinite(score) else float("-inf"), cfg, ret, dd, live, refused))
         for score, cfg, ret, dd, live, refused in sorted(items, reverse=True):
@@ -85,7 +85,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         for c in cfgs:
             d026 = by.get(c, {}).get(a, {}).get("0.26")
             if isinstance(d026, dict) and "ret" in d026 and "dd" in d026:
-                cells.append(f"{_safe_f(d026.get('ret'), 0.0):+.1f} ({_safe_f(d026.get('dd'), 0.0):.0f})")
+                cells.append(f"{safe_float(d026.get('ret'), 0.0):+.1f} ({safe_float(d026.get('dd'), 0.0):.0f})")
             else:
                 cells.append("- / -")
         L.append(f"| {a} | " + " | ".join(cells) + " |")

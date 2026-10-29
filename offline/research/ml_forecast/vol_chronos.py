@@ -24,7 +24,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
-from botcore import safe_int as _safe_int  # noqa: E402
+from botcore import safe_int, safe_nonneg_int, safe_pos_int  # noqa: E402
+
+_safe_int = safe_int
 
 MODEL_NAME = "amazon/chronos-t5-tiny"   # smallest 8M-parameter model; CPU-friendly
 MAX_CONTEXT = 512                       # maximum history hours supplied per prediction
@@ -48,9 +50,7 @@ def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
                 except (TypeError, ValueError, OverflowError):
                     cleaned.append(np.nan)
         px_arr = np.asarray(cleaned, dtype=float).reshape(-1)
-    if isinstance(win, bool) or not isinstance(win, (int, float)) or not np.isfinite(win):
-        win = 24
-    win = max(1, int(win))
+    win = safe_pos_int(win, default=24)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     r = np.diff(logp)
@@ -72,9 +72,9 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     """For each test hour i sampled by stride, give the model rv[:i+1] capped at
     MAX_CONTEXT and request a +horizon-hour prediction. Compare against persistence
     rv[i] and actual rv[i+horizon]."""
-    horizon = max(1, _safe_int(horizon, 24))
-    stride = max(1, _safe_int(stride, 6))
-    warmup = max(0, _safe_int(warmup, 0))
+    horizon = safe_pos_int(horizon, default=24)
+    stride = safe_pos_int(stride, default=6)
+    warmup = safe_nonneg_int(warmup, default=0)
     n = len(rv)
     idxs = [
         i for i in range(warmup, n - horizon, stride)
