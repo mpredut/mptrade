@@ -37,7 +37,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float, safe_pos_float
 
-_safe_nonneg_f = safe_nonneg_float
 from cachepaths import cache_path
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
