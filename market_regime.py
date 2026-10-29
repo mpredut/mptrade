@@ -567,26 +567,19 @@ class MarketRegimeService:
         clock=time.monotonic,
     ):
         self.evaluator = MarketRegimeEvaluator(strength_threshold)
-        if (
-            isinstance(cache_ttl_sec, bool)
-            or isinstance(negative_cache_ttl_sec, bool)
-            or isinstance(cache_max, bool)
-        ):
-            raise ValueError("cache settings must be numeric, not boolean")
-        self.cache_ttl_sec = float(cache_ttl_sec)
-        self.negative_cache_ttl_sec = float(negative_cache_ttl_sec)
-        cm_f = float(cache_max)
-        if not math.isfinite(cm_f) or not cm_f.is_integer():
-            raise ValueError("cache_max must be a finite integer")
-        self.cache_max = max(1, int(cm_f))
-        self.clock = clock
-        if not math.isfinite(self.cache_ttl_sec) or self.cache_ttl_sec < 0:
+        ttl = safe_nonneg_float(cache_ttl_sec, default=None)
+        neg_ttl = safe_nonneg_float(negative_cache_ttl_sec, default=None)
+        c_max = safe_pos_int(cache_max, default=None)
+        if ttl is None:
             raise ValueError("cache_ttl_sec must be finite and >= 0")
-        if (
-            not math.isfinite(self.negative_cache_ttl_sec)
-            or self.negative_cache_ttl_sec < 0
-        ):
+        if neg_ttl is None:
             raise ValueError("negative_cache_ttl_sec must be finite and >= 0")
+        if c_max is None:
+            raise ValueError("cache_max must be a finite integer")
+        self.cache_ttl_sec = ttl
+        self.negative_cache_ttl_sec = neg_ttl
+        self.cache_max = c_max
+        self.clock = clock
         self._cache = OrderedDict()
         self._lock = threading.Lock()
 
