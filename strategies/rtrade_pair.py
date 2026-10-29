@@ -24,8 +24,33 @@ from providers.base import _clean_single_order_id, normalize_side
 
 
 _MAX_LIMIT_REVISION = 1_000_000
+_TERMINAL_PHASES = {"complete", "expired", "failed", "hard_stop"}
+_TERMINAL_ORDER_STATUSES = {"closed", "canceled", "expired"}
 _clean_pair_id = _clean_single_order_id
 _clean_ticket_order_id = _clean_single_order_id
+
+
+def _parse_nonneg_int(
+    val: object,
+    *,
+    max_val: Optional[int] = None,
+    error_msg: str = "must be a non-negative integer",
+) -> int:
+    iv = safe_int(val, default=None)
+    if iv is None or iv < 0 or (isinstance(val, float) and not val.is_integer()):
+        raise ValueError(error_msg)
+    if max_val is not None and iv > max_val:
+        raise ValueError(error_msg)
+    return iv
+
+
+def _clean_optional_reason(val: object, label: str) -> Optional[str]:
+    if val is None:
+        return None
+    if isinstance(val, (bool, dict, list, tuple, set, frozenset)):
+        raise ValueError(f"invalid rtrade checkpoint {label}")
+    s = str(val).strip()
+    return s if s else None
 
 
 @dataclass
@@ -48,15 +73,13 @@ class OrderTicket:
             raise ValueError("ticket rtrade invalid")
         px = safe_pos_float(self.price, default=None)
         q = safe_pos_float(self.qty, default=None)
-        rev = safe_int(self.revision, default=None)
-        if (
-            px is None
-            or q is None
-            or rev is None
-            or not 0 <= rev <= _MAX_LIMIT_REVISION
-            or (isinstance(self.revision, float) and not self.revision.is_integer())
-        ):
+        if px is None or q is None:
             raise ValueError("ticket rtrade invalid")
+        rev = _parse_nonneg_int(
+            self.revision,
+            max_val=_MAX_LIMIT_REVISION,
+            error_msg="ticket rtrade invalid",
+        )
         self.price = px
         self.qty = q
         self.revision = rev
@@ -133,9 +156,10 @@ class PairPolicy:
         if not self.shock_hard_stop_fraction <= self.hard_stop_fraction < 1:
             raise ValueError(
                 "hard_stop_fraction must be >= shock_hard_stop_fraction and < 1")
-        pd = safe_int(self.price_decimals, default=None)
-        if pd is None or pd < 0 or (isinstance(self.price_decimals, float) and not self.price_decimals.is_integer()):
-            raise ValueError("price_decimals must be a non-negative integer")
+        pd = _parse_nonneg_int(
+            self.price_decimals,
+            error_msg="price_decimals must be a non-negative integer",
+        )
         object.__setattr__(self, "price_decimals", pd)
 
 
@@ -199,9 +223,7 @@ def quote_prices(mid: float, adjustment_fraction: float,
     adj_f = safe_float(adjustment_fraction, default=None)
     if adj_f is None or not 0 < adj_f < 1:
         raise ValueError("adjustment_fraction must be in (0, 1)")
-    dec_i = safe_int(decimals, default=None)
-    if dec_i is None or dec_i < 0 or (isinstance(decimals, float) and not decimals.is_integer()):
-        raise ValueError("decimals must be a non-negative integer")
+    dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
     return (
         round(mid_f * (1 - adj_f), dec_i),
         round(mid_f * (1 + adj_f), dec_i),
@@ -228,9 +250,7 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
     edge_f = safe_float(min_edge_fraction, default=None)
     if edge_f is None or not 0 <= edge_f < 1:
         raise ValueError("min_edge_fraction must be in [0, 1)")
-    dec_i = safe_int(decimals, default=None)
-    if dec_i is None or dec_i < 0 or (isinstance(decimals, float) and not decimals.is_integer()):
-        raise ValueError("decimals must be a non-negative integer")
+    dec_i = _parse_nonneg_int(decimals, error_msg="decimals must be a non-negative integer")
     if side == "SELL":
         market_target = cur_f * (1 + adj_f)
         floor = fill_f / (1 - edge_f)
@@ -280,7 +300,7 @@ class PairCoordinator:
 
     def start(self, mid: Optional[float] = None,
               pair_id: Optional[str] = None) -> PairOutcome:
-        if self.phase not in {"idle", "complete", "expired", "failed", "hard_stop"}:
+        if self.phase != "idle" and self.phase not in _TERMINAL_PHASES:
             raise RuntimeError("the existing round is not terminal")
         raw_mid = mid if mid is not None else (self.venue.current_price() or 0.0)
         mid_f = safe_float(raw_mid, default=None)
@@ -437,7 +457,7 @@ class PairCoordinator:
         ):
             raise ValueError("invalid rtrade checkpoint phase")
         obj.phase = str(raw_phase).strip()
-        obj.reason = state.get("reason")
+        obj.reason = _clean_optional_reason(state.get("reason"), "reason")
         obj.shock = _parse_bool_flag(state.get("shock", False), default=False)
         raw_elapsed = state.get("elapsed_sec")
         if raw_elapsed is None:
@@ -455,7 +475,16 @@ class PairCoordinator:
             if ff_f is None:
                 raise ValueError("invalid rtrade checkpoint first_fill_elapsed_sec")
             obj.first_fill_at = obj.started_at + max(0.0, ff_f)
-        obj.first_fill_side = state.get("first_fill_side")
+        raw_ffs = state.get("first_fill_side")
+        if raw_ffs is None:
+            obj.first_fill_side = None
+        elif isinstance(raw_ffs, bool):
+            raise ValueError("invalid rtrade checkpoint first_fill_side")
+        else:
+            ffs_u = str(raw_ffs).strip().upper()
+            if ffs_u not in {"BUY", "SELL", "BOTH"}:
+                raise ValueError("invalid rtrade checkpoint first_fill_side")
+            obj.first_fill_side = ffs_u
         raw_tickets = state.get("tickets")
         if not isinstance(raw_tickets, list):
             raise ValueError("invalid rtrade checkpoint tickets")
@@ -503,18 +532,26 @@ class PairCoordinator:
         def _parse_revision(raw_val, label: str) -> int:
             if raw_val is None:
                 return 0
-            rev_f = safe_float(raw_val, default=None)
-            if rev_f is None or not rev_f.is_integer() or not 0 <= int(rev_f) <= _MAX_LIMIT_REVISION:
-                raise ValueError(f"invalid {label}: {raw_val}")
-            return int(rev_f)
+            return _parse_nonneg_int(
+                raw_val,
+                max_val=_MAX_LIMIT_REVISION,
+                error_msg=f"invalid {label}: {raw_val}",
+            )
 
         obj.limit_revisions = {
             side: _parse_revision(stored_limit_revisions.get(side, 0), f"{side} limit revision")
             for side in ("BUY", "SELL")
         }
         obj.hard_stop_revision = _parse_revision(state.get("hard_stop_revision", 0), "hard-stop revision")
-        obj.hard_stop_reason = state.get("hard_stop_reason")
+        obj.hard_stop_reason = _clean_optional_reason(state.get("hard_stop_reason"), "hard_stop_reason")
         return obj
+
+    def _append_unique_ticket(self, ticket: OrderTicket) -> OrderTicket:
+        for known in self.tickets:
+            if known.order_id == ticket.order_id:
+                return known
+        self.tickets.append(ticket)
+        return ticket
 
     def _cancel(self, ticket: OrderTicket) -> bool:
         if not ticket.active:
@@ -554,15 +591,9 @@ class PairCoordinator:
                 f"{self.pair_id}: {exc}")
             return False
         for ticket, snapshot, kind in recovered:
-            existing = next(
-                (known for known in self.tickets
-                 if known.order_id == ticket.order_id),
-                None,
-            )
-            if existing is None:
+            if not any(known.order_id == ticket.order_id for known in self.tickets):
                 ticket.pair_id = self.pair_id
-                self.tickets.append(ticket)
-                existing = ticket
+            existing = self._append_unique_ticket(ticket)
             existing.active = snapshot.status == "open"
             self.snapshots[existing.order_id] = snapshot
             limit_revision = self._intent_revision(kind, "limit")
@@ -602,7 +633,7 @@ class PairCoordinator:
             return None, "status_unavailable"
         self.snapshots[ticket.order_id] = snapshot
         ticket.active = snapshot.status == "open"
-        if not snapshot.status in {"closed", "canceled", "expired"}:
+        if snapshot.status not in _TERMINAL_ORDER_STATUSES:
             return None, "status_unconfirmed"
         return snapshot, None
 
@@ -762,7 +793,7 @@ class PairCoordinator:
         elif latest_exit is not None:
             latest_snapshot = self.snapshots.get(
                 latest_exit.order_id, OrderSnapshot())
-            if latest_snapshot.status not in {"closed", "canceled", "expired"}:
+            if latest_snapshot.status not in _TERMINAL_ORDER_STATUSES:
                 self.reason = "exit_status_unconfirmed"
                 return False
             current_revision = self.limit_revisions[exit_side]
@@ -785,10 +816,7 @@ class PairCoordinator:
         if replacement is None:
             self.reason = "exit_place_failed"
             return False
-        if not any(
-                known.order_id == replacement.order_id
-                for known in self.tickets):
-            self.tickets.append(replacement)
+        self._append_unique_ticket(replacement)
         return True
 
     def _submit_hard_stop(self, exposure_side: str, net_qty: float,
@@ -865,10 +893,7 @@ class PairCoordinator:
             else:
                 self.reason = "hard_stop_place_failed"
             return False
-        if not any(
-                known.order_id == market.order_id
-                for known in self.tickets):
-            self.tickets.append(market)
+        self._append_unique_ticket(market)
         self.stop_ticket = market
         self.hard_stop_reason = reason
         self.phase = "stopping"
@@ -923,10 +948,7 @@ class PairCoordinator:
                 self.reason = "hard_stop_retry_failed"
             return False
         self.hard_stop_revision = next_revision
-        if not any(
-                known.order_id == market.order_id
-                for known in self.tickets):
-            self.tickets.append(market)
+        self._append_unique_ticket(market)
         self.stop_ticket = market
         self.phase = "stopping"
         self.reason = reason
@@ -953,7 +975,7 @@ class PairCoordinator:
         return False, bq, bc, sq, sc, net
 
     def step(self, now: Optional[float] = None) -> PairOutcome:
-        if self.phase in {"complete", "expired", "failed", "hard_stop"}:
+        if self.phase in _TERMINAL_PHASES:
             return self.outcome()
         if self.phase == "idle":
             raise RuntimeError("start() must be called before step()")
@@ -1015,7 +1037,7 @@ class PairCoordinator:
                 None if self.stop_ticket is None
                 else self.snapshots.get(self.stop_ticket.order_id))
             if (stop_snapshot is not None
-                    and stop_snapshot.status in {"closed", "canceled", "expired"}):
+                    and stop_snapshot.status in _TERMINAL_ORDER_STATUSES):
                 self._retry_terminal_hard_stop(net)
             return self.outcome()
 
@@ -1088,7 +1110,7 @@ class PairCoordinator:
         return PairOutcome(
             phase=self.phase,
             pair_id=self.pair_id,
-            terminal=self.phase in {"complete", "expired", "failed", "hard_stop"},
+            terminal=self.phase in _TERMINAL_PHASES,
             shock=self.shock,
             first_fill_side=self.first_fill_side,
             fill_latency_sec=latency,

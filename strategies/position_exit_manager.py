@@ -468,6 +468,29 @@ def _resolve_nonneg_threshold(custom_val: Any, default_val: float) -> float:
     return safe_nonneg_float(custom_val, default=safe_nonneg_float(default_val, default=0.0) or 0.0)
 
 
+def _same_buy_price(stored_buy_price: Any, buy_price: float) -> bool:
+    ebp = safe_pos_float(stored_buy_price, default=None)
+    cbp = safe_pos_float(buy_price, default=None)
+    return ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12)
+
+
+def _sanitize_position_state(
+    state_map: Dict[str, Dict[str, Any]],
+    symbol: str,
+    buy_price: float,
+) -> Optional[Dict[str, Any]]:
+    existing = state_map.get(symbol)
+    if existing is None:
+        return None
+    if not isinstance(existing, dict):
+        state_map.pop(symbol, None)
+        return None
+    if existing.get("buy_price") is not None and not _same_buy_price(existing.get("buy_price"), buy_price):
+        state_map.pop(symbol, None)
+        return None
+    return existing
+
+
 PERSISTED_EXIT_STATE_KEYS: Tuple[str, ...] = (
     "sl_bounce_state",
     "sl_episode_state",
@@ -533,36 +556,35 @@ class PositionExitManager:
         """Clear tracking state for a single symbol or all symbols."""
         sym_clean = _clean_symbol_str(symbol)
         if sym_clean:
-            self.sl_bounce_state.pop(sym_clean, None)
-            self.sl_episode_state.pop(sym_clean, None)
-            self.tp_ride_state.pop(sym_clean, None)
-            self.reentry_state.pop(sym_clean, None)
+            for key in PERSISTED_EXIT_STATE_KEYS:
+                getattr(self, key).pop(sym_clean, None)
             self._last_popped_reentry_state.pop(sym_clean, None)
             self.hard_tp_last.pop(sym_clean, None)
         else:
-            self.sl_bounce_state.clear()
-            self.sl_episode_state.clear()
-            self.tp_ride_state.clear()
-            self.reentry_state.clear()
+            for key in PERSISTED_EXIT_STATE_KEYS:
+                getattr(self, key).clear()
             self._last_popped_reentry_state.clear()
             self.hard_tp_last.clear()
 
     def get_state(self, symbol: str) -> Dict[str, Any]:
         """Return the current active states for a symbol."""
         sym_clean = _clean_symbol_str(symbol)
-        return {
-            "sl_bounce_state": self.sl_bounce_state.get(sym_clean),
-            "sl_episode_state": self.sl_episode_state.get(sym_clean),
-            "tp_ride_state": self.tp_ride_state.get(sym_clean),
-            "reentry_state": self.reentry_state.get(sym_clean),
-            "hard_tp_last": self.hard_tp_last.get(sym_clean),
-        }
+        out = {key: getattr(self, key).get(sym_clean) for key in PERSISTED_EXIT_STATE_KEYS}
+        out["hard_tp_last"] = self.hard_tp_last.get(sym_clean)
+        return out
 
     def reset_sl_episode(self, symbol: str) -> None:
         """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
         sym_clean = _clean_symbol_str(symbol)
         if not sym_clean:
             return
+        self.sl_episode_state.pop(sym_clean, None)
+
+    def _clear_sl_tracking(self, symbol: str) -> None:
+        sym_clean = _clean_symbol_str(symbol)
+        if not sym_clean:
+            return
+        self.sl_bounce_state.pop(sym_clean, None)
         self.sl_episode_state.pop(sym_clean, None)
 
     def _lock_episode_disaster_floor(
@@ -583,14 +605,8 @@ class PositionExitManager:
             (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
         """
         sym_clean = _clean_symbol_str(symbol)
-        episode = self.sl_episode_state.get(sym_clean)
-        if not isinstance(episode, dict):
-            episode = None
-        same_buy = False
-        if episode is not None and episode.get("buy_price") is not None:
-            ebp = safe_pos_float(episode.get("buy_price"), default=None)
-            cbp = safe_pos_float(buy_price, default=None)
-            same_buy = (ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12))
+        episode = _sanitize_position_state(self.sl_episode_state, sym_clean, buy_price)
+        same_buy = bool(episode is not None and episode.get("buy_price") is not None)
         if episode is None or not same_buy:
             self.sl_episode_state[sym_clean] = {
                 "started_at": now,
@@ -705,7 +721,7 @@ class PositionExitManager:
     ) -> ExitDecision:
         decision = self._evaluate_stop_loss_core(snapshot, custom_threshold=custom_threshold)
         if decision.action == ExitAction.SELL or decision.should_exit:
-            _clear_smart_sl(snapshot.symbol, snapshot.provider)
+            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
         return decision
 
     def _evaluate_stop_loss_core(
@@ -719,7 +735,7 @@ class PositionExitManager:
         Priority 2: Bounce Protection (Trend Deferral, Dynamic Ratchet, Structural Breakdown)
         Priority 3: Smart Stop-Loss Controller / Direct Exit
         """
-        symbol = snapshot.symbol
+        symbol = _clean_symbol_str(snapshot.symbol)
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
         now = _resolve_now_s(snapshot.current_time_s)
@@ -733,21 +749,13 @@ class PositionExitManager:
         price_decrease = snapshot.loss_ratio
 
         # Stop-loss boundary check
-        existing_bounce = self.sl_bounce_state.get(symbol)
-        if existing_bounce is not None and not isinstance(existing_bounce, dict):
-            self.sl_bounce_state.pop(symbol, None)
-            existing_bounce = None
-        if existing_bounce is not None and existing_bounce.get("buy_price") is not None:
-            ebp = safe_pos_float(existing_bounce.get("buy_price"), default=None)
-            if ebp is None or not math.isclose(ebp, buy_price, rel_tol=1e-9, abs_tol=1e-12):
-                self.sl_bounce_state.pop(symbol, None)
+        _sanitize_position_state(self.sl_bounce_state, symbol, buy_price)
 
         in_sl_territory = snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct)
 
         if not in_sl_territory:
             # Full recovery above stop-loss territory ends the SL episode
-            self.sl_bounce_state.pop(symbol, None)
-            self.reset_sl_episode(symbol)
+            self._clear_sl_tracking(symbol)
             return ExitDecision(ExitAction.HOLD, False, "not_in_sl_territory")
 
         # Compute dynamic disaster floor
@@ -1017,7 +1025,7 @@ class PositionExitManager:
             and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
         ):
             return None
-        symbol = snapshot.symbol
+        symbol = _clean_symbol_str(snapshot.symbol)
         last_hard = safe_pos_float(self.hard_tp_last.get(symbol), 0.0)
         if last_hard > now:
             last_hard = 0.0
@@ -1044,7 +1052,7 @@ class PositionExitManager:
     ) -> ExitDecision:
         decision = self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)
         if decision.action == ExitAction.SELL or decision.should_exit:
-            _clear_smart_sl(snapshot.symbol, snapshot.provider)
+            _clear_smart_sl(_clean_symbol_str(snapshot.symbol), snapshot.provider)
         return decision
 
     def compute_tp_anomaly_pullback(
@@ -1099,7 +1107,7 @@ class PositionExitManager:
         Priority 4: Stagnation Timeout (18 minutes)
         Priority 5: Trend Reversal Exit
         """
-        symbol = snapshot.symbol
+        symbol = _clean_symbol_str(snapshot.symbol)
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
         now = _resolve_now_s(snapshot.current_time_s)
@@ -1124,14 +1132,7 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
 
-        existing_ride = self.tp_ride_state.get(symbol)
-        if existing_ride is not None and not isinstance(existing_ride, dict):
-            self.tp_ride_state.pop(symbol, None)
-            existing_ride = None
-        if existing_ride is not None and existing_ride.get("buy_price") is not None:
-            ebp = safe_pos_float(existing_ride.get("buy_price"), default=None)
-            if ebp is None or not math.isclose(ebp, buy_price, rel_tol=1e-9, abs_tol=1e-12):
-                self.tp_ride_state.pop(symbol, None)
+        _sanitize_position_state(self.tp_ride_state, symbol, buy_price)
 
         # Gap down below cost while riding profit is an emergency breach of the profit floor
         if snapshot.gain_ratio <= 0:
@@ -1340,7 +1341,7 @@ class PositionExitManager:
             pullback (avoids buying top). In chop/range, enforces discount drop below sale.
           - Safety: Decays restrictions once TTL expires.
         """
-        symbol = snapshot.symbol
+        symbol = _clean_symbol_str(snapshot.symbol)
         current_price = snapshot.current_price
         last_sell = snapshot.last_sell_price
         last_kind = (
@@ -1463,7 +1464,6 @@ class PositionExitManager:
                     )
 
             if not snapshot.has_bounced(trough, bounce_required, self.config.reentry_tolerance_pct):
-                state["peak_bounce"] = max(state.get("peak_bounce", current_price), current_price)
                 target_px = trough * (1.0 + bounce_required)
                 return ReentryDecision(
                     ReentryAction.WAIT,
@@ -1473,7 +1473,6 @@ class PositionExitManager:
                 )
 
             # Ratchet Rollover Check: Track peak since bounce
-            state["peak_bounce"] = max(state.get("peak_bounce", current_price), current_price)
             peak_bounce = state["peak_bounce"]
             if self.config.reentry_ratchet_enabled and peak_bounce > current_price:
                 pullback_from_bounce = (peak_bounce - current_price) / peak_bounce
@@ -1570,53 +1569,50 @@ class PositionExitManager:
         """Unified entrypoint evaluating position exits in strict mirror sequence."""
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
+        symbol = _clean_symbol_str(snapshot.symbol)
 
         # Check Hard TP (Spike Exit) first without mutating tp_ride_state if on cooldown
         tp_spike = self._check_hard_tp_spike(snapshot, _resolve_now_s(snapshot.current_time_s))
         if tp_spike is not None:
-            _clear_smart_sl(snapshot.symbol, snapshot.provider)
+            _clear_smart_sl(symbol, snapshot.provider)
             return tp_spike
 
         # Check Stop-Loss (unless an active MDHTP profit ride is in progress, in which
         # case evaluate_take_profit must fire mdhtp_profit_floor_breached immediately)
         eff_sl = _resolve_positive_threshold(sl_threshold, self.config.lost_threshold)
-        in_sl = (snapshot.symbol not in self.tp_ride_state) and (
+        in_sl = (symbol not in self.tp_ride_state) and (
             snapshot.in_sl_territory(eff_sl, self.config.are_close_tolerance_pct)
-            or (snapshot.symbol in self.sl_bounce_state)
+            or (symbol in self.sl_bounce_state)
         )
         if in_sl:
             sl_decision = self.evaluate_stop_loss(snapshot, custom_threshold=eff_sl)
             if sl_decision.should_exit:
-                self.tp_ride_state.pop(snapshot.symbol, None)
+                self.tp_ride_state.pop(symbol, None)
                 return sl_decision
             elif sl_decision.action == ExitAction.HOLD and (
                 "mhdsl_bounce" in sl_decision.reason or "smart_stop_loss" in sl_decision.reason
             ):
-                self.tp_ride_state.pop(snapshot.symbol, None)
+                self.tp_ride_state.pop(symbol, None)
                 return sl_decision
         else:
-            self.sl_bounce_state.pop(snapshot.symbol, None)
-            self.reset_sl_episode(snapshot.symbol)
+            self._clear_sl_tracking(symbol)
 
         # Check Take-Profit
         eff_tp = _resolve_positive_threshold(tp_threshold, self.config.gain_threshold)
         in_tp = (
             snapshot.in_tp_territory(eff_tp, self.config.are_close_tolerance_pct)
-            or (snapshot.symbol in self.tp_ride_state)
+            or (symbol in self.tp_ride_state)
         )
         if in_tp:
             tp_decision = self.evaluate_take_profit(snapshot, custom_threshold=eff_tp)
             if tp_decision.should_exit:
-                self.sl_bounce_state.pop(snapshot.symbol, None)
-                self.reset_sl_episode(snapshot.symbol)
+                self._clear_sl_tracking(symbol)
                 return tp_decision
             elif tp_decision.action == ExitAction.HOLD and "mdhtp" in tp_decision.reason:
-                self.sl_bounce_state.pop(snapshot.symbol, None)
-                self.reset_sl_episode(snapshot.symbol)
+                self._clear_sl_tracking(symbol)
                 return tp_decision
 
         # Neutral corridor: clean up any remaining stale state
-        self.sl_bounce_state.pop(snapshot.symbol, None)
-        self.reset_sl_episode(snapshot.symbol)
-        self.tp_ride_state.pop(snapshot.symbol, None)
+        self._clear_sl_tracking(symbol)
+        self.tp_ride_state.pop(symbol, None)
         return ExitDecision(ExitAction.HOLD, False, "neutral_corridor")

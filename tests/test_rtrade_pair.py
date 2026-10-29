@@ -625,6 +625,17 @@ class PairCoordinatorTest(unittest.TestCase):
         self.assertEqual(restored.phase, "quoting")
         self.assertEqual([t.order_id for t in restored.tickets], ["L1", "L2"])
 
+        for bad_patch in (
+            {"reason": True},
+            {"hard_stop_reason": ["invalid"]},
+            {"first_fill_side": True},
+            {"first_fill_side": "SIDEWAYS"},
+        ):
+            with self.subTest(bad_patch=bad_patch):
+                bad_state = dict(state, **bad_patch)
+                with self.assertRaises(ValueError):
+                    PairCoordinator.from_state(venue, coordinator.policy, bad_state)
+
     def test_hard_stop_thresholds_and_shock_policies(self):
         with self.subTest("stale_preflight_preserves_active_exit"):
             venue = FakeVenue(current=95.0)
