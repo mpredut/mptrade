@@ -1,7 +1,6 @@
 import os
 import time
 import datetime
-import math
 import threading
 
 # Local imports.
@@ -119,7 +118,7 @@ def _validate_tradeall_config():
         "ACCEL_SURGE_THRESHOLD": ACCEL_SURGE_THRESHOLD,
     }
     for name, value in positive.items():
-        if not math.isfinite(float(value)) or float(value) <= 0:
+        if safe_pos_float(value, default=None) is None:
             raise ValueError(f"tradeall config invalid: {name}={value!r}")
     nonnegative_counts = {
         "TREND_MIN_VALIDATED_CONFIRMS": TREND_MIN_VALIDATED_CONFIRMS,
@@ -128,7 +127,7 @@ def _validate_tradeall_config():
     for name, value in nonnegative_counts.items():
         if int(value) < 0:
             raise ValueError(f"tradeall config invalid: {name}={value!r}")
-    if not math.isfinite(TREND_MIN_VALIDATED_SECONDS) or TREND_MIN_VALIDATED_SECONDS < 0:
+    if safe_nonneg_float(TREND_MIN_VALIDATED_SECONDS, default=None) is None:
         raise ValueError(
             f"tradeall config invalid: TREND_MIN_VALIDATED_SECONDS={TREND_MIN_VALIDATED_SECONDS!r}")
     if FIRE_MAX_PER_TREND < 1:
@@ -315,8 +314,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     if not hasattr(_fire_order, "_mock_name"):
         if (
             action not in {"BUY", "SELL"}
-            or not math.isfinite(base_price)
-            or base_price <= 0
+            or safe_pos_float(base_price, default=None) is None
             or symbol not in TRADEALL_FIRE_SYMBOLS
             or _kalman_gate_blocks(symbol, action, reason=reason)[0]
         ):
@@ -757,16 +755,15 @@ class TrendCoordinator:
     """
     def __init__(self, symbols, instant_mgr, current_price_mgr, cache24_managers=None,
                  min_interval=MIN_EVAL_INTERVAL_SEC, max_interval=MAX_EVAL_INTERVAL_SEC):
-        min_interval = float(min_interval)
-        max_interval = float(max_interval)
-        if (not math.isfinite(min_interval) or not math.isfinite(max_interval)
-                or min_interval <= 0 or max_interval <= 0 or min_interval > max_interval):
+        min_i = safe_pos_float(min_interval, default=None)
+        max_i = safe_pos_float(max_interval, default=None)
+        if min_i is None or max_i is None or min_i > max_i:
             raise ValueError("TrendCoordinator intervals must satisfy 0 < min <= max")
         self.symbols = list(dict.fromkeys(symbols))
         self.instant_mgr = instant_mgr
         self.current_price_mgr = current_price_mgr
-        self.min_interval = min_interval
-        self.max_interval = max_interval
+        self.min_interval = min_i
+        self.max_interval = max_i
 
         self._event = threading.Event()
         self._stop = threading.Event()

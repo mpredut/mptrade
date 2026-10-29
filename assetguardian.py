@@ -2,7 +2,6 @@ from __future__ import annotations
 import os
 import hashlib
 import json
-import math
 import time
 
 from binance_api import bapi as api
@@ -185,16 +184,15 @@ _local_price_samples = {symbol: [] for symbol in TRACKED_SYMBOLS}
 
 
 def _validate_config():
-    if not math.isfinite(CHECK_INTERVAL_SECONDS) or CHECK_INTERVAL_SECONDS <= 0:
+    if CHECK_INTERVAL_SECONDS <= 0:
         raise ValueError("AG_CHECK_INTERVAL_SEC must be > 0")
-    if (not math.isfinite(ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
-            or ASSET_REFERENCE_MINUTES_BACK_DEFAULT <= 0):
+    if ASSET_REFERENCE_MINUTES_BACK_DEFAULT <= 0:
         raise ValueError("AG_REFERENCE_MINUTES_BACK must be > 0")
-    if not math.isfinite(BUY_USE_CASH_RATIO) or not 0 < BUY_USE_CASH_RATIO <= 1:
+    if not 0 < BUY_USE_CASH_RATIO <= 1:
         raise ValueError("AG_BUY_USE_CASH_RATIO must be in (0, 1]")
     if not BUY_TIERS or any(
-            not math.isfinite(threshold) or threshold <= 0
-            or not math.isfinite(allocation) or allocation <= 0
+            safe_pos_float(threshold, default=None) is None
+            or safe_pos_float(allocation, default=None) is None
             for threshold, allocation in BUY_TIERS):
         raise ValueError("AG_BUY_TIERS must contain positive threshold:allocation pairs")
     if len({threshold for threshold, _ in BUY_TIERS}) != len(BUY_TIERS):
@@ -202,22 +200,19 @@ def _validate_config():
     if sum(allocation for _, allocation in BUY_TIERS) > 1.0 + 1e-12:
         raise ValueError("the AG_BUY_TIERS weights sum exceeds 1")
     if not SELL_TIERS or any(
-            not math.isfinite(threshold) or threshold <= 0
-            or not math.isfinite(allocation) or allocation <= 0
+            safe_pos_float(threshold, default=None) is None
+            or safe_pos_float(allocation, default=None) is None
             for threshold, allocation in SELL_TIERS):
         raise ValueError("AG_SELL_TIERS must contain positive threshold:allocation pairs")
     if len({threshold for threshold, _ in SELL_TIERS}) != len(SELL_TIERS):
         raise ValueError("AG_SELL_TIERS contains duplicate thresholds")
-    if not math.isclose(
-            sum(allocation for _, allocation in SELL_TIERS), 1.0,
-            rel_tol=0.0, abs_tol=1e-12):
+    if abs(sum(allocation for _, allocation in SELL_TIERS) - 1.0) > 1e-12:
         raise ValueError("the AG_SELL_TIERS weights must sum to exactly 1")
-    if (not math.isfinite(SELL_REARM_GROWTH_PERCENT)
-            or SELL_REARM_GROWTH_PERCENT <= 0
+    if (SELL_REARM_GROWTH_PERCENT <= 0
             or SELL_REARM_GROWTH_PERCENT >= SELL_TIERS[0][0]):
         raise ValueError(
             "AG_SELL_REARM_GROWTH_PCT must be > 0 and below the first SELL threshold")
-    if not math.isfinite(ORDER_MAX_AGE_SECONDS) or ORDER_MAX_AGE_SECONDS <= 0:
+    if ORDER_MAX_AGE_SECONDS <= 0:
         raise ValueError("AG_ORDER_MAX_AGE_SEC must be finite and > 0")
     if ORDER_MISSING_CONFIRMATIONS <= 0:
         raise ValueError("AG_ORDER_MISSING_CONFIRMATIONS must be an integer and > 0")
@@ -232,36 +227,31 @@ def _validate_config():
             (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
             (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC"),
             (P3B_MAX_AGE_SECONDS, "AG_P3B_MAX_AGE_SEC")):
-        if not math.isfinite(value) or value <= 0:
+        if value <= 0:
             raise ValueError(f"{name} must be finite and > 0")
-    if not math.isfinite(PORTFOLIO_SELL_ALLOCATION) or not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
+    if not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
         raise ValueError("AG_PORTFOLIO_SELL_ALLOCATION must be in (0, 1]")
-    if (not math.isfinite(PORTFOLIO_SELL_MAX_DISCOUNT)
-            or not 0 < PORTFOLIO_SELL_MAX_DISCOUNT <= 0.50):
+    if not 0 < PORTFOLIO_SELL_MAX_DISCOUNT <= 0.50:
         raise ValueError("AG_PORTFOLIO_SELL_MAX_DISCOUNT must be in (0, 0.50]")
     if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
         raise ValueError(
             "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
-    if (not math.isfinite(P3B_SELL_DEFENSIVE_MAX_DISCOUNT)
-            or not 0 < P3B_SELL_DEFENSIVE_MAX_DISCOUNT <= 0.50):
+    if not 0 < P3B_SELL_DEFENSIVE_MAX_DISCOUNT <= 0.50:
         raise ValueError(
             "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT must be in (0, 0.50]")
-    if (not math.isfinite(P3B_SELL_TRIM_MAX_DISCOUNT)
-            or not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT):
+    if not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT:
         raise ValueError(
             "AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
     if SELL_TIERS[0][0] * (1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT) <= SELL_REARM_GROWTH_PERCENT:
         raise ValueError(
             "Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
-    if (not math.isfinite(P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
-            or not 0 < P3B_BUY_ACCUMULATE_MAX_DISCOUNT <= 0.50):
+    if not 0 < P3B_BUY_ACCUMULATE_MAX_DISCOUNT <= 0.50:
         raise ValueError(
             "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT must be in (0, 0.50]")
     if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_PERCENT:
         raise ValueError(
             "Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
-    if (not math.isfinite(P3B_BUY_DEFENSIVE_MAX_PENALTY)
-            or not 0 < P3B_BUY_DEFENSIVE_MAX_PENALTY <= 1.0):
+    if not 0 < P3B_BUY_DEFENSIVE_MAX_PENALTY <= 1.0:
         raise ValueError(
             "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY must be in (0, 1.0]")
 
