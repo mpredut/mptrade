@@ -13,6 +13,12 @@ from collections.abc import Iterable, Sequence
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 
 
+def round_metric(value: object, decimals: int = 10) -> object:
+    """Round a finite numeric metric to ``decimals`` places, returning ``value`` unchanged otherwise."""
+    vf = safe_float(value, default=None) if isinstance(value, (int, float)) else None
+    return round(vf, decimals) if vf is not None else value
+
+
 def calculate_performance_metrics(
     equity_curve: Sequence[float],
     *,

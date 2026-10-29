@@ -14,7 +14,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from botcore import _parse_bool_flag, fetch_public_json, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, exact_pos_int, fetch_public_json, safe_float, safe_pos_float
 
 API_URL = "https://api.binance.com/api/v3/klines"
 
@@ -72,10 +72,10 @@ def parse_interval_minutes(interval: int | str) -> int:
                 raise ValueError(f"interval must be positive: {interval}")
             return val
         raise ValueError(f"unsupported Binance interval: {interval}")
-    val_f = safe_pos_float(interval, default=None)
-    if val_f is None or not val_f.is_integer():
+    val_i = exact_pos_int(interval, default=None)
+    if val_i is None:
         raise ValueError(f"interval must be a positive integer number of minutes: {interval}")
-    return int(val_f)
+    return val_i
 
 
 def interval_to_binance_str(interval: int | str) -> str:

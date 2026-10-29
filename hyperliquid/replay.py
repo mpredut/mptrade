@@ -33,7 +33,7 @@ from offline.backtests.execution import (
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import calculate_performance_metrics
+from offline.backtests.metrics import calculate_performance_metrics, round_metric
 
 
 def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
@@ -349,7 +349,7 @@ def _run_once(
         turnover_notional=turnover_notional,
     )
 
-    rounded = lambda v: round(f, 10) if (f := safe_float(v, default=None)) is not None else v
+    rounded = round_metric
     result = {
         "realized": rounded(realized),
         "net": rounded(realized + funding),

@@ -3,7 +3,7 @@ import time
 import threading
 
 from binance.client import Client
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import exact_pos_int, safe_nonneg_float, safe_pos_float
 
 ####MYLIB
 _client = None
@@ -58,10 +58,9 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
         t0_ms = int(time.time() * 1000)
         srv_resp = _client.get_server_time()
         raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
-        srv_f = safe_pos_float(raw_srv, default=None)
-        if srv_f is None or not srv_f.is_integer():
+        server_ms = exact_pos_int(raw_srv, default=None)
+        if server_ms is None:
             raise ValueError("invalid serverTime in Binance response")
-        server_ms = int(srv_f)
         t1_ms = int(time.time() * 1000)
         local_ms = (t0_ms + t1_ms) // 2
         _client.timestamp_offset = server_ms - local_ms - margin_ms

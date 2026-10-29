@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 
 import symbols as sym
 from binance_api import bapi as api
-from botcore import required_env, safe_pos_float, safe_pos_int
+from botcore import exact_pos_int, required_env, safe_pos_float, safe_pos_int
 from cachepaths import cache_path, normalize_venue_name
 
 # Import the base classes from cacheManager
@@ -63,6 +63,13 @@ class PricePlatformInterface(ABC):
     
     def refresh_symbols(self):
         pass
+
+    def _supports_in_set(self, symbol: str, symbols_set: Set[str]) -> bool:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        sym_up = symbol.strip().upper()
+        self.refresh_symbols()
+        return sym_up in symbols_set or get_base_symbol(sym_up) in symbols_set
 
 
 class BinancePricePlatform(PricePlatformInterface):
@@ -156,45 +163,37 @@ class BinancePricePlatform(PricePlatformInterface):
         self.refresh_symbols()
         return self._supported_symbols.copy()
     
+    def _resolve_trading_pair(self, symbol: str) -> Optional[str]:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return None
+        sym_up = symbol.strip().upper()
+        if sym_up in self._symbol_mapping:
+            return self._symbol_mapping[sym_up]
+        pair = f"{sym_up}USDC"
+        if pair in self._supported_symbols or pair in self._usdc_pairs:
+            return pair
+        if sym_up in self._supported_symbols or sym_up in self._usdc_pairs:
+            return sym_up
+        base = get_base_symbol(sym_up)
+        if base in self._symbol_mapping:
+            return self._symbol_mapping[base]
+        base_pair = f"{base}USDC"
+        if base_pair in self._supported_symbols or base_pair in self._usdc_pairs:
+            return base_pair
+        return None
+
     def supports_symbol(self, symbol: str) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
             return False
-        symbol = symbol.strip().upper()
         self.refresh_symbols()
-        if symbol in self._supported_symbols:
-            return True
-        if symbol in self._symbol_mapping:
-            return True
-        pair = f"{symbol}USDC"
-        if pair in self._supported_symbols or pair in self._usdc_pairs:
-            return True
-        base = get_base_symbol(symbol)
-        if base in self._symbol_mapping or f"{base}USDC" in self._usdc_pairs:
-            return True
-        return False
+        return self._resolve_trading_pair(symbol) is not None
     
     def get_price(self, symbol: str) -> Optional[float]:
         try:
-            if not isinstance(symbol, str) or not symbol.strip():
-                return None
-            symbol = symbol.strip().upper()
-            trading_pair = None
-            
-            if symbol in self._symbol_mapping:
-                trading_pair = self._symbol_mapping[symbol]
-            elif f"{symbol}USDC" in self._supported_symbols:
-                trading_pair = f"{symbol}USDC"
-            elif symbol in self._supported_symbols:
-                trading_pair = symbol
-            else:
-                base = get_base_symbol(symbol)
-                if base in self._symbol_mapping:
-                    trading_pair = self._symbol_mapping[base]
-                elif f"{base}USDC" in self._supported_symbols:
-                    trading_pair = f"{base}USDC"
-            
+            trading_pair = self._resolve_trading_pair(symbol)
             if not trading_pair:
-                print(f"[BinancePlatform] No trading pair found for {symbol}")
+                if isinstance(symbol, str) and symbol.strip():
+                    print(f"[BinancePlatform] No trading pair found for {symbol.strip().upper()}")
                 return None
 
             price = self.api_client.get_current_price(symbol=trading_pair)
@@ -203,7 +202,7 @@ class BinancePricePlatform(PricePlatformInterface):
                 if price is None or isinstance(price, bool):
                     print(f"[BinancePlatform] Could not get price for {trading_pair}")
                 return None
-            print(f"[BinancePlatform] {symbol} -> {trading_pair} = ${price_val}")
+            print(f"[BinancePlatform] {symbol.strip().upper()} -> {trading_pair} = ${price_val}")
             return price_val
 
         except Exception as e:
@@ -252,14 +251,7 @@ class HyperliquidPricePlatform(PricePlatformInterface):
         return self._supported_symbols.copy()
     
     def supports_symbol(self, symbol: str) -> bool:
-        if not isinstance(symbol, str) or not symbol.strip():
-            return False
-        symbol = symbol.strip().upper()
-        self.refresh_symbols()
-        if symbol in self._supported_symbols:
-            return True
-        base = get_base_symbol(symbol)
-        return base in self._supported_symbols
+        return self._supports_in_set(symbol, self._supported_symbols)
     
     def get_price(self, symbol: str) -> Optional[float]:
         try:
@@ -388,14 +380,9 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         return self._supported_symbols.copy()
     
     def supports_symbol(self, symbol: str) -> bool:
-        if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
+        if not self.api_key:
             return False
-        symbol = symbol.strip().upper()
-        self.refresh_symbols()
-        if symbol in self._supported_symbols:
-            return True
-        base = get_base_symbol(symbol)
-        return base in self._supported_symbols
+        return self._supports_in_set(symbol, self._supported_symbols)
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
         if not isinstance(data, dict):
@@ -828,10 +815,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         return None
 
     def get_price_history(self, symbol: str, limit: int = 100) -> List[Dict]:
-        lim_f = safe_pos_float(limit, default=None)
-        if lim_f is None or not lim_f.is_integer() or not isinstance(symbol, str) or not symbol.strip():
+        limit_i = exact_pos_int(limit, default=None)
+        if limit_i is None or not isinstance(symbol, str) or not symbol.strip():
             return []
-        limit_i = int(lim_f)
         sym_clean = symbol.strip()
         # Copy only references under the lock. Convert and format afterward so datetime
         # work and allocations do not block price synchronization.

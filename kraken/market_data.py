@@ -14,10 +14,10 @@ import urllib.parse
 import urllib.request
 
 try:
-    from kraken.kraken_common import log, safe_nonneg_float, safe_pos_float
+    from kraken.kraken_common import exact_nonneg_int, exact_pos_int, log, safe_nonneg_float, safe_pos_float
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
-    from kraken_common import log, safe_nonneg_float, safe_pos_float
+    from kraken_common import exact_nonneg_int, exact_pos_int, log, safe_nonneg_float, safe_pos_float
     from kraken_client import KrakenClient, KrakenError
 
 
@@ -40,11 +40,11 @@ def fetch_ohlc_candles(
         raise ValueError("interval and timeout must not be boolean")
     if isinstance(interval, float) or (isinstance(interval, str) and "." in interval.strip()):
         raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-    itv_f = safe_pos_float(interval, default=None)
+    itv_i = exact_pos_int(interval, default=None)
     to_f = safe_pos_float(timeout, default=None)
-    if itv_f is None or to_f is None or not itv_f.is_integer():
+    if itv_i is None or to_f is None:
         raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-    interval = int(itv_f)
+    interval = itv_i
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     from botcore import fetch_public_json
@@ -143,9 +143,9 @@ def pair_precision(info: dict) -> tuple[int, int, float]:
     """Return (price decimals, volume decimals, minimum order) from pair metadata."""
     if not isinstance(info, dict):
         return 2, 8, 0.0
-    p_val = safe_nonneg_float(info.get("pair_decimals"), default=None)
-    price_dec = int(p_val) if p_val is not None and p_val <= 18 and p_val.is_integer() else 2
-    v_val = safe_nonneg_float(info.get("lot_decimals"), default=None)
-    vol_dec = int(v_val) if v_val is not None and v_val <= 18 and v_val.is_integer() else 8
+    p_val = exact_nonneg_int(info.get("pair_decimals"), default=None)
+    price_dec = p_val if p_val is not None and p_val <= 18 else 2
+    v_val = exact_nonneg_int(info.get("lot_decimals"), default=None)
+    vol_dec = v_val if v_val is not None and v_val <= 18 else 8
     ordermin = safe_nonneg_float(info.get("ordermin", 0), default=0.0)
     return price_dec, vol_dec, ordermin

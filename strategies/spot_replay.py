@@ -16,7 +16,7 @@ from offline.backtests.execution import (
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import calculate_performance_metrics
+from offline.backtests.metrics import calculate_performance_metrics, round_metric
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as _strat
 
@@ -356,9 +356,7 @@ def _run_once(
         trade_pnls=trade_pnls,
         turnover_notional=turnover_notional,
     )
-    def rounded(value):
-        vf = safe_float(value, default=None) if isinstance(value, (int, float)) else None
-        return round(vf, 10) if vf is not None else value
+    rounded = round_metric
     result = {
         "realized": rounded(strategy.s["realized_gross"]),
         "net": rounded(strategy.s["realized_net"]),

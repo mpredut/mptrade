@@ -32,20 +32,25 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from kraken.kraken_common import (
-        _parse_bool_flag, log, load_env_stack, single_instance, required_env,
+        _parse_bool_flag, exact_pos_int, log, load_env_stack, single_instance, required_env,
         required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
     from kraken.notify import notify
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
     from kraken_common import (
-        _parse_bool_flag, log, load_env_stack, single_instance, required_env,
+        _parse_bool_flag, exact_pos_int, log, load_env_stack, single_instance, required_env,
         required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
     from notify import notify
     from kraken_client import KrakenClient, KrakenError
 from state_io import load_json_state, save_json_state
 from credentials import kraken_credentials
+
+
+def _clean_pid(pid: object) -> int | None:
+    pi = exact_pos_int(pid, default=None)
+    return pi if (pi is not None and pi > 1) else None
 
 
 def _state_file() -> str:
@@ -106,9 +111,7 @@ def _load_state() -> dict:
             merged["allocated"] = None
     else:
         merged["allocated"] = None
-    raw_pid = merged.get("bot_pid")
-    pf = safe_float(raw_pid, default=None)
-    merged["bot_pid"] = int(pf) if (pf is not None and pf.is_integer() and int(pf) > 1) else None
+    merged["bot_pid"] = _clean_pid(merged.get("bot_pid"))
     return merged
 
 
@@ -298,10 +301,10 @@ BOT_LOG = os.path.join(_HERE, "xstock_bot.log")
 
 
 def _bot_alive(pid) -> bool:
-    pf = safe_float(pid, default=None)
-    if pf is None or not pf.is_integer() or int(pf) <= 1:
+    pid_i = _clean_pid(pid)
+    if pid_i is None:
         return False
-    pid = int(pf)
+    pid = pid_i
     try:
         # Reap a dead child; otherwise kill(0) would incorrectly report it as alive.
         done, _ = os.waitpid(pid, os.WNOHANG)

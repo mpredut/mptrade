@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import os
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
-from cachepaths import canonical_base_asset
+from botcore import _parse_bool_flag, exact_int, safe_float, safe_pos_float
+from cachepaths import cache_symbol_variants, canonical_base_asset
+from instrument_registry import casefold_get
 from providers.quantity import resolve_assets
 
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
@@ -77,12 +78,13 @@ def load_config(path: str) -> dict:
                 cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]
             elif key_low in _SETTING_KEYS:
                 typ, where = _SETTING_KEYS[key_low]
-                fval = safe_float(val, default=None)
-                if fval is None:
-                    raise ValueError("setting must be finite")
-                if typ is int and not fval.is_integer():
-                    raise ValueError("integer setting must not have fractional part")
-                v = typ(fval)
+                v = exact_int(val, default=None) if typ is int else safe_float(val, default=None)
+                if v is None:
+                    raise ValueError(
+                        "integer setting must be a finite integer"
+                        if typ is int
+                        else "setting must be finite"
+                    )
                 min_allowed = 0 if key_low == "cooldown_minutes" else 1
                 if v < min_allowed:
                     raise ValueError(f"setting must be >= {min_allowed}")
@@ -117,16 +119,29 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     if not isinstance(alert_config, dict):
         alert_config = {}
     per = alert_config.get("per_coin")
-    if not isinstance(per, dict):
-        per = {}
-    sym_str = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
-    sym_up = sym_str.upper()
-    sym_low = sym_str.lower()
-    base = resolve_assets(sym_up)[0]
-    canon = canonical_base_asset(sym_up)
-    for cand in (sym_str, sym_up, sym_low, base, base.upper(), base.lower(), canon, canon.lower()):
-        if cand and isinstance(per.get(cand), dict):
-            return per[cand]
+    if isinstance(per, dict) and not isinstance(symbol, bool) and symbol is not None:
+        sym_str = str(symbol).strip()
+        if sym_str:
+            sym_up = sym_str.upper()
+            base = resolve_assets(sym_up)[0] or resolve_assets(sym_str)[0] or ""
+            canon = canonical_base_asset(sym_up)
+            cands = (
+                *cache_symbol_variants(sym_str),
+                sym_str.lower(),
+                base,
+                base.upper(),
+                base.lower(),
+                canon,
+                canon.lower(),
+            )
+            for cand in cands:
+                if cand and isinstance(per.get(cand), dict):
+                    return per[cand]
+            for cand in cands:
+                if cand:
+                    matched = casefold_get(per, cand)
+                    if isinstance(matched, dict):
+                        return matched
     dyn_flag = _parse_bool_flag(is_dynamic, default=False)
     preferred = alert_config.get("dynamic") if dyn_flag else alert_config.get("default")
     if isinstance(preferred, dict):

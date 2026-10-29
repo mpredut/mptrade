@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants, canonical_base_asset
+from market_monitor.alerts_config import resolve as resolve_alert_threshold
 from market_monitor.pricefetcher import get_base_symbol
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
@@ -274,31 +275,11 @@ class PriceChecker:
         return safe_pos_float(raw_ts, default=None) is not None
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:
-        fallback = self.config.get("dynamic") if self._is_dynamic_symbol(symbol) else self.config.get("default")
+        is_dyn = self._is_dynamic_symbol(symbol)
+        fallback = self.config.get("dynamic") if is_dyn else self.config.get("default")
         if not isinstance(fallback, dict):
             fallback = PRICE_ALERT_CONFIG["default"]
-        per_coin = self.config.get("per_coin")
-        chosen = None
-        if isinstance(per_coin, dict) and not isinstance(symbol, bool) and symbol is not None:
-            sym_str = str(symbol).strip()
-            sym_up = sym_str.upper()
-            base = get_base_symbol(sym_up) or get_base_symbol(sym_str) or ""
-            base_up = str(base).strip().upper() if base else ""
-            canon = canonical_base_asset(sym_up)
-            all_cands = (*cache_symbol_variants(symbol), base, base_up, canon)
-            chosen = next((per_coin[c] for c in all_cands if c and isinstance(per_coin.get(c), dict)), None)
-            if chosen is None:
-                target_keys = {c.upper() for c in all_cands if c}
-                chosen = next(
-                    (
-                        v
-                        for k, v in per_coin.items()
-                        if isinstance(v, dict) and not isinstance(k, bool) and k is not None and str(k).strip().upper() in target_keys
-                    ),
-                    None,
-                )
-        raw = chosen if isinstance(chosen, dict) else fallback
-
+        raw = resolve_alert_threshold(self.config if isinstance(self.config, dict) else {}, symbol, is_dyn)
         def_up = safe_pos_float(fallback.get("up_percent"), default=PRICE_ALERT_CONFIG["default"]["up_percent"])
         def_down = safe_pos_float(fallback.get("down_percent"), default=PRICE_ALERT_CONFIG["default"]["down_percent"])
         return {

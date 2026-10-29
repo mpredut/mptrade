@@ -13,7 +13,7 @@ import hashlib
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
-from botcore import safe_float, safe_pos_float
+from botcore import exact_int, safe_float, safe_pos_float
 from state_io import atomic_write_bytes, read_csv_dicts
 
 
@@ -30,16 +30,9 @@ def normalize_record(record: Mapping) -> dict:
         if record[field] is None or isinstance(record[field], bool):
             raise ValueError(f"{field} cannot be None or boolean")
     raw_ts = record["timestamp"]
-    if isinstance(raw_ts, int):
-        timestamp = raw_ts
-    else:
-        try:
-            timestamp = int(str(raw_ts).strip())
-        except (TypeError, ValueError):
-            ts_f = safe_float(raw_ts, default=None)
-            if ts_f is None or not ts_f.is_integer():
-                raise ValueError(f"invalid timestamp: {raw_ts!r}")
-            timestamp = int(ts_f)
+    timestamp = exact_int(raw_ts, default=None)
+    if timestamp is None:
+        raise ValueError(f"invalid timestamp: {raw_ts!r}")
     try:
         open_f = float(record["open"])
         high_f = float(record["high"])

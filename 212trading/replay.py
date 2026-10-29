@@ -42,7 +42,7 @@ from offline.backtests.execution import (
     split_order_fill,
     validate_ohlc_bars,
 )
-from offline.backtests.metrics import calculate_performance_metrics
+from offline.backtests.metrics import calculate_performance_metrics, round_metric
 from providers.replay_clock import SimClock as _SimClock
 
 
@@ -279,9 +279,7 @@ def _run_once(
     avg = engine._avg_cost()
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-    def rounded(value):
-        vf = safe_float(value, default=None) if isinstance(value, (int, float)) else None
-        return round(vf, 10) if vf is not None else value
+    rounded = round_metric
     result = {
         "realized": rounded(engine.s["realized_pnl_usd"]),
         "net": rounded(engine.s["realized_net_usd"]),
