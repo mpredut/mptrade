@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 """Run new-coin discovery and watch-list price alerts in one process.
 
 ``price_watcher.conf`` supplies the watch list, thresholds, scan intervals, sources,
@@ -12,11 +8,17 @@ threads. Coin discovery additionally requires ``ALERT_NEW_COIN=TRUE``.
 
 Usage: ``python3 price_watcher.py [--config PATH] [--check]``.
 """
+from __future__ import annotations
 
 import argparse
+import os
+import sys
 import threading
 import time
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from market_monitor.pricechecker import start_price_alert_checker
 from market_monitor.pricefetcher import create_cachePriceAll
@@ -27,7 +29,6 @@ from alertnotifiers import AlertNotifier
 from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float
 from market_monitor.alerts_config import load_config
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_env_stack(os.path.join(_ROOT, ".env"))
 ALERT_NEW_COIN = required_bool_env("ALERT_NEW_COIN")
 
