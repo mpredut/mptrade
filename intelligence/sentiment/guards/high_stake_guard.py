@@ -898,9 +898,10 @@ def load_symbol_microstructure(
         if spread_bps is None and best_bid is not None and best_ask is not None and best_ask >= best_bid:
             eff_mid = ob_mid if ob_mid is not None and ob_mid > 0 else (best_bid + best_ask) / 2.0
             if eff_mid > 0:
-                spread_bps = round(((best_ask - best_bid) / eff_mid) * 10000.0, 2)
+                raw_sp = ((best_ask - best_bid) / eff_mid) * 10000.0
+                spread_bps = round(raw_sp, 4 if raw_sp < 0.1 else 2)
         if spread_bps is not None:
-            m_info["spread_bps"] = round(spread_bps, 2)
+            m_info["spread_bps"] = round(spread_bps, 4 if spread_bps < 0.1 else 2)
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"),
             ("ask_depth_usd", "ask_depth_usd"),
@@ -986,39 +987,39 @@ def compute_liquidation_clusters(
     # Symmetric structural stop/liquidity pool anchors for nearest (25x-50x) cluster
     long_near_cands: list[float] = []
     for raw_lvl, pad in (
-        (p_dict.get("val_px"), 0.996),
-        (p_dict.get("low_24h"), 0.997),
-        (minfo.get("bid_wall_px"), 0.997),
+        (p_dict.get("val_px"), 0.995),
+        (p_dict.get("low_24h"), 0.996),
     ):
         lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
         if lvl > 0.0:
             swept = lvl * pad
             dist_ratio = (cur_px - swept) / cur_px
-            if 0.005 <= dist_ratio <= 0.065:
+            if 0.012 <= dist_ratio <= 0.065:
                 long_near_cands.append(swept)
 
     short_near_cands: list[float] = []
     for raw_lvl, pad in (
-        (p_dict.get("vah_px"), 1.004),
-        (p_dict.get("high_24h"), 1.003),
-        (minfo.get("ask_wall_px"), 1.003),
+        (p_dict.get("vah_px"), 1.005),
+        (p_dict.get("high_24h"), 1.004),
     ):
         lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
         if lvl > 0.0:
             swept = lvl * pad
             dist_ratio = (swept - cur_px) / cur_px
-            if 0.005 <= dist_ratio <= 0.065:
+            if 0.012 <= dist_ratio <= 0.065:
                 short_near_cands.append(swept)
 
-    long_near_raw = (
+    long_near_raw = min(
+        cur_px * (1.0 - 0.012),
         0.5 * base_long_near + 0.5 * (sum(long_near_cands) / len(long_near_cands))
         if long_near_cands
-        else base_long_near
+        else base_long_near,
     )
-    short_near_raw = (
+    short_near_raw = max(
+        cur_px * (1.0 + 0.012),
         0.5 * base_short_near + 0.5 * (sum(short_near_cands) / len(short_near_cands))
         if short_near_cands
-        else base_short_near
+        else base_short_near,
     )
 
     # Symmetric structural anchors for secondary deep cascade (10x-20x) cluster
@@ -1151,8 +1152,15 @@ def resolve_venue_fee_and_limits(
         min_notional = 5.0
 
     px_f = safe_pos_float(price, default=0.0) or 0.0
-    default_step = 0.001 if v_norm == "t212" else (0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01))
-    default_tick = 0.01 if (v_norm == "t212" or px_f >= 10.0) else (0.001 if px_f >= 1.0 else 0.0001)
+    if v_norm == "t212":
+        default_step = 0.001
+        default_tick = 0.01
+    elif v_norm == "hyperliquid":
+        default_step = 0.0001 if px_f >= 1000.0 else 0.01
+        default_tick = 0.01 if px_f >= 100.0 else (0.001 if px_f >= 1.0 else 0.0001)
+    else:
+        default_step = 0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01)
+        default_tick = 0.01 if px_f >= 10.0 else (0.001 if px_f >= 1.0 else 0.0001)
     min_qty = default_step
     step_size = default_step
     tick_size = default_tick
@@ -1205,7 +1213,8 @@ def resolve_venue_fee_and_limits(
                 if pair_dec is not None:
                     tick_size = round(10.0 ** (-int(pair_dec)), 8)
     elif v_norm == "hyperliquid" and prov is not None:
-        meta_cache = getattr(prov, "_meta_cache", None)
+        client = getattr(prov, "_client", None)
+        meta_cache = getattr(prov, "_meta_cache", None) or getattr(client, "_meta_cache", None)
         if isinstance(meta_cache, dict):
             base_tok = canonical_base_asset(symbol)
             sz_dec = safe_nonneg_float((meta_cache.get(base_tok) or {}).get("szDecimals") if isinstance(meta_cache.get(base_tok), dict) else None, default=None)
@@ -1226,7 +1235,7 @@ def resolve_venue_fee_and_limits(
     }
     sp_f = safe_nonneg_float(spread_bps, default=None)
     if sp_f is not None:
-        out["spread_bps"] = round(sp_f, 2)
+        out["spread_bps"] = round(sp_f, 4 if sp_f < 0.1 else 2)
     fq_f = safe_nonneg_float(free_quote, default=None)
     if fq_f is not None:
         out["effective_max_buy_usd"] = round(min(float(gateway_max_usd), fq_f * 0.995), 2)
@@ -1649,6 +1658,7 @@ def harvest_tradable_positions_and_orders(
             if not sym or not venue:
                 continue
             inst_by_sym[sym] = inst
+            inst_by_sym[f"{normalize_venue_name(venue)}:{sym}"] = inst
 
             px = prices_and_trends.get(sym, {}).get("price")
             px_f = safe_pos_float(px, default=0.0) or 0.0
@@ -1926,6 +1936,8 @@ def enrich_24h_and_microstructure(
             last_24_px = safe_float(matched_series_24h[-1][1], 0.0)
             if last_24_px > 0 and abs(sym_px_cur - last_24_px) / last_24_px > 0.10:
                 matched_series_24h = []
+            elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
+                matched_series_24h = list(matched_series_24h) + [[int(now_ts * 1000), sym_px_cur]]
         if sym_px_cur > 0 and arch_vals_7d:
             last_7d_px = safe_float(arch_vals_7d[-1], 0.0)
             if last_7d_px > 0 and abs(sym_px_cur - last_7d_px) / last_7d_px > 0.10:
@@ -2004,7 +2016,14 @@ def enrich_24h_and_microstructure(
                         cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
                         pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
                         if len(pts_24h) < 10:
-                            pts_24h = pts_5d[-78:]
+                            pts_24h = list(pts_5d[-78:])
+                        if (
+                            pts_24h
+                            and sym_px_cur > 0
+                            and abs(sym_px_cur - pts_24h[-1][1]) / pts_24h[-1][1] <= 0.10
+                            and abs(sym_px_cur - pts_24h[-1][1]) > 1e-9
+                        ):
+                            pts_24h = list(pts_24h) + [[int(now_ts * 1000), sym_px_cur]]
                         m24 = compute_24h_price_metrics(pts_24h) or {}
                         if m24:
                             matched_series_24h = pts_24h
@@ -2185,9 +2204,10 @@ def harvest_recent_orders_and_enrich_positions(
                 if fills:
                     venue_recent_orders[cache_venue][sym] = fills
                     recent_orders.setdefault(sym, fills)
-    for sym, inst in inst_by_sym.items():
+    for inst in inst_by_sym.values():
+        sym = str(getattr(inst, "symbol", "")).upper()
         v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
-        if v_inst != "hyperliquid" or sym in venue_recent_orders["hyperliquid"]:
+        if not sym or v_inst != "hyperliquid" or sym in venue_recent_orders["hyperliquid"]:
             continue
         try:
             prov = getattr(inst, "_provider", None)
@@ -2225,12 +2245,24 @@ def harvest_recent_orders_and_enrich_positions(
             (v_ro_map[c] for c in p_variants if isinstance(v_ro_map.get(c), dict)),
             None,
         )
+        fb_cur = safe_float(pos.get("free_base"), -1.0)
+        last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
+        is_flat_after_exit = (
+            fb_cur >= 0.0
+            and (fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0))
+            and last_side_ro == "SELL"
+        )
         if isinstance(ro, dict):
             lb = ro.get("last_buy")
             ls = ro.get("last_sell")
             if ro.get("last_action_side"):
                 pos["last_action_side"] = str(ro.get("last_action_side")).upper()
-            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
+            if is_flat_after_exit:
+                ro.pop("active_avg_buy_px", None)
+                pos.pop("trailing_peak", None)
+                pos.pop("dd_from_peak_pct", None)
+            else:
+                set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
@@ -2242,7 +2274,7 @@ def harvest_recent_orders_and_enrich_positions(
                 ),
                 default=0.0,
             )
-            if low_buy_px > 0:
+            if low_buy_px > 0 and not is_flat_after_exit:
                 set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
         venue_cyc_maps = (
             (hyperliquid_cycles,)
@@ -2265,12 +2297,18 @@ def harvest_recent_orders_and_enrich_positions(
                     pos["free_base"] = round(cyc_qty, 6)
                     if pos_px_f > 0:
                         pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
-            cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
-            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
-            set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+            if is_flat_after_exit and not cyc.get("resting_orders"):
+                cyc["qty"] = round(max(0.0, fb_cur), 6)
+                cyc["cost_usd"] = 0.0
+                cyc["avg_cost_px"] = None
+                cyc["dd_pct"] = None
+            elif not is_flat_after_exit:
+                cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
+                set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
+                set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+                set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
-            set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
         sym_spread = next(
             (
                 prices_and_trends[c].get("spread_bps")
@@ -2280,11 +2318,12 @@ def harvest_recent_orders_and_enrich_positions(
             ),
             pos.get("spread_bps"),
         )
+        inst_obj = inst_by_sym.get(f"{p_venue}:{p_sym}") or inst_by_sym.get(p_sym)
         pos.update(
             resolve_venue_fee_and_limits(
                 p_venue,
                 p_sym,
-                inst_by_sym.get(p_sym),
+                inst_obj,
                 price=pos_px_f,
                 free_quote=safe_nonneg_float(pos.get("free_quote"), default=None),
                 free_base=safe_nonneg_float(pos.get("free_base"), default=None),

@@ -2892,6 +2892,18 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     assert krk_specs["taker_fee_bps"] == 26.0
     assert krk_specs["maker_rebate_edge_bps"] == 10.0
 
+    t212_specs = resolve_venue_fee_and_limits(
+        "t212", "NVDA_US_EQ", price=215.0, free_quote=400.0, free_base=1.0
+    )
+    assert t212_specs["fee_tier"] == "INVEST_RTH"
+    assert t212_specs["maker_fee_bps"] == 15.0
+    assert t212_specs["taker_fee_bps"] == 15.0
+    assert t212_specs["step_size"] == 0.001
+    assert t212_specs["tick_size"] == 0.01
+
+    assert abs(liq["long_liq_dist_pct"]) >= 1.2
+    assert abs(liq["short_liq_dist_pct"]) >= 1.2
+
     # 4. End-to-end prompt integration in Section 3A, 3B, 3C
     cache_dir = tmp_path / "cachedb"
     cache_dir.mkdir(exist_ok=True)

@@ -234,7 +234,8 @@ class OrderbookSnapshot:
         if spread_bps <= 0.0 and best_bid > 0.0 and best_ask >= best_bid:
             eff_mid = mid_price if mid_price > 0.0 else (best_bid + best_ask) / 2.0
             if eff_mid > 0.0:
-                spread_bps = round(((best_ask - best_bid) / eff_mid) * 10000.0, 2)
+                raw_sp = ((best_ask - best_bid) / eff_mid) * 10000.0
+                spread_bps = round(raw_sp, 4 if raw_sp < 0.1 else 2)
         return cls(
             symbol=sym_str,
             mid_price=mid_price,
@@ -371,7 +372,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
             total_depth = bid_depth_usd + ask_depth_usd
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
-            spread_bps = round(((best_ask - best_bid) / mid) * 10000.0, 2) if mid > 0 else 0.0
+            raw_sp = ((best_ask - best_bid) / mid) * 10000.0 if mid > 0 else 0.0
+            spread_bps = round(raw_sp, 4 if raw_sp < 0.1 else 2)
 
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
