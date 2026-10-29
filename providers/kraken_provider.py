@@ -17,7 +17,6 @@ import json
 import os
 import re
 import sys
-import math
 import time
 from typing import Optional, List
 
@@ -297,7 +296,8 @@ class KrakenProvider(MarketDataProvider):
         try:
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.
-            raw_interval = max(1, int(math.ceil((lookback_f * 60.0) / 720.0)))
+            ratio = (lookback_f * 60.0) / 720.0
+            raw_interval = max(1, int(ratio) + (1 if ratio > int(ratio) else 0))
             valid_intervals = (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
             interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
             res = cli._public("OHLC", {"pair": str(symbol).strip(), "interval": interval})

@@ -1,5 +1,4 @@
 # new_coins_discovery.py
-import math
 import time
 import threading
 import requests
@@ -607,11 +606,13 @@ class NewCoinsMonitor:
                                 self._trigger_alerts(new_from_source, source_name, auto_add=auto_add)
                 except Exception as e:
                     print(f"[NewCoinsMonitor] Error: {e}")
-                print(f"[NewCoinsMonitor] ⏳ Waiting {interval_seconds} seconds until the next check...")
-                for _ in range(max(1, int(math.ceil(float(interval_seconds))))):
+                itv_f = safe_pos_float(interval_seconds, default=60.0)
+                print(f"[NewCoinsMonitor] ⏳ Waiting {itv_f} seconds until the next check...")
+                steps = max(1, int(itv_f) + (1 if itv_f > int(itv_f) else 0))
+                for _ in range(steps):
                     if not self._running:
                         break
-                    time.sleep(min(1.0, float(interval_seconds)))
+                    time.sleep(min(1.0, itv_f))
         self._thread = threading.Thread(target=run, name="NewCoinsMonitor", daemon=True)
         self._thread.start()
 

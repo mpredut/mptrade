@@ -301,8 +301,8 @@ def load_symbol_price_series(
             series_24h = []
 
     if vals_7d and series_24h:
-        latest_px = float(series_24h[-1][1])
-        if math.isfinite(latest_px) and latest_px > 0 and vals_7d[-1] != latest_px:
+        latest_px = safe_pos_float(series_24h[-1][1], default=None)
+        if latest_px is not None and vals_7d[-1] != latest_px:
             vals_7d.append(latest_px)
 
     return series_24h, vals_7d
@@ -416,13 +416,13 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         p_f, q_f, ts_raw = _norm_fill(o)
         if side_o == "BUY":
             buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
-            if q_f is not None and p_f is not None and math.isfinite(q_f) and math.isfinite(p_f):
+            if q_f is not None and p_f is not None:
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
         elif side_o == "SELL":
             sells_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
-            if q_f is not None and math.isfinite(q_f):
+            if q_f is not None:
                 if q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12:
                     cost_qty = 0.0
                     active_avg = 0.0
@@ -810,7 +810,8 @@ class HighStakeGuard:
             qf = safe_pos_float(qty, 0.0)
             if pf > 0.0 and qf > 0.0:
                 notional = pf * qf
-        if not math.isfinite(notional) or notional < self.min_notional_eur:
+        notional_f = safe_float(notional, default=None)
+        if notional_f is None or notional_f < self.min_notional_eur:
             return GuardDecision.allow(
                 "HighStakeGuard",
                 f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)",

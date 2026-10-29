@@ -15,7 +15,6 @@ Run with the Python interpreter from the SDK virtual environment:
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 import time
@@ -73,18 +72,17 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     """Round an HL price to 5 significant figures and at most (6/8 - szDecimals) decimals."""
     if isinstance(px, bool) or isinstance(sz_decimals, bool):
         raise ValueError("px and sz_decimals must not be boolean")
-    try:
-        px = float(px)
-        dec_f = float(sz_decimals)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("px and sz_decimals must be finite numbers") from exc
+    px_f = safe_float(px, default=None)
+    dec_f = safe_float(sz_decimals, default=None)
+    if px_f is None or dec_f is None:
+        raise ValueError("px and sz_decimals must be finite numbers")
     dec_i = _exact_int_in_range(dec_f, 0)
     if dec_i is None:
         raise ValueError("sz_decimals must be a non-negative integer")
-    if not math.isfinite(px) or px <= 0:
-        return px
+    if px_f <= 0:
+        return px_f
     max_dec = (6 if is_perp else 8) - dec_i
-    px = float(f"{px:.5g}")           # five significant figures
+    px = float(f"{px_f:.5g}")           # five significant figures
     return round(px, max(max_dec, 0))
 
 
