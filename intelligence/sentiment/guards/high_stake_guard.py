@@ -17,6 +17,7 @@ from intelligence.macro_sentiment_ssot import (
     obj_attr,
     resolve_now_ts,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_ts,
     safe_pos_float,
 )
@@ -390,12 +391,9 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         extract_timestamp_ms,
     )
 
-    def _safe_order_ts(o: Dict[str, Any]) -> float:
-        return safe_nonneg_ts(extract_timestamp_ms(o, default=None), 0.0)
-
     ordered = sorted(
         enumerate(valid),
-        key=lambda item: (_safe_order_ts(item[1]), item[0]),
+        key=lambda item: (safe_nonneg_ts(extract_timestamp_ms(item[1], default=None), 0.0), item[0]),
     )
     chron = [o for _, o in ordered]
     last_buy = next((o for o in reversed(chron) if extract_order_side(o) == "BUY"), None)
@@ -462,14 +460,12 @@ def collect_pretrade_telemetry(
         from cachepaths import get_cachedb_dir
         cachedb_dir = get_cachedb_dir()
     telemetry: Dict[str, Any] = {}
-    _safe_opt_float = lambda val: safe_float(val, None)
-
     # 1. Spot Microstructure: Orderbook Depth & Walls (Pillar 2)
     try:
         from external_order_guard import get_orderbook_collector
         ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
         if ob_snap is not None:
-            imb_f = _safe_opt_float(obj_attr(ob_snap, "imbalance_ratio", None))
+            imb_f = safe_float(obj_attr(ob_snap, "imbalance_ratio", None), default=None)
             if imb_f is not None:
                 bid_pct = max(0, min(100, int(round(imb_f * 100.0))))
                 ask_pct = 100 - bid_pct
@@ -493,7 +489,7 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_derivatives_collector
         f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
         if f_snap is not None:
-            fr_f = _safe_opt_float(obj_attr(f_snap, "funding_rate", None))
+            fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
             if fr_f is not None:
                 telemetry["Perpetual Funding Rate"] = f"{fr_f * 100:+.4f}% (8h)"
             oi_f = safe_pos_float(obj_attr(f_snap, "open_interest_usd", None), 0.0)
@@ -507,11 +503,11 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_whale_collector
         w_snap = get_whale_collector().fetch(symbol, allow_network=False)
         if w_snap is not None:
-            lp_f = _safe_opt_float(obj_attr(w_snap, "top_traders_long_pct", None))
-            lr_f = _safe_opt_float(obj_attr(w_snap, "top_traders_long_ratio", None))
+            lp_f = safe_float(obj_attr(w_snap, "top_traders_long_pct", None), default=None)
+            lr_f = safe_float(obj_attr(w_snap, "top_traders_long_ratio", None), default=None)
             if lp_f is not None and lr_f is not None:
                 telemetry["Whale Positioning"] = f"{lp_f * 100.0:.1f}% Top Traders Long (L/S ratio: {lr_f:.2f})"
-            tr_f = _safe_opt_float(obj_attr(w_snap, "taker_buy_sell_ratio", None))
+            tr_f = safe_float(obj_attr(w_snap, "taker_buy_sell_ratio", None), default=None)
             if tr_f is not None:
                 telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f} (regime: {obj_attr(w_snap, 'divergence_regime', 'neutral')})"
     except Exception:
@@ -522,8 +518,8 @@ def collect_pretrade_telemetry(
         try:
             trend = obj_attr(regime_context, "resolved_trend", None) or obj_attr(regime_context, "regime", None)
             dec = obj_attr(regime_context, "decision", None)
-            gf = _safe_opt_float(obj_attr(dec, "gradient", None)) if dec is not None else None
-            ef = _safe_opt_float(obj_attr(dec, "epsilon", None)) if dec is not None else None
+            gf = safe_float(obj_attr(dec, "gradient", None), default=None) if dec is not None else None
+            ef = safe_float(obj_attr(dec, "epsilon", None), default=None) if dec is not None else None
             trend_str = f"{trend}" if trend else "unspecified"
             if gf is not None and ef is not None:
                 trend_str += f" (gradient={gf:+.4f}, epsilon={ef:.4f})"
@@ -715,7 +711,7 @@ def evaluate_llm_guard_response(
     notional_eur: float,
 ) -> GuardDecision:
     """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
-    safe_notional = safe_nonneg_ts(notional_eur, 0.0)
+    safe_notional = safe_nonneg_float(notional_eur, 0.0)
     fb_norm = str(fallback_action or "allow").strip().lower()
     if not resp or not isinstance(resp, dict):
         if fb_norm in ("veto", "block"):
@@ -784,7 +780,7 @@ class HighStakeGuard:
         self.timeout_sec = safe_pos_float(timeout_sec, 25.0)
         self.fallback_action = str(fallback_action or "allow").strip().lower()
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 0.0)
+            self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, 0.0)
         elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
             self.cache_ttl_sec = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
         else:
