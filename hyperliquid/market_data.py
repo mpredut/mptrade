@@ -39,6 +39,7 @@ log = _common.log
 safe_float = _common.safe_float
 safe_pos_float = _common.safe_pos_float
 safe_nonneg_float = _common.safe_nonneg_float
+safe_int = _common.safe_int
 HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
@@ -80,9 +81,10 @@ def normalize_closed_candles(
     if not isinstance(rows, list):
         return []
     if drop_incomplete:
-        if isinstance(now_ms, bool) or not isinstance(now_ms, (int, float)) or not math.isfinite(float(now_ms)):
+        now_i = safe_int(now_ms, default=None)
+        if now_i is None or not isinstance(now_ms, (int, float)):
             return []
-        now_ms = int(now_ms)
+        now_ms = now_i
     by_open_time: dict[int, dict] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -155,40 +157,36 @@ def fetch_ohlc_candles(
     else:
         if isinstance(interval, (bool, float)):
             raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
-        try:
-            interval_f = float(interval)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"unsupported Hyperliquid interval: {interval!r}") from exc
-        if not math.isfinite(interval_f) or not interval_f.is_integer():
+        itv_f = safe_pos_float(interval, default=None)
+        if itv_f is None or not itv_f.is_integer():
             raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
-        interval_min = int(interval_f)
+        interval_min = int(itv_f)
         interval_str = INTERVALS.get(interval_min)
         if interval_str is None:
             raise ValueError(f"unsupported Hyperliquid interval: {interval} minutes")
 
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+    to_f = safe_pos_float(timeout, default=None)
+    if to_f is None or not isinstance(timeout, (int, float)):
         raise ValueError(f"invalid timeout: {timeout!r}")
 
     now_ms = int(time.time() * 1000)
     if end_ms is not None:
-        if isinstance(end_ms, bool) or not isinstance(end_ms, (int, float)) or not math.isfinite(float(end_ms)) or int(end_ms) <= 0:
+        end_f = safe_pos_float(end_ms, default=None)
+        if end_f is None or not isinstance(end_ms, (int, float)):
             raise ValueError(f"invalid end_ms: {end_ms!r}")
-        final_end = int(end_ms)
+        final_end = int(end_f)
     else:
         final_end = now_ms
     if start_ms is not None:
-        if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)) or int(start_ms) < 0:
+        start_f = safe_nonneg_float(start_ms, default=None)
+        if start_f is None or not isinstance(start_ms, (int, float)):
             raise ValueError(f"invalid start_ms: {start_ms!r}")
-        final_start = int(start_ms)
+        final_start = int(start_f)
     elif lookback_hours is not None:
-        if (
-            isinstance(lookback_hours, bool)
-            or not isinstance(lookback_hours, (int, float))
-            or not math.isfinite(float(lookback_hours))
-            or float(lookback_hours) <= 0
-        ):
+        lb_f = safe_pos_float(lookback_hours, default=None)
+        if lb_f is None or not isinstance(lookback_hours, (int, float)):
             raise ValueError(f"invalid lookback_hours: {lookback_hours!r}")
-        final_start = int(final_end - float(lookback_hours) * 3600 * 1000)
+        final_start = int(final_end - lb_f * 3600 * 1000)
     else:
         final_start = final_end - 30 * 24 * 3600 * 1000
     if final_start >= final_end:
