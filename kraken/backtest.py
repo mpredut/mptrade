@@ -25,6 +25,7 @@ if _HERE not in sys.path:
 
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary
+from botcore import parse_dotenv, safe_float, safe_pos_float
 
 import dataclasses
 try:
@@ -45,7 +46,6 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     if not isinstance(base, dict):
         raise ValueError("_bt_params requires a dict for base")
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
-    from botcore import parse_dotenv, safe_float, safe_pos_float
     env = dict(parse_dotenv(cfg_path))
     env.update(os.environ)
     p = StratParams.from_env(env=env)

@@ -27,7 +27,6 @@ logging, and notifications. See kraken/test_trailing_kraken.py.
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 import time
@@ -197,14 +196,9 @@ class KrakenTrailing:
         bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
-        raw_bal = bx.get("balance", 0)
-        raw_hold = bx.get("hold_trade", 0)
-        bal_f = 0.0 if raw_bal is None else safe_float(raw_bal, default=None)
-        hold_f = 0.0 if raw_hold is None else safe_float(raw_hold, default=None)
-        if bal_f is None or hold_f is None:
-            return 0.0
-        free = bal_f - hold_f
-        return max(0.0, free) if math.isfinite(free) else 0.0
+        bal_f = safe_float(bx.get("balance"), default=0.0)
+        hold_f = safe_float(bx.get("hold_trade"), default=0.0)
+        return safe_nonneg_float(bal_f - hold_f, default=0.0)
 
     # -- HYPE short trend from cache_short_trend.json for optional filters --
     def _trend_value(self, pair: str) -> float:
@@ -364,12 +358,13 @@ class KrakenTrailing:
                 min_qty_fn = getattr(self.executor._executor, "min_order_qty", None)
                 raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
                 min_q = safe_nonneg_float(raw_min_q, default=0.0)
-                if not math.isfinite(scaled_qty) or scaled_qty <= 0 or (min_q > 0 and scaled_qty < min_q):
+                sq_pos = safe_pos_float(scaled_qty, default=None)
+                if sq_pos is None or (min_q > 0 and sq_pos < min_q):
                     intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
                     persist(None)
                     from order_retry import TrackedOrderResult
                     return TrackedOrderResult(outcome="refused", intent=intent, status=None)
-                qty = scaled_qty
+                qty = sq_pos
                 intent["requested_qty"] = qty
 
         result = self.order_lifecycle.submit(

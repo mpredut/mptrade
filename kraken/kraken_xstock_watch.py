@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import subprocess
@@ -266,7 +265,7 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
                     f"Consider a partial sale or starting the bot with adoption.",
                source="xstock-watch", price=price, desktop=desktop)
     tp2 = required_float_env("XSTOCK_TP2_ALERT_PCT")
-    if math.isfinite(tp2) and tp2 > 0 and not st.get("alerted_tp2") and chg >= tp2:
+    if tp2 > 0 and not st.get("alerted_tp2") and chg >= tp2:
         st["alerted_tp2"] = True
         notify(title=f"📈📈 TRANSA 2: xStock {chg:+.1f}% ({price})",
                body=f"The second target is reached — sell the rest. Value: {qty * price:.0f}.",
@@ -531,7 +530,7 @@ def main() -> int:
         beats += 1                       # keep-alive pulse: one tail-visible dot per cycle
         sys.stdout.write("." if beats % 60 else ".\n")
         sys.stdout.flush()
-        time.sleep(max(1.0, float(args.interval) * 60.0) if math.isfinite(float(args.interval)) else 60.0)
+        time.sleep(max(1.0, safe_pos_float(args.interval, default=1.0) * 60.0))
 
 
 if __name__ == "__main__":
