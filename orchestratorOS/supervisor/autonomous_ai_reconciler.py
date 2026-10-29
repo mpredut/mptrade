@@ -48,6 +48,7 @@ from providers.base import (
     extract_order_price,
     extract_order_side,
     extract_orig_qty,
+    normalize_side,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
@@ -81,6 +82,7 @@ from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
     _extract_intent_notional,
     _is_us_rth_open,
+    _parse_intent_confidence,
     _parse_notify_enabled_flag,
     extract_current_price_item,
     load_key_value_conf,
@@ -213,24 +215,29 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     ):
         if isinstance(item, dict):
             d = dict(item)
-            raw_side = str(
-                d.get("decision") or d.get("action") or d.get("side") or "HOLD"
-            ).strip().upper()
+            raw_val = d.get("decision") or d.get("action") or d.get("side")
+            if isinstance(raw_val, bool) or raw_val is None:
+                raw_side = "HOLD"
+            else:
+                raw_side = normalize_side(raw_val) or str(raw_val).strip().upper() or "HOLD"
             d["decision"] = raw_side
             v_norm = normalize_venue_name(d.get("venue"))
             if v_norm:
                 d["venue"] = v_norm
+            if "confidence" in d and d.get("confidence") is not None:
+                d["confidence"] = _parse_intent_confidence(d.get("confidence"), default=0.0)
             extracted_usd = _extract_intent_notional(d, default=None)
             if extracted_usd is not None:
                 d["suggested_notional_usd"] = extracted_usd
             candidates.append(d)
 
     # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first,
-    # before deduplicating so the highest-confidence entry per (venue, canonical_symbol, side) wins.
+    # before deduplicating so the highest-confidence entry per (venue, canonical_symbol) wins
+    # and conflicting BUY+SELL decisions on the same instrument in a single cycle are prevented.
     def _sort_key(d: Dict[str, Any]) -> Tuple[int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
-        conf = _parse_finite_float(d.get("confidence"), 0.0)
+        conf = _parse_intent_confidence(d.get("confidence"), default=0.0)
         return (-is_action, -conf)
 
     candidates.sort(key=_sort_key)
@@ -240,10 +247,12 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     for item in candidates:
         sym_raw = str(item.get("symbol") or "").strip().upper()
         sym_canon = canonical_base_asset(sym_raw) or sym_raw
+        venue_norm = normalize_venue_name(item.get("venue"))
+        side_norm = str(item.get("decision") or "HOLD").strip().upper()
         key = (
-            normalize_venue_name(item.get("venue")),
-            sym_canon,
-            str(item.get("decision") or "HOLD").strip().upper(),
+            (venue_norm, sym_canon, "")
+            if sym_canon
+            else (venue_norm, "", side_norm)
         )
         if key not in seen_keys:
             seen_keys.add(key)
@@ -1036,18 +1045,28 @@ class AutonomousAIReconciler:
                 )
                 if entry.get("price") is None and (w222.get("current_price") or w900.get("current_price")):
                     entry["price"] = w222.get("current_price") or w900.get("current_price")
+                if w90:
+                    if w90.get("slope_full") is not None:
+                        entry["slope_90s"] = w90.get("slope_full")
+                    if w90.get("final_trend") is not None:
+                        entry["trend_90s"] = w90.get("final_trend")
+                    if w90.get("growth_coefficient") is not None:
+                        entry["growth_90s"] = w90.get("growth_coefficient")
                 if w222:
                     entry["slope_3_7m"] = w222.get("slope_full", entry.get("slope_3_7m", 0.0))
                     entry["trend_3_7m"] = w222.get("final_trend", entry.get("trend_3_7m", 0))
-                    entry["growth_3_7m"] = w222.get("growth_coefficient")
+                    if w222.get("growth_coefficient") is not None:
+                        entry["growth_3_7m"] = w222.get("growth_coefficient")
                 if w900:
                     entry["slope_15m"] = w900.get("slope_full", entry.get("slope_15m", 0.0))
                     entry["trend_15m"] = w900.get("final_trend", entry.get("trend_15m", 0))
-                    entry["growth_15m"] = w900.get("growth_coefficient")
+                    if w900.get("growth_coefficient") is not None:
+                        entry["growth_15m"] = w900.get("growth_coefficient")
                 if w9000:
                     entry["slope_2_5h"] = w9000.get("slope_full", entry.get("slope_2_5h", 0.0))
                     entry["trend_2_5h"] = w9000.get("final_trend", entry.get("trend_2_5h", 0))
-                    entry["growth_2_5h"] = w9000.get("growth_coefficient")
+                    if w9000.get("growth_coefficient") is not None:
+                        entry["growth_2_5h"] = w9000.get("growth_coefficient")
 
         # 7B. Discover all enabled tradable instruments & real spot wallet balances (when workspace has instruments.conf)
         tradable_positions: List[Dict[str, Any]] = []
@@ -1240,6 +1259,9 @@ class AutonomousAIReconciler:
                         sib.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")
                     ):
                         for k_inh in (
+                            "slope_90s",
+                            "trend_90s",
+                            "growth_90s",
                             "slope_3_7m",
                             "trend_3_7m",
                             "growth_3_7m",
@@ -1742,18 +1764,50 @@ class AutonomousAIReconciler:
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents_state.json"))
         if isinstance(intents_data, list) and intents_data:
-            snapshot.portfolio_summary["recent_ai_intents"] = [
-                {
+            reconcile_fn = getattr(self.intent_gateway, "reconcile_intents", None)
+            if callable(reconcile_fn):
+                try:
+                    if reconcile_fn(intents_data):
+                        save_fn = getattr(self.intent_gateway, "save_all_intents", None)
+                        if callable(save_fn):
+                            save_fn(intents_data)
+                except Exception:
+                    pass
+            scoped_intents = [
+                i
+                for i in intents_data
+                if isinstance(i, dict)
+                and (
+                    scope not in ("equities", "crypto")
+                    or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
+                )
+            ]
+            recent_intents_out: List[Dict[str, Any]] = []
+            for i in scoped_intents[-8:]:
+                exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
+                hist = i.get("history") if isinstance(i.get("history"), list) else []
+                last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
+                eff_notional = (
+                    safe_pos_float(exec_pay.get("cummulativeQuoteQty"), default=None)
+                    or safe_pos_float(exec_pay.get("cost"), default=None)
+                    or safe_pos_float(i.get("clamped_notional_usd"), default=None)
+                    or safe_pos_float(last_hist.get("notional_usd"), default=None)
+                    or _extract_intent_notional(i, default=None)
+                )
+                ts_val = _parse_finite_float(i.get("timestamp"), 0.0)
+                intent_summary: Dict[str, Any] = {
                     "decision": i.get("decision"),
                     "symbol": i.get("symbol"),
-                    "venue": i.get("venue"),
+                    "venue": normalize_venue_name(i.get("venue")) or i.get("venue"),
                     "status": i.get("status"),
-                    "notional_usd": i.get("suggested_notional_usd"),
+                    "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
                     "ts": i.get("timestamp"),
                 }
-                for i in intents_data[-8:]
-                if isinstance(i, dict)
-            ]
+                if ts_val > 0 and now_ts >= ts_val:
+                    intent_summary["age_h"] = round((now_ts - ts_val) / 3600.0, 2)
+                recent_intents_out.append(intent_summary)
+            if recent_intents_out:
+                snapshot.portfolio_summary["recent_ai_intents"] = recent_intents_out
 
         # 9E. Active queued retry orders (cachedb/order_retry_queue.jsonl), monitortrades active states (mt_state.json),
         # and recent exchange execution audit records (logger/execution_audit/execution_audit_*.jsonl)
@@ -2161,8 +2215,8 @@ class AutonomousAIReconciler:
                             else round((h24_f / l24_f - 1.0) * 100.0, 2)
                         )
                         pos24_sfx = (
-                            f" pos_24h={pos24}% (dd_high={float(dd24):+.2f}%, "
-                            f"bounce_low={float(bnc24):+.2f}%, span={spn24}%)"
+                            f" pos_24h={pos24}% (dd_high={_parse_finite_float(dd24, 0.0):+.2f}%, "
+                            f"bounce_low={_parse_finite_float(bnc24, 0.0):+.2f}%, span={spn24}%)"
                         )
                     micro_horizons = ""
                     for m_lbl, m_k in (("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct")):
@@ -2244,8 +2298,8 @@ class AutonomousAIReconciler:
                             else round((h7_f / l7_f - 1.0) * 100.0, 2)
                         )
                         pos7_sfx = (
-                            f" pos_7d={pos7}% (dd_high={float(dd7):+.2f}%, "
-                            f"bounce_low={float(bnc7):+.2f}%, span={spn7}%)"
+                            f" pos_7d={pos7}% (dd_high={_parse_finite_float(dd7, 0.0):+.2f}%, "
+                            f"bounce_low={_parse_finite_float(bnc7, 0.0):+.2f}%, span={spn7}%)"
                         )
                     extras.append(
                         f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
@@ -2567,9 +2621,11 @@ class AutonomousAIReconciler:
                 "is to maximize net portfolio value and risk-adjusted returns (net of venue fees) across all platforms while "
                 "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
                 "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
-                "symmetrically on both BUY and SELL as binding constraints. However, deterministic filter states and risk thresholds "
-                "can be consulted on-demand as advisory indicators and reference guidance—you have full quantitative authority "
-                "to validate, adapt, or override them according to live market structure.\n"
+                "symmetrically on both BUY and SELL as binding constraints. Deterministic bots (`tradeall.py`, `monitortrades.py`, `assetguardian.py`, "
+                "`rtrade.py`, `kraken/bot.py`, `hyperliquid/bot.py`, `212trading/bot.py`) and rigid code filters/configs "
+                "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) continue working in parallel in the "
+                "system and can be consulted by you on demand as advisory indicators and reference guidance—you have full quantitative authority "
+                "to validate, adapt, or override them according to live market structure, with ZERO obligation to consult or follow them.\n"
                 "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
                 "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
                 "(`binance`, `kraken`, `hyperliquid`, `t212`), and WHY to `BUY`, `SELL`, or `HOLD`. Do NOT restrict yourself to tiny "
@@ -2622,6 +2678,9 @@ class AutonomousAIReconciler:
                 "`cachedb/telemetry/`, `cachedb/macro/`, `cachedb/orders/`, `cachedb/state/`) as a direct source of information for your trading decisions, "
                 "as well as full freedom to query live market APIs (`providers.market_api`, `binance_api`, `kraken`, `hyperliquid`, `212trading`) "
                 "and read trade/execution logs (`logs/`, `logger/execution_audit/`) whenever you want deeper verification or to answer user questions.\n"
+                "- Deterministic bots (`tradeall.py`, `monitortrades.py`, `assetguardian.py`, `rtrade.py`, venue bots) and rigid code filters/guards "
+                "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) run in parallel and may be inspected on demand if you wish, "
+                "but consulting or following them is never required.\n"
                 "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n"
             )
             report_format_rule = (

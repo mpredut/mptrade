@@ -2576,11 +2576,47 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert "FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE" in prompt_out
     assert "UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING" in prompt_out
     assert "50%–100%` of `value_usd`" in prompt_out
+    assert "continue working in parallel in the system and can be consulted by you on demand" in prompt_out
     assert "providers.market_api" in prompt_out
     assert "cachedb_catalog" not in prompt_out
     assert "STRONG_SELL_HARVEST_ZONE" not in prompt_out
     assert "SWING_3_8_RULE" not in prompt_out
     assert "do NOT call tools, shell commands, or file readers" not in prompt_out
+
+    # 3. _normalize_trading_decisions deduplicates per (venue, symbol) so conflicting BUY+SELL on the same coin
+    #    cannot both fire in one cycle, and normalizes percentage confidence & LONG/SHORT aliases
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import _normalize_trading_decisions
+
+    deduped = _normalize_trading_decisions({
+        "market_trading_decisions": [
+            {"venue": "binance", "symbol": "TAOUSDC", "decision": "BUY", "confidence": "88%", "suggested_notional_usd": "$200"},
+            {"venue": "binance", "symbol": "TAOUSDC", "decision": "SELL", "confidence": "94%", "suggested_notional_usd": "$650"},
+            {"venue": "binance", "symbol": "TAOUSDC", "decision": "HOLD", "confidence": 0.99},
+        ]
+    })
+    assert len(deduped) == 1
+    assert deduped[0]["decision"] == "SELL"
+    assert deduped[0]["confidence"] == pytest.approx(0.94)
+    assert deduped[0]["suggested_notional_usd"] == pytest.approx(650.0)
+
+    # 4. recent_ai_intents filters by scope BEFORE slicing [-8:] so T212 intents are never pushed out by >8 crypto intents
+    now_ts = time.time()
+    mixed_intents = [
+        {"decision": "SELL", "symbol": "NVDA_US_EQ", "venue": "trading212", "status": "EXECUTED",
+         "suggested_notional_usd": 500.0, "clamped_notional_usd": 142.5, "timestamp": now_ts - 1800},
+    ] + [
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "status": "EXECUTED",
+         "suggested_notional_usd": 100.0, "timestamp": now_ts - 60 * i}
+        for i in range(12)
+    ]
+    (cache_dir / "autonomous_trade_intents_state.json").write_text(json.dumps(mixed_intents), encoding="utf-8")
+    eq_snap = reconciler.harvest_sensors_telemetry(asset_scope="equities")
+    eq_intents = eq_snap.portfolio_summary.get("recent_ai_intents", [])
+    assert len(eq_intents) == 1
+    assert eq_intents[0]["venue"] == "t212"
+    assert eq_intents[0]["notional_usd"] == pytest.approx(142.5)
+    assert eq_intents[0]["age_h"] == pytest.approx(0.5, abs=0.05)
+
 
 
 

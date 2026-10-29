@@ -711,5 +711,97 @@ def test_reconcile_intents_ignores_canceled_zero_fill_and_supports_90_900_short_
     assert "15m=+0.00140" in telem.get("Dynamic Multi-Window Slopes", "")
 
 
+def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_workspace):
+    import json
+    from orchestratorTrade.autonomous_intent_gateway import (
+        _extract_intent_notional,
+        _parse_intent_confidence,
+    )
+
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    # 1. _extract_intent_notional parses currency strings, aliases, and rejects <= 0
+    assert _extract_intent_notional({"suggested_notional_usd": "$1,250.50"}) == pytest.approx(1250.50)
+    assert _extract_intent_notional({"notional": "800 USD"}) == pytest.approx(800.0)
+    assert _extract_intent_notional({"value_usd": "$450 USDC"}) == pytest.approx(450.0)
+    assert _extract_intent_notional({"suggested_notional_usd": "-50"}, default=25.0) == pytest.approx(25.0)
+
+    # 2. _parse_intent_confidence normalizes percentage strings and 1..100 numbers
+    assert _parse_intent_confidence("91%") == pytest.approx(0.91)
+    assert _parse_intent_confidence(92) == pytest.approx(0.92)
+    assert _parse_intent_confidence(0.88) == pytest.approx(0.88)
+    assert _parse_intent_confidence(True, default=0.0) == 0.0
+
+    # 3. _clamp_notional_to_wallet_balance:
+    #    - rejects non-positive/NaN price on SELL
+    #    - floors T212 2-decimal shares (never rounds up above wallet balance)
+    #    - prevents partial T212 SELL from leaving < $6.0 unsellable remainder
+    t212_inst = MagicMock(symbol="NVDA_US_EQ", base="NVDA_US_EQ", quote="USD", provider_name="t212")
+    t212_inst._provider.free_balance.return_value = 1.00
+    ok_nan, _, reason_nan = gw._clamp_notional_to_wallet_balance(t212_inst, "SELL", float("nan"), 50.0)
+    assert ok_nan is False and "Invalid live price" in reason_nan
+
+    # Partial T212 SELL: 1.004 shares @ $100 = $100.40; selling $96 would leave $4.40 (< $6 min), so it clamps to 0.94 shares ($94)
+    t212_inst._provider.free_balance.return_value = 1.004
+    ok_part, usd_part, _ = gw._clamp_notional_to_wallet_balance(t212_inst, "SELL", 100.0, 96.0)
+    assert ok_part is True
+    assert usd_part == pytest.approx(94.0)
+
+    # 4. process_intent retries once on transient account_cache_not_fresh and records clamped_notional_usd
+    bin_inst = MagicMock(symbol="ARBUSDC", base="ARB", quote="USDC", provider_name="binance")
+    bin_inst._provider.name = "binance"
+    bin_inst._provider.get_current_price.return_value = 0.20
+    bin_inst._provider.free_balance.return_value = 500.0  # $100 worth of ARB
+    call_n = {"n": 0}
+
+    def place_retry_once(**kwargs):
+        call_n["n"] += 1
+        ctx = kwargs.get("_outcome_context")
+        if call_n["n"] == 1:
+            if isinstance(ctx, dict):
+                ctx["category"] = "refused_pre_submit"
+                ctx["reason"] = "account_cache_not_fresh"
+            return None
+        return {"orderId": "arb_ok_2", "cummulativeQuoteQty": "100.0"}
+
+    bin_inst.place.side_effect = place_retry_once
+    intent_retry = {
+        "intent_id": "retry_fresh_1",
+        "decision": "SELL",
+        "symbol": "ARBUSDC",
+        "venue": "binance",
+        "confidence": "92%",
+        "suggested_notional_usd": "$500",
+        "status": "PENDING",
+    }
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        res_retry = gw.process_intent(intent_retry, instruments_map={"ARBUSDC": bin_inst})
+    assert res_retry["status"] == "EXECUTED"
+    assert call_n["n"] == 2
+    assert res_retry["clamped_notional_usd"] == pytest.approx(100.0)
+    assert res_retry["confidence"] == pytest.approx(0.92)
+
+    # 5. reconcile_intents computes fallback cummulativeQuoteQty from qty * price on submit_accepted
+    audit_dir = os.path.join(ws, "logger", "execution_audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    with open(os.path.join(audit_dir, "execution_audit_2026-10-29.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "submit_accepted",
+            "intent_id": "id_calc_cost",
+            "order_id": "ord_909",
+            "symbol": "TAOUSDC",
+            "side": "sell",
+            "qty": 2.0,
+            "price": 250.5,
+            "ts": 1793100001.0,
+        }) + "\n")
+    pending_list = [{"intent_id": "id_calc_cost", "symbol": "TAOUSDC", "decision": "SELL", "status": "PENDING_EXECUTION"}]
+    assert gw.reconcile_intents(pending_list) is True
+    assert pending_list[0]["status"] == "EXECUTED"
+    assert pending_list[0]["execution_payload"]["cummulativeQuoteQty"] == "501.0"
+
+
+
 
 

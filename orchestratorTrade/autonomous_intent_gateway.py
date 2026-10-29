@@ -24,7 +24,9 @@ from dataclasses import asdict, dataclass, field
 import glob
 import json
 import logging
+import math
 import os
+import re
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -49,6 +51,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     normalize_venue_name,
+    resolve_cachedb_filepath,
     split_symbol_assets,
 )
 
@@ -96,15 +99,37 @@ MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
 _parse_finite_float = safe_float
 
 
-def _extract_intent_notional(data: Dict[str, Any], default: float) -> float:
-    """Extract and parse suggested notional USD across aliases, defaulting if missing or non-finite."""
+_CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
+
+
+def _extract_intent_notional(data: Dict[str, Any], default: Any = None) -> Any:
+    """Extract and parse positive suggested notional USD across aliases and currency strings."""
+    if not isinstance(data, dict):
+        return default
     raw_notional = data.get("suggested_notional_usd")
     if raw_notional is None:
-        for nk in ("notional_usd", "amount_usd", "size_usd"):
+        for nk in ("notional_usd", "amount_usd", "size_usd", "usd_notional", "notional", "value_usd"):
             if data.get(nk) is not None:
                 raw_notional = data.get(nk)
                 break
-    return _parse_finite_float(raw_notional, default)
+    if isinstance(raw_notional, str):
+        raw_notional = _CURRENCY_STRIP_RE.sub("", raw_notional).strip()
+    return safe_pos_float(raw_notional, default)
+
+
+def _parse_intent_confidence(raw_conf: Any, default: float = 0.0) -> float:
+    """Parse confidence into [0.0, 1.0], normalizing percentage strings or 1..100 values."""
+    if isinstance(raw_conf, str):
+        s = raw_conf.strip()
+        if s.endswith("%"):
+            pct = safe_nonneg_float(s[:-1].strip(), default=None)
+            return round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else default
+    val = safe_nonneg_float(raw_conf, default=None)
+    if val is None:
+        return default
+    if 1.0 < val <= 100.0:
+        return round(val / 100.0, 4)
+    return val if val <= 1.0 else default
 
 
 def extract_current_price_item(item: Any) -> Optional[float]:
@@ -351,10 +376,10 @@ class AutonomousIntentGateway:
         return items
 
     def reconcile_intents(self, intents: List[Dict[str, Any]]) -> bool:
-        """Reconciles FAILED intents against execution_audit_*.jsonl if later filled via retry worker."""
+        """Reconciles FAILED or PENDING_EXECUTION intents against execution_audit_*.jsonl if later filled via retry worker."""
         failed_by_id: Dict[str, Dict[str, Any]] = {}
         for item in intents:
-            if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() != "FAILED":
+            if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() not in ("FAILED", "PENDING_EXECUTION"):
                 continue
             raw_id = item.get("intent_id") if item.get("intent_id") is not None else item.get("id")
             if raw_id is None or isinstance(raw_id, bool):
@@ -420,12 +445,21 @@ class AutonomousIntentGateway:
         for iid, rec in matched_records.items():
             intent = failed_by_id[iid]
             filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+            raw_cost = rec.get("cost")
+            if raw_cost is None:
+                f_q = safe_pos_float(filled_qty, default=None)
+                f_px = safe_pos_float(
+                    rec.get("price") if rec.get("price") is not None else rec.get("reference_price"),
+                    default=None,
+                )
+                if f_q is not None and f_px is not None:
+                    raw_cost = round(f_q * f_px, 8)
             exec_payload: Dict[str, Any] = {
                 "orderId": rec.get("order_id"),
                 "symbol": rec.get("symbol") or intent.get("symbol"),
                 "side": str(rec.get("side") or intent.get("decision") or "").upper(),
                 "executedQty": str(filled_qty) if filled_qty is not None else "",
-                "cummulativeQuoteQty": str(rec.get("cost")) if rec.get("cost") is not None else "",
+                "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
                 "status": str(rec.get("venue_status") or "FILLED").upper(),
                 "reconciled_from_audit": True,
             }
@@ -446,14 +480,11 @@ class AutonomousIntentGateway:
 
     def save_all_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Transactionally persists all intents to disk using `.previous` staging and atomic replace."""
-        from state_io import atomic_write_json, discard_generation_file, stage_previous_generation
-        backup_path: Optional[str] = None
+        from orchestratorOS.lib.technical_repair_ssot import clean_json_value
+        from state_io import save_json_state
         try:
-            if os.path.exists(self.intents_file):
-                backup_path = stage_previous_generation(self.intents_file)
-            atomic_write_json(self.intents_file, intents, indent=2)
-            if backup_path:
-                discard_generation_file(backup_path)
+            cleaned = clean_json_value(intents if isinstance(intents, list) else [])
+            save_json_state(self.intents_file, cleaned, indent=2)
             return True
         except Exception as e:
             logger.error("Failed saving intents to %s: %s", self.intents_file, e)
@@ -704,6 +735,16 @@ class AutonomousIntentGateway:
 
         Returns ``(allowed, clamped_usd, reason)`` symmetrically across BUY (quote asset) and SELL (base asset).
         """
+        desired_f = safe_pos_float(desired_usd, default=None)
+        if desired_f is None:
+            return False, 0.0, f"Invalid desired notional USD: {desired_usd!r}"
+        desired_usd = desired_f
+        price_f = safe_pos_float(price, default=None)
+        if decision != "BUY" and price_f is None:
+            return False, 0.0, f"Invalid live price for {decision}: {price!r}"
+        if price_f is not None:
+            price = price_f
+
         provider = getattr(inst, "_provider", None)
         free_fn = getattr(provider, "free_balance", None)
         if not callable(free_fn):
@@ -742,13 +783,17 @@ class AutonomousIntentGateway:
         else:
             sell_bal = bal
             if venue_l == "t212" and price > 0:
-                q_round = round(bal, 2)
-                dust = bal - q_round
-                if abs(dust) > 1e-6 and abs(dust) * price < 6.0:
+                q_floor = math.floor(bal * 100.0 + 1e-9) / 100.0
+                dust = max(0.0, bal - q_floor)
+                if dust > 1e-6 and dust * price < 6.0:
                     buf = 6.0 / price
-                    sell_bal = max(0.0, round(bal - buf, 2)) if bal > buf else 0.0
+                    sell_bal = (
+                        max(0.0, math.floor((bal - buf) * 100.0 + 1e-9) / 100.0)
+                        if bal > buf
+                        else 0.0
+                    )
                 else:
-                    sell_bal = q_round
+                    sell_bal = q_floor
             avail_usd = sell_bal * price
         if avail_usd < self.min_notional_usd:
             return (
@@ -758,6 +803,18 @@ class AutonomousIntentGateway:
             )
         if avail_usd < desired_usd:
             return True, avail_usd, f"Clamped notional from ${desired_usd:.2f} to available ${avail_usd:.2f}"
+        if decision == "SELL" and venue_l == "t212" and price > 0:
+            rem_usd = bal * price - desired_usd
+            if 0.0 < rem_usd < 6.0:
+                max_part_shares = math.floor((bal - (6.0 / price)) * 100.0 + 1e-9) / 100.0
+                max_part_usd = round(max_part_shares * price, 4)
+                if max_part_usd >= self.min_notional_usd:
+                    return (
+                        True,
+                        max_part_usd,
+                        f"Adjusted T212 SELL notional from ${desired_usd:.2f} to ${max_part_usd:.2f} to leave >=$6 remainder",
+                    )
+                return True, avail_usd, f"Adjusted T212 SELL notional from ${desired_usd:.2f} to ${avail_usd:.2f} to avoid <$6 dust"
         return True, desired_usd, "Sufficient wallet balance"
 
     def _dispatch_notify(self, title: str, body: str, symbol: str) -> bool:
@@ -821,7 +878,8 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        confidence = _parse_finite_float(intent.get("confidence"), 0.0)
+        confidence = _parse_intent_confidence(intent.get("confidence"), 0.0)
+        intent["confidence"] = confidence
 
         if confidence < self.min_confidence:
             logger.info("[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
@@ -863,6 +921,8 @@ class AutonomousIntentGateway:
         guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
             inst, decision, price, effective_usd
         )
+        if guard_allowed and effective_usd > 0:
+            intent["clamped_notional_usd"] = round(effective_usd, 2)
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
 
         raw_thesis = intent.get("thesis")
@@ -960,6 +1020,29 @@ class AutonomousIntentGateway:
                 bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
                 _outcome_context=outcome_ctx,
             )
+            if (
+                not order_res
+                and (
+                    outcome_ctx.get("state") == "refused"
+                    or outcome_ctx.get("category") == "refused_pre_submit"
+                )
+                and outcome_ctx.get("reason") in ("account_cache_not_fresh", "account_cache_snapshot_changed")
+            ):
+                time.sleep(0.25)
+                outcome_ctx.clear()
+                order_res = inst.place(
+                    side=decision,
+                    qty=target_qty,
+                    price=price,
+                    market=True,
+                    enforce_business_minimum=False,
+                    wait_for_trend=False,
+                    intent_id=intent_id,
+                    client_order_id=intent_cid,
+                    regime_context=None,
+                    bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+                    _outcome_context=outcome_ctx,
+                )
             if order_res:
                 from providers.base import extract_order_id
                 logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
@@ -1044,7 +1127,7 @@ class AutonomousIntentGateway:
         if not symbol or not venue:
             logger.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
             return None
-        confidence = _parse_finite_float(decision.get("confidence"), 0.0)
+        confidence = _parse_intent_confidence(decision.get("confidence"), 0.0)
         if confidence < self.min_confidence:
             logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
                         source, side, symbol, confidence, self.min_confidence)
