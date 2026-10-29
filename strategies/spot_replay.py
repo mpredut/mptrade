@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (
     ExecutionModel,
     FeeModel,
@@ -445,25 +445,12 @@ def make_spot_replay_adapter(
 
 def align_spot_interval_params(params, bar_minutes: float | int | None):
     """Return a copy of params with trend/volatility intervals and regime sample cap aligned to bar_minutes."""
-    if bar_minutes is None or isinstance(bar_minutes, bool):
-        return params
-    try:
-        bm_f = float(bar_minutes)
-    except (TypeError, ValueError, OverflowError):
-        return params
-    if not math.isfinite(bm_f) or bm_f <= 0 or int(bm_f) <= 0:
+    bm_f = safe_pos_float(bar_minutes, default=None)
+    if bm_f is None or int(bm_f) <= 0:
         return params
     itv = int(bm_f)
     cap = _strat.MarketRegimeService.horizon_sample_capacity("long", itv)
-    raw_min_s = getattr(params, "regime_min_samples", 20)
-    try:
-        cur_min_samples = (
-            int(float(raw_min_s))
-            if raw_min_s is not None and not isinstance(raw_min_s, bool) and math.isfinite(float(raw_min_s))
-            else 20
-        )
-    except (TypeError, ValueError, OverflowError):
-        cur_min_samples = 20
+    cur_min_samples = safe_int(getattr(params, "regime_min_samples", 20), default=20)
     clamped_min_samples = max(3, min(cur_min_samples, cap))
     if (
         getattr(params, "trend_interval", itv) == itv
@@ -502,18 +489,11 @@ def prewarm_trend_series(
     """Prewarm process-level replay regime and volatility caches for an OHLC series."""
     if not ohlc or warmup is None or isinstance(warmup, bool):
         return
-    if bar_minutes is None or isinstance(bar_minutes, bool):
+    bm_f = safe_pos_float(bar_minutes, default=None)
+    if bm_f is None:
         return
-    try:
-        bm_f = float(bar_minutes)
-    except (TypeError, ValueError, OverflowError):
-        return
-    if not math.isfinite(bm_f) or bm_f <= 0:
-        return
-    try:
-        warmup_i = max(0, int(float(warmup))) if math.isfinite(float(warmup)) else 40
-    except (TypeError, ValueError, OverflowError):
-        warmup_i = 40
+    w_f = safe_float(warmup, default=None)
+    warmup_i = max(0, int(w_f)) if w_f is not None else 40
     if len(ohlc) <= warmup_i:
         return
     p = align_spot_interval_params(

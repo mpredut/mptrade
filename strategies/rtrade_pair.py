@@ -251,14 +251,10 @@ class PairCoordinator:
                  sleeper: Callable[[float], None] = time.sleep,
                  pair_id_factory: Callable[[], str] = lambda: uuid.uuid4().hex):
         self.venue = venue
-        if isinstance(qty, bool) or qty is None:
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             raise ValueError("rtrade qty must be finite and positive")
-        try:
-            self.qty = float(qty)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("rtrade qty must be finite and positive") from exc
-        if not math.isfinite(self.qty) or self.qty <= 0:
-            raise ValueError("rtrade qty must be finite and positive")
+        self.qty = qty_f
         self.policy = policy
         if start_side is None or isinstance(start_side, bool):
             raise ValueError("start_side must be BUY or SELL")
@@ -287,11 +283,10 @@ class PairCoordinator:
         if self.phase not in {"idle", "complete", "expired", "failed", "hard_stop"}:
             raise RuntimeError("the existing round is not terminal")
         raw_mid = mid if mid is not None else (self.venue.current_price() or 0.0)
-        if isinstance(raw_mid, bool):
+        mid_f = safe_float(raw_mid, default=None)
+        if mid_f is None:
             raise ValueError("the rtrade mid must be finite")
-        mid = float(raw_mid)
-        if not math.isfinite(mid):
-            raise ValueError("the rtrade mid must be finite")
+        mid = mid_f
         buy_price, sell_price = quote_prices(
             mid, self.policy.adjustment_fraction, self.policy.price_decimals)
         if pair_id is not None:
@@ -304,10 +299,10 @@ class PairCoordinator:
             if clean_pid is None:
                 raise ValueError("invalid rtrade pair_id")
             self.pair_id = clean_pid
-        raw_started = self.clock()
-        if isinstance(raw_started, bool) or not math.isfinite(float(raw_started)):
+        started_f = safe_float(self.clock(), default=None)
+        if started_f is None:
             raise ValueError("the rtrade clock must be finite")
-        self.started_at = float(raw_started)
+        self.started_at = started_f
         self.first_fill_at = None
         self.first_fill_side = None
         self.shock = False
@@ -448,19 +443,18 @@ class PairCoordinator:
         if raw_elapsed is None:
             elapsed_f = 0.0
         else:
-            if isinstance(raw_elapsed, bool):
-                raise ValueError("invalid rtrade checkpoint elapsed_sec")
-            elapsed_f = float(raw_elapsed)
-            if not math.isfinite(elapsed_f):
+            elapsed_f = safe_float(raw_elapsed, default=None)
+            if elapsed_f is None:
                 raise ValueError("invalid rtrade checkpoint elapsed_sec")
         obj.started_at = clock() - max(0.0, elapsed_f)
         ff_elapsed = state.get("first_fill_elapsed_sec")
         if ff_elapsed is None:
             obj.first_fill_at = None
         else:
-            if isinstance(ff_elapsed, bool) or not math.isfinite(float(ff_elapsed)):
+            ff_f = safe_float(ff_elapsed, default=None)
+            if ff_f is None:
                 raise ValueError("invalid rtrade checkpoint first_fill_elapsed_sec")
-            obj.first_fill_at = obj.started_at + max(0.0, float(ff_elapsed))
+            obj.first_fill_at = obj.started_at + max(0.0, ff_f)
         obj.first_fill_side = state.get("first_fill_side")
         raw_tickets = state.get("tickets")
         if not isinstance(raw_tickets, list):
@@ -506,34 +500,19 @@ class PairCoordinator:
             stored_limit_revisions = {}
         elif not isinstance(stored_limit_revisions, dict):
             raise ValueError("invalid rtrade checkpoint limit_revisions")
-        obj.limit_revisions = {}
-        for side in ("BUY", "SELL"):
-            raw_rev = stored_limit_revisions.get(side, 0)
-            if isinstance(raw_rev, bool):
-                raise ValueError(f"invalid {side} limit revision: {raw_rev}")
-            try:
-                rev_f = 0.0 if raw_rev is None else float(raw_rev)
-                if not math.isfinite(rev_f) or rev_f != int(rev_f):
-                    raise ValueError(f"invalid {side} limit revision: {raw_rev}")
-                revision = int(rev_f)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid {side} limit revision: {raw_rev}") from exc
-            if not 0 <= revision <= _MAX_LIMIT_REVISION:
-                raise ValueError(f"invalid {side} limit revision: {revision}")
-            obj.limit_revisions[side] = revision
-        raw_hs_rev = state.get("hard_stop_revision", 0)
-        if isinstance(raw_hs_rev, bool):
-            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}")
-        try:
-            hs_rev_f = 0.0 if raw_hs_rev is None else float(raw_hs_rev)
-            if not math.isfinite(hs_rev_f) or hs_rev_f != int(hs_rev_f):
-                raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}")
-            hs_revision = int(hs_rev_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev}") from exc
-        if not 0 <= hs_revision <= _MAX_LIMIT_REVISION:
-            raise ValueError(f"invalid hard-stop revision: {hs_revision}")
-        obj.hard_stop_revision = hs_revision
+        def _parse_revision(raw_val, label: str) -> int:
+            if raw_val is None:
+                return 0
+            rev_f = safe_float(raw_val, default=None)
+            if rev_f is None or not rev_f.is_integer() or not 0 <= int(rev_f) <= _MAX_LIMIT_REVISION:
+                raise ValueError(f"invalid {label}: {raw_val}")
+            return int(rev_f)
+
+        obj.limit_revisions = {
+            side: _parse_revision(stored_limit_revisions.get(side, 0), f"{side} limit revision")
+            for side in ("BUY", "SELL")
+        }
+        obj.hard_stop_revision = _parse_revision(state.get("hard_stop_revision", 0), "hard-stop revision")
         obj.hard_stop_reason = state.get("hard_stop_reason")
         return obj
 
@@ -953,15 +932,35 @@ class PairCoordinator:
         self.reason = reason
         return True
 
+    def _try_complete_flat_exposure(self) -> tuple[bool, float, float, float, float, float]:
+        cancel_ambiguous = False
+        for ticket in self.tickets:
+            if not ticket.active:
+                continue
+            _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
+            cancel_ambiguous = cancel_ambiguous or cancel_reason is not None
+        self._refresh()
+        bq, bc, _bf, sq, sc, _sf = self._totals()
+        net = bq - sq
+        if abs(net) <= 1e-8:
+            if cancel_ambiguous or self._has_active_tickets():
+                self.phase = "closing"
+                self.reason = "balanced_cancel_pending"
+            else:
+                self.phase = "complete"
+                self.reason = None
+            return True, bq, bc, sq, sc, net
+        return False, bq, bc, sq, sc, net
+
     def step(self, now: Optional[float] = None) -> PairOutcome:
         if self.phase in {"complete", "expired", "failed", "hard_stop"}:
             return self.outcome()
         if self.phase == "idle":
             raise RuntimeError("start() must be called before step()")
-        raw_now = self.clock() if now is None else now
-        if isinstance(raw_now, bool) or not math.isfinite(float(raw_now)):
+        now_f = safe_float(self.clock() if now is None else now, default=None)
+        if now_f is None:
             raise ValueError("the rtrade clock must be finite")
-        now = float(raw_now)
+        now = now_f
         self._refresh()
         bq, bc, _bf, sq, sc, _sf = self._totals()
         self._record_first_fill(now, bq, sq)
@@ -1022,25 +1021,8 @@ class PairCoordinator:
 
         if bq > 0 or sq > 0:
             if abs(net) <= 1e-8:
-                cancel_ambiguous = False
-                for ticket in self.tickets:
-                    if not ticket.active:
-                        continue
-                    _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-                    cancel_ambiguous = (
-                        cancel_ambiguous or cancel_reason is not None)
-                # Cancellation may race with a fill or fail. Confirm venue state
-                # before declaring the round terminal.
-                self._refresh()
-                bq, bc, _bf, sq, sc, _sf = self._totals()
-                net = bq - sq
-                if abs(net) <= 1e-8:
-                    if cancel_ambiguous or self._has_active_tickets():
-                        self.phase = "closing"
-                        self.reason = "balanced_cancel_pending"
-                        return self.outcome()
-                    self.phase = "complete"
-                    self.reason = None
+                settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
+                if settled:
                     return self.outcome()
 
             exposure_side = "LONG" if net > 0 else "SOLD"
@@ -1053,31 +1035,13 @@ class PairCoordinator:
             net = bq - sq
             if abs(net) <= 1e-8:
                 self.phase = "closing"
-                cancel_ambiguous = False
-                for ticket in self.tickets:
-                    if not ticket.active:
-                        continue
-                    _snapshot, cancel_reason = self._cancel_and_reconcile(ticket)
-                    cancel_ambiguous = (
-                        cancel_ambiguous or cancel_reason is not None)
-                self._refresh()
-                bq, bc, _bf, sq, sc, _sf = self._totals()
-                net = bq - sq
-                if abs(net) <= 1e-8:
-                    if cancel_ambiguous or self._has_active_tickets():
-                        self.reason = "balanced_cancel_pending"
-                        return self.outcome()
-                    self.phase = "complete"
-                    self.reason = None
+                settled, bq, bc, sq, sc, net = self._try_complete_flat_exposure()
+                if settled:
                     return self.outcome()
             exposure_side = "LONG" if net > 0 else "SOLD"
             entry_avg = (bc / bq) if exposure_side == "LONG" else (sc / sq)
-            raw_current = self.venue.current_price()
-            try:
-                current = 0.0 if raw_current is None or isinstance(raw_current, bool) else float(raw_current)
-            except (TypeError, ValueError, OverflowError):
-                current = 0.0
-            if not math.isfinite(current) or current <= 0:
+            current = safe_pos_float(self.venue.current_price(), default=0.0)
+            if current <= 0:
                 self.reason = "current_price_unavailable"
                 return self.outcome()
             self.reason = None

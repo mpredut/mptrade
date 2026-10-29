@@ -59,6 +59,16 @@ INFO_TIMEOUT_SECONDS = 10.0
 EXCHANGE_TIMEOUT_SECONDS = 30.0
 
 
+def _exact_int_in_range(val: object, lo: int = 0, hi: int | None = None) -> int | None:
+    f = safe_float(val, default=None)
+    if f is None or not f.is_integer():
+        return None
+    i = int(f)
+    if i < lo or (hi is not None and i > hi):
+        return None
+    return i
+
+
 def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     """Round an HL price to 5 significant figures and at most (6/8 - szDecimals) decimals."""
     if isinstance(px, bool) or isinstance(sz_decimals, bool):
@@ -68,11 +78,12 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
         dec_f = float(sz_decimals)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("px and sz_decimals must be finite numbers") from exc
-    if not math.isfinite(dec_f) or not dec_f.is_integer() or int(dec_f) < 0:
+    dec_i = _exact_int_in_range(dec_f, 0)
+    if dec_i is None:
         raise ValueError("sz_decimals must be a non-negative integer")
     if not math.isfinite(px) or px <= 0:
         return px
-    max_dec = (6 if is_perp else 8) - int(dec_f)
+    max_dec = (6 if is_perp else 8) - dec_i
     px = float(f"{px:.5g}")           # five significant figures
     return round(px, max(max_dec, 0))
 
@@ -186,23 +197,16 @@ class HLClient:
             raise HLError(f"Missing size precision metadata for {coin}")
         coin = coin.strip()
         meta = self._meta().get(coin)
-        raw_dec = meta.get("szDecimals") if isinstance(meta, dict) else None
-        if raw_dec is not None and not isinstance(raw_dec, bool):
-            try:
-                dec_f = float(raw_dec)
-                if math.isfinite(dec_f) and dec_f.is_integer() and 0 <= int(dec_f) <= 18:
-                    return int(dec_f)
-            except (TypeError, ValueError, OverflowError):
-                pass
+        dec_i = _exact_int_in_range(meta.get("szDecimals") if isinstance(meta, dict) else None, 0, 18)
+        if dec_i is not None:
+            return dec_i
         try:
             spot_meta = self.info.spot_meta() if hasattr(self.info, "spot_meta") else {}
             for token in (spot_meta or {}).get("tokens", []):
                 if isinstance(token, dict) and token.get("name") == coin and "szDecimals" in token:
-                    raw_tdec = token["szDecimals"]
-                    if raw_tdec is not None and not isinstance(raw_tdec, bool):
-                        tdec_f = float(raw_tdec)
-                        if math.isfinite(tdec_f) and tdec_f.is_integer() and 0 <= int(tdec_f) <= 18:
-                            return int(tdec_f)
+                    tdec_i = _exact_int_in_range(token["szDecimals"], 0, 18)
+                    if tdec_i is not None:
+                        return tdec_i
         except Exception:  # noqa: BLE001
             pass
         raise HLError(f"Missing size precision metadata for {coin}")
@@ -212,14 +216,9 @@ class HLClient:
             raise HLError(f"Missing leverage metadata for {coin}")
         coin = coin.strip()
         meta = self._meta().get(coin)
-        raw_lev = meta.get("maxLeverage") if isinstance(meta, dict) else None
-        if raw_lev is not None and not isinstance(raw_lev, bool):
-            try:
-                lev_f = float(raw_lev)
-                if math.isfinite(lev_f) and lev_f.is_integer() and int(lev_f) > 0:
-                    return int(lev_f)
-            except (TypeError, ValueError, OverflowError):
-                pass
+        lev_i = _exact_int_in_range(meta.get("maxLeverage") if isinstance(meta, dict) else None, 1)
+        if lev_i is not None:
+            return lev_i
         raise HLError(f"Missing leverage metadata for {coin}")
 
     def coin_listed(self, coin: str) -> bool:
@@ -431,12 +430,12 @@ class HLClient:
 
     def funding_history(self, start_ms: int) -> list[dict]:
         """Return actual funding payments received or paid since start_ms."""
-        if not self.address or start_ms is None or isinstance(start_ms, bool):
+        if not self.address:
+            return []
+        start_f = safe_nonneg_float(start_ms, default=None)
+        if start_f is None:
             return []
         try:
-            start_f = float(start_ms)
-            if not math.isfinite(start_f) or start_f < 0:
-                return []
             res = self.info.user_funding_history(self.address, int(start_f))
             return [x for x in res if isinstance(x, dict)] if isinstance(res, list) else []
         except Exception as e:  # noqa: BLE001
@@ -448,17 +447,13 @@ class HLClient:
         if (
             not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip()
             or not interval or isinstance(interval, bool) or not isinstance(interval, str) or not interval.strip()
-            or lookback_hours is None or isinstance(lookback_hours, bool)
         ):
+            return []
+        lh_f = safe_pos_float(lookback_hours, default=None)
+        if lh_f is None:
             return []
         coin = coin.strip()
         interval = interval.strip()
-        try:
-            lh_f = float(lookback_hours)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(lh_f) or lh_f <= 0:
-            return []
         end = int(time.time() * 1000)
         start = max(0, int(end - lh_f * 3600 * 1000))
         try:
@@ -518,17 +513,12 @@ class HLClient:
 
     # ----- signed trading -----------------------------------------------------
     def set_leverage(self, coin: str, leverage: int) -> None:
-        if not self.exchange:
+        if not self.exchange or not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return
-        if not coin or isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
-            return
-        if leverage is None or isinstance(leverage, bool):
+        lev_i = _exact_int_in_range(leverage, 1)
+        if lev_i is None:
             return
         try:
-            lev_f = float(leverage)
-            if not math.isfinite(lev_f) or not lev_f.is_integer() or int(lev_f) <= 0:
-                return
-            lev_i = int(lev_f)
             self.exchange.update_leverage(lev_i, coin.strip(), is_cross=True)
             log(f"  [HL] leverage {coin.strip()} set to {lev_i}x")
         except Exception as e:  # noqa: BLE001

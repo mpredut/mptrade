@@ -12,8 +12,6 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
 
-_safe_f = safe_float
-
 
 def _load_jsonl_dicts(path: str) -> list[dict]:
     rows = []
@@ -39,8 +37,8 @@ def q(xs, p):
         return float("nan")
     pf = min(1.0, max(0.0, pf))
     clean = sorted(
-        float(x) for x in (xs or [])
-        if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(float(x))
+        f for x in (xs or [])
+        if (f := safe_float(x, default=None)) is not None
     )
     return clean[min(len(clean) - 1, max(0, int(pf * (len(clean) - 1))))] if clean else float("nan")
 
@@ -85,12 +83,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         if not all(a in by[c] and isinstance(by[c][a].get("full"), dict) for a in assets):
             continue
         live = by.get("live", {})
-        full = [_safe_f(by[c][a]["full"].get("ret"), 0.0) for a in assets]
-        dd = [_safe_f(by[c][a]["full"].get("dd"), 0.0) for a in assets]
-        expo = [_safe_f(by[c][a]["full"].get("expo"), 0.0) for a in assets]
+        full = [safe_float(by[c][a]["full"].get("ret"), 0.0) for a in assets]
+        dd = [safe_float(by[c][a]["full"].get("dd"), 0.0) for a in assets]
+        expo = [safe_float(by[c][a]["full"].get("expo"), 0.0) for a in assets]
         beat_full = sum(
-            _safe_f(by[c][a]["full"].get("ret"), 0.0)
-            > _safe_f(
+            safe_float(by[c][a]["full"].get("ret"), 0.0)
+            > safe_float(
                 (live.get(a, {}).get("full") if isinstance(live.get(a, {}).get("full"), dict) else {}).get("ret"),
                 float("-inf"),
             ) + 1e-9
@@ -99,16 +97,16 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         w90 = [win_stats(by[c][a], "w90") for a in assets]
         w30 = [win_stats(by[c][a], "w30") for a in assets]
         beat_w90 = sum(
-            (win_stats(by[c][a], "w90")["mean"] > win_stats(live.get(a, {}), "w90")["mean"] + 1e-9)
-            if math.isfinite(win_stats(by[c][a], "w90")["mean"]) and math.isfinite(win_stats(live.get(a, {}), "w90")["mean"])
+            (w90_item["mean"] > live_w90_m + 1e-9)
+            if math.isfinite(w90_item["mean"]) and math.isfinite(live_w90_m := win_stats(live.get(a, {}), "w90")["mean"])
             else False
-            for a in assets
+            for a, w90_item in zip(assets, w90)
         )
         years = [
-            _safe_f(y.get("ret"), float("nan"))
+            yr_ret
             for a in assets
             for y in (by[c][a].get("year") or {}).values()
-            if isinstance(y, dict) and math.isfinite(_safe_f(y.get("ret"), float("nan")))
+            if isinstance(y, dict) and (yr_ret := safe_float(y.get("ret"), default=None)) is not None
         ]
         w90_means = [x["mean"] for x in w90 if math.isfinite(x["mean"])]
         w90_pos = [x["pos"] for x in w90 if math.isfinite(x["pos"])]
@@ -169,12 +167,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     L.append("|" + "---|" * (len(key_cfgs) + 2))
     for a in assets:
         live_full = by.get("live", {}).get(a, {}).get("full")
-        bh = _safe_f(live_full.get("bh") if isinstance(live_full, dict) else 0.0, 0.0)
+        bh = safe_float(live_full.get("bh") if isinstance(live_full, dict) else 0.0, 0.0)
         cells = []
         for c in key_cfgs:
             full_d = by.get(c, {}).get(a, {}).get("full")
             if isinstance(full_d, dict) and "ret" in full_d and "dd" in full_d:
-                cells.append(f"{_safe_f(full_d.get('ret'), 0.0):+.1f} ({_safe_f(full_d.get('dd'), 0.0):.0f})")
+                cells.append(f"{safe_float(full_d.get('ret'), 0.0):+.1f} ({safe_float(full_d.get('dd'), 0.0):.0f})")
             else:
                 cells.append("-")
         L.append(f"| {a} | {bh:+.0f} | " + " | ".join(cells) + " |")
@@ -193,12 +191,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             p_yr = by.get("old_live_pre0923", {}).get(a, {}).get("year")
             o = o_yr.get(y) if isinstance(o_yr, dict) else None
             p = p_yr.get(y) if isinstance(p_yr, dict) else None
-            r_bh = _safe_f(r.get("bh"), 0.0)
-            r_ret = _safe_f(r.get("ret"), 0.0)
+            r_bh = safe_float(r.get("bh"), 0.0)
+            r_ret = safe_float(r.get("ret"), 0.0)
             if isinstance(o, dict) and isinstance(p, dict) and "ret" in o and "ret" in p:
                 L.append(
                     f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | "
-                    f"{_safe_f(o.get('ret'), 0.0):+.1f} | {_safe_f(p.get('ret'), 0.0):+.1f} |"
+                    f"{safe_float(o.get('ret'), 0.0):+.1f} | {safe_float(p.get('ret'), 0.0):+.1f} |"
                 )
             else:
                 L.append(f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | - | - |")

@@ -104,8 +104,8 @@ def block_slopes(ts, px, window_h, step_h):
         order = np.argsort(ts, kind="mergesort")
         ts = ts[order]
         px = px[order]
-    w_h = _pos_float(window_h, 0.0)
-    s_h = _pos_float(step_h, 0.0)
+    w_h = safe_pos_float(window_h, default=0.0)
+    s_h = safe_pos_float(step_h, default=0.0)
     if w_h <= 0.0 or s_h <= 0.0:
         return np.array(out_t), np.array(out_s)
     w, s = w_h * 3600.0, s_h * 3600.0
@@ -138,15 +138,11 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
         or isinstance(bs, (bool, str, bytes))
     ):
         return eps
-    w_h = _pos_float(window_h, 0.0)
+    w_h = safe_pos_float(window_h, default=0.0)
     if w_h <= 0.0:
         return eps
-    nt = safe_nonneg_int(noise_tolerance, default=2) if noise_tolerance is not None else 2
-    if nt is None:
-        nt = 2
-    mc = safe_pos_int(min_confirm, default=3) if min_confirm is not None else 3
-    if mc is None:
-        mc = 3
+    nt = safe_nonneg_int(noise_tolerance, default=2)
+    mc = safe_pos_int(min_confirm, default=3)
     try:
         raw_bt = list(bt)
         raw_bs = list(bs)
@@ -217,7 +213,7 @@ def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0
     d = np.array(clean_d, dtype=float)
     if len(d) < 15:
         return None
-    hz = _pos_float(horizon_h, 24.0)
+    hz = safe_pos_float(horizon_h, default=24.0)
     cont = {}
     try:
         grid_iter = list(t_grid_days)
@@ -240,7 +236,7 @@ def verdict(cont: dict, mid: float) -> str:
     """Compare young (t < mid) and old (t >= mid) trend continuation."""
     if not isinstance(cont, dict):
         return "insufficient_data"
-    mid_f = _pos_float(mid, 0.0)
+    mid_f = safe_pos_float(mid, default=0.0)
     if mid_f <= 0.0:
         return "insufficient_data"
     young: list[float] = []
@@ -264,21 +260,22 @@ def verdict(cont: dict, mid: float) -> str:
 
 def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, t_max: int = 30) -> dict:
     """Return hybrid T by combining empirical data with prior."""
-    prior_f = _pos_float(prior_T, 14.0)
-    k_f = _pos_float(k, 30.0)
-    t_min_f = _pos_float(t_min, 4.0)
-    t_max_f = _pos_float(t_max, 30.0)
+    prior_f = safe_pos_float(prior_T, default=14.0)
+    k_f = safe_pos_float(k, default=30.0)
+    t_min_f = safe_pos_float(t_min, default=4.0)
+    t_max_f = safe_pos_float(t_max, default=30.0)
     if t_min_f > t_max_f:
         t_min_f, t_max_f = t_max_f, t_min_f
+    empty_res = {
+        "T": int(round(prior_f)),
+        "n": 0,
+        "w": 0.0,
+        "median_d": None,
+        "p90_d": None,
+        "T_emp": None,
+    }
     if dur_hours is None or isinstance(dur_hours, (str, bytes, bool)):
-        return {
-            "T": int(round(prior_f)),
-            "n": 0,
-            "w": 0.0,
-            "median_d": None,
-            "p90_d": None,
-            "T_emp": None,
-        }
+        return empty_res
     if isinstance(dur_hours, np.ndarray):
         if dur_hours.dtype == np.bool_:
             d = np.empty(0, dtype=float)
@@ -286,28 +283,21 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
             arr = dur_hours.astype(float, copy=False).ravel() / 24.0
             d = arr[np.isfinite(arr) & (arr > 0)]
         else:
-            vals = [_pos_float(v, 0.0) / 24.0 for v in dur_hours.ravel() if _pos_float(v, 0.0) > 0.0]
+            vals = [vf / 24.0 for v in dur_hours.ravel() if (vf := safe_pos_float(v, default=None)) is not None]
             d = np.asarray(vals, dtype=float)
     else:
         vals = []
         try:
             for v in dur_hours:
-                vf = _pos_float(v, 0.0)
-                if vf > 0.0:
+                vf = safe_pos_float(v, default=None)
+                if vf is not None:
                     vals.append(vf / 24.0)
         except TypeError:
             pass
         d = np.asarray(vals, dtype=float)
     n = len(d)
     if n == 0:
-        return {
-            "T": int(round(prior_f)),
-            "n": 0,
-            "w": 0.0,
-            "median_d": None,
-            "p90_d": None,
-            "T_emp": None,
-        }
+        return empty_res
     med, p90 = float(np.median(d)), float(np.percentile(d, 90))
     t_emp = max(p90, 2.0 * med)
     w = n / (n + k_f)
@@ -372,10 +362,6 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
     return None
 
 
-def _pos_float(val: Any, default: float) -> float:
-    return safe_pos_float(val, default=default) or default
-
-
 def estimate_T(
     symbol: str,
     days: int = 540,
@@ -385,19 +371,20 @@ def estimate_T(
     ttl_days: float = 7.0,
 ) -> dict:
     """Estimate asset-specific trend lifetime T empirically from historical candlesticks."""
-    prior_f = _pos_float(prior_T, 14.0)
-    ttl_f = _pos_float(ttl_days, 7.0)
+    prior_f = safe_pos_float(prior_T, default=14.0)
+    ttl_f = safe_pos_float(ttl_days, default=7.0)
+    fallback_res = {
+        "T": int(round(prior_f)),
+        "n": 0,
+        "w": 0.0,
+        "source_symbol": None,
+        "median_d": None,
+        "p90_d": None,
+        "T_emp": None,
+        "ts": 0,
+    }
     if not isinstance(symbol, str) or not symbol.strip():
-        return {
-            "T": int(round(prior_f)),
-            "n": 0,
-            "w": 0.0,
-            "source_symbol": None,
-            "median_d": None,
-            "p90_d": None,
-            "T_emp": None,
-            "ts": 0,
-        }
+        return fallback_res
     t_cache_path = _effective_t_cache_file()
     loaded_cache = _read_t_cache_dict(t_cache_path)
     cache = dict(loaded_cache) if isinstance(loaded_cache, dict) else {}
@@ -431,18 +418,7 @@ def estimate_T(
             continue
 
     if used is None:
-        if ent:
-            return ent
-        return {
-            "T": int(round(prior_f)),
-            "n": 0,
-            "w": 0.0,
-            "source_symbol": None,
-            "median_d": None,
-            "p90_d": None,
-            "T_emp": None,
-            "ts": 0,
-        }
+        return ent if ent else fallback_res
 
     bt, bs = block_slopes(ts, px, window_h, step_h)
     eps = episodes(bt, bs, window_h)
@@ -494,9 +470,9 @@ def get_trend_survival_metrics(
 
     allow_net = _parse_bool_flag(allow_network, False)
     if cached_entry:
-        median_d = _pos_float(cached_entry.get("median_d"), median_d)
-        p90_d = _pos_float(cached_entry.get("p90_d"), p90_d)
-        t_cand = _pos_float(cached_entry.get("T"), 0.0)
+        median_d = safe_pos_float(cached_entry.get("median_d"), default=median_d)
+        p90_d = safe_pos_float(cached_entry.get("p90_d"), default=p90_d)
+        t_cand = safe_pos_float(cached_entry.get("T"), default=0.0)
         if t_cand > 0.0:
             T_val = t_cand
             cached_t = T_val
@@ -504,10 +480,10 @@ def get_trend_survival_metrics(
         try:
             est = estimate_T(symbol)
             if est:
-                median_d = _pos_float(est.get("median_d"), median_d)
-                p90_d = _pos_float(est.get("p90_d"), p90_d)
-                t_cand = _pos_float(est.get("T"), 0.0)
-                if t_cand > 0.0 and _pos_float(est.get("n"), 0.0) > 0:
+                median_d = safe_pos_float(est.get("median_d"), default=median_d)
+                p90_d = safe_pos_float(est.get("p90_d"), default=p90_d)
+                t_cand = safe_pos_float(est.get("T"), default=0.0)
+                if t_cand > 0.0 and safe_pos_float(est.get("n"), default=0.0) > 0:
                     T_val = t_cand
                     cached_t = T_val
         except Exception:

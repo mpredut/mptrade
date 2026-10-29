@@ -26,7 +26,7 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import float_env, parse_dotenv, safe_float as _safe_f, safe_int as _safe_int
+from botcore import float_env, parse_dotenv, safe_float as _safe_f, safe_int as _safe_int, safe_pos_float
 from strategies import spot_dca as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
 
@@ -118,7 +118,6 @@ _TASK_CACHE: dict = {}
 
 
 def load(path):
-    import math
     if isinstance(path, (bool, int, float)):
         return []
     cached = _LOAD_CACHE.get(path)
@@ -127,21 +126,22 @@ def load(path):
     rows = []
     with open(path, encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
-            try:
-                ts_val = int(float(r["timestamp"]))
-                o = float(r["open"])
-                h = float(r["high"])
-                l = float(r["low"])
-                c = float(r["close"])
-            except (KeyError, TypeError, ValueError, OverflowError):
-                continue
+            ts_f = safe_pos_float(r.get("timestamp"), default=None)
+            o = safe_pos_float(r.get("open"), default=None)
+            h = safe_pos_float(r.get("high"), default=None)
+            l = safe_pos_float(r.get("low"), default=None)
+            c = safe_pos_float(r.get("close"), default=None)
             if (
-                ts_val > 0
-                and all(math.isfinite(x) and x > 0 for x in (o, h, l, c))
+                ts_f is not None
+                and int(ts_f) > 0
+                and o is not None
+                and h is not None
+                and l is not None
+                and c is not None
                 and h >= max(o, l, c)
                 and l <= min(o, h, c)
             ):
-                rows.append((ts_val, o, h, l, c))
+                rows.append((int(ts_f), o, h, l, c))
     _LOAD_CACHE[path] = rows
     return rows
 

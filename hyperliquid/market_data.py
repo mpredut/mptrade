@@ -38,6 +38,7 @@ _common = _load_hl_local("common")
 log = _common.log
 safe_float = _common.safe_float
 safe_pos_float = _common.safe_pos_float
+safe_nonneg_float = _common.safe_nonneg_float
 HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
@@ -212,12 +213,14 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
     """Return hourly coin funding history sorted as (time_ms, funding_rate) tuples."""
     if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
         return []
-    if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)) or int(start_ms) < 0:
+    if not isinstance(start_ms, (int, float)) or not isinstance(timeout, (int, float)):
         return []
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+    start_f = safe_nonneg_float(start_ms, default=None)
+    timeout_f = safe_pos_float(timeout, default=None)
+    if start_f is None or int(start_f) < 0 or timeout_f is None:
         return []
     try:
-        data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_ms)}, timeout=timeout)
+        data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_f)}, timeout=timeout)
         if not isinstance(data, list):
             return []
         entries: list[tuple[int, float]] = []
