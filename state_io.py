@@ -24,6 +24,8 @@ T = TypeVar("T")
 
 
 def _exact_nonneg_int(val: Any) -> int | None:
+    if isinstance(val, int) and not isinstance(val, bool):
+        return val if val >= 0 else None
     f = safe_float(val, default=None)
     return int(f) if (f is not None and f.is_integer() and int(f) >= 0) else None
 

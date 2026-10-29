@@ -299,6 +299,9 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
     assert "Price: $1.2346" in msg
 
     assert math.isnan(hl_client._round_px(float("nan"), 2))
+    large_oid = (1 << 53) + 7
+    assert hl_client._exact_int_in_range(large_oid, 1) == large_oid
+    assert hl_client._exact_int_in_range(str(large_oid), 1) == large_oid
 
     sig_file = tmp_path / "signal.json"
     sig_file.write_text(json.dumps({"trend": "up", "confidence": 5.0, "ts": now_ts + 999999999.0}), encoding="utf-8")

@@ -318,7 +318,11 @@ def cancel_order(symbol, order_id):
         cleaned_oid = _resolve_valid_bapi_oid(order_id)
         if cleaned_oid is None:
             return False
-        if isinstance(order_id, (int, float)) and not isinstance(order_id, bool):
+        if isinstance(order_id, int) and not isinstance(order_id, bool):
+            if order_id <= 0:
+                return False
+            oid_arg = order_id
+        elif isinstance(order_id, float):
             oid_f = safe_pos_float(order_id, default=None)
             if oid_f is None or not oid_f.is_integer():
                 return False

@@ -189,7 +189,11 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertEqual(botcore.safe_int(str(large_id), 0), large_id)
         self.assertEqual(botcore.safe_pos_int(str(large_id), None), large_id)
         from lock.trade_cooldown import _clean_order_id_meta
+        from order_retry import _rev_int
+        from state_io import _exact_nonneg_int
         self.assertEqual(_clean_order_id_meta(large_id), large_id)
+        self.assertEqual(_rev_int(large_id), large_id)
+        self.assertEqual(_exact_nonneg_int(large_id), large_id)
 
 
 class BoundNotifierTest(unittest.TestCase):

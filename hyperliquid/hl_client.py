@@ -59,10 +59,23 @@ EXCHANGE_TIMEOUT_SECONDS = 30.0
 
 
 def _exact_int_in_range(val: object, lo: int = 0, hi: int | None = None) -> int | None:
-    f = safe_float(val, default=None)
-    if f is None or not f.is_integer():
+    if isinstance(val, bool) or val is None:
         return None
-    i = int(f)
+    if isinstance(val, int):
+        i = val
+    elif isinstance(val, str):
+        try:
+            i = int(val.strip(), 10)
+        except ValueError:
+            f = safe_float(val, default=None)
+            if f is None or not f.is_integer():
+                return None
+            i = int(f)
+    else:
+        f = safe_float(val, default=None)
+        if f is None or not f.is_integer():
+            return None
+        i = int(f)
     if i < lo or (hi is not None and i > hi):
         return None
     return i

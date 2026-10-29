@@ -797,6 +797,8 @@ def enqueue_claimed(
 
 
 def _rev_int(val, default=-1):
+    if isinstance(val, int) and not isinstance(val, bool):
+        return val
     f = safe_float(val, default=None)
     return int(f) if (f is not None and f.is_integer()) else default
 
