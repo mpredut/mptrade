@@ -360,6 +360,18 @@ def test_atomic_text_writer_newline(tmp_path):
     assert b"a,b" in content
 
 
+def test_atomic_write_json_default(tmp_path):
+    import datetime as dt
+    from pathlib import Path
+    p = tmp_path / "test_default.json"
+    data = {"path": Path("/some/path"), "time": dt.datetime(2026, 1, 1, 12, 0, 0)}
+    atomic_write_json(p, data, default=str)
+    assert p.exists()
+    loaded = json.loads(p.read_text(encoding="utf-8"))
+    assert "/some/path" in loaded["path"]
+    assert "2026-01-01" in loaded["time"]
+
+
 
 
 

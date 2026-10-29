@@ -712,10 +712,9 @@ def main():
         # a snapshot of the current proposals (overwriting — the file means "what dev proposes
         # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
         # confirmed signal in this cycle (prod has nothing to apply).
-        from state_io import atomic_text_writer
+        from state_io import atomic_write_json
 
-        with atomic_text_writer(args.propose_out) as f:
-            json.dump(proposals, f, indent=2, default=str)
+        atomic_write_json(args.propose_out, proposals, indent=2, default=str)
         print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
         if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):
             # notify user that new proposals are available to review and apply
