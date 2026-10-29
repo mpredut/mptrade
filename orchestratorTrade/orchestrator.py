@@ -16,7 +16,10 @@ import botcore
 botcore.load_dotenv(os.path.join(ROOT_DIR, "config.env"))
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
 from notify_engine.server import NotificationServer
-from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
+from orchestratorOS.lib.technical_repair_ssot import (
+    evaluate_heartbeat_files_freshness,
+    parse_procs_manifest,
+)
 
 
 class BotManager:
@@ -389,30 +392,13 @@ class BotManager:
                             proc_start = now
                             self.process_start_times[name] = now
                         if (now - proc_start) > hb_stale_s:
-                            is_hung = False
-                            stale_file = ""
-                            max_stale_duration = 0.0
-
-                            # Every heartbeat file must indicate life (ALL must be fresh)
-                            for raw_hbf in hb_files:
-                                hbf = resolve_cachedb_filepath(raw_hbf)
-                                if os.path.exists(hbf):
-                                    try:
-                                        mtime = os.path.getmtime(hbf)
-                                        duration = now - mtime
-                                        if duration > hb_stale_s:
-                                            is_hung = True
-                                            if duration > max_stale_duration:
-                                                max_stale_duration = duration
-                                                stale_file = hbf
-                                    except Exception as exc:
-                                        logging.warning(f"Failed to check heartbeat mtime for {name} ({hbf}): {exc}")
-                                else:
-                                    is_hung = True
-                                    duration = now - proc_start
-                                    if duration > max_stale_duration:
-                                        max_stale_duration = duration
-                                        stale_file = hbf
+                            hb_fresh, _, max_stale_duration, stale_file = evaluate_heartbeat_files_freshness(
+                                hb_files,
+                                float(hb_stale_s),
+                                now,
+                                fallback_start_ts=proc_start,
+                            )
+                            is_hung = not hb_fresh
 
                             if is_hung:
                                 recent_logs = list(self.recent_lines.get(name, []))[-5:]

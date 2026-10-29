@@ -31,10 +31,12 @@ from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_pos_float, 
 from cachepaths import resolve_cachedb_filepath
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
+    evaluate_heartbeat_files_freshness,
     gather_basic_os_resources,
     parse_procs_manifest,
     read_json_recovering,
     resolve_heartbeat_paths,
+    summarize_fleet_sensor_status,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -129,25 +131,11 @@ class FleetHealthMonitor:
                     stale_threshold,
                 )
 
-            if hb_paths:
-                mtimes = []
-                missing_any = False
-                for raw_hbp in hb_paths:
-                    hbp = str(resolve_cachedb_filepath(raw_hbp))
-                    if os.path.exists(hbp):
-                        try:
-                            mtimes.append(os.path.getmtime(hbp))
-                        except Exception:
-                            missing_any = True
-                    else:
-                        missing_any = True
-                if mtimes:
-                    oldest = min(mtimes)
-                    age_sec = max(0.0, now_ts - oldest)
-                    if stale_threshold > 0 and (missing_any or age_sec > stale_threshold):
-                        fresh = False
-                elif stale_threshold > 0:
-                    fresh = False
+            fresh, age_sec, _, _ = evaluate_heartbeat_files_freshness(
+                hb_paths or [],
+                stale_threshold,
+                now_ts,
+            )
 
             results.append(ProcessHealth(
                 name=p["name"],
@@ -163,52 +151,7 @@ class FleetHealthMonitor:
 
     def gather_sensor_status(self) -> Dict[str, Any]:
         """Loads and summarizes real-time risk guards and telemetry files."""
-        sensors: Dict[str, Any] = {}
-
-        def _read(fname: str) -> Optional[Dict[str, Any]]:
-            data = read_json_recovering(os.path.join(self.cachedb_dir, fname))
-            return data if isinstance(data, dict) else None
-
-        # 1. Geopolitical Threat Sensor
-        geo = _read("geopolitical_eval.json")
-        if geo:
-            sensors["geopolitical_threat"] = {
-                "threat_level": str(geo.get("threat_level") or "NORMAL"),
-                "risk_score": safe_float(geo.get("risk_score"), default=0.0),
-                "summary": str(geo.get("summary") or ""),
-            }
-
-        # 2. Macro Sentiment Advisor
-        macro = _read("sentiment_eval.json")
-        if macro:
-            sensors["sentiment_advisor"] = {
-                "market_bias": str(macro.get("market_bias") or "NEUTRAL"),
-                "risk_level": str(macro.get("risk_level") or "MODERATE"),
-                "action": str(macro.get("recommended_action") or "HOLD"),
-            }
-
-        # 3. Autonomous AI Supervisor State
-        sup = _read("auto_cryptotrade_executor_eval.json")
-        if sup:
-            raw_dec = sup.get("market_trading_decision")
-            dec = raw_dec if isinstance(raw_dec, dict) else {}
-            sensors["supervisor_eval"] = {
-                "mode": str(sup.get("mode") or "enforce"),
-                "decision": str(dec.get("decision") or "HOLD"),
-                "confidence": safe_float(dec.get("confidence"), default=0.0),
-                "summary": str(sup.get("summary") or ""),
-            }
-
-        # 4. Fear & Greed & Market Breadth
-        fg = _read("fear_greed_collect.json")
-        if fg:
-            sensors["fear_greed"] = safe_float(fg.get("value"), default=None)
-
-        mb = _read("market_breadth_collect.json")
-        if mb:
-            sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
-
-        return sensors
+        return summarize_fleet_sensor_status(self.cachedb_dir, read_json_recovering)
 
     def get_autonomous_modes(self) -> Dict[str, str]:
         """Extracts operational mode settings strictly from order_guard.conf."""

@@ -2131,6 +2131,49 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     assert "REBOOT_SYSTEM" in ALL_REPAIR_ACTIONS
     assert "CONFIG_ERROR" in ALL_DIAGNOSED_CATEGORIES
 
+    # Heartbeat freshness evaluation and fleet sensor status SSOT
+    from orchestratorOS.lib.technical_repair_ssot import (
+        evaluate_heartbeat_files_freshness,
+        summarize_fleet_sensor_status,
+    )
+    now_t = 1_700_000_000.0
+    hb1 = tmp_path / "hb1.heartbeat"
+    hb1.write_text("ok", encoding="utf-8")
+    os.utime(str(hb1), (now_t - 5.0, now_t - 5.0))
+    hb2 = tmp_path / "hb2.heartbeat"
+    hb2.write_text("ok", encoding="utf-8")
+    os.utime(str(hb2), (now_t - 15.0, now_t - 15.0))
+
+    is_fresh, age_s, max_stale, st_path = evaluate_heartbeat_files_freshness(
+        [str(hb1), str(hb2)], 20.0, now_t
+    )
+    assert is_fresh is True
+    assert age_s == 15.0
+
+    is_fresh, _, max_stale, st_path = evaluate_heartbeat_files_freshness(
+        [str(hb1), str(hb2)], 10.0, now_t
+    )
+    assert is_fresh is False
+    assert max_stale == 15.0
+    assert st_path == str(hb2)
+
+    is_fresh, _, max_stale, st_path = evaluate_heartbeat_files_freshness(
+        [str(hb1), str(tmp_path / "missing.heartbeat")], 20.0, now_t, fallback_start_ts=now_t - 30.0
+    )
+    assert is_fresh is False
+    assert max_stale == 30.0
+
+    (tmp_path / "geopolitical_eval.json").write_text(
+        json.dumps({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "Middle East tensions"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "fear_greed_collect.json").write_text(json.dumps({"value": 28.0}), encoding="utf-8")
+    sensors = summarize_fleet_sensor_status(str(tmp_path))
+    assert sensors["geopolitical_threat"]["threat_level"] == "ELEVATED"
+    assert sensors["geopolitical_threat"]["risk_score"] == 0.65
+    assert sensors["fear_greed"] == 28.0
+
+
 
 def test_extract_current_price_item_instrument_resolution_and_trailing_state_normalization(tmp_path):
     """Verify extract_current_price_item, canonical base priority in resolve_instrument, and trailing_state key normalization."""
