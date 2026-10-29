@@ -293,7 +293,7 @@ def check_llm_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
@@ -302,11 +302,8 @@ def check_llm_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
-    if margins is None:
-        m = _load_margins()
-    else:
-        m = margins
+    from order_guard import _is_valid_regime_context, _load_margins, validate_guard_mode_cfg
+    m = _load_margins() if margins is None else margins
 
     if "intelligence_guards_mode" in m:
         if validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
@@ -321,25 +318,20 @@ def check_llm_order_guards(
     computed_notional = notional_f if notional_f > 0.0 else ((px_f * qty_f) if (px_f > 0.0 and qty_f > 0.0) else 0.0)
 
     # 1. GLLM1: High-Stake LLM Pre-Trade Guard (symmetric for BUY & SELL >= high_stake_min_notional_usd)
-    valid_context = False
-    if regime_context is not None and hasattr(regime_context, "__dict__"):
-        if hasattr(regime_context, "is_valid_for"):
-            max_age = _pos_float(m.get("regime_context_max_age_sec"), 300.0)
-            has_id = bool(getattr(regime_context, "symbol", None) and getattr(regime_context, "provider", None))
-            valid_context = regime_context.is_valid_for(
-                symbol=symbol,
-                provider=provider,
-                max_age_seconds=max_age,
-                now=now,
-                require_identity=has_id,
-            )
-        else:
-            valid_context = True
-    _raw_intel_codes = ("GT_L", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM2", "GLLM3")
-    intel_cache_key = (
-        side,
-        frozenset(code for code in _raw_intel_codes if GUARD_REGISTRY[code].is_bypassed(bypassed)),
+    has_id = bool(getattr(regime_context, "symbol", None) and getattr(regime_context, "provider", None))
+    valid_context = bool(
+        hasattr(regime_context, "__dict__")
+        and _is_valid_regime_context(
+            regime_context,
+            symbol,
+            provider,
+            margins=m,
+            now=now,
+            require_identity=has_id,
+            default_max_age=300.0,
+        )
     )
+    intel_cache_key = make_intel_cache_key(side, bypassed)
     hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
         symbol=symbol,
         side=side,

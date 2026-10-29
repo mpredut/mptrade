@@ -146,8 +146,9 @@ def check_qlimit2_order_guards(
     active_reason = "ok"
 
     # 1. Parabolic surge / vertical dump check (Anti-FOMO on BUY, Anti-Capitulation on SELL)
-    history = price_history
-    if history is None:
+    px_clean = safe_pos_float(price, 0.0)
+    history = price_history if px_clean > 0.0 else None
+    if history is None and px_clean > 0.0:
         try:
             from order_guard import _read_cached_price_history
             try:
@@ -157,8 +158,8 @@ def check_qlimit2_order_guards(
         except Exception:
             pass
 
-    if history:
-        p_dec = p_guard.check(symbol, order_side, price, price_history=history, now=now)
+    if history and px_clean > 0.0:
+        p_dec = p_guard.check(symbol, order_side, px_clean, price_history=history, now=now)
         if not p_dec.allowed:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
             print(f"{prefix} {order_side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")

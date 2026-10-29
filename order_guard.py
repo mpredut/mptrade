@@ -15,6 +15,7 @@ Returns True when placement is allowed and False when blocked.
 The profit threshold is configured per venue in versioned, non-sensitive
 `order_guard.conf`. A missing file or required key aborts startup immediately."""
 import os
+import statistics
 import time
 import json
 from botcore import (
@@ -564,6 +565,34 @@ def symbol_regime_context(
     )
 
 
+def _is_valid_regime_context(
+    regime_context: Any,
+    symbol: Optional[str],
+    provider: Any,
+    *,
+    margins: Optional[Dict[str, Any]] = None,
+    now: Optional[float] = None,
+    require_identity: bool = True,
+    default_max_age: float = 600.0,
+) -> bool:
+    """Return True when `regime_context` is non-None and passes identity/freshness validation."""
+    if regime_context is None:
+        return False
+    if not hasattr(regime_context, "is_valid_for"):
+        return True
+    m = _load_margins() if margins is None else margins
+    max_age = safe_pos_float(m.get("regime_context_max_age_sec") if isinstance(m, dict) else None, default_max_age)
+    return bool(
+        regime_context.is_valid_for(
+            symbol=symbol,
+            provider=provider,
+            max_age_seconds=max_age,
+            now=now,
+            require_identity=require_identity,
+        )
+    )
+
+
 def _symbol_trend(
     symbol: str,
     provider=None,
@@ -578,16 +607,8 @@ def _symbol_trend(
 
     Consumes the unified MarketRegimeDecision from MarketRegimeService.
     """
-    if regime_context is not None:
-        max_age = safe_pos_float(_load_margins().get("regime_context_max_age_sec"), 600.0)
-        if hasattr(regime_context, "is_valid_for"):
-            if regime_context.is_valid_for(
-                symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
-                require_identity=True,
-            ):
-                return regime_context.resolved_trend
-        else:
-            return regime_context.resolved_trend
+    if _is_valid_regime_context(regime_context, symbol, provider, now=now):
+        return regime_context.resolved_trend
     try:
         decision = symbol_regime(
             symbol,
@@ -649,13 +670,8 @@ def get_dynamic_window_sec_cfg(
     adverse_h = safe_pos_float(m.get("dynamic_window_adverse_h"), 2.0)
 
     trend = resolved_trend
-    if trend is None and regime_context is not None:
-        max_age = safe_pos_float(m.get("regime_context_max_age_sec"), 600.0)
-        if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
-            symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
-            require_identity=True,
-        ):
-            trend = getattr(regime_context, "resolved_trend", None)
+    if trend is None and _is_valid_regime_context(regime_context, symbol, provider, margins=m, now=now):
+        trend = getattr(regime_context, "resolved_trend", None)
     if trend not in {"bull", "bear", "flat", "sideways", "unknown"}:
         trend = (
             _symbol_trend(
@@ -762,7 +778,7 @@ def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
     if weighted_qty > 0:
         avg_ref = sum(q * px for q, px in valid_weighted) / weighted_qty
     else:
-        avg_ref = sum(active_prices) / len(active_prices)
+        avg_ref = statistics.fmean(active_prices)
     finite_ts_opp = []
     for item in (valid_opp or []):
         try:
@@ -849,6 +865,39 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL", *, 
     return _aggregate_reference_prices(active_lots, active_opp, side, mode)
 
 
+def _resolve_window_ref_from_orders(
+    provider,
+    symbol: str,
+    side: str,
+    window_s: float,
+    recent: list,
+    eff_mode: str = "strict",
+):
+    """Compute window reference price from `recent` opposite-side orders and optional same-side orders."""
+    prices = [
+        px
+        for o in recent
+        if (px := safe_pos_float(extract_order_price(o, default=0.0), 0.0)) > 0.0
+    ]
+    if not prices:
+        return None
+    if len(recent) > 1 and all(
+        isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
+        for o in recent
+    ):
+        try:
+            same_orders = provider.get_orders(symbol, side, window_s) or []
+        except Exception:
+            same_orders = []
+        if same_orders or eff_mode in ("average", "last", "hybrid"):
+            active_ref = active_cycle_window_ref(recent, same_orders, side, reference_mode=eff_mode)
+            if active_ref is not None and active_ref > 0:
+                return active_ref
+    if eff_mode in ("average", "last", "hybrid"):
+        return active_cycle_window_ref(recent, None, side, reference_mode=eff_mode)
+    return select_extreme_reference(prices, side, strict=True)
+
+
 def window_reference(
     provider,
     symbol,
@@ -875,22 +924,7 @@ def window_reference(
     recent = provider.get_orders(symbol, opp, window_s_f)
     if recent is None:
         raise ProviderError(f"window_reference({symbol}): failed to read order history")
-    prices = [extract_order_price(o, default=0.0) for o in recent if extract_order_price(o, default=0.0) > 0]
-    if not prices:
-        return None
-    if len(recent) > 1 and all(
-        isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
-        for o in recent
-    ):
-        try:
-            same_orders = provider.get_orders(symbol, side, window_s_f) or []
-        except Exception:
-            same_orders = []
-        if same_orders or eff_mode in ("average", "last", "hybrid"):
-            return active_cycle_window_ref(recent, same_orders, side, reference_mode=eff_mode)
-    if eff_mode in ("average", "last", "hybrid"):
-        return active_cycle_window_ref(recent, None, side, reference_mode=eff_mode)
-    return select_extreme_reference(prices, side, strict=True)
+    return _resolve_window_ref_from_orders(provider, symbol, side, window_s_f, recent, eff_mode=eff_mode)
 
 
 def get_chop_weight_cfg(provider_name):
@@ -1148,7 +1182,7 @@ _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 
 def _read_json_recovering(path: str) -> Optional[dict]:
     from cachepaths import resolve_cachedb_filepath
-    from state_io import previous_generation_path, read_recovering_previous
+    from state_io import previous_generation_path, read_json_dict, read_recovering_previous
 
     resolved = str(resolve_cachedb_filepath(path))
     backup_path = previous_generation_path(resolved)
@@ -1172,14 +1206,7 @@ def _read_json_recovering(path: str) -> Optional[dict]:
     if cached is not None and cached[0] == sig:
         return cached[1]
 
-    def _loader(candidate: str) -> dict:
-        with open(candidate, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        if not isinstance(payload, dict):
-            raise ValueError("cache payload must be a dict")
-        return payload
-
-    res = read_recovering_previous(resolved, _loader, backup_path=backup_path)
+    res = read_recovering_previous(resolved, read_json_dict, backup_path=backup_path)
     if isinstance(res, dict):
         if len(_JSON_RECOVERING_MEMO) > 32:
             _JSON_RECOVERING_MEMO.clear()
@@ -1397,6 +1424,35 @@ def _read_cached_price_history(
     return history if history else None
 
 
+def _record_context_suggested_scale(
+    regime_context: Any,
+    side: str,
+    scale: float,
+    reason: str,
+    *,
+    reason_attr: str = "intelligence_reason",
+    only_if_smaller: bool = False,
+) -> None:
+    """Update `_suggested_scale_by_side` and (for BUY) `suggested_scale` on `regime_context`."""
+    if regime_context is None:
+        return
+    try:
+        scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
+        if not isinstance(scales_by_side, dict):
+            scales_by_side = {}
+        curr_side = scales_by_side.get(side)
+        if not only_if_smaller or curr_side is None or scale < curr_side:
+            scales_by_side[side] = scale
+        object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
+        if side == "BUY":
+            curr = getattr(regime_context, "suggested_scale", None)
+            if not only_if_smaller or curr is None or scale < curr:
+                object.__setattr__(regime_context, "suggested_scale", scale)
+                object.__setattr__(regime_context, reason_attr, reason)
+    except Exception:
+        pass
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -1424,22 +1480,13 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+    from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
-    valid_context = False
-    if regime_context is not None:
-        max_age = safe_pos_float(m.get("regime_context_max_age_sec"), 600.0)
-        if hasattr(regime_context, "is_valid_for"):
-            valid_context = regime_context.is_valid_for(
-                symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
-                require_identity=True,
-            )
-        else:
-            valid_context = True
+    valid_context = _is_valid_regime_context(regime_context, symbol, provider, margins=m, now=now)
 
     mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
     if mode == "off":
@@ -1460,11 +1507,7 @@ def check_intelligence_guards(
     explicit_dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
 
     # Check if expensive static analysis is already cached on regime_context for this (side, intel_bypass) key
-    _raw_intel_codes = ("GT_L", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM2", "GLLM3")
-    cache_key = (
-        side,
-        frozenset(code for code in _raw_intel_codes if GUARD_REGISTRY[code].is_bypassed(bypassed)),
-    )
+    cache_key = make_intel_cache_key(side, bypassed)
     legacy_cache_key = (side, frozenset(bypassed))
     decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
     if isinstance(decisions_map, dict) and (cache_key in decisions_map or legacy_cache_key in decisions_map):
@@ -1553,45 +1596,39 @@ def check_intelligence_guards(
     effective_scale = static_scale
     active_reason = static_reason
 
-    skip_internal = GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed)
-    internal_mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
-    internal_active = was_cached and not skip_internal and internal_mode != "off"
+    # 1. Dynamic G_QLIMIT2 re-evaluation (ParabolicSurgeGuard + WeibullExhaustionGuard) when cached
+    if was_cached and not GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
+        from qlimit_order_guard import check_qlimit2_order_guards
+        q_ok, q_reason, q_scale = check_qlimit2_order_guards(
+            symbol=symbol,
+            side=side,
+            price=px_clean,
+            qty=qty,
+            notional_eur=computed_notional,
+            price_history=price_history,
+            trend_duration_seconds=explicit_dur_sec,
+            regime_context=regime_context,
+            margins=m,
+            now=now,
+            bypass_guards=bypassed,
+        )
+        if not q_ok:
+            return False, q_reason, 0.0
+        if q_scale < 1.0 and q_scale <= effective_scale:
+            effective_scale = q_scale
+            active_reason = q_reason
 
-    # Dynamic Re-evaluation for cached context:
-    # 1. Dynamic Parabolic Surge / Dump Guard (Anti-FOMO on BUY, Anti-Capitulation on SELL)
-    if internal_active and px_clean > 0:
-        from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-        from intelligence.internal.guards.guard_decision import BrakeAction
-        surge_pct = safe_pos_float(m.get("parabolic_surge_pct"), 4.0)
-        pullback_pct = safe_pos_float(m.get("parabolic_pullback_pct"), 1.0)
-        history = price_history
-        if history is None:
-            try:
-                history = _read_cached_price_history(symbol, window_seconds=7200.0, now=now)
-            except TypeError:
-                history = _read_cached_price_history(symbol, window_seconds=7200.0)
-        if history:
-            p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
-            p_dec = p_guard.check(symbol, side, px_clean, price_history=history, now=now)
-            if not p_dec.allowed:
-                prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
-                print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
-                if internal_mode == "enforce":
-                    return False, p_dec.reason, 0.0
-
-    # Resolve trend duration early so both LLM guard and Weibull guard have access
+    # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
     raw_ctx_dur = (
         regime_context.get("trend_duration_seconds", 0.0)
         if isinstance(regime_context, dict)
         else getattr(regime_context, "trend_duration_seconds", 0.0)
-    ) if valid_context else 0.0
+    )
     dur_sec = explicit_dur_sec or safe_pos_float(raw_ctx_dur, 0.0)
     if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)
 
-    # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
     from llm_order_guard import evaluate_high_stake_order_guard
-
     hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
         symbol=symbol,
         side=side,
@@ -1614,56 +1651,6 @@ def check_intelligence_guards(
         effective_scale = hs_scale
         active_reason = hs_reason
 
-    # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
-    if internal_active and dur_sec > 0.0:
-        from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-        from intelligence.internal.guards.guard_decision import BrakeAction
-        from qlimit_order_guard import resolve_cached_gaussian_horizon
-        e_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
-        e_scale = safe_nonneg_float(m.get("weibull_exhausted_scale"), 0.5)
-        e_p90 = safe_pos_float(m.get("weibull_p90_days"), 14.0)
-        e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
-        explicit_dur = explicit_dur_sec > 0.0
-        ctx_rt = (
-            (regime_context.get("resolved_trend") or regime_context.get("regime"))
-            if isinstance(regime_context, dict)
-            else (getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None))
-        )
-        if explicit_dur and ctx_rt is None:
-            trend_dir = None
-        else:
-            trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context if valid_context else None)
-        gauss_horizon_d = None
-        p90_d = None
-        median_d = None
-        if not explicit_dur:
-            qlimit1_active = not GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed)
-            p90_d, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
-            if qlimit1_active and cached_gauss_h:
-                gauss_horizon_d = cached_gauss_h
-        e_dec = e_guard.check(
-            symbol,
-            side,
-            trend_duration_seconds=dur_sec,
-            p90_days=p90_d,
-            median_days=median_d,
-            trend_direction=trend_dir,
-            gaussian_horizon_days=gauss_horizon_d,
-        )
-        if e_dec.brake_action != BrakeAction.NONE:
-            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
-            print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
-            if internal_mode == "enforce":
-                if not e_dec.allowed:
-                    return False, e_dec.reason, 0.0
-                s_val = safe_pos_float(getattr(e_dec, "suggested_scale", None), 0.0)
-                if s_val <= 0.0:
-                    return False, e_dec.reason, 0.0
-                s_val = min(1.0, s_val)
-                if s_val < 1.0 and s_val <= effective_scale:
-                    effective_scale = s_val
-                    active_reason = e_dec.reason
-
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
         try:
@@ -1675,16 +1662,9 @@ def check_intelligence_guards(
             object.__setattr__(regime_context, "_intelligence_price", price)
             if computed_notional is not None:
                 object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
-            scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
-            if not isinstance(scales_by_side, dict):
-                scales_by_side = {}
-            scales_by_side[side] = effective_scale
-            object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
-            if side == "BUY":
-                object.__setattr__(regime_context, "suggested_scale", effective_scale)
-                object.__setattr__(regime_context, "intelligence_reason", active_reason)
         except Exception:
             pass
+        _record_context_suggested_scale(regime_context, side, effective_scale, active_reason)
     return final_res
 
 
@@ -1841,14 +1821,11 @@ def check_math_profit_reference(
         return False
 
     if mode == "dynamic":
-        trend = None
-        if regime_context is not None:
-            max_age = safe_pos_float(_load_margins().get("regime_context_max_age_sec"), 600.0)
-            if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
-                symbol=symbol, provider=provider_name, max_age_seconds=max_age,
-                require_identity=True,
-            ):
-                trend = getattr(regime_context, "resolved_trend", None)
+        trend = (
+            getattr(regime_context, "resolved_trend", None)
+            if _is_valid_regime_context(regime_context, symbol, provider_name)
+            else None
+        )
         if trend is None:
             trend = _symbol_trend(symbol, provider=provider)
         dyn_window_s = get_dynamic_window_sec_cfg(
@@ -1872,30 +1849,14 @@ def check_math_profit_reference(
                     if recent is None:
                         print(f"[GUARD] {side} {symbol}: dynamic window history unavailable -> BLOCKED")
                         return False
-                    recent_prices = []
-                    for o in recent:
-                        if not isinstance(o, dict):
-                            continue
-                        px = safe_pos_float(extract_order_price(o, default=0.0), 0.0)
-                        if px > 0:
-                            recent_prices.append(px)
-                    if not recent_prices:
+                    resolved_dyn_ref = _resolve_window_ref_from_orders(
+                        provider, symbol, side, dyn_window_s, recent, eff_mode="strict"
+                    )
+                    if resolved_dyn_ref is None:
                         print(f"[GUARD] {side} {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
                               f"anchor {pos_window_ref} from older period bypassed")
                         return True
-                    pos_window_ref = select_extreme_reference(recent_prices, side, strict=True)
-                    if len(recent) > 1 and all(
-                        isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
-                        for o in recent
-                    ):
-                        try:
-                            same_orders = provider.get_orders(symbol, side, dyn_window_s) or []
-                        except Exception:
-                            same_orders = []
-                        if same_orders:
-                            active_ref = active_cycle_window_ref(recent, same_orders, side, reference_mode="strict")
-                            if active_ref is not None and active_ref > 0:
-                                pos_window_ref = active_ref
+                    pos_window_ref = resolved_dyn_ref
                     diff = profit_diff_pct(side, px_val, pos_window_ref)
                     if diff >= prof_pct:
                         print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
@@ -2015,21 +1976,13 @@ def profit_guard(
 
     s_scale = safe_pos_float(suggested_scale, default=1.0)
     if regime_context is not None and s_scale < 1.0:
-        try:
-            side_norm = _normalize_side_token(order_type)
-            scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
-            if not isinstance(scales_by_side, dict):
-                scales_by_side = {}
-            curr_side = scales_by_side.get(side_norm)
-            if curr_side is None or s_scale < curr_side:
-                scales_by_side[side_norm] = s_scale
-            object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
-            if side_norm == "BUY":
-                curr = getattr(regime_context, "suggested_scale", None)
-                if curr is None or s_scale < curr:
-                    object.__setattr__(regime_context, "suggested_scale", s_scale)
-                    object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
-        except Exception:
-            pass
+        _record_context_suggested_scale(
+            regime_context,
+            _normalize_side_token(order_type),
+            s_scale,
+            intel_reason,
+            reason_attr="intelligence_scale_reason",
+            only_if_smaller=True,
+        )
 
     return True

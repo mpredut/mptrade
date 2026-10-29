@@ -16877,5 +16877,43 @@ def test_iteration180_post_stop_high_stake_and_sentiment_macro_collectors_hygien
     assert agg_snap.high_severity_count == 1
 
 
+def test_iteration181_guard_ssot_helpers_and_cached_qlimit2_delegation():
+    from types import SimpleNamespace
+    from guard_hierarchy import make_intel_cache_key, normalize_bypassed_guards
+    from order_guard import (
+        _is_valid_regime_context,
+        _record_context_suggested_scale,
+        _resolve_window_ref_from_orders,
+    )
+
+    # 1. make_intel_cache_key builds deterministic (side, frozenset) ignoring GLLM1 / G_PROF
+    b1 = normalize_bypassed_guards({"g_qlimit2", "g_prof", "gllm1"})
+    b2 = normalize_bypassed_guards({"internal_quant_limit"})
+    assert make_intel_cache_key("BUY", b1) == ("BUY", frozenset({"G_QLIMIT2"}))
+    assert make_intel_cache_key("BUY", b1) == make_intel_cache_key("BUY", b2)
+
+    # 2. _is_valid_regime_context handles None, SimpleNamespace, and objects with is_valid_for
+    assert _is_valid_regime_context(None, "BTCUSDC", "binance") is False
+    assert _is_valid_regime_context(SimpleNamespace(resolved_trend="bull"), "BTCUSDC", "binance") is True
+
+    # 3. _record_context_suggested_scale updates _suggested_scale_by_side for both sides and suggested_scale for BUY only
+    ctx = SimpleNamespace(suggested_scale=1.0)
+    _record_context_suggested_scale(ctx, "SELL", 0.5, "sell_downscale")
+    assert ctx._suggested_scale_by_side["SELL"] == pytest.approx(0.5)
+    assert ctx.suggested_scale == pytest.approx(1.0)
+    _record_context_suggested_scale(ctx, "BUY", 0.6, "buy_downscale")
+    assert ctx.suggested_scale == pytest.approx(0.6)
+    assert ctx.intelligence_reason == "buy_downscale"
+    _record_context_suggested_scale(ctx, "BUY", 0.8, "higher_scale", only_if_smaller=True)
+    assert ctx.suggested_scale == pytest.approx(0.6)
+
+    # 4. _resolve_window_ref_from_orders resolves active cycle reference across Modes
+    fake_prov = SimpleNamespace(get_orders=lambda sym, side, win: [])
+    recent_opp = [{"price": 100.0, "time": 1000}, {"price": 110.0, "time": 2000}]
+    assert _resolve_window_ref_from_orders(fake_prov, "BTCUSDC", "BUY", 3600.0, recent_opp, "strict") == pytest.approx(100.0)
+    assert _resolve_window_ref_from_orders(fake_prov, "BTCUSDC", "SELL", 3600.0, recent_opp, "strict") == pytest.approx(110.0)
+
+
+
 
 

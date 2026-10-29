@@ -398,3 +398,24 @@ def normalize_bypassed_guards(
             _add_guard_tokens(g)
 
     return bypassed
+
+
+_RAW_INTEL_CACHE_CODES: tuple[str, ...] = (
+    "GT_L",
+    "G_QLIMIT1",
+    "G_QLIMIT2",
+    "GI_OBOOK",
+    "GI_WHALE",
+    "GI_FUNDING",
+    "GLLM2",
+    "GLLM3",
+)
+
+
+def make_intel_cache_key(side: str, bypassed: set[str]) -> tuple[str, frozenset[str]]:
+    """Build the canonical (side, bypassed_intel_codes) cache key for MarketRegimeContext."""
+    return (
+        side,
+        frozenset(code for code in _RAW_INTEL_CACHE_CODES if GUARD_REGISTRY[code].is_bypassed(bypassed)),
+    )
+
