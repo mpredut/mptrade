@@ -8,20 +8,17 @@ import threading
 import requests
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from datetime import datetime
-from typing import Dict, Optional, List, Set, Tuple
+from typing import Dict, List, Optional, Set
+from urllib.parse import quote
 from abc import ABC, abstractmethod
-from collections import defaultdict
 
-# Import your existing modules
-import log
-import utils as u
 import symbols as sym
 from binance_api import bapi as api
-from botcore import required_env, safe_int, safe_pos_float, safe_pos_int
-from cachepaths import canonical_base_asset, normalize_venue_name
+from botcore import required_env, safe_pos_float, safe_pos_int
+from cachepaths import cache_path, normalize_venue_name
 
 # Import the base classes from cacheManager
-from cacheManager import CacheManagerInterface, CacheFactory, _should_poll_for_manager
+from cacheManager import CacheFactory, CacheManagerInterface
 # Market-data facade. market_api imports binance_api.bapi without importing pricefetcher,
 # so this direction is safe. BinancePricePlatform uses the facade as its price client.
 import providers.market_api as _market_api
@@ -288,11 +285,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         self._all_listings: Dict[str, Dict] = {}
         self._last_refresh = 0
         self._refresh_interval = 86400
-        self._cache_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "cachedb",
-            "cmc_listings_cache.json",
-        )
+        self._cache_file = cache_path("cmc_listings_cache.json")
         
         if self.api_key:
             self._load_symbols()
@@ -411,30 +404,6 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             return safe_pos_float(price, default=None)
         return None
     
-    def get_price_old(self, symbol: str) -> Optional[float]:
-        if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
-            if not self.api_key:
-                print(f"[CMCPlatform] Missing API key")
-            return None
-        symbol = symbol.strip().upper()
-        try:
-            headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
-            params = {'symbol': symbol, 'convert': 'USD'}
-            time.sleep(0.2)
-            response = requests.get(self._base_url, headers=headers, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            price = self._extract_usd_price(symbol, data)
-            if price is not None:
-                print(f"[CMCPlatform] {symbol} = ${price}")
-                return price
-            else:
-                print(f"[CMCPlatform] {symbol} not found")
-                return None
-        except Exception as e:
-            print(f"[CMCPlatform] Warning for {symbol}: {e}")
-            return None
-        
     def get_price(self, symbol: str) -> Optional[float]:
         """
         Get the price from the internal cache (updated from listings/latest).
@@ -518,9 +487,8 @@ class StockYahooPricePlatform(PricePlatformInterface):
         try:
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
-            import urllib.parse
             sym_y = symbol.strip().upper().split("_")[0]
-            url = self._YAHOO.format(sym=urllib.parse.quote(sym_y, safe="")) + "?range=1d&interval=5m"
+            url = self._YAHOO.format(sym=quote(sym_y, safe="")) + "?range=1d&interval=5m"
             resp = requests.get(url, headers=self._UA, timeout=10)
             resp.raise_for_status()
             payload = resp.json()

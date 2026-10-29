@@ -11,8 +11,6 @@ from collections import defaultdict
 from operator import itemgetter
 from urllib.parse import quote
 
-# Import your existing modules
-import log
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants, canonical_base_asset
 from market_monitor.pricefetcher import get_base_symbol
