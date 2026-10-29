@@ -398,7 +398,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         if not isinstance(data, dict):
             return None
         data_map = data.get('data')
-        coin_data = data_map.get(symbol) if isinstance(data_map, dict) else None
+        coin_data = casefold_get(data_map, symbol) if isinstance(data_map, dict) else None
         if isinstance(coin_data, list):
             coin_data = coin_data[0] if coin_data else None
         if isinstance(coin_data, dict):
@@ -560,7 +560,7 @@ class PricePlatformFactory:
         sym_norm = symbol.strip().upper()
         cached_platform = None
         supported = False
-        platform_name = self._symbol_platform_cache.get(sym_norm) or self._symbol_platform_cache.get(symbol)
+        platform_name = casefold_get(self._symbol_platform_cache, sym_norm) or casefold_get(self._symbol_platform_cache, symbol)
         if platform_name:
             for platform in self._platforms:
                 if platform.platform_name == platform_name:
@@ -664,7 +664,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             recovered_symbols = [
                 symbol for symbol, added_time in self.symbol_added_time.items()
                 if (
-                    symbol in items_map
+                    casefold_get(items_map, symbol) is not None
                     and (at_val := safe_pos_float(added_time, default=None)) is not None
                     and time.time() - at_val <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
                 )
@@ -707,7 +707,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             return {}
         last_times = {}
         for symbol in self.symbols:
-            entries = self.cache.get(symbol, [])
+            entries = casefold_get(self.cache, symbol, [])
             if isinstance(entries, list) and entries:
                 max_ts = max((self._entry_timestamp_ms(entry) for entry in entries), default=0)
                 if max_ts > 0:

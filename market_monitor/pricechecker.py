@@ -151,7 +151,7 @@ class PriceChecker:
                     if getattr(platform, "platform_name", "") != "CoinMarketCap":
                         continue
                     listings = getattr(platform, "_all_listings", {})
-                    metadata = listings.get(candidate) or listings.get(candidate.upper())
+                    metadata = casefold_get(listings, candidate) if isinstance(listings, dict) else None
                     if metadata and metadata.get("slug"):
                         return f"https://coinmarketcap.com/currencies/{metadata['slug']}/"
             return f"https://coinmarketcap.com/search/?q={quote(symbol)}"
