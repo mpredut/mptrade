@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Sequence
 from botcore import safe_float, safe_nonneg_float
 from intelligence.internal.guards.guard_decision import (
-    BrakeAction,
     GuardDecision,
     normalize_guard_side,
     snap_attr,

@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from guard_hierarchy import BaseGuard, GUARD_REGISTRY, _ALL_GUARD_ALIASES, normalize_bypassed_guards
 
-from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
 from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
