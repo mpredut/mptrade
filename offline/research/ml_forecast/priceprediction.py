@@ -16,7 +16,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_float, safe_pos_float, safe_pos_int  # noqa: E402
+from botcore import safe_float, safe_int, safe_pos_float  # noqa: E402
 
 try:
     import torch
@@ -50,8 +50,8 @@ class PricePrediction:
         lr: float = 0.01,
         epochs: int = 30,
     ) -> None:
-        self.window_size = max(2, safe_pos_int(window_size, default=10))
-        safe_hidden = max(1, safe_pos_int(hidden_size, default=32))
+        self.window_size = max(2, safe_int(window_size, default=10))
+        safe_hidden = max(1, safe_int(hidden_size, default=32))
         safe_lr = safe_pos_float(lr, default=0.01)
         self.prices: list[float] = []
         self.scaler = MinMaxScaler(feature_range=(0, 1))
@@ -65,7 +65,7 @@ class PricePrediction:
             self.optimizer = None
             self.criterion = None
         self.trained = False
-        self.epochs = max(1, safe_pos_int(epochs, default=30))
+        self.epochs = max(1, safe_int(epochs, default=30))
 
     @staticmethod
     def _valid_price(price: object) -> float | None:
