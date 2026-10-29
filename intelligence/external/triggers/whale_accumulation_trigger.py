@@ -8,7 +8,6 @@ Generates actionable entry/exit signals by monitoring:
 
 from __future__ import annotations
 
-import math
 import time
 from typing import Optional
 

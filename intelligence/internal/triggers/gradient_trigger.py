@@ -1,7 +1,6 @@
 """Linear regression slope and signal-to-noise ratio directional trigger."""
 from __future__ import annotations
 
-import math
 from typing import Optional, Tuple
 
 from botcore import safe_float, safe_pos_float

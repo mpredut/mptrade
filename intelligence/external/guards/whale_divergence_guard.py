@@ -6,7 +6,6 @@ rather than genuine whale capital accumulation (rising OI).
 
 from __future__ import annotations
 
-import math
 from typing import Any, Optional
 
 from botcore import _parse_bool_flag, safe_float, safe_pos_float

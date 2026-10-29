@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import logging
-import math
 import os
 import sqlite3
 import sys

@@ -1,7 +1,6 @@
 """Parabolic surge guard: prevents buying at the peak of vertical price spikes (Anti-FOMO)."""
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Tuple
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float

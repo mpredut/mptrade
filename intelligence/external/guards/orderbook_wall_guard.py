@@ -6,7 +6,6 @@ into massive whale buy walls (support).
 
 from __future__ import annotations
 
-import math
 from typing import Any, Optional
 
 from botcore import safe_float, safe_pos_float

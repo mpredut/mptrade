@@ -12,7 +12,6 @@ NOTE & RESEARCH FINDINGS (from docs/archive/RSI_BOLLINGER_REVIEW_2026-09-14.md):
 from __future__ import annotations
 
 from collections import deque
-import math
 from typing import Any, Literal
 from botcore import safe_float, safe_pos_float, safe_pos_int
 from intelligence.internal.triggers.trigger_event import (
