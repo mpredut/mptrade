@@ -70,28 +70,9 @@ BASE_CONFIG = {
 
 
 def _import_t212():
-    _COLLIDING = ("strategy", "market_data", "notify", "ipo_notify", "replay")
-    saved_modules = {name: sys.modules.get(name) for name in _COLLIDING}
-    saved_path = list(sys.path)
-    try:
-        for name in _COLLIDING:
-            sys.modules.pop(name, None)
-        kraken_dir = os.path.join(ROOT, "kraken")
-        while kraken_dir in sys.path:
-            sys.path.remove(kraken_dir)
-        while T212_DIR in sys.path:
-            sys.path.remove(T212_DIR)
-        sys.path.insert(0, T212_DIR)
-        import strategy as _strat
-        import replay as rp
-        return _strat, rp
-    finally:
-        sys.path[:] = saved_path
-        for name, mod in saved_modules.items():
-            if mod is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = mod
+    from offline.backtests.evaluation import load_venue_module
+    rp = load_venue_module("212trading", "replay.py", "t212_replay_equities")
+    return rp._strat, rp
 
 
 build_equity_variants = build_ablation_variants

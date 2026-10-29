@@ -37,11 +37,19 @@ def load_hl_local(name: str):
     if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == _HERE):
         return mod
     import importlib.util
-    spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, f"{name}.py"))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    orig_sys_path = list(sys.path)
+    try:
+        if _ROOT not in sys.path:
+            sys.path.insert(0, _ROOT)
+        if _HERE not in sys.path:
+            sys.path.append(_HERE)
+        spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, f"{name}.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path[:] = orig_sys_path
 
 
 def now_str() -> str:

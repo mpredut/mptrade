@@ -5,18 +5,9 @@ import csv, os, sys, time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-t212_dir = os.path.join(REPO, "212trading")
+from offline.backtests.evaluation import load_venue_module
 
-import importlib.util
-_orig_sys_path = list(sys.path)
-try:
-    sys.path.insert(0, t212_dir)
-    _spec = importlib.util.spec_from_file_location("t212_md", os.path.join(t212_dir, "market_data.py"))
-    _t212_md = importlib.util.module_from_spec(_spec)
-    sys.modules["t212_md"] = _t212_md
-    _spec.loader.exec_module(_t212_md)
-finally:
-    sys.path[:] = _orig_sys_path
+_t212_md = load_venue_module("212trading", "market_data.py", "t212_md")
 fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
 
 DATA = os.path.join(os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid"), "data")

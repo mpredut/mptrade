@@ -79,22 +79,8 @@ def _load_expected_dataset(manifest_path: Path, interval: int) -> dict:
 
 def strat_params_from_dict(values: dict) -> StratParams:
     """Build StratParams from a stored report, dropping fields that no longer exist."""
-    spot_defaults = {
-        "currency": "USDC",
-        "entry_amount": 50.0,
-        "entry_discount_pct": 0.2,
-        "dca_amount": 30.0,
-        "dca_drop_pct": 2.0,
-        "check_minutes": 60.0,
-        "takeprofit_pct": 5.0,
-        "max_budget": 500.0,
-        "max_dca_buys": 10,
-        "enable_takeprofit": True,
-        "order_ttl_min": 120.0,
-        "sl_mhdsl_enabled": False,
-    }
     raw = dict(values) if isinstance(values, dict) else {}
-    return StratParams.from_dict(raw, defaults=spot_defaults, warn_dropped=False)
+    return StratParams.from_dict(raw, defaults={"sl_mhdsl_enabled": False}, warn_dropped=False)
 
 
 def _load_params(args) -> StratParams:

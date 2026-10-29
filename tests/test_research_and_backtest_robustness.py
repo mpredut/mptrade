@@ -6591,5 +6591,44 @@ def test_ohlc_tuples_csv_t212_grid_interval_alignment_and_vol_chronos_scalar_gua
     assert len(realized_vol_series(None, 24)) == 0
 
 
+def test_load_venue_module_ssot_stratparams_from_dict_and_hl_candles_validation():
+    """Verify load_venue_module sys.path preservation, Spot/T212 StratParams.from_dict defaults, and HL candle continuity validation."""
+    import argparse
+    import sys
+    from offline.backtests.evaluation import load_venue_module
+    from offline.runners.fetch_hyperliquid_candles import _parse_intervals, validate_continuity
+    from strategies.spot_engine import StratParams as SpotStratParams
+    from binance_api import replay as binance_replay
 
+    # 1. load_venue_module loads hyperliquid and 212trading modules without mutating sys.path
+    orig_path = list(sys.path)
+    hl_replay = load_venue_module("hyperliquid", "replay.py", "test_hl_replay_ssot")
+    t212_replay = load_venue_module("212trading", "replay.py", "test_t212_replay_ssot")
+    assert sys.path == orig_path
+    assert hasattr(hl_replay, "make_hyperliquid_replay_adapter")
+    assert hasattr(t212_replay, "make_t212_replay_adapter")
+    assert hasattr(binance_replay, "prewarm_trend_series")
+
+    # 2. Both SpotStratParams.from_dict and T212 StratParams.from_dict populate defaults and ignore removed fields
+    spot_p = SpotStratParams.from_dict({"takeprofit_pct": 6.5, "obsolete_key": 99})
+    assert spot_p.takeprofit_pct == 6.5
+    assert spot_p.currency == "USDC"
+
+    t212_p = t212_replay._strat.StratParams.from_dict({"takeprofit_pct": 7.5, "obsolete_key": 99})
+    assert t212_p.takeprofit_pct == 7.5
+    assert t212_p.currency == "USD"
+    assert t212_p.validity == "DAY"
+
+    # 3. fetch_hyperliquid_candles.validate_continuity and _parse_intervals
+    validate_continuity(
+        [{"timestamp": 1700000000}, {"timestamp": "1700003600.0"}],
+        60,
+    )
+    with pytest.raises(ValueError, match="interval_minutes must be a positive integer"):
+        validate_continuity([], True)
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        validate_continuity([{"timestamp": 1700000000}, {"timestamp": 1700003600.5}], 60)
+    assert _parse_intervals("60,240") == [60, 240]
+    with pytest.raises(argparse.ArgumentTypeError):
+        _parse_intervals("60,999")
 

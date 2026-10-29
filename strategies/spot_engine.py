@@ -322,11 +322,27 @@ class StratParams:
         return self.allocated_budget()
 
 
+    _DEFAULT_DICT_FIELDS = {
+        "currency": "USDC",
+        "entry_amount": 50.0,
+        "entry_discount_pct": 0.2,
+        "dca_amount": 30.0,
+        "dca_drop_pct": 2.0,
+        "check_minutes": 60.0,
+        "takeprofit_pct": 5.0,
+        "max_budget": 500.0,
+        "max_dca_buys": 10,
+        "enable_takeprofit": True,
+        "order_ttl_min": 120.0,
+    }
+
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
         from dataclasses import fields as _dc_fields
-        base_defaults = dict(defaults) if isinstance(defaults, dict) else {}
+        base_defaults = dict(cls._DEFAULT_DICT_FIELDS)
+        if isinstance(defaults, dict):
+            base_defaults.update(defaults)
         base_values = dict(values) if isinstance(values, dict) else {}
         merged = {**base_defaults, **base_values}
         valid = {f.name for f in _dc_fields(cls)}

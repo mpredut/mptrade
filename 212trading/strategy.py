@@ -31,7 +31,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
     required_int_env, required_bool_env, _parse_bool_flag, safe_float,
-    safe_pos_float, safe_nonneg_float,
+    safe_pos_float, safe_nonneg_float, exact_int, exact_pos_int, exact_nonneg_int,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -100,15 +100,11 @@ def generate_tp_ladder(
     """
     if isinstance(min_pct, bool) or isinstance(max_pct, bool) or isinstance(steps, bool):
         raise ValueError("generate_tp_ladder parameters cannot be bool")
-    try:
-        min_f = float(min_pct)
-        max_f = float(max_pct)
-        steps_f = float(steps)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"invalid generate_tp_ladder parameters: {exc}") from exc
-    if not (math.isfinite(min_f) and math.isfinite(max_f) and math.isfinite(steps_f) and steps_f.is_integer()):
+    min_f = safe_float(min_pct, default=None)
+    max_f = safe_float(max_pct, default=None)
+    steps_i = exact_int(steps, default=None)
+    if min_f is None or max_f is None or steps_i is None:
         raise ValueError("generate_tp_ladder requires finite min_pct, max_pct, and integer steps")
-    steps_i = int(steps_f)
     if steps_i < 1:
         return []
     if steps_i > 1 and max_f < min_f:
@@ -224,6 +220,38 @@ class StratParams:
     tp_mdhtp_enabled: bool = False
     tp_stagnation_max_sec: float = 1080.0
 
+    _DEFAULT_DICT_FIELDS = {
+        "currency": "USD",
+        "entry_amount": 50.0,
+        "entry_discount_pct": 0.2,
+        "dca_amount": 30.0,
+        "dca_drop_pct": 2.0,
+        "check_minutes": 5.0,
+        "takeprofit_pct": 5.0,
+        "max_budget": 500.0,
+        "max_dca_buys": 10,
+        "validity": "DAY",
+        "enable_takeprofit": True,
+        "order_ttl_min": 10.0,
+        "stop_loss_pct": 10.0,
+    }
+
+    @classmethod
+    def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
+        """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
+        from dataclasses import fields as _dc_fields
+        base_defaults = dict(cls._DEFAULT_DICT_FIELDS)
+        if isinstance(defaults, dict):
+            base_defaults.update(defaults)
+        base_values = dict(values) if isinstance(values, dict) else {}
+        merged = {**base_defaults, **base_values}
+        valid = {f.name for f in _dc_fields(cls) if f.init}
+        if _parse_bool_flag(warn_dropped, False):
+            dropped = sorted(set(merged) - valid)
+            if dropped:
+                print(f"[params] ignoring parameters removed from StratParams: {dropped}")
+        return cls(**{k: v for k, v in merged.items() if k in valid})
+
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
         """Read the environment or an explicit mapping for collision-free multi-asset use."""
@@ -240,12 +268,12 @@ class StratParams:
             if clean_raw.count(":") == 2 and "," not in clean_raw:
                 try:
                     p_min, p_max, p_steps = clean_raw.split(":")
-                    steps_f = safe_pos_float(p_steps, default=None)
+                    steps_i = exact_pos_int(p_steps, default=None)
                     min_f = safe_float(p_min, default=None)
                     max_f = safe_float(p_max, default=None)
-                    if steps_f is None or not steps_f.is_integer() or min_f is None or max_f is None:
+                    if steps_i is None or min_f is None or max_f is None:
                         raise ValueError("non-integer or non-finite steps")
-                    _ladder = generate_tp_ladder(min_f, max_f, int(steps_f), curve=ladder_curve)
+                    _ladder = generate_tp_ladder(min_f, max_f, steps_i, curve=ladder_curve)
                 except (ValueError, OverflowError) as exc:
                     raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
             else:
@@ -280,10 +308,9 @@ class StratParams:
             _max_dca = max(0, int((_budget - _entry) // _dca)) if _dca > 0 else 0
             _entry = _budget - _max_dca * _dca   # Entry absorbs remainder to cover the full budget.
         elif _mdb:
-            _mdb_f = safe_nonneg_float(_mdb, default=None)
-            if _mdb_f is None or not _mdb_f.is_integer():
+            _max_dca = exact_nonneg_int(_mdb, default=None)
+            if _max_dca is None:
                 raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}")
-            _max_dca = int(_mdb_f)
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         return cls(

@@ -21,31 +21,6 @@ if str(ROOT) not in sys.path:
 
 from botcore import required_env, required_float_env, safe_nonneg_float
 from state_io import atomic_write_json
-import importlib.util
-
-_orig_sys_path = list(sys.path)
-try:
-    if str(HL_DIR) not in sys.path:
-        sys.path.append(str(HL_DIR))
-    _md_spec = importlib.util.spec_from_file_location(
-        "hl_wf_md", str(HL_DIR / "market_data.py")
-    )
-    _hl_md = importlib.util.module_from_spec(_md_spec)
-    sys.modules[_md_spec.name] = _hl_md
-    _md_spec.loader.exec_module(_hl_md)
-    fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
-    fetch_funding_history = _hl_md.fetch_funding_history
-
-    _replay_spec = importlib.util.spec_from_file_location(
-        "hl_wf_replay", str(HL_DIR / "replay.py")
-    )
-    _hl_replay = importlib.util.module_from_spec(_replay_spec)
-    sys.modules[_replay_spec.name] = _hl_replay
-    _replay_spec.loader.exec_module(_hl_replay)
-    make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
-    StratParams = _hl_replay.StratParams
-finally:
-    sys.path[:] = _orig_sys_path
 from strategies.spot_engine import StratParams as SpotStratParams
 from strategies.spot_replay import align_spot_interval_params
 
@@ -61,10 +36,19 @@ from offline.backtests.evaluation import (
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
     load_layered_env_config,
+    load_venue_module,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
     resolve_window_sizes,
 )
+
+_hl_md = load_venue_module("hyperliquid", "market_data.py", "hl_wf_md")
+fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
+fetch_funding_history = _hl_md.fetch_funding_history
+
+_hl_replay = load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
+make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
+StratParams = _hl_replay.StratParams
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -24,37 +24,19 @@ if ROOT not in sys.path:
 if T212_DIR not in sys.path:
     sys.path.append(T212_DIR)
 
+from offline.backtests.evaluation import load_venue_module
 from offline.backtests.metrics import format_performance_summary
 from botcore import safe_float, safe_pos_float
 
-try:
-    import importlib.util
-    _spec = importlib.util.spec_from_file_location(
-        "t212_backtest_replay", os.path.join(T212_DIR, "replay.py")
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    run_replay = _mod.run_replay
-    StratParams = _mod._strat.StratParams
-except Exception:
-    from replay import run_replay
-    from strategy import StratParams
+_replay_mod = load_venue_module("212trading", "replay.py", "t212_backtest_replay")
+run_replay = _replay_mod.run_replay
+StratParams = _replay_mod._strat.StratParams
+_md_mod = _replay_mod._md
 
 
 def fetch_candles(sym, rng, interval):
     """Fetch completed Yahoo candles as (open, high, low, close) tuples."""
-    try:
-        from market_data import fetch_yahoo_candles
-    except ImportError:
-        import importlib.util
-        _md_spec = importlib.util.spec_from_file_location(
-            "t212_backtest_md", os.path.join(T212_DIR, "market_data.py")
-        )
-        _md = importlib.util.module_from_spec(_md_spec)
-        sys.modules[_md_spec.name] = _md
-        _md_spec.loader.exec_module(_md)
-        fetch_yahoo_candles = _md.fetch_yahoo_candles
-    records = fetch_yahoo_candles(sym, rng, interval, drop_incomplete=True)
+    records = _md_mod.fetch_yahoo_candles(sym, rng, interval, drop_incomplete=True)
     return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
@@ -150,17 +132,7 @@ def simulate(ohlc, P):
 
 def interval_minutes(value: str) -> int | None:
     try:
-        try:
-            from market_data import parse_interval_minutes
-        except ImportError:
-            import importlib.util
-            _spec = importlib.util.spec_from_file_location(
-                "t212_md_parse", os.path.join(T212_DIR, "market_data.py")
-            )
-            _mod = importlib.util.module_from_spec(_spec)
-            _spec.loader.exec_module(_mod)
-            parse_interval_minutes = _mod.parse_interval_minutes
-        return parse_interval_minutes(value)
+        return _md_mod.parse_interval_minutes(value)
     except (KeyError, ValueError, IndexError):
         return None
 

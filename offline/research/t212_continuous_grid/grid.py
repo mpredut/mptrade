@@ -20,23 +20,16 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import int_env
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-_orig_sys_path = list(sys.path)
-try:
-    _rp_spec = importlib.util.spec_from_file_location("t212_replay_grid", os.path.join(REPO, "212trading", "replay.py"))
-    rp = importlib.util.module_from_spec(_rp_spec)
-    sys.modules[_rp_spec.name] = rp
-    _rp_spec.loader.exec_module(rp)
-    strat = rp._strat
-    from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
-    from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
-    from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series  # noqa: E402
+from botcore import int_env, parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
+from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
+from offline.backtests.evaluation import load_venue_module  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series  # noqa: E402
 
-    _safe_f = safe_float
-    _safe_int = safe_int
-finally:
-    sys.path[:] = _orig_sys_path
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+rp = load_venue_module("212trading", "replay.py", "t212_replay_grid")
+strat = rp._strat
+_safe_f = safe_float
+_safe_int = safe_int
 
 FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step

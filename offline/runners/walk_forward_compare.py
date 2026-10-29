@@ -43,6 +43,7 @@ from offline.backtests.datasets import (
 )
 from offline.backtests.evaluation import (
     evaluate_segment as _evaluate_segment,
+    load_venue_module,
 )
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.hype_candidates import (
@@ -222,45 +223,15 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     return datasets
 
 
-_SPOT_PARAM_DEFAULTS = {
-    "currency": "USDC",
-    "entry_amount": 50.0,
-    "entry_discount_pct": 0.2,
-    "dca_amount": 30.0,
-    "dca_drop_pct": 2.0,
-    "check_minutes": 60.0,
-    "takeprofit_pct": 5.0,
-    "max_budget": 500.0,
-    "max_dca_buys": 10,
-    "enable_takeprofit": True,
-    "order_ttl_min": 120.0,
-}
-
-
-def _load_venue_replay_module(subdir: str, module_name: str):
-    import importlib.util
-    venue_dir = ROOT / subdir
-    orig_sys_path = list(sys.path)
-    try:
-        if str(ROOT) not in sys.path:
-            sys.path.insert(0, str(ROOT))
-        if str(venue_dir) not in sys.path:
-            sys.path.append(str(venue_dir))
-        spec = importlib.util.spec_from_file_location(module_name, str(venue_dir / "replay.py"))
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    finally:
-        sys.path[:] = orig_sys_path
+_SPOT_PARAM_DEFAULTS = dict(StratParams._DEFAULT_DICT_FIELDS)
 
 
 def _load_hl_replay():
-    return _load_venue_replay_module("hyperliquid", "hl_wf_replay")
+    return load_venue_module("hyperliquid", "replay.py", "hl_wf_replay")
 
 
 def _load_t212_replay():
-    return _load_venue_replay_module("212trading", "t212_wf_replay")
+    return load_venue_module("212trading", "replay.py", "t212_wf_replay")
 
 
 def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
@@ -271,7 +242,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
     raw_params = raw_sp if isinstance(raw_sp, dict) else {}
 
     if norm_venue in ("kraken", "binance"):
-        base_params = StratParams.from_dict(raw_params, defaults=dict(_SPOT_PARAM_DEFAULTS))
+        base_params = StratParams.from_dict(raw_params)
         raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
         base_fee = safe_nonneg_float(raw_fee, default=0.26 if norm_venue == "kraken" else 0.10)
         return base_params, base_fee, _segment_result
@@ -287,7 +258,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         base_fee = safe_nonneg_float(raw_fee, default=0.035)
 
         if engine == "spot":
-            base_params = StratParams.from_dict(raw_params, defaults=dict(_SPOT_PARAM_DEFAULTS))
+            base_params = StratParams.from_dict(raw_params)
 
             def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
                 adapter = hl_replay.make_hyperliquid_replay_adapter(
@@ -321,25 +292,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
 
     if norm_venue in ("trading212", "t212"):
         t212_replay = _load_t212_replay()
-        t212_params_cls = t212_replay._strat.StratParams
-        valid_fields = {f.name for f in dataclasses.fields(t212_params_cls)}
-        t212_defaults = {
-            "currency": "USD",
-            "entry_amount": 50.0,
-            "entry_discount_pct": 0.2,
-            "dca_amount": 30.0,
-            "dca_drop_pct": 2.0,
-            "check_minutes": 5.0,
-            "takeprofit_pct": 5.0,
-            "max_budget": 500.0,
-            "max_dca_buys": 10,
-            "validity": "DAY",
-            "enable_takeprofit": True,
-            "order_ttl_min": 10.0,
-            "stop_loss_pct": 10.0,
-        }
-        filtered = {**t212_defaults, **{k: v for k, v in raw_params.items() if k in valid_fields}}
-        base_params = t212_params_cls(**filtered)
+        base_params = t212_replay._strat.StratParams.from_dict(raw_params)
         raw_fee = source_report.get("fee_pct_per_leg")
         if raw_fee is None:
             raw_fee = raw_params.get("fx_fee_pct")

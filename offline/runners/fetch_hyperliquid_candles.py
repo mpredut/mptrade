@@ -18,23 +18,15 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import importlib.util
-_orig_sys_path = list(sys.path)
-try:
-    if str(HL_DIR) not in sys.path:
-        sys.path.append(str(HL_DIR))
-    _spec = importlib.util.spec_from_file_location("local_hl_market_data", str(HL_DIR / "market_data.py"))
-    _hl_md = importlib.util.module_from_spec(_spec)
-    sys.modules[_spec.name] = _hl_md
-    _spec.loader.exec_module(_hl_md)
-finally:
-    sys.path[:] = _orig_sys_path
+from botcore import exact_int, exact_pos_int
+from offline.backtests.datasets import canonical_bytes, dataset_metadata
+from offline.backtests.evaluation import load_venue_module, parse_intervals
+
+_hl_md = load_venue_module("hyperliquid", "market_data.py", "local_hl_market_data")
 API_URL = _hl_md.API_URL
 INTERVALS = _hl_md.INTERVALS
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
 normalize_closed_candles = _hl_md.normalize_closed_candles
-
-from offline.backtests.datasets import canonical_bytes, dataset_metadata
 
 
 _post = _hl_md._post_info
@@ -67,7 +59,7 @@ def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
 
 def validate_continuity(records: list[dict], interval_minutes: int) -> None:
     """The replay assumes evenly spaced bars; it refuses datasets with gaps."""
-    if isinstance(interval_minutes, bool) or not isinstance(interval_minutes, int) or interval_minutes <= 0:
+    if exact_pos_int(interval_minutes, default=None) is None:
         raise ValueError("interval_minutes must be a positive integer")
     if not isinstance(records, (list, tuple)):
         raise ValueError("records must be a sequence")
@@ -75,18 +67,11 @@ def validate_continuity(records: list[dict], interval_minutes: int) -> None:
     for previous, current in zip(records, records[1:]):
         if not isinstance(previous, dict) or not isinstance(current, dict):
             raise ValueError("discontinuous dataset: invalid record")
-        prev_ts = previous.get("timestamp")
-        curr_ts = current.get("timestamp")
-        if isinstance(prev_ts, bool) or isinstance(curr_ts, bool) or prev_ts is None or curr_ts is None:
+        prev_i = exact_int(previous.get("timestamp"), default=None)
+        curr_i = exact_int(current.get("timestamp"), default=None)
+        if prev_i is None or curr_i is None:
             raise ValueError("discontinuous dataset: invalid timestamp")
-        try:
-            prev_f = float(prev_ts)
-            curr_f = float(curr_ts)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("discontinuous dataset: invalid timestamp") from exc
-        if not (math.isfinite(prev_f) and math.isfinite(curr_f) and prev_f.is_integer() and curr_f.is_integer()):
-            raise ValueError("discontinuous dataset: invalid timestamp")
-        actual_seconds = int(curr_f) - int(prev_f)
+        actual_seconds = curr_i - prev_i
         if actual_seconds != expected_seconds:
             raise ValueError(
                 "discontinuous dataset: "
@@ -112,14 +97,12 @@ def fetch_closed_candles(
 
 
 def _parse_intervals(value: str) -> list[int]:
-    if not isinstance(value, str):
-        raise argparse.ArgumentTypeError("intervals must be in minutes")
     try:
-        intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
-    except ValueError as exc:
+        intervals = parse_intervals(value)
+    except argparse.ArgumentTypeError as exc:
         raise argparse.ArgumentTypeError("intervals must be in minutes") from exc
-    unsupported = [value for value in intervals if value not in INTERVALS]
-    if not intervals or unsupported:
+    unsupported = [item for item in intervals if item not in INTERVALS]
+    if unsupported:
         raise argparse.ArgumentTypeError(
             f"intervale nesuportate: {unsupported or value}; suportate: {sorted(INTERVALS)}"
         )

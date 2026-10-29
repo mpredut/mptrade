@@ -292,6 +292,34 @@ def extract_cfg_int(cfg: Any, key: str, default: int) -> int:
     return int(val)
 
 
+def load_venue_module(
+    subdir: str,
+    filename: str = "replay.py",
+    module_name: str | None = None,
+):
+    """Load a module from a venue directory (e.g. 'hyperliquid', '212trading') while preserving sys.path."""
+    import importlib.util
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    venue_dir = root / subdir
+    file_path = venue_dir / (filename if filename.endswith(".py") else f"{filename}.py")
+    mod_name = module_name or f"{subdir}_{file_path.stem}"
+    orig_sys_path = list(sys.path)
+    try:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        if str(venue_dir) not in sys.path:
+            sys.path.append(str(venue_dir))
+        spec = importlib.util.spec_from_file_location(mod_name, str(file_path))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path[:] = orig_sys_path
+
+
 def load_layered_env_config(
     config_file: str | Path,
     env_file: str | Path,
