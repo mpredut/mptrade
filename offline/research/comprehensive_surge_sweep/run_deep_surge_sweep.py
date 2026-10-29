@@ -34,7 +34,10 @@ _KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
 
-from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int
+from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int
+
+_safe_f = safe_float
+_safe_int = safe_int
 from strategies.spot_replay import run_replay
 from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
@@ -191,9 +194,9 @@ def evaluate_single_candidate(
                 warmup_ohlc=warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            pnl = _safe_f(res.get("total"), 0.0)
-            dd = _safe_f(res.get("max_drawdown_pct"), 0.0)
-            cyc = max(0, _safe_int(res.get("cycles"), 0))
+            pnl = safe_float(res.get("total"), 0.0)
+            dd = safe_float(res.get("max_drawdown_pct"), 0.0)
+            cyc = safe_nonneg_int(res.get("cycles"), default=0)
 
             total_profit += pnl
             worst_maxdd = max(worst_maxdd, dd)
@@ -222,8 +225,8 @@ def evaluate_single_candidate(
                 warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            h1_profits += _safe_f(res_h1.get("total"), 0.0)
-            h2_profits += _safe_f(res_h2.get("total"), 0.0)
+            h1_profits += safe_float(res_h1.get("total"), 0.0)
+            h2_profits += safe_float(res_h2.get("total"), 0.0)
 
     pnl_per_drawdown_point = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
 
@@ -262,13 +265,13 @@ def _run_slice_replay(
         initial_cash=initial_cash,
     )
     metrics = (
-        _safe_f(res.get("total"), 0.0),
-        _safe_f(res.get("max_drawdown_pct"), 0.0),
-        max(0, _safe_int(res.get("cycles"), 0)),
+        safe_float(res.get("total"), 0.0),
+        safe_float(res.get("max_drawdown_pct"), 0.0),
+        safe_nonneg_int(res.get("cycles"), default=0),
     )
     diag = _spot_replay._LAST_REPLAY_DIAG if isinstance(_spot_replay._LAST_REPLAY_DIAG, dict) else {}
     raw_max_vol = diag.get("max_active_surge_vol")
-    max_vol = _safe_f(raw_max_vol, float("inf")) if raw_max_vol is not None else float("inf")
+    max_vol = safe_float(raw_max_vol, default=float("inf")) if raw_max_vol is not None else float("inf")
     raw_ts = diag.get("surge_win_check_ts", ())
     win_ts = tuple(raw_ts) if isinstance(raw_ts, (list, tuple)) else ()
     return (

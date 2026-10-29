@@ -23,7 +23,14 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
-from botcore import _parse_bool_flag, safe_float
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 from cachepaths import normalize_venue_name
 from offline.backtests.comparison import (
     dominates as _dominates,
@@ -138,7 +145,7 @@ def _load_report(path: Path) -> dict:
 def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, tuple[list[dict], dict, int]]:
     datasets = {}
     wf_cfg = report.get("walk_forward") if isinstance(report.get("walk_forward"), dict) else {}
-    warmup_bars = max(0, int(_safe_f(wf_cfg.get("signal_warmup_bars"), 0.0)))
+    warmup_bars = safe_nonneg_int(wf_cfg.get("signal_warmup_bars"), default=0)
 
     def _resolve_frozen_file(raw_path: str | Path) -> Path:
         p = Path(raw_path).expanduser()
@@ -179,7 +186,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             )
             raw_ws = section.get("window_sizes") or section.get("windows")
             window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
-            warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
+            warmup = safe_nonneg_int(window_sizes.get("signal_warmup_bars"), default=warmup_bars)
             datasets[interval] = (records, window_sizes, warmup)
     elif isinstance(report.get("dataset"), dict) and (
         isinstance(report.get("windows"), dict) or isinstance(report.get("window_sizes"), dict)
@@ -197,8 +204,8 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             except ValueError:
                 from binance_api.market_data import parse_interval_minutes
                 interval = parse_interval_minutes(str(interval_raw))
-        elif _safe_f(dataset_meta.get("median_step_seconds"), 0.0) > 0:
-            step_min = int(round(_safe_f(dataset_meta["median_step_seconds"], 60.0) / 60.0))
+        elif safe_pos_float(dataset_meta.get("median_step_seconds"), default=0.0) > 0:
+            step_min = int(round(safe_pos_float(dataset_meta["median_step_seconds"], default=60.0) / 60.0))
             interval = 1440 if step_min >= 1440 else max(1, step_min)
         elif exec_meta.get("calendar_periods_per_year") == 252.0:
             interval = 1440
@@ -217,7 +224,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
         records = _load_and_verify_frozen(frozen_spec, dataset_meta["sha256"], interval)
         raw_ws = report.get("windows") or report.get("window_sizes")
         window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
-        warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
+        warmup = safe_nonneg_int(window_sizes.get("signal_warmup_bars"), default=warmup_bars)
         datasets[interval] = (records, window_sizes, warmup)
     return datasets
 
@@ -273,7 +280,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
     if norm_venue in ("kraken", "binance"):
         base_params = StratParams.from_dict(raw_params, defaults=dict(_SPOT_PARAM_DEFAULTS))
         raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
-        base_fee = max(0.0, _safe_f(raw_fee, 0.26 if norm_venue == "kraken" else 0.10))
+        base_fee = safe_nonneg_float(raw_fee, default=0.26 if norm_venue == "kraken" else 0.10)
         return base_params, base_fee, _segment_result
 
     if norm_venue == "hyperliquid":
@@ -284,7 +291,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
         if raw_fee is None:
             raw_fee = raw_params.get("fee_pct")
-        base_fee = max(0.0, _safe_f(raw_fee, 0.035))
+        base_fee = safe_nonneg_float(raw_fee, default=0.035)
 
         if engine == "spot":
             base_params = StratParams.from_dict(raw_params, defaults=dict(_SPOT_PARAM_DEFAULTS))
@@ -343,9 +350,9 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         raw_fee = source_report.get("fee_pct_per_leg")
         if raw_fee is None:
             raw_fee = raw_params.get("fx_fee_pct")
-        base_fee = max(0.0, _safe_f(raw_fee, 0.0))
+        base_fee = safe_nonneg_float(raw_fee, default=0.0)
         fx_model = source_report.get("fx_model") if isinstance(source_report.get("fx_model"), dict) else {}
-        raw_fx_unit = _safe_f(fx_model.get("usd_per_unit"), 1.0)
+        raw_fx_unit = safe_pos_float(fx_model.get("usd_per_unit"), default=1.0)
         fx_fixed = raw_fx_unit if raw_fx_unit > 0.0 else 1.0
         fx_invert = _as_bool(fx_model.get("invert", False), False)
         fx_records = None
@@ -358,8 +365,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
             if fx_path.exists():
                 fx_records = load_frozen_dataset(fx_path)
         exec_meta = source_report.get("execution_model") if isinstance(source_report.get("execution_model"), dict) else {}
-        ppy = _safe_f(exec_meta.get("calendar_periods_per_year"), 0.0)
-        periods_yr = ppy if ppy > 0.0 else None
+        periods_yr = safe_pos_float(exec_meta.get("calendar_periods_per_year"), default=None)
 
         def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
             if hasattr(params, "fx_fee_pct") and fee_pct is not None and params.fx_fee_pct != fee_pct:
@@ -415,10 +421,10 @@ def _candidate_windows(
     eval_fn = segment_fn or _segment_result
     windows = []
     for interval, (records, sizes, warmup_bars) in sorted(datasets.items()):
-        train_sz = int(_safe_f(sizes.get("train", sizes.get("train_bars")), 0.0))
-        val_sz = int(_safe_f(sizes.get("validation", sizes.get("validation_bars")), 0.0))
-        test_sz = int(_safe_f(sizes.get("test", sizes.get("test_bars")), 0.0))
-        step_sz = int(_safe_f(sizes.get("step", sizes.get("step_bars", test_sz)), float(test_sz))) or test_sz
+        train_sz = safe_nonneg_int(sizes.get("train", sizes.get("train_bars")), default=0)
+        val_sz = safe_nonneg_int(sizes.get("validation", sizes.get("validation_bars")), default=0)
+        test_sz = safe_nonneg_int(sizes.get("test", sizes.get("test_bars")), default=0)
+        step_sz = safe_nonneg_int(sizes.get("step", sizes.get("step_bars", test_sz)), default=test_sz) or test_sz
         folds = walk_forward_splits(
             len(records), train_size=train_sz,
             validation_size=val_sz, test_size=test_sz,
@@ -580,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Pareto: {', '.join(report['pareto_frontier'])}")
     print(f"Dominates live: {', '.join(report['dominates_live']) or '-'}")
     for name, item in sorted(
-            results.items(), key=lambda pair: _safe_f(pair[1]["summary"].get("mean_return_pct"), 0.0),
+            results.items(), key=lambda pair: safe_float(pair[1]["summary"].get("mean_return_pct"), 0.0),
             reverse=True)[:5]:
         summary = item["summary"]
         relative = item["relative_to_live"]

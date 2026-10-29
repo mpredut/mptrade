@@ -22,7 +22,12 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "kraken") not in sys.path:
     sys.path.append(str(ROOT / "kraken"))
 
-from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int, safe_nonneg_int
+from botcore import (
+    parse_dotenv,
+    safe_float,
+    safe_nonneg_int,
+    safe_pos_float,
+)
 from kraken import replay as kraken_replay
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import load_dataset
@@ -198,23 +203,22 @@ def define_candidate_grid() -> dict[str, dict]:
 
 def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     """Compute normalized percentage and risk-adjusted replay metrics safely."""
-    b_f = _safe_f(budget, 0.0)
-    safe_budget = b_f if b_f > 1e-9 else 1e-9
+    safe_budget = safe_pos_float(budget, default=1e-9)
     m_dict = m if isinstance(m, dict) else {}
-    net_pct = (_safe_f(m_dict.get("net"), 0.0) / safe_budget) * 100.0
-    total_pct = (_safe_f(m_dict.get("total"), 0.0) / safe_budget) * 100.0
-    max_dd = _safe_f(m_dict.get("max_drawdown_pct"), 0.0)
+    net_pct = (safe_float(m_dict.get("net"), 0.0) / safe_budget) * 100.0
+    total_pct = (safe_float(m_dict.get("total"), 0.0) / safe_budget) * 100.0
+    max_dd = safe_float(m_dict.get("max_drawdown_pct"), 0.0)
     calmar = (net_pct / max_dd) if max_dd > 0 else 0.0
-    sharpe = _safe_f(m_dict.get("sharpe_ratio"), 0.0)
+    sharpe = safe_float(m_dict.get("sharpe_ratio"), 0.0)
     return {
         "net_pct": net_pct,
         "total_pct": total_pct,
         "max_dd": max_dd,
         "calmar": calmar,
         "sharpe": sharpe,
-        "cycles": safe_nonneg_int(m_dict.get("cycles"), default=0) or 0,
-        "wins": safe_nonneg_int(m_dict.get("wins"), default=0) or 0,
-        "fills": safe_nonneg_int(m_dict.get("fills"), default=0) or 0,
+        "cycles": safe_nonneg_int(m_dict.get("cycles"), default=0),
+        "wins": safe_nonneg_int(m_dict.get("wins"), default=0),
+        "fills": safe_nonneg_int(m_dict.get("fills"), default=0),
     }
 
 

@@ -15,7 +15,10 @@ from strategies import spot_engine as strat
 from strategies.spot_replay import run_replay
 from offline.backtests.datasets import load_dataset, validate_dataset
 from offline.backtests.evaluation import to_ohlc
-from botcore import safe_float as _safe_f, safe_int as _safe_int, safe_nonneg_int
+from botcore import safe_float, safe_int, safe_nonneg_int
+
+_safe_f = safe_float
+_safe_int = safe_int
 
 
 def run_comparison(csv_path=None):
@@ -82,16 +85,16 @@ def run_comparison(csv_path=None):
     print("=" * 92)
 
     for sl, base, prop in results:
-        b_cyc = safe_nonneg_int(base.get('cycles'), default=0) or 0
-        p_cyc = safe_nonneg_int(prop.get('cycles'), default=0) or 0
-        b_wins = safe_nonneg_int(base.get('wins'), default=0) or 0
-        p_wins = safe_nonneg_int(prop.get('wins'), default=0) or 0
-        b_net = _safe_f(base.get('net'), 0.0)
-        p_net = _safe_f(prop.get('net'), 0.0)
-        b_dd = _safe_f(base.get('maxdd'), 0.0)
-        p_dd = _safe_f(prop.get('maxdd'), 0.0)
-        b_fills = safe_nonneg_int(base.get('fills'), default=0) or 0
-        p_fills = safe_nonneg_int(prop.get('fills'), default=0) or 0
+        b_cyc = safe_nonneg_int(base.get('cycles'), default=0)
+        p_cyc = safe_nonneg_int(prop.get('cycles'), default=0)
+        b_wins = safe_nonneg_int(base.get('wins'), default=0)
+        p_wins = safe_nonneg_int(prop.get('wins'), default=0)
+        b_net = safe_float(base.get('net'), 0.0)
+        p_net = safe_float(prop.get('net'), 0.0)
+        b_dd = safe_float(base.get('maxdd'), 0.0)
+        p_dd = safe_float(prop.get('maxdd'), 0.0)
+        b_fills = safe_nonneg_int(base.get('fills'), default=0)
+        p_fills = safe_nonneg_int(prop.get('fills'), default=0)
         base_win_pct = (b_wins / b_cyc * 100) if b_cyc > 0 else 0.0
         prop_win_pct = (p_wins / p_cyc * 100) if p_cyc > 0 else 0.0
 
