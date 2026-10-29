@@ -11,6 +11,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
 
+_safe_f = safe_float
+
 try:
     from .report import _load_jsonl_dicts
 except ImportError:
