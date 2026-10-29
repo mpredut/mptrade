@@ -11,7 +11,7 @@ import math
 import time
 from typing import Any, Optional
 
-from botcore import safe_float as _safe_float
+from botcore import safe_float, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.bybit_liquidations import (
     BybitLiquidationCollector,
@@ -30,12 +30,10 @@ class LiquidationCapitulationTrigger:
         window_sec: float = 300.0,
     ) -> None:
         self.collector = collector
-        mn = _safe_float(min_notional_usd, 100_000.0)
-        self.min_notional_usd = mn if (mn is not None and mn > 0.0) else 100_000.0
-        rt = _safe_float(ratio_threshold, 0.75)
-        self.ratio_threshold = rt if (rt is not None and 0.0 < rt <= 1.0) else 0.75
-        ws = _safe_float(window_sec, 300.0)
-        self.window_sec = ws if (ws is not None and ws > 0.0) else 300.0
+        self.min_notional_usd = safe_pos_float(min_notional_usd, default=100_000.0) or 100_000.0
+        rt = safe_pos_float(ratio_threshold, default=0.75) or 0.75
+        self.ratio_threshold = rt if rt <= 1.0 else 0.75
+        self.window_sec = safe_pos_float(window_sec, default=300.0) or 300.0
 
     def evaluate(
         self,
@@ -45,24 +43,14 @@ class LiquidationCapitulationTrigger:
         now: Optional[float] = None,
     ) -> Optional[TriggerEvent]:
         """Evaluate current liquidation window for capitulation buy or squeeze exit."""
-        if price is None or isinstance(price, bool):
-            return None
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError):
-            return None
-        if not (math.isfinite(price_f) and price_f > 0.0):
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             return None
         price = price_f
 
-        t_now = time.time()
-        if now is not None and not isinstance(now, bool):
-            try:
-                nf = float(now)
-                if math.isfinite(nf) and nf > 0.0:
-                    t_now = nf
-            except (TypeError, ValueError):
-                pass
+        t_now = safe_pos_float(now, default=None) if now is not None else None
+        if t_now is None:
+            t_now = time.time()
         if summary is None and self.collector is not None:
             try:
                 summary = (
@@ -79,18 +67,18 @@ class LiquidationCapitulationTrigger:
         def _sum_attr(key: str, default: Any = None) -> Any:
             return summary.get(key, default) if isinstance(summary, dict) else getattr(summary, key, default)
 
-        long_liq = _safe_float(_sum_attr("long_liq_usd", None), None)
-        short_liq = _safe_float(_sum_attr("short_liq_usd", None), None)
-        total_usd = _safe_float(_sum_attr("total_usd", None), None)
+        long_liq = safe_float(_sum_attr("long_liq_usd", None), default=None)
+        short_liq = safe_float(_sum_attr("short_liq_usd", None), default=None)
+        total_usd = safe_float(_sum_attr("total_usd", None), default=None)
         if isinstance(summary, dict) and "total_usd" not in summary and long_liq is not None and short_liq is not None:
             total_usd = long_liq + short_liq
-        cap_ratio = _safe_float(_sum_attr("capitulation_ratio", None), None)
+        cap_ratio = safe_float(_sum_attr("capitulation_ratio", None), default=None)
         if isinstance(summary, dict) and "capitulation_ratio" not in summary and total_usd is not None and total_usd > 0.0 and long_liq is not None:
             cap_ratio = long_liq / total_usd
-        sq_ratio = _safe_float(_sum_attr("squeeze_ratio", None), None)
+        sq_ratio = safe_float(_sum_attr("squeeze_ratio", None), default=None)
         if isinstance(summary, dict) and "squeeze_ratio" not in summary and total_usd is not None and total_usd > 0.0 and short_liq is not None:
             sq_ratio = short_liq / total_usd
-        win_sec = _safe_float(_sum_attr("window_sec", None), self.window_sec)
+        win_sec = safe_float(_sum_attr("window_sec", None), default=self.window_sec)
         if (
             total_usd is None
             or long_liq is None

@@ -12,7 +12,7 @@ import math
 import time
 from typing import Optional
 
-from intelligence.macro_sentiment_ssot import safe_pos_float as _safe_pos_float
+from botcore import safe_float, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
@@ -32,12 +32,12 @@ class WhaleAccumulationTrigger:
         min_taker_sell_ratio: float = 0.80,        # Taker aggressive sells dominate (<0.80)
     ) -> None:
         self.collector = collector
-        long_pct = _safe_pos_float(min_top_traders_long_pct, 0.60)
+        long_pct = safe_pos_float(min_top_traders_long_pct, default=0.60) or 0.60
         self.min_top_traders_long_pct = long_pct if long_pct <= 1.0 else 0.60
-        self.min_taker_buy_ratio = _safe_pos_float(min_taker_buy_ratio, 1.25)
-        short_pct = _safe_pos_float(min_top_traders_short_pct, 0.60)
+        self.min_taker_buy_ratio = safe_pos_float(min_taker_buy_ratio, default=1.25) or 1.25
+        short_pct = safe_pos_float(min_top_traders_short_pct, default=0.60) or 0.60
         self.min_top_traders_short_pct = short_pct if short_pct <= 1.0 else 0.60
-        self.min_taker_sell_ratio = _safe_pos_float(min_taker_sell_ratio, 0.80)
+        self.min_taker_sell_ratio = safe_pos_float(min_taker_sell_ratio, default=0.80) or 0.80
 
     def evaluate(
         self,
@@ -47,24 +47,14 @@ class WhaleAccumulationTrigger:
         now: Optional[float] = None,
     ) -> Optional[TriggerEvent]:
         """Evaluate if whale capital flow triggers an entry or exit."""
-        if price is None or isinstance(price, bool):
-            return None
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not (math.isfinite(price_f) and price_f > 0.0):
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             return None
         price = price_f
 
-        t_now = time.time()
-        if now is not None and not isinstance(now, bool):
-            try:
-                nf = float(now)
-                if math.isfinite(nf) and nf > 0.0:
-                    t_now = nf
-            except (TypeError, ValueError, OverflowError):
-                pass
+        t_now = safe_pos_float(now, default=None) if now is not None else None
+        if t_now is None:
+            t_now = time.time()
         if snapshot is None and self.collector is not None:
             try:
                 snapshot = self.collector.fetch(symbol, now=t_now) if now is not None else self.collector.fetch(symbol)
@@ -77,27 +67,12 @@ class WhaleAccumulationTrigger:
         def _snap_attr(key: str, default=None):
             return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
 
-        raw_long_pct = _snap_attr("top_traders_long_pct", None)
-        raw_taker_ratio = _snap_attr("taker_buy_sell_ratio", None)
-        raw_oi_chg = _snap_attr("open_interest_1h_change_pct", None)
+        top_long_pct = safe_float(_snap_attr("top_traders_long_pct", None), default=None)
+        taker_ratio = safe_float(_snap_attr("taker_buy_sell_ratio", None), default=None)
+        oi_chg = safe_float(_snap_attr("open_interest_1h_change_pct", None), default=None)
         raw_regime = _snap_attr("divergence_regime", "neutral")
         regime_str = raw_regime.strip() if isinstance(raw_regime, str) and raw_regime.strip() else "neutral"
-        if (
-            raw_long_pct is None
-            or raw_taker_ratio is None
-            or raw_oi_chg is None
-            or isinstance(raw_long_pct, bool)
-            or isinstance(raw_taker_ratio, bool)
-            or isinstance(raw_oi_chg, bool)
-        ):
-            return None
-        try:
-            top_long_pct = float(raw_long_pct)
-            taker_ratio = float(raw_taker_ratio)
-            oi_chg = float(raw_oi_chg)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not (math.isfinite(top_long_pct) and math.isfinite(taker_ratio) and math.isfinite(oi_chg)):
+        if top_long_pct is None or taker_ratio is None or oi_chg is None:
             return None
 
         # 1. Whale Accumulation Entry (BUY)
