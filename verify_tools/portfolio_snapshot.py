@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import _parse_bool_flag, parse_dotenv, required_float_env, safe_float  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-from state_io import atomic_write_json, read_recovering_previous, save_json_state  # noqa: E402
+from state_io import read_recovering_previous, save_json_state  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 

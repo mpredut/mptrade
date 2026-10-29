@@ -10,7 +10,6 @@ It does not touch the fleet. It confirms:
 Exits 0 when everything passes.
 """
 import os
-import re
 import sys
 
 # Run from verify_tools/ -> put the repo ROOT on the path for the imports below.
@@ -19,7 +18,6 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from providers.market_api import api
-from instrument import Instrument
 from instruments_config import load_instruments, load_for
 
 FAIL = []

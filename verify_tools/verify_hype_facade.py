@@ -18,7 +18,6 @@ Exits non-zero if anything is clearly unhealthy (wrong routing, invalid price, r
 """
 import os
 import sys
-import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:

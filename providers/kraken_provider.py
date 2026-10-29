@@ -12,7 +12,6 @@ The legacy ``place_order`` path submits validation-only requests unless
 strict and always sends a real request; its caller's dry-run policy is the controlling
 gate. Importing this module does not eagerly initialize the Kraken client.
 """
-import hashlib
 import json
 import os
 import re
@@ -22,11 +21,8 @@ from typing import Optional, List
 
 from botcore import (
     _parse_bool_flag,
-    safe_float,
     safe_nonneg_float,
-    safe_nonneg_int,
     safe_pos_float,
-    safe_pos_int,
 )
 from .base import (
     MarketDataProvider,
@@ -35,8 +31,6 @@ from .base import (
     _normalize_order,
     bool_env,
     env_value,
-    extract_order_side,
-    extract_timestamp_ms,
     normalize_side,
 )
 from .strategy_executor import (

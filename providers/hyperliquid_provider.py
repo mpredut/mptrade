@@ -13,7 +13,6 @@ does not require the SDK or credentials. Unavailable read dependencies generally
 """
 from __future__ import annotations
 
-import hashlib
 import inspect
 import os
 import re
@@ -26,7 +25,6 @@ from botcore import (
     _parse_bool_flag,
     safe_float,
     safe_nonneg_float,
-    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
@@ -34,7 +32,6 @@ from .base import (
     MarketDataProvider,
     _clean_single_order_id,
     _derive_128bit_client_order_id,
-    _normalize_order,
     bool_env,
     extract_order_fee,
     extract_order_id,
