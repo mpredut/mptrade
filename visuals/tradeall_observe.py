@@ -41,6 +41,7 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
+from state_io import atomic_write_text
 from providers.base import normalize_side
 try:
     from intelligence.internal.state.volatility import get_kalman_state_path
@@ -1005,14 +1006,11 @@ function show(which) {{
 setInterval(bust, 2500);
 </script>
 </body></html>"""
-    os.makedirs(LIVE_OUT_DIR, exist_ok=True)
-    with open(os.path.join(LIVE_OUT_DIR, "tradeall_live.html"), "w", encoding="utf-8") as f:
-        f.write(html)
+    atomic_write_text(os.path.join(LIVE_OUT_DIR, "tradeall_live.html"), html)
 
 
 def write_backtest_html(directory, symbols):
     """Write minimal backtest HTML without a day/week toggle."""
-    os.makedirs(directory, exist_ok=True)   # The backtester may not have created it yet.
     blocks = "".join(
         f'<div class="chart"><h3>{s}</h3><div class="chart-wrap">'
         f'<img src="tradeall_live_{s}.png" alt="{s}">'
@@ -1041,8 +1039,7 @@ setInterval(function() {{
 }}, 5000);
 </script>
 </body></html>"""
-    with open(os.path.join(directory, "tradeall_live_backtest.html"), "w", encoding="utf-8") as f:
-        f.write(html)
+    atomic_write_text(os.path.join(directory, "tradeall_live_backtest.html"), html)
 
 
 def main():
