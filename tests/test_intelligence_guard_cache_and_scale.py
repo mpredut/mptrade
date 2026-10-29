@@ -6569,6 +6569,12 @@ def test_iteration35_compute_weight_inf_auto_qty_and_instrument_nan_bool_safety(
     )
     assert q_nan == 1.0 and sc_nan == 1.0 and ref_nan is None
 
+    for bad_app in (0.0, -0.5, float("nan"), "invalid"):
+        q_bad_app, sc_bad_app, ref_bad_app = inst._apply_late_intelligence_scale(
+            1.0, 100.0, False, True, SimpleNamespace(suggested_scale=0.5), bad_app, side_u="BUY"
+        )
+        assert q_bad_app == 1.0 and ref_bad_app is None
+
     # 4. Instrument.place rejects boolean/NaN/negative limit prices on both BUY and SELL with 'invalid_price'
     for side in ("BUY", "SELL"):
         for bad_px in (True, False, float("nan"), -5.0, 0.0):

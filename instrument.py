@@ -166,8 +166,8 @@ class Instrument:
             return qty, applied_scale, None
         scale_raw = getattr(regime_context, "suggested_scale", None)
         scale_f = safe_pos_float(scale_raw, default=None)
-        app_f = safe_pos_float(applied_scale, default=1.0) or 1.0
-        if scale_f is None or app_f <= 0.0:
+        app_f = 1.0 if isinstance(applied_scale, bool) else safe_pos_float(applied_scale, default=None)
+        if scale_f is None or app_f is None:
             return qty, applied_scale, None
         if 0.0 < scale_f < app_f:
             ratio = scale_f / app_f
