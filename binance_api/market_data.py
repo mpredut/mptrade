@@ -74,15 +74,10 @@ def parse_interval_minutes(interval: int | str) -> int:
                 raise ValueError(f"interval must be positive: {interval}")
             return val
         raise ValueError(f"unsupported Binance interval: {interval}")
-    if isinstance(interval, float) and (not math.isfinite(interval) or not interval.is_integer()):
-        raise ValueError(f"interval must be a finite integer number of minutes: {interval}")
-    try:
-        val = int(interval)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"interval must be positive integer: {interval}") from exc
-    if val <= 0:
-        raise ValueError(f"interval must be positive: {interval}")
-    return val
+    val_f = safe_pos_float(interval, default=None)
+    if val_f is None or not val_f.is_integer():
+        raise ValueError(f"interval must be a positive integer number of minutes: {interval}")
+    return int(val_f)
 
 
 def interval_to_binance_str(interval: int | str) -> str:

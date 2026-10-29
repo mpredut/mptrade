@@ -3,6 +3,7 @@ import time
 import threading
 
 from binance.client import Client
+from botcore import safe_nonneg_float, safe_pos_float
 
 ####MYLIB
 _client = None
@@ -53,22 +54,14 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
     if _client is None:
         return None
     try:
-        margin_ms = TIME_SAFETY_MARGIN_MS
-        if safety_margin_ms is not None and not isinstance(safety_margin_ms, bool):
-            cand_m = float(safety_margin_ms)
-            if cand_m == cand_m and abs(cand_m) != float("inf") and cand_m >= 0:
-                margin_ms = int(cand_m)
+        margin_ms = int(safe_nonneg_float(safety_margin_ms, default=TIME_SAFETY_MARGIN_MS))
         t0_ms = int(time.time() * 1000)
         srv_resp = _client.get_server_time()
         raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
-        if raw_srv is None or isinstance(raw_srv, bool):
-            raise ValueError("invalid serverTime in Binance response")
-        srv_f = float(raw_srv)
-        if not (srv_f == srv_f and abs(srv_f) != float("inf") and srv_f.is_integer()):
+        srv_f = safe_pos_float(raw_srv, default=None)
+        if srv_f is None or not srv_f.is_integer():
             raise ValueError("invalid serverTime in Binance response")
         server_ms = int(srv_f)
-        if server_ms <= 0:
-            raise ValueError(f"non-positive serverTime: {server_ms}")
         t1_ms = int(time.time() * 1000)
         local_ms = (t0_ms + t1_ms) // 2
         _client.timestamp_offset = server_ms - local_ms - margin_ms
@@ -160,14 +153,7 @@ def stop_periodic_resync(timeout=2.0):
         _resync_stop_event.set()
 
     if thread is not None and thread is not threading.current_thread():
-        join_timeout = 2.0
-        if timeout is not None and not isinstance(timeout, bool):
-            try:
-                cand_t = float(timeout)
-                if cand_t == cand_t and abs(cand_t) != float("inf") and cand_t >= 0.0:
-                    join_timeout = cand_t
-            except (TypeError, ValueError, OverflowError):
-                pass
+        join_timeout = safe_nonneg_float(timeout, default=2.0)
         thread.join(timeout=join_timeout)
 
     with _resync_lock:

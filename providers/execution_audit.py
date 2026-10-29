@@ -400,17 +400,10 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "ohlc_series", None)
         if callable(reader):
             return reader(symbol, interval_min)
-        if isinstance(interval_min, bool) or interval_min is None:
+        itv_f = safe_pos_float(interval_min, default=None)
+        if itv_f is None or not itv_f.is_integer():
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
-        try:
-            itv_f = float(interval_min)
-            if not math.isfinite(itv_f) or not itv_f.is_integer():
-                raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
-            interval_i = int(itv_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}") from exc
-        if interval_i <= 0:
-            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
+        interval_i = int(itv_f)
         from market_regime import ClosedPriceSeries
         return ClosedPriceSeries(
             tuple(self._executor.ohlc_closes(symbol, interval_i) or ()),

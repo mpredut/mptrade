@@ -3,7 +3,7 @@ import os
 import time
 import threading
 
-from botcore import _parse_bool_flag, parse_dotenv
+from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float
 
 # Configuration cache.
 config_cache = {}
@@ -78,14 +78,7 @@ def config_watcher(interval=5 * 60):  # 5 minutes
     """
     Periodically monitor configuration and reload the cache.
     """
-    wait_sec = 5.0 * 60.0
-    if not isinstance(interval, bool) and interval is not None:
-        try:
-            cand = float(interval)
-            if math.isfinite(cand) and cand > 0:
-                wait_sec = cand
-        except (TypeError, ValueError, OverflowError):
-            pass
+    wait_sec = safe_pos_float(interval, default=5.0 * 60.0)
     while not _watcher_stop_event.is_set():
         load_config()
         if _watcher_stop_event.wait(wait_sec):

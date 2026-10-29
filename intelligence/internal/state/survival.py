@@ -346,16 +346,13 @@ def _read_t_cache_dict(t_cache_path: str) -> Optional[dict]:
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
     if not isinstance(data, dict) or not isinstance(symbol, str) or not symbol.strip():
         return None
-    sym_u = symbol.upper().strip()
-    ent = data.get(symbol) or data.get(sym_u)
-    if isinstance(ent, dict):
-        return ent
-    target_base = _extract_base_symbol(sym_u)
+    from cachepaths import cache_symbol_variants
+    for cand in (symbol, *cache_symbol_variants(symbol)):
+        ent = data.get(cand)
+        if isinstance(ent, dict):
+            return ent
+    target_base = _extract_base_symbol(symbol)
     if target_base:
-        for suffix in ("USDC", "USDT", "USD"):
-            cand = data.get(f"{target_base}{suffix}")
-            if isinstance(cand, dict):
-                return cand
         for k, v in data.items():
             if isinstance(v, dict) and _extract_base_symbol(str(k)) == target_base:
                 return v

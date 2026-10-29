@@ -464,14 +464,12 @@ class BinanceProvider(MarketDataProvider):
     def policy_cap_quantity(self, symbol: str, side: str, price: float,
                             qty: float, available_qty: float, **kwargs) -> float:
         from binance_api import bapi_placeorder as _po
-        is_auto = False
-        if qty is None:
-            is_auto = True
-        elif not isinstance(qty, bool):
-            try:
-                is_auto = math.isinf(float(qty)) and float(qty) > 0
-            except (TypeError, ValueError, OverflowError):
-                is_auto = False
+        is_auto = qty is None or (
+            not isinstance(qty, bool)
+            and isinstance(qty, (int, float))
+            and math.isinf(qty)
+            and qty > 0
+        )
         return _po.apply_weight_limit(
             symbol, side, price,
             None if is_auto else qty,

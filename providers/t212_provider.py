@@ -17,7 +17,7 @@ import math
 import importlib
 from typing import Optional, List
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from .base import MarketDataProvider, _normalize_order, bool_env, env_value, normalize_side
 from .strategy_executor import (
     OrderNotFound,
@@ -51,13 +51,9 @@ _STATUS_MAP = {
 
 def _definitive_submit_failure(status: int, payload) -> bool:
     """Return whether a synchronous T212 response proves non-acceptance."""
-    if not isinstance(status, bool):
-        try:
-            st_i = int(status)
-            if 400 <= st_i < 500 and st_i not in {408, 425, 429}:
-                return True
-        except (TypeError, ValueError, OverflowError):
-            pass
+    st_i = safe_pos_int(status, default=0)
+    if 400 <= st_i < 500 and st_i not in {408, 425, 429}:
+        return True
     return "rejected" in str(payload or "").lower()
 
 

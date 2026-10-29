@@ -149,12 +149,11 @@ class KalmanStateTracker:
         """Return Kalman trend and state age for tradeall's live order gate."""
         st = self._state.get(symbol)
         if not isinstance(st, dict) and isinstance(symbol, str):
-            sym_u = symbol.strip().upper()
-            if sym_u:
-                st = (
-                    self._state.get(sym_u)
-                    or self._state.get(sym_u.replace("/", "").replace("-", "").replace("_", ""))
-                )
+            from cachepaths import cache_symbol_variants
+            for cand in cache_symbol_variants(symbol):
+                st = self._state.get(cand)
+                if isinstance(st, dict):
+                    break
         if not isinstance(st, dict) or not st:
             return None, 1e18
         ts_f = safe_pos_float(st.get("ts"), default=None)

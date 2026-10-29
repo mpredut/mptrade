@@ -873,11 +873,8 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
         raise ValueError("order_type must be BUY or SELL")
     if isinstance(requested_price, bool):
         raise ValueError("requested_price cannot be bool")
-    try:
-        req_f = float(requested_price)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("requested_price must be numeric") from exc
-    if not math.isfinite(req_f) or req_f <= 0:
+    req_f = safe_pos_float(requested_price, default=None)
+    if req_f is None:
         raise ValueError("requested_price must be finite and positive")
     requested_price = req_f
     cp = safe_pos_float(current_price, default=None)

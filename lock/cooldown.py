@@ -24,7 +24,7 @@ import multiprocessing
 import contextlib
 
 from .file_lock import FileLock
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 
 
 def _is_active_entry(last, now: float, ttl: float) -> bool:
@@ -355,14 +355,8 @@ class Cooldown:
         last = self._read().get(key)
         if not isinstance(last, dict):
             return None
-        raw_ts = last.get("timestamp")
-        if raw_ts is None or isinstance(raw_ts, bool):
-            return None
-        try:
-            ts = float(raw_ts)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(ts) or ts <= 0:
+        ts = safe_pos_float(last.get("timestamp"), default=None)
+        if ts is None:
             return None
         return max(0.0, time.time() - ts)
 

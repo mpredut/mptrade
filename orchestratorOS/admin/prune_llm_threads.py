@@ -19,7 +19,15 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import _parse_bool_flag, load_dotenv, required_env, required_float_env, required_int_env  # noqa: E402
+from botcore import (  # noqa: E402
+    _parse_bool_flag,
+    load_dotenv,
+    required_env,
+    required_float_env,
+    required_int_env,
+    safe_nonneg_float,
+    safe_nonneg_int,
+)
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
@@ -168,14 +176,9 @@ def prune_old_cli_threads(
     finally:
         conn.close()
 
-    if retention_days is None or isinstance(retention_days, bool):
+    retention_days = safe_nonneg_float(retention_days, default=None)
+    if retention_days is None:
         retention_days = DEFAULT_RETENTION_DAYS
-    else:
-        try:
-            rd_val = float(retention_days)
-            retention_days = rd_val if math.isfinite(rd_val) and rd_val >= 0.0 else DEFAULT_RETENTION_DAYS
-        except (TypeError, ValueError, OverflowError):
-            retention_days = DEFAULT_RETENTION_DAYS
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     candidates: Set[str] = set()
@@ -185,14 +188,7 @@ def prune_old_cli_threads(
         if cid in protected:
             continue
         raw_steps = row["step_count"] if "step_count" in row.keys() else 0
-        try:
-            if raw_steps is not None and not isinstance(raw_steps, bool):
-                sf = float(raw_steps)
-                steps = int(sf) if math.isfinite(sf) and sf >= 0 else 0
-            else:
-                steps = 0
-        except (TypeError, ValueError, OverflowError):
-            steps = 0
+        steps = safe_nonneg_int(raw_steps, default=0)
         automated = is_automated_thread(row["title"] or "", row["preview"] or "")
         if not automated and steps > INTERACTIVE_MIN_STEPS:
             continue   # multi-turn interactive conversation: never pruned, even with --all
@@ -206,16 +202,11 @@ def prune_old_cli_threads(
             kept.append((dt, cid))
 
     # Hard count cap so autonomous threads never approach agy's conversation eviction limit
-    max_threads_i: Optional[int] = None
-    if max_threads is not None:
-        if isinstance(max_threads, bool):
-            max_threads_i = DEFAULT_MAX_AUTONOMOUS_THREADS
-        else:
-            try:
-                mt_f = float(max_threads)
-                max_threads_i = int(mt_f) if math.isfinite(mt_f) and int(mt_f) >= 0 else DEFAULT_MAX_AUTONOMOUS_THREADS
-            except (TypeError, ValueError, OverflowError):
-                max_threads_i = DEFAULT_MAX_AUTONOMOUS_THREADS
+    max_threads_i: Optional[int] = (
+        safe_nonneg_int(max_threads, default=DEFAULT_MAX_AUTONOMOUS_THREADS)
+        if max_threads is not None
+        else None
+    )
     if max_threads_i is not None and 0 <= max_threads_i < len(kept):
         kept.sort(reverse=True)
         candidates.update(cid for _, cid in kept[max_threads_i:])
