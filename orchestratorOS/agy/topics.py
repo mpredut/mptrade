@@ -42,6 +42,8 @@ from orchestratorOS.agy.ui_mirror import (
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
+_safe_int = safe_int
+
 
 @dataclass(frozen=True)
 class TopicSpec:

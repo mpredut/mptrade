@@ -149,12 +149,11 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     For real elapsed time, normalize milliseconds to days or hours and use the
     same formulas.
     """
-    if prices is None or isinstance(prices, (bool, str, bytes)) or isinstance(horizon, bool):
+    if prices is None or isinstance(prices, (bool, str, bytes)):
         return np.array([], dtype=np.float64)
-    hz_f = safe_float(horizon, default=None)
-    if hz_f is None or int(hz_f) <= 0:
+    hz = safe_pos_int(horizon, default=None)
+    if hz is None:
         return np.array([], dtype=np.float64)
-    hz = int(hz_f)
     clean_p = _clean_finite_floats(prices)
     n = len(clean_p)
     if n == 0:
