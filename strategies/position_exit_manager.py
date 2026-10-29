@@ -135,13 +135,8 @@ class PriceGeometrySnapshot:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
         cp = self._finite_pos_float(getattr(self, "current_price", None))
         rp = self._finite_pos_float(reference_price)
-        if cp is None or rp is None or threshold is None or isinstance(threshold, bool):
-            return False
-        try:
-            th = float(threshold)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(th):
+        th = safe_float(threshold, default=None)
+        if cp is None or rp is None or th is None:
             return False
         target = rp * (1.0 - th)
         if cp <= target:
@@ -462,14 +457,8 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
 
 def _resolve_now_s(current_time_s: Optional[float]) -> float:
     """Resolve explicit simulation/snapshot timestamp or fall back to wall-clock time."""
-    if current_time_s is not None and not isinstance(current_time_s, bool):
-        try:
-            tf = float(current_time_s)
-            if math.isfinite(tf) and tf >= 0.0:
-                return tf
-        except (TypeError, ValueError):
-            pass
-    return time.time()
+    tf = safe_nonneg_float(current_time_s, default=None)
+    return tf if tf is not None else time.time()
 
 
 def _resolve_positive_threshold(custom_val: Any, default_val: float) -> float:

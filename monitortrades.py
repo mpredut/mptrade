@@ -49,7 +49,9 @@ from botcore import (
     required_float_env,
     safe_float as _safe_f,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
 )
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
@@ -97,15 +99,8 @@ class _FifoTradeIdTracker:
     """Memory-bounded trade ID tracker preserving FIFO insertion order."""
     def __init__(self, maxsize: int = 10000):
         self._data: dict[str, None] = {}
-        if isinstance(maxsize, bool) or maxsize is None:
-            ms = 10000
-        else:
-            try:
-                mf = float(maxsize)
-                ms = int(mf) if (math.isfinite(mf) and int(mf) >= 2) else 10000
-            except (TypeError, ValueError, OverflowError):
-                ms = 10000
-        self._maxsize = ms
+        ms = safe_pos_int(maxsize, default=10000) or 10000
+        self._maxsize = ms if ms >= 2 else 10000
 
     def add(self, item: str) -> None:
         key = str(item)
@@ -279,7 +274,7 @@ def _order_timestamp_ms(order: dict) -> float:
     """Extract normalized millisecond timestamp from an order or fill record."""
     if not isinstance(order, dict):
         return 0.0
-    return float(extract_timestamp_ms(order, default=0) or 0)
+    return safe_nonneg_float(extract_timestamp_ms(order, default=0), default=0.0) or 0.0
 
 
 def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
@@ -338,35 +333,20 @@ def clear_position_stats_cache():
 def _summarize_orders(orders):
     if not orders:
         return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
-    if len(orders) == 1:
-        o = orders[0]
-        raw_q = extract_order_qty(o)
-        raw_p = extract_order_price(o)
-        q = raw_q if (math.isfinite(raw_q) and raw_q > 0.0) else 0.0
-        p = raw_p if (math.isfinite(raw_p) and raw_p > 0.0) else 0.0
-        raw_ts = _order_timestamp_ms(o)
-        ts = int(raw_ts) if math.isfinite(raw_ts) else 0
-        val = (p * q) if (q > 0.0 and p > 0.0) else 0.0
-        first_id = (o.get("id") or o.get("orderId") or ts) if isinstance(o, dict) else ts
-        return q, val, (1, round(q, 8), round(val, 4), ts, first_id)
     total_qty = 0.0
     total_val = 0.0
     latest_ts = 0
     for o in orders:
-        raw_q = extract_order_qty(o)
-        raw_p = extract_order_price(o)
-        q = raw_q if (math.isfinite(raw_q) and raw_q > 0.0) else 0.0
-        p = raw_p if (math.isfinite(raw_p) and raw_p > 0.0) else 0.0
-        raw_ts = _order_timestamp_ms(o)
-        ts = int(raw_ts) if math.isfinite(raw_ts) else 0
+        q = safe_pos_float(extract_order_qty(o), default=0.0) or 0.0
+        p = safe_pos_float(extract_order_price(o), default=0.0) or 0.0
+        ts = safe_nonneg_int(_order_timestamp_ms(o), default=0) or 0
         if q > 0.0 and p > 0.0:
             total_qty += q
             total_val += p * q
         if ts > latest_ts:
             latest_ts = ts
     first = orders[0]
-    first_ts_raw = _order_timestamp_ms(first)
-    first_ts = int(first_ts_raw) if math.isfinite(first_ts_raw) else 0
+    first_ts = safe_nonneg_int(_order_timestamp_ms(first), default=0) or 0
     first_id = (first.get("id") or first.get("orderId") or first_ts) if isinstance(first, dict) else first_ts
     sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
     return total_qty, total_val, sig
@@ -1082,11 +1062,8 @@ def _is_pending_exit_active(
                 pass
 
     pending_ts = extract_timestamp_s(pending_stop, default=current_time_s) or current_time_s
-    try:
-        pending_ts_f = float(pending_ts)
-    except (TypeError, ValueError):
-        pending_ts_f = float(current_time_s)
-    if not math.isfinite(pending_ts_f) or pending_ts_f <= 0 or pending_ts_f > current_time_s:
+    pending_ts_f = safe_pos_float(pending_ts, default=None)
+    if pending_ts_f is None or pending_ts_f > current_time_s:
         pending_ts_f = float(current_time_s)
         if isinstance(pending_stop, dict):
             pending_stop["time"] = current_time_s
@@ -1185,12 +1162,8 @@ def _evaluate_hard_take_profit(
     if not (sellable_qty > 0 and valid_cfg):
         return False
     current_time_s = snapshot.current_time_s
-    last_hard = _hard_tp_last.get(symbol, 0)
-    try:
-        last_hard_f = float(last_hard) if not isinstance(last_hard, bool) else 0.0
-    except (TypeError, ValueError):
-        last_hard_f = 0.0
-    if not math.isfinite(last_hard_f) or last_hard_f > current_time_s:
+    last_hard_f = safe_pos_float(_hard_tp_last.get(symbol), default=0.0) or 0.0
+    if last_hard_f > current_time_s:
         last_hard_f = 0.0
     if last_hard_f > 0 and current_time_s - last_hard_f < hard_tp_cd:
         print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one "
@@ -1748,15 +1721,8 @@ def _apply_post_stop_ai_guard(
         _ps_guard = get_post_stop_reentry_guard()
         if getattr(_ps_guard, "mode", None) in ("off", "shadow"):
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
-        raw_trough = reentry_snap.post_sell_trough
-        _trough_px = min(sell_price, current_price)
-        if raw_trough is not None and not isinstance(raw_trough, bool):
-            try:
-                tf = float(raw_trough)
-                if math.isfinite(tf) and tf > 0.0:
-                    _trough_px = tf
-            except (TypeError, ValueError):
-                pass
+        raw_trough = safe_pos_float(reentry_snap.post_sell_trough, default=None)
+        _trough_px = raw_trough if raw_trough is not None else min(sell_price, current_price)
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
         _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
         if (

@@ -236,8 +236,8 @@ class MarketRegimeContext:
                 fallback_used=_parse_bool_flag(benchmark_decision.get("fallback_used"), False),
             )
         trend = "flat" if decision.regime == "sideways" else decision.regime
-        eval_ts = time.time() if evaluated_at is None else (safe_float(evaluated_at, default=0.0) or 0.0)
-        dur_s = 0.0 if trend_duration_seconds is None else (safe_float(trend_duration_seconds, default=-1.0) if safe_float(trend_duration_seconds, default=-1.0) is not None else -1.0)
+        eval_ts = time.time() if (evaluated_at is None or isinstance(evaluated_at, bool)) else (safe_float(evaluated_at, default=0.0) if safe_float(evaluated_at, default=0.0) is not None else 0.0)
+        dur_s = 0.0 if (trend_duration_seconds is None or isinstance(trend_duration_seconds, bool)) else (safe_float(trend_duration_seconds, default=-1.0) if safe_float(trend_duration_seconds, default=-1.0) is not None else -1.0)
         sym_norm = (
             symbol.strip().upper()
             if isinstance(symbol, str) and symbol.strip()

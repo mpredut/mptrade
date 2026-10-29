@@ -26,7 +26,14 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from binance_api.market_data import fetch_ohlc_candles
-from botcore import _parse_bool_flag
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
@@ -55,16 +62,9 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
     for c in candles:
         if not isinstance(c, dict):
             continue
-        raw_t = c.get("timestamp")
-        raw_p = c.get("close")
-        if raw_t is None or raw_p is None or isinstance(raw_t, bool) or isinstance(raw_p, bool):
-            continue
-        try:
-            tf = float(raw_t)
-            pf = float(raw_p)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+        tf = safe_pos_float(c.get("timestamp"), default=None)
+        pf = safe_pos_float(c.get("close"), default=None)
+        if tf is not None and pf is not None:
             ts_list.append(tf)
             px_list.append(pf)
     return np.asarray(ts_list, dtype=float), np.asarray(px_list, dtype=float)
@@ -91,14 +91,9 @@ def block_slopes(ts, px, window_h, step_h):
     clean_ts = []
     clean_px = []
     for t_val, p_val in zip(raw_ts[:n_common], raw_px[:n_common]):
-        if t_val is None or p_val is None or isinstance(t_val, bool) or isinstance(p_val, bool):
-            continue
-        try:
-            tf = float(t_val)
-            pf = float(p_val)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+        tf = safe_pos_float(t_val, default=None)
+        pf = safe_pos_float(p_val, default=None)
+        if tf is not None and pf is not None:
             clean_ts.append(tf)
             clean_px.append(pf)
     if len(clean_ts) < 5:
@@ -146,22 +141,12 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
     w_h = _pos_float(window_h, 0.0)
     if w_h <= 0.0:
         return eps
-    nt = 2
-    if noise_tolerance is not None and not isinstance(noise_tolerance, bool):
-        try:
-            nt_f = float(noise_tolerance)
-            if math.isfinite(nt_f):
-                nt = max(0, int(nt_f))
-        except (TypeError, ValueError, OverflowError):
-            nt = 2
-    mc = 3
-    if min_confirm is not None and not isinstance(min_confirm, bool):
-        try:
-            mc_f = float(min_confirm)
-            if math.isfinite(mc_f):
-                mc = max(1, int(mc_f))
-        except (TypeError, ValueError, OverflowError):
-            mc = 3
+    nt = safe_nonneg_int(noise_tolerance, default=2) if noise_tolerance is not None else 2
+    if nt is None:
+        nt = 2
+    mc = safe_pos_int(min_confirm, default=3) if min_confirm is not None else 3
+    if mc is None:
+        mc = 3
     try:
         raw_bt = list(bt)
         raw_bs = list(bs)
@@ -171,14 +156,9 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
     clean_bt = []
     clean_bs = []
     for t_val, s_val in zip(raw_bt[:n_common], raw_bs[:n_common]):
-        if t_val is None or s_val is None or isinstance(t_val, bool) or isinstance(s_val, bool):
-            continue
-        try:
-            tf = float(t_val)
-            sf = float(s_val)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(tf) and math.isfinite(sf):
+        tf = safe_float(t_val, default=None)
+        sf = safe_float(s_val, default=None)
+        if tf is not None and sf is not None:
             clean_bt.append(tf)
             clean_bs.append(1.0 if sf > 0 else (-1.0 if sf < 0 else 0.0))
     n = len(clean_bt)
@@ -229,11 +209,10 @@ def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0
         return None
     try:
         clean_d = [
-            float(x)
-            for x in durs_h
-            if x is not None and not isinstance(x, bool) and math.isfinite(float(x)) and float(x) >= 0.0
+            f for x in durs_h
+            if (f := safe_nonneg_float(x, default=None)) is not None
         ]
-    except (TypeError, ValueError, OverflowError):
+    except TypeError:
         return None
     d = np.array(clean_d, dtype=float)
     if len(d) < 15:
@@ -245,13 +224,8 @@ def survival_report(durs_h: list[float], label: str, t_grid_days, horizon_h=24.0
     except TypeError:
         return None
     for t_days in grid_iter:
-        if t_days is None or isinstance(t_days, bool):
-            continue
-        try:
-            t_days_f = float(t_days)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not math.isfinite(t_days_f) or t_days_f < 0.0:
+        t_days_f = safe_nonneg_float(t_days, default=None)
+        if t_days_f is None:
             continue
         t_h = t_days_f * 24.0
         alive = d > t_h
@@ -272,14 +246,9 @@ def verdict(cont: dict, mid: float) -> str:
     young: list[float] = []
     old: list[float] = []
     for t, p in cont.items():
-        if t is None or p is None or isinstance(t, bool) or isinstance(p, bool):
-            continue
-        try:
-            tf = float(t)
-            pf = float(p)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not (math.isfinite(tf) and math.isfinite(pf)):
+        tf = safe_float(t, default=None)
+        pf = safe_float(p, default=None)
+        if tf is None or pf is None:
             continue
         if tf < mid_f:
             young.append(pf)
@@ -404,13 +373,7 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
 
 
 def _pos_float(val: Any, default: float) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if (math.isfinite(f) and f > 0.0) else default
-    except (TypeError, ValueError):
-        return default
+    return safe_pos_float(val, default=default) or default
 
 
 def estimate_T(
@@ -441,19 +404,11 @@ def estimate_T(
 
     ent = _lookup_t_cache_entry(cache, symbol)
     if ent:
-        raw_ts = ent.get("ts")
-        if raw_ts is not None and not isinstance(raw_ts, bool):
-            try:
-                ts_val = float(raw_ts)
-                now_curr = time.time()
-                if (
-                    math.isfinite(ts_val)
-                    and ts_val > 0.0
-                    and -60.0 <= (now_curr - ts_val) < ttl_f * 86400.0
-                ):
-                    return ent
-            except (TypeError, ValueError):
-                pass
+        ts_val = safe_pos_float(ent.get("ts"), default=None)
+        if ts_val is not None:
+            now_curr = time.time()
+            if -60.0 <= (now_curr - ts_val) < ttl_f * 86400.0:
+                return ent
 
     sym_u = symbol.upper().strip()
     clean_sym_u = sym_u.replace("/", "").replace("-", "").replace("_", "")
@@ -522,14 +477,7 @@ def get_trend_survival_metrics(
     allow_network: bool = False,
 ) -> Dict[str, Any]:
     """Retrieve or compute empirical trend survival metrics for a symbol."""
-    dur_sec = 0.0
-    if trend_duration_seconds is not None and not isinstance(trend_duration_seconds, bool):
-        try:
-            f_dur = float(trend_duration_seconds)
-            if math.isfinite(f_dur) and f_dur > 0.0:
-                dur_sec = f_dur
-        except (TypeError, ValueError):
-            dur_sec = 0.0
+    dur_sec = safe_pos_float(trend_duration_seconds, default=0.0) or 0.0
     duration_days = max(0.0, dur_sec / 86400.0)
     median_d = 3.0
     p90_d = 7.0

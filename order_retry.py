@@ -36,7 +36,15 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 from cachepaths import normalize_venue_name
 
 from lock import FileLock
@@ -202,16 +210,13 @@ def producer_claim_owner_state(record):
     distinct from dead so missing legacy metadata, permissions, or an unreadable
     process table cannot turn uncertainty into a duplicate submit.
     """
-    pid = record.get("producer_pid")
+    pid_i = safe_pos_int(record.get("producer_pid"), default=None)
     start_identity = str(
         record.get("producer_process_start_id") or "").strip()
-    if isinstance(pid, bool) or not start_identity:
+    if pid_i is None or not start_identity:
         return "unknown"
     try:
-        pid = int(pid)
-        if pid <= 0:
-            return "unknown"
-        current_identity = _process_start_identity(pid)
+        current_identity = _process_start_identity(pid_i)
     except (FileNotFoundError, ProcessLookupError):
         return "dead"
     except (OSError, TypeError, ValueError, OverflowError):
@@ -702,9 +707,9 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                         "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx))
                     e["prefix"] = pfx
                     e["place_kwargs"] = refreshed_kwargs
-                    e["created_ts"] = min(float(e.get("created_ts", cts)), cts)
-                    e["attempts"] = max(int(e.get("attempts", 0)), int(attempts))
-                    e["last_attempt_ts"] = max(float(e.get("last_attempt_ts", 0)),
+                    e["created_ts"] = min(safe_pos_float(e.get("created_ts"), default=cts) or cts, cts)
+                    e["attempts"] = max(safe_nonneg_int(e.get("attempts"), default=0) or 0, int(attempts))
+                    e["last_attempt_ts"] = max(safe_nonneg_float(e.get("last_attempt_ts"), default=0.0) or 0.0,
                                                float(last_attempt_ts))
                     previous_reason = e.get("last_failure_reason")
                     next_reason = (str(failure_reason)
@@ -812,13 +817,10 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     so crash recovery or partial fills calculate remainder against the actual
     submitted amount rather than the initial unscaled intent.
     """
-    if not isinstance(claim_snapshot, dict) or isinstance(qty, bool):
+    if not isinstance(claim_snapshot, dict):
         return None
-    try:
-        q_val = float(qty)
-        if not math.isfinite(q_val) or q_val <= 0:
-            return None
-    except (TypeError, ValueError, OverflowError):
+    q_val = safe_pos_float(qty, default=None)
+    if q_val is None:
         return None
     snapshot_client_id = dict(
         claim_snapshot.get("place_kwargs") or {}).get("client_order_id")
@@ -904,16 +906,12 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
             record["producer_process_start_id"] = current_start_identity
             record["submission_state"] = "producer_claimed"
             record["claim_until"] = max(
-                float(record.get("claim_until", 0) or 0),
+                safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0,
                 now + lease_sec)
-            if qty is not None and not isinstance(qty, bool):
-                try:
-                    q_val = float(qty)
-                    if math.isfinite(q_val) and q_val > 0:
-                        record["qty"] = q_val
-                        record["requested_qty_total"] = q_val
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            q_val = safe_pos_float(qty, default=None)
+            if q_val is not None:
+                record["qty"] = q_val
+                record["requested_qty_total"] = q_val
             if applied_scale is not None:
                 s_val = safe_pos_float(applied_scale, default=None)
                 if s_val is not None and s_val < 1.0:
@@ -1744,14 +1742,9 @@ def rewrite(items):
 
 def resolve_record_ttl(rec):
     """Return the effective active retry TTL for ``rec``, honoring custom ``ttl_sec``."""
-    raw_ttl = rec.get("ttl_sec") if isinstance(rec, dict) else None
-    if raw_ttl is not None and not isinstance(raw_ttl, bool):
-        try:
-            custom_ttl = float(raw_ttl)
-            if math.isfinite(custom_ttl) and custom_ttl > 0:
-                return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-        except (TypeError, ValueError, OverflowError):
-            pass
+    custom_ttl = safe_pos_float(rec.get("ttl_sec") if isinstance(rec, dict) else None, default=None)
+    if custom_ttl is not None:
+        return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
     return float(RETRY_TTL_SEC)
 
 
@@ -1769,45 +1762,30 @@ def is_expired(rec, now=None):
     if str(rec.get("lifecycle") or "submit_pending").lower() in {
             "accepted", "awaiting_cancel"} or is_possibly_submitted(rec):
         return False
-    if isinstance(now, bool):
-        return True
-    try:
-        now = float(time.time() if now is None else now)
-        claim_until = float(rec.get("claim_until", 0) or 0)
-        created = float(rec.get("created_ts", 0))
-        raw_ttl_started = rec.get("ttl_started_ts")
-        ttl_started = created if raw_ttl_started is None else float(raw_ttl_started)
-        raw_attempts = rec.get("attempts")
-        if isinstance(raw_attempts, bool):
+    now_f = safe_pos_float(time.time() if now is None else now, default=None)
+    claim_until = safe_nonneg_float(rec.get("claim_until"), default=0.0) or 0.0
+    created = safe_pos_float(rec.get("created_ts"), default=None)
+    ttl_started = safe_pos_float(rec.get("ttl_started_ts"), default=created)
+    raw_attempts = rec.get("attempts")
+    if raw_attempts is None:
+        attempts = 0
+    else:
+        attempts = safe_nonneg_int(raw_attempts, default=None)
+        if attempts is None or (isinstance(raw_attempts, float) and not raw_attempts.is_integer()):
             return True
-        if raw_attempts is None:
-            attempts = 0
-        else:
-            att_f = float(raw_attempts)
-            if not math.isfinite(att_f) or not att_f.is_integer() or att_f < 0:
-                return True
-            attempts = int(att_f)
-    except (TypeError, ValueError, OverflowError):
+    if now_f is None or created is None or ttl_started is None:
         return True
-    if (not all(math.isfinite(v) for v in (now, claim_until, created, ttl_started))
-            or created <= 0 or ttl_started <= 0):
-        return True
-    if claim_until > now:
+    if claim_until > now_f:
         return False
     raw_expires_at = rec.get("expires_at_ts")
     if raw_expires_at is not None:
-        if isinstance(raw_expires_at, bool):
-            return True
-        try:
-            expires_at = float(raw_expires_at)
-            if math.isfinite(expires_at) and expires_at > 0 and now > expires_at:
-                return True
-        except (TypeError, ValueError, OverflowError):
+        expires_at = safe_pos_float(raw_expires_at, default=None)
+        if expires_at is None or now_f > expires_at:
             return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False
     effective_ttl = resolve_record_ttl(rec)
-    return ((now - ttl_started) > effective_ttl or
+    return ((now_f - ttl_started) > effective_ttl or
             (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS))
 
 
@@ -2261,15 +2239,7 @@ class TrackedOrderLifecycle:
                 return TrackedOrderResult("active", pending)
             fields = self._order_fields(native)
             if not fields.get("order_id"):
-                raw_misses = pending.get("lookup_misses")
-                prev_misses = 0
-                if raw_misses is not None and not isinstance(raw_misses, bool):
-                    try:
-                        mf = float(raw_misses)
-                        if math.isfinite(mf) and mf >= 0:
-                            prev_misses = int(mf)
-                    except (TypeError, ValueError, OverflowError):
-                        prev_misses = 0
+                prev_misses = safe_nonneg_int(pending.get("lookup_misses"), default=0) or 0
                 misses = prev_misses + 1
                 pending["lookup_misses"] = misses
                 persist(dict(pending))
