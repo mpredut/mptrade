@@ -279,16 +279,41 @@ class AutonomousIntentGateway:
         if not ok:
             return intent
 
-        if mode == "enforce" and _parse_bool_flag(intent.get("replace_open_orders"), default=False):
-            canceled_ids = self._cancel_existing_ai_open_orders(inst, decision)
+        replace_open = _parse_bool_flag(intent.get("replace_open_orders"), default=False)
+        cancel_bot_open = _parse_bool_flag(intent.get("cancel_bot_open_orders"), default=False)
+        if mode == "enforce" and (replace_open or cancel_bot_open):
+            canceled_ids = self._cancel_existing_ai_open_orders(
+                inst,
+                decision,
+                include_bot_orders=cancel_bot_open,
+                any_side=cancel_bot_open,
+            )
             if canceled_ids:
                 intent["canceled_prior_open_orders"] = canceled_ids
 
         # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Strategy or Daily-Cap Guards):
         # Clamp desired notional strictly to real spot wallet free liquidity.
+        requested_effective_usd = effective_usd
         guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-            inst, decision, price, effective_usd
+            inst, decision, price, requested_effective_usd
         )
+        if mode == "enforce" and replace_open and not cancel_bot_open and not guard_allowed:
+            unlocked_ids = self._cancel_existing_ai_open_orders(
+                inst,
+                decision,
+                include_bot_orders=True,
+                any_side=True,
+            )
+            if unlocked_ids:
+                prior_c = list(intent.get("canceled_prior_open_orders") or [])
+                for uid in unlocked_ids:
+                    if uid not in prior_c:
+                        prior_c.append(uid)
+                intent["canceled_prior_open_orders"] = prior_c
+                intent["canceled_bot_open_orders"] = unlocked_ids
+                guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+                    inst, decision, price, requested_effective_usd
+                )
         if guard_allowed and effective_usd > 0:
             intent["clamped_notional_usd"] = round(effective_usd, 2)
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
@@ -351,9 +376,23 @@ class AutonomousIntentGateway:
             log=logger,
         )
 
-    def _cancel_existing_ai_open_orders(self, inst: Any, side: str) -> List[str]:
-        """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
-        return cancel_existing_ai_open_orders(inst, side, log=logger, intents=self.load_all_intents())
+    def _cancel_existing_ai_open_orders(
+        self,
+        inst: Any,
+        side: str,
+        *,
+        include_bot_orders: bool = False,
+        any_side: bool = False,
+    ) -> List[str]:
+        """Cancel any prior unfilled AI-placed (or bot-placed when requested) open orders on the symbol."""
+        return cancel_existing_ai_open_orders(
+            inst,
+            side,
+            log=logger,
+            intents=self.load_all_intents(),
+            include_bot_orders=include_bot_orders,
+            any_side=any_side,
+        )
 
     def submit(
         self,

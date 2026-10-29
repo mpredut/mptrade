@@ -464,7 +464,36 @@ def normalize_order(order: dict) -> dict:
     }
 
 
-def normalize_open_order(order: Any, *, venue: str = "", symbol: str = "") -> Optional[dict]:
+def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
+    """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
+    if not isinstance(order, dict):
+        return "BOT"
+    explicit = str(order.get("actor") or "").strip().upper()
+    if explicit in ("AI", "BOT"):
+        return explicit
+    raw_cid = str(
+        order.get("clientOrderId")
+        or order.get("client_order_id")
+        or order.get("cloid")
+        or order.get("cl_ord_id")
+        or order.get("userref")
+        or ""
+    ).strip()
+    if raw_cid.upper().startswith(("AI_", "SD_")):
+        return "AI"
+    oid = extract_order_id(order, default="")
+    if oid and known_ai_order_ids and str(oid) in known_ai_order_ids:
+        return "AI"
+    return "BOT"
+
+
+def normalize_open_order(
+    order: Any,
+    *,
+    venue: str = "",
+    symbol: str = "",
+    known_ai_order_ids: Optional[set[str]] = None,
+) -> Optional[dict]:
     """Normalize a venue open-order dict into a uniform telemetry record."""
     if not isinstance(order, dict):
         return None
@@ -506,6 +535,7 @@ def normalize_open_order(order: Any, *, venue: str = "", symbol: str = "") -> Op
         "order_type": str(raw_otype).strip().upper() or "LIMIT",
         "order_id": str(oid) if oid is not None else None,
         "orderId": oid,
+        "actor": resolve_order_actor(order, known_ai_order_ids),
         "price": px,
         "qty": round(qty_f, 8) if qty_f > 0 else orig_q,
         "orig_qty": round(orig_f, 8) if orig_f > 0 else orig_q,

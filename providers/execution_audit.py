@@ -619,6 +619,8 @@ def _resolve_intent_execution_details(
         or fill_px,
         default=None,
     )
+    if exec_status in ("OPEN_RESTING", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED") and filled_qty <= 0:
+        fill_px = None
     slippage_bps: Optional[float] = None
     if (
         exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED")
@@ -857,6 +859,8 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 d["limit_price"] = limit_px
             if "replace_open_orders" in d:
                 d["replace_open_orders"] = _parse_bool_flag(d.get("replace_open_orders"), False)
+            if "cancel_bot_open_orders" in d:
+                d["cancel_bot_open_orders"] = _parse_bool_flag(d.get("cancel_bot_open_orders"), False)
             candidates.append(d)
 
     def _sort_key(d: dict[str, Any]) -> tuple[int, float]:
@@ -1078,6 +1082,8 @@ def execute_enforce_intent_order(
             hist_exec: dict[str, Any] = {
                 "ts": now_ts,
                 "action": "EXECUTED",
+                "price": price,
+                "qty": round(target_qty, 8),
                 "notional_usd": effective_usd,
                 "payload": order_res,
             }
@@ -1206,7 +1212,8 @@ def validate_and_build_intent_dict(
     order_type = extract_intent_order_type(decision)
     limit_px = extract_intent_limit_price(decision, default=None) if order_type == "LIMIT" else None
     replace_open = _parse_bool_flag(decision.get("replace_open_orders"), default=False)
-    return {
+    cancel_bot_open = _parse_bool_flag(decision.get("cancel_bot_open_orders"), default=False)
+    rec = {
         "intent_id": intent_id,
         "timestamp": now_ts,
         "decision": side,
@@ -1224,6 +1231,9 @@ def validate_and_build_intent_dict(
         "created_by": str(source or "").strip(),
         "history": [],
     }
+    if cancel_bot_open:
+        rec["cancel_bot_open_orders"] = True
+    return rec
 
 
 def cancel_existing_ai_open_orders(
@@ -1233,8 +1243,10 @@ def cancel_existing_ai_open_orders(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     intents: Optional[list[dict[str, Any]]] = None,
+    include_bot_orders: bool = False,
+    any_side: bool = False,
 ) -> list[str]:
-    """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
+    """Cancel prior unfilled AI-placed (or bot-placed when ``include_bot_orders=True``) open orders on the symbol."""
     canceled_ids: list[str] = []
     open_fn = getattr(inst, "open_orders", None)
     cancel_fn = getattr(inst, "cancel_order", None)
@@ -1244,7 +1256,7 @@ def cancel_existing_ai_open_orders(
         raw_open = open_fn()
         if not isinstance(raw_open, list):
             return canceled_ids
-        from providers.base import extract_order_id, normalize_side
+        from providers.base import extract_order_id, extract_order_side, normalize_side, resolve_order_actor
 
         ai_oids = set(known_ai_order_ids or ())
         if isinstance(intents, list):
@@ -1253,15 +1265,20 @@ def cancel_existing_ai_open_orders(
                     oid_rec = extract_order_id(item.get("execution_payload"), default="")
                     if oid_rec:
                         ai_oids.add(str(oid_rec))
+                    for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
+                        if isinstance(h_entry, dict):
+                            h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
+                            if h_oid:
+                                ai_oids.add(str(h_oid))
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue
-            oo_side = normalize_side(oo.get("side") or oo.get("type"))
-            if oo_side != side:
+            oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
+            if not any_side and oo_side != side:
                 continue
             oid = extract_order_id(oo, default="")
-            raw_cid = str(oo.get("clientOrderId") or oo.get("cloid") or oo.get("userref") or "").strip()
-            if not raw_cid.startswith(("AI_", "SD_")) and (not oid or str(oid) not in ai_oids):
+            is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
+            if not is_ai_order and not include_bot_orders:
                 continue
             if oid:
                 try:
@@ -1269,12 +1286,15 @@ def cancel_existing_ai_open_orders(
                     canceled_ids.append(str(oid))
                     if log:
                         log.info(
-                            "[INTENT GATEWAY] Canceled prior AI open %s order %s on %s before replacement.",
-                            side, oid, getattr(inst, "symbol", ""),
+                            "[INTENT GATEWAY] Canceled prior %s open %s order %s on %s before replacement.",
+                            "AI" if is_ai_order else "BOT",
+                            oo_side or side,
+                            oid,
+                            getattr(inst, "symbol", ""),
                         )
                 except Exception as ce:
                     if log:
-                        log.debug("Could not cancel open AI order %s: %s", oid, ce)
+                        log.debug("Could not cancel open order %s: %s", oid, ce)
     except Exception as e:
         if log:
             log.debug("Open order scan failed before replacement: %s", e)

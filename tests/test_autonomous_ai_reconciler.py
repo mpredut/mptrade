@@ -532,8 +532,9 @@ def test_extract_symbol_recent_fills_sorts_by_timestamp(temp_env):
     snap = reconciler.harvest_sensors_telemetry()
     recent = snap.portfolio_summary["recent_orders"]["TAOUSDC"]
     assert recent["last_action_side"] == "SELL"
-    assert recent["last_sell"] == {"price": 265.0, "qty": 1.0, "ts_ms": 2000}
-    assert recent["last_buy"] == {"price": 250.0, "qty": 1.0, "ts_ms": 1000}
+    assert recent["last_action_actor"] == "BOT"
+    assert recent["last_sell"] == {"price": 265.0, "qty": 1.0, "ts_ms": 2000, "actor": "BOT"}
+    assert recent["last_buy"] == {"price": 250.0, "qty": 1.0, "ts_ms": 1000, "actor": "BOT"}
 
 
 def test_apply_code_patch_safely_guards_workspace_boundary_and_restores_in_memory_on_failure(temp_env, tmp_path):
@@ -3163,8 +3164,22 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
         ],
     )
     assert resting_status["status"] == "OPEN_RESTING"
+    assert resting_status["fill_px"] is None
     assert resting_status["filled_qty"] is None
     assert resting_status["slippage_bps"] is None
+
+    from providers.execution_audit import cancel_existing_ai_open_orders
+    krk_inst = MagicMock(symbol="HYPEUSD")
+    krk_inst.open_orders.return_value = [
+        {"ordertxid": "OKRK_AI_1", "descr": {"type": "buy", "ordertype": "limit", "price": "42.0"}},
+        {"ordertxid": "OKRK_SELL_KEEP", "descr": {"type": "sell", "ordertype": "limit", "price": "48.0"}},
+    ]
+    canceled = cancel_existing_ai_open_orders(
+        krk_inst,
+        "BUY",
+        intents=[{"history": [{"order_id": "OKRK_AI_1"}]}],
+    )
+    assert canceled == ["OKRK_AI_1"]
 
 
 def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_path):
@@ -3345,6 +3360,107 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
     )
     prompt_empty_oo = captured_prompts[-1]
     assert "Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)" in prompt_empty_oo
+    assert "SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES" in prompt_empty_oo
+    assert "by=AI" in prompt_empty_oo
+
+
+def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
+    """Verify interim bot fills are tagged by=BOT vs AI fills by=AI so the AI can audit and reverse unwanted bot trades."""
+    workspace, cache_dir, _ = temp_env
+    now_ms = int(time.time() * 1000)
+
+    # AI bought BTCUSDC 2h ago (orderId 9001 in autonomous_trade_intents_state.json),
+    # then a deterministic bot sold BTCUSDC 6m ago (orderId 9002, clientOrderId MT_STOP_1).
+    with open(os.path.join(cache_dir, "autonomous_trade_intents_state.json"), "w") as f:
+        json.dump([
+            {
+                "intent_id": "intent_ai_buy_9001",
+                "timestamp": (now_ms - 7_200_000) / 1000.0,
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "order_type": "MARKET",
+                "confidence": 0.92,
+                "suggested_notional_usd": 400.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "9001", "status": "FILLED", "price": "78500.0", "executedQty": "0.005"},
+            }
+        ], f)
+
+    with open(os.path.join(cache_dir, "cache_order.json"), "w") as f:
+        json.dump({
+            "items": {
+                "BTCUSDC": [
+                    {
+                        "orderId": "9001",
+                        "side": "BUY",
+                        "price": 78500.0,
+                        "executedQty": 0.005,
+                        "status": "FILLED",
+                        "timestamp": now_ms - 7_200_000,
+                    },
+                    {
+                        "orderId": "9002",
+                        "clientOrderId": "MT_STOP_1",
+                        "side": "SELL",
+                        "price": 78100.0,
+                        "executedQty": 0.005,
+                        "status": "FILLED",
+                        "timestamp": now_ms - 360_000,
+                    },
+                ]
+            }
+        }, f)
+
+    with open(os.path.join(workspace, "instruments.conf"), "w") as f:
+        f.write("BTCUSDC = binance:BTC/USDC\n")
+
+    mock_btc_inst = MagicMock()
+    mock_btc_inst.symbol = "BTCUSDC"
+    mock_btc_inst.provider_name = "binance"
+    mock_btc_inst.base = "BTC"
+    mock_btc_inst.quote = "USDC"
+    mock_btc_inst.params = {}
+    mock_btc_inst._provider.free_balance.side_effect = lambda asset: 0.0 if asset == "BTC" else 2000.0
+    mock_btc_inst._provider.get_current_price.return_value = 78200.0
+    mock_btc_inst.open_orders.return_value = [
+        {"orderId": "bot_rest_1", "clientOrderId": "TO_123", "side": "BUY", "price": "76000.0", "origQty": "0.005", "executedQty": "0.0"},
+        {"orderId": "ai_rest_1", "clientOrderId": "AI_123", "side": "BUY", "price": "77900.0", "origQty": "0.005", "executedQty": "0.0"},
+    ]
+
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway.load_tradable_instruments.return_value = {"BTCUSDC": mock_btc_inst}
+    gateway.reconcile_intents.return_value = False
+
+    captured_prompts = []
+    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+    sensors = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
+    ro = sensors.portfolio_summary["recent_orders"]["BTCUSDC"]
+    assert ro["last_action_side"] == "SELL"
+    assert ro["last_action_actor"] == "BOT"
+    assert ro["last_buy"]["actor"] == "AI"
+    assert ro["last_sell"]["actor"] == "BOT"
+
+    open_lim = {o["order_id"]: o["actor"] for o in sensors.portfolio_summary["open_limit_orders"]}
+    assert open_lim == {"bot_rest_1": "BOT", "ai_rest_1": "AI"}
+
+    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
+    prompt_text = captured_prompts[-1]
+    assert "BTCUSDC Last Action=SELL (by=BOT):" in prompt_text
+    assert "by=AI)" in prompt_text
+    assert "by=BOT)" in prompt_text
+    assert "If a bot SOLD prematurely or when it should NOT have" in prompt_text
+    assert "If a bot BOUGHT prematurely or when it should NOT have" in prompt_text
+
 
 
 

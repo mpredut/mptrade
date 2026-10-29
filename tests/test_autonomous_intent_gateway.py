@@ -966,6 +966,97 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert '"order_type": "MARKET" | "LIMIT"' in prompt
     assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt
 
+    # 6. When a bot's open order locks wallet liquidity so free_balance is 0, replace_open_orders=True
+    #    automatically cancels the locking bot order and re-clamps wallet balance so the AI can repair/reverse the trade.
+    locked_inst = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance")
+    locked_inst._provider.name = "binance"
+    locked_inst._provider.get_current_price.return_value = 80000.0
+    free_state = {"BTC": 0.0, "USDC": 1000.0}
+    locked_inst._provider.free_balance.side_effect = lambda asset: free_state.get(asset, 0.0)
+    locked_inst.open_orders.return_value = [
+        {"orderId": "bot_locking_sell_99", "clientOrderId": "MT_TP_99", "side": "SELL", "price": "84000.0", "origQty": "0.01"},
+    ]
+
+    def _unlock_on_cancel(oid):
+        if oid == "bot_locking_sell_99":
+            free_state["BTC"] = 0.01
+
+    locked_inst.cancel_order.side_effect = _unlock_on_cancel
+    locked_inst.place.return_value = {"orderId": "ai_repair_sell_1", "status": "FILLED", "price": "80000.0", "executedQty": "0.005"}
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_unlock = gw.submit({
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "MARKET",
+            "replace_open_orders": True,
+            "confidence": 0.93,
+            "suggested_notional_usd": 400.0,
+            "thesis": "Reverse unwanted bot buy and unlock bot-locked BTC",
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": locked_inst})
+
+    assert rec_unlock["status"] == "EXECUTED"
+    assert rec_unlock["canceled_bot_open_orders"] == ["bot_locking_sell_99"]
+    assert "bot_locking_sell_99" in rec_unlock["canceled_prior_open_orders"]
+    locked_inst.cancel_order.assert_called_once_with("bot_locking_sell_99")
+
+
+
+def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspace):
+    """Verify explicit cancel_bot_open_orders cancels bot orders and replace_open_orders unlocks balance when constrained."""
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    btc_inst = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance")
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 80000.0
+
+    # Case 1: cancel_bot_open_orders=True explicitly cancels bot orders across sides
+    btc_inst._provider.free_balance.return_value = 5000.0
+    btc_inst.open_orders.return_value = [
+        {"orderId": "bot_buy_1", "clientOrderId": "TO_1", "side": "BUY", "price": "79000.0"},
+        {"orderId": "bot_sell_1", "clientOrderId": "TO_2", "side": "SELL", "price": "81000.0"},
+    ]
+    btc_inst.place.return_value = {"orderId": "ai_order_1", "status": "FILLED"}
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec1 = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.92,
+            "cancel_bot_open_orders": True,
+            "suggested_notional_usd": 300.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec1["status"] == "EXECUTED"
+    assert rec1["canceled_prior_open_orders"] == ["bot_buy_1", "bot_sell_1"]
+    assert btc_inst.cancel_order.call_count == 2
+
+    # Case 2: replace_open_orders=True automatically cancels bot orders when initial wallet balance is constrained
+    btc_inst.cancel_order.reset_mock()
+    btc_inst._provider.free_balance.side_effect = [0.0, 500.0]  # First check returns 0.0, after cancel returns 500.0
+    btc_inst.open_orders.return_value = [
+        {"orderId": "bot_locking_buy", "clientOrderId": "TO_3", "side": "BUY", "price": "79000.0"},
+    ]
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec2 = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.92,
+            "replace_open_orders": True,
+            "suggested_notional_usd": 400.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec2["status"] == "EXECUTED"
+    assert "bot_locking_buy" in rec2["canceled_prior_open_orders"]
+    assert rec2["canceled_bot_open_orders"] == ["bot_locking_buy"]
+    btc_inst.cancel_order.assert_called_with("bot_locking_buy")
+
+
 
 
 

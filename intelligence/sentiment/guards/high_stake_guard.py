@@ -522,8 +522,12 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
 
 
-def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
-    """Extract last action side, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
+def extract_symbol_recent_fills(
+    orders_list: list,
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
         return None
     from providers.base import (
@@ -531,9 +535,11 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         _UNFILLED_ORDER_STATUSES,
         aggregate_fills_by_order_id,
         extract_executed_qty,
+        extract_order_id,
         extract_order_price,
         extract_order_side,
         extract_timestamp_ms,
+        resolve_order_actor,
     )
 
     valid = [
@@ -547,10 +553,30 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     ]
     if not valid:
         return None
+    ai_oids: set[str] = set(known_ai_order_ids or ())
+    ai_side_ts: set[tuple[str, Any]] = set()
+    for o in valid:
+        if resolve_order_actor(o, ai_oids) == "AI":
+            oid_v = extract_order_id(o, default="")
+            if oid_v:
+                ai_oids.add(str(oid_v))
+            else:
+                ai_side_ts.add((extract_order_side(o), extract_timestamp_ms(o, default=None)))
+
     if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
         agg = aggregate_fills_by_order_id(valid)
         if agg:
             valid = agg
+
+    def _fill_actor(o: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(o, dict):
+            return None
+        act = resolve_order_actor(o, ai_oids)
+        if act == "AI":
+            return "AI"
+        if (extract_order_side(o), extract_timestamp_ms(o, default=None)) in ai_side_ts:
+            return "AI"
+        return "BOT"
 
     ordered = sorted(
         enumerate(valid),
@@ -575,14 +601,15 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     for o in chron:
         side_o = extract_order_side(o)
         p_f, q_f, ts_raw = _norm_fill(o)
+        act_o = _fill_actor(o)
         if side_o == "BUY":
-            buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
+            buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o})
             if q_f is not None and p_f is not None:
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
         elif side_o == "SELL":
-            sells_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
+            sells_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o})
             if q_f is not None:
                 if q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12:
                     cost_qty = 0.0
@@ -594,13 +621,24 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     ls_norm = _norm_fill(last_sell) if last_sell else (None, None, None)
     return {
         "last_action_side": extract_order_side(last_any) or last_any.get("side"),
+        "last_action_actor": _fill_actor(last_any),
         "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
         "last_buy": (
-            {"price": lb_norm[0], "qty": lb_norm[1], "ts_ms": lb_norm[2]}
+            {
+                "price": lb_norm[0],
+                "qty": lb_norm[1],
+                "ts_ms": lb_norm[2],
+                "actor": _fill_actor(last_buy),
+            }
             if last_buy else None
         ),
         "last_sell": (
-            {"price": ls_norm[0], "qty": ls_norm[1], "ts_ms": ls_norm[2]}
+            {
+                "price": ls_norm[0],
+                "qty": ls_norm[1],
+                "ts_ms": ls_norm[2],
+                "actor": _fill_actor(last_sell),
+            }
             if last_sell else None
         ),
         "recent_buys": buys_fmt[-4:],
@@ -1566,6 +1604,8 @@ def harvest_tradable_positions_and_orders(
     prices_and_trends: Dict[str, Any],
     trailing_map: Dict[str, Dict[str, Any]],
     trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]],
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     from providers.base import normalize_open_order
@@ -1726,7 +1766,12 @@ def harvest_tradable_positions_and_orders(
                         for oo in raw_open:
                             if isinstance(oo, dict):
                                 open_orders_list.append(
-                                    normalize_open_order(oo, venue=venue, symbol=sym)
+                                    normalize_open_order(
+                                        oo,
+                                        venue=venue,
+                                        symbol=sym,
+                                        known_ai_order_ids=known_ai_order_ids,
+                                    )
                                 )
                 except Exception:
                     pass
@@ -2125,6 +2170,8 @@ def harvest_recent_orders_and_enrich_positions(
     hyperliquid_cycles: Dict[str, Dict[str, Any]],
     t212_cycles: Dict[str, Dict[str, Any]],
     read_json_fn: Any = None,
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, and Hyperliquid and enrich tradable_positions with cost-basis anchors."""
     _rj = read_json_fn or read_json_cached
@@ -2142,7 +2189,7 @@ def harvest_recent_orders_and_enrich_positions(
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             for sym, o_list in orders_data["items"].items():
-                fills = extract_symbol_recent_fills(o_list)
+                fills = extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids)
                 if fills:
                     venue_recent_orders[cache_venue][sym] = fills
                     recent_orders.setdefault(sym, fills)
@@ -2155,7 +2202,7 @@ def harvest_recent_orders_and_enrich_positions(
             prov = getattr(inst, "_provider", None)
             if prov is not None and hasattr(prov, "get_orders"):
                 hl_orders = prov.get_orders(sym, None, 90 * 86400.0)
-                fills = extract_symbol_recent_fills(hl_orders)
+                fills = extract_symbol_recent_fills(hl_orders, known_ai_order_ids=known_ai_order_ids)
                 if fills:
                     venue_recent_orders["hyperliquid"][sym] = fills
                     if sym in recent_orders:
@@ -2813,6 +2860,17 @@ def populate_market_and_portfolio_snapshot(
     t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
     snapshot.prices_and_trends = harvest_initial_prices_and_trends(cache_dir, prices_data, trends_data, _rj)
 
+    intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+    known_ai_oids: set[str] = set()
+    if isinstance(intents_data, list):
+        from providers.base import extract_order_id as _extract_oid
+
+        for _it in intents_data:
+            if isinstance(_it, dict):
+                _oid = _extract_oid(_it.get("execution_payload"), default="")
+                if _oid:
+                    known_ai_oids.add(str(_oid))
+
     tradable_positions: List[Dict[str, Any]] = []
     open_orders_list: List[Dict[str, Any]] = []
     venue_quote_cash: Dict[str, Dict[str, Any]] = {}
@@ -2841,7 +2899,11 @@ def populate_market_and_portfolio_snapshot(
 
         tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = (
             harvest_tradable_positions_and_orders(
-                inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue
+                inst_map,
+                snapshot.prices_and_trends,
+                trailing_map,
+                trailing_by_venue,
+                known_ai_order_ids=known_ai_oids,
             )
         )
 
@@ -2907,11 +2969,11 @@ def populate_market_and_portfolio_snapshot(
         hyperliquid_cycles,
         t212_cycles,
         _rj,
+        known_ai_order_ids=known_ai_oids,
     )
     if recent_orders:
         snapshot.portfolio_summary["recent_orders"] = recent_orders
 
-    intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
     if isinstance(intents_data, list) and intents_data:
         reconcile_fn = getattr(intent_gateway, "reconcile_intents", None)
         if callable(reconcile_fn):
@@ -3051,7 +3113,7 @@ def collect_pretrade_telemetry(
     from cachepaths import cache_symbol_variants, canonical_base_asset
     sym_variants = cache_symbol_variants(symbol)
     try:
-        cur_p_data = read_json_dict(os.path.join(cachedb_dir, "cache_current_price.json"), default=None, recover_previous=True)
+        cur_p_data = read_json_cached(os.path.join(cachedb_dir, "cache_current_price.json"))
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
         alt_series_24h, _ = load_symbol_price_series(
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=False
@@ -3146,7 +3208,7 @@ def collect_pretrade_telemetry(
 
     try:
         st_path = os.path.join(cachedb_dir, "cache_short_trend.json")
-        st_data = read_json_dict(st_path, default=None, recover_previous=True)
+        st_data = read_json_cached(st_path)
         if isinstance(st_data, dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
             tinfo = next((st_items.get(cand) for cand in sym_variants if isinstance(st_items.get(cand), dict)), None)
@@ -3166,7 +3228,7 @@ def collect_pretrade_telemetry(
         fills = {}
         for ord_file in ("cache_order.json", "cache_trade_kraken.json", "cache_trade_hyperliquid.json", "cache_trade_t212.json"):
             ord_path = os.path.join(cachedb_dir, ord_file)
-            ord_data = read_json_dict(ord_path, default=None, recover_previous=True)
+            ord_data = read_json_cached(ord_path)
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
             if not isinstance(o_items, dict):
                 continue
@@ -3189,7 +3251,7 @@ def collect_pretrade_telemetry(
 
     def _read_first_cached_dict(group_key: str, default_file: str) -> Optional[Dict[str, Any]]:
         for fname in (get_cache_filenames(group_key) or (default_file,)):
-            data = read_json_dict(os.path.join(cachedb_dir, fname), default=None, recover_previous=True)
+            data = read_json_cached(os.path.join(cachedb_dir, fname))
             if isinstance(data, dict):
                 return data
         return None

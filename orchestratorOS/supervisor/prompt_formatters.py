@@ -471,7 +471,11 @@ def _format_microstructure_section(
         aw_px = minfo.get("ask_wall_px")
         bw_px_f = _parse_finite_float(bw_px, 0.0)
         aw_px_f = _parse_finite_float(aw_px, 0.0)
-        ob_mid = _parse_finite_float(minfo.get("ob_mid_price"), 0.0)
+        b_bid = _parse_finite_float(minfo.get("best_bid"), 0.0)
+        b_ask = _parse_finite_float(minfo.get("best_ask"), 0.0)
+        ob_mid = _parse_finite_float(minfo.get("ob_mid_price"), 0.0) or (
+            (b_bid + b_ask) / 2.0 if b_bid > 0 and b_ask > 0 else 0.0
+        )
         if ob_mid > 0 and (
             cur_px <= 0
             or (bw_px_f > 0 and cur_px < bw_px_f)
@@ -482,8 +486,6 @@ def _format_microstructure_section(
         aw_dist = f", dist={(aw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and aw_px_f > 0 else ""
         spread_sfx = ""
         if minfo.get("spread_bps") is not None:
-            b_bid = _parse_finite_float(minfo.get("best_bid"), 0.0)
-            b_ask = _parse_finite_float(minfo.get("best_ask"), 0.0)
             ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}"
 
@@ -610,10 +612,16 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
     lb_px = _round_opt_px(lb.get("price"), 6)
     ls_px = _round_opt_px(ls.get("price"), 6)
-    lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h)" if lb_px is not None else "none"
-    ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h)" if ls_px is not None else "none"
+    lb_actor = str(lb.get("actor") or "").strip().upper()
+    ls_actor = str(ls.get("actor") or "").strip().upper()
+    lb_by = f", by={lb_actor}" if lb_actor in ("AI", "BOT") else ""
+    ls_by = f", by={ls_actor}" if ls_actor in ("AI", "BOT") else ""
+    lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h{lb_by})" if lb_px is not None else "none"
+    ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h{ls_by})" if ls_px is not None else "none"
+    last_act_actor = str(oinfo.get("last_action_actor") or "").strip().upper()
+    last_act_sfx = f" (by={last_act_actor})" if last_act_actor in ("AI", "BOT") else ""
     return (
-        f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
+        f"  * {sym} Last Action={oinfo.get('last_action_side')}{last_act_sfx}: "
         f"Last BUY={lb_str} | "
         f"Last SELL={ls_str}"
         f"{avg_b_str}{tranches_str}"
@@ -830,6 +838,22 @@ def build_supervisor_prompt(
             "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) continue working in parallel in the "
             "system and can be consulted by you on demand as advisory indicators and reference guidance—you have full quantitative authority "
             "to validate, adapt, or override them according to live market structure, with ZERO obligation to consult or follow them.\n"
+            "   - SUPERVISORY AUTHORITY TO AUDIT & REPAIR / REVERSE UNWANTED BOT OR FLEET TRADES (`by=BOT` vs `by=AI`): "
+            "Section 3C explicitly tags every recent fill (`Last Action`, `Last BUY`, `Last SELL`) and every resting order in "
+            "`open_limit_orders` with `by=BOT` / `\"actor\": \"BOT\"` (executed by deterministic fleet bots) vs `by=AI` / `\"actor\": \"AI\"` "
+            "(executed by you). Actively audit any interim `by=BOT` transaction or resting order executed between your cycles: if a bot or "
+            "fleet process made a trade that you disagree with based on your holistic multi-horizon/microstructure/macro view, you have full "
+            "authority and duty to immediately repair or reverse it:\n"
+            "     1) If a bot SOLD prematurely or when it should NOT have (e.g. panic stop-loss on a liquidity wick, premature micro-take-profit, "
+            "or selling at support when absorption/trend structure warrants holding), immediately submit a corrective `BUY` (`MARKET` or `LIMIT`) "
+            "to buy back and restore the position.\n"
+            "     2) If a bot BOUGHT prematurely or when it should NOT have (e.g. catching a falling knife without bid absorption, buying into "
+            "resistance/breakdown, or over-allocating when cash should be preserved), immediately submit a corrective `SELL` (`MARKET` or `LIMIT`) "
+            "to liquidate or reduce the unwanted position (all profit/cooldown guards `G_PROF`/`GO1` are bypassed so you can exit immediately "
+            "even at a scratch or small loss to repair a bad bot entry).\n"
+            "     3) If a bot placed a resting order in `open_limit_orders` (`\"actor\": \"BOT\"`) that you disagree with or that locks wallet "
+            "liquidity needed for your repair trade, set `\"replace_open_orders\": true` (or `\"cancel_bot_open_orders\": true`) to cancel "
+            "the bot's resting order and unlock the balance.\n"
             "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
             "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
             "(`binance`, `kraken`, `hyperliquid`, `t212`), and WHY to `BUY`, `SELL`, or `HOLD`. Do NOT restrict yourself to tiny "
@@ -910,7 +934,8 @@ def build_supervisor_prompt(
             "and read trade/execution logs (`logs/`, `logger/execution_audit/`) whenever you want deeper verification or to answer user questions.\n"
             "- Deterministic bots (`tradeall.py`, `monitortrades.py`, `assetguardian.py`, `rtrade.py`, venue bots) and rigid code filters/guards "
             "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) run in parallel and may be inspected on demand if you wish, "
-            "but consulting or following them is never required.\n"
+            "but consulting or following them is never required; if any bot executed an interim BUY or SELL (`by=BOT`) that you disagree with, "
+            "you are fully empowered to immediately repair/reverse it with a counter-trade (`BUY` back what a bot wrongly sold, or `SELL` what a bot wrongly bought).\n"
             "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n"
         )
         report_format_rule = (
