@@ -308,9 +308,9 @@ class PriceTrendAnalyzer:
 
 
 def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
-    sr = safe_float(sample_rate_sec, default=None)
+    sr = safe_pos_float(sample_rate_sec, default=None)
     rs = safe_float(recent_sec, default=None)
-    if sr is None or sr <= 0 or rs is None:
+    if sr is None or rs is None:
         return 2
     ratio = rs / sr
     return max(2, int(ratio)) if math.isfinite(ratio) else 2
