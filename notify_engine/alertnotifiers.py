@@ -1,12 +1,10 @@
 # alert_notifiers.py
 from __future__ import annotations
 
-import requests
 import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone

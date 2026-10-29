@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
 import os
-import sys
 import json
 import logging
 import re
@@ -11,7 +10,6 @@ from collections import defaultdict
 from typing import Dict, Any, List
 
 from botcore import (
-    _parse_bool_flag,
     load_env_stack,
     required_env,
     safe_float,
