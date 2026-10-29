@@ -23,6 +23,7 @@ if ROOT not in sys.path:
 
 from cachepaths import cache_path as resolve_cache_path
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from offline.research.chop_weight_backtest import _downsample_price_series
 
 _safe_float = safe_float
 from providers.replay_provider import load_price_series
@@ -187,12 +188,7 @@ def run_intelligence_backtest(
         raise ValueError(f"No price data found for {symbol} at {cache_path}")
 
     # Downsample to regular step_seconds bars (e.g. 5m)
-    sampled: List[Tuple[float, float]] = []
-    last_t = 0.0
-    for t, p in raw_series:
-        if (t - last_t) >= step_seconds:
-            sampled.append((t, p))
-            last_t = t
+    sampled = _downsample_price_series(raw_series, step_seconds)
 
     logger.info("Total raw ticks: %d | Resampled %ds bars: %d", len(raw_series), step_seconds, len(sampled))
     if not sampled:
@@ -466,7 +462,7 @@ def run_intelligence_backtest(
                     entry_cost += alloc_usd
 
         # Final liquidation at end
-        final_price = sampled[-1][1]
+        final_price = float(tape[-1]["p"]) if tape else float(sampled[-1][1])
         if asset_qty > 0:
             final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - entry_cost
             trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})

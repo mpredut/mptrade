@@ -58,25 +58,44 @@ def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SE
     return a_arr, sr_arr
 
 
-def compute_all_signals(
-    series: list[tuple[float, float]],
-    win_sec: float = rrb.DEFAULT_WINDOW_SECONDS,
+def compute_window_signals_from_bounds(
+    px: np.ndarray,
+    a: np.ndarray,
+    sr: np.ndarray,
+    *,
     symbol: str | None = None,
-):
-    """Vectorized O(1) prefix-sum evaluation of short-trend estimators over series."""
-    N = len(series)
-    ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=N)
-    px = np.fromiter((p for _, p in series), dtype=np.float64, count=N)
+    recent_win_sec: float | None = None,
+    min_valid_n: int = 2,
+) -> dict[str, np.ndarray]:
+    """Vectorized chunked O(1) prefix-sum evaluation of short-trend estimators given window bounds [a, b]."""
+    N = len(px)
+    if N == 0:
+        empty_i = np.zeros(0, dtype=np.int64)
+        empty_f = np.zeros(0, dtype=np.float64)
+        return {
+            "n": empty_i,
+            "m": empty_i,
+            "eps": empty_f,
+            "scale_inv": empty_f,
+            "gr": empty_f,
+            "sf": empty_f,
+            "legacy_raw": empty_f,
+            "legacy": empty_f,
+            "sw1": empty_f,
+            "sw2": empty_f,
+            "sw3": empty_f,
+            "diff": empty_f,
+            "gc": empty_f,
+        }
 
-    a, sr = compute_window_bounds(ts, win_sec=win_sec)
     b = np.arange(N, dtype=np.int64)
     n = b - a + 1
     m = b - a
-    valid = n >= 2
-    n_f = n.astype(np.float64)
+    valid = n >= min_valid_n
+    n_f = np.maximum(1.0, n.astype(np.float64))
     m_f = np.maximum(1.0, m.astype(np.float64))
 
-    recent_sec = pw.effective_recent_gradient_seconds(None)
+    recent_sec = pw.effective_recent_gradient_seconds(recent_win_sec)
     r_arr = np.maximum(2, (recent_sec / np.maximum(1e-9, sr)).astype(np.int64))
     b_m1 = np.maximum(0, b - 1)
     a_p1 = np.minimum(N - 1, a + 1)
@@ -168,10 +187,11 @@ def compute_all_signals(
         sum_g2 = g0 * g0 + (PG2[bm1_loc] - PG2[a_loc]) + gn * gn
         mean_g = sum_g_all[hi_start:hi_end] / n_sub
         var_g = np.maximum(0.0, sum_g2 / n_sub - mean_g * mean_g)
-        eps[hi_start:hi_end] = np.where(n_sub >= 3, np.sqrt(var_g), 0.0)
+        eps[hi_start:hi_end] = np.where(val_sub & (n_sub >= 3), np.sqrt(var_g), 0.0)
 
     tol_raw = 1e-10 * np.maximum(1.0, np.abs(px[b]))
-    gc_legacy = np.where(valid, 0.5 * (slope_full + gradient_recent), 0.0)
+    legacy_raw = 0.5 * (slope_full + gradient_recent)
+    gc_legacy = np.where(valid, legacy_raw, 0.0)
     gc_legacy = np.where(np.abs(gc_legacy) <= tol_raw, 0.0, gc_legacy)
     gc_sw1 = np.where(np.abs(gc_sw1) <= tol_raw, 0.0, gc_sw1)
     gc_sw2 = np.where(np.abs(gc_sw2) <= tol_raw, 0.0, gc_sw2)
@@ -187,12 +207,31 @@ def compute_all_signals(
         "m": m,
         "eps": eps,
         "scale_inv": scale_inv,
+        "gr": gradient_recent,
+        "sf": slope_full,
+        "legacy_raw": legacy_raw,
         "legacy": gc_legacy,
         "sw1": gc_sw1,
         "sw2": gc_sw2,
         "sw3": gc_sw3,
         "diff": gc_diff,
+        "gc": gc_diff,
     }
+
+
+def compute_all_signals(
+    series: list[tuple[float, float]],
+    win_sec: float = rrb.DEFAULT_WINDOW_SECONDS,
+    symbol: str | None = None,
+):
+    """Vectorized O(1) prefix-sum evaluation of short-trend estimators over series."""
+    N = len(series)
+    ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=N)
+    px = np.fromiter((p for _, p in series), dtype=np.float64, count=N)
+    a, sr = compute_window_bounds(ts, win_sec=win_sec)
+    return compute_window_signals_from_bounds(
+        px, a, sr, symbol=symbol, recent_win_sec=None, min_valid_n=2
+    )
 
 
 def make_tape(

@@ -563,28 +563,12 @@ class HyperliquidProvider(MarketDataProvider):
         lookback_h = max(1, int(90 * interval / 60))
         try:
             raw_candles = client.candles(pair, candle_interval(interval), lookback_h)
-            completed = list(raw_candles)[:-1] if raw_candles is not None else []
-            valid = []
-            for item in completed:
-                if not isinstance(item, dict):
-                    continue
-                c_f = safe_pos_float(item.get("c"), default=None)
-                if c_f is not None:
-                    valid.append((item, c_f))
-            closes = tuple(c_f for _item, c_f in valid)
-            raw_timestamps = [item.get("T") for item, _c_f in valid]
-            ts_list = []
-            ts_ok = bool(raw_timestamps)
-            for value in raw_timestamps:
-                ts_f = safe_pos_float(value, default=None)
-                if ts_f is None:
-                    ts_ok = False
-                    break
-                ts_list.append(ts_f / 1000.0)
-            timestamps = tuple(ts_list) if ts_ok else ()
-            observed_at = timestamps[-1] if timestamps else None
-            return ClosedPriceSeries(
-                closes, interval, observed_at, timestamps)
+            return ClosedPriceSeries.from_raw_candles(
+                raw_candles,
+                interval,
+                lambda item: item.get("c") if isinstance(item, dict) else None,
+                lambda item: item.get("T") if isinstance(item, dict) else None,
+            )
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc
 

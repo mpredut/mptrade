@@ -21,7 +21,6 @@ if str(ROOT / "kraken") not in sys.path:
     sys.path.append(str(ROOT / "kraken"))
 
 from botcore import (
-    parse_dotenv,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -29,17 +28,19 @@ from botcore import (
 )
 from kraken import replay as kraken_replay
 from strategies.spot_engine import StratParams
+from strategies.spot_replay import align_spot_interval_params
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits
-from offline.backtests.evaluation import evaluate_segment
+from offline.backtests.evaluation import evaluate_segment, load_layered_env_config
 from offline.backtests.execution import ExecutionModel
 
 # Load live configuration into an isolated dict without polluting os.environ
 KRAKEN_DIR = ROOT / "kraken"
-_KRAKEN_CFG: dict[str, str] = {}
-for _cfg_file in (KRAKEN_DIR / "config.env", KRAKEN_DIR / ".env"):
-    if _cfg_file.is_file():
-        _KRAKEN_CFG.update(parse_dotenv(str(_cfg_file)))
+_KRAKEN_CFG = load_layered_env_config(
+    KRAKEN_DIR / "config.env",
+    KRAKEN_DIR / ".env",
+    override_prefixes=("KRAKEN_",),
+)
 LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 
 DATASET_CSV = ROOT / "offline" / "research" / "hype_dataset" / "HYPEUSDC_240m_hlspot.csv"
@@ -237,7 +238,9 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     live_candidate_windows = []
 
     for name, overrides in candidates.items():
-        params = dataclasses.replace(LIVE_PARAMS, **overrides)
+        params = align_spot_interval_params(
+            dataclasses.replace(LIVE_PARAMS, **overrides), interval
+        )
         windows = []
         for fold in folds:
             warmup = records[max(0, fold.test.start - warmup_bars):fold.test.start]
@@ -304,7 +307,9 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
         kraken_replay.prewarm_trend_series(ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
     for name, overrides in candidates.items():
-        params = dataclasses.replace(LIVE_PARAMS, **overrides)
+        params = align_spot_interval_params(
+            dataclasses.replace(LIVE_PARAMS, **overrides), interval
+        )
         m = kraken_replay.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             execution=ExecutionModel(),
@@ -379,7 +384,9 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     interval = 240
 
     for name, overrides in candidates.items():
-        params = dataclasses.replace(LIVE_PARAMS, **overrides)
+        params = align_spot_interval_params(
+            dataclasses.replace(LIVE_PARAMS, **overrides), interval
+        )
         budget = params.effective_max_budget()
 
         # Forward bars

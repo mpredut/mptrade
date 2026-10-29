@@ -449,3 +449,98 @@ def diff_equals_percent(value1: float, value2: float, target_percent: float,
         return False
     diff_f = safe_nonneg_float(diff_percent(value1, value2), default=None)
     return diff_f is not None and abs(diff_f - target) <= tol
+
+
+ET = ZoneInfo("America/New_York")
+
+
+def is_us_rth_open(now_ts: float | None = None) -> bool:
+    """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
+    import time as _time
+    from datetime import time as dt_time
+
+    ts = safe_pos_float(now_ts, _time.time()) or _time.time()
+    try:
+        ny_dt = datetime.fromtimestamp(ts, tz=ET)
+    except (ValueError, OverflowError, OSError):
+        ny_dt = datetime.fromtimestamp(_time.time(), tz=ET)
+    if ny_dt.weekday() >= 5:
+        return False
+    return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
+
+
+def parse_env_file(env_path: str) -> dict[str, str]:
+    """Parse a key=value env/conf file into an uppercase-keyed dictionary without mutating os.environ."""
+    if not env_path or not os.path.exists(env_path):
+        return {}
+    try:
+        raw = parse_dotenv(env_path)
+        return {k.upper(): v for k, v in raw.items() if k}
+    except Exception:
+        return {}
+
+
+def load_env_file_defaults(env_path: str) -> dict[str, str]:
+    """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
+    parsed = parse_env_file(env_path)
+    for key_u, val in parsed.items():
+        if not key_u.startswith("STRAT_"):
+            os.environ.setdefault(key_u, val)
+    return parsed
+
+
+def load_key_value_conf(workspace_dir: str, root_dir: str = _REPO_ROOT) -> dict[str, str]:
+    """Load key=value settings from order_guard.conf / config.env / .env (root_dir overlaid by workspace_dir)."""
+    conf: dict[str, str] = {}
+    eff_root = root_dir or _REPO_ROOT
+    search_dirs = [eff_root]
+    if workspace_dir and os.path.abspath(workspace_dir) != os.path.abspath(eff_root):
+        search_dirs.append(workspace_dir)
+    for base_dir in search_dirs:
+        for fname in ("order_guard.conf", "config.env", ".env"):
+            for k_u, v_s in parse_env_file(os.path.join(base_dir, fname)).items():
+                conf[k_u.lower()] = v_s
+    return conf
+
+
+def extract_current_price_item(item: object) -> float | None:
+    """Extract the latest positive finite price from any ``cache_current_price.json`` item format."""
+    if item is None or isinstance(item, bool):
+        return None
+    if isinstance(item, (int, float, str)):
+        return safe_pos_float(item, None)
+    if isinstance(item, dict):
+        return safe_pos_float(item.get("price") if item.get("price") is not None else item.get("c"), None)
+    if isinstance(item, (list, tuple)):
+        for entry in reversed(item):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                px_f = safe_pos_float(entry[1], None)
+                if px_f is not None:
+                    return px_f
+            else:
+                px_f = safe_pos_float(entry, None)
+                if px_f is not None:
+                    return px_f
+    return None
+
+
+def conf_or_override(conf: dict[str, str], key: str, override: object = None) -> object:
+    """Return ``override`` when not None, else require ``conf[key]``."""
+    if override is not None:
+        return override
+    if key not in conf:
+        raise KeyError(f"Missing required '{key}' in order_guard.conf")
+    return conf[key]
+
+
+def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf_key: str) -> bool:
+    """Validate and coerce an explicit ``notify_enabled`` override or ``conf[conf_key]`` into a bool."""
+    if isinstance(notify_enabled, str) and not notify_enabled.strip():
+        return False
+    raw = conf_or_override(conf, conf_key, notify_enabled)
+    res = _parse_bool_flag(raw, None)
+    if res is not None:
+        return res
+    label = "notify_enabled" if notify_enabled is not None else conf_key
+    raise ValueError(f"Invalid {label} {raw!r}")
+

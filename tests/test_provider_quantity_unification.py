@@ -314,6 +314,46 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
         self.assertIsNone(res_sell)
         self.assertEqual(outcome_sell.get("reason"), "balance_unavailable")
 
+    def test_ssot_hyperliquid_buy_and_t212_sell_clamping_in_general_pipeline(self):
+        """Verify Hyperliquid 0.95 BUY reserve and T212 $6 SELL dust/remainder rules work in decide_quantity and Instrument.place."""
+        from lock.trade_cooldown import release_trade
+        from providers.quantity import clamp_notional_to_wallet_balance
+        release_trade("HYPEUSDC")
+
+        # 1. Hyperliquid oversized BUY via Instrument.place clamps to 0.95 * free_balance without preflight failure
+        hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+        fake_hl = MagicMock()
+        fake_hl.sz_decimals.return_value = 2
+        hl._hl = lambda: fake_hl
+        hl.free_balance = MagicMock(return_value=100.0)
+        hl.get_current_price = MagicMock(return_value=40.0)
+        placed_hl = []
+        hl.place_order = lambda sym, side, px, q, **kw: placed_hl.append((sym, side, px, q)) or {"orderId": 777}
+
+        registry_hl = MarketApi([hl])
+        inst_hl = Instrument("HYPE", symbol="HYPEUSDC", provider="hyperliquid", base="HYPE", quote="USDC", api=registry_hl)
+        res_hl = inst_hl.place("BUY", 40.0, 10.0, market=True, bypass_guards={"all"}, wait_for_trend=False, caller_owns_retry=True)
+        self.assertIsNotNone(res_hl)
+        # $100 * 0.95 / $40 = 2.375 -> floored to 2 decimals = 2.37
+        self.assertAlmostEqual(placed_hl[0][3], 2.37, places=6)
+
+        # 2. T212 full SELL with sub-2-decimal dust and partial SELL leaving <$6 remainder via decide_quantity
+        t212 = T212Provider(live_enabled=True)
+        t212.free_balance = MagicMock(return_value=5.15296546)
+        dec_full = decide_quantity(t212, "SPCX_US_EQ", "SELL", 150.0, 10.0, apply_policy=False)
+        self.assertAlmostEqual(dec_full.final_qty, 5.11, places=6)
+
+        t212.free_balance = MagicMock(return_value=1.004)
+        dec_part = decide_quantity(t212, "NVDA_US_EQ", "SELL", 100.0, 0.96, apply_policy=False)
+        self.assertAlmostEqual(dec_part.final_qty, 0.94, places=6)
+
+        # 3. clamp_notional_to_wallet_balance shares the same SSOT rules
+        ok_n, usd_n, _ = clamp_notional_to_wallet_balance(
+            t212, "SELL", 100.0, 96.0, symbol="NVDA_US_EQ"
+        )
+        self.assertTrue(ok_n)
+        self.assertAlmostEqual(usd_n, 94.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

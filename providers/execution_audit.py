@@ -408,3 +408,258 @@ class AuditedStrategyExecutor:
             tuple(self._executor.ohlc_closes(symbol, interval_i) or ()),
             interval_i,
         )
+
+
+def append_intent_history(intent: dict[str, Any], entry: dict[str, Any]) -> None:
+    """Append an entry to ``intent['history']``, coercing null or non-list history fields."""
+    hist = intent.get("history")
+    if not isinstance(hist, list):
+        hist = []
+        intent["history"] = hist
+    hist.append(entry)
+
+
+def reconcile_intents_from_execution_audit(
+    intents: list[dict[str, Any]],
+    audit_dir: str,
+) -> bool:
+    """Reconcile FAILED or PENDING_EXECUTION intents against execution_audit_*.jsonl if later filled."""
+    import glob
+
+    failed_by_id: dict[str, dict[str, Any]] = {}
+    for item in intents:
+        if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() not in ("FAILED", "PENDING_EXECUTION"):
+            continue
+        raw_id = item.get("intent_id") if item.get("intent_id") is not None else item.get("id")
+        if raw_id is None or isinstance(raw_id, bool):
+            continue
+        clean_id = str(raw_id).strip()
+        if clean_id:
+            failed_by_id[clean_id] = item
+    if not failed_by_id or not os.path.isdir(audit_dir):
+        return False
+
+    matched_records: dict[str, dict[str, Any]] = {}
+    for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
+        try:
+            with open(audit_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    raw_iid = rec.get("intent_id") if rec.get("intent_id") is not None else rec.get("id")
+                    if raw_iid is None or isinstance(raw_iid, bool):
+                        continue
+                    iid = str(raw_iid).strip()
+                    if iid not in failed_by_id:
+                        continue
+                    ev = str(rec.get("event") or "")
+                    if ev == "submit_accepted":
+                        matched_records.setdefault(iid, rec)
+                    elif ev in ("order_terminal", "order_terminal_retry"):
+                        v_stat = str(rec.get("venue_status") or "").upper()
+                        l_stat = str(rec.get("status") or "").lower()
+                        f_qty = safe_pos_float(
+                            rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
+                            0.0,
+                        )
+                        if (
+                            v_stat in ("FILLED", "PARTIALLY_FILLED")
+                            or l_stat in ("closed", "filled", "partially_filled")
+                            or f_qty > 0.0
+                        ):
+                            matched_records[iid] = rec
+                        elif matched_records.get(iid, {}).get("event") == "submit_accepted":
+                            prev_oid = matched_records[iid].get("order_id")
+                            cur_oid = rec.get("order_id")
+                            if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
+                                matched_records.pop(iid, None)
+        except OSError:
+            continue
+
+    if not matched_records:
+        return False
+
+    updated = False
+    for iid, rec in matched_records.items():
+        intent = failed_by_id[iid]
+        filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+        raw_cost = rec.get("cost")
+        if raw_cost is None:
+            f_q = safe_pos_float(filled_qty, default=None)
+            f_px = safe_pos_float(
+                rec.get("price") if rec.get("price") is not None else rec.get("reference_price"),
+                default=None,
+            )
+            if f_q is not None and f_px is not None:
+                raw_cost = round(f_q * f_px, 8)
+        exec_payload: dict[str, Any] = {
+            "orderId": rec.get("order_id"),
+            "symbol": rec.get("symbol") or intent.get("symbol"),
+            "side": str(rec.get("side") or intent.get("decision") or "").upper(),
+            "executedQty": str(filled_qty) if filled_qty is not None else "",
+            "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
+            "status": str(rec.get("venue_status") or "FILLED").upper(),
+            "reconciled_from_audit": True,
+        }
+        intent["status"] = "EXECUTED"
+        intent["execution_payload"] = exec_payload
+        rec_ts = safe_pos_float(rec.get("ts"), time.time())
+        append_intent_history(intent, {
+            "ts": rec_ts,
+            "action": "RECONCILED_EXECUTED",
+            "order_id": rec.get("order_id"),
+            "payload": exec_payload,
+        })
+        updated = True
+    return updated
+
+
+def summarize_recent_ai_intents(
+    intents_data: list[dict[str, Any]],
+    scope: str,
+    now_ts: float,
+    extract_notional_fn: Callable[..., Any],
+) -> list[dict[str, Any]]:
+    """Summarize the most recent AI trade intents filtered by asset scope."""
+    from cachepaths import normalize_venue_name
+
+    scoped_intents = [
+        i
+        for i in intents_data
+        if isinstance(i, dict)
+        and (
+            scope not in ("equities", "crypto")
+            or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
+        )
+    ]
+    recent_intents_out: list[dict[str, Any]] = []
+    for i in scoped_intents[-8:]:
+        exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
+        hist = i.get("history") if isinstance(i.get("history"), list) else []
+        last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
+        eff_notional = (
+            safe_pos_float(exec_pay.get("cummulativeQuoteQty"), default=None)
+            or safe_pos_float(exec_pay.get("cost"), default=None)
+            or safe_pos_float(i.get("clamped_notional_usd"), default=None)
+            or safe_pos_float(last_hist.get("notional_usd"), default=None)
+            or extract_notional_fn(i, default=None)
+        )
+        ts_val = safe_float(i.get("timestamp"), 0.0)
+        intent_summary: dict[str, Any] = {
+            "decision": i.get("decision"),
+            "symbol": i.get("symbol"),
+            "venue": normalize_venue_name(i.get("venue")) or i.get("venue"),
+            "status": i.get("status"),
+            "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
+            "ts": i.get("timestamp"),
+        }
+        if ts_val > 0 and now_ts >= ts_val:
+            intent_summary["age_h"] = round((now_ts - ts_val) / 3600.0, 2)
+        recent_intents_out.append(intent_summary)
+    return recent_intents_out
+
+
+_CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
+
+
+def extract_intent_side(data: dict[str, Any]) -> str:
+    """Extract normalized BUY/SELL/HOLD side from an intent dictionary."""
+    from .base import normalize_side
+
+    for k in ("decision", "action", "side"):
+        if data.get(k) is not None:
+            return normalize_side(data.get(k))
+    return ""
+
+
+def extract_intent_notional(data: dict[str, Any], default: Any = None) -> Any:
+    """Extract and parse positive suggested notional USD across aliases and currency strings."""
+    if not isinstance(data, dict):
+        return default
+    raw_notional = data.get("suggested_notional_usd")
+    if raw_notional is None:
+        for nk in ("notional_usd", "amount_usd", "size_usd", "usd_notional", "notional", "value_usd"):
+            if data.get(nk) is not None:
+                raw_notional = data.get(nk)
+                break
+    if isinstance(raw_notional, str):
+        raw_notional = _CURRENCY_STRIP_RE.sub("", raw_notional).strip()
+    return safe_pos_float(raw_notional, default)
+
+
+def parse_intent_confidence(raw_conf: Any, default: float = 0.0) -> float:
+    """Parse confidence into [0.0, 1.0], normalizing percentage strings or 1..100 values."""
+    from intelligence.macro_sentiment_ssot import clean_scale
+
+    return clean_scale(raw_conf, default, allow_percent=True)
+
+
+def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract and deduplicate single or multi-coin trading decisions from Gemini's JSON plan."""
+    if not isinstance(plan, dict):
+        return []
+    from cachepaths import canonical_base_asset, normalize_venue_name
+    from .base import normalize_side
+
+    raw_multi = None
+    for k in ("market_trading_decisions", "trading_decisions", "decisions"):
+        if isinstance(plan.get(k), list):
+            raw_multi = plan.get(k)
+            break
+    raw_single = plan.get("market_trading_decision")
+    candidates: list[dict[str, Any]] = []
+    for item in (
+        *(raw_multi if isinstance(raw_multi, list) else ()),
+        *([raw_single] if isinstance(raw_single, dict) and raw_single else ()),
+    ):
+        if isinstance(item, dict):
+            d = dict(item)
+            raw_val = d.get("decision") or d.get("action") or d.get("side")
+            if isinstance(raw_val, bool) or raw_val is None:
+                raw_side = "HOLD"
+            else:
+                raw_side = normalize_side(raw_val) or str(raw_val).strip().upper() or "HOLD"
+            d["decision"] = raw_side
+            v_norm = normalize_venue_name(d.get("venue"))
+            if v_norm:
+                d["venue"] = v_norm
+            if "confidence" in d and d.get("confidence") is not None:
+                d["confidence"] = parse_intent_confidence(d.get("confidence"), default=0.0)
+            extracted_usd = extract_intent_notional(d, default=None)
+            if extracted_usd is not None:
+                d["suggested_notional_usd"] = extracted_usd
+            candidates.append(d)
+
+    def _sort_key(d: dict[str, Any]) -> tuple[int, float]:
+        side = str(d.get("decision") or "HOLD").strip().upper()
+        is_action = 1 if side in ("BUY", "SELL") else 0
+        conf = parse_intent_confidence(d.get("confidence"), default=0.0)
+        return (-is_action, -conf)
+
+    candidates.sort(key=_sort_key)
+
+    decisions: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str]] = set()
+    for item in candidates:
+        sym_raw = str(item.get("symbol") or "").strip().upper()
+        sym_canon = canonical_base_asset(sym_raw) or sym_raw
+        venue_norm = normalize_venue_name(item.get("venue"))
+        side_norm = str(item.get("decision") or "HOLD").strip().upper()
+        key = (
+            (venue_norm, sym_canon, "")
+            if sym_canon
+            else (venue_norm, "", side_norm)
+        )
+        if key not in seen_keys:
+            seen_keys.add(key)
+            decisions.append(item)
+    return decisions
+
+

@@ -246,22 +246,30 @@ class TestMirrorTopicThreadToUi:
                          [(cid, "t", "CORTEX_TRAJECTORY_SOURCE_CLI", "proj", 2, raw)])
 
         ui_base = paths.resolve_ui_cli_base()
-        _make_summary_db(os.path.join(ui_base, "conversation_summaries.db"), [])
+        _make_summary_db(
+            os.path.join(ui_base, "conversation_summaries.db"),
+            [("stale-dup-cid", "Permanent Name", "", "proj", 1, raw)],
+        )
         visible = visible_conversations_dir(ui_base)
         os.makedirs(visible, exist_ok=True)
         stale = os.path.join(visible, f"{cid}.db")
         with open(stale, "w") as f:
             f.write("old")
+        stale_dup_db = os.path.join(ui_base, "conversations", "stale-dup-cid.db")
+        _make_conv_db(stale_dup_db)
 
         assert mirror_topic_thread_to_ui(cid, "Permanent Name", bot_cli_base=str(bot_base)) is True
 
         dst = os.path.join(ui_base, "conversations", f"{cid}.db")
         assert sqlite3.connect(dst).execute("SELECT source FROM trajectory_meta").fetchone()[0] == 1
-        assert os.path.exists(stale) and os.path.samefile(dst, stale)
-        title, source, stored = sqlite3.connect(os.path.join(ui_base, "conversation_summaries.db")).execute(
-            "SELECT title, source, raw_summary FROM conversation_summaries WHERE conversation_id=?", (cid,)
-        ).fetchone()
-        assert (title, source) == ("Permanent Name", "")
+        assert not os.path.exists(stale)
+        assert not os.path.exists(stale_dup_db)
+        rows = sqlite3.connect(os.path.join(ui_base, "conversation_summaries.db")).execute(
+            "SELECT conversation_id, title, source, raw_summary FROM conversation_summaries"
+        ).fetchall()
+        assert len(rows) == 1
+        row_cid, title, source, stored = rows[0]
+        assert (row_cid, title, source) == (cid, "Permanent Name", "")
         assert stored == summary_ui_visible(raw, "Permanent Name")
         with open(os.path.join(ui_base, "annotations", f"{cid}.pbtxt")) as f:
             assert 'title:"Permanent Name"' in f.read()

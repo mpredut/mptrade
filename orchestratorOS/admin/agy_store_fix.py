@@ -54,7 +54,11 @@ from orchestratorOS.agy.protobuf import (  # noqa: E402
     summary_ui_visible,
 )
 from orchestratorOS.agy.summary_store import checkpoint_db, drop_wal_sidecars, read_annotation_title  # noqa: E402
-from orchestratorOS.agy.topics import get_active_topic_cids, get_topic_canonical_titles  # noqa: E402
+from orchestratorOS.agy.topics import (  # noqa: E402
+    get_active_topic_cids,
+    get_topic_canonical_titles,
+    get_topic_registry_path,
+)
 
 
 HOME = os.environ.get("AGY_FIX_HOME") or os.path.expanduser("~")
@@ -468,6 +472,7 @@ def pending_ui_sync() -> list[str]:
         if os.path.isdir(d):
             disk_cids.update(n[:-3] for n in os.listdir(d) if n.endswith(".db"))
     active_rows = rows & disk_cids
+    topic_cids = mirrored_topic_cids()
     entries = [f"new:{cid}" for cid in active_rows - known] + [f"gone:{cid}" for cid in known - active_rows]
     if os.path.isdir(D1):
         for name in os.listdir(D1):
@@ -476,7 +481,7 @@ def pending_ui_sync() -> list[str]:
                 continue
             p1 = os.path.join(D1, name)
             p2 = os.path.join(D2, name)
-            if (cid not in known or os.path.exists(p2)) and not same_file(p1, p2):
+            if (cid not in known or os.path.exists(p2) or cid in topic_cids) and not same_file(p1, p2):
                 try:
                     entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
                 except OSError:
@@ -484,7 +489,7 @@ def pending_ui_sync() -> list[str]:
     return sorted(entries)
 
 
-TOPIC_REGISTRY = os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")
+TOPIC_REGISTRY = get_topic_registry_path()
 
 
 def mirrored_topic_cids() -> set[str]:
@@ -561,7 +566,7 @@ def last_store_activity() -> float:
                 conn_idx = txt.rfind("Connection status: Connected")
                 if conn_idx >= 0:
                     tail = txt[conn_idx:]
-                    recent_tail = "\n".join(tail.splitlines()[-15:])
+                    recent_tail = "\n".join(tail.splitlines()[-2:])
                     if any(
                         marker in recent_tail
                         for marker in (
@@ -629,11 +634,17 @@ def main(argv) -> int:
                         handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)])
     lock = open(LOCK, "w")
     try:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            log.error("another agy_store_fix is running")
-            return 3
+        lock_wait_s = 15.0 if mode in ("pre", "post") else 2.0
+        lock_deadline = time.time() + lock_wait_s
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= lock_deadline:
+                    log.error("another agy_store_fix is running")
+                    return 3
+                time.sleep(0.1)
         try:
             if mode == "pre":
                 return mode_pre(force="--force" in argv)

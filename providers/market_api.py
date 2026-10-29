@@ -539,31 +539,11 @@ class BinanceProvider(MarketDataProvider):
                 symbol=symbol, interval=iv, limit=91)
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc
-        completed = list(klines or ())[:-1]
-        valid = []
-        for item in completed:
-            if not isinstance(item, (list, tuple)) or len(item) < 5:
-                continue
-            c_f = safe_pos_float(item[4], default=None)
-            if c_f is not None:
-                valid.append((item, c_f))
-        closes = tuple(c_f for _item, c_f in valid)
-        ts_list = []
-        ts_ok = bool(valid) and all(len(item) > 6 for item, _ in valid)
-        if ts_ok:
-            for item, _ in valid:
-                t_ms = safe_pos_float(item[6], default=None)
-                if t_ms is None:
-                    ts_ok = False
-                    break
-                ts_list.append(t_ms / 1000.0)
-        timestamps = tuple(ts_list) if ts_ok else ()
-        observed_at = timestamps[-1] if timestamps else None
-        return ClosedPriceSeries(
-            closes,
-            safe_pos_int(interval_min, 1),
-            observed_at,
-            timestamps,
+        return ClosedPriceSeries.from_raw_candles(
+            klines,
+            interval_min,
+            lambda item: item[4] if isinstance(item, (list, tuple)) and len(item) >= 5 else None,
+            lambda item: item[6] if isinstance(item, (list, tuple)) and len(item) > 6 else None,
         )
 
     def submit_order(self, symbol: str, side: str, qty: float,
@@ -1186,7 +1166,7 @@ class MarketApi:
             benchmark = item.strip()
             if not benchmark:
                 raise ValueError("benchmark symbols must be non-empty")
-            identity = canonical_symbol_key(benchmark) or benchmark.upper().replace("/", "").replace("-", "").replace("_", "")
+            identity = canonical_symbol_key(benchmark)
             if identity not in seen_benchmarks:
                 normalized_benchmarks.append(benchmark)
                 seen_benchmarks.add(identity)
@@ -1358,7 +1338,6 @@ class MarketApi:
         quote from the symbol when absent. Lazy Instrument import avoids a cycle.
         """
         from instrument import Instrument
-        import utils as u
         explicit_provider_name = kwargs.pop("provider_name", None)
         inst_params = kwargs.pop("params", None)
         provider = self._provider_explicit_or_routed(
@@ -1367,38 +1346,20 @@ class MarketApi:
         if inst_params is None:
             try:
                 from instrument_registry import select_instruments
-                sym_clean = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
                 sym_canon = canonical_symbol_key(symbol)
                 for spec in select_instruments(prov_name).values():
-                    spec_clean = str(spec.symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
-                    if spec_clean == sym_clean or (sym_canon and canonical_symbol_key(spec.symbol) == sym_canon):
+                    if sym_canon and canonical_symbol_key(spec.symbol) == sym_canon:
                         inst_params = dict(spec.params or {})
-                        if base is None and spec.base:
-                            base = spec.base
-                        if quote is None and spec.quote:
-                            quote = spec.quote
+                        base = base or spec.base or None
+                        quote = quote or spec.quote or None
                         break
             except Exception:
                 inst_params = {}
         if base is None or quote is None:
-            try:
-                from providers.quantity import resolve_assets
-                res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)
-                if base is None and res_base:
-                    base = res_base
-                if quote is None and res_quote:
-                    quote = res_quote
-            except Exception:
-                if base is None:
-                    try:
-                        base = u.base_asset(symbol)
-                    except Exception:
-                        base = None
-        sym_str = str(symbol or "").strip() if not isinstance(symbol, bool) else ""
-        if quote is None and base and sym_str.upper().startswith(base.upper()) and sym_str.upper() != base.upper():
-            quote = sym_str[len(base):].lstrip("/-_").strip() or None   # For example, BTCUSDC or HYPE/USDC gives BTC/HYPE and USDC.
-        if quote is None and normalize_venue_name(prov_name) == "hyperliquid":
-            quote = "USDC"
+            from providers.quantity import resolve_assets
+            res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)
+            base = base or res_base or None
+            quote = quote or res_quote or ("USDC" if normalize_venue_name(prov_name) == "hyperliquid" else None)
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
                           base=base, quote=quote, params=inst_params or {}, api=self)
         return inst.place(side, price, qty, **kwargs)

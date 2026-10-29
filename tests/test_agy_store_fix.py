@@ -221,20 +221,25 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
     assert asf.pending_ui_sync() == []
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
 
-    # 3. Background heartbeat lines (fetchAvailableModels / loadCodeAssist) do NOT block ui-sync when a new topic thread appears
+    # 3. Mirrored topic turn (unlinked in D2) and new topic thread trigger ui-sync even if daemon logged background heartbeats
+    os.remove(d2 / "topic-10m.db")
     (d1 / "new-topic.db").write_text("first-turn")
     _set_rows(["topic-10m", "webui-chat", "new-topic"])
     with open(asf.TOPIC_REGISTRY, "w", encoding="utf-8") as f:
-        f.write('{"auto_cryptotrade_executor": {"conversation_id": "new-topic"}}')
+        f.write(
+            '{"auto_cryptotrade_executor": {"conversation_id": "new-topic"}, '
+            '"auto_sharetrade_executor": {"conversation_id": "topic-10m"}}'
+        )
     log_dir = cli / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "cli-20261026_100000.log"
     log_file.write_text(
         "I1026 10:00:01.000000 1 remote_control_v2.go:2056] Connection status: Connected\n"
-        "I1026 10:05:00.000000 2 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n"
-        "I1026 10:05:01.000000 3 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
+        "I1026 10:01:00.000000 2 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n"
+        "I1026 10:05:00.000000 3 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n"
+        "I1026 10:05:01.000000 4 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
     )
-    assert len(asf.pending_ui_sync()) == 2
+    assert len(asf.pending_ui_sync()) == 3
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
 

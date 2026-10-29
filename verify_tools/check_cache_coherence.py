@@ -10,9 +10,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_pos_float
+from botcore import extract_current_price_item, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants, resolve_cachedb_filepath  # noqa: E402
-from orchestratorTrade.autonomous_intent_gateway import extract_current_price_item  # noqa: E402
 from state_io import previous_generation_path, read_json_dict, read_recovering_previous  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")

@@ -107,16 +107,7 @@ def run_comparison(csv_path=None):
 
 
 def main():
-    has_orig_log = hasattr(strat, "log")
-    orig_log = getattr(strat, "log", None)
-    strat.log = lambda *a, **k: None
-    try:
-        run_comparison()
-    finally:
-        if has_orig_log:
-            strat.log = orig_log
-        elif hasattr(strat, "log"):
-            delattr(strat, "log")
+    run_comparison()
 
 
 if __name__ == "__main__":

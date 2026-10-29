@@ -136,14 +136,19 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
     att_val = safe_pos_int(pending.get("attempt"), 1)
     cur_rc_i = safe_nonneg_int(retry_counts.get(retry_key), 0)
     attempt_base = max(cur_rc_i, rc_act, att_val - 1)
-    if result.outcome in ("absent", "retryable"):
+
+    def _bump_retry(clear_pending: bool = False):
         new_count = attempt_base + 1
         retry_counts[retry_key] = new_count
         if isinstance(st, dict):
             if not isinstance(st.get("retry_counts"), dict):
                 st["retry_counts"] = {}
             st["retry_counts"][action] = new_count
-            persist(None)
+            if clear_pending:
+                persist(None)
+
+    if result.outcome in ("absent", "retryable"):
+        _bump_retry(clear_pending=True)
     elif result.outcome == "terminal":
         filled = safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)
         req_qty = safe_nonneg_float(
@@ -152,12 +157,7 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
         )
         st_name = str(getattr(result.status, "status", "") or "").lower()
         if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
-            new_count = attempt_base + 1
-            retry_counts[retry_key] = new_count
-            if isinstance(st, dict):
-                if not isinstance(st.get("retry_counts"), dict):
-                    st["retry_counts"] = {}
-                st["retry_counts"][action] = new_count
+            _bump_retry()
         else:
             retry_counts.pop(retry_key, None)
             if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
@@ -412,10 +412,7 @@ class TrailingCore:
         if not isinstance(rb, dict) or not rb:
             return
         low_f = safe_pos_float(rb.get("low"), default=None)
-        if low_f is None:
-            rb["low"] = price
-        else:
-            rb["low"] = min(low_f, price)          # track the post-sale low
+        rb["low"] = price if low_f is None else min(low_f, price)
         qty_f = safe_pos_float(rb.get("qty"), default=None)
         if qty_f is None:
             st.pop("rebuy", None)
@@ -462,9 +459,7 @@ class TrailingCore:
         if "warmup_at" in st and safe_pos_float(st.get("warmup_at"), default=None) is None:
             st.pop("warmup_at", None)
 
-        total_pos = self._remaining_qty(asset)
-        if total_pos <= 0:
-            total_pos = free
+        total_pos = self._remaining_qty(asset) or free
         has_pos = (total_pos * price >= self.min_notional)
 
         if has_pos and not st.get("pending_order"):
@@ -492,10 +487,7 @@ class TrailingCore:
             # Keep the low while a dynamic gate is closed, so later recovery can
             # resume the existing intent without forgetting the intervening dip.
             low_f = safe_pos_float(st["rebuy"].get("low"), default=None)
-            if low_f is None:
-                st["rebuy"]["low"] = price
-            else:
-                st["rebuy"]["low"] = min(low_f, price)
+            st["rebuy"]["low"] = price if low_f is None else min(low_f, price)
             if self._rebuy_for(pair):
                 self._handle_rebuy(key, asset, pair, st, price, state)
                 if st.get("pending_order"):
@@ -506,9 +498,8 @@ class TrailingCore:
 
         if not _parse_bool_flag(st.get("is_flat"), default=False) and "warmup_at" not in st and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
-            st.pop("target_exit_qty", None)
-            st.pop("exit_sold_qty", None)
-            st.pop("exit_sold_cost", None)
+            for k in ("target_exit_qty", "exit_sold_qty", "exit_sold_cost"):
+                st.pop(k, None)
         stop_at = st["peak"] * (1 - trail / 100.0)
 
         # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
@@ -531,9 +522,7 @@ class TrailingCore:
                     return                                        # nothing to sell even after unlock attempt
 
                 if "target_exit_qty" not in st or safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
-                    total_pos = self._remaining_qty(asset)
-                    if total_pos <= 0:
-                        total_pos = free
+                    total_pos = self._remaining_qty(asset) or free
                     st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
 
                 target_rem = max(
@@ -559,9 +548,7 @@ class TrailingCore:
         if safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
             st.pop("target_exit_qty", None)
 
-        total_pos = self._remaining_qty(asset)
-        if total_pos <= 0:
-            total_pos = free
+        total_pos = self._remaining_qty(asset) or free
         if total_pos * price < self.min_notional:
             sold_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0))
             if sold_qty > 0:
@@ -577,9 +564,8 @@ class TrailingCore:
                         "low": min(overall_avg, price),
                     }
             st["is_flat"] = True
-            st.pop("target_exit_qty", None)
-            st.pop("exit_sold_qty", None)
-            st.pop("exit_sold_cost", None)
+            for k in ("target_exit_qty", "exit_sold_qty", "exit_sold_cost"):
+                st.pop(k, None)
             return                                            # nothing to protect; keep resting orders intact
 
         if free * price < self.min_notional:

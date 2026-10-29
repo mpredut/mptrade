@@ -6383,6 +6383,72 @@ def test_batch48_hyperliquid_and_t212_hardening(monkeypatch):
     assert res_bt["initial_capital"] == 1000.0
 
 
+def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
+    """Verify chunked prefix-sum precision in backtest_wait_and_regime, zero-ts downsample preservation, and benchmark interval alignment."""
+    import numpy as np
+    from offline.backtests.financial_benchmark import default_scenarios
+    from offline.research.chop_weight_backtest import _downsample_price_series
+    from offline.research.monitortrades_backtest.backtest_wait_and_regime import (
+        compute_exact_time_window_signals,
+    )
+    from offline.research.monitortrades_backtest.sweep_mt_models import (
+        compute_all_signals,
+        compute_window_signals_from_bounds,
+    )
+    from offline.runners.kraken_financial_benchmark import _scenario_windows
+    from strategies.spot_engine import StratParams
 
+    # 1. Empty array handling
+    empty_res = compute_exact_time_window_signals(
+        np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64), 222.0, "BTCUSDC"
+    )
+    assert len(empty_res["gc"]) == 0
+    empty_all = compute_all_signals([], symbol="BTCUSDC")
+    assert len(empty_all["diff"]) == 0
 
+    # 2. Multi-chunk consistency: signals on a tail window at index > 4096 must match signals on the isolated tail
+    n_total = 5000
+    ts = np.arange(n_total, dtype=np.float64)
+    px = 50_000.0 + np.sin(ts * 0.05) * 25.0 + ts * 0.02
+    sig_full = compute_exact_time_window_signals(ts, px, 60.0, "BTCUSDC")
+    tail_start = 4800
+    sig_tail = compute_exact_time_window_signals(
+        ts[tail_start:], px[tail_start:], 60.0, "BTCUSDC"
+    )
+    assert np.allclose(sig_full["gc"][-50:], sig_tail["gc"][-50:], rtol=1e-11, atol=1e-11)
+    assert np.allclose(sig_full["sf"][-50:], sig_tail["sf"][-50:], rtol=1e-11, atol=1e-11)
+    assert np.allclose(sig_full["eps"][-50:], sig_tail["eps"][-50:], rtol=1e-11, atol=1e-11)
+    assert np.allclose(sig_full["legacy"][-50:], sig_tail["legacy"][-50:], rtol=1e-11, atol=1e-11)
+
+    # 3. _downsample_price_series preserves the first bar even when t=0.0 or t < step_seconds
+    raw_zero = [(0.0, 100.0), (100.0, 101.0), (300.0, 102.0), (600.0, 103.0)]
+    ds_zero = _downsample_price_series(raw_zero, 300)
+    assert ds_zero == [(0.0, 100.0), (300.0, 102.0), (600.0, 103.0)]
+
+    # 4. kraken_financial_benchmark._scenario_windows aligns mismatched trend_interval (e.g. 60m -> 240m)
+    records = [
+        {"timestamp": 1_700_000_000 + i * 14400, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+        for i in range(40)
+    ]
+    params = StratParams(
+        currency="USDC",
+        entry_amount=50.0,
+        entry_discount_pct=0.2,
+        dca_amount=30.0,
+        dca_drop_pct=2.0,
+        check_minutes=60.0,
+        takeprofit_pct=5.0,
+        max_budget=500.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=120.0,
+        trend_overlay=True,
+        trend_interval=60,
+    )
+    scen = default_scenarios()[0]
+    wins = _scenario_windows(
+        records, params, scen, interval=240, train=10, validation=10, test=10, step=10, warmup=5
+    )
+    assert len(wins) == 2
+    assert wins[0]["bars"] == 10
 

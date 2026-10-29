@@ -287,6 +287,37 @@ class ClosedPriceSeries:
     last_closed_at: Optional[float] = None
     timestamps: tuple = ()
 
+    @classmethod
+    def from_raw_candles(
+        cls,
+        raw_candles,
+        interval_min: int,
+        close_getter,
+        ts_ms_getter,
+    ) -> "ClosedPriceSeries":
+        completed = list(raw_candles or ())[:-1]
+        valid = [
+            (item, c_f)
+            for item in completed
+            if (c_f := safe_pos_float(close_getter(item), default=None)) is not None
+        ]
+        closes = tuple(c_f for _item, c_f in valid)
+        ts_list = []
+        ts_ok = bool(valid)
+        for item, _ in valid:
+            t_ms = safe_pos_float(ts_ms_getter(item), default=None)
+            if t_ms is None:
+                ts_ok = False
+                break
+            ts_list.append(t_ms / 1000.0)
+        timestamps = tuple(ts_list) if ts_ok else ()
+        return cls(
+            closes,
+            safe_pos_int(interval_min, 1),
+            timestamps[-1] if timestamps else None,
+            timestamps,
+        )
+
 
 @dataclass(frozen=True)
 class MarketRegimeEvidence:

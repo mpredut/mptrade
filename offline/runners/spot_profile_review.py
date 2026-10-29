@@ -20,8 +20,7 @@ from unittest.mock import patch
 from dotenv import dotenv_values
 from botcore import safe_pos_float
 from state_io import atomic_write_json, read_json_file
-from strategies import spot_engine as _strat
-from strategies.spot_replay import run_replay
+from strategies.spot_replay import align_spot_interval_params, run_replay
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
 from offline.backtests.evaluation import evaluate_segment, to_ohlc
@@ -74,36 +73,36 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
     if not folds:
         raise ValueError("dataset too small for walk-forward splits")
     reports = {}
-    with patch.object(_strat, "log", lambda *_args: None):
-        for name, params in profiles.items():
-            report = {"strategy_params": asdict(params), "initial_capital_usd": cash,
-                      "dataset": {"sha256": digest, "bars": len(records)},
-                      "walk_forward": {"interval_minutes": 240, "train": 720,
-                                       "validation": 180, "test": 90, "step": 90, "warmup": 40},
-                      "scenarios": {}}
-            for scenario in scenarios:
-                def run(ohlc, warmup=()):
-                    return run_replay(ohlc, params, bar_minutes=240, warmup_ohlc=warmup,
-                                      execution=scenario.execution, fee_model=scenario.fees,
-                                      initial_cash=cash)
-                windows = []
-                for index, fold in enumerate(folds, 1):
-                    segment = evaluate_segment(
-                        records[fold.test], lambda bars, warm, _context: run(bars, warm),
-                        warmup_records=records[max(0, fold.test.start - 40):fold.test.start])
-                    metrics = segment["metrics"]
-                    windows.append({"key": f"240m/fold-{index:02d}", "bars": segment["bars"],
-                                    "start_utc": segment["start_utc"], "end_utc": segment["end_utc"],
-                                    "buy_hold_return_pct": segment["buy_hold_return_pct"],
-                                    **{k: metrics[k] for k in ("return_pct", "max_drawdown_pct", "cycles", "fills")},
-                                    "metrics": metrics})
-                report["scenarios"][scenario.name] = {
-                    "assumptions": scenario.as_dict(), "windows": windows,
-                    "aggregate": aggregate_financial_windows(windows, initial_capital=cash),
-                    "continuous": run(to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
-                                      to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start])),
-                }
-            reports[name] = report
+    for name, params in profiles.items():
+        aligned_params = align_spot_interval_params(params, 240)
+        report = {"strategy_params": asdict(params), "initial_capital_usd": cash,
+                  "dataset": {"sha256": digest, "bars": len(records)},
+                  "walk_forward": {"interval_minutes": 240, "train": 720,
+                                   "validation": 180, "test": 90, "step": 90, "warmup": 40},
+                  "scenarios": {}}
+        for scenario in scenarios:
+            def run(ohlc, warmup=(), _p=aligned_params, _s=scenario):
+                return run_replay(ohlc, _p, bar_minutes=240, warmup_ohlc=warmup,
+                                  execution=_s.execution, fee_model=_s.fees,
+                                  initial_cash=cash)
+            windows = []
+            for index, fold in enumerate(folds, 1):
+                segment = evaluate_segment(
+                    records[fold.test], lambda bars, warm, _context: run(bars, warm),
+                    warmup_records=records[max(0, fold.test.start - 40):fold.test.start])
+                metrics = segment["metrics"]
+                windows.append({"key": f"240m/fold-{index:02d}", "bars": segment["bars"],
+                                "start_utc": segment["start_utc"], "end_utc": segment["end_utc"],
+                                "buy_hold_return_pct": segment["buy_hold_return_pct"],
+                                **{k: metrics[k] for k in ("return_pct", "max_drawdown_pct", "cycles", "fills")},
+                                "metrics": metrics})
+            report["scenarios"][scenario.name] = {
+                "assumptions": scenario.as_dict(), "windows": windows,
+                "aggregate": aggregate_financial_windows(windows, initial_capital=cash),
+                "continuous": run(to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
+                                  to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start])),
+            }
+        reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,
             "code": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip(),
             "source_sha256": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()

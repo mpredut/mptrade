@@ -39,12 +39,13 @@ _safe_f = safe_float
 _safe_int = safe_int
 from strategies import spot_dca as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
+from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 
-_KRAKEN_CFG: dict[str, str] = {}
-for _cfg_name in ("config.env", ".env"):
-    _cfg_path = os.path.join(ROOT, "kraken", _cfg_name)
-    if os.path.isfile(_cfg_path):
-        _KRAKEN_CFG.update(parse_dotenv(_cfg_path))
+_KRAKEN_CFG = load_layered_env_config(
+    os.path.join(ROOT, "kraken", "config.env"),
+    os.path.join(ROOT, "kraken", ".env"),
+    override_prefixes=("KRAKEN_",),
+)
 
 FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step

@@ -427,6 +427,25 @@ def normalize_order(order: dict) -> dict:
     }
 
 
+def normalize_open_order(order: Any, *, venue: str = "", symbol: str = "") -> Optional[dict]:
+    """Normalize a venue open-order dict into a uniform telemetry record."""
+    if not isinstance(order, dict):
+        return None
+    return {
+        "venue": venue,
+        "symbol": symbol,
+        "side": extract_order_side(order) or str(order.get("side") or order.get("type") or "").upper(),
+        "price": extract_order_price(order) or order.get("price"),
+        "origQty": extract_orig_qty(order) or order.get("origQty") or order.get("vol") or order.get("qty"),
+        "executedQty": (
+            order.get("executedQty")
+            if order.get("executedQty") is not None
+            else (order.get("vol_exec") or 0)
+        ),
+        "orderId": extract_order_id(order) or order.get("orderId") or order.get("id"),
+    }
+
+
 _PARENT_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "oid")
 
 
@@ -720,7 +739,8 @@ class MarketDataProvider(ABC):
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
                          available_qty: float) -> float:
-        return available_qty
+        from providers.quantity import venue_fee_cap_quantity
+        return venue_fee_cap_quantity(self.name, side, price, available_qty)
 
     def quantity_decision(self, symbol: str, side: str, price: float,
                           qty: float, **kwargs):

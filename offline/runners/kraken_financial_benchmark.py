@@ -23,6 +23,7 @@ from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float  # n
 from state_io import read_json_file  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,
@@ -118,37 +119,33 @@ def _scenario_windows(records: list[dict], params: StratParams, scenario, *,
     if not folds:
         raise ValueError("the dataset is too small for the walk-forward schema")
 
-    original_log = kraken_replay._strat.log
-    kraken_replay._strat.log = lambda *_args, **_kwargs: None
+    aligned_params = align_spot_interval_params(params, interval)
     windows = []
-    try:
-        for fold_index, fold in enumerate(folds, start=1):
-            test_records = records[fold.test]
-            warmup_records = records[max(0, fold.test.start - warmup):fold.test.start]
-            segment = evaluate_segment(
-                test_records,
-                lambda ohlc, warmup_ohlc, _context: kraken_replay.run_replay(
-                    ohlc, params, bar_minutes=interval, warmup_ohlc=warmup_ohlc,
-                    execution=scenario.execution, fee_model=scenario.fees,
-                ),
-                warmup_records=warmup_records,
-            )
-            metrics = segment["metrics"]
-            windows.append({
-                "key": f"{interval}m/fold-{fold_index:02d}",
-                "fold": fold_index,
-                "start_utc": segment["start_utc"],
-                "end_utc": segment["end_utc"],
-                "bars": segment["bars"],
-                "return_pct": metrics["return_pct"],
-                "max_drawdown_pct": metrics["max_drawdown_pct"],
-                "buy_hold_return_pct": segment["buy_hold_return_pct"],
-                "cycles": metrics["cycles"],
-                "fills": metrics["fills"],
-                "metrics": metrics,
-            })
-    finally:
-        kraken_replay._strat.log = original_log
+    for fold_index, fold in enumerate(folds, start=1):
+        test_records = records[fold.test]
+        warmup_records = records[max(0, fold.test.start - warmup):fold.test.start]
+        segment = evaluate_segment(
+            test_records,
+            lambda ohlc, warmup_ohlc, _context: kraken_replay.run_replay(
+                ohlc, aligned_params, bar_minutes=interval, warmup_ohlc=warmup_ohlc,
+                execution=scenario.execution, fee_model=scenario.fees,
+            ),
+            warmup_records=warmup_records,
+        )
+        metrics = segment["metrics"]
+        windows.append({
+            "key": f"{interval}m/fold-{fold_index:02d}",
+            "fold": fold_index,
+            "start_utc": segment["start_utc"],
+            "end_utc": segment["end_utc"],
+            "bars": segment["bars"],
+            "return_pct": metrics["return_pct"],
+            "max_drawdown_pct": metrics["max_drawdown_pct"],
+            "buy_hold_return_pct": segment["buy_hold_return_pct"],
+            "cycles": metrics["cycles"],
+            "fills": metrics["fills"],
+            "metrics": metrics,
+        })
     return windows
 
 

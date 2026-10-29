@@ -94,47 +94,19 @@ class Instrument:
         method = getattr(self._provider, "profit_guard_window_ref", None)
         if not callable(method):
             return None
-        try:
-            parameters = list(inspect.signature(method).parameters.values())
-            accepts_var_kw = any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters
-            )
-            accepts_context = accepts_var_kw or any(
-                parameter.name == "regime_context"
-                and parameter.kind in {
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                }
-                for parameter in parameters
-            )
-            accepts_ref_mode = accepts_var_kw or any(
-                parameter.name == "reference_mode"
-                and parameter.kind in {
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                }
-                for parameter in parameters
-            )
-            accepts_module = accepts_var_kw or any(
-                parameter.name == "module"
-                and parameter.kind in {
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                }
-                for parameter in parameters
-            )
-        except (TypeError, ValueError):
-            accepts_context = False
-            accepts_ref_mode = False
-            accepts_module = False
         call_kw = {}
-        if accepts_context:
-            call_kw["regime_context"] = regime_context
-        if accepts_ref_mode and reference_mode is not None:
-            call_kw["reference_mode"] = reference_mode
-        if accepts_module and module is not None:
-            call_kw["module"] = module
+        try:
+            params = inspect.signature(method).parameters.values()
+            var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+            accepted = {
+                p.name for p in params
+                if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            }
+            for k, v in (("regime_context", regime_context), ("reference_mode", reference_mode), ("module", module)):
+                if (var_kw or k in accepted) and (k == "regime_context" or v is not None):
+                    call_kw[k] = v
+        except (TypeError, ValueError):
+            pass
         return method(symbol, side, safeback_sec, **call_kw)
 
     @staticmethod
@@ -317,14 +289,15 @@ class Instrument:
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
+        def _refuse_early(r: str):
+            if outcome_context is not None:
+                outcome_context.update(accepted=False, reason=r, state="refused")
+            return None
+
         side_u = normalize_side(side)
         if not side_u:
-            reason = "invalid_side"
-            print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): {reason}")
-            if outcome_context is not None:
-                outcome_context.update(
-                    accepted=False, reason=reason, state="refused")
-            return None
+            print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): invalid_side")
+            return _refuse_early("invalid_side")
 
         medium_trend_action_cfg = kwargs.get("medium_trend_action")
         medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
@@ -403,40 +376,22 @@ class Instrument:
         defers_smart_cancel = bool(getattr(self._provider, "defers_smart_cancellation", lambda: False)())
         supports_biz_min = bool(getattr(self._provider, "supports_business_minimum", lambda: False)())
         if cache_permit is not None and not requires_permit:
-            reason = "invalid_cache_permit_provider"
-            print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): {reason}")
-            if outcome_context is not None:
-                outcome_context.update(
-                    accepted=False, reason=reason, state="refused")
-            return None
+            print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): invalid_cache_permit_provider")
+            return _refuse_early("invalid_cache_permit_provider")
         execution_enabled = getattr(self._provider, "execution_enabled", None)
         try:
             provider_execution_enabled = (
                 True if not callable(execution_enabled)
                 else bool(execution_enabled()))
         except Exception as exc:  # noqa: BLE001 - An unreadable gate must fail closed.
-            reason = "execution_gate_unavailable"
-            print(
-                f"[{self.symbol}] {side_u} BLOCKED (pre-submit): "
-                f"{reason} ({exc})")
-            if outcome_context is not None:
-                outcome_context.update(
-                    accepted=False, reason=reason, state="refused")
-            return None
+            print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): execution_gate_unavailable ({exc})")
+            return _refuse_early("execution_gate_unavailable")
         if not provider_execution_enabled:
-            reason = "execution_disabled"
             print(f"[{self.symbol}] {side_u} DRY: real provider execution is disabled")
-            if outcome_context is not None:
-                outcome_context.update(
-                    accepted=False, reason=reason, state="refused")
-            return None
+            return _refuse_early("execution_disabled")
         if self._provider.guards_internally():
             if retry_constraint_supplied:
-                reason = "retry_price_constraint_unsupported"
-                if outcome_context is not None:
-                    outcome_context.update(
-                        accepted=False, reason=reason, state="refused")
-                return None
+                return _refuse_early("retry_price_constraint_unsupported")
             return self._provider.place_order(self.symbol, side_u, price, qty, **kwargs)
 
         # Capture the original uncapped quantity, requested price, and reproducible
@@ -531,8 +486,9 @@ class Instrument:
                 if guarded_order_state is None:
                     raise SubmissionRefused("account_cache_not_fresh")
             if not requires_permit and callable(preflight_order):
+                preflight_qty = None if v_norm in {"kraken", "hyperliquid"} else qty
                 preflight_order(
-                    self.symbol, side_u, qty, price, market=is_market,
+                    self.symbol, side_u, preflight_qty, price, market=is_market,
                     kind=order_kind)
 
             # 0. Compute smart venue pricing before the guards. When deferred (e.g. Binance),
@@ -564,15 +520,11 @@ class Instrument:
             # as the Single Source of Truth for this order placement across all providers.
             if isinstance(price, bool) or (price is not None and (side_u == "BUY" or not is_market)):
                 price_f = safe_pos_float(price, default=None)
-                if price_f is not None:
-                    price = price_f
-                    price_ok = True
-                else:
-                    price_ok = False
-                if not price_ok:
+                if price_f is None:
                     print(f"[{self.symbol}] {side_u} preflight refused: price invalid {price!r}")
                     reason = "invalid_price"
                     return None
+                price = price_f
 
             from providers.quantity import resolve_assets
             base_asset, quote_asset = resolve_assets(self.symbol, self.base, self.quote)
@@ -839,12 +791,8 @@ class Instrument:
                             ttl_sec=kwargs.get("ttl_sec"))
                         if prequeued_claim is None:
                             raise RuntimeError("the intent cannot be read back after persisting")
-                        prequeued_record_id = prequeued_claim.get("id")
-                        prequeued = prequeued_claim
                         prequeued_client_order_id = dict(
-                            prequeued.get("place_kwargs") or {}).get(
-                                "client_order_id")
-                        prequeued_intent_id = prequeued.get("intent_id")
+                            prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
                         if not prequeued_client_order_id:
                             raise RuntimeError("the persisted intent has no client_order_id")
                         kwargs["client_order_id"] = prequeued_client_order_id
@@ -856,13 +804,12 @@ class Instrument:
                     return None
             else:
                 prequeued_claim = kwargs.get("_retry_claim")
-                if prequeued_claim is not None:
-                    prequeued_record_id = prequeued_claim.get("id")
-                    prequeued = prequeued_claim
-                    prequeued_client_order_id = dict(
-                        prequeued.get("place_kwargs") or {}).get(
-                            "client_order_id")
-                    prequeued_intent_id = prequeued.get("intent_id")
+
+            if prequeued_claim is not None:
+                prequeued_record_id = prequeued_claim.get("id")
+                prequeued_client_order_id = dict(
+                    prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
+                prequeued_intent_id = prequeued_claim.get("intent_id")
 
             if prequeued_intent_id:
                 _EXECUTION_AUDIT.record(

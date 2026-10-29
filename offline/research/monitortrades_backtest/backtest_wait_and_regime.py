@@ -20,6 +20,9 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
+from offline.research.monitortrades_backtest.sweep_mt_models import (
+    compute_window_signals_from_bounds,
+)
 
 
 def compute_exact_time_window_signals(
@@ -28,99 +31,20 @@ def compute_exact_time_window_signals(
     win_sec: float,
     symbol: str,
 ):
-    """Exact O(N) sliding two-pointer + O(1) prefix-sum evaluation for dynamic window `win_sec`."""
+    """Exact O(N) sliding two-pointer + chunked O(1) prefix-sum evaluation for dynamic window `win_sec`."""
     N = len(ts)
     # Two-pointer to find a[b] = first index with ts[a] >= ts[b] - win_sec
     a = np.searchsorted(ts, ts - win_sec, side="left")
     b = np.arange(N, dtype=np.int64)
-    n = b - a + 1
-    m = b - a
-    valid = n >= 3
-
-    y_ref = px[0]
-    dy_ref = px - y_ref
-    k_idx = np.arange(N, dtype=np.float64)
-
-    P0 = np.cumsum(dy_ref)
-    P1 = np.cumsum(k_idx * dy_ref)
-    P2 = np.cumsum(dy_ref * dy_ref)
-    Q2 = np.cumsum(k_idx * k_idx * dy_ref)
-
-    def _range_sum(P, lo, hi):
-        prev = np.where(lo > 0, P[np.maximum(0, lo - 1)], 0.0)
-        return P[hi] - prev
-
-    n_f = np.maximum(1.0, n.astype(np.float64))
-    m_f = np.maximum(1.0, m.astype(np.float64))
-    b_m1 = np.maximum(0, b - 1)
-    a_p1 = np.minimum(N - 1, a + 1)
-
-    s0 = _range_sum(P0, a, b)
-    s1 = _range_sum(P1, a, b)
-    s2 = _range_sum(P2, a, b)
-    ss_y = s2 - (s0 * s0) / n_f
-    cov_xy = s1 - (a.astype(np.float64) + 0.5 * (n_f - 1.0)) * s0
-    denom_ols = np.maximum(1.0, n_f * (n_f * n_f - 1.0))
-    slope_full = np.where(valid & (ss_y > 1e-18), (12.0 * cov_xy) / denom_ols, 0.0)
-
-    # Estimate sample rate per slice as elapsed / m
-    elapsed = np.maximum(1.0, ts[b] - ts[a])
+    m_f = np.maximum(1.0, (b - a).astype(np.float64))
+    elapsed = np.maximum(1.0, ts[b] - ts[a]) if N > 0 else np.zeros(0, dtype=np.float64)
     sr = np.maximum(0.5, elapsed / m_f)
-    recent_sec = pw.effective_recent_gradient_seconds(win_sec)
-    r_arr = np.maximum(2, (recent_sec / sr).astype(np.int64))
 
-    sum_g_all = (px[b] - px[a]) + 0.5 * ((px[b] - px[b_m1]) + (px[a_p1] - px[a]))
-    b_mr = np.maximum(0, b - r_arr)
-    b_mr1 = np.maximum(0, b - r_arr + 1)
-    gr_sub = ((px[b] - px[b_m1]) + (px[b] - px[b_mr1]) + (px[b] - px[b_mr])) / (2.0 * r_arr.astype(np.float64))
-    gr_all = sum_g_all / n_f
-    gradient_recent = np.where(n > r_arr, gr_sub, gr_all)
-    gradient_recent = np.where(np.abs(gradient_recent) <= 1e-12, 0.0, gradient_recent)
-
-    a0 = _range_sum(P0, a, b_m1)
-    a1 = _range_sum(P1, a, b_m1)
-    a2 = _range_sum(Q2, a, b_m1)
-    c_f = a.astype(np.float64)
-    tol_raw = 1e-10 * np.maximum(1.0, np.abs(px[b]))
-
-    sym_p = pw.step_wols_power_for_symbol(symbol)
-    if sym_p >= 2.5:
-        sum_r2 = a2 - 2.0 * c_f * a1 + c_f * c_f * a0
-        sum_r1 = a1 - c_f * a0
-        total_p3 = (m_f ** 3) * dy_ref[b] - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
-        s3_w = (0.5 * m_f * (m_f + 1.0)) ** 2
-        gc = np.where(valid, total_p3 / s3_w, 0.0)
-    else:
-        sum_2r1 = 2.0 * a1 - (2.0 * c_f - 1.0) * a0
-        total_p2 = (m_f * m_f) * dy_ref[b] - sum_2r1
-        s2_w = (m_f * (m_f + 1.0) * (2.0 * m_f + 1.0)) / 6.0
-        gc = np.where(valid, total_p2 / s2_w, 0.0)
-    gc = np.where(np.abs(gc) <= tol_raw, 0.0, gc)
-
-    pg2 = np.zeros(N, dtype=np.float64)
-    if N >= 3:
-        g_int = 0.5 * (px[2:] - px[:-2])
-        cs_g2 = np.cumsum(g_int * g_int)
-        pg2[1:-1] = cs_g2
-        pg2[-1] = cs_g2[-1]
-    g0 = px[a_p1] - px[a]
-    gn = px[b] - px[b_m1]
-    sum_g2 = g0 * g0 + (pg2[b_m1] - pg2[a]) + gn * gn
-    mean_g = sum_g_all / n_f
-    var_g = np.maximum(0.0, sum_g2 / n_f - mean_g * mean_g)
-    eps = np.where(valid, np.sqrt(var_g), 0.0)
-    scale_inv = np.where(m_f > 10.0, np.sqrt(10.0 / m_f), 1.0)
-
-    return {
-        "n": n,
-        "m": m,
-        "gc": gc,
-        "gr": gradient_recent,
-        "sf": slope_full,
-        "legacy": 0.5 * (slope_full + gradient_recent),
-        "eps": eps,
-        "scale_inv": scale_inv,
-    }
+    res = compute_window_signals_from_bounds(
+        px, a, sr, symbol=symbol, recent_win_sec=win_sec, min_valid_n=3
+    )
+    res["legacy"] = res["legacy_raw"]
+    return res
 
 
 def simulate_should_wait(

@@ -48,14 +48,32 @@ from providers.base import (
     extract_order_price,
     extract_order_side,
     extract_orig_qty,
+    extract_timestamp_s,
+    normalize_open_order,
     normalize_side,
+)
+from state_io import (
+    read_last_jsonl_dict as _read_last_jsonl_dict,
+    read_tail_jsonl_dicts,
+    read_tail_lines,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
+    apply_live_24trend_windows as _apply_live_24trend_windows,
+    apply_short_trend_item as _apply_short_trend_item,
+    build_cross_market_context as _build_cross_market_context,
+    compute_7d_range_metrics as _compute_7d_range_metrics,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
+    compute_swing_wave_metrics as _compute_swing_wave_metrics,
+    extract_current_price_item,
     extract_symbol_recent_fills,
+    harvest_kraken_xstocks as _harvest_kraken_xstocks,
+    harvest_venue_cycles as _harvest_venue_cycles,
+    load_symbol_microstructure as _load_symbol_microstructure,
     load_symbol_price_series,
+    parse_venue_cycle_state as _parse_venue_cycle_state,
+    set_pos_anchor as _set_pos_anchor,
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -67,6 +85,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     BOT_MODULE_REPAIR_ACTIONS,
     BOT_OR_FLEET_ERROR_ACTIONS,
     DIAGNOSED_SEVERITIES,
+    LogEventSummary,
     SYSTEM_ADMIN_ACTION_SPECS,
     SYSTEM_OS_ERROR_ACTIONS,
     SYSTEM_OS_ERROR_CATEGORIES,
@@ -74,9 +93,26 @@ from orchestratorOS.lib.technical_repair_ssot import (
     build_system_admin_command,
     clean_json_value,
     gather_system_and_vpn_telemetry,
+    harvest_log_anomalies_from_dirs,
+    is_bot_or_code_error_report,
+    is_error_report,
+    is_system_os_error_report,
+    normalize_error_signature,
     normalize_repair_action,
     read_json_recovering,
+    recent_log_lines,
     resolve_patchable_target,
+)
+from orchestratorOS.supervisor.prompt_formatters import (
+    _format_horizon_range,
+    _format_macro_and_news_section,
+    _format_market_prices_section,
+    _format_microstructure_section,
+    _format_portfolio_section,
+    _format_sre_and_fleet_section,
+    _format_venue_cycle_line,
+    _resolve_symbol_price,
+    _round_opt_px,
 )
 from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
@@ -84,117 +120,16 @@ from orchestratorTrade.autonomous_intent_gateway import (
     _is_us_rth_open,
     _parse_intent_confidence,
     _parse_notify_enabled_flag,
-    extract_current_price_item,
     load_key_value_conf,
 )
 
 _parse_finite_float = safe_float
+_as_bool_flag = _parse_bool_flag
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-
-_FULL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
-_GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})")
-_CLOCK_TS_RE = re.compile(r"^\.*\[?(\d{2}):(\d{2}):(\d{2})\b")
-
-
-def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> List[str]:
-    """Return the tail of ``lines`` whose own timestamps are >= cutoff_ts (chronological order).
-
-    Bot logs mix full dates, glog headers and clock-only stamps ("14:54:17 ..."). Clock-only stamps are
-    anchored to the file's mtime day and walked backwards, stepping one day back on a midnight wrap.
-    Lines without a stamp (tracebacks) inherit the nearest later stamp; a file mtime inside the window
-    alone is not enough to pull hours-old errors into a short lookback.
-    """
-    from datetime import datetime, timedelta
-
-    if not isinstance(lines, (list, tuple)) or not lines:
-        return []
-    fm = safe_pos_float(file_mtime, default=None) or time.time()
-    cutoff_ts = safe_nonneg_float(cutoff_ts, default=0.0) or 0.0
-    try:
-        ref = datetime.fromtimestamp(fm)
-    except (ValueError, OverflowError, OSError):
-        fm = time.time()
-        ref = datetime.fromtimestamp(fm)
-    day = ref.date()
-    prev_ts = float(fm)
-    picked: List[str] = []
-
-    def _resolve_fold_ts(dt_naive: datetime, upper_ts: float) -> float:
-        ts0 = dt_naive.replace(fold=0).timestamp()
-        ts1 = dt_naive.replace(fold=1).timestamp()
-        if ts1 > ts0 and ts1 <= upper_ts + 300.0:
-            return ts1
-        return ts0
-
-    pending_unstamped: List[str] = []
-    for line in reversed(lines):
-        if not isinstance(line, str):
-            continue
-        ts: Optional[float] = None
-        has_stamp_token = False
-        m = _FULL_TS_RE.search(line)
-        if m:
-            has_stamp_token = True
-            try:
-                dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
-                day = dt.date()
-                ts = _resolve_fold_ts(dt, prev_ts)
-                prev_ts = ts
-            except ValueError:
-                pass
-        else:
-            g = _GLOG_TS_RE.match(line)
-            c = None if g else _CLOCK_TS_RE.match(line)
-            if g:
-                has_stamp_token = True
-                try:
-                    dt = datetime(ref.year, int(g.group(1)), int(g.group(2)),
-                                  int(g.group(3)), int(g.group(4)), int(g.group(5)))
-                    if (dt - ref).total_seconds() > 86400:
-                        dt = datetime(ref.year - 1, int(g.group(1)), int(g.group(2)),
-                                      int(g.group(3)), int(g.group(4)), int(g.group(5)))
-                    day = dt.date()
-                    ts = _resolve_fold_ts(dt, prev_ts)
-                    prev_ts = ts
-                except ValueError:
-                    pass
-            elif c and int(c.group(1)) < 24 and int(c.group(2)) < 60 and int(c.group(3)) < 60:
-                has_stamp_token = True
-                secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
-                dt_same = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
-                ts0 = dt_same.replace(fold=0).timestamp()
-                ts1 = dt_same.replace(fold=1).timestamp()
-                if ts1 > ts0 and ts1 <= prev_ts + 300.0:
-                    ts = ts1
-                elif ts0 <= prev_ts + 300.0:
-                    ts = ts0
-                else:
-                    day -= timedelta(days=1)
-                    dt_prev = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
-                    ts = _resolve_fold_ts(dt_prev, prev_ts)
-                prev_ts = ts
-        if ts is not None and ts < cutoff_ts:
-            break
-        if has_stamp_token:
-            if pending_unstamped:
-                picked.extend(pending_unstamped)
-                pending_unstamped.clear()
-            picked.append(line)
-        else:
-            pending_unstamped.append(line)
-    else:
-        if pending_unstamped:
-            picked.extend(pending_unstamped)
-    picked.reverse()
-    return picked
-
-
-_as_bool_flag = _parse_bool_flag
 
 
 def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -231,9 +166,6 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
                 d["suggested_notional_usd"] = extracted_usd
             candidates.append(d)
 
-    # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first,
-    # before deduplicating so the highest-confidence entry per (venue, canonical_symbol) wins
-    # and conflicting BUY+SELL decisions on the same instrument in a single cycle are prevented.
     def _sort_key(d: Dict[str, Any]) -> Tuple[int, float]:
         side = str(d.get("decision") or "HOLD").strip().upper()
         is_action = 1 if side in ("BUY", "SELL") else 0
@@ -260,1230 +192,6 @@ def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     return decisions
 
 
-def _read_last_jsonl_dict(fpath: str, tail_bytes: int = 4096) -> Optional[Dict[str, Any]]:
-    """Read and parse the last JSON object from a JSONL file using a bounded tail seek."""
-    fpath = str(resolve_cachedb_filepath(fpath))
-    if not os.path.exists(fpath):
-        return None
-    try:
-        with open(fpath, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - tail_bytes))
-            lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
-        if lines:
-            parsed = json.loads(lines[-1])
-            if isinstance(parsed, dict):
-                return parsed
-    except Exception:
-        pass
-    return None
-
-
-def _apply_short_trend_item(
-    entry: Dict[str, Any],
-    tinfo: Dict[str, Any],
-    *,
-    fallback_price: Any = None,
-    require_any_slope: bool = False,
-) -> bool:
-    """Populate short/dynamic trend slopes (3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
-    dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
-    d90 = dyn.get("90", {}) if isinstance(dyn.get("90"), dict) else {}
-    d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
-    if d222.get("slope_full") is None:
-        if tinfo.get("slope_full") is not None:
-            d222 = tinfo
-        elif d90.get("slope_full") is not None:
-            d222 = d90
-    d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
-    d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
-    if require_any_slope and not any(
-        x is not None
-        for x in (
-            d222.get("slope_full"),
-            d900.get("slope_full"),
-            d9000.get("slope_full"),
-            tinfo.get("slope_full"),
-        )
-    ):
-        return False
-    cur_px = tinfo.get("current_price", fallback_price)
-    if _parse_finite_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
-        entry["price"] = cur_px
-    trend = tinfo.get("final_trend", entry.get("trend", 0))
-    entry["trend"] = trend
-    entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
-    entry["slope_full"] = tinfo.get("slope_full", 0.0)
-    entry["gradient_recent"] = tinfo.get("gradient_recent", 0.0)
-    if not require_any_slope:
-        entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
-        entry["epsilon"] = tinfo.get("epsilon")
-        entry["trend_fast"] = tinfo.get("trend_fast", trend)
-        entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
-    else:
-        if tinfo.get("gradient_recent_fast") is not None:
-            entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
-        if tinfo.get("epsilon") is not None:
-            entry["epsilon"] = tinfo.get("epsilon")
-        if tinfo.get("vol_1h_pct") is not None:
-            entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
-    if tinfo.get("adapt_reentry_pct") is not None:
-        entry["adapt_reentry_pct"] = tinfo.get("adapt_reentry_pct")
-    if tinfo.get("adapt_dca_pct") is not None:
-        entry["adapt_dca_pct"] = tinfo.get("adapt_dca_pct")
-    if d90.get("slope_full") is not None:
-        entry["slope_90s"] = d90.get("slope_full")
-        entry["trend_90s"] = d90.get("final_trend", trend)
-    if d90.get("growth_coefficient") is not None:
-        entry["growth_90s"] = d90.get("growth_coefficient")
-    for w_dict, s_key, t_key, g_key in (
-        (d222, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
-        (d900, "slope_15m", "trend_15m", "growth_15m"),
-        (d9000, "slope_2_5h", "trend_2_5h", "growth_2_5h"),
-    ):
-        if w_dict.get("slope_full") is not None or require_any_slope:
-            entry[s_key] = w_dict.get("slope_full", 0.0) if require_any_slope else w_dict.get("slope_full")
-            entry[t_key] = w_dict.get("final_trend", trend)
-        if w_dict.get("growth_coefficient") is not None:
-            entry[g_key] = w_dict.get("growth_coefficient")
-    return True
-
-
-def _set_pos_anchor(
-    pos: Dict[str, Any],
-    px_key: str,
-    pct_key: str,
-    anchor_val: Any,
-    cur_px: float,
-    *,
-    overwrite: bool = True,
-) -> None:
-    """Attach a cost/buy/sell/peak price anchor and its percentage delta to a position dict."""
-    a_f = safe_pos_float(anchor_val, default=0.0) or 0.0
-    if a_f <= 0:
-        return
-    if not overwrite and pos.get(px_key) is not None:
-        return
-    if px_key == "trailing_peak" and cur_px > a_f:
-        a_f = cur_px
-    a_r = round(a_f, 6)
-    pos[px_key] = a_r
-    if cur_px > 0:
-        pos[pct_key] = round(((cur_px - a_f) / a_f) * 100.0, 2)
-
-
-def _compute_swing_wave_metrics(
-    series_or_vals: List[Any],
-    *,
-    reversal_pct: float = 3.0,
-    decimals: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Extract raw ZigZag swing waves (>=3% reversals), active swing low/high, and rally/pullback % from a price series."""
-    if not isinstance(series_or_vals, list) or len(series_or_vals) < 2:
-        return {}
-    vals: List[float] = []
-    for item in series_or_vals:
-        if isinstance(item, (list, tuple)) and len(item) > 1:
-            v = _parse_finite_float(item[1], 0.0)
-        else:
-            v = _parse_finite_float(item, 0.0)
-        if v > 0.0:
-            vals.append(v)
-    if len(vals) < 2:
-        return {}
-
-    cur_v = vals[-1]
-    thr = max(0.5, float(reversal_pct)) / 100.0
-    pivots: List[Tuple[str, int, float]] = []
-    direction = 0
-    hi_px, hi_idx = vals[0], 0
-    lo_px, lo_idx = vals[0], 0
-
-    for idx, v in enumerate(vals[1:], start=1):
-        if direction == 0:
-            if v > hi_px:
-                hi_px, hi_idx = v, idx
-            if v < lo_px:
-                lo_px, lo_idx = v, idx
-            if lo_px > 0 and (v - lo_px) / lo_px >= thr and lo_idx < idx:
-                pivots.append(("LOW", lo_idx, lo_px))
-                direction = 1
-                hi_px, hi_idx = v, idx
-            elif hi_px > 0 and (hi_px - v) / hi_px >= thr and hi_idx < idx:
-                pivots.append(("HIGH", hi_idx, hi_px))
-                direction = -1
-                lo_px, lo_idx = v, idx
-        elif direction == 1:
-            if v >= hi_px:
-                hi_px, hi_idx = v, idx
-            elif hi_px > 0 and (hi_px - v) / hi_px >= thr:
-                pivots.append(("HIGH", hi_idx, hi_px))
-                direction = -1
-                lo_px, lo_idx = v, idx
-        else:
-            if v <= lo_px:
-                lo_px, lo_idx = v, idx
-            elif lo_px > 0 and (v - lo_px) / lo_px >= thr:
-                pivots.append(("LOW", lo_idx, lo_px))
-                direction = 1
-                hi_px, hi_idx = v, idx
-
-    chain: List[Tuple[str, int, float]] = list(pivots)
-    if direction == 1 and chain and chain[-1][2] > 0:
-        if (hi_px - chain[-1][2]) / chain[-1][2] >= thr:
-            chain.append(("HIGH", hi_idx, hi_px))
-    elif direction == -1 and chain and chain[-1][2] > 0:
-        if (chain[-1][2] - lo_px) / chain[-1][2] >= thr:
-            chain.append(("LOW", lo_idx, lo_px))
-
-    swing_legs_pct: List[float] = []
-    for i in range(1, len(chain)):
-        p0, p1 = chain[i - 1][2], chain[i][2]
-        if p0 > 0:
-            swing_legs_pct.append(round(((p1 - p0) / p0) * 100.0, 2))
-
-    major_low_px: Optional[float] = None
-    if direction == 1 and pivots:
-        swing_low_px = pivots[-1][2]
-        swing_high_px = max(hi_px, cur_v)
-        if len(pivots) >= 3 and pivots[-3][0] == "LOW" and pivots[-3][2] < swing_low_px:
-            major_low_px = pivots[-3][2]
-    elif direction == -1 and pivots:
-        swing_high_px = pivots[-1][2]
-        swing_low_px = min(lo_px, cur_v)
-        if len(pivots) >= 2 and pivots[-2][0] == "LOW" and pivots[-2][2] < swing_low_px:
-            major_low_px = pivots[-2][2]
-    else:
-        swing_low_px = min(vals)
-        swing_high_px = max(vals)
-
-    rally_pct = round(((cur_v / swing_low_px) - 1.0) * 100.0, 2) if swing_low_px > 0 else 0.0
-    pullback_pct = round(((cur_v / swing_high_px) - 1.0) * 100.0, 2) if swing_high_px > 0 else 0.0
-    major_rally_pct = (
-        round(((cur_v / major_low_px) - 1.0) * 100.0, 2)
-        if major_low_px and major_low_px > 0
-        else None
-    )
-
-    eff_dec = decimals if decimals is not None else 6
-    out: Dict[str, Any] = {
-        "swing_low_px": round(swing_low_px, eff_dec),
-        "swing_high_px": round(swing_high_px, eff_dec),
-        "rally_from_swing_low_pct": rally_pct,
-        "pullback_from_swing_high_pct": pullback_pct,
-    }
-    if major_rally_pct is not None and major_low_px is not None and major_rally_pct > rally_pct:
-        out["major_swing_low_px"] = round(major_low_px, eff_dec)
-        out["rally_from_major_low_pct"] = major_rally_pct
-    if swing_legs_pct:
-        out["recent_swings_7d"] = [f"{x:+.1f}%" for x in swing_legs_pct[-5:]]
-        out["avg_swing_amp_7d_pct"] = round(
-            sum(abs(x) for x in swing_legs_pct) / len(swing_legs_pct), 2
-        )
-    return out
-
-
-def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None) -> Dict[str, Any]:
-    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%–8% swing waves from a price series."""
-    if not isinstance(vals, list) or len(vals) < 2 or vals[0] <= 0:
-        return {}
-    raw_low, raw_high, cur_v = min(vals), max(vals), vals[-1]
-    eff_dec = decimals if decimals is not None else 6
-    l7_v = round(raw_low, eff_dec)
-    h7_v = round(raw_high, eff_dec)
-    metrics: Dict[str, Any] = {
-        "chg_7d_pct": round(((cur_v - vals[0]) / vals[0]) * 100.0, 2),
-        "low_7d": l7_v,
-        "high_7d": h7_v,
-    }
-    if h7_v > 0:
-        metrics["dd_7d_high_pct"] = round((cur_v / h7_v - 1.0) * 100.0, 2)
-    if l7_v > 0:
-        metrics["bounce_7d_low_pct"] = round((cur_v / l7_v - 1.0) * 100.0, 2)
-        metrics["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
-    if h7_v > l7_v > 0:
-        metrics["pos_7d_pct"] = round(((cur_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
-    metrics.update(_compute_swing_wave_metrics(vals, decimals=eff_dec))
-    return metrics
-
-
-def _load_symbol_microstructure(
-    cache_dir: str,
-    sym: str,
-    read_json_fn: Any,
-) -> Optional[Dict[str, Any]]:
-    """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
-    sym_cands = cache_symbol_variants(sym)
-    ob = next(
-        (
-            d
-            for cand in sym_cands
-            for d in (read_json_fn(os.path.join(cache_dir, f"orderbook_depth_{cand}.json")),)
-            if isinstance(d, dict)
-        ),
-        None,
-    )
-    deriv = next(
-        (
-            d
-            for cand in sym_cands
-            for d in (read_json_fn(os.path.join(cache_dir, f"derivatives_telemetry_{cand}.json")),)
-            if isinstance(d, dict)
-        ),
-        None,
-    )
-    whale = next(
-        (
-            d
-            for cand in sym_cands
-            for d in (read_json_fn(os.path.join(cache_dir, f"whale_snapshot_{cand}.json")),)
-            if isinstance(d, dict)
-        ),
-        None,
-    )
-    if not (ob or deriv or whale):
-        return None
-    m_info: Dict[str, Any] = {}
-    if isinstance(ob, dict):
-        m_info["ob_imbalance"] = ob.get("imbalance_ratio")
-        ob_mid = safe_pos_float(ob.get("mid_price"), default=None)
-        if ob_mid is not None:
-            m_info["ob_mid_price"] = ob_mid
-        for k_src, k_dst in (
-            ("bid_depth_usd", "bid_depth_usd"),
-            ("ask_depth_usd", "ask_depth_usd"),
-            ("largest_bid_wall_usd", "bid_wall_usd"),
-            ("largest_ask_wall_usd", "ask_wall_usd"),
-        ):
-            val = safe_nonneg_float(ob.get(k_src), default=None)
-            m_info[k_dst] = round(val, 0) if val is not None else None
-        m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
-        m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
-    if isinstance(deriv, dict):
-        m_info["funding_rate"] = deriv.get("funding_rate")
-        m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
-        m_info["oi_usd"] = deriv.get("open_interest_usd")
-    if isinstance(whale, dict):
-        m_info["whale_long_pct"] = whale.get("top_traders_long_pct")
-        m_info["whale_long_ratio"] = whale.get("top_traders_long_ratio")
-        m_info["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
-        m_info["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
-        m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
-        m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
-        m_info["divergence_regime"] = whale.get("divergence_regime")
-    return m_info
-
-
-def _round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
-    """Round a positive price anchor to `decimals`, returning None when absent or non-positive."""
-    vf = safe_pos_float(val, default=None)
-    return round(vf, decimals) if vf is not None else None
-
-
-def _resolve_symbol_price(
-    symbol: str,
-    prices_and_trends: Dict[str, Any],
-    fallback_prices: Optional[Dict[str, float]] = None,
-) -> float:
-    """Resolve a positive live price for `symbol` across canonical symbol variants and optional fallback map."""
-    if not symbol:
-        return 0.0
-    sym_variants = cache_symbol_variants(symbol)
-    for cand in sym_variants:
-        entry = prices_and_trends.get(cand)
-        cand_px = safe_pos_float(entry.get("price") if isinstance(entry, dict) else None, default=0.0) or 0.0
-        if cand_px > 0:
-            return cand_px
-    if isinstance(fallback_prices, dict):
-        for cand in sym_variants:
-            cand_px = safe_pos_float(fallback_prices.get(cand), default=0.0) or 0.0
-            if cand_px > 0:
-                return cand_px
-    return 0.0
-
-
-def _apply_live_24trend_windows(
-    entry: Dict[str, Any],
-    lt_win: Dict[str, Any],
-    fallback_price: Any = None,
-) -> None:
-    """Overlay fresh 1-second sampled dynamic windows (90s, 3.7m, 15m, 2.5h) from `cachedb/24trend/live_<SYM>.json`."""
-    w90 = lt_win.get("90") if isinstance(lt_win.get("90"), dict) else {}
-    w222 = lt_win.get("222") if isinstance(lt_win.get("222"), dict) else w90
-    w900 = lt_win.get("900") if isinstance(lt_win.get("900"), dict) else {}
-    w9000 = lt_win.get("9000") if isinstance(lt_win.get("9000"), dict) else {}
-    live_px = w222.get("current_price") or w900.get("current_price") or fallback_price
-    if entry.get("price") is None and live_px is not None:
-        entry["price"] = live_px
-    entry.setdefault("trend", w222.get("final_trend", 0))
-    entry.setdefault("growth_coefficient", w222.get("growth_coefficient", 0.0))
-    for w_dict, s_key, t_key, g_key, keep_existing_default in (
-        (w90, "slope_90s", "trend_90s", "growth_90s", False),
-        (w222, "slope_3_7m", "trend_3_7m", "growth_3_7m", True),
-        (w900, "slope_15m", "trend_15m", "growth_15m", True),
-        (w9000, "slope_2_5h", "trend_2_5h", "growth_2_5h", True),
-    ):
-        if not w_dict:
-            continue
-        if keep_existing_default:
-            entry[s_key] = w_dict.get("slope_full", entry.get(s_key, 0.0))
-            entry[t_key] = w_dict.get("final_trend", entry.get(t_key, 0))
-        else:
-            if w_dict.get("slope_full") is not None:
-                entry[s_key] = w_dict.get("slope_full")
-            if w_dict.get("final_trend") is not None:
-                entry[t_key] = w_dict.get("final_trend")
-        if w_dict.get("growth_coefficient") is not None:
-            entry[g_key] = w_dict.get("growth_coefficient")
-
-
-def _parse_venue_cycle_state(
-    st_data: Dict[str, Any],
-    symbol: str,
-    prices_and_trends: Dict[str, Any],
-    *,
-    avg_decimals: int = 6,
-    fallback_prices: Optional[Dict[str, float]] = None,
-) -> Dict[str, Any]:
-    """Normalize a venue cycle `.state_*.json` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
-    qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
-    raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
-    cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
-    avg_cost = round(cost / qty, avg_decimals) if qty > 1e-12 and cost > 0 else None
-    px_f = _resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
-    dd_pct = round(((px_f - avg_cost) / avg_cost) * 100.0, 2) if avg_cost and px_f > 0 else None
-    last_buy_px = (
-        st_data.get("last_buy_price")
-        if st_data.get("last_buy_price") is not None
-        else st_data.get("last_open_price")
-    )
-    cyc_entry: Dict[str, Any] = {
-        "qty": round(qty, 6),
-        "cost_usd": round(cost, 2),
-        "avg_cost_px": avg_cost,
-        "entry_price": _round_opt_px(st_data.get("entry_price"), avg_decimals),
-        "last_buy_price": _round_opt_px(last_buy_px, avg_decimals),
-        "last_sell_price": _round_opt_px(st_data.get("last_sell_price"), avg_decimals),
-        "last_exit_kind": st_data.get("last_exit_kind"),
-        "dca_buys": st_data.get("dca_buys"),
-        "dd_pct": dd_pct,
-    }
-    pos_peak = _round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
-    if pos_peak is not None:
-        cyc_entry["pos_peak"] = pos_peak
-    raw_realized = (
-        st_data.get("realized_net")
-        if st_data.get("realized_net") is not None
-        else (
-            st_data.get("realized_pnl")
-            if st_data.get("realized_pnl") is not None
-            else st_data.get("realized_gross")
-        )
-    )
-    realized_pnl = _parse_finite_float(raw_realized, 0.0)
-    if abs(realized_pnl) > 1e-9:
-        cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
-    tp_sold = st_data.get("tp_sold")
-    if isinstance(tp_sold, list) and tp_sold:
-        cyc_entry["tp_sold_levels"] = tp_sold
-    raw_orders = st_data.get("orders")
-    if isinstance(raw_orders, list) and raw_orders:
-        close_orders = [
-            {
-                "side": o.get("side"),
-                "px": o.get("px") or o.get("price") or o.get("limit"),
-                "sz": o.get("sz") or o.get("qty"),
-                "role": o.get("role") or o.get("kind"),
-            }
-            for o in raw_orders
-            if isinstance(o, dict)
-        ]
-        if close_orders:
-            cyc_entry["resting_orders"] = close_orders
-    return cyc_entry
-
-
-def _harvest_venue_cycles(
-    workspace_dir: str,
-    prices_and_trends: Dict[str, Any],
-    fallback_prices: Dict[str, float],
-    read_json_fn: Any,
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """Harvest normalized `.state_*.json` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
-    kraken_cycles: Dict[str, Any] = {}
-    kraken_dir = os.path.join(workspace_dir, "kraken")
-    if os.path.isdir(kraken_dir):
-        for st_path in sorted(glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
-            pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-            if not pair_name.isalnum() or not pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
-                continue
-            st_data = read_json_fn(st_path)
-            if isinstance(st_data, dict):
-                kraken_cycles[pair_name] = _parse_venue_cycle_state(
-                    st_data, pair_name, prices_and_trends, avg_decimals=6, fallback_prices=fallback_prices
-                )
-
-    hyperliquid_cycles: Dict[str, Any] = {}
-    hl_dir = os.path.join(workspace_dir, "hyperliquid")
-    if os.path.isdir(hl_dir):
-        hl_state_paths = sorted(
-            glob.glob(os.path.join(hl_dir, ".state_*.json")),
-            key=lambda p: (
-                0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
-                os.path.basename(p),
-            ),
-        )
-        for st_path in hl_state_paths:
-            raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-            if raw_tok.startswith("DN_") or raw_tok == "DN":
-                continue
-            for sfx in ("_LONG", "_SHORT"):
-                if raw_tok.endswith(sfx):
-                    raw_tok = raw_tok[: -len(sfx)]
-                    break
-            if not raw_tok.isalnum():
-                continue
-            pair_name = raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC"
-            st_data = read_json_fn(st_path)
-            if isinstance(st_data, dict):
-                hyperliquid_cycles[pair_name] = _parse_venue_cycle_state(
-                    st_data, pair_name, prices_and_trends, avg_decimals=6, fallback_prices=fallback_prices
-                )
-
-    all_t212_cycles: Dict[str, Any] = {}
-    t212_dir = os.path.join(workspace_dir, "212trading")
-    if os.path.isdir(t212_dir):
-        for st_path in sorted(glob.glob(os.path.join(t212_dir, ".state_*.json"))):
-            fname = os.path.basename(st_path)
-            if fname.startswith(".."):
-                continue
-            ticker = fname[len(".state_") : -len(".json")].upper()
-            if not ticker.replace("_", "").isalnum():
-                continue
-            st_data = read_json_fn(st_path)
-            if isinstance(st_data, dict):
-                all_t212_cycles[ticker] = _parse_venue_cycle_state(
-                    st_data, ticker, prices_and_trends, avg_decimals=4, fallback_prices=fallback_prices
-                )
-
-    return kraken_cycles, hyperliquid_cycles, all_t212_cycles
-
-
-def _harvest_kraken_xstocks(
-    kraken_dir: str,
-    prices_and_trends: Dict[str, Any],
-    all_t212_cycles: Dict[str, Any],
-    read_json_fn: Any,
-) -> Optional[Dict[str, Any]]:
-    """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
-    xst_path = os.path.join(kraken_dir, "xstock_state.json")
-    xst_data = read_json_fn(xst_path) if os.path.exists(xst_path) else None
-    if not isinstance(xst_data, dict):
-        return None
-    xstock_cfg = load_key_value_conf(kraken_dir, root_dir=kraken_dir)
-    known_assets = xst_data.get("known_assets") if isinstance(xst_data.get("known_assets"), dict) else {}
-    x_regex = xstock_cfg.get("xstock_regex") or "SPCX|SPACEX"
-    x_holdings: Dict[str, float] = {}
-    for ak, av in known_assets.items():
-        ak_str = str(ak).strip()
-        av_f = _parse_finite_float(av, 0.0)
-        if av_f <= 0:
-            continue
-        is_xstock_tok = ak_str.upper().endswith(("X.T", ".T"))
-        if not is_xstock_tok:
-            try:
-                is_xstock_tok = bool(re.search(x_regex, ak_str, re.IGNORECASE))
-            except re.error:
-                is_xstock_tok = False
-        if is_xstock_tok:
-            x_holdings[ak_str] = round(av_f, 6)
-    alloc_info = xst_data.get("allocated") if isinstance(xst_data.get("allocated"), dict) else None
-    raw_pair = xst_data.get("pair")
-    listed_pair = (
-        str(raw_pair).strip().upper()
-        if isinstance(raw_pair, str) and raw_pair.strip() and raw_pair.strip().lower() not in ("none", "null", "nan")
-        else None
-    )
-    if not (x_holdings or alloc_info or listed_pair):
-        return None
-    underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
-    t212_sib = f"{underlying}_US_EQ"
-    alloc_px = _parse_finite_float(xstock_cfg.get("xstock_alloc_price"), 0.0)
-    tp1_pct = _parse_finite_float(xstock_cfg.get("xstock_tp_alert_pct"), 0.0)
-    tp2_pct = _parse_finite_float(xstock_cfg.get("xstock_tp2_alert_pct"), 0.0)
-    sl_pct = _parse_finite_float(xstock_cfg.get("xstock_sl_alert_pct"), 0.0)
-    live_px = _resolve_symbol_price(listed_pair or underlying, prices_and_trends)
-    xst_summary: Dict[str, Any] = {
-        "underlying": underlying,
-        "t212_sibling": t212_sib,
-        "holdings": x_holdings,
-        "allocated": alloc_info,
-        "listed_pair": listed_pair,
-        "alloc_price": alloc_px if alloc_px > 0 else None,
-        "tp1_alert_pct": tp1_pct if tp1_pct > 0 else None,
-        "tp2_alert_pct": tp2_pct if tp2_pct > 0 else None,
-        "sl_alert_pct": sl_pct if sl_pct > 0 else None,
-    }
-    if live_px > 0:
-        xst_summary["live_price"] = live_px
-        if alloc_px > 0:
-            xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
-    sib_cyc = all_t212_cycles.get(t212_sib)
-    if isinstance(sib_cyc, dict):
-        xst_summary["t212_sibling_cycle"] = sib_cyc
-    return xst_summary
-
-
-def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
-    """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
-    extra_parts: List[str] = []
-    if cyc.get("pos_peak") is not None:
-        extra_parts.append(f"pos_peak={cyc.get('pos_peak')}")
-    if cyc.get("realized_pnl_usd") is not None:
-        extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
-    if cyc.get("tp_sold_levels"):
-        extra_parts.append(f"tp_sold={cyc.get('tp_sold_levels')}")
-    if cyc.get("resting_orders"):
-        extra_parts.append(f"resting_orders={cyc.get('resting_orders')}")
-    extra_sfx = f", {', '.join(extra_parts)}" if extra_parts else ""
-    exit_kind = cyc.get("last_exit_kind")
-    exit_kind_sfx = f" ({exit_kind})" if exit_kind else ""
-    dd_val = cyc.get("dd_pct")
-    dd_str = f"{dd_val}%" if dd_val is not None else "N/A"
-    return (
-        f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
-        f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
-        f"last_buy={cyc.get('last_buy_price')}, last_sell={cyc.get('last_sell_price')}"
-        f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, dd={dd_str}{extra_sfx}"
-    )
-
-
-def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> str:
-    """Format `[low, high] pos_<horizon>=X% (dd_high=..., bounce_low=..., span=...)` for 24h or 7d."""
-    lo, hi = pinfo.get(f"low_{horizon}"), pinfo.get(f"high_{horizon}")
-    lo_f = _parse_finite_float(lo, 0.0)
-    hi_f = _parse_finite_float(hi, 0.0)
-    pos_sfx = ""
-    if px_f > 0 and lo_f > 0 and hi_f > lo_f:
-        pos_v = (
-            pinfo.get(f"pos_{horizon}_pct")
-            if pinfo.get(f"pos_{horizon}_pct") is not None
-            else round(((px_f - lo_f) / (hi_f - lo_f)) * 100.0, 1)
-        )
-        dd_v = (
-            pinfo.get(f"dd_{horizon}_high_pct")
-            if pinfo.get(f"dd_{horizon}_high_pct") is not None
-            else round((px_f / hi_f - 1.0) * 100.0, 2)
-        )
-        bnc_v = (
-            pinfo.get(f"bounce_{horizon}_low_pct")
-            if pinfo.get(f"bounce_{horizon}_low_pct") is not None
-            else round((px_f / lo_f - 1.0) * 100.0, 2)
-        )
-        spn_v = (
-            pinfo.get(f"span_{horizon}_pct")
-            if pinfo.get(f"span_{horizon}_pct") is not None
-            else round((hi_f / lo_f - 1.0) * 100.0, 2)
-        )
-        pos_sfx = (
-            f" pos_{horizon}={pos_v}% (dd_high={_parse_finite_float(dd_v, 0.0):+.2f}%, "
-            f"bounce_low={_parse_finite_float(bnc_v, 0.0):+.2f}%, span={spn_v}%)"
-        )
-    return f"{horizon}_range=[{lo}, {hi}]{pos_sfx}"
-
-
-def _format_macro_and_news_section(sensors: "TelemetrySensorSnapshot") -> List[str]:
-    """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
-    fg = sensors.fear_greed or {}
-    mb = sensors.market_breadth or {}
-    sa = sensors.sentiment_advisor or {}
-    gt = sensors.geopolitical_threat or {}
-
-    fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
-    fg_line = (
-        f"{fg.get('value', 'N/A')} ({fg.get('classification') or fg.get('sentiment') or 'N/A'}, "
-        f"7d_chg={fg.get('trend_7d_change', 'N/A')}"
-        + (f", 7d_hist={fg_hist}" if fg_hist else "")
-        + (f", age={fg.get('age_min')}m" if fg.get("age_min") is not None else "")
-        + ")"
-        if fg else "None"
-    )
-    mb_gainers = mb.get("top_gainers")[:3] if isinstance(mb.get("top_gainers"), list) else None
-    mb_losers = mb.get("top_losers")[:3] if isinstance(mb.get("top_losers"), list) else None
-    mb_line = (
-        f"advance_ratio={mb.get('advance_ratio', 'N/A')}, regime={mb.get('regime', 'N/A')}, "
-        f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
-        f"mean_chg={mb.get('mean_change_pct', 'N/A')}%, disp_std={mb.get('dispersion_std', 'N/A')}, "
-        f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
-        + (f", top_gainers={mb_gainers}" if mb_gainers else "")
-        + (f", top_losers={mb_losers}" if mb_losers else "")
-        if mb else "None"
-    )
-    sa_line = (
-        f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
-        f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')}"
-        + (f", age={sa.get('age_min')}m" if sa.get("age_min") is not None else "")
-        + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
-        if sa else "None"
-    )
-    gt_line = (
-        f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
-        f"brake={gt.get('recommended_brake', 'N/A')}"
-        + (f", age={gt.get('age_min')}m" if gt.get("age_min") is not None else "")
-        + f" | summary={gt.get('summary', '')}"
-        if gt else "None"
-    )
-    lines = [
-        "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
-        f"- Fear & Greed: {fg_line}",
-        f"- Market Breadth: {mb_line}",
-        f"- Macro Sentiment Advisor: {sa_line}",
-        f"- Geopolitical Threat Shield: {gt_line}",
-    ]
-    if sensors.breaking_news:
-        lines.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
-        for hn in sensors.breaking_news:
-            sev_tag = "[HIGH-SEV] " if hn.get("is_high_severity") else ""
-            kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
-            age_sfx = f" (age={hn.get('age_min')}m)" if hn.get("age_min") is not None else ""
-            lines.append(f"  * {sev_tag}{hn.get('title')}{kw_sfx}{age_sfx}")
-    return lines
-
-
-def _format_sre_and_fleet_section(
-    sensors: "TelemetrySensorSnapshot",
-    logs: "LogEventSummary",
-    lookback_hours: float,
-) -> List[str]:
-    """Format SRE functional telemetry, log anomalies, fleet heartbeats, and OS/VPN resources."""
-    lines = [
-        "### 1. FUNCTIONAL SYSTEM TELEMETRY, HEARTBEATS & WATCHDOG STATES:",
-        f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
-        f"- Watchdog & Runtime State Files: {sensors.state_files}",
-        f"\n### 2. LOG ANOMALIES & GUARD VETOES / PERSISTENT UNRESOLVED ERRORS (PAST {lookback_hours:g}H):",
-        f"- Scanned Logs: {logs.total_scanned_files}",
-        f"- Error Count: {logs.error_count}",
-        f"- Guard Interventions: {logs.warning_count}",
-    ]
-    if getattr(logs, "persistent_errors", None):
-        lines.append("- Persistent / Unresolved Errors in Logs:")
-        for pe in logs.persistent_errors[:15]:
-            tail_lbl = "UNRESOLVED_AT_TAIL" if pe.get("unresolved_at_tail") else "RECURRING"
-            lines.append(
-                f"  * [{tail_lbl} x{pe.get('count', 1)} in {pe.get('file', 'log')}] {pe.get('sample', '')}"
-            )
-    lines.append("- Sample Errors & Interventions:")
-    for evt in logs.critical_events[:15]:
-        lines.append(f"  * {evt}")
-    for g_evt in logs.guard_interventions[:10]:
-        lines.append(f"  * [GUARD] {g_evt}")
-
-    if sensors.fleet_processes:
-        running_p = [p for p in sensors.fleet_processes if p.get("is_running")]
-        stopped_p = [p["name"] for p in sensors.fleet_processes if not p.get("is_running")]
-        stale_p = [
-            f"{p['name']} (age={p.get('age_seconds')}s > {p.get('max_stale_seconds')}s)"
-            for p in sensors.fleet_processes
-            if p.get("is_running") and not p.get("heartbeat_fresh", True)
-        ]
-        lines.append(
-            f"\n### 2B. FLEET PROCESSES & BOT HEARTBEATS (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
-            + (f" | STOPPED: {stopped_p}" if stopped_p else "")
-            + (f" | STALE HEARTBEAT: {stale_p}" if stale_p else " | All heartbeats fresh")
-        )
-
-    if sensors.system_and_vpn:
-        sv = sensors.system_and_vpn
-        cfg_audit = sv.get("config_audit") if isinstance(sv.get("config_audit"), dict) else {}
-        cfg_issues = cfg_audit.get("issues") or []
-        cfg_summary = (
-            f"ISSUES DETECTED: {cfg_issues}"
-            if cfg_issues
-            else f"OK (verified {cfg_audit.get('checked_files', [])})"
-        )
-        lines.append(
-            "\n### 2C. LINUX SYSTEM RESOURCES & VPN TUNNEL HEALTH:\n"
-            f"- CPU Load Avg (1m/5m/15m): {sv.get('load_avg', 'N/A')}\n"
-            f"- Memory: used={sv.get('mem_used_pct', 'N/A')}%, avail={sv.get('mem_avail_mb', 'N/A')} MB\n"
-            f"- Disk: used={sv.get('disk_used_pct', 'N/A')}%, free={sv.get('disk_free_gb', 'N/A')} GB\n"
-            f"- VPN Tunnel ({sv.get('vpn_interface', 'wgpia0')}): {'UP' if sv.get('vpn_tunnel_up') else 'DOWN / NOT PRESENT'}\n"
-            f"- Internet & DNS Connectivity: healthy={sv.get('internet_healthy', True)}, "
-            f"default_route={sv.get('default_route_present', 'N/A')}, dns_servers={sv.get('dns_servers', 'N/A')}, "
-            f"vpn_outage_active={sv.get('vpn_outage_active', False)}\n"
-            f"- Configuration Files Audit: {cfg_summary}"
-            + (
-                f"\n- Sustained High-Resource Processes (.resource_watchdog_state.json): {sv['resource_watchdog_offenders']}"
-                if sv.get("resource_watchdog_offenders")
-                else ""
-            )
-        )
-    return lines
-
-
-def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str]:
-    """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
-    lines = ["\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):"]
-    btc_entry = next(
-        (
-            entry for k, entry in prices_and_trends.items()
-            if isinstance(entry, dict) and canonical_base_asset(k) == "BTC"
-        ),
-        None,
-    )
-    grouped_3a: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
-    for s_k, s_v in sorted(prices_and_trends.items()):
-        if isinstance(s_v, dict):
-            grouped_3a.setdefault(canonical_base_asset(s_k), []).append((s_k, s_v))
-
-    for _, sym_group in sorted(grouped_3a.items(), key=lambda kv: kv[1][0][0]):
-        sym_group.sort(
-            key=lambda item: (
-                0 if item[0].endswith(("USDC", "_US_EQ", "_EQ")) else 1,
-                -len(item[1]),
-                item[0],
-            )
-        )
-        sym, pinfo = sym_group[0]
-        px = pinfo.get("price")
-        px_f = _parse_finite_float(px, 0.0)
-        px_str = (
-            f"${px_f:,.2f}"
-            if px_f >= 1.0
-            else (f"${px_f:.6g}" if px_f > 0 else (f"${px}" if px is not None and not isinstance(px, bool) else "N/A"))
-        )
-        sib_lbl = ""
-        if len(sym_group) > 1:
-            sib_parts: List[str] = []
-            for sib_sym, sib_info in sym_group[1:]:
-                s_px = _parse_finite_float(sib_info.get("price"), 0.0)
-                if s_px > 0:
-                    s_px_s = f"${s_px:,.2f}" if s_px >= 1.0 else f"${s_px:.6g}"
-                    if px_f > 0 and abs(s_px - px_f) > 1e-9:
-                        sib_parts.append(f"{sib_sym}={s_px_s} [{(s_px - px_f) / px_f * 100.0:+.2f}%]")
-                    else:
-                        sib_parts.append(f"{sib_sym}={s_px_s}")
-                else:
-                    sib_parts.append(sib_sym)
-            if sib_parts:
-                sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
-
-        extras: List[str] = []
-        if "chg_15m_pct" in pinfo:
-            micro_horizons = "".join(
-                f"{m_lbl}={_parse_finite_float(pinfo.get(m_k), 0.0):+.2f}% "
-                for m_lbl, m_k in (("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct"))
-                if m_k in pinfo and pinfo.get(m_k) is not None
-            )
-            opt_horizons = "".join(
-                f"{h_lbl}={_parse_finite_float(pinfo.get(h_k), 0.0):+.2f}% "
-                for h_lbl, h_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"))
-                if h_k in pinfo and pinfo.get(h_k) is not None
-            )
-            extras.append(
-                f"{micro_horizons}"
-                f"15m={_parse_finite_float(pinfo.get('chg_15m_pct'), 0.0):+.2f}% "
-                f"30m={_parse_finite_float(pinfo.get('chg_30m_pct'), 0.0):+.2f}% "
-                f"1h={_parse_finite_float(pinfo.get('chg_1h_pct'), 0.0):+.2f}% "
-                f"3h={_parse_finite_float(pinfo.get('chg_3h_pct'), 0.0):+.2f}% "
-                f"{opt_horizons}"
-                f"{_format_horizon_range(pinfo, px_f, '24h')}"
-            )
-            if isinstance(pinfo.get("recent_tape_15m"), list) and pinfo["recent_tape_15m"]:
-                tape_str = f"tape_15m=[{', '.join(str(x) for x in pinfo['recent_tape_15m'])}]"
-                if pinfo.get("low_15m") is not None and pinfo.get("high_15m") is not None:
-                    pos15_sfx = f" pos_15m={pinfo['pos_15m_pct']}%" if pinfo.get("pos_15m_pct") is not None else ""
-                    tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
-                extras.append(tape_str)
-
-        if not sym.endswith(("_EQ", "_US_EQ")) and canonical_base_asset(sym) != "BTC":
-            vs_btc_parts: List[str] = []
-            if btc_entry:
-                for h_lbl, h_k in (
-                    ("5m", "chg_5m_pct"), ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("3h", "chg_3h_pct"),
-                    ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"), ("7d", "chg_7d_pct"),
-                ):
-                    if h_k in pinfo and h_k in btc_entry:
-                        a_v = _parse_finite_float(pinfo.get(h_k), None)
-                        b_v = _parse_finite_float(btc_entry.get(h_k), None)
-                        if a_v is not None and b_v is not None:
-                            vs_btc_parts.append(f"{h_lbl}={a_v - b_v:+.2f}%")
-            if vs_btc_parts:
-                extras.append(f"vs_btc({', '.join(vs_btc_parts)})")
-            cross_parts: List[str] = []
-            if pinfo.get("alt_btc_pos_24h_pct") is not None:
-                cross_parts.append(f"pos={pinfo.get('alt_btc_pos_24h_pct')}%")
-            if pinfo.get("alt_btc_dd_24h_high_pct") is not None:
-                cross_parts.append(f"dd_high={_parse_finite_float(pinfo.get('alt_btc_dd_24h_high_pct'), 0.0):+.2f}%")
-            if pinfo.get("alt_btc_bounce_24h_low_pct") is not None:
-                cross_parts.append(f"bounce_low={_parse_finite_float(pinfo.get('alt_btc_bounce_24h_low_pct'), 0.0):+.2f}%")
-            if cross_parts:
-                extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
-
-        if "chg_7d_pct" in pinfo:
-            extras.append(
-                f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
-                f"{_format_horizon_range(pinfo, px_f, '7d')}"
-            )
-        if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None:
-            sw_ral = _parse_finite_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
-            sw_pb = _parse_finite_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
-            maj_sfx = (
-                f", major_low={pinfo.get('major_swing_low_px')}"
-                f"(rally={_parse_finite_float(pinfo.get('rally_from_major_low_pct'), 0.0):+.2f}%)"
-                if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None
-                else ""
-            )
-            hist_sfx = ""
-            if isinstance(pinfo.get("recent_swings_7d"), list) and pinfo["recent_swings_7d"]:
-                amp_s = (
-                    f", avg_amp={pinfo.get('avg_swing_amp_7d_pct')}%"
-                    if pinfo.get("avg_swing_amp_7d_pct") is not None
-                    else ""
-                )
-                hist_sfx = f" swings_7d=[{', '.join(str(x) for x in pinfo['recent_swings_7d'])}]{amp_s}"
-            extras.append(
-                f"swing_wave(low={pinfo.get('swing_low_px')}, high={pinfo.get('swing_high_px')}, "
-                f"rally_low={sw_ral:+.2f}%, pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
-            )
-        if "slope_15m" in pinfo:
-            s90_pfx = (
-                f"90s={_parse_finite_float(pinfo.get('slope_90s'), 0.0):+.5f}, "
-                if pinfo.get("slope_90s") is not None and not isinstance(pinfo.get("slope_90s"), bool)
-                else ""
-            )
-            grad_rec_sfx = (
-                f", grad_rec={_parse_finite_float(pinfo.get('gradient_recent'), 0.0):+.4f}"
-                if isinstance(pinfo.get("gradient_recent"), (int, float))
-                and not isinstance(pinfo.get("gradient_recent"), bool)
-                and abs(_parse_finite_float(pinfo.get("gradient_recent"), 0.0)) > 1e-9
-                else ""
-            )
-            fast_sfx = (
-                f", grad_fast={_parse_finite_float(pinfo.get('gradient_recent_fast'), 0.0):+.4f}"
-                f"/eps={_parse_finite_float(pinfo.get('epsilon'), 0.0):.4f}"
-                if isinstance(pinfo.get("gradient_recent_fast"), (int, float))
-                and not isinstance(pinfo.get("gradient_recent_fast"), bool)
-                and isinstance(pinfo.get("epsilon"), (int, float))
-                and not isinstance(pinfo.get("epsilon"), bool)
-                else ""
-            )
-            g_parts = [
-                f"{g_lbl}={_parse_finite_float(pinfo.get(g_k), 0.0):+.5f}"
-                for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
-                if isinstance(pinfo.get(g_k), (int, float)) and not isinstance(pinfo.get(g_k), bool)
-            ]
-            g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
-            extras.append(
-                f"slopes({s90_pfx}3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}, "
-                f"15m={_parse_finite_float(pinfo.get('slope_15m'), 0.0):+.5f}, "
-                f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}{grad_rec_sfx}{fast_sfx}){g_sfx}"
-            )
-        if pinfo.get("vol_1h_pct") is not None:
-            vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
-            if pinfo.get("adapt_reentry_pct") is not None:
-                vol_part += f"(adapt_reentry={pinfo.get('adapt_reentry_pct')}%)"
-            if pinfo.get("adapt_dca_pct") is not None:
-                vol_part += f" adapt_dca={pinfo.get('adapt_dca_pct')}%"
-            extras.append(vol_part)
-        if pinfo.get("kalman_vel") is not None and not isinstance(pinfo.get("kalman_vel"), bool):
-            extras.append(f"kalman_vel={_parse_finite_float(pinfo.get('kalman_vel'), 0.0):+.5f}")
-        if pinfo.get("long_trend_dir"):
-            lt_str = f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h"
-            if pinfo.get("long_trend_est_rem_hours") is not None:
-                lt_str += f", est_rem={pinfo.get('long_trend_est_rem_hours')}h"
-            if pinfo.get("weibull_median_d") is not None:
-                lt_str += f", med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d"
-            lt_str += ")"
-            extras.append(lt_str)
-        extra_str = f" | {' | '.join(extras)}" if extras else ""
-        lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{extra_str}")
-    return lines
-
-
-def _format_microstructure_section(
-    microstructure: Dict[str, Any],
-    prices_and_trends: Dict[str, Any],
-) -> List[str]:
-    """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
-    lines = ["\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"]
-    seen_3b_bases: set[str] = set()
-    sorted_3b = sorted(
-        microstructure.items(),
-        key=lambda kv: (0 if kv[0].endswith("USDC") else 1, kv[0]),
-    )
-    for sym, minfo in sorted_3b:
-        if not isinstance(minfo, dict):
-            continue
-        b_canon_3b = canonical_base_asset(sym)
-        if b_canon_3b in seen_3b_bases:
-            continue
-        seen_3b_bases.add(b_canon_3b)
-        sib_3b = [
-            other_s
-            for other_s in microstructure
-            if other_s != sym and canonical_base_asset(other_s) == b_canon_3b
-        ]
-        sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
-        cur_px = _resolve_symbol_price(sym, prices_and_trends)
-        bw_px = minfo.get("bid_wall_px")
-        aw_px = minfo.get("ask_wall_px")
-        bw_px_f = _parse_finite_float(bw_px, 0.0)
-        aw_px_f = _parse_finite_float(aw_px, 0.0)
-        ob_mid = _parse_finite_float(minfo.get("ob_mid_price"), 0.0)
-        if ob_mid > 0 and (
-            cur_px <= 0
-            or (bw_px_f > 0 and cur_px < bw_px_f)
-            or (aw_px_f > 0 and cur_px > aw_px_f)
-        ):
-            cur_px = ob_mid
-        bw_dist = f", dist={(bw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and bw_px_f > 0 else ""
-        aw_dist = f", dist={(aw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and aw_px_f > 0 else ""
-        lines.append(
-            f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
-            f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
-            f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
-            f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
-            f"whale_long_pct={minfo.get('whale_long_pct')}, div_regime={minfo.get('divergence_regime')}, "
-            f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
-            f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}), "
-            f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-            f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
-        )
-    return lines
-
-
-def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]:
-    """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
-    lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
-    if ps.get("total_value_usdc") is not None:
-        tot_usdc = _parse_finite_float(ps.get("total_value_usdc"), 0.0)
-        lines.append(f"  * Total Binance Portfolio Value: ${tot_usdc:,.2f} USDC")
-    if ps.get("venue_quote_cash"):
-        cash_parts: List[str] = []
-        for v in ps["venue_quote_cash"].values():
-            if not isinstance(v, dict):
-                continue
-            part = f"{v.get('venue')} {v.get('asset')}=${_parse_finite_float(v.get('free'), 0.0):,.2f}"
-            bd = v.get("breakdown")
-            if isinstance(bd, dict) and (len(bd) > 1 or any(k != v.get("asset") for k in bd)):
-                bd_str = ", ".join(f"{bk}=${_parse_finite_float(bv, 0.0):,.2f}" for bk, bv in bd.items())
-                part += f" ({bd_str})"
-            cash_parts.append(part)
-        if cash_parts:
-            lines.append(f"  * Available Free Quote Cash per Venue: {', '.join(cash_parts)}")
-    if ps.get("tradable_positions"):
-        lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
-        for pos in ps["tradable_positions"]:
-            t_extra = ""
-            if pos.get("active_avg_buy_px") is not None:
-                t_extra += f", avg_buy_px={pos.get('active_avg_buy_px')} (pnl_vs_avg={pos.get('pnl_vs_avg_pct')}%)"
-            if (
-                pos.get("cycle_avg_cost_px") is not None
-                and pos.get("cycle_avg_cost_px") != pos.get("active_avg_buy_px")
-            ):
-                t_extra += f", cycle_avg_cost={pos.get('cycle_avg_cost_px')} (pnl_vs_cycle_cost={pos.get('pnl_vs_cycle_cost_pct')}%)"
-            if pos.get("last_buy_px") is not None:
-                t_extra += f", last_buy_px={pos.get('last_buy_px')} (pnl_vs_last_buy={pos.get('pnl_vs_last_buy_pct')}%)"
-            if (
-                pos.get("lowest_buy_px") is not None
-                and pos.get("lowest_buy_px") != pos.get("last_buy_px")
-            ):
-                t_extra += f", lowest_buy_px={pos.get('lowest_buy_px')} (pnl_vs_lowest_buy={pos.get('pnl_vs_lowest_buy_pct')}%)"
-            if pos.get("last_sell_px") is not None:
-                t_extra += f", last_sell_px={pos.get('last_sell_px')} (chg_vs_last_sell={pos.get('chg_vs_last_sell_pct')}%)"
-            if pos.get("trailing_peak") is not None:
-                t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
-            if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
-                t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
-            fee_bps = (
-                10 if pos.get("venue") == "binance"
-                else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
-            )
-            t_extra += f", venue_fee_per_leg={fee_bps}bps"
-            fb_val = pos.get("free_base")
-            val_usd = pos.get("value_usd")
-            fb_str = (
-                f"{fb_val} (${val_usd} USD)"
-                if fb_val is not None and val_usd is not None
-                else (f"{fb_val}" if fb_val is not None else "N/A")
-            )
-            fq_val = pos.get("free_quote")
-            fq_str = f"${fq_val}" if fq_val is not None else "N/A"
-            fq_bd = pos.get("free_quote_breakdown")
-            if fq_val is not None and isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != pos.get("quote") for k in fq_bd)):
-                bd_s = ", ".join(f"{bk}=${_parse_finite_float(bv, 0.0):,.2f}" for bk, bv in fq_bd.items())
-                fq_str += f" ({bd_s})"
-            lines.append(
-                f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={fb_str}, "
-                f"free_{pos['quote']}={fq_str}, "
-                f"px={pos.get('price')}{t_extra}"
-            )
-    if ps.get("open_orders"):
-        lines.append(f"  * Active Open Orders on Exchange (Locking Liquidity): {ps['open_orders']}")
-    for cyc_key, venue_lbl, venue_id in (
-        ("kraken_cycles", "Kraken", "kraken"),
-        ("hyperliquid_cycles", "Hyperliquid", "hyperliquid"),
-        ("t212_cycles", "Trading212", "t212"),
-    ):
-        if ps.get(cyc_key):
-            lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
-            for c_sym, c_data in sorted(ps[cyc_key].items()):
-                lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
-    if ps.get("kraken_xstocks"):
-        xs = ps["kraken_xstocks"]
-        lines.append(
-            f"  * Kraken xStocks Pre-IPO Holdings (READ-ONLY on Kraken — NOT API-tradable; cross-venue SpaceX exposure for Trading212 {xs.get('t212_sibling')}): {xs}"
-        )
-    if ps.get("cross_market_context"):
-        cmc = ps["cross_market_context"]
-        if isinstance(cmc, dict):
-            if cmc.get("crypto_bellwethers") and asset_scope == "equities":
-                lines.append(
-                    f"  * Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure): {cmc['crypto_bellwethers']}"
-                )
-            if cmc.get("equity_bellwethers") and asset_scope != "equities":
-                lines.append(
-                    f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {cmc['equity_bellwethers']}"
-                )
-    if ps.get("hyperliquid_readonly"):
-        lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
-    for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
-        if not isinstance(oinfo, dict):
-            continue
-        lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
-        ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
-        now_ms = int(time.time() * 1000)
-        lb_ts = _parse_finite_float(lb.get("ts_ms"), 0.0)
-        ls_ts = _parse_finite_float(ls.get("ts_ms"), 0.0)
-        lb_age_h = round((now_ms - int(lb_ts)) / 3_600_000.0, 1) if lb_ts > 0 else None
-        ls_age_h = round((now_ms - int(ls_ts)) / 3_600_000.0, 1) if ls_ts > 0 else None
-        avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
-        avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
-        r_buys = oinfo.get("recent_buys") or []
-        tranches_str = ""
-        if len(r_buys) > 1:
-            t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
-            tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
-        lb_px = _round_opt_px(lb.get("price"), 6)
-        ls_px = _round_opt_px(ls.get("price"), 6)
-        lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h)" if lb_px is not None else "none"
-        ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h)" if ls_px is not None else "none"
-        lines.append(
-            f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
-            f"Last BUY={lb_str} | "
-            f"Last SELL={ls_str}"
-            f"{avg_b_str}{tranches_str}"
-        )
-    for st_key, st_label in (
-        ("active_retry_queue", "Active Queued Retry Orders (order_retry_queue.jsonl)"),
-        ("monitortrades_active_state", "Active MonitorTrades Ride/Stop State (mt_state.json)"),
-        ("assetguardian_state", "Active AssetGuardian State (assetguardian_state.json)"),
-        ("smart_stop_loss_state", "Active Smart Stop-Loss State (smart_stop_loss_state.json)"),
-        ("recent_ai_intents", "Recent Autonomous Intents"),
-    ):
-        if ps.get(st_key):
-            lines.append(f"  * {st_label}: {ps[st_key]}")
-    return lines
-
-
-def _build_cross_market_context(
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-    all_t212_cycles: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Build raw, objective cross-market telemetry (Crypto <-> US Equities) with zero pre-calculated correlations or bias."""
-    ctx: Dict[str, Any] = {}
-
-    # Deduplicate symbols by canonical base asset so multi-venue siblings (HYPEUSDC/HYPEUSD) count once
-    by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
-    for sym, pinfo in sorted(prices_and_trends.items()):
-        if not isinstance(pinfo, dict):
-            continue
-        b_canon = canonical_base_asset(sym)
-        if not b_canon:
-            continue
-        prev = by_base.get(b_canon)
-        if prev is None or (
-            sym.endswith(("USDC", "_US_EQ", "_EQ")) and not prev[0].endswith(("USDC", "_US_EQ", "_EQ"))
-        ) or len(pinfo) > len(prev[1]):
-            by_base[b_canon] = (sym, pinfo)
-
-    raw_horizon_keys = (
-        "chg_1m_pct",
-        "chg_3m_pct",
-        "chg_5m_pct",
-        "chg_15m_pct",
-        "chg_30m_pct",
-        "chg_1h_pct",
-        "chg_3h_pct",
-        "chg_6h_pct",
-        "chg_12h_pct",
-        "chg_24h_pct",
-        "chg_7d_pct",
-        "pos_24h_pct",
-        "slope_3_7m",
-        "slope_15m",
-        "slope_2_5h",
-        "kalman_vel",
-    )
-
-    # 1. Raw Crypto market telemetry for Trading212 Equities AI (24/7 prices, multi-horizon deltas & microstructure)
-    crypto_bellwethers: Dict[str, Any] = {}
-    for b_canon, (sym, pinfo) in sorted(by_base.items()):
-        if sym.endswith(("_EQ", "_US_EQ")):
-            continue
-        px_f = _parse_finite_float(pinfo.get("price"), 0.0)
-        if px_f <= 0:
-            continue
-        cb_entry: Dict[str, Any] = {"symbol": sym, "price": px_f}
-        for k_copy in raw_horizon_keys:
-            if pinfo.get(k_copy) is not None:
-                cb_entry[k_copy] = pinfo.get(k_copy)
-        m_info = microstructure.get(sym)
-        if not isinstance(m_info, dict):
-            m_info = next(
-                (mv for mk, mv in microstructure.items() if canonical_base_asset(mk) == b_canon and isinstance(mv, dict)),
-                None,
-            )
-        if isinstance(m_info, dict):
-            for mk_copy in ("ob_imbalance", "whale_long_pct", "funding_rate", "oi_1h_chg_pct"):
-                if m_info.get(mk_copy) is not None:
-                    cb_entry[mk_copy] = m_info.get(mk_copy)
-        crypto_bellwethers[b_canon] = cb_entry
-    if crypto_bellwethers:
-        ctx["crypto_bellwethers"] = crypto_bellwethers
-
-    # 2. Raw US Equities telemetry for Crypto AI (Trading212 raw prices, multi-horizon deltas & active cycle anchors)
-    equity_bellwethers: Dict[str, Any] = {}
-    eq_syms = sorted(
-        {s for s in prices_and_trends if str(s).upper().endswith(("_EQ", "_US_EQ"))}
-        | {s for s in all_t212_cycles if str(s).upper().endswith(("_EQ", "_US_EQ"))}
-    )
-    for eq_sym in eq_syms:
-        pinfo = prices_and_trends.get(eq_sym) if isinstance(prices_and_trends.get(eq_sym), dict) else {}
-        t_cyc = all_t212_cycles.get(eq_sym) if isinstance(all_t212_cycles.get(eq_sym), dict) else {}
-        eq_entry: Dict[str, Any] = {"symbol": eq_sym}
-        if pinfo.get("price") is not None:
-            eq_entry["price"] = pinfo.get("price")
-        for k_copy in raw_horizon_keys:
-            if pinfo.get(k_copy) is not None:
-                eq_entry[k_copy] = pinfo.get(k_copy)
-        if t_cyc:
-            eq_entry["t212_cycle"] = {
-                k: t_cyc.get(k)
-                for k in ("qty", "avg_cost_px", "entry_price", "last_buy_price", "dd_pct")
-                if t_cyc.get(k) is not None
-            }
-        if len(eq_entry) > 1:
-            equity_bellwethers[eq_sym] = eq_entry
-    if equity_bellwethers:
-        ctx["equity_bellwethers"] = equity_bellwethers
-
-    return ctx
-
-
-
 @dataclass
 class TelemetrySensorSnapshot:
     """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""
@@ -1499,17 +207,6 @@ class TelemetrySensorSnapshot:
     portfolio_summary: Dict[str, Any] = field(default_factory=dict)
     fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
     system_and_vpn: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class LogEventSummary:
-    """Summary of log anomalies and guard interventions collected within the lookback window."""
-    total_scanned_files: int
-    error_count: int
-    warning_count: int
-    critical_events: List[str] = field(default_factory=list)
-    guard_interventions: List[str] = field(default_factory=list)
-    persistent_errors: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1610,13 +307,9 @@ class AutonomousAIReconciler:
 
         def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
             enriched = dict(payload)
-            raw_ts = enriched.get("ts")
-            ref_ts: Optional[float] = None
-            ts_f = safe_pos_float(raw_ts, default=0.0) or 0.0
+            ref_ts = extract_timestamp_s(enriched)
             eff_path = str(resolve_cachedb_filepath(fpath))
-            if ts_f > 0:
-                ref_ts = ts_f / 1000.0 if ts_f > 1e12 else ts_f
-            elif os.path.exists(eff_path):
+            if ref_ts is None and os.path.exists(eff_path):
                 try:
                     ref_ts = os.path.getmtime(eff_path)
                 except OSError:
@@ -1715,7 +408,7 @@ class AutonomousAIReconciler:
         priceanalysis_data = _read_json(os.path.join(self.cache_dir, "priceanalysis.json"))
         t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
         kalman_data = _read_json(os.path.join(self.cache_dir, "cache_kalman_trend.json"))
-        prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
+        watcher_all_price_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
         trailing_map: Dict[str, Dict[str, Any]] = {}
         trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
         for trail_venue, raw_trail, default_quote in (
@@ -1941,15 +634,9 @@ class AutonomousAIReconciler:
                             if isinstance(raw_open, list):
                                 for oo in raw_open:
                                     if isinstance(oo, dict):
-                                        open_orders_list.append({
-                                            "venue": venue,
-                                            "symbol": sym,
-                                            "side": extract_order_side(oo) or str(oo.get("side") or oo.get("type") or "").upper(),
-                                            "price": extract_order_price(oo) or oo.get("price"),
-                                            "origQty": extract_orig_qty(oo) or oo.get("origQty") or oo.get("vol") or oo.get("qty"),
-                                            "executedQty": oo.get("executedQty") if oo.get("executedQty") is not None else (oo.get("vol_exec") or 0),
-                                            "orderId": extract_order_id(oo) or oo.get("orderId") or oo.get("id"),
-                                        })
+                                        open_orders_list.append(
+                                            normalize_open_order(oo, venue=venue, symbol=sym)
+                                        )
                         except Exception:
                             pass
 
@@ -1963,7 +650,9 @@ class AutonomousAIReconciler:
             snapshot.portfolio_summary["trailing_peaks"] = trailing_map
 
         # Enrich every symbol (including Kraken/Hyperliquid/T212 pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
-        multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
+        watcher_price_items = (
+            watcher_all_price_data.get("items", {}) if isinstance(watcher_all_price_data, dict) else {}
+        )
         trends_items_map = (
             trends_data.get("items")
             if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict)
@@ -2059,11 +748,11 @@ class AutonomousAIReconciler:
             if isinstance(tt, dict):
                 entry["weibull_median_d"] = tt.get("median_d")
                 entry["weibull_p90_d"] = tt.get("p90_d")
-            if isinstance(multi_items, dict):
+            if isinstance(watcher_price_items, dict):
                 sym_px_cur = _parse_finite_float(entry.get("price"), 0.0)
                 m_series = None
                 for ck in cand_keys:
-                    cand_ser = multi_items.get(ck)
+                    cand_ser = watcher_price_items.get(ck)
                     if not isinstance(cand_ser, list) or len(cand_ser) < 2:
                         continue
                     last_m_px = (
@@ -2289,8 +978,8 @@ class AutonomousAIReconciler:
                 ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0
                 if ob_mid_v > 0:
                     cycle_fallback_prices[m_sym] = ob_mid_v
-        if isinstance(multi_items, dict):
-            for m_sym, m_ser in multi_items.items():
+        if isinstance(watcher_price_items, dict):
+            for m_sym, m_ser in watcher_price_items.items():
                 if isinstance(m_ser, list) and m_ser and isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
                     m_px = safe_pos_float(m_ser[-1][1], default=0.0) or 0.0
                     if m_px > 0:
@@ -2502,33 +1191,20 @@ class AutonomousAIReconciler:
         retry_q_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "order_retry_queue.jsonl")))
         if os.path.exists(retry_q_path):
             active_retries: List[Dict[str, Any]] = []
-            try:
-                with open(retry_q_path, "r", encoding="utf-8", errors="replace") as f:
-                    for raw_line in f.readlines()[-50:]:
-                        raw_line = raw_line.strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            rec = json.loads(raw_line)
-                        except ValueError:
-                            continue
-                        if not isinstance(rec, dict):
-                            continue
-                        lifecycle = str(rec.get("lifecycle") or "").lower()
-                        exp_ts = _parse_finite_float(rec.get("expires_at_ts"), 0.0)
-                        if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
-                            active_retries.append({
-                                "venue": str(rec.get("provider_name") or "").lower(),
-                                "symbol": rec.get("symbol"),
-                                "side": rec.get("side"),
-                                "qty": rec.get("qty"),
-                                "requested_price": rec.get("requested_price"),
-                                "kind": rec.get("kind"),
-                                "attempts": rec.get("attempts"),
-                                "last_failure_reason": rec.get("last_failure_reason"),
-                            })
-            except Exception:
-                pass
+            for rec in read_tail_jsonl_dicts(retry_q_path, limit=50):
+                lifecycle = str(rec.get("lifecycle") or "").lower()
+                exp_ts = _parse_finite_float(rec.get("expires_at_ts"), 0.0)
+                if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
+                    active_retries.append({
+                        "venue": str(rec.get("provider_name") or "").lower(),
+                        "symbol": rec.get("symbol"),
+                        "side": rec.get("side"),
+                        "qty": rec.get("qty"),
+                        "requested_price": rec.get("requested_price"),
+                        "kind": rec.get("kind"),
+                        "attempts": rec.get("attempts"),
+                        "last_failure_reason": rec.get("last_failure_reason"),
+                    })
             if active_retries:
                 snapshot.portfolio_summary["active_retry_queue"] = active_retries
 
@@ -2596,102 +1272,14 @@ class AutonomousAIReconciler:
     @staticmethod
     def _normalize_error_signature(line: str) -> str:
         """Strip timestamps, PIDs, and hex addresses so recurring log errors group into one signature."""
-        s = _FULL_TS_RE.sub("", line)
-        s = _GLOG_TS_RE.sub("", s)
-        s = _CLOCK_TS_RE.sub("", s)
-        s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
-        s = re.sub(r"\b\d{4,}\b", "NUM", s)
-        return " ".join(s.strip().split())[:180]
+        return normalize_error_signature(line)
 
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
         """Parses recent log files for errors, persistent unresolved exceptions, and guard vetoes."""
         hours = _parse_finite_float(lookback_hours, self.lookback_hours)
         if hours <= 0:
             hours = self.lookback_hours
-        cutoff_ts = time.time() - (hours * 3600.0)
-
-        critical_events: List[str] = []
-        guard_interventions: List[str] = []
-        persistent_errors: List[Dict[str, Any]] = []
-        error_count = 0
-        warning_count = 0
-        scanned_count = 0
-
-        err_pattern = re.compile(
-            r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b)",
-            re.IGNORECASE,
-        )
-        benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
-        supervisor_summary_pattern = re.compile(
-            r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
-            r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
-            r"ntfy delivery gated by common policy|Dispatched ntfy alert to|"
-            r"<!--\s*a padding to disable MSIE|<(?:head|center)>.*500 Internal Server Error)",
-            re.IGNORECASE,
-        )
-        guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
-
-        for l_dir in self.logs_dirs:
-            if not os.path.isdir(l_dir):
-                continue
-            try:
-                for fname in os.listdir(l_dir):
-                    if not (fname.endswith(".log") or fname.endswith(".txt")):
-                        continue
-                    fpath = os.path.join(l_dir, fname)
-                    try:
-                        mtime = os.path.getmtime(fpath)
-                        if mtime < cutoff_ts:
-                            continue
-                        scanned_count += 1
-                        with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                            lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
-                            total_lines = len(lines)
-                            tail_start_idx = max(0, total_lines - max(10, total_lines // 4))
-                            file_sig_stats: Dict[str, Dict[str, Any]] = {}
-                            for idx, line in enumerate(lines):
-                                if supervisor_summary_pattern.search(line):
-                                    continue
-                                if err_pattern.search(line) and not (
-                                    benign_warn_pattern.search(line)
-                                    and not re.search(r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)", line, re.IGNORECASE)
-                                ):
-                                    error_count += 1
-                                    cleaned = line.strip()
-                                    if cleaned not in critical_events and len(critical_events) < 50:
-                                        critical_events.append(cleaned)
-                                    sig = self._normalize_error_signature(cleaned)
-                                    if sig:
-                                        st = file_sig_stats.setdefault(
-                                            sig,
-                                            {"file": fname, "count": 0, "unresolved_at_tail": False, "sample": cleaned},
-                                        )
-                                        st["count"] += 1
-                                        st["sample"] = cleaned
-                                        if idx >= tail_start_idx:
-                                            st["unresolved_at_tail"] = True
-                                elif guard_pattern.search(line):
-                                    warning_count += 1
-                                    cleaned = line.strip()
-                                    if cleaned not in guard_interventions and len(guard_interventions) < 50:
-                                        guard_interventions.append(cleaned)
-                            for st in file_sig_stats.values():
-                                if st["count"] >= 2 or st["unresolved_at_tail"]:
-                                    persistent_errors.append(st)
-                    except Exception as err:
-                        logger.debug("Failed reading log file %s: %s", fpath, err)
-            except Exception as d_err:
-                logger.debug("Failed scanning directory %s: %s", l_dir, d_err)
-
-        persistent_errors.sort(key=lambda item: (1 if item.get("unresolved_at_tail") else 0, int(item.get("count", 0))), reverse=True)
-        return LogEventSummary(
-            total_scanned_files=scanned_count,
-            error_count=error_count,
-            warning_count=warning_count,
-            critical_events=critical_events,
-            guard_interventions=guard_interventions,
-            persistent_errors=persistent_errors[:25],
-        )
+        return harvest_log_anomalies_from_dirs(self.logs_dirs, hours)
 
     def synthesize_and_diagnose(
         self,
@@ -3105,47 +1693,17 @@ class AutonomousAIReconciler:
     @classmethod
     def _is_bot_or_code_error_report(cls, report: SupervisorAuditReport) -> bool:
         """Return True strictly for trading bot exceptions, fleet/config anomalies, or code/config patches."""
-        for issue in report.diagnosed_issues or []:
-            if not isinstance(issue, dict):
-                continue
-            cat = str(issue.get("category") or "").strip().upper()
-            sev = str(issue.get("severity") or "").strip().upper()
-            if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
-                return True
-        if isinstance(report.code_remediation, dict) and _as_bool_flag(report.code_remediation.get("has_fix"), False):
-            return True
-        if report.tests_passed is False:
-            return True
-        for act in report.venue_actions or []:
-            if isinstance(act, dict):
-                norm_act = normalize_repair_action(act, "").get("action")
-                if norm_act in BOT_OR_FLEET_ERROR_ACTIONS:
-                    return True
-        return False
+        return is_bot_or_code_error_report(report)
 
     @classmethod
     def _is_system_os_error_report(cls, report: SupervisorAuditReport) -> bool:
         """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
-        for issue in report.diagnosed_issues or []:
-            if not isinstance(issue, dict):
-                continue
-            cat = str(issue.get("category") or "").strip().upper()
-            sev = str(issue.get("severity") or "").strip().upper()
-            if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
-                return True
-            if sev in ACTIONABLE_ERROR_SEVERITIES and cat not in cls._BOT_AND_ORDER_ERROR_CATEGORIES:
-                return True
-        for act in report.venue_actions or []:
-            if isinstance(act, dict):
-                norm_act = normalize_repair_action(act, "").get("action")
-                if norm_act in SYSTEM_OS_ERROR_ACTIONS:
-                    return True
-        return False
+        return is_system_os_error_report(report)
 
     @classmethod
     def _is_error_report(cls, report: SupervisorAuditReport) -> bool:
         """Return True if the audit report diagnoses any bot/order/code error or system/OS error."""
-        return cls._is_bot_or_code_error_report(report) or cls._is_system_os_error_report(report)
+        return is_error_report(report)
 
     def dispatch_notification(
         self,

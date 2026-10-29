@@ -72,8 +72,6 @@ AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
     "llm",
 })
 
-_QUOTE_SUFFIXES: Tuple[str, ...] = ("USDC", "USDT", "FDUSD", "EUR", "RON", "GBP", "BTC", "ETH", "USD")
-
 
 @dataclass
 class TradeIntentRecord:
@@ -98,193 +96,34 @@ MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
 
 _parse_finite_float = safe_float
 
+from botcore import (
+    conf_or_override as _conf_or_override,
+    extract_current_price_item,
+    is_us_rth_open as _is_us_rth_open,
+    load_env_file_defaults as _load_env_file_defaults,
+    load_key_value_conf,
+    parse_env_file as _parse_env_file,
+    parse_notify_enabled_flag as _parse_notify_enabled_flag,
+)
+from instruments_config import (
+    discover_hyperliquid_spot as _discover_hyperliquid_spot,
+    discover_kraken_cache_pairs as _discover_kraken_cache_pairs,
+    discover_t212_equities as _discover_t212_equities,
+    load_tradable_instruments as _load_tradable_instruments,
+    resolve_instrument_live_price,
+    resolve_tradable_instrument,
+)
+from intelligence.macro_sentiment_ssot import clean_scale, clean_symbol_key
+from providers.execution_audit import (
+    append_intent_history as _append_intent_history,
+    extract_intent_notional as _extract_intent_notional,
+    extract_intent_side as _extract_intent_side,
+    parse_intent_confidence as _parse_intent_confidence,
+    reconcile_intents_from_execution_audit,
+)
 
-_CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
-
-
-def _extract_intent_notional(data: Dict[str, Any], default: Any = None) -> Any:
-    """Extract and parse positive suggested notional USD across aliases and currency strings."""
-    if not isinstance(data, dict):
-        return default
-    raw_notional = data.get("suggested_notional_usd")
-    if raw_notional is None:
-        for nk in ("notional_usd", "amount_usd", "size_usd", "usd_notional", "notional", "value_usd"):
-            if data.get(nk) is not None:
-                raw_notional = data.get(nk)
-                break
-    if isinstance(raw_notional, str):
-        raw_notional = _CURRENCY_STRIP_RE.sub("", raw_notional).strip()
-    return safe_pos_float(raw_notional, default)
-
-
-def _parse_intent_confidence(raw_conf: Any, default: float = 0.0) -> float:
-    """Parse confidence into [0.0, 1.0], normalizing percentage strings or 1..100 values."""
-    if isinstance(raw_conf, str):
-        s = raw_conf.strip()
-        if s.endswith("%"):
-            pct = safe_nonneg_float(s[:-1].strip(), default=None)
-            return round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else default
-    val = safe_nonneg_float(raw_conf, default=None)
-    if val is None:
-        return default
-    if 1.0 < val <= 100.0:
-        return round(val / 100.0, 4)
-    return val if val <= 1.0 else default
-
-
-def extract_current_price_item(item: Any) -> Optional[float]:
-    """Extract the latest positive finite price from any ``cache_current_price.json`` item format."""
-    if item is None or isinstance(item, bool):
-        return None
-    if isinstance(item, (int, float, str)):
-        return safe_pos_float(item, None)
-    if isinstance(item, dict):
-        return safe_pos_float(item.get("price") if item.get("price") is not None else item.get("c"), None)
-    if isinstance(item, (list, tuple)):
-        for entry in reversed(item):
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                px_f = safe_pos_float(entry[1], None)
-                if px_f is not None:
-                    return px_f
-            else:
-                px_f = safe_pos_float(entry, None)
-                if px_f is not None:
-                    return px_f
-    return None
-
-
-def _append_intent_history(intent: Dict[str, Any], entry: Dict[str, Any]) -> None:
-    """Append an entry to ``intent['history']``, coercing null or non-list history fields."""
-    hist = intent.get("history")
-    if not isinstance(hist, list):
-        hist = []
-        intent["history"] = hist
-    hist.append(entry)
-
-
-def _norm_sym(symbol: str) -> str:
-    """Normalize a symbol for comparison by stripping separators and uppercasing."""
-    if isinstance(symbol, bool) or not isinstance(symbol, str):
-        return ""
-    return symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
-
-
-def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
-    """Split a standard spot pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD) into (base, quote)."""
-    return split_symbol_assets(symbol)
-
-
-def _parse_notify_enabled_flag(notify_enabled: Any, conf: Dict[str, str], conf_key: str) -> bool:
-    """Validate and coerce an explicit ``notify_enabled`` override or ``conf[conf_key]`` into a bool."""
-    if notify_enabled is not None:
-        if isinstance(notify_enabled, str) and notify_enabled.strip() == "":
-            return False
-        res = _parse_bool_flag(notify_enabled, None)
-        if res is not None:
-            return res
-        raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
-    if conf_key not in conf:
-        raise KeyError(f"Missing required '{conf_key}' in order_guard.conf")
-    res = _parse_bool_flag(conf[conf_key], None)
-    if res is not None:
-        return res
-    raise ValueError(f"Invalid {conf_key} {conf[conf_key]!r}")
-
-
-def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
-    """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
-    from datetime import datetime, time as dt_time
-    from zoneinfo import ZoneInfo
-
-    ts = safe_pos_float(now_ts, time.time())
-    try:
-        ny_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
-    except (ValueError, OverflowError, OSError):
-        ny_dt = datetime.fromtimestamp(time.time(), tz=ZoneInfo("America/New_York"))
-    if ny_dt.weekday() >= 5:
-        return False
-    return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
-
-
-def _parse_env_file(env_path: str) -> Dict[str, str]:
-    """Parse a key=value env/conf file into an uppercase-keyed dictionary without mutating os.environ."""
-    if not env_path or not os.path.exists(env_path):
-        return {}
-    try:
-        raw = parse_dotenv(env_path)
-        return {k.upper(): v for k, v in raw.items() if k}
-    except Exception:
-        return {}
-
-
-def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
-    """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
-    parsed = _parse_env_file(env_path)
-    for key_u, val in parsed.items():
-        if not key_u.startswith("STRAT_"):
-            os.environ.setdefault(key_u, val)
-    return parsed
-
-
-def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str]]:
-    """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS) and listed xStock pairs from kraken/."""
-    kv = _parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
-    raw_pairs = kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or ""
-    out: List[Tuple[str, str, str]] = []
-    seen_pairs: set[str] = set()
-    for item in raw_pairs.split(","):
-        pair = item.strip().upper()
-        if not pair or pair in seen_pairs:
-            continue
-        split = _split_symbol_assets(pair)
-        if split is not None:
-            seen_pairs.add(pair)
-            out.append((pair, split[0], split[1]))
-    return out
-
-
-def _discover_hyperliquid_spot(workspace_dir: str) -> List[Tuple[str, str, str]]:
-    """Read hyperliquid/config.env to include live Hyperliquid spot pairs (e.g. HYPEUSDC)."""
-    cfg_path = os.path.join(workspace_dir, "hyperliquid", "config.env")
-    if not os.path.exists(cfg_path):
-        return []
-    kv = _load_env_file_defaults(cfg_path)
-    if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
-        return []
-    token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
-    if not token:
-        return []
-    return [(f"{token}USDC", token, "USDC")]
-
-
-def _discover_t212_equities(workspace_dir: str) -> List[Tuple[str, str, str, str]]:
-    """Read 212trading/config.*.env to discover configured Trading212 equity tickers."""
-    t212_dir = os.path.join(workspace_dir, "212trading")
-    if not os.path.isdir(t212_dir):
-        return []
-    out: List[Tuple[str, str, str, str]] = []
-    seen: set[str] = set()
-    for cfg_path in sorted(glob.glob(os.path.join(glob.escape(t212_dir), "config.*.env"))):
-        kv = _parse_env_file(cfg_path)
-        ticker = (kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
-        if ticker and ticker not in seen:
-            seen.add(ticker)
-            short = ticker.split("_", 1)[0]
-            out.append((f"T212_{short}", ticker, ticker, "USD"))
-    return out
-
-
-def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[str, str]:
-    """Load key=value settings from order_guard.conf / config.env / .env (root_dir overlaid by workspace_dir)."""
-    conf: Dict[str, str] = {}
-    search_dirs = [root_dir]
-    if os.path.abspath(workspace_dir) != os.path.abspath(root_dir):
-        search_dirs.append(workspace_dir)
-    for base_dir in search_dirs:
-        for fname in ("order_guard.conf", "config.env", ".env"):
-            for k_u, v_s in _parse_env_file(os.path.join(base_dir, fname)).items():
-                conf[k_u.lower()] = v_s
-    return conf
+_norm_sym = clean_symbol_key
+_split_symbol_assets = split_symbol_assets
 
 
 class AutonomousIntentGateway:
@@ -305,34 +144,20 @@ class AutonomousIntentGateway:
 
         conf = self._load_conf()
 
-        if mode is not None:
-            if isinstance(mode, bool):
-                raise ValueError(
-                    f"Invalid autonomous_trading_mode {mode!r}; must be one of ['enforce', 'off', 'shadow']"
-                )
-            raw_mode = mode
-        else:
-            if "autonomous_trading_mode" not in conf:
-                raise KeyError("Missing required 'autonomous_trading_mode' in order_guard.conf")
-            raw_mode = conf["autonomous_trading_mode"]
-        self.mode = str(raw_mode).strip().lower()
+        raw_mode = _conf_or_override(conf, "autonomous_trading_mode", mode)
+        self.mode = "" if isinstance(raw_mode, bool) else str(raw_mode).strip().lower()
         if self.mode not in ("off", "shadow", "enforce"):
             raise ValueError(
                 f"Invalid autonomous_trading_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']"
             )
 
-        if "autonomous_trading_min_notional_usd" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_min_notional_usd' in order_guard.conf")
-        min_usd = safe_pos_float(conf.get("autonomous_trading_min_notional_usd"), default=None)
+        raw_min = _conf_or_override(conf, "autonomous_trading_min_notional_usd")
+        min_usd = safe_pos_float(raw_min, default=None)
         if min_usd is None:
-            raise ValueError(f"Invalid autonomous_trading_min_notional_usd {conf.get('autonomous_trading_min_notional_usd')!r}")
+            raise ValueError(f"Invalid autonomous_trading_min_notional_usd {raw_min!r}")
         self.min_notional_usd = min_usd
 
-        raw_max = max_notional_usd
-        if raw_max is None:
-            if "autonomous_trading_max_notional_usd" not in conf:
-                raise KeyError("Missing required 'autonomous_trading_max_notional_usd' in order_guard.conf")
-            raw_max = conf.get("autonomous_trading_max_notional_usd")
+        raw_max = _conf_or_override(conf, "autonomous_trading_max_notional_usd", max_notional_usd)
         max_usd = safe_pos_float(raw_max, default=None)
         if max_usd is None or max_usd < self.min_notional_usd:
             raise ValueError(
@@ -341,11 +166,7 @@ class AutonomousIntentGateway:
             )
         self.max_notional_usd = max_usd
 
-        raw_conf = min_confidence
-        if raw_conf is None:
-            if "autonomous_trading_min_confidence" not in conf:
-                raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
-            raw_conf = conf.get("autonomous_trading_min_confidence")
+        raw_conf = _conf_or_override(conf, "autonomous_trading_min_confidence", min_confidence)
         conf_val = safe_nonneg_float(raw_conf, default=None)
         if conf_val is None or conf_val > 1.0:
             raise ValueError(
@@ -377,103 +198,8 @@ class AutonomousIntentGateway:
 
     def reconcile_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Reconciles FAILED or PENDING_EXECUTION intents against execution_audit_*.jsonl if later filled via retry worker."""
-        failed_by_id: Dict[str, Dict[str, Any]] = {}
-        for item in intents:
-            if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() not in ("FAILED", "PENDING_EXECUTION"):
-                continue
-            raw_id = item.get("intent_id") if item.get("intent_id") is not None else item.get("id")
-            if raw_id is None or isinstance(raw_id, bool):
-                continue
-            clean_id = str(raw_id).strip()
-            if clean_id:
-                failed_by_id[clean_id] = item
-        if not failed_by_id:
-            return False
-
         audit_dir = os.path.join(self.workspace_dir, "logger", "execution_audit")
-        if not os.path.isdir(audit_dir):
-            return False
-
-        matched_records: Dict[str, Dict[str, Any]] = {}
-        for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
-            try:
-                with open(audit_path, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except ValueError:
-                            continue
-                        if not isinstance(rec, dict):
-                            continue
-                        raw_iid = rec.get("intent_id") if rec.get("intent_id") is not None else rec.get("id")
-                        if raw_iid is None or isinstance(raw_iid, bool):
-                            continue
-                        iid = str(raw_iid).strip()
-                        if iid not in failed_by_id:
-                            continue
-                        ev = str(rec.get("event") or "")
-                        if ev == "submit_accepted":
-                            matched_records.setdefault(iid, rec)
-                        elif ev in ("order_terminal", "order_terminal_retry"):
-                            v_stat = str(rec.get("venue_status") or "").upper()
-                            l_stat = str(rec.get("status") or "").lower()
-                            f_qty = safe_pos_float(
-                                rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
-                                0.0,
-                            )
-                            if (
-                                v_stat in ("FILLED", "PARTIALLY_FILLED")
-                                or l_stat in ("closed", "filled", "partially_filled")
-                                or f_qty > 0.0
-                            ):
-                                matched_records[iid] = rec
-                            elif matched_records.get(iid, {}).get("event") == "submit_accepted":
-                                prev_oid = matched_records[iid].get("order_id")
-                                cur_oid = rec.get("order_id")
-                                if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
-                                    matched_records.pop(iid, None)
-            except OSError:
-                continue
-
-        if not matched_records:
-            return False
-
-        updated = False
-        for iid, rec in matched_records.items():
-            intent = failed_by_id[iid]
-            filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
-            raw_cost = rec.get("cost")
-            if raw_cost is None:
-                f_q = safe_pos_float(filled_qty, default=None)
-                f_px = safe_pos_float(
-                    rec.get("price") if rec.get("price") is not None else rec.get("reference_price"),
-                    default=None,
-                )
-                if f_q is not None and f_px is not None:
-                    raw_cost = round(f_q * f_px, 8)
-            exec_payload: Dict[str, Any] = {
-                "orderId": rec.get("order_id"),
-                "symbol": rec.get("symbol") or intent.get("symbol"),
-                "side": str(rec.get("side") or intent.get("decision") or "").upper(),
-                "executedQty": str(filled_qty) if filled_qty is not None else "",
-                "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
-                "status": str(rec.get("venue_status") or "FILLED").upper(),
-                "reconciled_from_audit": True,
-            }
-            intent["status"] = "EXECUTED"
-            intent["execution_payload"] = exec_payload
-            rec_ts = safe_pos_float(rec.get("ts"), time.time())
-            _append_intent_history(intent, {
-                "ts": rec_ts,
-                "action": "RECONCILED_EXECUTED",
-                "order_id": rec.get("order_id"),
-                "payload": exec_payload,
-            })
-            updated = True
-
+        updated = reconcile_intents_from_execution_audit(intents, audit_dir)
         if updated:
             self.save_all_intents(intents)
         return updated
@@ -506,104 +232,14 @@ class AutonomousIntentGateway:
         asset_scope: str = "all",
     ) -> Dict[str, Any]:
         """Load enabled instruments filtered by asset_scope ('crypto' | 'equities' | 'all')."""
-        scope = (asset_scope or "all").strip().lower()
-        ws_inst_conf = os.path.join(self.workspace_dir, "instruments.conf")
-        raw_map: Dict[str, Any] = {}
-        if os.path.exists(ws_inst_conf) or not only_workspace_conf:
-            try:
-                from instruments_config import load_instruments
-                raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
-            except Exception as e:
-                logger.error("Failed loading instrument registry: %s", e)
-                return {}
-
-        active_map: Dict[str, Any] = {}
-        if scope in ("all", "crypto"):
-            for k, inst in raw_map.items():
-                if getattr(inst, "enabled", True) is False:
-                    continue
-                if scope == "crypto" and str(getattr(inst, "provider_name", "")).lower() == "t212":
-                    continue
-                active_map[k] = inst
-
-            existing_kraken_syms = {
-                str(getattr(inst, "symbol", "")).upper()
-                for inst in active_map.values()
-                if str(getattr(inst, "provider_name", "")).lower() == "kraken"
-            }
-            for pair, base, quote in _discover_kraken_cache_pairs(self.workspace_dir):
-                if pair in existing_kraken_syms:
-                    continue
-                try:
-                    from instrument import Instrument
-                    inst = Instrument(
-                        name=f"KRAKEN_{base}",
-                        provider="kraken",
-                        symbol=pair,
-                        base=base,
-                        quote=quote,
-                        enabled=True,
-                    )
-                    active_map[f"KRAKEN_{base}"] = inst
-                    existing_kraken_syms.add(pair)
-                except Exception as exc:
-                    logger.debug("Could not bind Kraken pair %s: %s", pair, exc)
-
-            existing_hl_syms = {
-                str(getattr(inst, "symbol", "")).upper()
-                for inst in active_map.values()
-                if str(getattr(inst, "provider_name", "")).lower() == "hyperliquid"
-            }
-            for pair, base, quote in _discover_hyperliquid_spot(self.workspace_dir):
-                if pair in existing_hl_syms or base in existing_hl_syms:
-                    continue
-                try:
-                    from instrument import Instrument
-                    inst = Instrument(
-                        name=f"HYPERLIQUID_{base}",
-                        provider="hyperliquid",
-                        symbol=pair,
-                        base=base,
-                        quote=quote,
-                        enabled=True,
-                    )
-                    if hasattr(inst, "_provider"):
-                        inst._provider._live_enabled = True
-                    active_map[f"HYPERLIQUID_{base}"] = inst
-                    existing_hl_syms.add(pair)
-                except Exception as exc:
-                    logger.debug("Could not bind Hyperliquid pair %s: %s", pair, exc)
-
-        if scope in ("all", "equities") and (include_closed_rth or _is_us_rth_open(now_ts)):
-            _load_env_file_defaults(os.path.join(self.workspace_dir, "212trading", "runtime.env"))
-            existing_t212_syms = {
-                str(getattr(inst, "symbol", "")).upper()
-                for inst in active_map.values()
-                if str(getattr(inst, "provider_name", "")).lower() == "t212"
-            }
-            for inst_name, ticker, base, quote in _discover_t212_equities(self.workspace_dir):
-                if ticker in existing_t212_syms:
-                    continue
-                try:
-                    from instrument import Instrument
-                    inst = Instrument(
-                        name=inst_name,
-                        provider="t212",
-                        symbol=ticker,
-                        base=base,
-                        quote=quote,
-                        enabled=True,
-                        market_hours="rth",
-                    )
-                    if hasattr(inst, "_provider"):
-                        inst._provider._live_enabled = True
-                        inst._provider._order_validity = "DAY"
-                    active_map[inst_name] = inst
-                    existing_t212_syms.add(ticker)
-                except Exception as exc:
-                    logger.debug("Could not bind Trading212 ticker %s: %s", ticker, exc)
-
-        return active_map
+        return _load_tradable_instruments(
+            self.workspace_dir,
+            only_workspace_conf=only_workspace_conf,
+            include_closed_rth=include_closed_rth,
+            now_ts=now_ts,
+            asset_scope=asset_scope,
+            is_rth_open_fn=_is_us_rth_open,
+        )
 
     def resolve_instrument(
         self,
@@ -614,115 +250,16 @@ class AutonomousIntentGateway:
         """Resolves an enabled Instrument instance for the given symbol and venue."""
         if instruments_map is None:
             instruments_map = self.load_tradable_instruments()
-
-        active_values = [
-            inst for inst in instruments_map.values()
-            if getattr(inst, "enabled", True) is not False
-        ]
-
-        sym_norm = _norm_sym(symbol)
-        if not sym_norm:
-            return None
-        if isinstance(venue, bool):
-            return None
-        venue_norm = normalize_venue_name(venue) or None
-        req_base = canonical_base_asset(symbol)
-
-        def _inst_base_norm(inst: Any) -> str:
-            raw_b = getattr(inst, "base", None) or getattr(inst, "symbol", "")
-            return canonical_base_asset(str(raw_b))
-
-        def _inst_venue_norm(inst: Any) -> str:
-            return normalize_venue_name(str(getattr(inst, "provider_name", "")))
-
-        # 1. Match strictly within the specified venue (never cross-venue fallback)
-        if venue_norm:
-            for inst in active_values:
-                if _norm_sym(inst.symbol) == sym_norm and _inst_venue_norm(inst) == venue_norm:
-                    return inst
-            if req_base:
-                for inst in active_values:
-                    if _inst_venue_norm(inst) == venue_norm and _inst_base_norm(inst) == req_base:
-                        return inst
-            for inst in active_values:
-                inst_sym_n = _norm_sym(inst.symbol)
-                if _inst_venue_norm(inst) == venue_norm and (
-                    inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n)
-                ):
-                    return inst
-            return None
-
-        # 2. Match by exact symbol
-        for inst in active_values:
-            if _norm_sym(inst.symbol) == sym_norm:
-                return inst
-
-        # 3. Match by canonical base asset first, then prefix fallback
-        if req_base:
-            for inst in active_values:
-                if _inst_base_norm(inst) == req_base:
-                    return inst
-        for inst in active_values:
-            inst_sym_n = _norm_sym(inst.symbol)
-            if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
-                return inst
-
-        return None
+        return resolve_tradable_instrument(
+            symbol,
+            venue=venue,
+            instruments_map=instruments_map,
+            workspace_dir=self.workspace_dir,
+        )
 
     def _get_live_price(self, inst: Any) -> float:
         """Fetches live market price from provider or cache."""
-        try:
-            if hasattr(inst._provider, "get_current_price"):
-                px_f = safe_pos_float(inst._provider.get_current_price(inst.symbol), default=None)
-                if px_f is not None:
-                    return px_f
-        except Exception:
-            pass
-
-        # Fallback to cache_current_price.json (supporting cross-venue quote variants, e.g. TAOUSD -> TAOUSDC)
-        cache_path = os.path.join(self.cache_dir, "cache_current_price.json")
-        try:
-            from state_io import read_recovering_previous
-            cdata = read_recovering_previous(cache_path, json.loads, default=None)
-            if isinstance(cdata, dict):
-                raw_items = cdata.get("items")
-                items = raw_items if isinstance(raw_items, dict) else {}
-                sym_u = str(inst.symbol or "").strip().upper()
-                candidates = cache_symbol_variants(inst.symbol, include_original=True)
-                inst_base = getattr(inst, "base", None) or (_split_symbol_assets(sym_u) or (sym_u, ""))[0]
-                if inst_base:
-                    for suffix in ("USDC", "USDT", "USD"):
-                        cand = f"{str(inst_base).upper()}{suffix}"
-                        if cand not in candidates:
-                            candidates.append(cand)
-
-                for cand in candidates:
-                    if cand in items and items[cand] is not None:
-                        px_f = extract_current_price_item(items[cand])
-                        if px_f is not None:
-                            return px_f
-                if inst_base:
-                    base_u = canonical_base_asset(str(inst_base))
-                    for k, v in items.items():
-                        if canonical_base_asset(str(k)) == base_u and v is not None:
-                            px_f = extract_current_price_item(v)
-                            if px_f is not None:
-                                return px_f
-        except Exception:
-            pass
-
-        # Fallback to cache_24_price_<SYM>.json / cache_365_price_<SYM>.jsonl / cache_sparse_price_<SYM>.jsonl
-        try:
-            from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
-            ser_24h, _ = load_symbol_price_series(self.cache_dir, str(inst.symbol or ""), include_7d=False)
-            if ser_24h:
-                px_f = safe_pos_float(ser_24h[-1][1], default=None)
-                if px_f is not None:
-                    return px_f
-        except Exception:
-            pass
-
-        return float("nan")
+        return resolve_instrument_live_price(inst, cache_dir=self.cache_dir)
 
     def _clamp_notional_to_wallet_balance(
         self,
@@ -731,91 +268,15 @@ class AutonomousIntentGateway:
         price: float,
         desired_usd: float,
     ) -> Tuple[bool, float, str]:
-        """Clamp desired USD notional to real spot wallet liquidity when finite balance is exposed.
-
-        Returns ``(allowed, clamped_usd, reason)`` symmetrically across BUY (quote asset) and SELL (base asset).
-        """
-        desired_f = safe_pos_float(desired_usd, default=None)
-        if desired_f is None:
-            return False, 0.0, f"Invalid desired notional USD: {desired_usd!r}"
-        desired_usd = desired_f
-        price_f = safe_pos_float(price, default=None)
-        if decision != "BUY" and price_f is None:
-            return False, 0.0, f"Invalid live price for {decision}: {price!r}"
-        if price_f is not None:
-            price = price_f
-
-        provider = getattr(inst, "_provider", None)
-        free_fn = getattr(provider, "free_balance", None)
-        if not callable(free_fn):
-            return True, desired_usd, "Wallet balance check skipped (no provider hook)"
-
-        from providers.quantity import resolve_assets
-        raw_base = getattr(inst, "base", None)
-        raw_quote = getattr(inst, "quote", None)
-        base_asset, quote_asset = resolve_assets(
-            str(inst.symbol),
-            raw_base if isinstance(raw_base, str) else None,
-            raw_quote if isinstance(raw_quote, str) else None,
+        """Clamp desired USD notional to real spot wallet liquidity via unified SSOT in providers.quantity."""
+        from providers.quantity import clamp_notional_to_wallet_balance
+        return clamp_notional_to_wallet_balance(
+            inst,
+            decision,
+            price,
+            desired_usd,
+            min_notional_usd=self.min_notional_usd,
         )
-        target_asset = quote_asset if decision == "BUY" else base_asset
-        if not target_asset:
-            return True, desired_usd, "Wallet balance check skipped (unresolved asset)"
-
-        try:
-            raw_bal = free_fn(target_asset)
-        except Exception as exc:
-            logger.debug("Wallet free_balance(%s) check skipped: %s", target_asset, exc)
-            return True, desired_usd, "Wallet balance check unavailable"
-
-        if raw_bal is None or isinstance(raw_bal, bool) or hasattr(raw_bal, "_mock_name"):
-            return True, desired_usd, "Wallet balance check skipped (non-numeric)"
-        bal = safe_float(raw_bal, None)
-        if bal is None:
-            return True, desired_usd, "Wallet balance check skipped (non-numeric)"
-        if bal < 0.0:
-            return True, desired_usd, "Wallet balance check skipped (non-finite)"
-
-        venue_l = normalize_venue_name(str(getattr(inst, "provider_name", "")))
-        buy_buf = 0.95 if venue_l == "hyperliquid" else 0.998
-        if decision == "BUY":
-            avail_usd = bal * buy_buf
-        else:
-            sell_bal = bal
-            if venue_l == "t212" and price > 0:
-                q_floor = math.floor(bal * 100.0 + 1e-9) / 100.0
-                dust = max(0.0, bal - q_floor)
-                if dust > 1e-6 and dust * price < 6.0:
-                    buf = 6.0 / price
-                    sell_bal = (
-                        max(0.0, math.floor((bal - buf) * 100.0 + 1e-9) / 100.0)
-                        if bal > buf
-                        else 0.0
-                    )
-                else:
-                    sell_bal = q_floor
-            avail_usd = sell_bal * price
-        if avail_usd < self.min_notional_usd:
-            return (
-                False,
-                0.0,
-                f"Insufficient free {target_asset} balance (${avail_usd:.2f} < ${self.min_notional_usd:.2f})",
-            )
-        if avail_usd < desired_usd:
-            return True, avail_usd, f"Clamped notional from ${desired_usd:.2f} to available ${avail_usd:.2f}"
-        if decision == "SELL" and venue_l == "t212" and price > 0:
-            rem_usd = bal * price - desired_usd
-            if 0.0 < rem_usd < 6.0:
-                max_part_shares = math.floor((bal - (6.0 / price)) * 100.0 + 1e-9) / 100.0
-                max_part_usd = round(max_part_shares * price, 4)
-                if max_part_usd >= self.min_notional_usd:
-                    return (
-                        True,
-                        max_part_usd,
-                        f"Adjusted T212 SELL notional from ${desired_usd:.2f} to ${max_part_usd:.2f} to leave >=$6 remainder",
-                    )
-                return True, avail_usd, f"Adjusted T212 SELL notional from ${desired_usd:.2f} to ${avail_usd:.2f} to avoid <$6 dust"
-        return True, desired_usd, "Sufficient wallet balance"
 
     def _dispatch_notify(self, title: str, body: str, symbol: str) -> bool:
         """Dispatches an alert notification via notify_engine."""
@@ -856,10 +317,7 @@ class AutonomousIntentGateway:
         if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
             raw_iid = f"intent_{int(time.time())}"
         intent_id = str(raw_iid).strip()
-        raw_dec = intent.get("decision")
-        if raw_dec is None:
-            raw_dec = intent.get("action") if intent.get("action") is not None else intent.get("side", "")
-        decision = normalize_side(raw_dec)
+        decision = _extract_intent_side(intent)
         raw_sym = intent.get("symbol", "")
         symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
         raw_venue = intent.get("venue", "binance")
@@ -1007,28 +465,8 @@ class AutonomousIntentGateway:
         try:
             intent_cid = f"AI_{intent_id[:28]}" if intent_id else None
             outcome_ctx: Dict[str, Any] = {}
-            order_res = inst.place(
-                side=decision,
-                qty=target_qty,
-                price=price,
-                market=True,
-                enforce_business_minimum=False,
-                wait_for_trend=False,
-                intent_id=intent_id,
-                client_order_id=intent_cid,
-                regime_context=None,
-                bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-                _outcome_context=outcome_ctx,
-            )
-            if (
-                not order_res
-                and (
-                    outcome_ctx.get("state") == "refused"
-                    or outcome_ctx.get("category") == "refused_pre_submit"
-                )
-                and outcome_ctx.get("reason") in ("account_cache_not_fresh", "account_cache_snapshot_changed")
-            ):
-                time.sleep(0.25)
+            order_res = None
+            for attempt in range(2):
                 outcome_ctx.clear()
                 order_res = inst.place(
                     side=decision,
@@ -1043,6 +481,17 @@ class AutonomousIntentGateway:
                     bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
                     _outcome_context=outcome_ctx,
                 )
+                if (
+                    order_res
+                    or attempt > 0
+                    or (
+                        outcome_ctx.get("state") != "refused"
+                        and outcome_ctx.get("category") != "refused_pre_submit"
+                    )
+                    or outcome_ctx.get("reason") not in ("account_cache_not_fresh", "account_cache_snapshot_changed")
+                ):
+                    break
+                time.sleep(0.25)
             if order_res:
                 from providers.base import extract_order_id
                 logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
@@ -1113,12 +562,10 @@ class AutonomousIntentGateway:
         """
         if not isinstance(decision, dict):
             return None
-        raw_side = decision.get("decision")
-        if raw_side is None:
-            raw_side = decision.get("action") if decision.get("action") is not None else decision.get("side", "")
-        side = normalize_side(raw_side)
+        side = _extract_intent_side(decision)
         if side not in ("BUY", "SELL"):
-            logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, side)
+            raw_dec = str(decision.get("decision") or decision.get("action") or decision.get("side") or "HOLD").strip().upper() or "HOLD"
+            logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, raw_dec)
             return None
         raw_sym = decision.get("symbol", "")
         symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
