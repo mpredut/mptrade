@@ -73,7 +73,9 @@ def _valid_pair_id(pair_id) -> bool:
 
 
 def _clean_order_id_meta(val):
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
+    if isinstance(val, int) and not isinstance(val, bool):
+        return val if val > 0 else None
+    if isinstance(val, float):
         f = safe_pos_float(val, default=None)
         if f is not None and f.is_integer():
             return int(f)
