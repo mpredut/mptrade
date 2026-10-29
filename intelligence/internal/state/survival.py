@@ -31,6 +31,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from instrument_registry import casefold_get
 from state_io import read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
@@ -324,7 +325,7 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
         return None
     from cachepaths import cache_symbol_variants
     for cand in (symbol, *cache_symbol_variants(symbol)):
-        ent = data.get(cand)
+        ent = casefold_get(data, cand)
         if isinstance(ent, dict):
             return ent
     target_base = _extract_base_symbol(symbol)

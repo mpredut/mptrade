@@ -1383,9 +1383,26 @@ def send_supervisor_ntfy_http(
         if log:
             log.debug("Common gate fallback in reconciler: %s", e)
 
-    url = ntfy_url or f"https://ntfy.sh/{target_topic}"
+    try:
+        from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url
+    except Exception:
+        format_ntfy_url = None  # type: ignore[assignment]
+        AlertNotifier = None  # type: ignore[assignment]
+
+    url_raw = (ntfy_url or "").strip()
+    if format_ntfy_url is not None:
+        url = format_ntfy_url(url_raw or target_topic)
+    else:
+        url = url_raw if url_raw.startswith(("http://", "https://")) else f"https://ntfy.sh/{target_topic}"
+    if not url:
+        return False
+    safe_title = (
+        (AlertNotifier.utf8_header(title or "Alert") if AlertNotifier is not None else "")
+        or str(title or "Alert").replace("\r", " ").replace("\n", " ").strip().encode("utf-8").decode("latin-1", "ignore")
+        or "Alert"
+    )
     headers = {
-        "Title": title.encode("utf-8").decode("latin-1", "ignore"),
+        "Title": safe_title,
         "Priority": priority,
         "Tags": "rotating_light,robot" if is_any_error else "shield,robot",
     }

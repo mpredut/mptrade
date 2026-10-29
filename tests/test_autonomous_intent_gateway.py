@@ -1057,6 +1057,76 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
     btc_inst.cancel_order.assert_called_with("bot_locking_buy")
 
 
+def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect_ai_ids():
+    """Verify unfilled resting LIMIT orders and non-executed intents do not inherit prior fills from recent_orders."""
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        collect_known_ai_order_ids,
+        extract_intent_notional,
+        summarize_recent_ai_intents,
+    )
+
+    now_ts = 1_760_000_100.0
+    intents = [
+        {
+            "intent_id": "rest_lim_1",
+            "timestamp": now_ts - 10.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 42.0,
+            "reference_price": 42.5,
+            "suggested_notional_usd": 420.0,
+            "status": "EXECUTED",
+            "execution_payload": {"ordertxid": "KRK_LIM_1", "status": "OPEN", "vol": "10.0", "vol_exec": "0.0"},
+        },
+        {
+            "intent_id": "blocked_1",
+            "timestamp": now_ts - 5.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "MARKET",
+            "reference_price": 42.5,
+            "suggested_notional_usd": 420.0,
+            "status": "BLOCKED_BY_GUARD",
+            "execution_payload": None,
+            "history": [{"ts": now_ts - 5.0, "action": "BLOCKED_BY_GUARD", "payload": {"oid": "HIST_OID_9"}}],
+        },
+    ]
+    recent_orders = {
+        "kraken:HYPEUSD": {
+            "last_buy": {"price": 42.4, "qty": 5.0, "ts_ms": int((now_ts - 30.0) * 1000), "actor": "BOT"}
+        }
+    }
+    open_orders = [
+        {"ordertxid": "KRK_LIM_1", "venue": "kraken", "symbol": "HYPEUSD", "descr": {"type": "buy", "price": "42.0"}, "vol": "10.0", "vol_exec": "0.0"}
+    ]
+
+    last_st = build_last_cycle_execution_status(
+        intents, "crypto", now_ts, extract_intent_notional, recent_orders=recent_orders, open_orders=open_orders
+    )
+    assert isinstance(last_st, list) and len(last_st) == 2
+    assert last_st[0]["status"] == "OPEN_RESTING"
+    assert last_st[0]["fill_px"] is None
+    assert last_st[0]["filled_qty"] is None
+    assert last_st[0]["slippage_bps"] is None
+    assert last_st[1]["status"] == "BLOCKED_BY_GUARD"
+    assert last_st[1]["fill_px"] is None
+    assert last_st[1]["filled_qty"] is None
+
+    summary = summarize_recent_ai_intents(
+        intents, "crypto", now_ts, extract_intent_notional, recent_orders=recent_orders, open_orders=open_orders
+    )
+    assert "fill_px" not in summary[0]
+    assert "filled_qty" not in summary[0]
+    assert "fill_px" not in summary[1]
+
+    known_ids = collect_known_ai_order_ids(intents, {"INIT_1"})
+    assert known_ids == {"INIT_1", "KRK_LIM_1", "HIST_OID_9"}
+
+
 
 
 

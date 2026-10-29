@@ -10,6 +10,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
+from instrument_registry import casefold_get
 
 
 def _f_env(name: str, default: float) -> float:
@@ -234,7 +235,7 @@ def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
             variants = _vol_symbol_variants(symbol)
             for mapping in search_maps:
                 for cand in variants:
-                    entry = mapping.get(cand)
+                    entry = casefold_get(mapping, cand)
                     if not isinstance(entry, dict):
                         continue
                     vf = safe_pos_float(entry.get("vol_1h_pct"), default=None)

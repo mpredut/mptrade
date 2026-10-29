@@ -245,8 +245,8 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
 
     cache_path = os.path.join(cache_dir, "cache_current_price.json")
     try:
-        from state_io import read_json_dict
-        cdata = read_json_dict(cache_path, default=None, recover_previous=True)
+        from state_io import read_json_dict_recovering
+        cdata = read_json_dict_recovering(cache_path)
         if isinstance(cdata, dict):
             raw_items = cdata.get("items")
             items = raw_items if isinstance(raw_items, dict) else {}

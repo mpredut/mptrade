@@ -524,7 +524,13 @@ def _resolve_intent_execution_details(
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
     from cachepaths import normalize_venue_name
-    from .base import extract_executed_qty, extract_order_id, extract_order_price, extract_orig_qty
+    from .base import (
+        extract_executed_qty,
+        extract_order_id,
+        extract_order_price,
+        extract_order_side,
+        extract_orig_qty,
+    )
 
     venue = normalize_venue_name(i.get("venue")) or i.get("venue")
     symbol = str(i.get("symbol") or "").strip().upper()
@@ -542,14 +548,16 @@ def _resolve_intent_execution_details(
         or extract_notional_fn(i, default=None)
     )
     ts_val = safe_float(i.get("timestamp"), 0.0)
-    order_id = extract_order_id(exec_pay, default=None) or last_hist.get("order_id")
+    order_id = extract_order_id(exec_pay, default=None) or extract_order_id(
+        last_hist.get("order_id") or last_hist.get("payload"), default=None
+    )
 
     matched_open = None
     if isinstance(open_orders, list):
         for oo in open_orders:
             if not isinstance(oo, dict):
                 continue
-            oo_oid = oo.get("order_id") or oo.get("orderId")
+            oo_oid = extract_order_id(oo, default=None)
             if order_id is not None and oo_oid is not None and str(oo_oid) == str(order_id):
                 matched_open = oo
                 break
@@ -558,7 +566,7 @@ def _resolve_intent_execution_details(
                 and order_type == "LIMIT"
                 and normalize_venue_name(oo.get("venue")) == venue
                 and str(oo.get("symbol") or "").strip().upper() == symbol
-                and str(oo.get("side") or "").strip().upper() == side
+                and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
             ):
                 matched_open = oo
                 break
@@ -573,7 +581,15 @@ def _resolve_intent_execution_details(
         if fill_px is None:
             fill_px = safe_pos_float(matched_open.get("price"), default=None)
 
-    if isinstance(recent_orders, dict) and symbol:
+    raw_intent_st = str(i.get("status") or "").strip().upper()
+    venue_st = str(exec_pay.get("status") or "").strip().upper()
+    if (
+        matched_open is None
+        and raw_intent_st == "EXECUTED"
+        and venue_st not in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+        and isinstance(recent_orders, dict)
+        and symbol
+    ):
         ro_entry = recent_orders.get(f"{venue}:{symbol}") or recent_orders.get(symbol)
         if isinstance(ro_entry, dict):
             side_key = "last_buy" if side == "BUY" else ("last_sell" if side == "SELL" else "")
@@ -585,9 +601,6 @@ def _resolve_intent_execution_details(
                         fill_px = safe_pos_float(last_fill.get("price"), default=None)
                     if filled_qty <= 0:
                         filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
-
-    raw_intent_st = str(i.get("status") or "").strip().upper()
-    venue_st = str(exec_pay.get("status") or "").strip().upper()
     if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW"):
         fill_px = safe_pos_float(
             last_hist.get("price")
@@ -755,6 +768,12 @@ def build_last_cycle_execution_status(
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
 
 
+def _parse_currency_pos_float(raw: Any, default: Any = None) -> Any:
+    if isinstance(raw, str):
+        raw = _CURRENCY_STRIP_RE.sub("", raw).strip()
+    return safe_pos_float(raw, default)
+
+
 def extract_intent_side(data: dict[str, Any]) -> str:
     """Extract normalized BUY/SELL/HOLD side from an intent dictionary."""
     from .base import normalize_side
@@ -775,9 +794,7 @@ def extract_intent_notional(data: dict[str, Any], default: Any = None) -> Any:
             if data.get(nk) is not None:
                 raw_notional = data.get(nk)
                 break
-    if isinstance(raw_notional, str):
-        raw_notional = _CURRENCY_STRIP_RE.sub("", raw_notional).strip()
-    return safe_pos_float(raw_notional, default)
+    return _parse_currency_pos_float(raw_notional, default)
 
 
 def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
@@ -792,9 +809,7 @@ def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any
                 break
         if raw_px is None and str(data.get("order_type") or data.get("type") or "").strip().upper() == "LIMIT":
             raw_px = data.get("price")
-    if isinstance(raw_px, str):
-        raw_px = _CURRENCY_STRIP_RE.sub("", raw_px).strip()
-    return safe_pos_float(raw_px, default)
+    return _parse_currency_pos_float(raw_px, default)
 
 
 def extract_intent_order_type(data: dict[str, Any]) -> str:
@@ -1236,6 +1251,30 @@ def validate_and_build_intent_dict(
     return rec
 
 
+def collect_known_ai_order_ids(
+    intents: Any,
+    initial_ids: Optional[set[str]] = None,
+) -> set[str]:
+    """Collect all venue order IDs recorded in ``execution_payload`` and ``history`` across intent records."""
+    from .base import extract_order_id
+
+    ai_oids: set[str] = set(initial_ids or ())
+    if not isinstance(intents, list):
+        return ai_oids
+    for item in intents:
+        if not isinstance(item, dict):
+            continue
+        oid_rec = extract_order_id(item.get("execution_payload"), default="")
+        if oid_rec:
+            ai_oids.add(str(oid_rec))
+        for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
+            if isinstance(h_entry, dict):
+                h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
+                if h_oid:
+                    ai_oids.add(str(h_oid))
+    return ai_oids
+
+
 def cancel_existing_ai_open_orders(
     inst: Any,
     side: str,
@@ -1258,18 +1297,7 @@ def cancel_existing_ai_open_orders(
             return canceled_ids
         from providers.base import extract_order_id, extract_order_side, normalize_side, resolve_order_actor
 
-        ai_oids = set(known_ai_order_ids or ())
-        if isinstance(intents, list):
-            for item in intents:
-                if isinstance(item, dict):
-                    oid_rec = extract_order_id(item.get("execution_payload"), default="")
-                    if oid_rec:
-                        ai_oids.add(str(oid_rec))
-                    for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
-                        if isinstance(h_entry, dict):
-                            h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
-                            if h_oid:
-                                ai_oids.add(str(h_oid))
+        ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue

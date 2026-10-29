@@ -1110,7 +1110,7 @@ def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
 
 def resolve_global_trading_session(now_ts: Optional[float] = None) -> GlobalSessionContext:
     """Resolve current global market session and European/US/Asian trader flow dynamics."""
-    ts = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())
+    ts = resolve_now_ts(now_ts)
     dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
     dt_eet = _to_tz(ts, _cfg_str("sessions", "primary_timezone", "Europe/Bucharest"), _cfg_int("sessions", "primary_fallback_offset_hours", 2))
     dt_ny = _to_tz(ts, _cfg_str("sessions", "secondary_timezone", "America/New_York"), _cfg_int("sessions", "secondary_fallback_offset_hours", -5))
@@ -1155,13 +1155,16 @@ def did_cross_session_checkpoint(
     min_cooldown_sec: float = SENTIMENT_CHECKPOINT_COOLDOWN_SEC,
 ) -> Optional[str]:
     """Return the checkpoint label if a canonical EET session transition was crossed in (last_eval_ts, now_ts]."""
-    if last_eval_ts <= 0.0 or now_ts <= last_eval_ts or (now_ts - last_eval_ts) < min_cooldown_sec:
+    last_f = safe_pos_float(last_eval_ts, 0.0)
+    now_f = safe_pos_float(now_ts, 0.0)
+    cooldown_f = safe_nonneg_float(min_cooldown_sec, SENTIMENT_CHECKPOINT_COOLDOWN_SEC)
+    if last_f <= 0.0 or now_f <= last_f or (now_f - last_f) < cooldown_f:
         return None
 
     primary_tz = _cfg_str("sessions", "primary_timezone", "Europe/Bucharest")
     p_off = _cfg_int("sessions", "primary_fallback_offset_hours", 2)
-    dt_last = _to_tz(last_eval_ts, primary_tz, p_off)
-    dt_now = _to_tz(now_ts, primary_tz, p_off)
+    dt_last = _to_tz(last_f, primary_tz, p_off)
+    dt_now = _to_tz(now_f, primary_tz, p_off)
 
     candidate_days = [dt_last.date()] + ([dt_now.date()] if dt_now.date() != dt_last.date() else [])
     crossed_label: Optional[str] = None
@@ -1171,7 +1174,7 @@ def did_cross_session_checkpoint(
             if is_weekend_day and label not in ("EU_MORNING_BUY_OPEN", "EU_EVENING_POSITION_CLOSE"):
                 continue
             cp_ts = datetime(day.year, day.month, day.day, hour, minute, tzinfo=dt_now.tzinfo).timestamp()
-            if last_eval_ts < cp_ts <= now_ts:
+            if last_f < cp_ts <= now_f:
                 crossed_label = label
     return crossed_label
 
@@ -1192,8 +1195,8 @@ def compute_dynamic_sentiment_interval(
     geopolitical_threat_level: str = "NORMAL",
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_sentiment`` evaluation."""
-    base = max(60.0, float(base_interval_sec or DEFAULT_SENTIMENT_INTERVAL_SEC))
-    ts = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())
+    base = max(60.0, safe_pos_float(base_interval_sec, DEFAULT_SENTIMENT_INTERVAL_SEC))
+    ts = resolve_now_ts(now_ts)
 
     scale = base / DEFAULT_SENTIMENT_INTERVAL_SEC
     min_interval = max(60.0, MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC * scale)
@@ -1201,25 +1204,35 @@ def compute_dynamic_sentiment_interval(
     checkpoint_cooldown = max(60.0, SENTIMENT_CHECKPOINT_COOLDOWN_SEC * scale)
 
     norm_geo = normalize_threat_level(geopolitical_threat_level)
-    cached_risk = normalize_risk_level(getattr(cached_assessment, "risk_level", None))
-    breadth_regime = getattr(breadth, "regime", "NEUTRAL") if breadth is not None else "NEUTRAL"
-    median_abs = abs(float(getattr(breadth, "median_change_pct", 0.0))) if breadth is not None else 0.0
+    cached_risk = normalize_risk_level(obj_attr(cached_assessment, "risk_level", None))
+    breadth_regime = str(obj_attr(breadth, "regime", "NEUTRAL") or "NEUTRAL") if breadth is not None else "NEUTRAL"
+    median_abs = abs(obj_float(breadth, "median_change_pct", 0.0)) if breadth is not None else 0.0
 
     if norm_geo == "CRITICAL_SHOCK":
         return min_interval, "critical_geopolitical_shock_30m"
     if breadth_regime in ("PANIC_WASHOUT", "EUPHORIC_BLOWOFF") or median_abs >= 5.5 or cached_risk == "EXTREME":
         return min_interval, f"extreme_market_regime_{breadth_regime.lower()}_{cached_risk.lower()}"
-    if fear_greed is not None and prev_fear_greed_val is not None and abs(int(fear_greed.value) - int(prev_fear_greed_val)) >= 8:
-        return min_interval, f"fear_greed_jump_{int(fear_greed.value) - int(prev_fear_greed_val):+d}pts"
-    if breadth is not None and prev_advance_ratio is not None and abs(float(breadth.advance_ratio) - float(prev_advance_ratio)) >= 0.18:
-        return min_interval, f"breadth_shift_{float(breadth.advance_ratio) - float(prev_advance_ratio):+.2f}"
+    cur_fg_val = safe_int(obj_attr(fear_greed, "value", None), None)
+    prev_fg_val = safe_int(prev_fear_greed_val, None)
+    if cur_fg_val is not None and prev_fg_val is not None and abs(cur_fg_val - prev_fg_val) >= 8:
+        return min_interval, f"fear_greed_jump_{cur_fg_val - prev_fg_val:+d}pts"
+    cur_adv = safe_float(obj_attr(breadth, "advance_ratio", None), None)
+    prev_adv = safe_float(prev_advance_ratio, None)
+    if cur_adv is not None and prev_adv is not None and abs(cur_adv - prev_adv) >= 0.18:
+        return min_interval, f"breadth_shift_{cur_adv - prev_adv:+.2f}"
 
     crossed_cp = did_cross_session_checkpoint(last_eval_ts, ts, min_cooldown_sec=checkpoint_cooldown)
     if crossed_cp is not None:
         return max(min_interval, min(base, checkpoint_cooldown)), f"session_checkpoint_{crossed_cp}"
 
     session_ctx = resolve_global_trading_session(ts)
-    is_extreme_fg = bool(fear_greed is not None and (fear_greed.is_extreme_fear or fear_greed.is_extreme_greed))
+    is_extreme_fg = bool(
+        fear_greed is not None
+        and (
+            _parse_bool_flag(obj_attr(fear_greed, "is_extreme_fear", False))
+            or _parse_bool_flag(obj_attr(fear_greed, "is_extreme_greed", False))
+        )
+    )
     if cached_risk == "HIGH" or norm_geo == "ELEVATED" or median_abs >= 3.0 or is_extreme_fg:
         return max(min_interval, base * 0.5), f"elevated_volatility_risk_{cached_risk.lower()}"
     if session_ctx.is_peak_transition_window:
@@ -1241,20 +1254,21 @@ def compute_dynamic_geopolitical_interval(
     fallback_retry_ttl_sec: float = DEFAULT_FALLBACK_RETRY_TTL_SEC,
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_geopolitical`` evaluation."""
-    base = max(60.0, float(base_interval_sec or DEFAULT_GEOPOLITICAL_INTERVAL_SEC))
-    ts = float(now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp())
+    base = max(60.0, safe_pos_float(base_interval_sec, DEFAULT_GEOPOLITICAL_INTERVAL_SEC))
+    ts = resolve_now_ts(now_ts)
+    changed_b = _parse_bool_flag(headlines_changed)
 
-    if cached_assessment is not None and bool(getattr(cached_assessment, "is_fallback", False)):
-        return max(30.0, float(fallback_retry_ttl_sec)), "fallback_short_retry"
+    if cached_assessment is not None and _parse_bool_flag(obj_attr(cached_assessment, "is_fallback", False)):
+        return max(30.0, safe_pos_float(fallback_retry_ttl_sec, DEFAULT_FALLBACK_RETRY_TTL_SEC)), "fallback_short_retry"
 
-    threat_level = normalize_threat_level(getattr(cached_assessment, "threat_level", None))
-    has_shock = bool(getattr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
-    high_sev_count = int(getattr(news_snapshot, "high_severity_count", 0)) if news_snapshot is not None else 0
+    threat_level = normalize_threat_level(obj_attr(cached_assessment, "threat_level", None))
+    has_shock = _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
+    high_sev_count = safe_int(obj_attr(news_snapshot, "high_severity_count", 0), 0) if news_snapshot is not None else 0
 
-    if has_shock and (threat_level == "NORMAL" or (threat_level == "ELEVATED" and headlines_changed)):
+    if has_shock and (threat_level == "NORMAL" or (threat_level == "ELEVATED" and changed_b)):
         return 0.0, "acute_shock_keyword_alert"
 
-    if headlines_changed and high_sev_count > 0:
+    if changed_b and high_sev_count > 0:
         if threat_level == "CRITICAL_SHOCK":
             return min(base, 1800.0), "critical_shock_active_monitoring_30m"
         if threat_level == "ELEVATED":

@@ -71,7 +71,8 @@ def snap_attr(obj: Any, key: str, default: Any = None) -> Any:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
     if obj is None:
         return default
-    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+    val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+    return default if val is None else val
 
 
 def fetch_guard_snapshot(
