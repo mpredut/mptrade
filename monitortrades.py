@@ -1220,10 +1220,9 @@ def _state_matches_buy_price(state: Optional[dict], buy_price: Optional[float]) 
     saved_buy = state.get("buy_price")
     if saved_buy is None:
         return True
-    try:
-        return math.isclose(float(saved_buy), float(buy_price), rel_tol=1e-9, abs_tol=1e-12)
-    except (TypeError, ValueError):
-        return False
+    sb_f = safe_pos_float(saved_buy, default=None)
+    bp_f = safe_pos_float(buy_price, default=None)
+    return sb_f is not None and bp_f is not None and math.isclose(sb_f, bp_f, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def _execute_take_profit(
@@ -1359,14 +1358,8 @@ def _execute_stop_loss(
     bounce_started_at = (prev_sl_state or {}).get("started_at")
     if bounce_started_at is None:
         bounce_started_at = episode_started_at
-    bounce_started_f = None
-    if bounce_started_at is not None and not isinstance(bounce_started_at, bool):
-        try:
-            cand_bs = float(bounce_started_at)
-            if math.isfinite(cand_bs) and cand_bs > 0:
-                bounce_started_f = min(cand_bs, float(current_time_s))
-        except (TypeError, ValueError):
-            bounce_started_f = None
+    cand_bs = safe_pos_float(bounce_started_at, default=None)
+    bounce_started_f = min(cand_bs, float(current_time_s)) if cand_bs is not None else None
     sl_timer_expired = bool(
         sl_decision.metadata.get("sub_reason") == "timeout"
         or sl_decision.metadata.get("sl_timer_expired")
@@ -1402,13 +1395,9 @@ def _execute_stop_loss(
     owned_qty = snapshot.net_qty
     isolation = inst.isolation
     sellable_qty = snapshot.sellable_qty
-    if avail_qty_refreshed is not None and not isinstance(avail_qty_refreshed, bool):
-        try:
-            avail_qty = float(avail_qty_refreshed)
-            if math.isfinite(avail_qty) and avail_qty >= 0.0:
-                sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
-        except (TypeError, ValueError):
-            pass
+    avail_f = safe_nonneg_float(avail_qty_refreshed, default=None)
+    if avail_f is not None:
+        sellable_qty = min(avail_f, owned_qty) if isolation == "own_ledger" else avail_f
 
     placed = False
     outcome_ctx = {}
@@ -1486,10 +1475,10 @@ def _handle_position_recovery(
         saved_buy = bounce_state.get("buy_price")
         same_buy = True
         if saved_buy is not None and snapshot.avg_buy_price is not None:
-            try:
-                same_buy = math.isclose(float(saved_buy), float(snapshot.avg_buy_price), rel_tol=1e-6, abs_tol=1e-9)
-            except (TypeError, ValueError):
-                pass
+            sb_f = safe_pos_float(saved_buy, default=None)
+            abp_f = safe_pos_float(snapshot.avg_buy_price, default=None)
+            if sb_f is not None and abp_f is not None:
+                same_buy = math.isclose(sb_f, abp_f, rel_tol=1e-6, abs_tol=1e-9)
         if same_buy:
             print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
                   f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%).")
@@ -1645,12 +1634,9 @@ def _can_pass_buy_quantity_policy(
                 or getattr(provider, "round_quantity", None)
             )
             if callable(round_fn):
-                try:
-                    res_f = float(round_fn(symbol, scaled_qty))
-                    if math.isfinite(res_f):
-                        scaled_qty = res_f
-                except (TypeError, ValueError):
-                    pass
+                res_f = safe_float(round_fn(symbol, scaled_qty), default=None)
+                if res_f is not None:
+                    scaled_qty = res_f
             if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
                 print(
                     f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
@@ -1776,12 +1762,9 @@ def _apply_post_stop_ai_guard(
                     or getattr(provider, "round_quantity", None)
                 )
                 if callable(round_fn):
-                    try:
-                        res_f = float(round_fn(symbol, scaled_qty))
-                        if math.isfinite(res_f):
-                            scaled_qty = res_f
-                    except (TypeError, ValueError):
-                        pass
+                    res_f = safe_float(round_fn(symbol, scaled_qty), default=None)
+                    if res_f is not None:
+                        scaled_qty = res_f
                 min_qty_fn = getattr(inst, "min_qty", None)
                 min_q = float(min_qty_fn() or 0.0) if callable(min_qty_fn) else 0.0
                 if scaled_qty <= 0.0 or (min_q and scaled_qty < min_q):
@@ -1964,37 +1947,17 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if _verbose:
             print(f"POSITION (referinta SELL=AVG) for {symbol} : {position}")
     # 2. Fetch current price through the facade for the instrument's provider.
-    raw_current_price = inst.price()
-    if raw_current_price is None or isinstance(raw_current_price, bool):
-        if _verbose:
-            print(f"No current price for {symbol} (market closed / unavailable) — skip")
-        return
-    try:
-        current_price = float(raw_current_price)
-    except (TypeError, ValueError):
-        if _verbose:
-            print(f"No current price for {symbol} (market closed / unavailable) — skip")
-        return
-    if not math.isfinite(current_price) or current_price <= 0:
+    current_price = safe_pos_float(inst.price(), default=None)
+    if current_price is None:
         if _verbose:
             print(f"No current price for {symbol} (market closed / unavailable) — skip")
         return
     if _verbose:
         print(f"Current price for {symbol}: {current_price}")
-    avail_qty = inst.free()
-    if avail_qty is None or isinstance(avail_qty, bool):
+    avail_qty = safe_nonneg_float(inst.free(), default=None)
+    if avail_qty is None:
         if _verbose:
             print(f"No available balance snapshot for {symbol} — skip")
-        return
-    try:
-        avail_qty = float(avail_qty)
-    except (TypeError, ValueError):
-        if _verbose:
-            print(f"Invalid available balance for {symbol}: {avail_qty} — skip")
-        return
-    if not math.isfinite(avail_qty) or avail_qty < 0:
-        if _verbose:
-            print(f"Invalid available balance for {symbol}: {avail_qty} — skip")
         return
     isolation = inst.isolation
     owned_qty = max(float(position["net_qty"]), 0.0)
