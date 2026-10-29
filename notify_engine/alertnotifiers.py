@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import read_recovering_previous, save_json_state
 from typing import Any, Optional
 
 # Import your modules
@@ -22,13 +22,9 @@ from botcore import (
     float_env,
     int_env,
     safe_float,
-    safe_int,
     safe_nonneg_int,
     safe_pos_float,
 )
-
-_safe_float = safe_float
-_safe_pos_float = safe_pos_float
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
