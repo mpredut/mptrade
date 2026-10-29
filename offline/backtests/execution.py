@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from botcore import _parse_bool_flag, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 
 
@@ -183,7 +183,7 @@ def choose_intrabar_scenario(
         for policy in ("buy_first", "sell_first")
     }
     selected_policy, selected = min(
-        scenarios.items(), key=lambda item: float(item[1]["return_pct"]),
+        scenarios.items(), key=lambda item: safe_float(item[1].get("return_pct"), 0.0),
     )
     result = dict(selected)
     result["intrabar_policy_selected"] = selected_policy
