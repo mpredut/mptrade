@@ -207,10 +207,7 @@ class T212Provider(MarketDataProvider):
                 cash = get_cash_fn()
                 if not isinstance(cash, dict):
                     return None
-                raw_free = cash.get("free")
-                if isinstance(raw_free, bool):
-                    return None
-                free_ron = safe_nonneg_float(raw_free if raw_free is not None else 0.0, default=None)
+                free_ron = safe_nonneg_float(cash.get("free", 0.0), default=None)
                 if free_ron is None:
                     return None
                 if asset_u == "RON":
@@ -240,10 +237,7 @@ class T212Provider(MarketDataProvider):
             return None
         if not p:
             return 0.0
-        raw_qty = p.get("quantity")
-        if isinstance(raw_qty, bool):
-            return None
-        return safe_nonneg_float(raw_qty if raw_qty is not None else 0.0, default=None)
+        return safe_nonneg_float(p.get("quantity", 0.0), default=None)
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Represent the portfolio position as one synthetic average-price buy."""
