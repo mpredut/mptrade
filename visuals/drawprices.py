@@ -3,14 +3,14 @@ import os
 import sys
 import json
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Tuple, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
-from botcore import safe_float, safe_int, safe_pos_int
+from botcore import safe_float, safe_pos_int
 from cachepaths import cache_symbol_variants
 from state_io import atomic_write_json
 import symbols as sym
