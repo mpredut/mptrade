@@ -15,7 +15,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import load_dotenv, required_env
 
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config.env"))
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 AGY_STORE_SUBDIR = os.path.join(".gemini", "antigravity-cli")
 
