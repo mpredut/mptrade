@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -159,7 +161,6 @@ def _plot_series_and_forecast(
     plt.tight_layout()
     fname = os.path.join(outdir, f"{fname_prefix}_{symbol}.png")
     plt.savefig(fname, dpi=150)
-    plt.show()
     plt.close()
     return fname
 
@@ -311,9 +312,7 @@ def run_for_symbols(symbols: List[str],
                     lstm_verbose: int = 0):
     ensure_dir(outdir)
     results = {}
-    print(f" MARIUS OK: ")
     for symbol in symbols:
-        print(f" MARIUS SYM:{symbol} ")
         pairs = get_cache_for_symbol(symbol)
         ts, prices, dt = to_series(pairs)
 
@@ -321,17 +320,13 @@ def run_for_symbols(symbols: List[str],
             results[symbol] = {"error": "No data in the cache."}
             continue
 
-        print(f" plot history{symbol} ")
-        
         hist_path = plot_history(symbol, dt, prices, outdir=outdir)
 
-        print(f" regresie:{symbol} ")
         # Linear regression.
         lin_pred = forecast_linear(ts, prices, horizon=horizon)
         lin_path = plot_with_linear(symbol, dt, prices, lin_pred, outdir=outdir)
 
         # LSTM, when available.
-        print(f" forecast_lstm :{symbol} ")
         lstm_pred, info = forecast_lstm(prices,
                                         window=lstm_window,
                                         epochs=lstm_epochs,
