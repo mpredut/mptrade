@@ -472,7 +472,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
 
     # Copy one coherent snapshot while the manager may reload a new generation.
     sym_u = str(symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "")
+    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
     with manager.lock:
         raw_bucket = (
             manager.cache.get(symbol)

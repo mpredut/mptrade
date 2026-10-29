@@ -99,7 +99,7 @@ def _fetch_with_ts(_pair: str, interval: int):
     HLClient = _hlc_mod.HLClient
 
     _load_config()
-    from botcore import required_env
+    from botcore import required_env, safe_pos_float
     token = required_env("HL_SPOT_TOKEN")
     client = HLClient.public()  # the unsigned client cannot submit orders
     candles = client.candles(token, "4h", lookback_hours=5000 * 4)
@@ -107,19 +107,16 @@ def _fetch_with_ts(_pair: str, interval: int):
     for item in candles or []:
         if not isinstance(item, dict):
             continue
-        if any(isinstance(item.get(k), bool) for k in ("t", "o", "h", "l", "c")):
+        t_f = safe_pos_float(item.get("t"), default=None)
+        o_v = safe_pos_float(item.get("o"), default=None)
+        h_v = safe_pos_float(item.get("h"), default=None)
+        l_v = safe_pos_float(item.get("l"), default=None)
+        c_v = safe_pos_float(item.get("c"), default=None)
+        if None in (t_f, o_v, h_v, l_v, c_v):
             continue
-        try:
-            t_f = float(item["t"])
-            if not math.isfinite(t_f):
-                continue
-            ts = int(t_f) // 1000
-            o_v, h_v, l_v, c_v = float(item["o"]), float(item["h"]), float(item["l"]), float(item["c"])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            continue
+        ts = int(t_f) // 1000
         if (
             ts > 0
-            and all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v))
             and h_v >= l_v
             and h_v >= max(o_v, c_v)
             and l_v <= min(o_v, c_v)

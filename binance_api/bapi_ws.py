@@ -353,12 +353,9 @@ class BinancePriceStream(BinanceWSBase):
             if not isinstance(symbol, str) or not symbol.strip():
                 raise ValueError(f"invalid ticker symbol: {symbol!r}")
             symbol = symbol.strip().upper()
-            raw_c = data["c"]
-            if isinstance(raw_c, bool):
-                raise ValueError("invalid boolean ticker price")
-            price  = float(raw_c)
-            if not math.isfinite(price) or price <= 0:
-                raise ValueError(f"invalid ticker price: {price!r}")
+            price = safe_pos_float(data["c"], default=None)
+            if price is None:
+                raise ValueError(f"invalid ticker price: {data['c']!r}")
             raw_ts = (
                 data.get("E")
                 if not isinstance(data.get("E"), bool) and data.get("E") is not None
@@ -367,8 +364,8 @@ class BinancePriceStream(BinanceWSBase):
             if isinstance(raw_ts, bool):
                 raw_ts = None
             if raw_ts is not None:
-                ts_f = float(raw_ts)
-                if not math.isfinite(ts_f):
+                ts_f = safe_float(raw_ts, default=None)
+                if ts_f is None:
                     raise ValueError(f"invalid ticker timestamp: {raw_ts!r}")
                 ts_ms = int(ts_f)
             else:

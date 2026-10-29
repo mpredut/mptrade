@@ -13,17 +13,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from botcore import safe_float  # noqa: E402
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
 
 
 def _fmt_calmar_pct(calmar) -> str:
-    if calmar is None or isinstance(calmar, bool):
-        return "n/a"
-    try:
-        cf = float(calmar)
-    except (TypeError, ValueError, OverflowError):
-        return "n/a"
-    return f"{cf * 100:+.1f}%" if math.isfinite(cf) else "n/a"
+    cf = safe_float(calmar, default=None)
+    return f"{cf * 100:+.1f}%" if cf is not None else "n/a"
 
 
 def main() -> int:

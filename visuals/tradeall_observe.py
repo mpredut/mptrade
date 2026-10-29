@@ -47,7 +47,7 @@ try:
     from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
     from intelligence import get_kalman_state_path
-from cachepaths import cache_path, get_cachedb_dir, resolve_cachedb_filepath
+from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = cache_path("cache_short_trend.json")
 
@@ -712,6 +712,19 @@ def format_state_text(entry, header, pending=None, exposure=None):
     return text
 
 
+def _lookup_symbol_dict(mapping, symbol):
+    if not isinstance(mapping, dict):
+        return None
+    val = mapping.get(symbol)
+    if isinstance(val, dict):
+        return val
+    for cand in cache_symbol_variants(symbol):
+        val = mapping.get(cand)
+        if isinstance(val, dict):
+            return val
+    return None
+
+
 def build_analysis_state_text(symbol, active_summary=None):
     """Combine current live tradeall analysis with its Kalman state and active intents.
 
@@ -722,7 +735,7 @@ def build_analysis_state_text(symbol, active_summary=None):
         with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
             raw_trend = json.load(f)
             trend_map = raw_trend.get("items") if isinstance(raw_trend, dict) and isinstance(raw_trend.get("items"), dict) else raw_trend
-            entry = trend_map.get(symbol) if isinstance(trend_map, dict) else None
+            entry = _lookup_symbol_dict(trend_map, symbol)
     except (OSError, json.JSONDecodeError):
         entry = None
     if not isinstance(entry, dict) or not entry:
@@ -731,7 +744,7 @@ def build_analysis_state_text(symbol, active_summary=None):
         with open(get_kalman_state_path(), "r", encoding="utf-8") as f:
             raw_sh = json.load(f)
             sh_map = raw_sh.get("items") if isinstance(raw_sh, dict) and isinstance(raw_sh.get("items"), dict) else raw_sh
-            sh = sh_map.get(symbol) if isinstance(sh_map, dict) else None
+            sh = _lookup_symbol_dict(sh_map, symbol)
         if isinstance(sh, dict) and sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
     except (OSError, json.JSONDecodeError):
@@ -743,7 +756,7 @@ def build_analysis_state_text(symbol, active_summary=None):
     if isinstance(active_summary, dict):
         notional_root = active_summary.get("pending_notional")
         by_sym_pending = notional_root.get("by_symbol") if isinstance(notional_root, dict) else None
-        pending_map = by_sym_pending.get(symbol) if isinstance(by_sym_pending, dict) else None
+        pending_map = _lookup_symbol_dict(by_sym_pending, symbol)
         if isinstance(pending_map, dict):
             parts = []
             buy_val = safe_pos_float(pending_map.get("buy"), default=0.0)
@@ -756,7 +769,7 @@ def build_analysis_state_text(symbol, active_summary=None):
                 pending_info = ", ".join(parts)
         exposures_root = active_summary.get("net_exposures")
         by_sym_exp = exposures_root.get("by_symbol") if isinstance(exposures_root, dict) else None
-        exp_map = by_sym_exp.get(symbol) if isinstance(by_sym_exp, dict) else None
+        exp_map = _lookup_symbol_dict(by_sym_exp, symbol)
         if isinstance(exp_map, dict):
             qty_val = safe_float(exp_map.get("qty"), 0.0)
             if abs(qty_val) > 1e-9:
@@ -776,7 +789,7 @@ def build_backtest_state_text(directory, symbol):
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw_state = json.load(f)
-            entry = raw_state.get(symbol) if isinstance(raw_state, dict) else None
+            entry = _lookup_symbol_dict(raw_state, symbol)
     except (OSError, json.JSONDecodeError):
         entry = None
     if not isinstance(entry, dict) or not entry:

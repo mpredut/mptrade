@@ -266,7 +266,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # A WebSocket can update a partially filled order in place. Copy each row
     # under the manager lock so financial totals never observe a torn mutation.
     sym_u = str(symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "")
+    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
     with cache_order_manager.lock:
         raw_bucket = (
             cache_order_manager.cache.get(symbol)

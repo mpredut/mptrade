@@ -65,10 +65,10 @@ def load_config(path: str) -> dict:
             key_low = key.lower()
             try:
                 if key_low == "discover_new_coins":
-                    normalized = val.strip().lower()
-                    if normalized not in {"yes", "no", "true", "false", "1", "0", "on", "off"}:
+                    bval = _parse_bool_flag(val, default=None)
+                    if bval is None:
                         raise ValueError("expected an explicit boolean")
-                    cfg["discover_new_coins"] = normalized in {"yes", "true", "1", "on"}
+                    cfg["discover_new_coins"] = bval
                 elif key_low in _LIST_KEYS:
                     norm = _LIST_KEYS[key_low]
                     cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]

@@ -167,15 +167,11 @@ def _extract_exposure(payload: dict, *, owner: str, source: str,
                       inherited: dict) -> dict | None:
     if not isinstance(payload, dict):
         return None
-    qty_val = _finite_float(payload.get("qty"), default=None)
+    qty_val = safe_float(payload.get("qty"), default=None)
     if qty_val is None or abs(qty_val) < 1e-9:
         return None
-    cost_val = _finite_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None)
-    if cost_val is not None and cost_val < 0:
-        cost_val = None
-    entry_price_val = _finite_float(payload.get("entry_price"), default=None)
-    if entry_price_val is not None and entry_price_val <= 0:
-        entry_price_val = None
+    cost_val = safe_nonneg_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None)
+    entry_price_val = safe_pos_float(payload.get("entry_price"), default=None)
     symbol = (_first(payload, "symbol", "ticker", "pair")
               or _first(inherited, "symbol", "ticker", "pair"))
     raw_venue = (_first(payload, "provider_name", "venue") or inherited.get("venue")
@@ -200,11 +196,11 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
     for it in intents:
         sym = it.get("symbol") or "UNKNOWN"
         side = (it.get("side") or "").upper()
-        req_qty = _finite_float(it.get("requested_qty"), default=0.0) or 0.0
-        exec_qty = _finite_float(it.get("executed_qty"), default=0.0) or 0.0
+        req_qty = safe_float(it.get("requested_qty"), default=0.0)
+        exec_qty = safe_float(it.get("executed_qty"), default=0.0)
         unfilled = max(0.0, req_qty - exec_qty)
-        price_val = _finite_float(it.get("requested_price"), default=None)
-        notional = (unfilled * price_val) if (price_val is not None and price_val > 0) else 0.0
+        price_val = safe_pos_float(it.get("requested_price"), default=None)
+        notional = (unfilled * price_val) if price_val is not None else 0.0
 
         entry = notional_by_sym.setdefault(sym, {"buy": 0.0, "sell": 0.0})
         if side == "BUY":
@@ -224,10 +220,8 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
         if not isinstance(exp, dict):
             continue
         sym = exp.get("symbol") or "UNKNOWN"
-        qty = _finite_float(exp.get("qty"), default=0.0) or 0.0
-        cost = _finite_float(exp.get("cost"), default=None)
-        if cost is not None and cost < 0:
-            cost = None
+        qty = safe_float(exp.get("qty"), default=0.0)
+        cost = safe_nonneg_float(exp.get("cost"), default=None)
         if cost is not None:
             total_cost += cost
         entry = exp_by_sym.setdefault(sym, {"qty": 0.0, "cost": 0.0})
