@@ -8,16 +8,15 @@ but a correct replay replaces that value before strategy code reads the clock.
 """
 
 
-import math
 import time
+
+from botcore import safe_float
 
 
 def _clean_ts(val: float) -> float:
-    if isinstance(val, bool) or val is None:
+    f = safe_float(val, default=None)
+    if f is None:
         raise ValueError("SimClock timestamp must be a finite number, not bool/None")
-    f = float(val)
-    if not math.isfinite(f):
-        raise ValueError("SimClock timestamp must be finite")
     return f
 
 

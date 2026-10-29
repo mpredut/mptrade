@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import math
 
-from botcore import _parse_bool_flag, safe_nonneg_float
-
-_as_bool = _parse_bool_flag
+from botcore import _parse_bool_flag, safe_nonneg_float, safe_nonneg_int, safe_pos_int
 
 
 def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
@@ -39,28 +37,21 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
     client startup.
     """
     try:
-        if (
-            session is None
-            or isinstance(status_forcelist, (bool, str, bytes))
-            or not isinstance(attempts, (int, float, str))
-            or not isinstance(read, (int, float, str))
-            or not isinstance(backoff, (int, float, str))
-        ):
+        if session is None or isinstance(status_forcelist, (bool, str, bytes)):
             return False
-        att_f = safe_nonneg_float(attempts, default=None)
-        read_f = safe_nonneg_float(read, default=None)
+        att_i = safe_nonneg_int(attempts, default=None)
+        read_i = safe_nonneg_int(read, default=None)
         bo_f = safe_nonneg_float(backoff, default=None)
-        if att_f is None or read_f is None or bo_f is None:
+        if att_i is None or read_i is None or bo_f is None:
             return False
-        att_i = int(att_f)
-        read_i = int(read_f)
         forcelist = None
         if status_forcelist:
             forcelist = []
             for code in status_forcelist:
-                if isinstance(code, bool):
+                c_i = safe_pos_int(code, default=None)
+                if c_i is None:
                     return False
-                forcelist.append(int(code))
+                forcelist.append(c_i)
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         retry = Retry(
@@ -71,7 +62,7 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
             redirect=0,
             backoff_factor=bo_f,
             status_forcelist=forcelist if forcelist else None,
-            raise_on_status=_as_bool(raise_on_status, default=False),
+            raise_on_status=_parse_bool_flag(raise_on_status, default=False),
         )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("https://", adapter)
