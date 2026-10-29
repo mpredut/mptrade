@@ -24,29 +24,16 @@ import multiprocessing
 import contextlib
 
 from .file_lock import FileLock
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 
 
 def _is_active_entry(last, now: float, ttl: float) -> bool:
     if not isinstance(last, dict):
         return False
-    raw_ts = last.get("timestamp")
-    if (
-        raw_ts is None
-        or isinstance(raw_ts, bool)
-        or ttl is None
-        or isinstance(ttl, bool)
-        or now is None
-        or isinstance(now, bool)
-    ):
-        return False
-    try:
-        ts = float(raw_ts)
-        ttl_f = float(ttl)
-        now_f = float(now)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if not (math.isfinite(ts) and math.isfinite(ttl_f) and math.isfinite(now_f)):
+    ts = safe_float(last.get("timestamp"), None)
+    ttl_f = safe_float(ttl, None)
+    now_f = safe_float(now, None)
+    if ts is None or ttl_f is None or now_f is None:
         return False
     age = now_f - ts
     return 0.0 <= age < ttl_f

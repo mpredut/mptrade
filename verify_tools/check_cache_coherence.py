@@ -11,6 +11,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from botcore import safe_pos_float
 from cachepaths import cache_symbol_variants, resolve_cachedb_filepath  # noqa: E402
 from orchestratorTrade.autonomous_intent_gateway import extract_current_price_item  # noqa: E402
 from state_io import previous_generation_path, read_recovering_previous  # noqa: E402
@@ -73,19 +74,10 @@ def main() -> int:
             problems.append(f"short_trend MISSING {s}")
             print(f"   {s:10} IS MISSING")
             continue
-        ts = e.get("ts", 0)
-        try:
-            ts_val = float(ts) if ts is not None and not isinstance(ts, bool) else 0.0
-            if not math.isfinite(ts_val):
-                ts_val = 0.0
-        except (TypeError, ValueError):
-            ts_val = 0.0
+        ts_val = safe_pos_float(e.get("ts"), default=0.0)
         age = now - ts_val if ts_val > 0 else 1e9
         px = e.get("current_price")
-        try:
-            px_ok = px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0
-        except (TypeError, ValueError):
-            px_ok = False
+        px_ok = safe_pos_float(px, default=None) is not None
         ok = -5.0 <= age < STALE_S and px_ok
         if not ok:
             problems.append(f"short_trend {s} age={age:.0f}s px={px}")
@@ -140,12 +132,7 @@ def main() -> int:
             print(f"   {s:10} IS INVALID")
             continue
 
-        try:
-            ts_ms_val = float(ts_raw) if ts_raw is not None and not isinstance(ts_raw, bool) else 0.0
-            if not math.isfinite(ts_ms_val):
-                ts_ms_val = 0.0
-        except (TypeError, ValueError):
-            ts_ms_val = 0.0
+        ts_ms_val = safe_pos_float(ts_raw, default=0.0)
         ts_sec_val = (ts_ms_val / 1000.0 if ts_ms_val > 1e11 else ts_ms_val) if ts_ms_val > 0 else 0.0
         age = (now - ts_sec_val) if ts_sec_val > 0 else 1e9
         ok = -5.0 <= age < STALE_S and px_val > 0

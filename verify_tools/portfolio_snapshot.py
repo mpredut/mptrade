@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import _parse_bool_flag, parse_dotenv, required_float_env  # noqa: E402
+from botcore import _parse_bool_flag, parse_dotenv, required_float_env, safe_float  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from state_io import atomic_write_json, read_recovering_previous, save_json_state  # noqa: E402
 
@@ -58,14 +58,7 @@ def _kraken_price(pair: str):
         sys.path[:] = saved_path
 
 
-def _f(x, default=0.0):
-    if x is None or isinstance(x, bool):
-        return default
-    try:
-        v = float(x)
-        return v if math.isfinite(v) else default
-    except (TypeError, ValueError):
-        return default
+_f = safe_float
 
 
 def _is_paper(val) -> bool:
