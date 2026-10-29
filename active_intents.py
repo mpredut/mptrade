@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
-from botcore import _parse_bool_flag, safe_float, safe_float as _finite_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import normalize_venue_name
 from providers.base import _clean_single_order_id, normalize_side
 
@@ -256,9 +256,9 @@ def format_summary(result: dict) -> str:
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
     notional = summary.get("pending_notional") if isinstance(summary.get("pending_notional"), dict) else {}
     exposures = summary.get("net_exposures") if isinstance(summary.get("net_exposures"), dict) else {}
-    total_cost_val = _finite_float(exposures.get("total_cost"), default=0.0) or 0.0
-    total_buy_val = _finite_float(notional.get("total_buy"), default=0.0) or 0.0
-    total_sell_val = _finite_float(notional.get("total_sell"), default=0.0) or 0.0
+    total_cost_val = safe_float(exposures.get("total_cost"), default=0.0) or 0.0
+    total_buy_val = safe_float(notional.get("total_buy"), default=0.0) or 0.0
+    total_sell_val = safe_float(notional.get("total_sell"), default=0.0) or 0.0
     lines = [
         "=" * 60,
         "ACTIVE INTENTS & EXPOSURE SUMMARY",
@@ -276,7 +276,7 @@ def format_summary(result: dict) -> str:
         for pos in positions:
             if not isinstance(pos, dict):
                 continue
-            pos_cost = _finite_float(pos.get("cost"), default=None)
+            pos_cost = safe_float(pos.get("cost"), default=None)
             cost_str = f" (${pos_cost:.2f})" if pos_cost is not None else ""
             lines.append(
                 f"  - {pos.get('symbol')}: {pos.get('qty')}{cost_str} [{pos.get('venue')}]"
@@ -292,8 +292,8 @@ def format_summary(result: dict) -> str:
             if not isinstance(amounts, dict):
                 continue
             parts = []
-            buy_v = _finite_float(amounts.get("buy"), default=0.0) or 0.0
-            sell_v = _finite_float(amounts.get("sell"), default=0.0) or 0.0
+            buy_v = safe_float(amounts.get("buy"), default=0.0) or 0.0
+            sell_v = safe_float(amounts.get("sell"), default=0.0) or 0.0
             if buy_v:
                 parts.append(f"BUY ${buy_v:.2f}")
             if sell_v:
