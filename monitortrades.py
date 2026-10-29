@@ -25,7 +25,7 @@ from providers.base import (
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
 import cachepaths
-from state_io import previous_generation_path, read_recovering_previous, save_json_state
+from state_io import previous_generation_path, read_json_dict, save_json_state
 
 import utils as u
 from strategies.position_exit_manager import (
@@ -570,7 +570,7 @@ def _load_mt_state(now_curr: float | None = None):
     if not _MT_PERSISTENCE_ENABLED:
         return
     try:
-        data = read_recovering_previous(_effective_mt_state_file(), json.loads, default=None)
+        data = read_json_dict(_effective_mt_state_file(), default=None, recover_previous=True)
         if not isinstance(data, dict):
             return
         now_curr = safe_pos_float(now_curr, default=None) or time.time()

@@ -90,10 +90,10 @@ class SentimentAdvisor:
         )
 
     def _load_from_disk(self) -> None:
-        from state_io import read_recovering_previous
+        from state_io import read_json_dict
         cache_file = self._effective_cache_file()
         try:
-            data = read_recovering_previous(cache_file, json.loads, default=None)
+            data = read_json_dict(cache_file, default=None, recover_previous=True)
             if not isinstance(data, dict):
                 return
             self._cached_assessment = self._build_assessment(data)

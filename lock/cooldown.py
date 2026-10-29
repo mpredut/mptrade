@@ -14,8 +14,7 @@ deadlocks under the lock. State persists; the lock does not.
         # Otherwise exit automatically releases the reservation.
 """
 import os
-import json
-from state_io import read_recovering_previous, save_json_state
+from state_io import read_json_dict, save_json_state
 import time
 import socket
 import threading
@@ -135,8 +134,7 @@ class Cooldown:
 
     # ── Storage ──────────────────────────────────────────────────────────────
     def _read(self):
-        loaded = read_recovering_previous(self.state_path, json.loads, default=None)
-        return loaded if isinstance(loaded, dict) else {}
+        return read_json_dict(self.state_path, default={}, recover_previous=True)
 
     def _write(self, state):
         save_json_state(self.state_path, _sanitize_json_payload(state), indent=2)

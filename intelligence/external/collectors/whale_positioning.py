@@ -24,7 +24,7 @@ from intelligence.external.collectors.orderbook_depth import (
     _resolve_binance_lookup_symbol,
     _symbol_variants,
 )
-from state_io import read_recovering_previous
+from state_io import read_json_dict
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
@@ -120,7 +120,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 if not p:
                     continue
                 try:
-                    d = read_recovering_previous(p, json.loads, default=None)
+                    d = read_json_dict(p, default=None, recover_previous=True)
                     if not isinstance(d, dict):
                         continue
                     ts_val = safe_pos_float(d.get("ts"), default=None)

@@ -95,14 +95,14 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         "guard_preview": {},
     }
 
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     # 1. Pillar 1: Internal Quantitative & Trend Survival
     try:
         from intelligence.internal.state.survival import _lookup_t_cache_entry, estimate_T
         t_est = None
         if not hasattr(estimate_T, "_mock_name"):
-            local_t_data = read_recovering_previous(os.path.join(cache_dir, "cache_T_trend.json"), json.loads, default=None)
+            local_t_data = read_json_dict(os.path.join(cache_dir, "cache_T_trend.json"), default=None, recover_previous=True)
             if isinstance(local_t_data, dict):
                 t_est = _lookup_t_cache_entry(local_t_data, symbol)
         if not isinstance(t_est, dict):
@@ -136,7 +136,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         ):
             snap_data = None
             for cand in sym_candidates:
-                cand_data = read_recovering_previous(os.path.join(cache_dir, f"{prefix}_{cand}.json"), json.loads, default=None)
+                cand_data = read_json_dict(os.path.join(cache_dir, f"{prefix}_{cand}.json"), default=None, recover_previous=True)
                 if isinstance(cand_data, dict):
                     snap_data = cand_data
                     break
@@ -148,7 +148,7 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
     try:
         fg_data = None
         for fg_fname in get_cache_filenames("fear_greed_files"):
-            cand_fg = read_recovering_previous(os.path.join(cache_dir, fg_fname), json.loads, default=None)
+            cand_fg = read_json_dict(os.path.join(cache_dir, fg_fname), default=None, recover_previous=True)
             if isinstance(cand_fg, dict):
                 fg_data = cand_fg
                 break

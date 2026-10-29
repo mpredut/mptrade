@@ -22,7 +22,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import _parse_bool_flag, parse_dotenv, required_float_env, safe_float  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-from state_io import read_recovering_previous, save_json_state  # noqa: E402
+from state_io import read_json_dict, save_json_state  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 
@@ -37,11 +37,7 @@ KRAKEN_PAIRS = [("HYPEUSD", "HYPE", False), ("TAOUSD", "TAO", False), ("ADAUSD",
 
 def _load_state(pair: str) -> dict | None:
     path = os.path.join(KRAKEN_DIR, f".state_{pair}.json")
-    try:
-        data = read_recovering_previous(path, json.loads, default=None)
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        return None
+    return read_json_dict(path, default=None, recover_previous=True)
 
 
 def _kraken_price(pair: str):
@@ -167,11 +163,7 @@ def _ntfy(title: str, body: str) -> None:
 
 
 def _alert_state() -> dict:
-    try:
-        data = read_recovering_previous(ALERT_STATE, json.loads, default=None)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return read_json_dict(ALERT_STATE, default={}, recover_previous=True)
 
 
 def _save_alert_state(st: dict) -> None:

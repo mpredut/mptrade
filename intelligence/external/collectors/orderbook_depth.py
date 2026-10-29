@@ -24,7 +24,7 @@ from cachepaths import (
     resolve_kraken_lookup_symbol,
     telemetry_cache_file_path,
 )
-from state_io import read_recovering_previous, save_json_state
+from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
@@ -93,7 +93,7 @@ class _DiskBackedSymbolCollector:
             if not p:
                 continue
             try:
-                data = read_recovering_previous(p, json.loads, default=None)
+                data = read_json_dict(p, default=None, recover_previous=True)
                 if not isinstance(data, dict):
                     continue
                 snapshot = self._SNAPSHOT_CLS.from_dict(data)
@@ -125,7 +125,7 @@ class _DiskBackedSymbolCollector:
             p = self._disk_path(cand)
             if p:
                 try:
-                    data = read_recovering_previous(p, json.loads, default=None)
+                    data = read_json_dict(p, default=None, recover_previous=True)
                     if isinstance(data, dict):
                         return self._SNAPSHOT_CLS.from_dict(data)
                 except Exception:

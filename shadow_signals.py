@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from state_io import read_recovering_previous, save_json_state
+from state_io import read_json_dict, save_json_state
 from datetime import date
 
 from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
@@ -125,7 +125,7 @@ class KalmanStateTracker:
                     if legacy_path != self.state_path and os.path.exists(legacy_path):
                         os.replace(legacy_path, self.state_path)
                         break
-            loaded = read_recovering_previous(self.state_path, json.loads, default=None)
+            loaded = read_json_dict(self.state_path, default=None, recover_previous=True)
             if isinstance(loaded, dict):
                 self._state = loaded
         except Exception as e:  # noqa: BLE001

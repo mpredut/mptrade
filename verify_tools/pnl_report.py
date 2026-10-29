@@ -114,9 +114,9 @@ def main():
             print(f"{'Binance '+sym:<22} ERROR: {e}")
 
     # Kraken HYPE (kraken_bot)
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
     try:
-        k = read_recovering_previous(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), json.loads, default=None)
+        k = read_json_dict(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), default=None, recover_previous=True)
         if not isinstance(k, dict):
             raise FileNotFoundError("kraken/.state_HYPEUSD.json missing or invalid")
         hy = 54.77  # Latest price from trail_k.
@@ -131,7 +131,7 @@ def main():
 
     # Hyperliquid dn_bot (delta-neutral: profit = funding - fees, price-independent)
     try:
-        h = read_recovering_previous(os.path.join(ROOT, "hyperliquid/.state_dn_HYPE.json"), json.loads, default=None)
+        h = read_json_dict(os.path.join(ROOT, "hyperliquid/.state_dn_HYPE.json"), default=None, recover_previous=True)
         if not isinstance(h, dict):
             raise FileNotFoundError("hyperliquid/.state_dn_HYPE.json missing or invalid")
         h_fund = safe_float(h.get("funding_accrued"), 0.0)

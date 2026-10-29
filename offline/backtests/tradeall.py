@@ -33,7 +33,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 from providers.replay_clock import SimClock as _SimClock  # noqa: F401
-from state_io import atomic_write_json, read_recovering_previous
+from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, legacy_filenames_for, migrate_legacy_filename_if_needed
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
@@ -242,21 +242,11 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
     full_ticks = _FILE_TICKS_CACHE.get(file_key)
     if full_ticks is None:
-        full_ticks = []
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(rec, dict) or rec.get("s") != symbol:
-                    continue
-                parsed = _parse_tick_pair(rec.get("i"))
-                if parsed is not None:
-                    full_ticks.append(parsed)
+        full_ticks = [
+            parsed
+            for rec in read_jsonl_dicts(path)
+            if rec.get("s") == symbol and (parsed := _parse_tick_pair(rec.get("i"))) is not None
+        ]
         if len(_FILE_TICKS_CACHE) >= 4:
             _FILE_TICKS_CACHE.clear()
         _FILE_TICKS_CACHE[file_key] = full_ticks
@@ -300,8 +290,9 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         return
     if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
-    data = read_recovering_previous(path, json.loads, default=None)
-    entries = data.get("items", {}).get(symbol, []) if isinstance(data, dict) else []
+    data = read_json_dict(path, default={}, recover_previous=True)
+    items_map = data.get("items") if isinstance(data, dict) else None
+    entries = items_map.get(symbol, []) if isinstance(items_map, dict) else []
     for entry in entries:
         parsed = _parse_tick_pair(entry)
         if parsed is None:

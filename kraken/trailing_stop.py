@@ -206,9 +206,8 @@ class KrakenTrailing:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown).
         Errors return 0, making trend filters a safe no-op."""
         try:
-            import json
-            from state_io import read_recovering_previous
-            data = read_recovering_previous(CACHE_TREND, json.loads, default=None)
+            from state_io import read_json_dict
+            data = read_json_dict(CACHE_TREND, default=None, recover_previous=True)
             if not isinstance(data, dict):
                 return 0.0
             items_map = data.get("items") if isinstance(data.get("items"), dict) else data

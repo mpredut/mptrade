@@ -25,7 +25,7 @@ from botcore import (  # noqa: E402
     required_float_env,
     required_int_env,
 )
-from state_io import read_recovering_previous, save_json_state  # noqa: E402
+from state_io import read_json_dict, save_json_state  # noqa: E402
 
 
 def _watchdog_event(title, message):
@@ -41,11 +41,7 @@ def load_env():
 
 
 def load_state(state_file):
-    try:
-        data = read_recovering_previous(state_file, json.loads, default=None)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    return read_json_dict(state_file, default={}, recover_previous=True)
 
 
 def save_state(state_file, state):
