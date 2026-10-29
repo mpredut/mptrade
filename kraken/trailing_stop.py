@@ -186,7 +186,7 @@ class KrakenTrailing:
         if not isinstance(bx_map, dict):
             return None
         for key in _kraken_balance_asset_candidates(asset):
-            entry = bx_map.get(key) if key in bx_map else casefold_get(bx_map, key)
+            entry = casefold_get(bx_map, key)
             if isinstance(entry, dict):
                 return entry
         return None
@@ -216,7 +216,7 @@ class KrakenTrailing:
             for cand in [pair] + cache_symbol_variants(pair):
                 if not cand:
                     continue
-                cand_val = items_map.get(cand) if cand in items_map else casefold_get(items_map, cand)
+                cand_val = casefold_get(items_map, cand)
                 if isinstance(cand_val, dict):
                     snap = cand_val
                     break
@@ -234,7 +234,9 @@ class KrakenTrailing:
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for asset, trail in TRAIL_PCT.items():
-            yield (asset, asset, PAIR_FOR[asset], trail)
+            pair = casefold_get(PAIR_FOR, asset)
+            if pair:
+                yield (asset, asset, pair, trail)
 
     def begin_tick(self) -> bool:
         self._tick_balances = None
@@ -499,7 +501,7 @@ def main() -> int:
     if args.status:
         st = ts._load()
         for a, t in TRAIL_PCT.items():
-            e = st.get(a, {}) if isinstance(st, dict) else {}
+            e = casefold_get(st, a, {}) if isinstance(st, dict) else {}
             if not isinstance(e, dict):
                 e = {}
             peak = safe_pos_float(e.get("peak"), default=None)

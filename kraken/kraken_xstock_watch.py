@@ -46,6 +46,7 @@ except ImportError:
     from kraken_client import KrakenClient, KrakenError
 from state_io import load_json_state, save_json_state
 from credentials import kraken_credentials
+from instrument_registry import casefold_get
 
 
 def _clean_pid(pid: object) -> int | None:
@@ -414,15 +415,16 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             return 1
         if not isinstance(bal, dict):
             return 1
-        asset_bal = safe_pos_float(bal.get(asset, 0), 0.0)
+        asset_bal = safe_pos_float(casefold_get(bal, asset, 0), 0.0)
         if asset_bal <= 0:
             log(f"  ! n-ai {asset} in cont — alege alt activ: XSTOCK_TRIAL_ASSET=...")
             return 1
         st = _load_state()
+        asset_cf = str(asset).strip().casefold()
         st["known_assets"] = {
             a: qf
             for a, q in bal.items()
-            if a != asset and (qf := safe_pos_float(q, None)) is not None
+            if str(a).strip().casefold() != asset_cf and (qf := safe_pos_float(q, None)) is not None
         }
         log(f"  [proba] cobai: {asset} — removing it from the snapshot so it 'arrives' now")
         check_balance(client, st, asset, desktop)                # 1. allocation detection

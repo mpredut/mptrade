@@ -205,15 +205,20 @@ class BinanceProvider(MarketDataProvider):
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         import binance_cache_health as health
         import cacheManager as cm
-        from instrument_registry import select_instruments
+        from cachepaths import cache_symbol_variants
+        from instrument_registry import casefold_get, select_instruments
         from .quantity import remaining_average_cost
 
         since_s = _require_pos_since_s(since_s)
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None
         symbol = symbol.strip().upper()
+        sym_canon = canonical_symbol_key(symbol)
         spec = next(
-            (item for item in select_instruments("binance").values() if item.symbol == symbol),
+            (
+                item for item in select_instruments("binance").values()
+                if item.symbol == symbol or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
+            ),
             None,
         )
         if spec is None:
@@ -222,7 +227,14 @@ class BinanceProvider(MarketDataProvider):
         cm.ensure_account_cache_readers(status)
         manager = cm.get_cache_manager("Trade", start_sync=False)
         with manager.lock:
-            raw_rows = list(manager.cache.get(symbol, []))
+            bucket = None
+            for cand in [symbol] + cache_symbol_variants(symbol):
+                if not cand:
+                    continue
+                bucket = casefold_get(manager.cache, cand)
+                if bucket is not None:
+                    break
+            raw_rows = list(bucket) if isinstance(bucket, (list, tuple)) else []
         rows = []
         for r in raw_rows:
             if not isinstance(r, dict):
@@ -233,7 +245,9 @@ class BinanceProvider(MarketDataProvider):
         normalized = []
         for row in rows:
             ts_ms = extract_timestamp_ms(row, default=0) or 0
-            if (not manager._is_valid_item(row) or row["symbol"] != symbol
+            row_sym = str(row.get("symbol") or "").strip().upper() if isinstance(row.get("symbol"), str) else ""
+            if (not manager._is_valid_item(row)
+                    or (row_sym != symbol and (not sym_canon or canonical_symbol_key(row_sym) != sym_canon))
                     or ts_ms > now_ms):
                 return None
             if ts_ms < cutoff:

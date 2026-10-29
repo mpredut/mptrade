@@ -45,8 +45,11 @@ from .strategy_executor import (
     extract_order_id,
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
+from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
 from state_io import read_json_dict_recovering
+
+_MISSING = object()
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
@@ -326,9 +329,9 @@ class KrakenProvider(MarketDataProvider):
         for key in candidates:
             if key in bal:
                 return True, safe_nonneg_float(bal[key], default=None)
-        cands_up = {c.upper() for c in candidates}
-        for k_raw, raw_val in bal.items():
-            if str(k_raw).strip().upper() in cands_up:
+        for key in candidates:
+            raw_val = casefold_get(bal, key, _MISSING)
+            if raw_val is not _MISSING:
                 return True, safe_nonneg_float(raw_val, default=None)
         return False, 0.0
 
@@ -496,7 +499,7 @@ class KrakenProvider(MarketDataProvider):
         key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
         if key is None or not isinstance(items.get(key), list):
             return None
-        ft_val = safe_pos_float(ft.get(key), default=None)
+        ft_val = safe_pos_float(casefold_get(ft, key), default=None)
         if ft_val is None:
             return None
         if ft_val < 1e11:
@@ -693,7 +696,9 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"order_status {order_id}: {e}") from e
         if not isinstance(res, dict):
             raise ProviderError(f"order_status {order_id}: invalid Kraken response")
-        info = res.get(clean_id) if clean_id in res else res.get(order_id)
+        info = casefold_get(res, clean_id)
+        if info is None:
+            info = casefold_get(res, order_id)
         if not isinstance(info, dict):
             raise ProviderError(f"order_status: the order {order_id} was not found")
         raw_status = str(info.get("status") or "").strip()

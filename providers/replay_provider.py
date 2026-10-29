@@ -46,8 +46,10 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
                     break
         except Exception:
             pass
+    sym_cf = symbol.strip().casefold()
     for rec in read_jsonl_dicts(path):
-        if rec.get("s") != symbol:
+        rec_s = rec.get("s")
+        if not isinstance(rec_s, str) or rec_s.strip().casefold() != sym_cf:
             continue
         try:
             ts_ms, price = rec["i"]
@@ -108,23 +110,38 @@ class ReplayMarketDataProvider(MarketDataProvider):
     def name(self) -> str:
         return "Replay"
 
+    def _resolve_symbol(self, symbol: str) -> str:
+        if not isinstance(symbol, str):
+            return ""
+        if symbol in self._series:
+            return symbol
+        s_clean = symbol.strip()
+        if s_clean in self._series:
+            return s_clean
+        s_cf = s_clean.casefold()
+        for k in self._series:
+            if isinstance(k, str) and k.strip().casefold() == s_cf:
+                return k
+        return s_clean
+
     def supports_symbol(self, symbol: str) -> bool:
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str):
             return False
-        return symbol in self._series
+        return self._resolve_symbol(symbol) in self._series
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None
-        prec = self._precisions.get(symbol)
+        sym = self._resolve_symbol(symbol)
+        prec = self._precisions.get(sym)
         if prec is None:
-            base = _base_asset(symbol).upper()
+            base = _base_asset(sym).upper()
             prec = PairPrecision(
                 price_decimals=2, volume_decimals=4, order_min=0.0,
                 base_asset=base,
             )
-            self._precisions[symbol] = prec
-            self._asset_to_symbol.setdefault(base, symbol)
+            self._precisions[sym] = prec
+            self._asset_to_symbol.setdefault(base, sym)
         return prec
 
     # ── Clock advancement: called by the backtest driver, not bot code ───────
@@ -136,22 +153,24 @@ class ReplayMarketDataProvider(MarketDataProvider):
         steps_int = exact_pos_int(steps, default=None)
         if steps_int is None:
             return None
-        series = self._series.get(symbol)
+        sym = self._resolve_symbol(symbol)
+        series = self._series.get(sym)
         if not series:
             return None
-        cur_idx = self._cursor.get(symbol, 0)
+        cur_idx = self._cursor.get(sym, 0)
         new_idx = min(cur_idx + steps_int, len(series))
         if new_idx == cur_idx and new_idx >= len(series):
             return None   # Already at the end; nothing to advance.
-        self._cursor[symbol] = new_idx
+        self._cursor[sym] = new_idx
         if new_idx == 0:
             return None
         ts, price = series[new_idx - 1]
-        self._last_ts[symbol] = ts
+        self._last_ts[sym] = ts
         return price
 
     def has_more(self, symbol: str) -> bool:
-        return self._cursor.get(symbol, 0) < len(self._series.get(symbol, []))
+        sym = self._resolve_symbol(symbol)
+        return self._cursor.get(sym, 0) < len(self._series.get(sym, []))
 
     def now(self, symbol: Optional[str] = None) -> float:
         """Return the timestamp of the most recently read replay price.
@@ -160,20 +179,22 @@ class ReplayMarketDataProvider(MarketDataProvider):
         timestamp among all advanced symbols, or 0.0 before any advancement.
         """
         if symbol is not None:
-            return self._last_ts.get(symbol, 0.0)
+            return self._last_ts.get(self._resolve_symbol(symbol), 0.0)
         return max(self._last_ts.values(), default=0.0)
 
     # ── Market data ─────────────────────────────────────────────────────────
     def get_current_price(self, symbol: str) -> Optional[float]:
-        series = self._series.get(symbol)
-        idx = self._cursor.get(symbol, 0)
+        sym = self._resolve_symbol(symbol)
+        series = self._series.get(sym)
+        idx = self._cursor.get(sym, 0)
         if not series or idx == 0:
             return None
         return series[idx - 1][1]
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        series = self._series.get(symbol)
-        idx = self._cursor.get(symbol, 0)
+        sym = self._resolve_symbol(symbol)
+        series = self._series.get(sym)
+        idx = self._cursor.get(sym, 0)
         if not series or idx == 0:
             return None
         lb_val = safe_nonneg_float(lookback_h, default=None)
@@ -207,20 +228,22 @@ class ReplayMarketDataProvider(MarketDataProvider):
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return False
-        orders = self._orders.get(symbol)
+        sym = self._resolve_symbol(symbol)
+        orders = self._orders.get(sym)
         if not orders:
             return False
-        cutoff_ms = (self._last_ts.get(symbol, 0.0) - since_val) * 1000.0
+        cutoff_ms = (self._last_ts.get(sym, 0.0) - since_val) * 1000.0
         return orders[-1]["timestamp"] >= cutoff_ms
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return []
-        orders = self._orders.get(symbol)
+        sym = self._resolve_symbol(symbol)
+        orders = self._orders.get(sym)
         if not orders:
             return []
-        now = self._last_ts.get(symbol, 0.0)
+        now = self._last_ts.get(sym, 0.0)
         cutoff_ms = (now - since_val) * 1000.0
         if orders[-1]["timestamp"] < cutoff_ms:
             return []
@@ -229,7 +252,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         side_u = normalize_side(side) if side is not None and str(side).strip() else None
         if side_u is not None and side_u not in ("BUY", "SELL"):
             return []
-        cache_key = (symbol, side_u)
+        cache_key = (sym, side_u)
         cached = self._orders_cache.get(cache_key)
         if cached is not None:
             ver, low_ms, high_ms, res = cached
@@ -257,7 +280,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         This is the public accessor for backtest drivers; they should not read
         ``self._positions`` directly.
         """
-        return self._positions.get(symbol, (0.0, 0.0))
+        return self._positions.get(self._resolve_symbol(symbol), (0.0, 0.0))
 
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         """Execute immediately at the requested price as the phase-one simplification.
@@ -270,13 +293,14 @@ class ReplayMarketDataProvider(MarketDataProvider):
         qty_f = safe_pos_float(qty, default=None)
         if side not in ("BUY", "SELL") or price_f is None or qty_f is None:
             return None
+        sym = self._resolve_symbol(symbol)
         price = price_f
-        qty = safe_pos_float(self.round_quantity(symbol, qty_f), default=None)
+        qty = safe_pos_float(self.round_quantity(sym, qty_f), default=None)
         if qty is None:
             return None
-        ts_ms = int(self.now(symbol) * 1000)
-        pos_qty, pos_cost = self._positions.get(symbol, (0.0, 0.0))
-        cur_px = safe_pos_float(self.get_current_price(symbol), default=None)
+        ts_ms = int(self.now(sym) * 1000)
+        pos_qty, pos_cost = self._positions.get(sym, (0.0, 0.0))
+        cur_px = safe_pos_float(self.get_current_price(sym), default=None)
         if side == "BUY":
             fill_px = min(price, cur_px) if cur_px is not None else price
             executed_qty = qty
@@ -293,11 +317,11 @@ class ReplayMarketDataProvider(MarketDataProvider):
             if pos_qty <= 1e-9:
                 pos_qty = 0.0
                 pos_cost = 0.0
-        self._orders.setdefault(symbol, []).append(
+        self._orders.setdefault(sym, []).append(
             {"side": side, "price": fill_px, "qty": executed_qty,
              "timestamp": ts_ms})
         self._orders_version += 1
-        self._positions[symbol] = (pos_qty, pos_cost)
+        self._positions[sym] = (pos_qty, pos_cost)
         return {"orderId": -1, "backtest": True}
 
     def guards_internally(self) -> bool:
