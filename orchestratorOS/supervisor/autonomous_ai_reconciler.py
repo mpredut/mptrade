@@ -33,15 +33,12 @@ from botcore import (
     _parse_bool_flag,
     load_dotenv,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
-    safe_pos_int,
 )
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
-    normalize_cache_base_asset,
     normalize_venue_name,
     resolve_cachedb_filepath,
     split_symbol_assets,
@@ -49,7 +46,6 @@ from cachepaths import (
 from providers.base import (
     extract_order_id,
     extract_order_price,
-    extract_order_qty,
     extract_order_side,
     extract_orig_qty,
 )

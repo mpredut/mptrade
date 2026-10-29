@@ -1,20 +1,12 @@
 import bisect
-import gzip
-import hashlib
-import json
-import glob
-import os
-import time
-import datetime
-import asyncio
-import threading
-import importlib
 import builtins
-import weakref
-import shutil
+from datetime import datetime
+import json
+import os
+import threading
+import time
 import uuid
-from datetime import datetime, timedelta
-from decimal import Decimal
+import weakref
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from typing import Optional
@@ -25,7 +17,6 @@ from state_io import (
     atomic_write_json as _atomic_write_json,
     commit_file_and_meta,
     discard_generation_file,
-    durable_replace_file,
     generation_lock_path,
     meta_file_path,
     previous_generation_path,
@@ -37,10 +28,7 @@ from state_io import (
     truncate_file_bytes,
 )
 from cachepaths import (
-    EXACT_LEGACY_FILENAMES as _EXACT_LEGACY_FILENAMES,
-    PREFIX_LEGACY_FILENAMES as _PREFIX_LEGACY_FILENAMES,
     canonical_symbol_key,
-    legacy_filenames_for as _legacy_filenames_for,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
 )
@@ -79,7 +67,6 @@ from botcore import (
     required_float_env,
     required_int_env,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,

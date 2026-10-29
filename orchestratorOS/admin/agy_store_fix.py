@@ -50,7 +50,6 @@ from orchestratorOS.agy.paths import resolve_store_lock_path, visible_conversati
 from orchestratorOS.agy.protobuf import (  # noqa: E402
     enc_fields,
     list_entry_cids,
-    parse_fields,
     summary_annotation_title,
     summary_ui_visible,
 )

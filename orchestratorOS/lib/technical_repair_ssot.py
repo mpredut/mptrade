@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 

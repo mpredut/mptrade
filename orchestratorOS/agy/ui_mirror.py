@@ -13,7 +13,7 @@ import os
 import shutil
 import sqlite3
 import sys
-from typing import Any, Optional
+from typing import Optional
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT_DIR not in sys.path:

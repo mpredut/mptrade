@@ -19,9 +19,13 @@ if str(ROOT) not in sys.path:
 
 from notify_engine.alertnotifiers import AlertNotifier  # noqa: E402
 from botcore import (  # noqa: E402
-    _parse_bool_flag, load_env_stack, required_bool_env, required_float_env, required_int_env,
+    _parse_bool_flag,
+    load_env_stack,
+    required_bool_env,
+    required_float_env,
+    required_int_env,
 )
-from state_io import atomic_write_json, read_recovering_previous, save_json_state  # noqa: E402
+from state_io import read_recovering_previous, save_json_state  # noqa: E402
 
 
 def _watchdog_event(title, message):

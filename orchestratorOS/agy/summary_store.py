@@ -20,7 +20,7 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
-from botcore import _parse_bool_flag, safe_int, safe_nonneg_int
+from botcore import _parse_bool_flag, safe_nonneg_int
 from state_io import atomic_write_bytes
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
