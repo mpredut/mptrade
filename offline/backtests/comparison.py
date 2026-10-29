@@ -10,7 +10,6 @@ Provides venue-agnostic comparison math for walk-forward evaluation windows:
 
 from __future__ import annotations
 
-import math
 from typing import Any, Mapping, Sequence
 
 from botcore import safe_float, safe_nonneg_float

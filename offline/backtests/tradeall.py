@@ -17,7 +17,6 @@ Visualisation (while running or afterwards): in another terminal,
 """
 import argparse
 import json
-import math
 import os
 import sys
 import time
