@@ -418,6 +418,26 @@ class TestRebuyGuardsKraken(Base):
             if os.path.exists(trend_path):
                 os.remove(trend_path)
 
+    def test_free_balance_fails_closed_on_corrupt_hold_trade_and_unlock_qty_handles_null_descr(self):
+        c = FakeK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        ts._tick_balances = {"HYPE": {"balance": "25.0", "hold_trade": "corrupt"}}
+        self.assertEqual(ts._free("HYPE"), 0.0)
+        ts._tick_balances = {"HYPE": {"balance": "25.0", "hold_trade": "-5.0"}}
+        self.assertEqual(ts._free("HYPE"), 0.0)
+        ts._tick_balances = {"HYPE": {"balance": "25.0", "hold_trade": True}}
+        self.assertEqual(ts._free("HYPE"), 0.0)
+
+        cancelled = []
+        c.open_orders = lambda: {
+            "TX-NULL-DESCR": {"descr": None, "pair": "HYPEUSD", "type": "sell"},
+            "TX-NON-DICT": "malformed",
+        }
+        c.cancel_order = lambda txid: cancelled.append(txid) or {"count": 1}
+        self.assertTrue(ts.unlock_qty("HYPEUSD"))
+        self.assertEqual(cancelled, ["TX-NULL-DESCR"])
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

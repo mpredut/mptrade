@@ -49,7 +49,9 @@ except ImportError:
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     TrailingCore,
     build_trailing_order_intent,
+    extract_rebuy_anchors,
     extract_short_trend_slope,
+    extract_trailing_intent_action_asset,
     reconcile_trailing_pending_order,
     should_sell,
     sync_trailing_retry_count,
@@ -193,8 +195,10 @@ class KrakenTrailing:
         bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
-        bal_f = safe_float(bx.get("balance"), default=0.0)
-        hold_f = safe_float(bx.get("hold_trade"), default=0.0)
+        bal_f = safe_nonneg_float(bx.get("balance"), default=None)
+        hold_f = safe_nonneg_float(bx.get("hold_trade", 0.0), default=None)
+        if bal_f is None or hold_f is None:
+            return 0.0
         return safe_nonneg_float(bal_f - hold_f, default=0.0)
 
     # -- HYPE short trend from cache_short_trend.json for optional filters --
@@ -258,8 +262,11 @@ class KrakenTrailing:
                 return False
             cancelled_any = False
             for txid, ord_info in open_ords.items():
-                descr = ord_info.get("descr", {}) if isinstance(ord_info, dict) else {}
-                ord_pair = str(descr.get("pair") or (ord_info.get("pair") if isinstance(ord_info, dict) else "") or "")
+                if not isinstance(ord_info, dict):
+                    continue
+                raw_descr = ord_info.get("descr")
+                descr = raw_descr if isinstance(raw_descr, dict) else {}
+                ord_pair = str(descr.get("pair") or ord_info.get("pair") or "")
                 if extract_order_side(ord_info) == "SELL" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
                     self.client.cancel_order(txid)
                     cancelled_any = True
@@ -306,9 +313,9 @@ class KrakenTrailing:
         if result is not None and result.outcome == "terminal":
             filled = safe_nonneg_float(getattr(result.status, "filled_qty", None), default=0.0)
             if filled > 0:
-                meta = result.intent.get("metadata") if isinstance(result.intent.get("metadata"), dict) else {}
-                notify_action = str(result.intent.get("action") or meta.get("action") or "ORDER")
-                notify_asset = result.intent.get("asset") or meta.get("asset") or result.intent.get("symbol")
+                act_norm, asset_norm = extract_trailing_intent_action_asset(result.intent)
+                notify_action = act_norm or "ORDER"
+                notify_asset = asset_norm or (result.intent.get("symbol") if isinstance(result.intent, dict) else None)
                 qty = filled
                 cost = safe_nonneg_float(getattr(result.status, "cost", None), default=0.0)
                 req_px = safe_nonneg_float(result.intent.get("requested_price"), default=0.0)
@@ -401,10 +408,7 @@ class KrakenTrailing:
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
         limit = price * 1.005
         self._sync_retry_count_from_state(pair, "REBUY", persist)
-        raw_low = rb.get("low") if isinstance(rb, dict) else None
-        anchor_val = safe_pos_float(raw_low, default=float(price))
-        raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
-        sell_price_val = safe_nonneg_float(raw_sp, default=0.0)
+        anchor_val, sell_price_val = extract_rebuy_anchors(rb, price)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, limit,
             anchor=anchor_val,
@@ -432,8 +436,7 @@ class KrakenTrailing:
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
         px_f = self._safe_float(price, 0.0)
-        raw_low = rb.get("low") if isinstance(rb, dict) else None
-        low_val = safe_pos_float(raw_low, default=px_f)
+        low_val, _ = extract_rebuy_anchors(rb, px_f)
         self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{px_f:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 

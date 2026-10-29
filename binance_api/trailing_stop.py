@@ -52,6 +52,7 @@ from order_retry import (
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     TrailingCore,
     build_trailing_order_intent,
+    extract_rebuy_anchors,
     extract_short_trend_slope,
     reconcile_trailing_pending_order,
     should_sell,
@@ -265,6 +266,21 @@ class TrailingStop:
             self.log(f"  [TRAIL] long-trend({symbol}) unavailable ({e}) — auto rebuy OFF")
             return False
 
+    @staticmethod
+    def _find_balance_row(balances: list | None, asset: str, *, unique: bool = False) -> dict | None:
+        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+            return None
+        target = asset.strip().upper()
+        matches = [
+            row for row in (balances or [])
+            if isinstance(row, dict)
+            and not isinstance(row.get("asset"), bool)
+            and str(row.get("asset") or "").strip().upper() == target
+        ]
+        if not matches or (unique and len(matches) != 1):
+            return None
+        return matches[0]
+
     def cost_basis(self, pair: str):
         """Use reconciled BUY/SELL inventory for new-position warm-up, when known.
 
@@ -276,10 +292,9 @@ class TrailingStop:
             pair_norm = str(pair or "").strip().upper()
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair) or TRAILING_INSTRUMENTS[pair]
             asset = spec.base
-            balances = [row for row in self._balances if isinstance(row, dict) and row.get("asset") == asset]
-            if len(balances) != 1:
+            balance = self._find_balance_row(self._balances, asset, unique=True)
+            if balance is None:
                 return None
-            balance = balances[0]
             free = safe_nonneg_float(balance.get("free"), default=None)
             locked = safe_nonneg_float(balance.get("locked"), default=None)
             if free is None or locked is None:
@@ -291,10 +306,10 @@ class TrailingStop:
             return None
 
     def _free_qty(self, balances: list, asset: str) -> float:
-        for bal in balances or []:
-            if isinstance(bal, dict) and bal.get("asset") == asset:
-                return safe_nonneg_float(bal.get("free"), default=0.0)
-        return 0.0
+        bal = self._find_balance_row(balances, asset)
+        if bal is None:
+            return 0.0
+        return safe_nonneg_float(bal.get("free"), default=0.0)
 
     # -- instant trend from cacheManager for optional filters ------------------
     def _trend_value(self, symbol: str) -> float:
@@ -335,15 +350,14 @@ class TrailingStop:
         return self._free_qty(self._balances, asset)
 
     def total_qty(self, asset: str) -> float:
-        for bal in self._balances or []:
-            if isinstance(bal, dict) and bal.get("asset") == asset:
-                f = safe_nonneg_float(bal.get("free", 0.0), default=None)
-                l = safe_nonneg_float(bal.get("locked", 0.0), default=None)
-                if f is None or l is None:
-                    return 0.0
-                tot = f + l
-                return safe_nonneg_float(tot, default=0.0)
-        return 0.0
+        bal = self._find_balance_row(self._balances, asset)
+        if bal is None:
+            return 0.0
+        f = safe_nonneg_float(bal.get("free", 0.0), default=None)
+        l = safe_nonneg_float(bal.get("locked", 0.0), default=None)
+        if f is None or l is None:
+            return 0.0
+        return safe_nonneg_float(f + l, default=0.0)
 
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""
@@ -354,14 +368,8 @@ class TrailingStop:
                 spec = TRAILING_INSTRUMENTS.get(pair_norm) or TRAILING_INSTRUMENTS.get(pair)
                 asset = spec.base if spec is not None else None
                 if asset and self._balances:
-                    locked = 0.0
-                    found = False
-                    for bal in self._balances:
-                        if isinstance(bal, dict) and bal.get("asset") == asset:
-                            found = True
-                            locked = safe_pos_float(bal.get("locked", 0.0), default=0.0)
-                            break
-                    if found and locked <= 0.0:
+                    bal = self._find_balance_row(self._balances, asset)
+                    if bal is not None and safe_pos_float(bal.get("locked", 0.0), default=0.0) <= 0.0:
                         return False
                 cancel_fn("SELL", pair)
                 refreshed = self.api.get_account_assets_balances()
@@ -457,10 +465,7 @@ class TrailingStop:
         # the historical math reference while keeping microstructure/AI guards active.
         self._sync_retry_count_from_state(pair, "REBUY", persist)
         price_f = safe_nonneg_float(price, 0.0)
-        raw_low = rb.get("low") if isinstance(rb, dict) else None
-        anchor_val = safe_pos_float(raw_low, default=price_f)
-        raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
-        sell_price_val = safe_nonneg_float(raw_sp, default=0.0)
+        anchor_val, sell_price_val = extract_rebuy_anchors(rb, price_f)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
             anchor=anchor_val,
@@ -486,8 +491,7 @@ class TrailingStop:
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
         price_f = safe_nonneg_float(price, 0.0)
-        raw_low = rb.get("low") if isinstance(rb, dict) else None
-        low_val = safe_pos_float(raw_low, default=price_f)
+        low_val, _ = extract_rebuy_anchors(rb, price_f)
         self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price_f:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [TRAILING_ENABLED=true for it to execute]")
 

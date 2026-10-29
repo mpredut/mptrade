@@ -45,6 +45,27 @@ from botcore import (
 )
 
 
+def extract_trailing_intent_action_asset(intent: object) -> tuple[str, str]:
+    """Extract normalized (action, asset) from a trailing order intent or its nested metadata."""
+    pending = intent if isinstance(intent, dict) else {}
+    raw_meta = pending.get("metadata")
+    meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
+    raw_act = pending.get("action") or meta_dict.get("action")
+    action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
+    raw_asset = pending.get("asset") or meta_dict.get("asset")
+    asset = raw_asset.strip() if isinstance(raw_asset, str) else ""
+    return action, asset
+
+
+def extract_rebuy_anchors(rb: object, fallback_price: object) -> tuple[float, float]:
+    """Return validated (low_anchor, sell_price) from a rebuy state dict."""
+    fallback_f = safe_nonneg_float(fallback_price, default=0.0)
+    rb_dict = rb if isinstance(rb, dict) else {}
+    low_anchor = safe_pos_float(rb_dict.get("low"), default=fallback_f)
+    sell_price = safe_nonneg_float(rb_dict.get("sell_price"), default=0.0)
+    return low_anchor, sell_price
+
+
 def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:
     """Restore in-memory retry count from persisted state when higher."""
     st = getattr(persist, "st", None)
@@ -107,10 +128,7 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
     result = order_lifecycle.reconcile(pending, persist=persist)
     raw_pair = pending.get("symbol")
     pair = raw_pair.strip() if isinstance(raw_pair, str) else ""
-    raw_meta = pending.get("metadata")
-    meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-    raw_act = pending.get("action") or meta_dict.get("action")
-    action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
+    action, _ = extract_trailing_intent_action_asset(pending)
     retry_key = (pair, action)
     st = getattr(persist, "st", None)
     rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
@@ -280,18 +298,13 @@ class TrailingCore:
         status = result.status
         raw_intent = getattr(result, "intent", None)
         pending = raw_intent if isinstance(raw_intent, dict) else {}
-        raw_meta = pending.get("metadata")
-        meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
-        raw_act = pending.get("action") or meta_dict.get("action")
-        action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
+        action, asset = extract_trailing_intent_action_asset(pending)
         filled = safe_nonneg_float(getattr(status, "filled_qty", None), 0.0)
         cost_val = safe_nonneg_float(getattr(status, "cost", None), 0.0)
         avg = safe_pos_float(cost_val / filled, default=None) if filled > 0 and cost_val > 0 else None
         if avg is None:
             avg = safe_pos_float(price, default=0.0) or 0.0
         if action == "SELL" and filled > 0:
-            raw_asset = pending.get("asset") or meta_dict.get("asset")
-            asset = raw_asset.strip() if isinstance(raw_asset, str) else ""
             if not asset:
                 asset = self._asset_for_pair(pair)
 
