@@ -161,28 +161,18 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     order_type = _normalize_side(order_type)
     if order_type not in {"BUY", "SELL"}:
         raise SubmissionRefused("invalid_weight_policy_inputs")
-    if (
-        isinstance(price, bool)
-        or isinstance(available_qty, bool)
-        or isinstance(required_qty, bool)
-    ):
+    price_val = safe_pos_float(price, default=None)
+    avail_val = safe_pos_float(available_qty, default=None)
+    if price_val is None or avail_val is None:
         raise SubmissionRefused("invalid_weight_policy_inputs")
-    try:
-        price = float(price)
-        available_qty = float(available_qty)
-        required_qty = float(_resolve_qty(required_qty))
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SubmissionRefused("invalid_weight_policy_inputs") from exc
-    if (not math.isfinite(price) or price <= 0 or
-            not math.isfinite(available_qty) or available_qty <= 0 or
-            math.isnan(required_qty) or required_qty <= 0 or
-            (math.isinf(required_qty) and not auto_qty)):
-        raise SubmissionRefused("invalid_weight_policy_inputs")
-    # ``qty=None`` is represented by positive infinity until policy and balance
-    # caps are known. Resolve only that internal sentinel to the already-validated
-    # finite balance cap; explicit invalid values still fail closed above.
+    price, available_qty = price_val, avail_val
     if auto_qty:
         required_qty = available_qty
+    else:
+        req_val = safe_pos_float(required_qty, default=None)
+        if req_val is None:
+            raise SubmissionRefused("invalid_weight_policy_inputs")
+        required_qty = req_val
 
     is_sell = order_type == "SELL"
 
@@ -202,23 +192,23 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
         raise SubmissionRefused(reason) from exc
 
     try:
-        weight = order_guard.resolve_trade_weight(
-            symbol, order_type, provider_name="binance", raise_on_error=True)
+        weight = safe_pos_float(order_guard.resolve_trade_weight(
+            symbol, order_type, provider_name="binance", raise_on_error=True), default=None)
     except SubmissionRefused:
         raise
     except Exception as exc:
         return _fail_open_or_refuse("weight_policy_unavailable", exc)
 
-    if not math.isfinite(weight) or not 0 < weight <= 1:
+    if weight is None or weight > 1:
         raise SubmissionRefused("invalid_weight_policy_weight")
 
     try:
         stats = apiorders.get_total_traded_stats(symbol)
         side_stats = stats[order_type.upper()]
-        traded_value = float(side_stats["total_value"])
+        traded_value = safe_nonneg_float(side_stats.get("total_value"), default=None)
     except Exception as exc:
         return _fail_open_or_refuse("trade_stats_unavailable", exc)
-    if not math.isfinite(traded_value) or traded_value < 0:
+    if traded_value is None:
         raise SubmissionRefused("invalid_trade_stats")
 
     adjusted_qty = order_guard.compute_weight_capped_qty(
@@ -368,10 +358,7 @@ def _consume_account_cache_submit_permit(
             if submitted_price is None or scoped_price is None:
                 raise SubmissionRefused("account_cache_not_fresh")
         price_is_safe = scope.market or (
-            math.isfinite(submitted_price)
-            and submitted_price > 0
-            and math.isfinite(scoped_price)
-            and scoped_price == scope.requested_price
+            scoped_price == scope.requested_price
             and ((scope.side == "BUY" and submitted_price <= scoped_price)
                 or (
                     scope.side == "SELL"
@@ -391,8 +378,7 @@ def _consume_account_cache_submit_permit(
             and scope.side == str(_normalize_side(side))
             and scope.market is bool(market)
             and scope.kind == str(kind or "")
-            and math.isfinite(actual_qty)
-            and 0 < actual_qty <= scope.max_qty
+            and actual_qty <= scope.max_qty
             and price_is_safe
         )
         if not matches:

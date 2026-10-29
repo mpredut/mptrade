@@ -16,7 +16,6 @@ The profit threshold is configured per venue in versioned, non-sensitive
 `order_guard.conf`. A missing file or required key aborts startup immediately."""
 import os
 import time
-import math
 import json
 from botcore import (
     _parse_bool_flag,
@@ -225,15 +224,15 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
                 f"Invalid {policy_key} {raw_val!r} in {path}; must be one of {sorted(valid_set)}"
             )
 
-    min_auto_usd = float(m["autonomous_trading_min_notional_usd"])
-    max_auto_usd = float(m["autonomous_trading_max_notional_usd"])
-    if not (math.isfinite(min_auto_usd) and min_auto_usd > 0):
+    min_auto_usd = safe_pos_float(m.get("autonomous_trading_min_notional_usd"), default=None)
+    max_auto_usd = safe_pos_float(m.get("autonomous_trading_max_notional_usd"), default=None)
+    if min_auto_usd is None:
         raise ValueError(
-            f"Invalid autonomous_trading_min_notional_usd {m['autonomous_trading_min_notional_usd']!r} in {path}"
+            f"Invalid autonomous_trading_min_notional_usd {m.get('autonomous_trading_min_notional_usd')!r} in {path}"
         )
-    if not (math.isfinite(max_auto_usd) and max_auto_usd >= min_auto_usd):
+    if max_auto_usd is None or max_auto_usd < min_auto_usd:
         raise ValueError(
-            f"Invalid autonomous_trading_max_notional_usd {m['autonomous_trading_max_notional_usd']!r} in {path}; "
+            f"Invalid autonomous_trading_max_notional_usd {m.get('autonomous_trading_max_notional_usd')!r} in {path}; "
             f"must be >= autonomous_trading_min_notional_usd ({min_auto_usd})"
         )
 
@@ -802,7 +801,7 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL", *, 
     valid_opp = []
     for o in opp_orders:
         ts, qty, px = _order_ts_qty_price(o)
-        if px > 0 and math.isfinite(px):
+        if px > 0:
             valid_opp.append((ts, qty, px))
     if not valid_opp:
         return None
@@ -900,9 +899,10 @@ def get_chop_weight_cfg(provider_name):
     m = _load_margins()
     venue = _provider_name(provider_name).strip().lower()
     key = venue + "_chop_weight"
-    val = float(m.get(key, m["default_chop_weight"]))
-    if not math.isfinite(val) or val <= 0:
-        raise ValueError(f"Invalid chop_weight in order_guard.conf: {val!r}")
+    raw = m.get(key, m["default_chop_weight"])
+    val = safe_pos_float(raw, default=None)
+    if val is None:
+        raise ValueError(f"Invalid chop_weight in order_guard.conf: {raw!r}")
     return val
 
 
@@ -913,7 +913,6 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
     2. Proxy Gaussian weight (e.g. BTCUSDC) when symbol has no trend.
     3. Conservative chop fallback (default 0.03 or venue-configured chop weight).
     """
-    import math
 
     def _gauss(sym):
         try:
@@ -957,15 +956,9 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
 def _clean_required_qty_or_inf(required_qty) -> float:
     """Parse required_qty (>0), preserving +inf for auto-quantity while rejecting None/bool/NaN/<=0."""
-    if required_qty is None or isinstance(required_qty, bool):
-        return 0.0
-    try:
-        rf = float(required_qty)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if math.isnan(rf) or rf <= 0.0:
-        return 0.0
-    return rf
+    if required_qty == float("inf"):
+        return float("inf")
+    return safe_pos_float(required_qty, 0.0)
 
 
 def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded_24h_value):
@@ -1092,8 +1085,8 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         for t in trades:
             if not isinstance(t, dict):
                 continue
-            ts_s = extract_timestamp_s(t, default=0.0) or 0.0
-            if math.isfinite(ts_s) and ts_s > 0:
+            ts_s = safe_pos_float(extract_timestamp_s(t, default=0.0), 0.0)
+            if ts_s > 0:
                 elapsed_s = max(0.0, now_s - ts_s)
                 if elapsed_s < antispam_sec:
                     print(f"[DAILY-LIMIT] {order_type} {symbol}: last fill {elapsed_s:.1f}s ago "
@@ -1886,8 +1879,8 @@ def check_math_profit_reference(
                     for o in recent:
                         if not isinstance(o, dict):
                             continue
-                        px = extract_order_price(o, default=0.0)
-                        if px > 0 and math.isfinite(px):
+                        px = safe_pos_float(extract_order_price(o, default=0.0), 0.0)
+                        if px > 0:
                             recent_prices.append(px)
                     if not recent_prices:
                         print(f"[GUARD] {side} {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
