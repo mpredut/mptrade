@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import utils
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, legacy_filenames_for
 from providers.base import MarketDataProvider, normalize_side
 from providers.strategy_executor import PairPrecision
 
@@ -40,8 +40,7 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
         return out
     if not os.path.isfile(path):
         try:
-            import cachepaths
-            for legacy_path in cachepaths.legacy_filenames_for(path):
+            for legacy_path in legacy_filenames_for(path):
                 if os.path.isfile(legacy_path):
                     path = legacy_path
                     break
