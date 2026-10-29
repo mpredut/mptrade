@@ -31,7 +31,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
         sys.modules.pop(_mod_name, None)
 
 from state_io import atomic_write_json, previous_generation_path, read_json_dict
-from providers.base import extract_order_side
+from providers.base import extract_order_id, extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:
@@ -102,7 +102,7 @@ def order_already_placed() -> bool:
     except RuntimeError as exc:
         log(f"  ! [ORDER] unreadable marker — fail closed: {exc}")
         return True
-    return bool(record and str(record.get("lifecycle") or "").lower() not in {
+    return bool(record and str(record.get("lifecycle") or "").strip().lower() not in {
         "canceled", "cancelled", "expired",
     })
 
@@ -155,7 +155,7 @@ def _write_marker(ticker: str, result: dict) -> None:
     res_dict = result if isinstance(result, dict) else {}
     _persist_marker({
         "version": 2, "at": now_str(), "ticker": ticker,
-        "lifecycle": "accepted", "order_id": T212Client._clean_order_id(res_dict.get("id")),
+        "lifecycle": "accepted", "order_id": T212Client._clean_order_id(extract_order_id(res_dict)),
         "venue_status": res_dict.get("status"), "order": res_dict,
     }, _marker_path(ticker))
     log(f"  [ORDER] marker written: {_marker_path(ticker)}")
@@ -252,6 +252,30 @@ def _append_venue_order_id(record: dict, oid: object) -> list[str]:
     return history
 
 
+def _confirm_fill_from_portfolio(
+    client: T212Client,
+    record: dict,
+    marker_path: str,
+    *,
+    now: float,
+    message: str,
+) -> str | None:
+    current_qty = _portfolio_qty(client, record["ticker"])
+    if current_qty is None:
+        return "waiting"
+    before_f = safe_nonneg_float(record.get("before_qty"), None)
+    if before_f is not None and current_qty > before_f + 1e-6:
+        record.update({
+            "lifecycle": "filled", "portfolio_fill_observed": True,
+            "filled_qty": current_qty - before_f,
+            "lookup_misses": 0, "last_observed_at": now,
+        })
+        _persist_marker(record, marker_path)
+        log(message)
+        return "complete"
+    return None
+
+
 def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       *, now: float, retry_delay: float,
                       desktop: bool) -> str:
@@ -262,19 +286,15 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         if info is None:
             return "waiting"
         if info is False:
-            current_qty = _portfolio_qty(client, record["ticker"])
-            if current_qty is None:
-                return "waiting"
-            before_f = safe_nonneg_float(record.get("before_qty"), None)
-            if before_f is not None and current_qty > before_f + 1e-6:
-                record.update({
-                    "lifecycle": "filled", "portfolio_fill_observed": True,
-                    "filled_qty": current_qty - before_f,
-                    "lookup_misses": 0, "last_observed_at": now,
-                })
-                _persist_marker(record, marker_path)
-                log("  [ORDER] accepted order vanished from history; fill confirmed from portfolio")
-                return "complete"
+            pf_outcome = _confirm_fill_from_portfolio(
+                client,
+                record,
+                marker_path,
+                now=now,
+                message="  [ORDER] accepted order vanished from history; fill confirmed from portfolio",
+            )
+            if pf_outcome is not None:
+                return pf_outcome
             misses = safe_nonneg_int(record.get("lookup_misses"), default=0) + 1
             record["lookup_misses"] = misses
             record["last_observed_at"] = now
@@ -316,7 +336,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
     matches = _matching_active_orders(client, record)
     if matches is None:
         return "waiting"
-    matched_oid = T212Client._clean_order_id(matches[0].get("id")) if len(matches) == 1 else None
+    matched_oid = T212Client._clean_order_id(extract_order_id(matches[0])) if len(matches) == 1 else None
     if matched_oid is not None:
         record.update({
             "order_id": matched_oid, "lifecycle": "accepted",
@@ -329,19 +349,15 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         log("  ! [ORDER] several T212 orders match the intent — keeping it pending")
         return "waiting"
 
-    current_qty = _portfolio_qty(client, record["ticker"])
-    if current_qty is None:
-        return "waiting"
-    before_f = safe_nonneg_float(record.get("before_qty"), None)
-    if before_f is not None and current_qty > before_f + 1e-6:
-        record.update({
-            "lifecycle": "filled", "portfolio_fill_observed": True,
-            "filled_qty": current_qty - before_f,
-            "last_observed_at": now,
-        })
-        _persist_marker(record, marker_path)
-        log("  [ORDER] the submit was recovered from the growth of the T212 position")
-        return "complete"
+    pf_outcome = _confirm_fill_from_portfolio(
+        client,
+        record,
+        marker_path,
+        now=now,
+        message="  [ORDER] the submit was recovered from the growth of the T212 position",
+    )
+    if pf_outcome is not None:
+        return pf_outcome
 
     misses = safe_nonneg_int(record.get("lookup_misses"), default=0) + 1
     record["lookup_misses"] = misses
@@ -429,7 +445,7 @@ def place_order_with_retry(
         ver_i = safe_int(record.get("version"), 1)
         if ver_i < 2:
             legacy = record.get("order") if isinstance(record.get("order"), dict) else {}
-            legacy_id = T212Client._clean_order_id(legacy.get("id"))
+            legacy_id = T212Client._clean_order_id(extract_order_id(legacy))
             if legacy_id:
                 info = poll_order_until_terminal(client, legacy_id, ticker, desktop)
                 record["last_status"] = info.get("status") if isinstance(info, dict) else None
@@ -448,7 +464,7 @@ def place_order_with_retry(
         if not same_intent:
             log("  ! [ORDER] another intent already exists in the marker — NOT overwriting")
             return False
-        lifecycle = str(record.get("lifecycle") or "").lower()
+        lifecycle = str(record.get("lifecycle") or "").strip().lower()
         if lifecycle == "filled":
             return True
         if lifecycle in {"canceled", "cancelled", "expired"}:
@@ -514,7 +530,7 @@ def place_order_with_retry(
         log(f"  ! [ORDER] raspuns submit ambiguu ({exc}) — intentia ramane pending")
         return False
 
-    oid = T212Client._clean_order_id(data.get("id")) if isinstance(data, dict) else None
+    oid = T212Client._clean_order_id(extract_order_id(data)) if isinstance(data, dict) else None
     if status in (200, 201) and oid is not None:
         venue_status = str(data.get("status") or "").upper()
         lifecycle = "filled" if venue_status == "FILLED" else "accepted"

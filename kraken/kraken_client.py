@@ -97,14 +97,21 @@ def _cache_invalidate(methods) -> None:
             _CACHE.pop(k, None)
 
 
+def _format_kraken_number(value: float, max_decimals: int) -> str:
+    s = f"{value}"
+    if "e" in s.lower():
+        return f"{value:.{max_decimals}f}".rstrip("0").rstrip(".") or "0"
+    return s
+
+
 class KrakenError(Exception):
     pass
 
 
 class KrakenClient:
     def __init__(self, api_key: str | None = None, api_secret: str | None = None):
-        self.api_key = api_key or ""
-        self.api_secret = api_secret or ""
+        self.api_key = api_key.strip() if isinstance(api_key, str) and not isinstance(api_key, bool) else ""
+        self.api_secret = api_secret.strip() if isinstance(api_secret, str) and not isinstance(api_secret, bool) else ""
 
     @classmethod
     def public(cls) -> "KrakenClient":
@@ -125,7 +132,8 @@ class KrakenClient:
             raise KrakenError("Missing Kraken keys (check KRAKEN_API_KEY_BOT/_TRAIL/_CACHE in kraken/.env)")
         data = dict(data or {})
         ttl = _read_ttl(method, data)
-        if ttl and not fresh:                       # serve a cacheable read from a fresh cache entry
+        fresh_flag = _parse_bool_flag(fresh, default=False)
+        if ttl and not fresh_flag:                  # serve a cacheable read from a fresh cache entry
             ok, val = _cache_get(method, data)
             if ok:
                 return val
@@ -157,7 +165,8 @@ class KrakenClient:
     def _public(self, method: str, params: dict | None = None, fresh: bool = False) -> dict:
         params = dict(params or {})
         ttl = _read_ttl(method, params)
-        if ttl and not fresh:
+        fresh_flag = _parse_bool_flag(fresh, default=False)
+        if ttl and not fresh_flag:
             ok, val = _cache_get(method, params)
             if ok:
                 return val
@@ -302,9 +311,7 @@ class KrakenClient:
         ot_norm = str(ordertype or "").strip().lower() if not isinstance(ordertype, bool) else ""
         if ot_norm not in {"limit", "market"}:
             raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")
-        vol_str = f"{vol_f}"
-        if "e" in vol_str.lower():
-            vol_str = f"{vol_f:.12f}".rstrip("0").rstrip(".") or "0"
+        vol_str = _format_kraken_number(vol_f, 12)
         data = {
             "pair": pair_s,
             "type": side_val,
@@ -318,10 +325,7 @@ class KrakenClient:
             price = round(px_f, self.price_decimals(pair_s))
             if price <= 0.0:
                 raise ValueError(f"invalid Kraken rounded limit price: {price!r}")
-            px_str = f"{price}"
-            if "e" in px_str.lower():
-                px_str = f"{price:.18f}".rstrip("0").rstrip(".") or "0"
-            data["price"] = px_str
+            data["price"] = _format_kraken_number(price, 18)
         if cl_ord_id is not None:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")

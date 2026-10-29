@@ -93,8 +93,22 @@ def _load_state() -> dict:
     else:
         merged["pair"] = str(raw_pair).strip()
     alloc = merged.get("allocated")
-    if not isinstance(alloc, dict):
+    if isinstance(alloc, dict):
+        raw_asset = alloc.get("asset")
+        if raw_asset and not isinstance(raw_asset, bool) and str(raw_asset).strip():
+            clean_alloc = dict(alloc)
+            clean_alloc["asset"] = str(raw_asset).strip()
+            clean_alloc["qty"] = safe_nonneg_float(alloc.get("qty"), 0.0)
+            if "ts" in clean_alloc:
+                clean_alloc["ts"] = safe_nonneg_float(alloc.get("ts"), 0.0)
+            merged["allocated"] = clean_alloc
+        else:
+            merged["allocated"] = None
+    else:
         merged["allocated"] = None
+    raw_pid = merged.get("bot_pid")
+    pf = safe_float(raw_pid, default=None)
+    merged["bot_pid"] = int(pf) if (pf is not None and pf.is_integer() and int(pf) > 1) else None
     return merged
 
 

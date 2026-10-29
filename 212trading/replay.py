@@ -248,9 +248,7 @@ def _run_once(
                                     avg, price, quantity, params.fx_fee_pct,
                                 )
                                 if complete and fill_order.get("level") is not None:
-                                    engine.s.setdefault("tp_sold_levels", []).append(
-                                        fill_order["level"]
-                                    )
+                                    engine._record_tp_sold_level(fill_order["level"])
                                 realized_net_account += net / rate
                                 wins += int(net > 0)
                                 trade_pnls.append(net / rate)

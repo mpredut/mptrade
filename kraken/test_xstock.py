@@ -167,6 +167,27 @@ class TestWatcherPersistenta(Base):
         xw.check_levels(c, st, 200.0, 20.0, 15.0, "", False)
         self.assertEqual(len(self.alerts), 2, "and the SL alert fires only once")
 
+    def test_load_state_sanitizes_corrupt_allocated_and_bot_pid(self):
+        xw._save_state({
+            "known_assets": {"ZUSD": 100.0},
+            "allocated": {"asset": True, "qty": "corrupt"},
+            "bot_pid": True,
+        })
+        st = xw._load_state()
+        self.assertIsNone(st["allocated"])
+        self.assertIsNone(st["bot_pid"])
+
+        xw._save_state({
+            "known_assets": {"ZUSD": 100.0},
+            "allocated": {"asset": " SPCXX ", "qty": "37.5", "ts": -5},
+            "bot_pid": 4321.0,
+        })
+        st2 = xw._load_state()
+        self.assertEqual(st2["allocated"]["asset"], "SPCXX")
+        self.assertEqual(st2["allocated"]["qty"], 37.5)
+        self.assertEqual(st2["allocated"]["ts"], 0.0)
+        self.assertEqual(st2["bot_pid"], 4321)
+
 
 # ---------------------------------------------------------------------------
 # Auto-start: idempotent, watchdog, conditii

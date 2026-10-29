@@ -29,7 +29,7 @@ except ImportError:
         _sys.path.append(_HERE)
     from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
-from providers.base import _clean_single_order_id
+from providers.base import _clean_single_order_id, extract_order_id
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -275,7 +275,7 @@ class T212Client:
     def _clean_order_id(order_id: object) -> str | None:
         return _clean_single_order_id(order_id)
 
-    def get_historical_order(self, order_id) -> dict | None:
+    def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.
 
         The id endpoint focuses on pending orders, which may disappear after fill or
@@ -306,7 +306,7 @@ class T212Client:
             if not isinstance(item, dict):
                 continue
             order = item.get("order") if isinstance(item.get("order"), dict) else item
-            cand_oid = self._clean_order_id(order.get("id"))
+            cand_oid = self._clean_order_id(extract_order_id(order))
             if cand_oid is not None and cand_oid == target_oid:
                 matches.append((order, item.get("fill")))
         if not matches:
@@ -353,7 +353,7 @@ class T212Client:
             result["_feeCurrencies"] = sorted(fee_currencies)
         return result
 
-    def get_order_status(self, order_id) -> dict | None:
+    def get_order_status(self, order_id) -> dict | bool | None:
         target_oid = self._clean_order_id(order_id)
         if target_oid is None:
             return None
@@ -430,7 +430,7 @@ class T212Client:
             return True, (c[1] if (c and (now - c[0]) < 60.0) else None)
         return False, None
 
-    def _read_cached(self, attr: str, path: str, what: str) -> list | None:
+    def _read_cached(self, attr: str, path: str, what: str) -> list | dict | None:
         """GET through a TTL cache with double-checked anti-stampede locking.
 
         Without it, every asset thread crosses an expired TTL simultaneously and
