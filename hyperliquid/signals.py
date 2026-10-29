@@ -77,8 +77,8 @@ def _builtin_trend(client, coin: str) -> dict:
     ]
     if len(closes) < max(fast, slow):
         return {**NEUTRAL, "source": "builtin(insuf. date)"}
-    mf = statistics.mean(closes[-fast:])
-    ms = statistics.mean(closes[-slow:])
+    mf = statistics.fmean(closes[-fast:])
+    ms = statistics.fmean(closes[-slow:])
     diff = (mf - ms) / ms if ms else 0.0
     trend = "up" if diff > band else "down" if diff < -band else "neutral"
     conf = round(min(1.0, abs(diff) / (band * 3)), 2) if band > 0 else 0.0

@@ -86,7 +86,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
             out[i] = res["direction"] if res else "neutral"
         else:  # builtin
             if fast > 0 and slow > 0 and i + 1 >= max(fast, slow):
-                mf = statistics.mean(closes[i+1-fast:i+1]); ms = statistics.mean(closes[i+1-slow:i+1])
+                mf = statistics.fmean(closes[i+1-fast:i+1]); ms = statistics.fmean(closes[i+1-slow:i+1])
                 diff = (mf - ms) / ms if ms else 0
                 out[i] = "up" if diff > band else "down" if diff < -band else "neutral"
     return out

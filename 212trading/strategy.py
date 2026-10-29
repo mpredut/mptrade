@@ -724,13 +724,13 @@ class Strategy:
         order = {
             "id": str(order_id),
             "side": pending["side"],
-            "qty": float(pending["qty"]),
-            "limit": float(pending["limit"]),
+            "qty": safe_float(pending.get("qty"), default=0.0) or 0.0,
+            "limit": safe_float(pending.get("limit"), default=0.0) or 0.0,
             "kind": pending.get("kind"),
             "level": pending.get("level"),
             "intent_id": pending.get("intent_id"),
             "market": bool(pending.get("market")),
-            "ts": float(pending.get("ts") or self._now()),
+            "ts": safe_float(pending.get("ts"), default=None) or self._now(),
         }
         if pending.get("amount") is not None:
             order["amount"] = pending["amount"]

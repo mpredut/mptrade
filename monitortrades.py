@@ -29,6 +29,8 @@ from order_rollback import restore_cancelled_orders
 import cachepaths
 from state_io import discard_generation_file, read_json_dict, save_json_state
 
+from instrument import Instrument as _Instrument
+from instruments_config import load_for
 import utils as u
 from strategies.position_exit_manager import (
     ExitAction,
@@ -907,10 +909,6 @@ def compute_disaster_buffer(symbol: str, lost_threshold: float) -> Tuple[float, 
         vol_1h=v1h if v1h is not None else 0.0,
         vol_source="1h_cache" if v1h is not None else "default",
     )
-
-
-from instrument import Instrument as _Instrument
-from instruments_config import load_for
 
 
 def _as_instrument(x):

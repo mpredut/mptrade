@@ -27,15 +27,8 @@ def _bool_flag(val: object) -> bool:
     return _parse_bool_flag(val, default=False)
 
 
-def diff_percent(v1: float, v2: float) -> float:
-    """Return symmetric percentage difference relative to the absolute mean."""
-    return _botcore_diff_percent(v1, v2)
-
-
-def are_close(v1: float, v2: float, tol_pct: float) -> bool:
-    """Return whether v1 is within tol_pct%% of v2, matching botcore.are_close.
-    Treat near-threshold prices as reached to avoid missing entries by a few cents."""
-    return _botcore_are_close(v1, v2, tol_pct)
+diff_percent = _botcore_diff_percent
+are_close = _botcore_are_close
 
 
 def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]]:

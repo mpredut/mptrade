@@ -100,7 +100,7 @@ class MarketBreadthCollector:
         advance_ratio = advancing / total if total > 0 else 0.5
 
         median_change = float(statistics.median(changes))
-        mean_change = float(statistics.mean(changes))
+        mean_change = float(statistics.fmean(changes))
         dispersion_std = float(statistics.pstdev(changes)) if len(changes) > 1 else 0.0
 
         if advance_ratio <= 0.20 and median_change <= -4.0:
