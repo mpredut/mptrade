@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch Yahoo 1h (last ~730 days) and 1d (10 years) regular-session bars for the grid."""
-import csv, json, os, sys, time, urllib.request
+import csv, os, sys, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if REPO not in sys.path:

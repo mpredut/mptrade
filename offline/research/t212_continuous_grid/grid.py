@@ -11,7 +11,7 @@ US stocks/ETFs, to separate what is specific to one chart from what generalises.
 Harness-only variant FLAGS["peak"]: after a take-profit, ratchet last_sell_price up to the
 highest close since the sale, so re-entry waits for a pullback from the post-sale peak.
 """
-import contextlib, csv, importlib.util, io, json, os, sys, time, traceback
+import csv, importlib.util, json, os, sys, time, traceback
 from multiprocessing import Pool
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

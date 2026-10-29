@@ -6,11 +6,9 @@ OHLC; fees are modelled separately). HYPE comes from the frozen Hyperliquid spot
 Output: $GRID_OUT/data/<ASSET>_240m.csv with timestamp,open,high,low,close.
 """
 import csv
-import json
 import os
 import shutil
 import time
-import urllib.request
 
 import sys
 

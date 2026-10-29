@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -21,7 +20,7 @@ import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
 import offline.research.monitortrades_backtest.run_replay_backtest as rrb
-from offline.research.monitortrades_backtest.sweep_mt_models import compute_all_signals, make_tape
+from offline.research.monitortrades_backtest.sweep_mt_models import compute_all_signals
 
 
 def run_multiwindow_sweep(use_365: bool = False):

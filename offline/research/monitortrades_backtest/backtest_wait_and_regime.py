@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -21,7 +20,6 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
-from offline.research.monitortrades_backtest.sweep_mt_models import compute_all_signals
 
 
 def compute_exact_time_window_signals(

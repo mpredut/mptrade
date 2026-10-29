@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Compare MHDSL and baseline spot DCA replay on HYPE spot dataset."""
 
-import csv
 import os
 import sys
 

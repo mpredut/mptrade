@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Wave 3: continuous full-history runs with a FINITE cash account of 3900 USD (replay
 initial_cash): losses are not refilled, open BUYs reserve cash. Top candidates only."""
-import contextlib, io, json, os, sys, time
+import json, os, sys
 from multiprocessing import Pool
 
 HERE = os.path.dirname(os.path.abspath(__file__))

@@ -11,7 +11,7 @@ Reuses grid.py (same live engine, same TTL harness correction, same datasets).
             the individually reverted 23 Sep changes; same views as wave 1.
   fee     - key configs at 0.40%/leg instead of 0.26% (execution-cost stress).
 """
-import contextlib, io, json, os, statistics as st, sys, time, traceback
+import json, os, sys, time, traceback
 from multiprocessing import Pool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
