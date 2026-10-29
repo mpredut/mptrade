@@ -178,29 +178,29 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def price_change_ratio(self) -> float:
         """Normalized price change relative to cost: (current - buy) / buy."""
-        if not self.is_valid_price:
+        bp = self._finite_pos_float(getattr(self, "avg_buy_price", None))
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        if bp is None or cp is None:
             return 0.0
-        bp = float(self.avg_buy_price)
-        cp = float(self.current_price)
         return (cp - bp) / bp
 
     @property
     def gain_ratio(self) -> float:
         """Positive price gain ratio, or 0.0 if position is in loss."""
-        if not self.is_valid_price:
+        bp = self._finite_pos_float(getattr(self, "avg_buy_price", None))
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        if bp is None or cp is None:
             return 0.0
-        bp = float(self.avg_buy_price)
-        cp = float(self.current_price)
         diff = cp - bp
         return diff / bp if diff > 0.0 else 0.0
 
     @property
     def loss_ratio(self) -> float:
         """Positive price loss ratio, or 0.0 if position is in profit."""
-        if not self.is_valid_price:
+        bp = self._finite_pos_float(getattr(self, "avg_buy_price", None))
+        cp = self._finite_pos_float(getattr(self, "current_price", None))
+        if bp is None or cp is None:
             return 0.0
-        bp = float(self.avg_buy_price)
-        cp = float(self.current_price)
         diff = bp - cp
         return diff / bp if diff > 0.0 else 0.0
 
@@ -461,11 +461,11 @@ def _resolve_now_s(current_time_s: Optional[float]) -> float:
 
 
 def _resolve_positive_threshold(custom_val: Any, default_val: float) -> float:
-    return safe_pos_float(custom_val, default=float(default_val))
+    return safe_pos_float(custom_val, default=safe_pos_float(default_val, default=0.0) or 0.0)
 
 
 def _resolve_nonneg_threshold(custom_val: Any, default_val: float) -> float:
-    return safe_nonneg_float(custom_val, default=float(default_val))
+    return safe_nonneg_float(custom_val, default=safe_nonneg_float(default_val, default=0.0) or 0.0)
 
 
 PERSISTED_EXIT_STATE_KEYS: Tuple[str, ...] = (
