@@ -12,6 +12,8 @@ import math
 from typing import Sequence
 import numpy as np
 
+from botcore import safe_float
+
 
 def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
     if prices is None or isinstance(prices, (str, bytes, bool)):
@@ -25,13 +27,9 @@ def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
     vals = []
     try:
         for p in prices:
-            if p is not None and not isinstance(p, bool):
-                try:
-                    pf = float(p)
-                    if math.isfinite(pf):
-                        vals.append(pf)
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            pf = safe_float(p, default=None)
+            if pf is not None:
+                vals.append(pf)
     except TypeError:
         pass
     return np.asarray(vals, dtype=float)
