@@ -364,7 +364,7 @@ def _run_once(
         turnover_notional=turnover_notional,
     )
 
-    rounded = lambda v: round(float(v), 10) if not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) else v
+    rounded = lambda v: round(f, 10) if (f := safe_float(v, default=None)) is not None else v
     result = {
         "realized": rounded(realized),
         "net": rounded(realized + funding),

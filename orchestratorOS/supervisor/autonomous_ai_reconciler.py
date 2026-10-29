@@ -365,7 +365,10 @@ def _set_pos_anchor(
         return
     if not overwrite and pos.get(px_key) is not None:
         return
-    pos[px_key] = a_f
+    if px_key == "trailing_peak" and cur_px > a_f:
+        a_f = cur_px
+    a_r = round(a_f, 6)
+    pos[px_key] = a_r
     if cur_px > 0:
         pos[pct_key] = round(((cur_px - a_f) / a_f) * 100.0, 2)
 
@@ -463,14 +466,15 @@ def _compute_swing_wave_metrics(
         else None
     )
 
+    eff_dec = decimals if decimals is not None else 6
     out: Dict[str, Any] = {
-        "swing_low_px": round(swing_low_px, decimals) if decimals is not None else swing_low_px,
-        "swing_high_px": round(swing_high_px, decimals) if decimals is not None else swing_high_px,
+        "swing_low_px": round(swing_low_px, eff_dec),
+        "swing_high_px": round(swing_high_px, eff_dec),
         "rally_from_swing_low_pct": rally_pct,
         "pullback_from_swing_high_pct": pullback_pct,
     }
     if major_rally_pct is not None and major_low_px is not None and major_rally_pct > rally_pct:
-        out["major_swing_low_px"] = round(major_low_px, decimals) if decimals is not None else major_low_px
+        out["major_swing_low_px"] = round(major_low_px, eff_dec)
         out["rally_from_major_low_pct"] = major_rally_pct
     if swing_legs_pct:
         out["recent_swings_7d"] = [f"{x:+.1f}%" for x in swing_legs_pct[-5:]]
@@ -485,8 +489,9 @@ def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None)
     if not isinstance(vals, list) or len(vals) < 2 or vals[0] <= 0:
         return {}
     raw_low, raw_high, cur_v = min(vals), max(vals), vals[-1]
-    l7_v = round(raw_low, decimals) if decimals is not None else raw_low
-    h7_v = round(raw_high, decimals) if decimals is not None else raw_high
+    eff_dec = decimals if decimals is not None else 6
+    l7_v = round(raw_low, eff_dec)
+    h7_v = round(raw_high, eff_dec)
     metrics: Dict[str, Any] = {
         "chg_7d_pct": round(((cur_v - vals[0]) / vals[0]) * 100.0, 2),
         "low_7d": l7_v,
@@ -499,7 +504,7 @@ def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None)
         metrics["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
     if h7_v > l7_v > 0:
         metrics["pos_7d_pct"] = round(((cur_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
-    metrics.update(_compute_swing_wave_metrics(vals, decimals=decimals))
+    metrics.update(_compute_swing_wave_metrics(vals, decimals=eff_dec))
     return metrics
 
 
@@ -542,6 +547,9 @@ def _load_symbol_microstructure(
     m_info: Dict[str, Any] = {}
     if isinstance(ob, dict):
         m_info["ob_imbalance"] = ob.get("imbalance_ratio")
+        ob_mid = safe_pos_float(ob.get("mid_price"), default=None)
+        if ob_mid is not None:
+            m_info["ob_mid_price"] = ob_mid
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"),
             ("ask_depth_usd", "ask_depth_usd"),
@@ -567,12 +575,19 @@ def _load_symbol_microstructure(
     return m_info
 
 
+def _round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
+    """Round a positive price anchor to `decimals`, returning None when absent or non-positive."""
+    vf = safe_pos_float(val, default=None)
+    return round(vf, decimals) if vf is not None else None
+
+
 def _parse_venue_cycle_state(
     st_data: Dict[str, Any],
     symbol: str,
     prices_and_trends: Dict[str, Any],
     *,
     avg_decimals: int = 6,
+    fallback_prices: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Normalize a venue cycle `.state_*.json` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
     qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
@@ -580,11 +595,18 @@ def _parse_venue_cycle_state(
     cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
     avg_cost = round(cost / qty, avg_decimals) if qty > 1e-12 and cost > 0 else None
     px_f = 0.0
-    for cand in cache_symbol_variants(symbol):
+    sym_variants = cache_symbol_variants(symbol)
+    for cand in sym_variants:
         cand_px = safe_pos_float((prices_and_trends.get(cand) or {}).get("price"), default=0.0) or 0.0
         if cand_px > 0:
             px_f = cand_px
             break
+    if px_f <= 0 and isinstance(fallback_prices, dict):
+        for cand in sym_variants:
+            cand_px = safe_pos_float(fallback_prices.get(cand), default=0.0) or 0.0
+            if cand_px > 0:
+                px_f = cand_px
+                break
     dd_pct = round(((px_f - avg_cost) / avg_cost) * 100.0, 2) if avg_cost and px_f > 0 else None
     last_buy_px = (
         st_data.get("last_buy_price")
@@ -595,17 +617,26 @@ def _parse_venue_cycle_state(
         "qty": round(qty, 6),
         "cost_usd": round(cost, 2),
         "avg_cost_px": avg_cost,
-        "entry_price": st_data.get("entry_price"),
-        "last_buy_price": last_buy_px,
-        "last_sell_price": st_data.get("last_sell_price"),
+        "entry_price": _round_opt_px(st_data.get("entry_price"), avg_decimals),
+        "last_buy_price": _round_opt_px(last_buy_px, avg_decimals),
+        "last_sell_price": _round_opt_px(st_data.get("last_sell_price"), avg_decimals),
         "last_exit_kind": st_data.get("last_exit_kind"),
         "dca_buys": st_data.get("dca_buys"),
         "dd_pct": dd_pct,
     }
-    pos_peak = st_data.get("pos_peak") or st_data.get("trail_peak")
+    pos_peak = _round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
     if pos_peak is not None:
         cyc_entry["pos_peak"] = pos_peak
-    realized_pnl = _parse_finite_float(st_data.get("realized_pnl"), 0.0)
+    raw_realized = (
+        st_data.get("realized_net")
+        if st_data.get("realized_net") is not None
+        else (
+            st_data.get("realized_pnl")
+            if st_data.get("realized_pnl") is not None
+            else st_data.get("realized_gross")
+        )
+    )
+    realized_pnl = _parse_finite_float(raw_realized, 0.0)
     if abs(realized_pnl) > 1e-9:
         cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
     tp_sold = st_data.get("tp_sold")
@@ -640,11 +671,15 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     if cyc.get("resting_orders"):
         extra_parts.append(f"resting_orders={cyc.get('resting_orders')}")
     extra_sfx = f", {', '.join(extra_parts)}" if extra_parts else ""
+    exit_kind = cyc.get("last_exit_kind")
+    exit_kind_sfx = f" ({exit_kind})" if exit_kind else ""
+    dd_val = cyc.get("dd_pct")
+    dd_str = f"{dd_val}%" if dd_val is not None else "N/A"
     return (
         f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
         f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
-        f"last_buy={cyc.get('last_buy_price')}, last_sell={cyc.get('last_sell_price')} "
-        f"({cyc.get('last_exit_kind')}), dca_buys={cyc.get('dca_buys')}, dd={cyc.get('dd_pct')}%{extra_sfx}"
+        f"last_buy={cyc.get('last_buy_price')}, last_sell={cyc.get('last_sell_price')}"
+        f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, dd={dd_str}{extra_sfx}"
     )
 
 
@@ -978,9 +1013,10 @@ class AutonomousAIReconciler:
         kalman_data = _read_json(os.path.join(self.cache_dir, "cache_kalman_trend.json"))
         prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
         trailing_map: Dict[str, Dict[str, Any]] = {}
-        for raw_trail, default_quote in (
-            (_read_json(os.path.join(self.cache_dir, "trailing_state.json")), ""),
-            (_read_json(os.path.join(self.workspace_dir, "kraken", "trailing_state.json")), "USD"),
+        trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
+        for trail_venue, raw_trail, default_quote in (
+            ("binance", _read_json(os.path.join(self.cache_dir, "trailing_state.json")), ""),
+            ("kraken", _read_json(os.path.join(self.workspace_dir, "kraken", "trailing_state.json")), "USD"),
         ):
             if not isinstance(raw_trail, dict):
                 continue
@@ -989,12 +1025,16 @@ class AutonomousAIReconciler:
                 if not k_up:
                     continue
                 k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
+                norm_st: Optional[Dict[str, Any]] = None
                 if isinstance(k_st, dict) and k_st.get("peak") is not None:
-                    trailing_map.setdefault(k_key, k_st)
+                    norm_st = k_st
                 else:
                     k_pk = safe_pos_float(k_st, default=0.0) or 0.0
                     if k_pk > 0:
-                        trailing_map.setdefault(k_key, {"peak": k_pk})
+                        norm_st = {"peak": k_pk}
+                if norm_st is not None:
+                    trailing_map.setdefault(k_key, norm_st)
+                    trailing_by_venue[trail_venue].setdefault(k_key, norm_st)
 
         price_map: Dict[str, float] = {}
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
@@ -1169,16 +1209,22 @@ class AutonomousAIReconciler:
                         else None
                     )
                     params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
+                    v_norm = normalize_venue_name(venue)
+                    v_trail_map = trailing_by_venue.get(v_norm, {})
                     t_state = next(
                         (
-                            trailing_map[c]
+                            v_trail_map[c]
                             for c in cache_symbol_variants(sym, include_original=True, include_base=True)
-                            if isinstance(trailing_map.get(c), dict)
+                            if isinstance(v_trail_map.get(c), dict)
                         ),
                         {},
                     )
+                    if not t_state and v_norm == "binance" and isinstance(trailing_map.get(sym), dict):
+                        t_state = trailing_map[sym]
                     peak = t_state.get("peak")
                     peak_f = _parse_finite_float(peak, 0.0)
+                    if peak_f > 0 and px_f > 0 and peak_f < px_f:
+                        peak_f = px_f
                     dd_from_peak_pct = (
                         round(((px_f - peak_f) / peak_f) * 100.0, 2)
                         if px_f > 0 and peak_f > 0
@@ -1189,13 +1235,13 @@ class AutonomousAIReconciler:
                         "symbol": sym,
                         "base": base,
                         "quote": quote,
-                        "price": px,
+                        "price": _round_opt_px(px, 6) if px is not None else None,
                         "free_base": round(base_free, 6) if base_free is not None else None,
                         "value_usd": pos_val_usd,
                         "free_quote": round(quote_free, 2) if quote_free is not None else None,
                     }
-                    if peak is not None:
-                        pos_entry["trailing_peak"] = peak
+                    if peak is not None and peak_f > 0:
+                        pos_entry["trailing_peak"] = round(peak_f, 6)
                         pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
                     if params.get("trailing.pct"):
                         pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
@@ -1330,7 +1376,26 @@ class AutonomousAIReconciler:
                 entry["weibull_median_d"] = tt.get("median_d")
                 entry["weibull_p90_d"] = tt.get("p90_d")
             if isinstance(multi_items, dict):
-                m_series = next((multi_items[ck] for ck in cand_keys if isinstance(multi_items.get(ck), list) and len(multi_items[ck]) >= 2), None)
+                sym_px_cur = _parse_finite_float(entry.get("price"), 0.0)
+                m_series = None
+                for ck in cand_keys:
+                    cand_ser = multi_items.get(ck)
+                    if not isinstance(cand_ser, list) or len(cand_ser) < 2:
+                        continue
+                    last_m_px = (
+                        _parse_finite_float(cand_ser[-1][1], 0.0)
+                        if isinstance(cand_ser[-1], (list, tuple)) and len(cand_ser[-1]) > 1
+                        else 0.0
+                    )
+                    if (
+                        ck != sym
+                        and sym_px_cur > 0
+                        and last_m_px > 0
+                        and abs(sym_px_cur - last_m_px) / last_m_px > 0.10
+                    ):
+                        continue
+                    m_series = cand_ser
+                    break
                 if isinstance(m_series, list) and len(m_series) >= 2:
                     vals = [
                         _parse_finite_float(pt[1], 0.0)
@@ -1349,9 +1414,18 @@ class AutonomousAIReconciler:
             self.cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
         )
         for sym in list(snapshot.prices_and_trends.keys()):
+            sym_px_cur = _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0)
             matched_series_24h, arch_vals_7d = load_symbol_price_series(
                 self.cache_dir, sym, current_price_items=cur_p_items
             )
+            if sym_px_cur > 0 and matched_series_24h:
+                last_24_px = _parse_finite_float(matched_series_24h[-1][1], 0.0)
+                if last_24_px > 0 and abs(sym_px_cur - last_24_px) / last_24_px > 0.10:
+                    matched_series_24h = []
+            if sym_px_cur > 0 and arch_vals_7d:
+                last_7d_px = _parse_finite_float(arch_vals_7d[-1], 0.0)
+                if last_7d_px > 0 and abs(sym_px_cur - last_7d_px) / last_7d_px > 0.10:
+                    arch_vals_7d = []
             if (
                 _parse_finite_float(snapshot.prices_and_trends[sym].get("price"), 0.0) <= 0.0
                 and matched_series_24h
@@ -1392,7 +1466,7 @@ class AutonomousAIReconciler:
                             snapshot.prices_and_trends[sym].update(_compute_7d_range_metrics(vals_7d))
                     except Exception:
                         pass
-                elif str(getattr(inst_by_sym[sym], "provider_name", "")).lower() == "t212":
+                if not m24 and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212":
                     try:
                         t212_dir = os.path.join(self.workspace_dir, "212trading")
                         if t212_dir not in sys.path:
@@ -1468,6 +1542,12 @@ class AutonomousAIReconciler:
                     snapshot.microstructure[msym] = m_info_ref
 
         # 8A. Symmetric cross-venue & sibling symbol synchronization (Binance <-> Kraken <-> Hyperliquid <-> T212/xStocks)
+        range_bound_keys = {
+            "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct",
+            "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
+            "swing_low_px", "swing_high_px", "major_swing_low_px",
+            "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
+        }
         for sym, pinfo in list(snapshot.prices_and_trends.items()):
             if not isinstance(pinfo, dict):
                 continue
@@ -1477,13 +1557,16 @@ class AutonomousAIReconciler:
                     continue
                 sib_pinfo = snapshot.prices_and_trends.get(cand)
                 if isinstance(sib_pinfo, dict):
-                    if (
-                        _parse_finite_float(pinfo.get("price"), 0.0) <= 0.0
-                        and _parse_finite_float(sib_pinfo.get("price"), 0.0) > 0.0
-                    ):
+                    p_px = _parse_finite_float(pinfo.get("price"), 0.0)
+                    s_px = _parse_finite_float(sib_pinfo.get("price"), 0.0)
+                    if p_px <= 0.0 and s_px > 0.0:
                         pinfo["price"] = sib_pinfo["price"]
+                        p_px = s_px
+                    px_diverged = p_px > 0.0 and s_px > 0.0 and abs(p_px - s_px) / s_px > 0.10
                     for k, v in sib_pinfo.items():
                         if v is None:
+                            continue
+                        if px_diverged and k in range_bound_keys:
                             continue
                         if k not in pinfo or pinfo.get(k) is None:
                             pinfo[k] = v
@@ -1504,6 +1587,19 @@ class AutonomousAIReconciler:
             snapshot.portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
 
         # 9B. Active DCA cycle states on Kraken, Hyperliquid, and Trading212 (.state_*.json)
+        cycle_fallback_prices: Dict[str, float] = {}
+        for m_sym, m_dict in snapshot.microstructure.items():
+            if isinstance(m_dict, dict):
+                ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0
+                if ob_mid_v > 0:
+                    cycle_fallback_prices[m_sym] = ob_mid_v
+        if isinstance(multi_items, dict):
+            for m_sym, m_ser in multi_items.items():
+                if isinstance(m_ser, list) and m_ser and isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
+                    m_px = safe_pos_float(m_ser[-1][1], default=0.0) or 0.0
+                    if m_px > 0:
+                        cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
+
         kraken_cycles: Dict[str, Any] = {}
         kraken_dir = os.path.join(self.workspace_dir, "kraken")
         if os.path.isdir(kraken_dir):
@@ -1516,7 +1612,11 @@ class AutonomousAIReconciler:
                 if not isinstance(st_data, dict):
                     continue
                 kraken_cycles[pair_name] = _parse_venue_cycle_state(
-                    st_data, pair_name, snapshot.prices_and_trends, avg_decimals=6
+                    st_data,
+                    pair_name,
+                    snapshot.prices_and_trends,
+                    avg_decimals=6,
+                    fallback_prices=cycle_fallback_prices,
                 )
         if kraken_cycles:
             snapshot.portfolio_summary["kraken_cycles"] = kraken_cycles
@@ -1547,7 +1647,11 @@ class AutonomousAIReconciler:
                 if not isinstance(st_data, dict):
                     continue
                 hyperliquid_cycles[pair_name] = _parse_venue_cycle_state(
-                    st_data, pair_name, snapshot.prices_and_trends, avg_decimals=6
+                    st_data,
+                    pair_name,
+                    snapshot.prices_and_trends,
+                    avg_decimals=6,
+                    fallback_prices=cycle_fallback_prices,
                 )
         if hyperliquid_cycles:
             snapshot.portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
@@ -1570,7 +1674,11 @@ class AutonomousAIReconciler:
                 if not isinstance(st_data, dict):
                     continue
                 all_t212_cycles[ticker] = _parse_venue_cycle_state(
-                    st_data, ticker, snapshot.prices_and_trends, avg_decimals=4
+                    st_data,
+                    ticker,
+                    snapshot.prices_and_trends,
+                    avg_decimals=4,
+                    fallback_prices=cycle_fallback_prices,
                 )
         t212_cycles = dict(all_t212_cycles) if has_active_t212 else {}
         if t212_cycles:
@@ -1705,12 +1813,15 @@ class AutonomousAIReconciler:
                     )
                     if cand_px > 0:
                         pos_px_f = cand_px
-                        pos["price"] = cand_px
+                        pos["price"] = round(cand_px, 6)
                         fb_val = _parse_finite_float(pos.get("free_base"), -1.0)
                         if fb_val >= 0:
                             pos["value_usd"] = round(fb_val * cand_px, 2)
                         pk_val = _parse_finite_float(pos.get("trailing_peak"), 0.0)
                         if pk_val > 0:
+                            if pk_val < cand_px:
+                                pk_val = cand_px
+                                pos["trailing_peak"] = round(pk_val, 6)
                             pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
                         break
             v_ro_map = venue_recent_orders.get(p_venue, {})
@@ -1718,8 +1829,6 @@ class AutonomousAIReconciler:
                 (v_ro_map[c] for c in p_variants if isinstance(v_ro_map.get(c), dict)),
                 None,
             )
-            if not isinstance(ro, dict) and isinstance(recent_orders.get(p_sym), dict):
-                ro = recent_orders[p_sym]
             if isinstance(ro, dict):
                 lb = ro.get("last_buy")
                 ls = ro.get("last_sell")
@@ -1740,22 +1849,26 @@ class AutonomousAIReconciler:
                 if low_buy_px > 0:
                     _set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
             venue_cyc_maps = (
-                (hyperliquid_cycles, kraken_cycles, t212_cycles)
+                (hyperliquid_cycles,)
                 if p_venue == "hyperliquid"
-                else (t212_cycles, kraken_cycles, hyperliquid_cycles)
+                else (t212_cycles,)
                 if p_venue == "t212"
-                else (kraken_cycles, hyperliquid_cycles, t212_cycles)
+                else (kraken_cycles,)
+                if p_venue == "kraken"
+                else ()
             )
             for cyc_map in venue_cyc_maps:
                 cyc = cyc_map.get(p_sym)
-                if not isinstance(cyc, dict) and (
-                    (p_venue == "kraken" and cyc_map is kraken_cycles)
-                    or (p_venue == "hyperliquid" and cyc_map is hyperliquid_cycles)
-                    or (p_venue == "t212" and cyc_map is t212_cycles)
-                ):
+                if not isinstance(cyc, dict):
                     cyc = next((cyc_map[c] for c in p_variants if isinstance(cyc_map.get(c), dict)), None)
                 if not isinstance(cyc, dict):
                     continue
+                if pos.get("free_base") is None and cyc.get("qty") is not None:
+                    cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
+                    if cyc_qty is not None:
+                        pos["free_base"] = round(cyc_qty, 6)
+                        if pos_px_f > 0:
+                            pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
                 _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)

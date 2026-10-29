@@ -18,7 +18,6 @@ HL fees are small enough for a tight take profit. HL_LEVERAGE=1 approximates spo
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 import time
@@ -153,8 +152,9 @@ class StratParams:
                     return False
                 raise ValueError(f"invalid boolean string for {key}: {raw!r}")
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-                if math.isfinite(float(raw)) and float(raw) in (0.0, 1.0):
-                    return bool(raw)
+                f_raw = safe_float(raw, default=None)
+                if f_raw in (0.0, 1.0):
+                    return bool(f_raw)
                 raise ValueError(f"invalid numeric boolean for {key}: {raw!r}")
             raise ValueError(f"invalid boolean value for {key}: {raw!r}")
 

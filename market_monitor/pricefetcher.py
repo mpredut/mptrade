@@ -1000,17 +1000,11 @@ def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbo
 
 
 def is_valid_symbol_for_monitoring(symbol: str) -> bool:
-    if not symbol or not isinstance(symbol, str):
+    if not isinstance(symbol, str) or not (1 <= len(symbol) <= 10):
         return False
-    if len(symbol) < 1 or len(symbol) > 10:
+    if not symbol.isalnum() or symbol.isdigit():
         return False
-    if not symbol.isalnum():
-        return False
-    if symbol.isdigit():
-        return False
-    if len(symbol) > 8 and symbol.startswith('0'):
-        return False
-    return True
+    return not (len(symbol) > 8 and symbol.startswith("0"))
 
 
 def get_base_symbol(symbol: str) -> str:

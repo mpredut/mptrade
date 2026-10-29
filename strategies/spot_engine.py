@@ -1164,7 +1164,8 @@ class Strategy:
                 log("  [STRAT] profit exit pending: invalid stored floor or cost basis")
                 return False
             floor = safe_float(sr.tp_price(avg, min_profit_pct), default=None)
-            if floor is None or not math.isfinite(reference) or reference < floor:
+            ref_f = safe_pos_float(reference, default=None)
+            if floor is None or ref_f is None or ref_f < floor:
                 log("  [STRAT] profit exit pending: current reference does not satisfy the stored floor")
                 return False
         if _parse_bool_flag(pending.get("soft_floor"), False) and kind != "STOP":
