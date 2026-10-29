@@ -27,6 +27,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
+from state_io import atomic_write_json
 
 CACHE_DIR = get_cachedb_dir()
 ORDER_FILE = os.path.join(CACHE_DIR, "cache_order.json")
@@ -80,10 +81,7 @@ def main():
     os.rename(ORDER_FILE, bak)
     print(f"Backup: {bak}")
     data["items"] = cleaned
-    tmp = ORDER_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=1)
-    os.replace(tmp, ORDER_FILE)
+    atomic_write_json(ORDER_FILE, data, indent=1)
     print(f"Wrote a cleaned {ORDER_FILE} ({removed} removed).")
 
 
