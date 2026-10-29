@@ -18,11 +18,11 @@ Flow at the ``__place_order`` choke point:
         # Failure, exception, or omission releases automatically on exit.
 """
 import os
-import math
 import time
 import contextlib
 import configparser
 
+from botcore import safe_pos_float
 from .cooldown import Cooldown
 from providers.base import (
     _clean_single_order_id,
@@ -73,12 +73,11 @@ def _valid_pair_id(pair_id) -> bool:
 
 
 def _clean_order_id_meta(val):
-    if isinstance(val, int) and not isinstance(val, bool):
-        return val if val > 0 else None
-    if isinstance(val, float):
-        if not math.isfinite(val) or val <= 0.0 or not val.is_integer():
-            return None
-        return int(val)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        f = safe_pos_float(val, default=None)
+        if f is not None and f.is_integer():
+            return int(f)
+        return None
     return _clean_single_order_id(val)
 
 
@@ -163,14 +162,8 @@ def describe_last_trade(symbol):
     last = _cooldown().get(symbol)
     if not isinstance(last, dict):
         return f"{symbol}: no order recorded"
-    raw_ts = last.get("timestamp")
-    if raw_ts is None or isinstance(raw_ts, bool):
-        return f"{symbol}: no order recorded"
-    try:
-        ts = float(raw_ts)
-    except (TypeError, ValueError):
-        return f"{symbol}: no order recorded"
-    if not math.isfinite(ts) or ts <= 0:
+    ts = safe_pos_float(last.get("timestamp"), default=None)
+    if ts is None:
         return f"{symbol}: no order recorded"
     age = max(0.0, time.time() - ts)
     return (f"{symbol}: ultim={last.get('side')} | age={age:.1f}s | "
