@@ -35,6 +35,7 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from instrument_registry import casefold_get
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -159,11 +160,19 @@ class CacheLongTrendManager(CacheManagerInterface):
 
         if not isinstance(data, dict):
             return []
-        for cand in _short_trend_symbol_variants(symbol):
+        variants = _short_trend_symbol_variants(symbol)
+        for cand in variants:
             if cand in data:
                 # An explicitly published null is a neutral snapshot, distinct from a
                 # missing symbol. Preserve it so stale in-memory trends are cleared.
                 return [data[cand]]
+        for cand in variants:
+            if not isinstance(cand, str):
+                continue
+            cand_cf = cand.casefold()
+            for k, v in data.items():
+                if isinstance(k, str) and k.casefold() == cand_cf:
+                    return [v]
         return []
 
 
@@ -640,10 +649,10 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     # ── Calculation API ──────────────────────────────────────────────────────
     def _lookup_by_symbol_and_window(self, store: dict, symbol, seconds=None):
-        mapping = store.get(symbol)
+        mapping = casefold_get(store, symbol)
         if not mapping:
             for cand in _short_trend_symbol_variants(symbol):
-                mapping = store.get(cand)
+                mapping = casefold_get(store, cand)
                 if mapping:
                     break
         mapping = mapping or {}
@@ -732,11 +741,12 @@ class CacheShortTrendManager(CacheManagerInterface):
                 items_map = raw.get("items")
                 if not isinstance(items_map, dict):
                     raise ValueError("Cache24 items must be a dict")
-                items = items_map.get(matched_sym)
+                items = casefold_get(items_map, matched_sym)
                 if not isinstance(items, list):
                     for cand in _short_trend_symbol_variants(symbol):
-                        if isinstance(items_map.get(cand), list):
-                            items = items_map[cand]
+                        cand_items = casefold_get(items_map, cand)
+                        if isinstance(cand_items, list):
+                            items = cand_items
                             break
                 if not isinstance(items, list):
                     return []
@@ -878,7 +888,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         c24 = None
         c24_sym = symbol
         for cand in _short_trend_symbol_variants(symbol):
-            c24 = self._cache24_managers.get(cand)
+            c24 = casefold_get(self._cache24_managers, cand)
             if c24 is not None:
                 c24_sym = cand
                 break
@@ -892,7 +902,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
         if hasattr(c24, "cache") and hasattr(c24, "lock"):
             with c24.lock:
-                all_entries = list(c24.cache.get(c24_sym, []))
+                all_entries = list(casefold_get(c24.cache, c24_sym, []))
             if len(all_entries) < 3:
                 return None
             cutoff_ms = int((now_val - clamped) * 1000)
@@ -990,13 +1000,13 @@ class CacheShortTrendManager(CacheManagerInterface):
         # 1. Check in-memory _live_windows and _mem['dynamic'] first:
         with self._lock:
             for cand in variants:
-                mem_live = (self._live_windows.get(cand) or {}).get(w_key)
+                mem_live = (casefold_get(self._live_windows, cand) or {}).get(w_key)
                 if isinstance(mem_live, dict):
                     fresh = _check_fresh(mem_live)
                     if fresh is not None:
                         return fresh
             for cand in variants:
-                mem_snap = self._mem.get(cand)
+                mem_snap = casefold_get(self._mem, cand)
                 if isinstance(mem_snap, dict):
                     mem_pub = mem_snap.get("dynamic")
                     if isinstance(mem_pub, dict) and w_key in mem_pub:
@@ -1007,7 +1017,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         # 2. Check shared snapshot file dynamic dict (authoritative if present):
         file_data = self._read_file()
         for cand in variants:
-            snap = file_data.get(cand)
+            snap = casefold_get(file_data, cand)
             if isinstance(snap, dict):
                 published = snap.get("dynamic")
                 if isinstance(published, dict) and w_key in published:
@@ -1068,12 +1078,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         matched_sym = symbol
         if self._cache24_managers is not None:
             for cand in variants:
-                c24 = self._cache24_managers.get(cand)
+                c24 = casefold_get(self._cache24_managers, cand)
                 if c24 is not None:
                     matched_sym = cand
                     if hasattr(c24, "cache") and hasattr(c24, "lock"):
                         with c24.lock:
-                            entries = list(c24.cache.get(cand, []))
+                            entries = list(casefold_get(c24.cache, cand, []))
                     elif hasattr(c24, "entries"):
                         entries = list(c24.entries)
                     if entries:
@@ -1384,12 +1394,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         variants = _short_trend_symbol_variants(symbol)
         with self._lock:
             for cand in variants:
-                val = self._mem.get(cand)
+                val = casefold_get(self._mem, cand)
                 if isinstance(val, dict):
                     return dict(val)
         file_data = self._read_file()
         for cand in variants:
-            val = file_data.get(cand)
+            val = casefold_get(file_data, cand)
             if isinstance(val, dict):
                 return dict(val)
         return None

@@ -42,6 +42,9 @@ def _normalize_symbol(symbol):
         s_clean = s.replace("/", "")
         if s_clean in symbols:
             return s_clean
+        for cfg_sym in symbols:
+            if isinstance(cfg_sym, str) and cfg_sym.upper() in (s, s_clean):
+                return cfg_sym
     return symbol
 
 

@@ -771,7 +771,7 @@ class PriceWindow:
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
         """Update the window from a ``Cache24PriceManager`` callback."""
-        if symbol != self.symbol:
+        if symbol != self.symbol and str(symbol or "").upper() != str(self.symbol or "").upper():
             return
         self.process_price(price)
 
