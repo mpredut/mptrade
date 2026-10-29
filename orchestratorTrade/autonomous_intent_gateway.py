@@ -24,13 +24,18 @@ from dataclasses import asdict, dataclass, field
 import glob
 import json
 import logging
-import math
 import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    parse_dotenv,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from providers.base import normalize_side
 
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
@@ -147,8 +152,6 @@ def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
 def _parse_notify_enabled_flag(notify_enabled: Any, conf: Dict[str, str], conf_key: str) -> bool:
     """Validate and coerce an explicit ``notify_enabled`` override or ``conf[conf_key]`` into a bool."""
     if notify_enabled is not None:
-        if isinstance(notify_enabled, float) and not math.isfinite(notify_enabled):
-            raise ValueError(f"Invalid notify_enabled {notify_enabled!r}")
         if isinstance(notify_enabled, str) and notify_enabled.strip() == "":
             return False
         res = _parse_bool_flag(notify_enabled, None)
@@ -295,36 +298,35 @@ class AutonomousIntentGateway:
 
         if "autonomous_trading_min_notional_usd" not in conf:
             raise KeyError("Missing required 'autonomous_trading_min_notional_usd' in order_guard.conf")
-        self.min_notional_usd = float(conf["autonomous_trading_min_notional_usd"])
-        if not (math.isfinite(self.min_notional_usd) and self.min_notional_usd > 0):
-            raise ValueError(f"Invalid autonomous_trading_min_notional_usd {self.min_notional_usd!r}")
+        min_usd = safe_pos_float(conf.get("autonomous_trading_min_notional_usd"), default=None)
+        if min_usd is None:
+            raise ValueError(f"Invalid autonomous_trading_min_notional_usd {conf.get('autonomous_trading_min_notional_usd')!r}")
+        self.min_notional_usd = min_usd
 
-        if max_notional_usd is not None:
-            if isinstance(max_notional_usd, bool):
-                raise ValueError(f"Invalid autonomous_trading_max_notional_usd {max_notional_usd!r}")
-            self.max_notional_usd = float(max_notional_usd)
-        else:
+        raw_max = max_notional_usd
+        if raw_max is None:
             if "autonomous_trading_max_notional_usd" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_max_notional_usd' in order_guard.conf")
-            self.max_notional_usd = float(conf["autonomous_trading_max_notional_usd"])
-        if not (math.isfinite(self.max_notional_usd) and self.max_notional_usd >= self.min_notional_usd):
+            raw_max = conf.get("autonomous_trading_max_notional_usd")
+        max_usd = safe_pos_float(raw_max, default=None)
+        if max_usd is None or max_usd < self.min_notional_usd:
             raise ValueError(
-                f"Invalid autonomous_trading_max_notional_usd {self.max_notional_usd!r}; "
+                f"Invalid autonomous_trading_max_notional_usd {raw_max!r}; "
                 f"must be >= autonomous_trading_min_notional_usd ({self.min_notional_usd})"
             )
+        self.max_notional_usd = max_usd
 
-        if min_confidence is not None:
-            if isinstance(min_confidence, bool):
-                raise ValueError(f"Invalid autonomous_trading_min_confidence {min_confidence!r}")
-            self.min_confidence = float(min_confidence)
-        else:
+        raw_conf = min_confidence
+        if raw_conf is None:
             if "autonomous_trading_min_confidence" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
-            self.min_confidence = float(conf["autonomous_trading_min_confidence"])
-        if not (math.isfinite(self.min_confidence) and 0.0 <= self.min_confidence <= 1.0):
+            raw_conf = conf.get("autonomous_trading_min_confidence")
+        conf_val = safe_nonneg_float(raw_conf, default=None)
+        if conf_val is None or conf_val > 1.0:
             raise ValueError(
-                f"Invalid autonomous_trading_min_confidence {self.min_confidence!r}; must be in [0.0, 1.0]"
+                f"Invalid autonomous_trading_min_confidence {raw_conf!r}; must be in [0.0, 1.0]"
             )
+        self.min_confidence = conf_val
 
         self.notify_enabled = _parse_notify_enabled_flag(
             notify_enabled, conf, "autonomous_trading_notify"

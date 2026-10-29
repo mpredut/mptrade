@@ -32,7 +32,6 @@ ADAPTER contract (duck typing; see the two adapter classes):
 from __future__ import annotations
 
 import os
-import math
 from state_io import load_json_state, save_json_state
 
 
@@ -171,11 +170,12 @@ def extract_short_trend_slope(snap: dict, symbol: str) -> float:
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
-    if isinstance(current, bool) or isinstance(peak, bool) or isinstance(trail_pct, bool):
+    c = safe_pos_float(current, default=None)
+    p = safe_pos_float(peak, default=None)
+    t = safe_pos_float(trail_pct, default=None)
+    if c is None or p is None or t is None:
         return False
-    if not (math.isfinite(current) and math.isfinite(peak) and math.isfinite(trail_pct)):
-        return False
-    return current > 0 and peak > 0 and trail_pct > 0 and current <= peak * (1 - trail_pct / 100.0)
+    return c <= p * (1 - t / 100.0)
 
 
 class TrailingCore:
@@ -219,8 +219,8 @@ class TrailingCore:
                 return {k: _sanitize(v) for k, v in obj.items()}
             if isinstance(obj, (list, tuple, set, frozenset)):
                 return [_sanitize(v) for v in obj]
-            if isinstance(obj, float) and not math.isfinite(obj):
-                return None
+            if isinstance(obj, float):
+                return safe_float(obj, default=None)
             return obj
 
         try:
@@ -286,9 +286,9 @@ class TrailingCore:
         action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
         filled = safe_nonneg_float(getattr(status, "filled_qty", None), 0.0)
         cost_val = safe_nonneg_float(getattr(status, "cost", None), 0.0)
-        avg = cost_val / filled if filled > 0 and cost_val > 0 else price
-        if not math.isfinite(avg) or avg <= 0:
-            avg = price
+        avg = safe_pos_float(cost_val / filled, default=None) if filled > 0 and cost_val > 0 else None
+        if avg is None:
+            avg = safe_pos_float(price, default=0.0) or 0.0
         if action == "SELL" and filled > 0:
             raw_asset = pending.get("asset") or meta_dict.get("asset")
             asset = raw_asset.strip() if isinstance(raw_asset, str) else ""
@@ -297,8 +297,8 @@ class TrailingCore:
 
             accum_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0)) + filled
             accum_cost = safe_nonneg_float(st.get("exit_sold_cost", 0.0)) + (avg * filled)
-            overall_avg = accum_cost / accum_qty if accum_qty > 0 else avg
-            if not math.isfinite(overall_avg) or overall_avg <= 0:
+            overall_avg = safe_pos_float(accum_cost / accum_qty, default=None) if accum_qty > 0 else avg
+            if overall_avg is None:
                 overall_avg = avg
 
             target_qty = safe_nonneg_float(st.get("target_exit_qty", 0.0))
@@ -553,8 +553,8 @@ class TrailingCore:
             sold_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0))
             if sold_qty > 0:
                 sold_cost = safe_nonneg_float(st.get("exit_sold_cost", 0.0))
-                overall_avg = sold_cost / sold_qty if sold_cost > 0 else price
-                if not math.isfinite(overall_avg) or overall_avg <= 0:
+                overall_avg = safe_pos_float(sold_cost / sold_qty, default=None) if sold_cost > 0 else None
+                if overall_avg is None:
                     overall_avg = price
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):

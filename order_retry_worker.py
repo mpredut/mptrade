@@ -29,7 +29,6 @@ import sys
 import time
 import argparse
 import json
-import math
 from datetime import datetime
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -64,10 +63,10 @@ from state_io import (
 
 
 WORKER_POLL_SEC = required_float_env("RETRY_WORKER_POLL_SEC")
-if not math.isfinite(WORKER_POLL_SEC) or WORKER_POLL_SEC <= 0:
+if WORKER_POLL_SEC <= 0:
     raise ValueError("RETRY_WORKER_POLL_SEC must be finite and > 0")
 GIVEUP_SUMMARY_SEC = required_float_env("RETRY_GIVEUP_SUMMARY_SEC")
-if not math.isfinite(GIVEUP_SUMMARY_SEC) or GIVEUP_SUMMARY_SEC <= 0:
+if GIVEUP_SUMMARY_SEC <= 0:
     raise ValueError("RETRY_GIVEUP_SUMMARY_SEC must be finite and > 0")
 
 _AUDIT = ExecutionAudit()
@@ -824,7 +823,7 @@ def _format_record_context(rec, *, include_lease=False):
     raw_prov = rec.get("provider_name")
     provider = raw_prov.strip().upper() if isinstance(raw_prov, str) and raw_prov.strip() else "ROUTED"
     base_asset, quote_asset = _resolve_display_assets(symbol)
-    qty_val = safe_float(rec.get("qty"), default=0.0)
+    qty_val = safe_pos_float(rec.get("qty"), default=0.0)
     req_px = safe_pos_float(rec.get("requested_price"), default=None)
     ref_px = safe_pos_float(rec.get("ref_price"), default=None)
 
@@ -836,7 +835,7 @@ def _format_record_context(rec, *, include_lease=False):
     else:
         price_str = "@ market"
 
-    if effective_px is not None and math.isfinite(qty_val) and qty_val > 0:
+    if effective_px is not None and qty_val > 0:
         notional = qty_val * effective_px
         value_str = f"~${notional:.2f} {quote_asset}"
     else:
@@ -1044,17 +1043,18 @@ class IncidentDigest:
             groups = state["groups"]
             changed = False
             for key, group in list(groups.items()):
-                if (not isinstance(group, dict)
-                        or isinstance(group.get("count"), bool)
-                        or not isinstance(group.get("count"), int) or group["count"] < 0
-                        or isinstance(group.get("next_at"), bool)
-                        or not isinstance(group.get("next_at"), (int, float))
-                        or not math.isfinite(group["next_at"]) or group["next_at"] <= 0
-                        or isinstance(group.get("quantity"), bool)
-                        or not isinstance(group.get("quantity"), (int, float))
-                        or not math.isfinite(group["quantity"]) or group["quantity"] < 0
-                        or isinstance(group.get("attempts", 0), bool)
-                        or not isinstance(group.get("attempts", 0), int) or group.get("attempts", 0) < 0):
+                if not isinstance(group, dict):
+                    raise ValueError("invalid notification digest group")
+                count = group.get("count")
+                next_at = safe_pos_float(group.get("next_at"), default=None)
+                qty = safe_nonneg_float(group.get("quantity"), default=None)
+                attempts = group.get("attempts", 0)
+                if (
+                    not isinstance(count, int) or isinstance(count, bool) or count < 0
+                    or next_at is None
+                    or qty is None
+                    or not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0
+                ):
                     raise ValueError("invalid notification digest group")
                 if group["count"] == 0 and group["next_at"] <= now:
                     del groups[key]
