@@ -12,6 +12,8 @@ The lock is generic and can protect any operation, not just order placement.
 
 import os
 
+from cachepaths import resolve_cachedb_filepath
+
 try:
     import fcntl                            # Unix (Linux/WSL)
     _HAVE_FCNTL = True
@@ -23,7 +25,6 @@ class FileLock:
     """Cross-process/thread lock using fcntl.flock(LOCK_EX) on an owned fd."""
 
     def __init__(self, path):
-        from cachepaths import resolve_cachedb_filepath
         self.path = resolve_cachedb_filepath(path)
         self._fd = None
 
