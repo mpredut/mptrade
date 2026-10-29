@@ -29,7 +29,6 @@ and the stored price constraint. Configuration lives in ``config.env``.
 import hashlib
 import os
 import json
-import math
 import time
 import uuid
 import tempfile
@@ -84,19 +83,16 @@ MAX_GLOBAL_ORDER_TTL_SEC = required_float_env("MAX_GLOBAL_ORDER_TTL_SEC")
 def _validate_retry_config():
     """Reject unsafe retry policy before queue processing can start."""
     invalid = []
-    if not math.isfinite(RETRY_INTERVAL_SEC) or RETRY_INTERVAL_SEC <= 0:
+    if RETRY_INTERVAL_SEC <= 0:
         invalid.append("RETRY_INTERVAL_SEC must be finite and > 0")
-    if not math.isfinite(RETRY_TTL_SEC) or RETRY_TTL_SEC <= 0:
+    if RETRY_TTL_SEC <= 0:
         invalid.append("RETRY_TTL_SEC must be finite and > 0")
-    if (not math.isfinite(RETRY_CLAIM_LEASE_SEC)
-            or RETRY_CLAIM_LEASE_SEC <= 0):
+    if RETRY_CLAIM_LEASE_SEC <= 0:
         invalid.append("RETRY_CLAIM_LEASE_SEC must be finite and > 0")
-    if (not math.isfinite(RETRY_NOT_FOUND_MAX_AGE_SEC)
-            or RETRY_NOT_FOUND_MAX_AGE_SEC <= 0):
+    if RETRY_NOT_FOUND_MAX_AGE_SEC <= 0:
         invalid.append(
             "RETRY_NOT_FOUND_MAX_AGE_SEC must be finite and > 0")
-    if (not math.isfinite(RETRY_PRICE_TOL)
-            or not 0 <= RETRY_PRICE_TOL < 1):
+    if not 0 <= RETRY_PRICE_TOL < 1:
         invalid.append(
             "RETRY_PRICE_TOL must be finite, >= 0, and < 1")
     if RETRY_MAX_ATTEMPTS < 0:
@@ -2034,15 +2030,10 @@ class TrackedOrderLifecycle:
             raise ValueError("tracked intent requested_qty must be positive")
         if isinstance(requested_price, bool):
             raise ValueError("tracked intent requested_price must be positive")
-        if isinstance(attempt, bool):
+        att_f = safe_float(attempt, default=None)
+        if att_f is None or not att_f.is_integer() or att_f <= 0:
             raise ValueError("tracked intent attempt must be positive")
-        try:
-            att_f = float(attempt)
-            if not math.isfinite(att_f) or not att_f.is_integer():
-                raise ValueError("tracked intent attempt must be positive")
-            att_int = int(att_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("tracked intent attempt must be positive") from exc
+        att_int = int(att_f)
         clean_iid = _clean_retry_order_id(intent_id)
         clean_cid = _clean_retry_order_id(client_order_id)
         clean_sym = _clean_retry_order_id(symbol)
