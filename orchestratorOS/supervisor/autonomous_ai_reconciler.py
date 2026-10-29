@@ -319,6 +319,15 @@ def _apply_short_trend_item(
             entry["epsilon"] = tinfo.get("epsilon")
         if tinfo.get("vol_1h_pct") is not None:
             entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
+    if tinfo.get("adapt_reentry_pct") is not None:
+        entry["adapt_reentry_pct"] = tinfo.get("adapt_reentry_pct")
+    if tinfo.get("adapt_dca_pct") is not None:
+        entry["adapt_dca_pct"] = tinfo.get("adapt_dca_pct")
+    if d90.get("slope_full") is not None:
+        entry["slope_90s"] = d90.get("slope_full")
+        entry["trend_90s"] = d90.get("final_trend", trend)
+    if d90.get("growth_coefficient") is not None:
+        entry["growth_90s"] = d90.get("growth_coefficient")
     for w_dict, s_key, t_key, g_key in (
         (d222, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
         (d900, "slope_15m", "trend_15m", "growth_15m"),
@@ -358,7 +367,7 @@ def _compute_swing_wave_metrics(
     reversal_pct: float = 3.0,
     decimals: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Extract 3%–8%+ ZigZag swing waves, active swing low/high, rally/pullback %, and action zone from a price series."""
+    """Extract raw ZigZag swing waves (>=3% reversals), active swing low/high, and rally/pullback % from a price series."""
     if not isinstance(series_or_vals, list) or len(series_or_vals) < 2:
         return {}
     vals: List[float] = []
@@ -444,27 +453,12 @@ def _compute_swing_wave_metrics(
         if major_low_px and major_low_px > 0
         else None
     )
-    eff_rally_pct = rally_pct
-    if major_rally_pct is not None and pullback_pct >= -2.0 and major_rally_pct > eff_rally_pct:
-        eff_rally_pct = major_rally_pct
-
-    if eff_rally_pct >= 5.0 and pullback_pct > -3.0:
-        zone = "STRONG_SELL_HARVEST_ZONE(+5%..+8%+)"
-    elif eff_rally_pct >= 3.0 and pullback_pct > -3.0:
-        zone = "SELL_HARVEST_ZONE(+3%..+5%)"
-    elif pullback_pct <= -5.0 and rally_pct < 3.0:
-        zone = "STRONG_BUY_DIP_ZONE(-5%..-8%+)"
-    elif pullback_pct <= -3.0 and rally_pct < 3.0:
-        zone = "BUY_DIP_ZONE(-3%..-5%)"
-    else:
-        zone = "MID_SWING_NEUTRAL(<3%)"
 
     out: Dict[str, Any] = {
         "swing_low_px": round(swing_low_px, decimals) if decimals is not None else swing_low_px,
         "swing_high_px": round(swing_high_px, decimals) if decimals is not None else swing_high_px,
         "rally_from_swing_low_pct": rally_pct,
         "pullback_from_swing_high_pct": pullback_pct,
-        "swing_action_zone": zone,
     }
     if major_rally_pct is not None and major_low_px is not None and major_rally_pct > rally_pct:
         out["major_swing_low_px"] = round(major_low_px, decimals) if decimals is not None else major_low_px
@@ -475,117 +469,6 @@ def _compute_swing_wave_metrics(
             sum(abs(x) for x in swing_legs_pct) / len(swing_legs_pct), 2
         )
     return out
-
-
-def _evaluate_position_swing_signal(
-    pos: Dict[str, Any],
-    pinfo: Optional[Dict[str, Any]],
-) -> Optional[str]:
-    """Compute a deterministic 3%–8% swing-harvest / dip-buy / anti-whipsaw guidance label for a tradable position."""
-    if not isinstance(pos, dict):
-        return None
-    p_dict = pinfo if isinstance(pinfo, dict) else {}
-    val_usd = _parse_finite_float(pos.get("value_usd"), 0.0)
-    last_side = str(pos.get("last_action_side") or "").upper()
-    pnl_last_buy = _parse_finite_float(pos.get("pnl_vs_last_buy_pct"), None)
-    pnl_low_buy = _parse_finite_float(pos.get("pnl_vs_lowest_buy_pct"), None)
-    pnl_cyc_cost = _parse_finite_float(pos.get("pnl_vs_cycle_cost_pct"), None)
-    pnl_avg = _parse_finite_float(pos.get("pnl_vs_avg_pct"), None)
-    chg_last_sell = _parse_finite_float(pos.get("chg_vs_last_sell_pct"), None)
-
-    rally_low = _parse_finite_float(p_dict.get("rally_from_swing_low_pct"), None)
-    rally_maj = _parse_finite_float(p_dict.get("rally_from_major_low_pct"), None)
-    pullback_high = _parse_finite_float(p_dict.get("pullback_from_swing_high_pct"), None)
-    bnc_24h = _parse_finite_float(p_dict.get("bounce_24h_low_pct"), None)
-    dd_24h = _parse_finite_float(p_dict.get("dd_24h_high_pct"), None)
-
-    eff_pullback = (
-        pullback_high
-        if pullback_high is not None
-        else (dd_24h if dd_24h is not None else 0.0)
-    )
-
-    # 1. Anti-whipsaw guard right after a SELL when price has only pulled back shallowly (< 3%)
-    if (
-        last_side == "SELL"
-        and chg_last_sell is not None
-        and -3.0 < chg_last_sell < 0.0
-        and eff_pullback > -3.0
-    ):
-        return (
-            f"ANTI_WHIPSAW_HOLD_NO_REBUY(shallow_post_sell_dip={chg_last_sell:+.2f}%_vs_last_sell, "
-            f"pullback_high={eff_pullback:+.2f}% < 3.0% threshold — wait for -3%..-8% pullback before re-buying)"
-        )
-
-    # 2. Swing harvest SELL signal (+3% to +8%+ rally from swing low or buy tranches)
-    tranche_gains = [
-        g for g in (pnl_last_buy, pnl_low_buy, pnl_cyc_cost, pnl_avg) if g is not None
-    ]
-    wave_gains = [
-        g
-        for g in (
-            rally_low,
-            bnc_24h,
-            rally_maj if eff_pullback >= -2.0 else None,
-        )
-        if g is not None
-    ]
-    can_harvest_after_sell = (
-        last_side != "SELL"
-        or chg_last_sell is None
-        or chg_last_sell >= 0.0
-        or ((rally_low or 0.0) >= 3.0 and max(tranche_gains, default=0.0) >= 3.0)
-    )
-    if val_usd >= 10.0 and eff_pullback > -3.0 and can_harvest_after_sell:
-        max_gain = max(tranche_gains + wave_gains, default=0.0)
-        best_tranche = max(tranche_gains, default=None)
-        if max_gain >= 5.0 and (
-            best_tranche is None or best_tranche >= 1.5 or (rally_low or 0.0) >= 5.0
-        ):
-            return (
-                f"STRONG_SELL_HARVEST_CANDIDATE(advance={max_gain:+.2f}% in +5%..+8%+ zone — "
-                "harvest profit tranche now)"
-            )
-        if max_gain >= 3.0 and (
-            best_tranche is None or best_tranche >= 1.0 or (rally_low or 0.0) >= 3.0
-        ):
-            return (
-                f"SELL_HARVEST_CANDIDATE(advance={max_gain:+.2f}% in +3%..+5% zone — "
-                "harvest profit tranche on stall/exhaustion)"
-            )
-
-    # 3. Swing dip BUY signal (-3% to -8%+ pullback from swing high or last sell)
-    pb_cands = [
-        x
-        for x in (
-            pullback_high,
-            dd_24h,
-            chg_last_sell if last_side == "SELL" else None,
-        )
-        if x is not None
-    ]
-    min_pb = min(pb_cands, default=0.0)
-    if min_pb <= -5.0 and (rally_low is None or rally_low < 3.0):
-        return (
-            f"STRONG_BUY_DIP_CANDIDATE(pullback={min_pb:+.2f}% in -5%..-8%+ zone — "
-            "accumulate tranche on support/stabilization)"
-        )
-    if min_pb <= -3.0 and (rally_low is None or rally_low < 3.0):
-        return (
-            f"BUY_DIP_CANDIDATE(pullback={min_pb:+.2f}% in -3%..-5% zone — "
-            "accumulate tranche on support/stabilization)"
-        )
-    if (
-        last_side == "BUY"
-        and pnl_last_buy is not None
-        and -3.0 < pnl_last_buy < -0.5
-        and min_pb > -3.0
-    ):
-        return (
-            f"ANTI_WHIPSAW_NO_DCA_YET(shallow_dip={pnl_last_buy:+.2f}%_vs_last_buy, "
-            f"pullback_high={min_pb:+.2f}% < 3.0% threshold — wait for -3%..-8% pullback)"
-        )
-    return None
 
 
 def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None) -> Dict[str, Any]:
@@ -1081,6 +964,7 @@ class AutonomousAIReconciler:
         prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
         trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
         long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
+        priceanalysis_data = _read_json(os.path.join(self.cache_dir, "priceanalysis.json"))
         t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
         kalman_data = _read_json(os.path.join(self.cache_dir, "cache_kalman_trend.json"))
         prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
@@ -1385,17 +1269,40 @@ class AutonomousAIReconciler:
                         entry["adapt_reentry_pct"] = k_sym.get("adapt_reentry_pct")
                     if k_sym.get("adapt_dca_pct") is not None:
                         entry["adapt_dca_pct"] = k_sym.get("adapt_dca_pct")
+            lt_obj: Optional[Dict[str, Any]] = None
             if isinstance(long_items, dict):
-                lt_list = next((long_items[ck] for ck in cand_keys if isinstance(long_items.get(ck), list) and long_items[ck]), None)
-                if lt_list:
-                    lt = lt_list[-1]
-                    if isinstance(lt, dict):
-                        entry["long_trend_dir"] = lt.get("direction")
-                        dur_s = _parse_finite_float(lt.get("duration_seconds"), 0.0)
-                        entry["long_trend_hours"] = round(dur_s / 3600.0, 1)
-                        est_rem = _parse_finite_float(lt.get("estimated_future_hours"), -1.0)
-                        if est_rem >= 0.0:
-                            entry["long_trend_est_rem_hours"] = round(est_rem, 1)
+                for ck in cand_keys:
+                    raw_lt = long_items.get(ck)
+                    if isinstance(raw_lt, list):
+                        valid_lts = [x for x in raw_lt if isinstance(x, dict) and x.get("direction")]
+                        if valid_lts:
+                            lt_obj = valid_lts[-1]
+                            break
+                    elif isinstance(raw_lt, dict) and raw_lt.get("direction"):
+                        lt_obj = raw_lt
+                        break
+            if lt_obj is None and isinstance(priceanalysis_data, dict):
+                pa_map = (
+                    priceanalysis_data.get("items")
+                    if isinstance(priceanalysis_data.get("items"), dict)
+                    else priceanalysis_data
+                )
+                if isinstance(pa_map, dict):
+                    lt_obj = next(
+                        (
+                            pa_map[ck]
+                            for ck in cand_keys
+                            if isinstance(pa_map.get(ck), dict) and pa_map[ck].get("direction")
+                        ),
+                        None,
+                    )
+            if isinstance(lt_obj, dict):
+                entry["long_trend_dir"] = lt_obj.get("direction")
+                dur_s = _parse_finite_float(lt_obj.get("duration_seconds"), 0.0)
+                entry["long_trend_hours"] = round(dur_s / 3600.0, 1)
+                est_rem = _parse_finite_float(lt_obj.get("estimated_future_hours"), -1.0)
+                if est_rem >= 0.0:
+                    entry["long_trend_est_rem_hours"] = round(est_rem, 1)
             tt = next((t_trend_map[ck] for ck in cand_keys if isinstance(t_trend_map.get(ck), dict)), None)
             if isinstance(tt, dict):
                 entry["weibull_median_d"] = tt.get("median_d")
@@ -1832,19 +1739,6 @@ class AutonomousAIReconciler:
                 _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
-            sym_pinfo = snapshot.prices_and_trends.get(p_sym)
-            if not isinstance(sym_pinfo, dict):
-                sym_pinfo = next(
-                    (
-                        snapshot.prices_and_trends[c]
-                        for c in p_variants
-                        if isinstance(snapshot.prices_and_trends.get(c), dict)
-                    ),
-                    None,
-                )
-            sw_sig = _evaluate_position_swing_signal(pos, sym_pinfo)
-            if sw_sig:
-                pos["swing_signal"] = sw_sig
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents_state.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -1861,7 +1755,8 @@ class AutonomousAIReconciler:
                 if isinstance(i, dict)
             ]
 
-        # 9E. Active queued retry orders (cachedb/order_retry_queue.jsonl) & monitortrades active states (mt_state.json)
+        # 9E. Active queued retry orders (cachedb/order_retry_queue.jsonl), monitortrades active states (mt_state.json),
+        # and recent exchange execution audit records (logger/execution_audit/execution_audit_*.jsonl)
         retry_q_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "order_retry_queue.jsonl")))
         if os.path.exists(retry_q_path):
             active_retries: List[Dict[str, Any]] = []
@@ -1895,6 +1790,53 @@ class AutonomousAIReconciler:
             if active_retries:
                 snapshot.portfolio_summary["active_retry_queue"] = active_retries
 
+        exec_audit_dir = os.path.join(self.workspace_dir, "logger", "execution_audit")
+        if os.path.isdir(exec_audit_dir):
+            audit_files = sorted(glob.glob(os.path.join(exec_audit_dir, "execution_audit_*.jsonl")))
+            if audit_files:
+                audit_events: List[Dict[str, Any]] = []
+                try:
+                    for af_path in audit_files[-2:]:
+                        with open(af_path, "r", encoding="utf-8", errors="replace") as f:
+                            for raw_line in f.readlines()[-40:]:
+                                raw_line = raw_line.strip()
+                                if not raw_line:
+                                    continue
+                                try:
+                                    rec = json.loads(raw_line)
+                                except ValueError:
+                                    continue
+                                if not isinstance(rec, dict):
+                                    continue
+                                evt = str(rec.get("event") or "")
+                                st = str(rec.get("status") or "")
+                                if evt == "order_status" and st.lower() == "open":
+                                    continue
+                                item_aud: Dict[str, Any] = {
+                                    "venue": normalize_venue_name(rec.get("venue")),
+                                    "symbol": rec.get("symbol"),
+                                    "event": evt,
+                                }
+                                if rec.get("side"):
+                                    item_aud["side"] = str(rec.get("side")).upper()
+                                if st:
+                                    item_aud["status"] = st
+                                if rec.get("qty") is not None or rec.get("filled_qty") is not None:
+                                    item_aud["qty"] = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+                                if rec.get("price") is not None or rec.get("reference_price") is not None:
+                                    item_aud["price"] = rec.get("price") if rec.get("price") is not None else rec.get("reference_price")
+                                if rec.get("cost") is not None:
+                                    item_aud["cost"] = rec.get("cost")
+                                if rec.get("reason") or rec.get("error"):
+                                    item_aud["reason"] = rec.get("reason") or rec.get("error")
+                                if rec.get("ts_utc"):
+                                    item_aud["ts_utc"] = rec.get("ts_utc")
+                                audit_events.append(item_aud)
+                except Exception:
+                    pass
+                if audit_events:
+                    snapshot.portfolio_summary["recent_execution_audit"] = audit_events[-10:]
+
         mt_state = _read_json(os.path.join(self.cache_dir, "mt_state.json"))
         if isinstance(mt_state, dict):
             active_mt = {
@@ -1905,6 +1847,38 @@ class AutonomousAIReconciler:
             }
             if active_mt:
                 snapshot.portfolio_summary["monitortrades_active_state"] = active_mt
+
+        ag_state = _read_json(os.path.join(self.cache_dir, "assetguardian_state.json"))
+        if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
+            snapshot.portfolio_summary["assetguardian_state"] = ag_state["symbols"]
+
+        ssl_state = _read_json(os.path.join(self.cache_dir, "smart_stop_loss_state.json"))
+        if isinstance(ssl_state, dict) and ssl_state:
+            snapshot.portfolio_summary["smart_stop_loss_state"] = ssl_state
+
+        # Build live catalog of all data files in cachedb/ available as decision sources
+        if os.path.isdir(self.cache_dir):
+            cachedb_catalog: Dict[str, List[str]] = {}
+            for sub_rel in ("prices", "trends", "trends/24trend", "telemetry", "macro", "orders", "state", ""):
+                sub_dir = os.path.join(self.cache_dir, sub_rel) if sub_rel else self.cache_dir
+                if not os.path.isdir(sub_dir):
+                    continue
+                files_found: List[str] = []
+                try:
+                    for fn in sorted(os.listdir(sub_dir)):
+                        full_fn = os.path.join(sub_dir, fn)
+                        if not os.path.isfile(full_fn):
+                            continue
+                        if fn.endswith((".meta", ".lock", ".tmp", ".heartbeat", "_eval.json")):
+                            continue
+                        if fn.endswith((".json", ".jsonl", ".npz")):
+                            files_found.append(f"{sub_rel}/{fn}" if sub_rel else fn)
+                except OSError:
+                    pass
+                if files_found:
+                    cachedb_catalog[sub_rel or "root"] = files_found
+            if cachedb_catalog:
+                snapshot.portfolio_summary["cachedb_catalog"] = cachedb_catalog
 
         if scope in ("equities", "crypto"):
             want_t212 = scope == "equities"
@@ -1931,7 +1905,7 @@ class AutonomousAIReconciler:
                     if not str(k).upper().endswith(("_EQ", "_US_EQ"))
                 }
                 snapshot.portfolio_summary.pop("t212_cycles", None)
-            for list_key in ("recent_ai_intents", "active_retry_queue"):
+            for list_key in ("recent_ai_intents", "active_retry_queue", "recent_execution_audit"):
                 if list_key in snapshot.portfolio_summary:
                     filtered_items = [
                         item for item in snapshot.portfolio_summary[list_key]
@@ -2352,7 +2326,6 @@ class AutonomousAIReconciler:
                     sw_h = pinfo.get("swing_high_px")
                     sw_ral = _parse_finite_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
                     sw_pb = _parse_finite_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
-                    sw_zone = pinfo.get("swing_action_zone") or "MID_SWING_NEUTRAL(<3%)"
                     maj_sfx = ""
                     if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None:
                         maj_sfx = (
@@ -2369,9 +2342,21 @@ class AutonomousAIReconciler:
                         hist_sfx = f" swings_7d=[{', '.join(str(x) for x in pinfo['recent_swings_7d'])}]{amp_s}"
                     extras.append(
                         f"swing_wave(low={sw_l}, high={sw_h}, rally_low={sw_ral:+.2f}%, "
-                        f"pullback_high={sw_pb:+.2f}%{maj_sfx}, zone={sw_zone}){hist_sfx}"
+                        f"pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
                     )
                 if "slope_15m" in pinfo:
+                    s90_pfx = (
+                        f"90s={_parse_finite_float(pinfo.get('slope_90s'), 0.0):+.5f}, "
+                        if pinfo.get("slope_90s") is not None and not isinstance(pinfo.get("slope_90s"), bool)
+                        else ""
+                    )
+                    grad_rec_sfx = ""
+                    if (
+                        isinstance(pinfo.get("gradient_recent"), (int, float))
+                        and not isinstance(pinfo.get("gradient_recent"), bool)
+                        and abs(_parse_finite_float(pinfo.get("gradient_recent"), 0.0)) > 1e-9
+                    ):
+                        grad_rec_sfx = f", grad_rec={_parse_finite_float(pinfo.get('gradient_recent'), 0.0):+.4f}"
                     fast_sfx = ""
                     if (
                         isinstance(pinfo.get("gradient_recent_fast"), (int, float))
@@ -2383,15 +2368,27 @@ class AutonomousAIReconciler:
                             f", grad_fast={_parse_finite_float(pinfo.get('gradient_recent_fast'), 0.0):+.4f}"
                             f"/eps={_parse_finite_float(pinfo.get('epsilon'), 0.0):.4f}"
                         )
+                    g_parts: List[str] = []
+                    for g_lbl, g_k in (
+                        ("90s", "growth_90s"),
+                        ("3.7m", "growth_3_7m"),
+                        ("15m", "growth_15m"),
+                        ("2.5h", "growth_2_5h"),
+                    ):
+                        if isinstance(pinfo.get(g_k), (int, float)) and not isinstance(pinfo.get(g_k), bool):
+                            g_parts.append(f"{g_lbl}={_parse_finite_float(pinfo.get(g_k), 0.0):+.5f}")
+                    g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
                     extras.append(
-                        f"slopes(3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}, "
+                        f"slopes({s90_pfx}3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}, "
                         f"15m={_parse_finite_float(pinfo.get('slope_15m'), 0.0):+.5f}, "
-                        f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}{fast_sfx})"
+                        f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}{grad_rec_sfx}{fast_sfx}){g_sfx}"
                     )
                 if pinfo.get("vol_1h_pct") is not None:
                     vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
                     if pinfo.get("adapt_reentry_pct") is not None:
                         vol_part += f"(adapt_reentry={pinfo.get('adapt_reentry_pct')}%)"
+                    if pinfo.get("adapt_dca_pct") is not None:
+                        vol_part += f" adapt_dca={pinfo.get('adapt_dca_pct')}%"
                     extras.append(vol_part)
                 if pinfo.get("kalman_vel") is not None and not isinstance(pinfo.get("kalman_vel"), bool):
                     extras.append(f"kalman_vel={_parse_finite_float(pinfo.get('kalman_vel'), 0.0):+.5f}")
@@ -2504,8 +2501,6 @@ class AutonomousAIReconciler:
                         else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
                     )
                     t_extra += f", venue_fee_per_leg={fee_bps}bps"
-                    if pos.get("swing_signal"):
-                        t_extra += f" | SWING_3_8_RULE={pos.get('swing_signal')}"
                     context_items.append(
                         f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={pos.get('free_base')} "
                         f"(${pos.get('value_usd')} USD), free_{pos['quote']}=${pos.get('free_quote')}, "
@@ -2569,8 +2564,18 @@ class AutonomousAIReconciler:
                 context_items.append(f"  * Active Queued Retry Orders (order_retry_queue.jsonl): {ps['active_retry_queue']}")
             if ps.get("monitortrades_active_state"):
                 context_items.append(f"  * Active MonitorTrades Ride/Stop State (mt_state.json): {ps['monitortrades_active_state']}")
+            if ps.get("assetguardian_state"):
+                context_items.append(f"  * Active AssetGuardian State (assetguardian_state.json): {ps['assetguardian_state']}")
+            if ps.get("smart_stop_loss_state"):
+                context_items.append(f"  * Active Smart Stop-Loss State (smart_stop_loss_state.json): {ps['smart_stop_loss_state']}")
             if ps.get("recent_ai_intents"):
                 context_items.append(f"  * Recent Autonomous Intents: {ps['recent_ai_intents']}")
+            if ps.get("recent_execution_audit"):
+                context_items.append(f"  * Recent Exchange Execution Audit Log (logger/execution_audit/): {ps['recent_execution_audit']}")
+            if ps.get("cachedb_catalog"):
+                context_items.append(
+                    f"  * Complete cachedb/ Data Sources Available for Decision-Making (Full Read/Query Access): {ps['cachedb_catalog']}"
+                )
 
         if not is_pure_sre and focus_symbols:
             raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
@@ -2628,38 +2633,24 @@ class AutonomousAIReconciler:
             venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
             ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
             tasks.append(
-                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} using the complete "
-                "macro sentiment, geopolitical risk, live breaking news, multi-horizon price evolution "
-                "(1m/3m/5m/15m/30m/1h/3h/6h/12h/24h/7d, 15m tick tape, 24h & 7d range geometry, 7d 3%–8% swing waves from cache_watcher_all_price.json, relative vs_btc deltas, and alt_btc_24h range geometry), "
-                "dynamic slopes, volatility, and real wallet/account balances + "
-                "cycle entry anchors above.\n"
-                "   - FULL AI AUTHORITY & QUANTITATIVE 3%–8% SWING HARVESTING RULES (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "
-                "is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
+                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} by synthesizing the "
+                "entire MPTrade system telemetry as a whole:\n"
+                "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: You have direct, unrestricted access to "
+                "all files and subdirectories in `cachedb/` (listed in `cachedb_catalog` above) and may use everything in `cachedb/` as a source of information for your trading decisions:\n"
+                "     * `cachedb/prices/`: `cache_current_price.json`, `cache_watcher_all_price.json` (7d multi-coin price curves & raw `swing_wave` percentages: `low`, `high`, `rally_low`, `pullback_high`, `swings_7d`, `avg_amp`), `cache_24_price_<SYM>.json` (24h tick history & `1m..24h` deltas), `cache_365_price_<SYM>.jsonl`/`.npz` (long-term history), and `cache_sparse_price_<SYM>.jsonl`.\n"
+                "     * `cachedb/trends/`: `cache_short_trend.json` & `cachedb/trends/24trend/live_<SYM>.json` (1-second ultra-fast dynamic trend windows `90s`, `3.7m`/`222s`, `15m`/`900s`, `2.5h`/`9000s`, slopes, growth coefficients `g_coeff`, `grad_rec`, `grad_fast`/`eps`), `cache_kalman_trend.json` (`kalman_vel`, `vol_1h`, `adapt_reentry`, `adapt_dca`), `cache_long_trend.json` & `priceanalysis.json` (long trend direction, duration, `est_rem` hours), and `cache_T_trend.json` (`med_d`/`p90_d` Weibull duration stats).\n"
+                "     * `cachedb/telemetry/`: `orderbook_depth_<SYM>.json` (bid/ask depth USD, imbalance, bid/ask walls & distances), `derivatives_telemetry_<SYM>.json` (funding, predicted funding, OI USD & 1h change, taker buy/sell ratio), and `whale_snapshot_<SYM>.json` (whale long/short positioning & divergence regime).\n"
+                "     * `cachedb/macro/`: `fear_greed_collect.json`, `market_breadth_collect.json`, `sentiment_eval.json`, `geopolitical_eval.json`, `news_feed_collect.json` (1m live breaking news), and `macro_lexicon_collect.json`.\n"
+                "     * `cachedb/orders/` & `cachedb/state/`: `cache_order.json`, `cache_trade.jsonl`, `cache_trade_kraken.json`, `cache_asset_value.jsonl`, `order_retry_queue.jsonl`, `mt_state.json`, `trailing_state.json`, `assetguardian_state.json`, `smart_stop_loss_state.json`, `autonomous_trade_intents_state.json`, plus venue cycle states (`.state_*.json` in `kraken/`, `hyperliquid/`, `212trading/`) and `logger/execution_audit/`.\n"
+                "   - BUSINESS OBJECTIVE & FULL AUTONOMOUS JUDGMENT (ZERO PROFIT OR STRATEGY GUARDS): Your objective "
+                "is to maximize net portfolio value and risk-adjusted returns (net of venue fees) across all platforms while "
                 "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
                 "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
-                "symmetrically on both BUY and SELL. You hold 100% autonomous quantitative judgment for profit harvesting, "
-                "multi-tranche scaling, and capital protection, governed by these explicit quantitative swing rules:\n"
-                "     * SELL (Mandatory +3% to +8% Swing Profit Harvesting, Tranche Scaling OR Defensive Risk Reduction): Emit 'SELL' on EVERY tradable instrument "
-                f"(across Binance, Kraken, Hyperliquid, or T212) with free base inventory >= ${min_usd:g} USD when:\n"
-                "       (a) SWING RALLY HARVEST (+3% to +8%+ RULE): Whenever a coin advances by >= +3.0% (and with high urgency as it approaches +5.0% to +8.0%+) "
-                "from its active swing low (`rally_low` / `major_low` in `swing_wave(...)` from `cache_watcher_all_price.json`, or `bounce_low` in 24h range) "
-                "OR vs its buy anchors (`pnl_vs_last_buy`, `pnl_vs_lowest_buy`, `pnl_vs_cycle_cost`, or `pnl_vs_avg` >= +3.0%, or `SWING_3_8_RULE` shows "
-                "`*SELL_HARVEST_CANDIDATE*`) and short-term momentum decelerates/plateaus near upper range (`pos_24h >= 75-95%` or flattening 1m/3m/5m/15m slopes), "
-                "actively harvest profits in tranches! Scale SELL tranche size progressively higher as the move extends from +3% toward +7%–8%+, harvesting profitable "
-                "lower dip-buy tranches even if an older historical cycle average is higher, and evaluate ALL venues symmetrically (do NOT leave profitable Kraken/Hyperliquid "
-                "positions like HYPEUSD unsold while harvesting Binance coins).\n"
-                "       (b) DEFENSIVE DE-RISKING: Also emit 'SELL' EVEN BELOW entry/last-BUY price when protective de-risking is warranted "
-                "(e.g. structural breakdown, accelerating multi-horizon selloff, distribution, or macro/geopolitical shock "
-                "where cutting/trimming exposure protects capital against a deeper drop). Distinguish true structural "
-                "breakdowns from shallow liquidity sweeps into strong support/bid walls.\n"
-                "     * BUY (Mandatory -3% to -8% Swing Dip Accumulation, Strict Anti-Whipsaw Cooldown & Breakout): Emit 'BUY' on any tradable instrument whose venue has free quote "
-                f"cash >= ${min_usd:g} USD when:\n"
-                "       (a) SWING DIP ACCUMULATION (-3% to -8%+ RULE): The coin has pulled back by -3.0% to -8.0%+ from its recent swing high (`pullback_high` in `swing_wave(...)` "
-                "or `dd_high` in 24h range <= -3.0%, or `SWING_3_8_RULE` shows `*BUY_DIP_CANDIDATE*`) OR is down >= -3.0% below `last_sell_px` / `last_buy_px` and shows "
-                "washed-out selling exhaustion / stabilization near support/bid walls.\n"
-                "       (b) STRICT ANTI-WHIPSAW / NO SHALLOW RE-BUY RULE: Right after a take-profit SELL (or recent BUY), do NOT re-buy on a shallow pullback of < 2.5%–3.0% "
-                "(e.g. when `chg_vs_last_sell` is only -0.5% to -2.0% or `SWING_3_8_RULE` shows `ANTI_WHIPSAW_*`). Preserve quote cash for a real -3% to -8% retracement wave "
-                "(unless a confirmed structural momentum breakout above the prior swing peak occurs).\n"
+                "symmetrically on both BUY and SELL.\n"
+                "   - UNBIASED QUANTITATIVE FREEDOM: No rigid trading rules, fixed percentage thresholds, or directional biases "
+                "are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform (`binance`, `kraken`, "
+                "`hyperliquid`, `t212`), and WHY to `BUY`, `SELL` (whether harvesting profits on upward swings, scaling in/out "
+                "in tranches, or selling below entry/last-BUY to reduce risk), or `HOLD` based on your own holistic judgment of the market and portfolio data.\n"
                 f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
                 "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
@@ -2702,10 +2693,11 @@ class AutonomousAIReconciler:
                 "Evaluate the market context and formulate autonomous BUY/SELL trading decisions:\n" + "\n".join(tasks) + "\n\n"
             )
             tool_rule = (
-                "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
-                "required telemetry and wallet balances are provided above (use tools only when the user asks a direct interactive question in chat).\n"
-                "- Do NOT check or report on fleet process state, heartbeats, or system logs; "
-                "your sole responsibility on this thread is executing BUY/SELL transactions based on market and portfolio context.\n"
+                "- You have full, unrestricted access to everything in `cachedb/` (`cachedb/prices/`, `cachedb/trends/`, `cachedb/trends/24trend/`, "
+                "`cachedb/telemetry/`, `cachedb/macro/`, `cachedb/orders/`, `cachedb/state/`) as a direct source of information for your trading decisions, "
+                "as well as full freedom to query live market APIs (`providers.market_api`, `binance_api`, `kraken`, `hyperliquid`, `212trading`) "
+                "and read trade/execution logs (`logs/`, `logger/execution_audit/`) whenever you want deeper verification or to answer user questions.\n"
+                "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n"
             )
             report_format_rule = (
                 "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"

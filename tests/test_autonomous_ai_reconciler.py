@@ -2461,15 +2461,14 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     )
 
 
-def test_swing_wave_metrics_and_3_to_8_pct_harvest_rules(tmp_path):
+def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tmp_path):
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         GeminiClient,
         _compute_swing_wave_metrics,
-        _evaluate_position_swing_signal,
     )
 
-    # 1. ZigZag 3%–8% wave extraction on rally (+8.68%) and subsequent drop (-7.67%)
+    # 1. Pure objective ZigZag swing wave extraction on rally (+8.68%) and subsequent drop (-7.82%)
     series_rally = [
         [1000, 0.1750],
         [2000, 0.1636],  # swing low (-6.51%)
@@ -2481,54 +2480,18 @@ def test_swing_wave_metrics_and_3_to_8_pct_harvest_rules(tmp_path):
     assert m_up["swing_high_px"] == 0.1778
     assert m_up["rally_from_swing_low_pct"] == 8.68
     assert m_up["pullback_from_swing_high_pct"] == 0.0
-    assert m_up["swing_action_zone"] == "STRONG_SELL_HARVEST_ZONE(+5%..+8%+)"
+    assert "swing_action_zone" not in m_up
     assert m_up["recent_swings_7d"] == ["-6.5%", "+8.7%"]
 
     series_drop = series_rally + [[5000, 0.1639]]  # -7.82% pullback from 0.1778
     m_dn = _compute_swing_wave_metrics(series_drop)
     assert m_dn["swing_high_px"] == 0.1778
     assert m_dn["pullback_from_swing_high_pct"] == -7.82
-    assert m_dn["swing_action_zone"] == "STRONG_BUY_DIP_ZONE(-5%..-8%+)"
+    assert "swing_action_zone" not in m_dn
     assert m_dn["recent_swings_7d"] == ["-6.5%", "+8.7%", "-7.8%"]
 
-    # 2. Position swing signal: harvest on +3%..+8% advance, anti-whipsaw after shallow post-sell dip, buy on -3%..-8% dip
-    sig_harvest = _evaluate_position_swing_signal(
-        {
-            "value_usd": 2200.0,
-            "last_action_side": "BUY",
-            "pnl_vs_avg_pct": 2.53,
-            "pnl_vs_cycle_cost_pct": 5.18,
-            "pnl_vs_last_buy_pct": 8.33,
-        },
-        m_up,
-    )
-    assert sig_harvest is not None
-    assert "STRONG_SELL_HARVEST_CANDIDATE" in sig_harvest
-
-    sig_whipsaw = _evaluate_position_swing_signal(
-        {
-            "value_usd": 600.0,
-            "last_action_side": "SELL",
-            "chg_vs_last_sell_pct": -1.04,
-            "pnl_vs_last_buy_pct": 2.43,
-        },
-        {"rally_from_swing_low_pct": 2.68, "pullback_from_swing_high_pct": -1.68},
-    )
-    assert sig_whipsaw is not None
-    assert "ANTI_WHIPSAW_HOLD_NO_REBUY" in sig_whipsaw
-
-    sig_dip = _evaluate_position_swing_signal(
-        {
-            "value_usd": 600.0,
-            "last_action_side": "SELL",
-            "chg_vs_last_sell_pct": -5.39,
-        },
-        m_dn,
-    )
-    assert sig_dip is not None
-    assert "STRONG_BUY_DIP_CANDIDATE" in sig_dip
-
-    # 3. End-to-end prompt formatting includes swing_wave, SWING_3_8_RULE, and 3%–8% quantitative rules
+    # 2. End-to-end prompt formatting includes raw swing_wave, 90s fast trend slopes & g_coeff,
+    #    execution audit log records, and unbiased autonomous freedom (with tool/API/log access)
     cache_dir = tmp_path / "cachedb"
     cache_dir.mkdir(exist_ok=True)
     (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
@@ -2540,6 +2503,45 @@ def test_swing_wave_metrics_and_3_to_8_pct_harvest_rules(tmp_path):
         json.dumps({"items": {"ARBUSDC": 0.1778}}),
         encoding="utf-8",
     )
+    (cache_dir / "cache_short_trend.json").write_text(
+        json.dumps({
+            "items": {
+                "ARBUSDC": {
+                    "current_price": 0.1778,
+                    "final_trend": 1,
+                    "slope_full": 0.00045,
+                    "gradient_recent": 0.0012,
+                    "gradient_recent_fast": 0.0018,
+                    "epsilon": 0.0004,
+                    "vol_1h_pct": 0.85,
+                    "adapt_reentry_pct": 1.70,
+                    "adapt_dca_pct": 2.10,
+                    "dynamic": {
+                        "90": {"slope_full": 0.00092, "final_trend": 1, "growth_coefficient": 0.00081},
+                        "222": {"slope_full": 0.00064, "final_trend": 1, "growth_coefficient": 0.00055},
+                        "900": {"slope_full": 0.00045, "final_trend": 1, "growth_coefficient": 0.00038},
+                        "9000": {"slope_full": 0.00021, "final_trend": 1, "growth_coefficient": 0.00019},
+                    },
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    audit_dir = tmp_path / "logger" / "execution_audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "execution_audit_2026-10-29.jsonl").write_text(
+        json.dumps({
+            "event": "submit_accepted",
+            "venue": "Binance",
+            "symbol": "ARBUSDC",
+            "side": "sell",
+            "qty": 500.0,
+            "price": 0.1778,
+            "ts_utc": "2026-10-29T12:00:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
     arb_inst = MagicMock(symbol="ARBUSDC", provider_name="binance", base="ARB", quote="USDC", params={})
     arb_inst._provider.get_current_price.return_value = 0.1778
     arb_inst._provider.free_balance.side_effect = lambda a: 5000.0 if a == "ARB" else 400.0
@@ -2566,8 +2568,19 @@ def test_swing_wave_metrics_and_3_to_8_pct_harvest_rules(tmp_path):
     reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
     assert len(captured) == 1
     prompt_out = captured[0]
-    assert "swing_wave(low=0.1636, high=0.1778, rally_low=+8.68%" in prompt_out
-    assert "SWING_3_8_RULE=STRONG_SELL_HARVEST_CANDIDATE" in prompt_out
-    assert "QUANTITATIVE 3%–8% SWING HARVESTING RULES" in prompt_out
+    assert "swing_wave(low=0.1636, high=0.1778, rally_low=+8.68%, pullback_high=+0.00%)" in prompt_out
+    assert "swings_7d=[-6.5%, +8.7%], avg_amp=7.59%" in prompt_out
+    assert "slopes(90s=+0.00092, 3.7m=+0.00064, 15m=+0.00045, 2.5h=+0.00021, grad_rec=+0.0012, grad_fast=+0.0018/eps=0.0004)" in prompt_out
+    assert "g_coeff(90s=+0.00081, 3.7m=+0.00055, 15m=+0.00038, 2.5h=+0.00019)" in prompt_out
+    assert "vol_1h=0.85%(adapt_reentry=1.7%) adapt_dca=2.1%" in prompt_out
+    assert "Recent Exchange Execution Audit Log (logger/execution_audit/):" in prompt_out
+    assert "Complete cachedb/ Data Sources Available for Decision-Making (Full Read/Query Access):" in prompt_out
+    assert "FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE" in prompt_out
+    assert "UNBIASED QUANTITATIVE FREEDOM" in prompt_out
+    assert "providers.market_api" in prompt_out
+    assert "STRONG_SELL_HARVEST_ZONE" not in prompt_out
+    assert "SWING_3_8_RULE" not in prompt_out
+    assert "do NOT call tools, shell commands, or file readers" not in prompt_out
+
 
 
