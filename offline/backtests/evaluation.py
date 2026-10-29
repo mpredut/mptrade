@@ -112,7 +112,12 @@ def iso_utc(timestamp: int) -> str:
 
 def to_ohlc(records: Sequence[dict]) -> list[tuple[float, float, float, float]]:
     return [
-        (float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"]))
+        (
+            safe_float(row["open"], 0.0),
+            safe_float(row["high"], 0.0),
+            safe_float(row["low"], 0.0),
+            safe_float(row["close"], 0.0),
+        )
         for row in records
     ]
 
@@ -143,8 +148,8 @@ def evaluate_segment(
     if validate_contract:
         from offline.backtests.metrics import validate_replay_metrics
         validate_replay_metrics(metrics)
-    first_close = float(records[0]["close"])
-    last_close = float(records[-1]["close"])
+    first_close = safe_float(records[0]["close"], 0.0)
+    last_close = safe_float(records[-1]["close"], 0.0)
     buy_hold_pct = (last_close / first_close - 1.0) * 100.0 if first_close > 0 else None
     return {
         "start_utc": iso_utc(int(records[0]["timestamp"])),
@@ -222,7 +227,7 @@ def evaluate_walk_forward(
     summary = summarize_test_windows(test_windows)
     compounded = 100.0
     for window in test_windows:
-        compounded *= 1.0 + float(window["return_pct"]) / 100.0
+        compounded *= 1.0 + safe_float(window.get("return_pct"), 0.0) / 100.0
     bh_values = [
         bh_f
         for window in test_windows
