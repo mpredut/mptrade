@@ -264,6 +264,12 @@ def safe_pos_int(val: object, default: int | None = 1) -> int | None:
     return i if (i is not None and i >= 1) else default
 
 
+def safe_nonneg_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to a non-negative integer (>= 0), otherwise return ``default``."""
+    i = safe_int(val, default=None)
+    return i if (i is not None and i >= 0) else default
+
+
 def float_env(key: str, env: dict | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     The optional `env` argument preserves compatibility with legacy float_env(key) calls."""

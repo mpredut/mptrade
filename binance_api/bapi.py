@@ -104,17 +104,11 @@ def get_current_price(symbol):
         return None
     symbol = symbol.strip().upper()
     now = time.time()
-    cached_at = cprice_time.get(symbol)
-    cached = cprice.get(symbol)
-    if (
-        cached_at is not None
-        and not isinstance(cached_at, bool)
-        and cached is not None
-        and not isinstance(cached, bool)
-    ):
-        age = safe_nonneg_float(now - float(cached_at), default=None)
-        cached_f = safe_pos_float(cached, default=None)
-        if age is not None and cached_f is not None and age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
+    cached_at_f = safe_float(cprice_time.get(symbol), default=None)
+    cached_f = safe_pos_float(cprice.get(symbol), default=None)
+    if cached_at_f is not None and cached_f is not None:
+        age = safe_nonneg_float(now - cached_at_f, default=None)
+        if age is not None and age < BINANCE_REST_PRICE_CACHE_TTL_SEC:
             return cached_f
 
     # A failed refresh returns None. It deliberately does not extend the timestamp

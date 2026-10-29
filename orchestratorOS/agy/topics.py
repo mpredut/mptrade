@@ -245,7 +245,9 @@ def format_topic_history_prefix(
     return "\n".join(lines) + "\n\n"
 
 
-_safe_int = safe_int
+def _safe_int(val: Any, default: int = 0) -> int:
+    f = safe_float(val, default=None)
+    return int(round(f)) if f is not None else default
 
 
 def prepare_topic_session(
@@ -260,9 +262,10 @@ def prepare_topic_session(
     base = resolve_bot_cli_base(cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
-    compact_steps_i = safe_pos_int(compact_steps, default=None)
-    if compact_steps_i is None or (isinstance(compact_steps, float) and not compact_steps.is_integer()):
+    compact_steps_f = safe_float(compact_steps, default=None)
+    if compact_steps_f is None or compact_steps_f <= 0 or not compact_steps_f.is_integer():
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
+    compact_steps_i = int(compact_steps_f)
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(resolved)

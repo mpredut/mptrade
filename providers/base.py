@@ -180,7 +180,7 @@ def normalize_side(side: Any) -> str:
     s = str(side).strip().upper()
     if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
         return "BUY"
-    if s in ("A", "S", "SELL", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
+    if s in ("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
         return "SELL"
     return ""
 

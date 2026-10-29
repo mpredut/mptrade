@@ -14,8 +14,15 @@ import time
 from collections import OrderedDict
 from typing import Mapping, Optional
 
-from botcore import _parse_bool_flag
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
 from cachepaths import normalize_venue_name
+from providers.base import normalize_side
 
 
 def _clean_regime_symbol_key(symbol) -> str:
@@ -63,19 +70,9 @@ class MarketRegimeDecision:
     @property
     def fitted_move_pct(self) -> Optional[float]:
         """Return the fitted move across the classified sample window."""
-        if (
-            self.gradient is None
-            or isinstance(self.gradient, bool)
-            or self.n_samples is None
-            or isinstance(self.n_samples, bool)
-        ):
-            return None
-        try:
-            grad_f = float(self.gradient)
-            samples_f = float(self.n_samples)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(grad_f) or not math.isfinite(samples_f) or samples_f < 2:
+        grad_f = safe_float(self.gradient, default=None)
+        samples_f = safe_pos_float(self.n_samples, default=None)
+        if grad_f is None or samples_f is None or samples_f < 2:
             return None
         move = grad_f * (samples_f - 1.0) * 100.0
         return move if math.isfinite(move) else None
@@ -83,9 +80,8 @@ class MarketRegimeDecision:
     def adverse_to(self, exposure_side: str) -> bool:
         if isinstance(exposure_side, bool):
             return False
-        side = str(exposure_side or "").strip().upper()
-        return ((side in {"LONG", "BUY", "B", "BID"} and self.regime == "bear") or
-                (side in {"SOLD", "SHORT", "SELL", "S", "ASK", "A"} and self.regime == "bull"))
+        side = normalize_side(exposure_side)
+        return (side == "BUY" and self.regime == "bear") or (side == "SELL" and self.regime == "bull")
 
 
 @dataclass(frozen=True)
@@ -136,61 +132,33 @@ class MarketRegimeContext:
         require_identity: bool = False,
     ) -> bool:
         """Validate whether context matches instrument identity, timestamp sanity, and freshness constraints."""
-        if isinstance(now, bool):
-            return False
-        try:
-            current_time = time.time() if now is None else float(now)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(current_time):
+        current_time = time.time() if now is None else safe_float(now, default=None)
+        if current_time is None:
             return False
 
         # 1. Timestamp validation: evaluated_at must be strictly positive, finite, and not in the future
-        if (
-            isinstance(self.evaluated_at, bool)
-            or not math.isfinite(self.evaluated_at)
-            or self.evaluated_at <= 0
-        ):
-            return False
-        # Allow at most 1.0 second clock skew for future timestamps
-        if self.evaluated_at > (current_time + 1.0):
+        eval_at = safe_pos_float(self.evaluated_at, default=None)
+        if eval_at is None or eval_at > (current_time + 1.0):
             return False
 
         # 2. Freshness and age validation
-        age = current_time - self.evaluated_at
+        age = current_time - eval_at
         if age < -1.0:
             return False
 
         if max_age_seconds is not None:
-            if isinstance(max_age_seconds, bool):
-                return False
-            try:
-                max_age_f = float(max_age_seconds)
-            except (TypeError, ValueError, OverflowError):
-                return False
-            if not math.isfinite(max_age_f):
-                return False
-            if max_age_f > 0 and age > max_age_f:
+            max_age_f = safe_float(max_age_seconds, default=None)
+            if max_age_f is None or (max_age_f > 0 and age > max_age_f):
                 return False
 
         # 3. Temporal horizon and trend duration validation
-        if (
-            isinstance(self.trend_duration_seconds, bool)
-            or not math.isfinite(self.trend_duration_seconds)
-            or self.trend_duration_seconds < 0
-        ):
+        dur = safe_nonneg_float(self.trend_duration_seconds, default=None)
+        if dur is None:
             return False
 
         if max_horizon_seconds is not None:
-            if isinstance(max_horizon_seconds, bool):
-                return False
-            try:
-                max_hor_f = float(max_horizon_seconds)
-            except (TypeError, ValueError, OverflowError):
-                return False
-            if not math.isfinite(max_hor_f):
-                return False
-            if max_hor_f > 0 and self.trend_duration_seconds > max_hor_f:
+            max_hor_f = safe_float(max_horizon_seconds, default=None)
+            if max_hor_f is None or (max_hor_f > 0 and dur > max_hor_f):
                 return False
 
         # 4. Identity validation
@@ -268,20 +236,8 @@ class MarketRegimeContext:
                 fallback_used=_parse_bool_flag(benchmark_decision.get("fallback_used"), False),
             )
         trend = "flat" if decision.regime == "sideways" else decision.regime
-        if evaluated_at is None or isinstance(evaluated_at, bool):
-            eval_ts = time.time()
-        else:
-            try:
-                eval_ts = float(evaluated_at)
-            except (TypeError, ValueError, OverflowError):
-                eval_ts = 0.0
-        if trend_duration_seconds is None or isinstance(trend_duration_seconds, bool):
-            dur_s = 0.0
-        else:
-            try:
-                dur_s = float(trend_duration_seconds)
-            except (TypeError, ValueError, OverflowError):
-                dur_s = -1.0
+        eval_ts = time.time() if evaluated_at is None else (safe_float(evaluated_at, default=0.0) or 0.0)
+        dur_s = 0.0 if trend_duration_seconds is None else (safe_float(trend_duration_seconds, default=-1.0) if safe_float(trend_duration_seconds, default=-1.0) is not None else -1.0)
         sym_norm = (
             symbol.strip().upper()
             if isinstance(symbol, str) and symbol.strip()
@@ -356,16 +312,11 @@ class MarketRegimeEvidence:
 
     @property
     def age_seconds(self) -> Optional[float]:
-        if (
-            self.observed_at is None
-            or isinstance(self.observed_at, bool)
-            or isinstance(self.evaluated_at, bool)
-        ):
+        eval_f = safe_float(self.evaluated_at, default=None)
+        obs_f = safe_float(self.observed_at, default=None)
+        if eval_f is None or obs_f is None:
             return None
-        try:
-            age = float(self.evaluated_at) - float(self.observed_at)
-        except (TypeError, ValueError, OverflowError):
-            return None
+        age = eval_f - obs_f
         return age if math.isfinite(age) else None
 
     @property
@@ -377,13 +328,8 @@ class MarketRegimeEvidence:
         if age < -5.0:
             return "future"
         if self.max_age_seconds is not None:
-            if isinstance(self.max_age_seconds, bool):
-                return "stale"
-            try:
-                max_age_f = float(self.max_age_seconds)
-            except (TypeError, ValueError, OverflowError):
-                return "stale"
-            if not math.isfinite(max_age_f) or max_age_f <= 0 or age > max_age_f:
+            max_age_f = safe_pos_float(self.max_age_seconds, default=None)
+            if max_age_f is None or age > max_age_f:
                 return "stale"
         if self.max_age_seconds is None:
             return "unbounded"
@@ -847,22 +793,16 @@ class MarketRegimeService:
             if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
                 raise ValueError("the regime interval and window must be positive")
             if interval_min is not None:
-                try:
-                    im_f = float(interval_min)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise ValueError("the regime interval and window must be positive") from exc
-                if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+                im_i = safe_pos_int(interval_min, default=None)
+                if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
                     raise ValueError("the regime interval and window must be positive")
             if window_seconds is not None:
-                try:
-                    ws_f = float(window_seconds)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise ValueError("the regime interval and window must be positive") from exc
-                if not math.isfinite(ws_f) or ws_f <= 0:
+                ws_f = safe_pos_float(window_seconds, default=None)
+                if ws_f is None:
                     raise ValueError("the regime interval and window must be positive")
             primary = (
-                int(configured[0][0] if interval_min is None else float(interval_min)),
-                float(configured[0][1] if window_seconds is None else window_seconds),
+                int(configured[0][0] if interval_min is None else im_i),
+                float(configured[0][1] if window_seconds is None else ws_f),
             )
             configured = (primary,) + tuple(
                 item for item in configured if item != primary
@@ -927,15 +867,13 @@ class MarketRegimeService:
             return None
         if decision.regime == "sideways":
             return 0.0
-        if decision.strength is None or isinstance(decision.strength, bool):
+        if decision.strength is None:
             strength = 0.0
         else:
-            try:
-                strength = float(decision.strength)
-            except (TypeError, ValueError, OverflowError):
+            s_f = safe_nonneg_float(decision.strength, default=None)
+            if s_f is None:
                 return None
-            if not math.isfinite(strength) or strength < 0.0:
-                return None
+            strength = s_f
         magnitude = min(strength, strength_cap) / strength_cap
         return magnitude if decision.regime == "bull" else -magnitude
 
@@ -1140,29 +1078,19 @@ class MarketRegimeService:
             series = reader(symbol, interval_min)
             if isinstance(series, Mapping):
                 raw_iv = series.get("interval_min", interval_min)
-                if isinstance(raw_iv, bool):
-                    raise ValueError("ohlc_series returned the wrong interval")
-                try:
-                    iv_f = float(raw_iv)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise ValueError("ohlc_series returned the wrong interval") from exc
-                if not math.isfinite(iv_f) or not iv_f.is_integer():
+                iv_i = safe_pos_int(raw_iv, default=None)
+                if iv_i is None or (isinstance(raw_iv, float) and not raw_iv.is_integer()):
                     raise ValueError("ohlc_series returned the wrong interval")
                 series = ClosedPriceSeries(
                     tuple(series.get("closes") or ()),
-                    int(iv_f),
+                    iv_i,
                     series.get("last_closed_at"),
                     tuple(series.get("timestamps") or ()),
                 )
             if not isinstance(series, ClosedPriceSeries):
                 raise TypeError("ohlc_series must return ClosedPriceSeries")
-            if isinstance(series.interval_min, bool):
-                raise ValueError("ohlc_series returned the wrong interval")
-            try:
-                s_iv_f = float(series.interval_min)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("ohlc_series returned the wrong interval") from exc
-            if not math.isfinite(s_iv_f) or not s_iv_f.is_integer() or int(s_iv_f) != interval_min:
+            s_iv_i = safe_pos_int(series.interval_min, default=None)
+            if s_iv_i is None or (isinstance(series.interval_min, float) and not series.interval_min.is_integer()) or s_iv_i != interval_min:
                 raise ValueError("ohlc_series returned the wrong interval")
             return series
         return ClosedPriceSeries(
@@ -1207,16 +1135,12 @@ class MarketRegimeService:
 
     def _evaluate_provider_source(self, provider, symbol: str, *,
                                   interval_min=1, window_seconds=900.0):
-        if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
+        im_i = safe_pos_int(interval_min, default=None)
+        win_f = safe_pos_float(window_seconds, default=None)
+        if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()) or win_f is None:
             raise ValueError("the regime interval and window must be positive")
-        try:
-            im_f = float(interval_min)
-            window_seconds = float(window_seconds)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("the regime interval and window must be positive") from exc
-        if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0:
-            raise ValueError("the regime interval and window must be positive")
-        interval_min = int(im_f)
+        interval_min = im_i
+        window_seconds = win_f
         key = (
             str(getattr(provider, "name", "unknown")).lower(),
             str(symbol),
@@ -1227,22 +1151,17 @@ class MarketRegimeService:
         with self._lock:
             cached = self._cache.get(key)
             if isinstance(cached, (tuple, list)) and len(cached) >= 4:
-                raw_ts = cached[0]
+                c_ts = safe_float(cached[0], default=None)
                 cached_dec = cached[1]
-                if raw_ts is not None and not isinstance(raw_ts, bool) and cached_dec is not None:
-                    try:
-                        c_ts = float(raw_ts)
-                    except (TypeError, ValueError, OverflowError):
-                        c_ts = float("nan")
-                    if math.isfinite(c_ts):
-                        ttl = (
-                            self.cache_ttl_sec
-                            if getattr(cached_dec, "fresh", False)
-                            else self.negative_cache_ttl_sec
-                        )
-                        if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
-                            self._cache.move_to_end(key)
-                            return cached[1:]
+                if c_ts is not None and cached_dec is not None:
+                    ttl = (
+                        self.cache_ttl_sec
+                        if getattr(cached_dec, "fresh", False)
+                        else self.negative_cache_ttl_sec
+                    )
+                    if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
+                        self._cache.move_to_end(key)
+                        return cached[1:]
         observed_at = None
         continuous = None
         try:
@@ -1306,13 +1225,10 @@ class MarketRegimeService:
         if interval_min is None:
             interval = configured_interval
         else:
-            try:
-                im_f = float(interval_min)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("the regime interval must be positive") from exc
-            if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+            im_i = safe_pos_int(interval_min, default=None)
+            if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
                 raise ValueError("the regime interval must be positive")
-            interval = int(im_f)
+            interval = im_i
         return max(3, int(math.ceil(window_seconds / (interval * 60))))
 
     _EVAL_CLOSES_CACHE: dict = {}
@@ -1328,13 +1244,10 @@ class MarketRegimeService:
         if interval_min is None:
             interval = configured_interval
         else:
-            try:
-                im_f = float(interval_min)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("the regime interval must be positive") from exc
-            if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+            im_i = safe_pos_int(interval_min, default=None)
+            if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
                 raise ValueError("the regime interval must be positive")
-            interval = int(im_f)
+            interval = im_i
         return self._annotate(
             self.evaluate_closes(
                 closes, interval_min=interval, window_seconds=window_seconds,
@@ -1345,17 +1258,15 @@ class MarketRegimeService:
 
     def evaluate_closes(self, closes, *, interval_min=1,
                         window_seconds=900.0) -> MarketRegimeDecision:
-        if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
-            return self.evaluator.unknown("invalid_window_metadata")
         if closes is None or isinstance(closes, (str, bytes, bool)):
             return self.evaluator.unknown("invalid_ohlc")
+        im_i = safe_pos_int(interval_min, default=None)
+        win = safe_pos_float(window_seconds, default=None)
+        if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()) or win is None:
+            return self.evaluator.unknown("invalid_window_metadata")
+        itv = im_i
+        needed = max(3, int(math.ceil(win / (itv * 60))))
         try:
-            im_f = float(interval_min)
-            win = float(window_seconds)
-            if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0 or not math.isfinite(win) or win <= 0:
-                return self.evaluator.unknown("invalid_window_metadata")
-            itv = int(im_f)
-            needed = max(3, int(math.ceil(win / (itv * 60))))
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
             tail = seq[-needed:]
             if any(isinstance(value, bool) or value is None for value in tail):

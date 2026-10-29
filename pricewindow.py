@@ -21,7 +21,15 @@ from bisect import insort, bisect_left
 import numpy as np
 from scipy.stats import linregress
 
-from botcore import float_env, safe_float
+from botcore import (
+    float_env,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 import utils as u
 
 # ── Window constants ──────────────────────────────────────────────────────────
@@ -120,22 +128,12 @@ def _load_symbol_power_map() -> dict[str, float]:
         sym = str(spec.symbol or "").strip().upper()
         base = str(spec.base or "").strip().upper()
         c_base = canonical_base_asset(base or sym)
-        raw_p = spec.params.get("trend.step_wols_power")
-        if raw_p is not None:
-            try:
-                pval = float(raw_p)
-            except (TypeError, ValueError, OverflowError):
-                pval = float("nan")
-            if math.isfinite(pval) and pval >= 0.0:
-                _register_symbol_param(mapping, sym, base, c_base, pval)
-        raw_fw = spec.params.get("trend.fast_window_sec")
-        if raw_fw is not None:
-            try:
-                fw_val = float(raw_fw)
-            except (TypeError, ValueError, OverflowError):
-                fw_val = float("nan")
-            if math.isfinite(fw_val) and fw_val > 0.0:
-                _register_symbol_param(fast_win_map, sym, base, c_base, fw_val)
+        pval = safe_nonneg_float(spec.params.get("trend.step_wols_power"), default=None)
+        if pval is not None:
+            _register_symbol_param(mapping, sym, base, c_base, pval)
+        fw_val = safe_pos_float(spec.params.get("trend.fast_window_sec"), default=None)
+        if fw_val is not None:
+            _register_symbol_param(fast_win_map, sym, base, c_base, fw_val)
     _SYMBOL_POWER_CACHE["mtime_ns"] = mtime_ns
     _SYMBOL_POWER_CACHE["map"] = mapping
     _SYMBOL_FAST_WINDOW_CACHE["mtime_ns"] = mtime_ns
@@ -251,13 +249,9 @@ def effective_recent_gradient_seconds(window_seconds=None) -> float:
     (60 / 222 ≈ 27.03% of the window) so multi-minute/hour windows do not
     collapse to a 60-second tail.
     """
-    if window_seconds is not None and not isinstance(window_seconds, bool):
-        try:
-            win_f = float(window_seconds)
-            if math.isfinite(win_f) and win_f > WINDOW_SECONDS_SMALL:
-                return win_f * (RECENT_GRADIENT_SECONDS / WINDOW_SECONDS_SMALL)
-        except (TypeError, ValueError, OverflowError):
-            pass
+    win_f = safe_float(window_seconds, default=None)
+    if win_f is not None and win_f > WINDOW_SECONDS_SMALL:
+        return win_f * (RECENT_GRADIENT_SECONDS / WINDOW_SECONDS_SMALL)
     return RECENT_GRADIENT_SECONDS
 
 
@@ -267,14 +261,9 @@ class PriceTrendAnalyzer:
         if prices is not None and not isinstance(prices, (bool, str, bytes)):
             try:
                 for p in prices:
-                    if p is None or isinstance(p, bool):
-                        continue
-                    try:
-                        pf = float(p)
-                        if math.isfinite(pf):
-                            clean.append(pf)
-                    except (TypeError, ValueError, OverflowError):
-                        continue
+                    pf = safe_float(p, default=None)
+                    if pf is not None:
+                        clean.append(pf)
             except TypeError:
                 pass
         self.prices = clean
@@ -409,14 +398,9 @@ class IncrementalTrendBuffer:
         self.y_ref = None
 
     def append(self, price: float, ts_ms: int = 0) -> None:
-        if price is None or isinstance(price, bool) or isinstance(ts_ms, bool):
-            return
-        try:
-            y = float(price)
-            ts_int = int(ts_ms)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not math.isfinite(y):
+        y = safe_float(price, default=None)
+        ts_int = safe_int(ts_ms, default=None)
+        if y is None or ts_int is None:
             return
         if self.y_ref is None:
             self.y_ref = y
@@ -527,16 +511,8 @@ class IncrementalTrendBuffer:
             self.append(px, ts)
 
     def trim_front(self, count: int) -> None:
-        if count is None or isinstance(count, bool):
-            return
-        try:
-            cf = float(count)
-            if not math.isfinite(cf) or cf <= 0:
-                return
-            count_int = int(cf)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if count_int <= 0:
+        count_int = safe_pos_int(count, default=None)
+        if count_int is None:
             return
         idx = min(count_int, len(self.prices))
         if idx <= 0:
@@ -625,24 +601,15 @@ class IncrementalTrendBuffer:
     ):
         """Evaluate (final_trend, growth_coefficient, slope_full, gradient_recent, epsilon)
         on inclusive index range [a, b] in O(1) using cumulative prefix sums."""
-        if isinstance(a, bool) or isinstance(b, bool):
+        a_i = safe_nonneg_int(a, default=None)
+        b_i = safe_nonneg_int(b, default=None)
+        if a_i is None or b_i is None:
             return 0, 0.0, 0.0, 0.0, 0.0
-        try:
-            a = int(a)
-            b = int(b)
-        except (TypeError, ValueError, OverflowError):
-            return 0, 0.0, 0.0, 0.0, 0.0
+        a, b = a_i, b_i
         n = b - a + 1
         if a < 0 or b >= len(self.prices) or n < 2:
             return 0, 0.0, 0.0, 0.0, 0.0
-        k_val = 1.0
-        if eps_k is not None and not isinstance(eps_k, bool):
-            try:
-                kf = float(eps_k)
-                if math.isfinite(kf) and kf > 0.0:
-                    k_val = kf
-            except (TypeError, ValueError, OverflowError):
-                k_val = 1.0
+        k_val = safe_pos_float(eps_k, default=1.0) or 1.0
         p = self.prices
         s0 = self.p0[b] - (self.p0[a - 1] if a > 0 else self.base_p0)
         s1_raw = self.p1[b] - (self.p1[a - 1] if a > 0 else self.base_p1)
@@ -731,34 +698,10 @@ class PriceWindow:
     def __init__(self, symbol, window_size, sample_rate_sec=None, initial_prices=None,
                  window_seconds=None):
         self.symbol = symbol
-        ws_int = 10
-        if window_size is not None and not isinstance(window_size, bool):
-            try:
-                wf = float(window_size)
-                if math.isfinite(wf):
-                    ws_int = max(1, int(wf))
-            except (TypeError, ValueError, OverflowError):
-                pass
-        self.window_size = ws_int
-        if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
-            try:
-                _sr = float(sample_rate_sec)
-                self.sample_rate_sec = _sr if math.isfinite(_sr) and _sr > 0 else DEFAULT_SAMPLE_RATE_SEC
-            except (TypeError, ValueError, OverflowError):
-                self.sample_rate_sec = DEFAULT_SAMPLE_RATE_SEC
-        else:
-            self.sample_rate_sec = DEFAULT_SAMPLE_RATE_SEC
-        # When set, target duration resizes with the observed sampling rate so the
-        # window continues to cover the same elapsed time.
-        win_sec = None
-        if window_seconds is not None and not isinstance(window_seconds, bool):
-            try:
-                wsec_f = float(window_seconds)
-                if math.isfinite(wsec_f) and wsec_f > 0:
-                    win_sec = wsec_f
-            except (TypeError, ValueError, OverflowError):
-                win_sec = None
-        self.window_seconds = win_sec
+        ws_i = safe_int(window_size, default=None)
+        self.window_size = max(1, ws_i) if ws_i is not None else 10
+        self.sample_rate_sec = safe_pos_float(sample_rate_sec, default=DEFAULT_SAMPLE_RATE_SEC) or DEFAULT_SAMPLE_RATE_SEC
+        self.window_seconds = safe_pos_float(window_seconds, default=None)
         self._subscribed_to_cache24 = False
         # WS/Cache24 updates on a different thread from evaluation. Protect mutation
         # and iteration of both price collections.
@@ -804,23 +747,14 @@ class PriceWindow:
 
     def set_sample_rate(self, rate):
         """Update observed sampling rate and resize a duration-based window."""
-        if rate is None or isinstance(rate, bool):
-            return
-        try:
-            rate_val = float(rate)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not math.isfinite(rate_val) or rate_val <= 0:
+        rate_val = safe_pos_float(rate, default=None)
+        if rate_val is None:
             return
         self.sample_rate_sec = rate_val
-        if (
-            self.window_seconds is None
-            or isinstance(self.window_seconds, bool)
-            or not math.isfinite(float(self.window_seconds))
-            or float(self.window_seconds) <= 0
-        ):
+        wsec = safe_pos_float(self.window_seconds, default=None)
+        if wsec is None:
             return
-        new_size = max(10, int(float(self.window_seconds) / rate_val))
+        new_size = max(10, int(wsec / rate_val))
         if new_size == self.window_size:
             return
         with self._lock:
@@ -855,15 +789,9 @@ class PriceWindow:
             for e in entries:
                 if not isinstance(e, (list, tuple)) or len(e) < 1:
                     continue
-                ts_raw = e[0]
-                if ts_raw is None or isinstance(ts_raw, bool):
-                    continue
-                try:
-                    ts_f = float(ts_raw) / 1000.0
-                    if math.isfinite(ts_f):
-                        timestamps_sec.append(ts_f)
-                except (TypeError, ValueError, OverflowError):
-                    continue
+                ts_f = safe_float(e[0], default=None)
+                if ts_f is not None:
+                    timestamps_sec.append(ts_f / 1000.0)
         except TypeError:
             return DEFAULT_SAMPLE_RATE_SEC
         if len(timestamps_sec) < 2:
@@ -879,14 +807,7 @@ class PriceWindow:
     @classmethod
     def from_cache24(cls, symbol: str, window_seconds: float, cache24) -> "PriceWindow":
         """Build a window from recent Cache24 data and subscribe to future updates."""
-        win_sec = WINDOW_SECONDS_SMALL
-        if window_seconds is not None and not isinstance(window_seconds, bool):
-            try:
-                wf = float(window_seconds)
-                if math.isfinite(wf) and wf > 0:
-                    win_sec = wf
-            except (TypeError, ValueError, OverflowError):
-                win_sec = WINDOW_SECONDS_SMALL
+        win_sec = safe_pos_float(window_seconds, default=WINDOW_SECONDS_SMALL) or WINDOW_SECONDS_SMALL
         entries = cache24.get_recent_entries(symbol, last_seconds=win_sec)
 
         sample_rate = cls._sample_rate_from_entries(entries)
@@ -909,14 +830,8 @@ class PriceWindow:
         self._subscribed_to_cache24 = False
 
     def process_price(self, price):
-        #print(f"{self.symbol}: {price}")
-        if price is None or isinstance(price, bool):
-            return
-        try:
-            price_f = float(price)
-            if not math.isfinite(price_f):
-                return
-        except (TypeError, ValueError, OverflowError):
+        price_f = safe_float(price, default=None)
+        if price_f is None:
             return
         if not isinstance(price, (int, float)):
             price = price_f
@@ -1172,15 +1087,7 @@ class PriceWindow:
                 )
 
         if getattr(builtins.print, "__name__", "") != "_dummy_print":
-            raw_rate = self.sample_rate_sec
-            rate_val = 1.0
-            if raw_rate is not None and not isinstance(raw_rate, bool):
-                try:
-                    rf = float(raw_rate)
-                    if math.isfinite(rf) and rf > 0:
-                        rate_val = rf
-                except (TypeError, ValueError, OverflowError):
-                    rate_val = 1.0
+            rate_val = safe_pos_float(self.sample_rate_sec, default=1.0) or 1.0
             print(
                 f"[{self.symbol}] slope_full={slope_full:.4f} "
                 f"gradient_recent={gradient_recent:.4f} (recent_n={self.recent_n}, rate={rate_val:.2f}s)"
@@ -1197,23 +1104,9 @@ class PriceWindow:
           velocity: dy/dt at the end of the window (in % / min)
           acceleration: d^2y/dt^2 = 2*a (in % / min^2)
         """
-        raw_rate = self.sample_rate_sec
-        if isinstance(raw_rate, bool) or raw_rate is None:
-            rate = 1.0
-        else:
-            try:
-                rf = float(raw_rate)
-                rate = max(rf, 0.1) if math.isfinite(rf) and rf > 0 else 1.0
-            except (TypeError, ValueError):
-                rate = 1.0
-        n_samples = None
-        if window_sec is not None and not isinstance(window_sec, bool):
-            try:
-                wf = float(window_sec)
-                if math.isfinite(wf) and wf > 0:
-                    n_samples = max(int(round(wf / rate)), 3)
-            except (TypeError, ValueError, OverflowError):
-                n_samples = None
+        rate = max(safe_pos_float(self.sample_rate_sec, default=1.0) or 1.0, 0.1)
+        wf = safe_pos_float(window_sec, default=None)
+        n_samples = max(int(round(wf / rate)), 3) if wf is not None else None
         with self._lock:
             n_win = len(self.prices)
             blen = len(self._trend_buf.prices)
@@ -1270,14 +1163,10 @@ class WindowAnalyzer:
         return self.window.calculate_acceleration(window_sec)
 
     def check_price_change(self, threshold):
-        if threshold is None or isinstance(threshold, bool):
+        threshold_f = safe_float(threshold, default=None)
+        if threshold_f is None:
             return 0, 0
-        try:
-            threshold = float(threshold)
-        except (TypeError, ValueError, OverflowError):
-            return 0, 0
-        if not math.isfinite(threshold):
-            return 0, 0
+        threshold = threshold_f
         w = self.window
         if len(w.prices) < 2:
             return 0, 1
