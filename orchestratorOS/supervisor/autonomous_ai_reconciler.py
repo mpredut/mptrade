@@ -1477,21 +1477,21 @@ class AutonomousAIReconciler:
                         pts_5d: List[List[Any]] = []
                         if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
                             pts_5d = [
-                                [int(float(bar[0]) * 1000), round(float(bar[1]), 4)]
+                                [int(ts_f * 1000), round(px_f, 4)]
                                 for bar in chart_res[1]
                                 if isinstance(bar, (list, tuple))
                                 and len(bar) >= 2
-                                and bar[0]
-                                and bar[1] is not None
-                                and float(bar[1]) > 0
+                                and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                                and (px_f := safe_pos_float(bar[1], default=None)) is not None
                             ]
                         elif isinstance(chart_res, dict):
                             ts_list = chart_res.get("timestamp") or []
                             closes = (((chart_res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
                             pts_5d = [
-                                [int(ts * 1000), round(float(c), 4)]
+                                [int(ts_f * 1000), round(c_f, 4)]
                                 for ts, c in zip(ts_list, closes)
-                                if ts and c is not None and float(c) > 0
+                                if (ts_f := safe_pos_float(ts, default=None)) is not None
+                                and (c_f := safe_pos_float(c, default=None)) is not None
                             ]
                         if pts_5d:
                             cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
