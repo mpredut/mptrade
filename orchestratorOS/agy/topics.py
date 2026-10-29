@@ -20,7 +20,14 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import _parse_bool_flag, required_int_env, safe_float, safe_int, safe_pos_int
+from botcore import (
+    _parse_bool_flag,
+    required_int_env,
+    safe_float,
+    safe_int,
+    safe_nonneg_int,
+    safe_pos_int,
+)
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
 from orchestratorOS.agy.summary_store import (
     get_thread_step_count,
@@ -34,8 +41,6 @@ from orchestratorOS.agy.ui_mirror import (
 )
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
-
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @dataclass(frozen=True)
@@ -245,11 +250,6 @@ def format_topic_history_prefix(
     return "\n".join(lines) + "\n\n"
 
 
-def _safe_int(val: Any, default: int = 0) -> int:
-    f = safe_float(val, default=None)
-    return int(round(f)) if f is not None else default
-
-
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
@@ -275,13 +275,11 @@ def prepare_topic_session(
     raw_cid = entry.get("conversation_id")
     cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
     if cid:
-        from orchestratorOS.agy.ui_mirror import sync_topic_thread_from_ui
-
         sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
         if exists:
-            compacted_at = _safe_int(entry.get("compacted_at_step"), 0)
-            if compacted_at < 0 or compacted_at > step_count:
+            compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
+            if compacted_at > step_count:
                 compacted_at = 0
             since = step_count - compacted_at
             return TopicSession(cid, "", since >= compact_steps_i)
@@ -372,7 +370,7 @@ def condense_decision(response_text: Any, max_len: int = 220) -> str:
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)
-    max_len = max(4, _safe_int(max_len, 220))
+    max_len = max(4, safe_int(max_len, 220))
     return condensed if len(condensed) <= max_len else condensed[: max_len - 3] + "..."
 
 
@@ -390,8 +388,6 @@ def record_topic_turn(
     The topic's conversation id is adopted once and then never replaced; ``compacted`` marks a turn that
     compacted the thread in-place with `/compact` so the next compaction is scheduled from the current step count.
     """
-    from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
-
     spec = topic_spec(topic_key)
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
@@ -399,7 +395,7 @@ def record_topic_turn(
     if max_history_entries is None or isinstance(max_history_entries, bool):
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
     else:
-        parsed_max = _safe_int(max_history_entries, -1)
+        parsed_max = safe_int(max_history_entries, -1)
         max_history_entries = (
             parsed_max if parsed_max >= 0 else required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
         )
@@ -422,9 +418,9 @@ def record_topic_turn(
         entry["step_count"] = step_count
         if compacted and active_cid == clean_cid:
             entry["compacted_at_step"] = step_count
-            entry["compaction_count"] = _safe_int(entry.get("compaction_count"), 0) + 1
+            entry["compaction_count"] = safe_nonneg_int(entry.get("compaction_count"), 0) + 1
     entry["topic_key"] = resolved
-    entry["turn_count"] = _safe_int(entry.get("turn_count"), 0) + 1
+    entry["turn_count"] = safe_nonneg_int(entry.get("turn_count"), 0) + 1
     entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
     entry["title"] = spec.title
 

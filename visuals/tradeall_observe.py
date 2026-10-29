@@ -668,19 +668,16 @@ def format_state_text(entry, header, pending=None, exposure=None):
     trend_map = {1: "UP", -1: "DOWN", 0: "FLAT"}
 
     def _t_label(val):
-        if val is None or isinstance(val, bool):
-            return "?"
-        if isinstance(val, (int, float)):
-            if not math.isfinite(float(val)):
-                return "?"
-            return trend_map.get(int(val), "?")
+        iv = safe_int(val, default=None)
+        if iv in trend_map:
+            return trend_map[iv]
         if isinstance(val, str):
             s = val.strip().upper()
-            if s in ("UP", "BULL", "+1", "1", "1.0"):
+            if s in ("UP", "BULL"):
                 return "UP"
-            if s in ("DOWN", "BEAR", "-1", "-1.0"):
+            if s in ("DOWN", "BEAR"):
                 return "DOWN"
-            if s in ("FLAT", "HOLD", "NEUTRAL", "0", "0.0"):
+            if s in ("FLAT", "HOLD", "NEUTRAL"):
                 return "FLAT"
         return trend_map.get(val, "?")
 

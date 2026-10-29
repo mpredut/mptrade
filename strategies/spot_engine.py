@@ -24,7 +24,7 @@ from botcore import (
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
-from providers.base import _clean_single_order_id, normalize_side
+from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError, StrategyExecutor
 from order_retry import (
@@ -61,8 +61,6 @@ notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 _clean_pos_float = lambda val: safe_pos_float(val, default=None)
 _clean_nonneg_float = lambda val: safe_nonneg_float(val, default=None)
-_clean_finite_float = lambda val: safe_float(val, default=None)
-_clean_order_id = _clean_single_order_id
 
 
 def state_path_for(pair: str, state_dir: str | None = None) -> str:
@@ -461,8 +459,10 @@ def _parse_tranches(spec: str) -> list:
     out = []
     try:
         for part in spec.split(","):
-            pct, share = map(float, part.split(":"))
-            if not (math.isfinite(pct) and math.isfinite(share) and pct >= 0 and share > 0):
+            p_str, s_str = part.split(":")
+            pct = safe_nonneg_float(p_str, default=None)
+            share = safe_pos_float(s_str, default=None)
+            if pct is None or share is None:
                 raise ValueError("Invalid tranche values")
             out.append((pct, share))
         if abs(sum(share for _, share in out) - 100) >= 1e-6:
@@ -923,11 +923,8 @@ class Strategy:
             side = s_norm.lower()
         # A market trailing/stop exit executes immediately instead of risking a missed
         # sharp drop with a limit order. Backtests fill it at the next bar's open.
-        if not isinstance(vol, (int, float, str, Decimal)) or not isinstance(price, (int, float, str, Decimal)):
-            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
-            return False
-        vol_f = safe_float(vol, default=None)
-        price_f = safe_float(price, default=None)
+        vol_f = safe_pos_float(vol, default=None)
+        price_f = safe_pos_float(price, default=None)
         if vol_f is None or price_f is None:
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
             return False
@@ -1251,8 +1248,8 @@ class Strategy:
                 if total_cost is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
-                reported_price = total_cost / total_vol if total_vol > 0 else ord_px
-                if not math.isfinite(reported_price) or reported_price <= 0.0:
+                reported_price = safe_pos_float(total_cost / total_vol if total_vol > 0 else ord_px, default=None)
+                if reported_price is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
 
@@ -1438,14 +1435,14 @@ class Strategy:
     def _vol_1h_ratio(self) -> tuple[float, str]:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
         try:
-            vol = self._trail_vol_1h()
-            if vol is not None and math.isfinite(vol) and vol > 0:
+            vol = safe_pos_float(self._trail_vol_1h(), default=None)
+            if vol is not None:
                 return vol_pct_to_ratio(vol), "trail_ohlc"
         except Exception:
             pass
         try:
-            vol = self._shadow_vol_1h()
-            if vol is not None and math.isfinite(vol) and vol > 0:
+            vol = safe_pos_float(self._shadow_vol_1h(), default=None)
+            if vol is not None:
                 return vol_pct_to_ratio(vol), "shadow_ticks"
         except Exception:
             pass
@@ -1677,18 +1674,18 @@ class Strategy:
         base = self._base_dca_amount()
         scale_k = float(self.p.dca_vol_scale_k)
         vol_ref = float(self.p.dca_vol_ref)
-        if not scale_k:
-            return base
-        if not math.isfinite(scale_k) or not math.isfinite(vol_ref) or vol_ref <= 0:
+        k_val = safe_float(scale_k, default=0.0)
+        ref_val = safe_pos_float(vol_ref, default=None)
+        if not k_val or ref_val is None:
             return base
         try:
-            vol = self._dca_vol_1h()
-            if not vol or not math.isfinite(vol) or vol <= 0:
+            vol = safe_pos_float(self._dca_vol_1h(), default=None)
+            if vol is None:
                 return base
-            scale = (vol_ref / vol) ** scale_k
+            scale = safe_pos_float((ref_val / vol) ** k_val, default=None)
+            if scale is None:
+                return base
         except (ArithmeticError, TypeError, ValueError):
-            return base
-        if not math.isfinite(scale):
             return base
         return base * max(0.3, min(3.0, scale))
 
@@ -2833,21 +2830,12 @@ class Strategy:
         if self.fee_note:
             log(f"      ! {self.fee_note}; TP={self.p.takeprofit_pct}%")
         self._maybe_adopt()
-        sleep_sec = (
-            max(1.0, float(self.p.check_minutes) * 60.0)
-            if (_clean_pos_float(self.p.check_minutes) is not None)
-            else 60.0
-        )
+        check_min = safe_pos_float(self.p.check_minutes, default=None)
+        sleep_sec = max(1.0, check_min * 60.0) if check_min is not None else 60.0
         try:
             while True:
-                price = self.client.get_current_price(self.pair)
-                if (
-                    price is None
-                    or isinstance(price, bool)
-                    or not isinstance(price, (int, float))
-                    or not math.isfinite(price)
-                    or price <= 0
-                ):
+                price = safe_pos_float(self.client.get_current_price(self.pair), default=None)
+                if price is None:
                     log("  [STRAT] price unavailable — retrying")
                     time.sleep(sleep_sec)
                     continue
