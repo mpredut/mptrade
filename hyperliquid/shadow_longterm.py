@@ -87,8 +87,11 @@ def _variants(interval: int):
 
 def _fetch_with_ts(_pair: str, interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm candles")
-    from offline.backtests.evaluation import load_venue_module
-    HLClient = load_venue_module("hyperliquid", "hl_client.py", "hl_client").HLClient
+    hl_mod = sys.modules.get("hl_client")
+    if hl_mod is None or not hasattr(hl_mod, "HLClient"):
+        from offline.backtests.evaluation import load_venue_module
+        hl_mod = load_venue_module("hyperliquid", "hl_client.py", "hl_client")
+    HLClient = hl_mod.HLClient
 
     _load_config()
     from botcore import required_env, safe_pos_float

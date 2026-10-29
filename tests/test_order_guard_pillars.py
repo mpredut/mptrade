@@ -1854,3 +1854,57 @@ def test_batch57_binance_wf_baseline_t212_report_and_tradeall_backtest_guards(tm
     assert ticks_json == [(1700000000.0, 100.0), (1700000020.0, 102.0)]
 
 
+def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guards(monkeypatch):
+    import sys
+    import types
+    from offline.backtests.evaluation import load_venue_module
+    hl_sl = load_venue_module("hyperliquid", "shadow_longterm.py", "hl_shadow_longterm_b58")
+    from visuals import tradeall_observe as tao
+    from verify_tools import portfolio_snapshot as ps
+
+    # 1. shadow_longterm._fetch_with_ts reuses existing sys.modules['hl_client'] without clobbering mocks
+    called = []
+
+    class FakeHLClient:
+        @classmethod
+        def public(cls):
+            called.append("public")
+            return cls()
+
+        def candles(self, token, interval, lookback_hours=0):
+            return [
+                {"t": 1700000000000, "o": 10.0, "h": 11.0, "l": 9.0, "c": 10.5},
+                {"t": 1700014400000, "o": 10.5, "h": 12.0, "l": 10.0, "c": 11.0},
+            ]
+
+    monkeypatch.setitem(sys.modules, "hl_client", types.SimpleNamespace(HLClient=FakeHLClient))
+    monkeypatch.setenv("HL_SPOT_TOKEN", "@107")
+    monkeypatch.setattr(hl_sl, "_load_config", lambda: None)
+    rows = hl_sl._fetch_with_ts("HYPE-HL", 240)
+    assert called == ["public"]
+    assert rows == [(1700000000, 10.0, 11.0, 9.0, 10.5)]
+
+    # 2. tradeall_observe._parse_price_sample_rows tolerates extra pipe columns and short rows
+    ts_list, px_list = tao._parse_price_sample_rows(
+        [
+            ["1700000000.0", "BTCUSDC", "50000.0", "extra_col"],
+            ["short_row"],
+            ["1700000010.0", "BTCUSDC", "50100.0"],
+        ],
+        "BTCUSDC",
+    )
+    assert ts_list == [1700000000.0, 1700000010.0]
+    assert px_list == [50000.0, 50100.0]
+
+    # 3. portfolio_snapshot.run_alerts normalises negative policy thresholds
+    monkeypatch.setenv("RISK_DD_ALERT_PCT", "-15.0")
+    monkeypatch.setenv("RISK_DD_REALERT_HOURS", "6.0")
+    monkeypatch.setenv("RISK_DD_WORSEN_PCT", "-5.0")
+    monkeypatch.setattr(ps, "_alert_state", lambda: {})
+    monkeypatch.setattr(ps, "_save_alert_state", lambda st: None)
+    monkeypatch.setattr(ps, "_ntfy", lambda title, body: None)
+    fired = ps.run_alerts([{"engine": "Kraken HYPE", "paper": False, "qty": 1.0, "dd_pct": -2.0}])
+    assert fired == []
+
+
+

@@ -98,8 +98,8 @@ def hl_row() -> dict | None:
     saved_common = sys.modules.get("common")
     try:
         hl_dir = os.path.join(ROOT, "hyperliquid")
-        if hl_dir not in sys.path:
-            sys.path.insert(0, hl_dir)
+        if sys.path[:1] != [hl_dir]:
+            sys.path[:] = [hl_dir] + [p for p in sys.path if p != hl_dir]
         sys.modules.pop("common", None)
         # load_dotenv/HLClient write logs to stdout — we suppress them so they do not
         # pollute the --json output (the cron jsonl).
@@ -178,9 +178,9 @@ def run_alerts(kr: list[dict]) -> list[str]:
 
     Threshold and re-alert policy are mandatory values from root config.env.
     """
-    threshold = _policy_float("RISK_DD_ALERT_PCT")
-    realert_hours = _policy_float("RISK_DD_REALERT_HOURS")
-    worsen_pct = _policy_float("RISK_DD_WORSEN_PCT")
+    threshold = abs(_policy_float("RISK_DD_ALERT_PCT"))
+    realert_hours = abs(_policy_float("RISK_DD_REALERT_HOURS"))
+    worsen_pct = abs(_policy_float("RISK_DD_WORSEN_PCT"))
     now = datetime.now(timezone.utc)
     st = _alert_state()
     fired = []

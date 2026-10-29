@@ -207,7 +207,10 @@ def sample_current_prices(symbols):
 
 def _parse_price_sample_rows(rows, symbol, *, require_pos_ts: bool = False):
     ts_list, px_list = [], []
-    for ts, sym_, price in rows:
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            continue
+        ts, sym_, price = row[:3]
         if sym_ != symbol:
             continue
         t_val = safe_pos_float(ts, default=None) if require_pos_ts else safe_float(ts, default=None)
@@ -878,9 +881,18 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
     for i in range(n_chunks):
         c_start = range_start + i * chunk_sec
         c_end = min(c_start + chunk_sec, range_end)
-        label = f"{datetime.fromtimestamp(c_start).strftime('%Y-%m-%d %H:%M')} " \
-                f"→ {datetime.fromtimestamp(c_end).strftime('%Y-%m-%d %H:%M')}  (frame {i+1}/{n_chunks})"
-        fname = f"tradeall_live_{symbol}_frame{i+1:03d}_{datetime.fromtimestamp(c_start).strftime('%Y%m%d_%H%M')}.png"
+        try:
+            start_dt = datetime.fromtimestamp(c_start)
+            end_dt = datetime.fromtimestamp(c_end)
+            start_label = start_dt.strftime('%Y-%m-%d %H:%M')
+            end_label = end_dt.strftime('%Y-%m-%d %H:%M')
+            start_tag = start_dt.strftime('%Y%m%d_%H%M')
+        except (ValueError, OSError, OverflowError):
+            start_label = str(int(c_start))
+            end_label = str(int(c_end))
+            start_tag = str(int(c_start))
+        label = f"{start_label} → {end_label}  (frame {i+1}/{n_chunks})"
+        fname = f"tradeall_live_{symbol}_frame{i+1:03d}_{start_tag}.png"
         path = os.path.join(out_dir, fname)
         render_chart(symbol, label, c_start, c_end, price_ts, price_vals,
                      trend_events, order_events, path)
