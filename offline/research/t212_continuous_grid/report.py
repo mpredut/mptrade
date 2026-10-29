@@ -74,8 +74,8 @@ def generate_report(exp_dir=None):
                 safe_float(x[0]) for x in w
                 if isinstance(x, (list, tuple)) and len(x) > 0 and safe_float(x[0], default=None) is not None
             ]
-            wm = st.mean(w_rets) if w_rets else None
-            wp = (100.0 * sum(ret > 0 for ret in w_rets) / len(w_rets)) if w_rets else None
+            wm = st.fmean(w_rets) if w_rets else None
+            wp = (100.0 * st.fmean(ret > 0 for ret in w_rets)) if w_rets else None
             ret_1h = g(r, "1h", "ret")
             sort_key = ret_1h if ret_1h is not None else -1e9
             items.append((sort_key, v, r, wm, wp))

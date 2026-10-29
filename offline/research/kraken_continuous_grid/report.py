@@ -58,10 +58,10 @@ def win_stats(r, key):
                 "down": float("nan"), "up": float("nan")}
     down_vals = [x[0] for x in valid if x[1] < -10]
     up_vals = [x[0] for x in valid if x[1] > 10]
-    return {"mean": st.mean(rets), "pos": 100.0 * sum(x > 0 for x in rets) / len(rets),
+    return {"mean": st.fmean(rets), "pos": 100.0 * st.fmean(x > 0 for x in rets),
             "p10": q(rets, 0.10),
-            "down": st.mean(down_vals) if down_vals else float("nan"),
-            "up": st.mean(up_vals) if up_vals else float("nan")}
+            "down": st.fmean(down_vals) if down_vals else float("nan"),
+            "up": st.fmean(up_vals) if up_vals else float("nan")}
 
 
 def generate_report(exp_dir: str | None = None) -> list[str]:
@@ -128,7 +128,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             "w90_down": st.mean(w90_down) if w90_down else float("nan"),
             "w30_mean": st.mean(w30_means) if w30_means else float("nan"),
             "w30_pos": st.mean(w30_pos) if w30_pos else float("nan"),
-            "yr_pos": (100.0 * sum(y > 0 for y in years) / len(years)) if years else float("nan"),
+            "yr_pos": (100.0 * st.fmean(y > 0 for y in years)) if years else float("nan"),
             "yr_worst": min(years) if years else float("nan"),
             "yr_med": st.median(years) if years else float("nan"),
             "calmar_med": st.median(f / max(d, 1.0) for f, d in zip(full, dd)) if full else 0.0,
