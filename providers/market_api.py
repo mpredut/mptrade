@@ -95,9 +95,10 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
         if isinstance(snap, dict):
             fast_w = pw.fast_trend_window_for_symbol(symbol)
+            fw = safe_pos_float(fast_w, default=None)
             dyn = snap.get("dynamic")
-            if fast_w is not None and isinstance(dyn, dict):
-                w_snap = dyn.get(f"{float(fast_w):g}")
+            if fw is not None and isinstance(dyn, dict):
+                w_snap = dyn.get(f"{fw:g}")
                 if isinstance(w_snap, dict):
                     return w_snap
         return snap
