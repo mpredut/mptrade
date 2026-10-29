@@ -135,10 +135,8 @@ def generate_report(exp_dir=None):
             L.append(f"- {e.get('profile')} {e.get('variant')} {e.get('asset')}: `{last_err}`")
 
     report_content = "\n".join(L) + "\n"
-    os.makedirs(exp, exist_ok=True)
-    report_file = os.path.join(exp, "REPORT.md")
-    with open(report_file, "w", encoding="utf-8") as f:
-        f.write(report_content)
+    from state_io import atomic_write_text
+    atomic_write_text(os.path.join(exp, "REPORT.md"), report_content)
     return report_content
 
 

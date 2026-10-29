@@ -339,5 +339,15 @@ def test_audit46_transactional_recovery_and_cross_venue_fallbacks(tmp_path, monk
     assert "Recent Venue Fills" in telem
 
 
+def test_atomic_write_json_allow_nan(tmp_path):
+    p = tmp_path / "test_nan.json"
+    import pytest
+    with pytest.raises(ValueError):
+        atomic_write_json(p, {"nan_val": float("nan")}, allow_nan=False)
+    atomic_write_json(p, {"nan_val": float("nan")}, allow_nan=True)
+    assert p.exists()
+
+
+
 
 

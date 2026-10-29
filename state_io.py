@@ -180,22 +180,25 @@ def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8") -> No
 
 def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
                       sort_keys: bool = False, separators=None,
-                      ensure_ascii: bool = True) -> None:
+                      ensure_ascii: bool = True,
+                      allow_nan: bool = False) -> None:
     """Serialize JSON through ``atomic_text_writer``."""
     sort_keys = _parse_bool_flag(sort_keys, False)
     ensure_ascii = _parse_bool_flag(ensure_ascii, True)
+    allow_nan = _parse_bool_flag(allow_nan, False)
     clean_indent = _exact_nonneg_int(indent)
     with atomic_text_writer(path) as handle:
         json.dump(
             value, handle, indent=clean_indent, sort_keys=sort_keys,
             separators=separators, ensure_ascii=ensure_ascii,
-            allow_nan=False,
+            allow_nan=allow_nan,
         )
 
 
 def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     sort_keys: bool = False, separators=None,
-                    ensure_ascii: bool = True) -> None:
+                    ensure_ascii: bool = True,
+                    allow_nan: bool = False) -> None:
     """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
     target_path = str(resolve_cachedb_filepath(os.fspath(path)))
     backup_path = None
@@ -209,6 +212,7 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
         atomic_write_json(
             target_path, value, indent=indent, sort_keys=sort_keys,
             separators=separators, ensure_ascii=ensure_ascii,
+            allow_nan=allow_nan,
         )
         if backup_path is not None:
             discard_generation_file(backup_path)

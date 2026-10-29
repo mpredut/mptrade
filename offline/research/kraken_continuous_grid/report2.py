@@ -146,8 +146,8 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             err_lines = str(e.get("error") or "").strip().splitlines()
             last_err = err_lines[-1] if err_lines else "unknown"
             L.append(f"- {e.get('args', '?')}: `{last_err}`")
-    with open(os.path.join(exp, "REPORT2.md"), "w") as f:
-        f.write("\n".join(L) + "\n")
+    from state_io import atomic_write_text
+    atomic_write_text(os.path.join(exp, "REPORT2.md"), "\n".join(L) + "\n")
     return L
 
 

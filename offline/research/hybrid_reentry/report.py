@@ -9,6 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
+from state_io import atomic_write_text
 
 _safe_f = safe_float
 
@@ -20,7 +21,6 @@ def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False
     spec = f"{f:+0.{decimals}f}%" if signed else f"{f:0.{decimals}f}%"
     return f"**{spec}**" if bold else spec
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 CRYPTO_JSON = os.path.join(OUT_DIR, "ablation_results.json")
 SUMMARY_JSON = os.path.join(OUT_DIR, "ablation_summary.json")
@@ -160,10 +160,8 @@ def generate_markdown_report() -> str:
 
 def main():
     report_md = generate_markdown_report()
-    os.makedirs(OUT_DIR, exist_ok=True)
     out_file = os.path.join(OUT_DIR, "HYBRID_REENTRY_ABLATION_REPORT.md")
-    with open(out_file, "w", encoding="utf-8") as f:
-        f.write(report_md)
+    atomic_write_text(out_file, report_md)
     print(f"Report generated successfully at {out_file}")
 
 

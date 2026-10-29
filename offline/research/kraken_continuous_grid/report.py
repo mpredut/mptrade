@@ -210,7 +210,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
 
     from state_io import atomic_write_json, atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT.md"), "\n".join(L) + "\n")
-    atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1)
+    atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1, allow_nan=True)
     return L
 
 
