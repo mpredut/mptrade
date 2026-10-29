@@ -33,6 +33,7 @@ from cachepaths import (
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
 )
+from instrument_registry import casefold_get
 import cacheintegrity as _cache_integrity
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 from binance_api import bapi_ws_health as _bapi_ws_health
@@ -2466,9 +2467,8 @@ class CacheTradeManager(CacheManagerInterface):
         latest_price = None
         with self.lock:
             bucket = (
-                self.cache.get(symbol)
-                or self.cache.get(sym_u)
-                or self.cache.get(sym_clean)
+                casefold_get(self.cache, symbol)
+                or casefold_get(self.cache, sym_clean)
                 or []
             )
             for trade in bucket:
@@ -2893,7 +2893,7 @@ class Cache24PriceManager(_PriceSeriesCacheMixin, CacheManagerInterface):
             return []
         cutoff_ms = int((time.time() - sec_val) * 1000)
         with self.lock:
-            entries = self.cache.get(symbol, [])
+            entries = casefold_get(self.cache, symbol, [])
             if not entries or not isinstance(entries, list):
                 return []
             idx = bisect.bisect_left(entries, cutoff_ms, key=self._entry_timestamp_ms)
@@ -3345,9 +3345,9 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
         ck = canonical_symbol_key(symbol)
         return (
-            self._provider_names.get(sym_u)
-            or self._provider_names.get(sym_clean)
-            or (self._provider_names.get(ck) if ck else None)
+            casefold_get(self._provider_names, sym_u)
+            or casefold_get(self._provider_names, sym_clean)
+            or (casefold_get(self._provider_names, ck) if ck else None)
         )
 
     def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
@@ -3504,7 +3504,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         return (
             self._update_timestamps.get(symbol)
             if symbol in self._update_timestamps
-            else self._update_timestamps.get(sym_u)
+            else casefold_get(self._update_timestamps, sym_u)
         )
 
     def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
@@ -3544,9 +3544,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
         with self.lock:
             entries = (
-                self.cache.get(symbol)
-                or self.cache.get(sym_u)
-                or self.cache.get(sym_clean)
+                casefold_get(self.cache, symbol)
+                or casefold_get(self.cache, sym_clean)
             )
             cached_price, last_ts = self._extract_price_and_ts(entries)
         if cached_price is None or last_ts is None:
@@ -3572,8 +3571,19 @@ class CacheCurrentPriceManager(CacheManagerInterface):
                 target_sym = sym_u
             elif sym_clean in self.cache:
                 target_sym = sym_clean
-            elif sym_clean in getattr(self, "symbols", ()):
-                target_sym = sym_clean
+            else:
+                for k in self.cache:
+                    if isinstance(k, str) and k.upper() in (sym_u, sym_clean):
+                        target_sym = k
+                        break
+                else:
+                    if sym_clean in getattr(self, "symbols", ()):
+                        target_sym = sym_clean
+                    else:
+                        for s in getattr(self, "symbols", ()):
+                            if isinstance(s, str) and s.upper() in (sym_u, sym_clean):
+                                target_sym = s
+                                break
             entries = self.cache.get(target_sym)
             cached_price, last_ts = self._extract_price_and_ts(entries)
             entry = [last_ts, cached_price] if cached_price is not None else None
