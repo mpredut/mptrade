@@ -75,6 +75,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "macro": {
         "exact": (
             "macro_lexicon_collect.json",
+            "macro_benchmarks_collect.json",
             "sentiment_eval.json",
             "geopolitical_eval.json",
             "fear_greed_collect.json",
@@ -84,6 +85,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "prefixes": (
             "fear_greed_",
             "market_breadth_",
+            "macro_benchmarks_",
             "news_feed_",
             "geopolitical_",
             "macro_lexicon_",

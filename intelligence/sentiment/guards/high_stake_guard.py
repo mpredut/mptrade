@@ -2334,6 +2334,169 @@ def harvest_bot_runtime_states(
     return out
 
 
+MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("SPY", "SPY", "usd"),
+    ("QQQ", "QQQ", "usd"),
+    ("ES=F", "ES=F", "usd"),
+    ("NQ=F", "NQ=F", "usd"),
+    ("DXY", "DX-Y.NYB", "index"),
+    ("US10Y", "^TNX", "yield_pct"),
+)
+
+
+def format_macro_benchmarks_summary_line(data: Any) -> str:
+    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y)."""
+    if not isinstance(data, dict):
+        return ""
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        return ""
+    ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items]
+    for extra_k in items:
+        if extra_k not in ordered_keys and extra_k not in ("ts", "age_min", "summary_line", "items"):
+            ordered_keys.append(extra_k)
+    parts: List[str] = []
+    for sym in ordered_keys:
+        entry = items.get(sym)
+        if not isinstance(entry, dict):
+            continue
+        px = safe_pos_float(entry.get("price"), default=None)
+        if px is None:
+            continue
+        unit_kind = str(entry.get("unit") or "").lower()
+        if sym == "US10Y" or unit_kind == "yield_pct":
+            px_s = f"{px:.2f}%"
+        elif sym == "DXY" or unit_kind == "index":
+            px_s = f"{px:.2f}"
+        else:
+            px_s = f"${px:,.2f}"
+        d_parts: List[str] = []
+        for h_lbl, h_key in (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct")):
+            val = safe_float(entry.get(h_key), default=None)
+            if val is not None:
+                d_parts.append(f"{val:+.2f}% {h_lbl}")
+        m_state = str(entry.get("market_state") or "").strip().upper()
+        if m_state and m_state not in ("REGULAR", ""):
+            d_parts.append(m_state.lower())
+        delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
+        parts.append(f"{sym}={px_s}{delta_s}")
+    return " | ".join(parts)
+
+
+def collect_macro_benchmarks_snapshot(
+    cache_dir: str = "cachedb",
+    *,
+    now_ts: Optional[float] = None,
+    timeout_sec: float = 3.5,
+    persist: bool = True,
+    fetch_fn: Optional[Callable[..., Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y 24h/1h/15m deltas from Yahoo Finance and persist to cachedb."""
+    import urllib.parse as _urlparse
+    from botcore import fetch_public_json
+    from state_io import save_json_state
+
+    eff_now = safe_pos_float(now_ts, default=None) or time.time()
+    _fetch = fetch_fn or fetch_public_json
+    items: Dict[str, Dict[str, Any]] = {}
+    for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
+        try:
+            url = (
+                "https://query1.finance.yahoo.com/v8/finance/chart/"
+                f"{_urlparse.quote(yahoo_sym)}?range=2d&interval=5m"
+            )
+            raw = _fetch(url, timeout=timeout_sec, headers={"User-Agent": "Mozilla/5.0"})
+            if not isinstance(raw, dict):
+                continue
+            res_list = (raw.get("chart") or {}).get("result")
+            if not isinstance(res_list, list) or not res_list or not isinstance(res_list[0], dict):
+                continue
+            res = res_list[0]
+            meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
+            ts_list = res.get("timestamp") if isinstance(res.get("timestamp"), list) else []
+            q_list = ((res.get("indicators") or {}).get("quote") or [{}])
+            q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_list[0], dict) else {}
+            closes = q_obj.get("close") if isinstance(q_obj.get("close"), list) else []
+            pts: List[tuple[float, float]] = [
+                (ts_f, c_f)
+                for ts, c in zip(ts_list, closes)
+                if (ts_f := safe_pos_float(ts, default=None)) is not None
+                and (c_f := safe_pos_float(c, default=None)) is not None
+            ]
+            px = (
+                safe_pos_float(meta.get("fulldayPrice"), default=None)
+                or safe_pos_float(meta.get("regularMarketPrice"), default=None)
+                or (pts[-1][1] if pts else None)
+            )
+            if px is None:
+                continue
+            chg_24h: Optional[float] = None
+            for meta_chg_k in ("fulldayChangePercent", "regularMarketChangePercent"):
+                cand_chg = safe_float(meta.get(meta_chg_k), default=None)
+                if cand_chg is not None and abs(cand_chg) > 1e-9:
+                    chg_24h = round(cand_chg, 2)
+                    break
+            if chg_24h is None:
+                prev_close = safe_pos_float(
+                    meta.get("chartPreviousClose") or meta.get("previousClose"),
+                    default=None,
+                )
+                if prev_close is not None and prev_close > 0:
+                    chg_24h = round(((px - prev_close) / prev_close) * 100.0, 2)
+                elif len(pts) >= 2 and pts[0][1] > 0:
+                    chg_24h = round(((px - pts[0][1]) / pts[0][1]) * 100.0, 2)
+
+            chg_1h: Optional[float] = None
+            chg_15m: Optional[float] = None
+            if len(pts) >= 2:
+                last_bar_ts = pts[-1][0]
+                for target_sec, attr_name in ((3600.0, "1h"), (900.0, "15m")):
+                    target_ts = last_bar_ts - target_sec
+                    ref_pt = min(pts, key=lambda p: abs(p[0] - target_ts))
+                    if abs(ref_pt[0] - target_ts) <= target_sec * 1.5 and ref_pt[1] > 0:
+                        pct_v = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2)
+                        if attr_name == "1h":
+                            chg_1h = pct_v
+                        else:
+                            chg_15m = pct_v
+
+            item_entry: Dict[str, Any] = {
+                "symbol": label,
+                "yahoo_symbol": yahoo_sym,
+                "unit": unit_kind,
+                "price": round(px, 4 if unit_kind == "yield_pct" else 2),
+                "chg_24h_pct": chg_24h if chg_24h is not None else 0.0,
+            }
+            if chg_1h is not None:
+                item_entry["chg_1h_pct"] = chg_1h
+            if chg_15m is not None:
+                item_entry["chg_15m_pct"] = chg_15m
+            if meta.get("marketState"):
+                item_entry["market_state"] = str(meta.get("marketState")).strip().upper()
+            if pts:
+                cutoff_24h = pts[-1][0] - 86400.0
+                vals_24h = [p[1] for p in pts if p[0] >= cutoff_24h] or [p[1] for p in pts]
+                item_entry["low_24h"] = round(min(vals_24h), 4 if unit_kind == "yield_pct" else 2)
+                item_entry["high_24h"] = round(max(vals_24h), 4 if unit_kind == "yield_pct" else 2)
+            items[label] = item_entry
+        except Exception:
+            continue
+
+    if not items:
+        return None
+    payload: Dict[str, Any] = {
+        "ts": eff_now,
+        "items": items,
+        "summary_line": format_macro_benchmarks_summary_line({"items": items}),
+    }
+    if persist and cache_dir:
+        try:
+            save_json_state(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
+        except Exception:
+            pass
+    return payload
+
+
 def apply_asset_scope_filter(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
@@ -2369,8 +2532,8 @@ def apply_asset_scope_filter(
             if not str(k).upper().endswith(("_EQ", "_US_EQ"))
         }
         portfolio_summary.pop("t212_cycles", None)
-    for list_key in ("recent_ai_intents", "active_retry_queue"):
-        if list_key in portfolio_summary:
+    for list_key in ("recent_ai_intents", "active_retry_queue", "open_orders"):
+        if list_key in portfolio_summary and isinstance(portfolio_summary[list_key], list):
             filtered_items = [
                 item for item in portfolio_summary[list_key]
                 if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
@@ -2379,6 +2542,26 @@ def apply_asset_scope_filter(
                 portfolio_summary[list_key] = filtered_items
             else:
                 portfolio_summary.pop(list_key, None)
+    if "open_limit_orders" in portfolio_summary and isinstance(portfolio_summary["open_limit_orders"], list):
+        portfolio_summary["open_limit_orders"] = [
+            item for item in portfolio_summary["open_limit_orders"]
+            if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
+        ]
+    last_exec = portfolio_summary.get("last_cycle_execution_status")
+    if isinstance(last_exec, dict):
+        if (normalize_venue_name(last_exec.get("venue")) == "t212") != want_t212:
+            portfolio_summary.pop("last_cycle_execution_status", None)
+    elif isinstance(last_exec, list):
+        filtered_exec = [
+            item for item in last_exec
+            if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
+        ]
+        if filtered_exec:
+            portfolio_summary["last_cycle_execution_status"] = (
+                filtered_exec[0] if len(filtered_exec) == 1 else filtered_exec
+            )
+        else:
+            portfolio_summary.pop("last_cycle_execution_status", None)
     return prices_and_trends, microstructure
 
 
@@ -2387,7 +2570,7 @@ def harvest_macro_and_news_sensors(
     now_ts: float,
     read_json_fn: Any = None,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
-    """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, and Breaking News."""
+    """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     from providers.base import extract_timestamp_s
 
     _rj = read_json_fn or read_json_cached
@@ -2411,11 +2594,27 @@ def harvest_macro_and_news_sensors(
         ("market_breadth", "market_breadth_collect.json"),
         ("sentiment_advisor", "sentiment_eval.json"),
         ("geopolitical_threat", "geopolitical_eval.json"),
+        ("macro_benchmarks", "macro_benchmarks_collect.json"),
     ):
         s_path = os.path.join(cache_dir, fname)
         data = _rj(s_path)
         if isinstance(data, dict) and data:
-            macro_sensors[attr] = _with_age_min(data, s_path)
+            enriched = _with_age_min(data, s_path)
+            if attr == "macro_benchmarks" and not enriched.get("summary_line"):
+                summary_s = format_macro_benchmarks_summary_line(enriched)
+                if summary_s:
+                    enriched["summary_line"] = summary_s
+            macro_sensors[attr] = enriched
+    if (
+        "macro_benchmarks" not in macro_sensors
+        and read_json_fn is None
+        and "PYTEST_CURRENT_TEST" not in os.environ
+    ):
+        live_mb = collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=True)
+        if isinstance(live_mb, dict) and live_mb:
+            macro_sensors["macro_benchmarks"] = _with_age_min(
+                live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json")
+            )
 
     breaking_news: List[Dict[str, Any]] = []
     news_data = _rj(os.path.join(cache_dir, "news_feed_collect.json"))
@@ -2587,7 +2786,11 @@ def populate_market_and_portfolio_snapshot(
     log: Optional[Any] = None,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
-    from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        summarize_recent_ai_intents,
+    )
 
     _rj = read_json_fn or read_json_cached
 
@@ -2643,6 +2846,7 @@ def populate_market_and_portfolio_snapshot(
         snapshot.portfolio_summary["tradable_positions"] = tradable_positions
     if open_orders_list:
         snapshot.portfolio_summary["open_orders"] = open_orders_list
+        snapshot.portfolio_summary["open_limit_orders"] = list(open_orders_list)
     if venue_quote_cash:
         snapshot.portfolio_summary["venue_quote_cash"] = venue_quote_cash
     if trailing_map:
@@ -2716,10 +2920,25 @@ def populate_market_and_portfolio_snapshot(
             except Exception:
                 pass
         recent_intents_out = summarize_recent_ai_intents(
-            intents_data, scope, now_ts, extract_intent_notional
+            intents_data,
+            scope,
+            now_ts,
+            extract_intent_notional,
+            recent_orders=recent_orders,
+            open_orders=open_orders_list,
         )
         if recent_intents_out:
             snapshot.portfolio_summary["recent_ai_intents"] = recent_intents_out
+        last_exec_status = build_last_cycle_execution_status(
+            intents_data,
+            scope,
+            now_ts,
+            extract_intent_notional,
+            recent_orders=recent_orders,
+            open_orders=open_orders_list,
+        )
+        if last_exec_status is not None:
+            snapshot.portfolio_summary["last_cycle_execution_status"] = last_exec_status
 
     snapshot.portfolio_summary.update(harvest_bot_runtime_states(cache_dir, now_ts, _rj))
 
@@ -2731,6 +2950,14 @@ def populate_market_and_portfolio_snapshot(
         inst_by_sym,
         t212_cycles,
     )
+    mb_snap = getattr(snapshot, "macro_benchmarks", None)
+    if isinstance(mb_snap, dict) and mb_snap and snapshot.portfolio_summary:
+        snapshot.portfolio_summary["macro_benchmarks"] = mb_snap
+        cmc = snapshot.portfolio_summary.get("cross_market_context")
+        if isinstance(cmc, dict):
+            cmc["macro_benchmarks"] = mb_snap
+    if snapshot.portfolio_summary:
+        snapshot.portfolio_summary.setdefault("open_limit_orders", [])
     return snapshot
 
 

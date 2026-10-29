@@ -75,6 +75,21 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
     return f"{horizon}_range=[{lo}, {hi}]{pos_sfx}"
 
 
+def _extract_macro_benchmarks_line(mb_raw: Any) -> str:
+    """Extract or synthesize the 1-line SPY / QQQ / ES=F / NQ=F / DXY / US10Y benchmark summary."""
+    if not isinstance(mb_raw, dict) or not mb_raw:
+        return ""
+    from intelligence.sentiment.guards.high_stake_guard import format_macro_benchmarks_summary_line
+
+    summary_s = str(mb_raw.get("summary_line") or "").strip()
+    if not summary_s:
+        summary_s = format_macro_benchmarks_summary_line(mb_raw)
+    if not summary_s:
+        return ""
+    age_sfx = f" (age={mb_raw.get('age_min')}m)" if mb_raw.get("age_min") is not None else ""
+    return f"{summary_s}{age_sfx}"
+
+
 def _format_macro_and_news_section(sensors: Any) -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
@@ -82,6 +97,13 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
     mb = getattr(sensors, "market_breadth", None) or macro.get("market_breadth") or {}
     sa = getattr(sensors, "sentiment_advisor", None) or macro.get("sentiment_advisor") or {}
     gt = getattr(sensors, "geopolitical_threat", None) or macro.get("geopolitical") or {}
+    ps = getattr(sensors, "portfolio_summary", None) or {}
+    mb_bench = (
+        getattr(sensors, "macro_benchmarks", None)
+        or macro.get("macro_benchmarks")
+        or (ps.get("macro_benchmarks") if isinstance(ps, dict) else None)
+        or {}
+    )
 
     fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
     fg_line = (
@@ -138,6 +160,11 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         f"- Macro Sentiment Advisor: {sa_line}",
         f"- Geopolitical Threat Shield: {gt_line}",
     ]
+    mb_bench_line = _extract_macro_benchmarks_line(mb_bench)
+    if mb_bench_line:
+        lines.append(
+            f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
+        )
     breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
     if breaking_news:
         lines.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
@@ -616,8 +643,19 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
         lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
         for pos in ps["tradable_positions"]:
             lines.append(_format_tradable_position_line(pos))
-    if ps.get("open_orders"):
-        lines.append(f"  * Active Open Orders on Exchange (Locking Liquidity): {ps['open_orders']}")
+    open_lim = (
+        ps.get("open_limit_orders")
+        if isinstance(ps.get("open_limit_orders"), list)
+        else (ps.get("open_orders") if isinstance(ps.get("open_orders"), list) else [])
+    )
+    if open_lim:
+        lines.append(
+            f"  * Active Open Orders on Exchange (Locking Liquidity) — open_limit_orders: {open_lim}"
+        )
+    else:
+        lines.append(
+            "  * Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)"
+        )
     for cyc_key, venue_lbl, venue_id in (
         ("kraken_cycles", "Kraken", "kraken"),
         ("hyperliquid_cycles", "Hyperliquid", "hyperliquid"),
@@ -643,12 +681,28 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
                 lines.append(
                     f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {cmc['equity_bellwethers']}"
                 )
+    mb_bench_3c = _extract_macro_benchmarks_line(
+        ps.get("macro_benchmarks")
+        or (
+            ps["cross_market_context"].get("macro_benchmarks")
+            if isinstance(ps.get("cross_market_context"), dict)
+            else None
+        )
+    )
+    if mb_bench_3c:
+        lines.append(
+            f"  * Macro & US Equities Live Correlation Index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_3c}"
+        )
     if ps.get("hyperliquid_readonly"):
         lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
     now_ms = int(time.time() * 1000)
     for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
         if isinstance(oinfo, dict):
             lines.append(_format_recent_order_line(sym, oinfo, now_ms))
+    if ps.get("last_cycle_execution_status"):
+        lines.append(
+            f"  * Last Cycle Execution Status — last_cycle_execution_status: {ps['last_cycle_execution_status']}"
+        )
     for st_key, st_label in (
         ("active_retry_queue", "Active Queued Retry Orders (order_retry_queue.jsonl)"),
         ("monitortrades_active_state", "Active MonitorTrades Ride/Stop State (mt_state.json)"),
@@ -787,12 +841,15 @@ def build_supervisor_prompt(
             "create the highest-EV mean-reversion entries. Whenever microstructure confirms strong absorption at support "
             "(e.g. a large `bid_wall` / positive `ob_imbalance`, `taker_ratio > 1.3`, seller exhaustion at 24h/7d/`VAL` support, "
             "and ample dry powder), execute contrarian dip accumulation (scale-in) in controlled small/medium tranches ($200–$500 USD).\n"
-            "   - DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Because intra-cycle "
-            "wicks between 10-minute evaluations can touch key support or resistance levels and bounce before the next cycle, "
+            "   - DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK (`open_limit_orders` & `last_cycle_execution_status`): "
+            "Because intra-cycle wicks between 10-minute evaluations can touch key support or resistance levels and bounce before the next cycle, "
             "you may submit either immediate market orders (`\"order_type\": \"MARKET\"`, `\"limit_price\": null`) OR passive resting "
             "limit orders (`\"order_type\": \"LIMIT\"`, `\"limit_price\": <float>`, `\"replace_open_orders\": true`) in the exchange "
             "orderbook (e.g. resting a passive `BUY LIMIT` at a major `bid_wall` / support level below spot with $200–$500 tranches, "
-            "or a passive `SELL LIMIT` at an `ask_wall` / take-profit target above spot). Setting `\"replace_open_orders\": true` "
+            "or a passive `SELL LIMIT` at an `ask_wall` / take-profit target above spot). Section 3C explicitly reports your active resting orders "
+            "(`open_limit_orders`, including `filled_qty`, `remaining_qty`, `status`) and mathematical fill confirmation from the previous cycle "
+            "(`last_cycle_execution_status` with `status`, `fill_px`, `ref_px`, `filled_qty`, `slippage_bps`), plus the 1-line US Equities/Futures/Macro "
+            "correlation index (`SPY / QQQ / ES=F / NQ=F / DXY / US10Y` 24h/1h deltas). Setting `\"replace_open_orders\": true` "
             "automatically cancels any prior unfilled AI limit order on the same symbol and side before placing the updated order; "
             "returning `'HOLD'` leaves existing resting open orders untouched in the book.\n"
             "   - VOLUME PROFILE (`vol_profile` IN SECTION 3A), LIQUIDATION CLUSTERS (`liq_clusters` IN SECTION 3B) & VENUE FEE/LIMITS "

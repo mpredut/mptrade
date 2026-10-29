@@ -53,6 +53,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         news_interval_sec: Optional[float] = None,
         fear_greed_interval_sec: float = 1800.0,
         breadth_interval_sec: float = 900.0,
+        macro_benchmarks_interval_sec: float = 300.0,
         skip_news: bool = False,
         skip_external: bool = False,
     ) -> None:
@@ -63,6 +64,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.news_interval_sec = safe_pos_float(news_interval_sec, required_float_env("MACRO_NEWS_INTERVAL_SEC"))
         self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, 1800.0)
         self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, 900.0)
+        self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, 300.0)
         self.skip_news = _as_bool(skip_news)
         self.skip_external = _as_bool(skip_external)
         self.running = False
@@ -86,6 +88,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self._last_news_ts: float = 0.0
         self._last_fear_greed_ts: float = 0.0
         self._last_breadth_ts: float = 0.0
+        self._last_macro_benchmarks_ts: float = 0.0
         self._last_stdout_hb_ts: float = 0.0
 
         self.heartbeat_path = os.path.join(self.cache_dir, "globaltelemetry_collector.heartbeat")
@@ -166,6 +169,19 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating market breadth: %s", e)
         return False
 
+    def update_macro_benchmarks(self, force: bool = False) -> bool:
+        """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
+        try:
+            from intelligence.sentiment.guards.high_stake_guard import collect_macro_benchmarks_snapshot
+
+            snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True)
+            if isinstance(snap, dict) and snap.get("items"):
+                logger.debug("Macro benchmarks updated: %s", snap.get("summary_line", ""))
+                return True
+        except Exception as e:
+            logger.warning("Failed updating macro benchmarks: %s", e)
+        return False
+
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
         force = _as_bool(force)
@@ -179,6 +195,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             "news_updated": False,
             "fear_greed_updated": False,
             "breadth_updated": False,
+            "macro_benchmarks_updated": False,
         }
 
         self.write_heartbeat(results)
@@ -201,6 +218,13 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             if self._run_step_bounded(self.update_market_breadth, force, timeout_sec=15.0, label="breadth"):
                 results["breadth_updated"] = True
                 self._last_breadth_ts = current_ts
+
+        if not self.skip_external and is_interval_due(
+            current_ts, self._last_macro_benchmarks_ts, self.macro_benchmarks_interval_sec, force=force
+        ):
+            if self._run_step_bounded(self.update_macro_benchmarks, force, timeout_sec=15.0, label="macro_benchmarks"):
+                results["macro_benchmarks_updated"] = True
+                self._last_macro_benchmarks_ts = current_ts
 
         if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
             logger.info("Global telemetry cycle active: %d symbols monitored (PID=%d)", len(self.symbols), os.getpid())

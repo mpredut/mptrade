@@ -442,18 +442,52 @@ def normalize_open_order(order: Any, *, venue: str = "", symbol: str = "") -> Op
     """Normalize a venue open-order dict into a uniform telemetry record."""
     if not isinstance(order, dict):
         return None
+    oid = extract_order_id(order) or order.get("orderId") or order.get("id")
+    px = extract_order_price(order) or order.get("price")
+    orig_q = extract_orig_qty(order) or order.get("origQty") or order.get("vol") or order.get("qty")
+    raw_exec = (
+        order.get("executedQty")
+        if order.get("executedQty") is not None
+        else (order.get("vol_exec") if order.get("vol_exec") is not None else order.get("filledQuantity", 0))
+    )
+    orig_f = safe_nonneg_float(orig_q, default=0.0) or 0.0
+    exec_f = safe_nonneg_float(raw_exec, default=0.0) or 0.0
+    rem_f = extract_remaining_qty(order, default=max(0.0, orig_f - exec_f) if orig_f > 0 else 0.0)
+    qty_f = rem_f if rem_f > 0 else orig_f
+    raw_status = str(order.get("status") or "").strip().upper()
+    if exec_f > 0 and rem_f > 0:
+        norm_status = "PARTIALLY_FILLED"
+    elif raw_status in ("OPEN", "PENDING", "WORKING", "RESTING", ""):
+        norm_status = "NEW"
+    else:
+        norm_status = raw_status
+    descr = order.get("descr") if isinstance(order.get("descr"), dict) else {}
+    raw_otype = (
+        order.get("order_type")
+        or order.get("orderType")
+        or descr.get("ordertype")
+        or (
+            order.get("type")
+            if str(order.get("type") or "").strip().upper() not in ("BUY", "SELL", "B", "S", "")
+            else ""
+        )
+        or "LIMIT"
+    )
     return {
         "venue": venue,
         "symbol": symbol,
         "side": extract_order_side(order) or str(order.get("side") or order.get("type") or "").upper(),
-        "price": extract_order_price(order) or order.get("price"),
-        "origQty": extract_orig_qty(order) or order.get("origQty") or order.get("vol") or order.get("qty"),
-        "executedQty": (
-            order.get("executedQty")
-            if order.get("executedQty") is not None
-            else (order.get("vol_exec") or 0)
-        ),
-        "orderId": extract_order_id(order) or order.get("orderId") or order.get("id"),
+        "order_type": str(raw_otype).strip().upper() or "LIMIT",
+        "order_id": str(oid) if oid is not None else None,
+        "orderId": oid,
+        "price": px,
+        "qty": round(qty_f, 8) if qty_f > 0 else orig_q,
+        "orig_qty": round(orig_f, 8) if orig_f > 0 else orig_q,
+        "filled_qty": round(exec_f, 8),
+        "remaining_qty": round(rem_f, 8),
+        "status": norm_status,
+        "origQty": orig_q,
+        "executedQty": raw_exec,
     }
 
 

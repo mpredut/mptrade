@@ -3115,6 +3115,187 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     assert "dd_from_peak_pct" not in positions[0]
 
 
+def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_path):
+    """Verify open_limit_orders, SPY/QQQ/DXY/US10Y/Futures 24h delta macro benchmarks, and last_cycle_execution_status."""
+    from intelligence.sentiment.guards.high_stake_guard import collect_macro_benchmarks_snapshot
+    from providers.t212_provider import T212Provider
+
+    workspace = str(tmp_path)
+    cache_dir = os.path.join(workspace, "cachedb")
+    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(os.path.join(workspace, "logs"), exist_ok=True)
+    os.makedirs(os.path.join(workspace, "212trading"), exist_ok=True)
+    with open(os.path.join(workspace, "instruments.conf"), "w", encoding="utf-8") as f:
+        f.write("BTCUSDC|binance|BTC|USDC|1|own_ledger|24x7|\n")
+
+    now_ts = time.time()
+    # 1. Test collect_macro_benchmarks_snapshot with mocked Yahoo Finance chart payloads
+    def _fake_fetch(url, timeout=3.5, headers=None):
+        sym_map = {
+            "SPY": (582.40, -0.85, "POST"),
+            "QQQ": (501.20, -1.40, "POST"),
+            "ES%3DF": (5845.00, -0.90, "REGULAR"),
+            "NQ%3DF": (20310.00, -1.55, "REGULAR"),
+            "DX-Y.NYB": (104.25, 0.32, "REGULAR"),
+            "%5ETNX": (4.28, 1.12, "REGULAR"),
+        }
+        for key, (px, chg24, mstate) in sym_map.items():
+            if key in url:
+                p_1h = round(px / 1.002, 4)
+                p_15m = round(px / 1.001, 4)
+                return {
+                    "chart": {
+                        "result": [
+                            {
+                                "meta": {
+                                    "regularMarketPrice": px,
+                                    "fulldayPrice": px,
+                                    "fulldayChangePercent": chg24,
+                                    "marketState": mstate,
+                                },
+                                "timestamp": [int(now_ts - 3600), int(now_ts - 900), int(now_ts)],
+                                "indicators": {"quote": [{"close": [p_1h, p_15m, px]}]},
+                            }
+                        ]
+                    }
+                }
+        return {}
+
+    mb_snap = collect_macro_benchmarks_snapshot(
+        cache_dir, now_ts=now_ts, persist=True, fetch_fn=_fake_fetch
+    )
+    assert mb_snap is not None
+    assert "SPY=$582.40 (-0.85% 24h" in mb_snap["summary_line"]
+    assert "QQQ=$501.20 (-1.40% 24h" in mb_snap["summary_line"]
+    assert "ES=F=$5,845.00 (-0.90% 24h" in mb_snap["summary_line"]
+    assert "NQ=F=$20,310.00 (-1.55% 24h" in mb_snap["summary_line"]
+    assert "DXY=104.25 (+0.32% 24h" in mb_snap["summary_line"]
+    assert "US10Y=4.28% (+1.12% 24h" in mb_snap["summary_line"]
+
+    # 2. Test T212Provider.open_orders filtering by ticker
+    fake_t212_cli = MagicMock()
+    fake_t212_cli.list_active_orders.return_value = [
+        {"id": 8801, "ticker": "NVDA_US_EQ", "orderedQuantity": -1.5, "filledQuantity": 0.5, "limitPrice": 135.0, "status": "PARTIALLY_FILLED", "type": "LIMIT"},
+        {"id": 8802, "ticker": "SPCX_US_EQ", "orderedQuantity": 2.0, "filledQuantity": 0.0, "limitPrice": 110.0, "status": "NEW", "type": "LIMIT"},
+    ]
+    t212_prov = T212Provider(client=fake_t212_cli, live_enabled=True)
+    nvda_open = t212_prov.open_orders("NVDA_US_EQ")
+    assert len(nvda_open) == 1
+    assert nvda_open[0]["orderId"] == "8801"
+    assert nvda_open[0]["side"] == "SELL"
+    assert nvda_open[0]["price"] == 135.0
+    assert nvda_open[0]["origQty"] == 1.5
+    assert nvda_open[0]["executedQty"] == 0.5
+
+    # 3. Test last_cycle_execution_status (FILLED with slippage_bps) & open_limit_orders in telemetry + prompt
+    intents_state = [
+        {
+            "intent_id": "intent_1_buy_btcusdc",
+            "timestamp": now_ts - 600.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "confidence": 0.92,
+            "suggested_notional_usd": 400.0,
+            "clamped_notional_usd": 396.07,
+            "order_type": "MARKET",
+            "reference_price": 79204.89,
+            "requested_price": 79204.89,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "orderId": 555001,
+                "status": "FILLED",
+                "executedQty": "0.005",
+                "cummulativeQuoteQty": "396.07195",
+            },
+            "history": [
+                {"ts": now_ts - 600.0, "action": "EXECUTED", "price": 79204.89, "qty": 0.005, "notional_usd": 396.07}
+            ],
+        }
+    ]
+    with open(os.path.join(cache_dir, "autonomous_trade_intents_state.json"), "w", encoding="utf-8") as f:
+        json.dump(intents_state, f)
+
+    mock_btc_inst = MagicMock()
+    mock_btc_inst.symbol = "BTCUSDC"
+    mock_btc_inst.provider_name = "binance"
+    mock_btc_inst.base = "BTC"
+    mock_btc_inst.quote = "USDC"
+    mock_btc_inst.params = {}
+    mock_btc_inst._provider.get_current_price.return_value = 79300.0
+    mock_btc_inst._provider.free_balance.side_effect = lambda a: 0.025 if a == "BTC" else 1200.0
+    mock_btc_inst.open_orders.return_value = [
+        {
+            "orderId": "777888",
+            "side": "BUY",
+            "type": "LIMIT",
+            "price": "78500.0",
+            "origQty": "0.005",
+            "executedQty": "0.002",
+            "status": "PARTIALLY_FILLED",
+        }
+    ]
+
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway.load_tradable_instruments.return_value = {"BTCUSDC": mock_btc_inst}
+    gateway.reconcile_intents.return_value = False
+
+    captured_prompts = []
+    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+    sensors = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
+    ps = sensors.portfolio_summary
+
+    assert len(ps["open_limit_orders"]) == 1
+    oo = ps["open_limit_orders"][0]
+    assert oo["venue"] == "binance"
+    assert oo["symbol"] == "BTCUSDC"
+    assert oo["order_id"] == "777888"
+    assert oo["price"] == 78500.0
+    assert oo["orig_qty"] == 0.005
+    assert oo["filled_qty"] == 0.002
+    assert oo["remaining_qty"] == 0.003
+    assert oo["qty"] == 0.003
+    assert oo["status"] == "PARTIALLY_FILLED"
+
+    last_exec = ps["last_cycle_execution_status"]
+    assert last_exec["symbol"] == "BTCUSDC"
+    assert last_exec["venue"] == "binance"
+    assert last_exec["status"] == "FILLED"
+    assert last_exec["fill_px"] == 79214.39
+    assert last_exec["ref_px"] == 79204.89
+    assert last_exec["slippage_bps"] == 1.2
+
+    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
+    prompt_text = captured_prompts[-1]
+    assert "open_limit_orders:" in prompt_text
+    assert "'order_id': '777888'" in prompt_text
+    assert "last_cycle_execution_status:" in prompt_text
+    assert "'fill_px': 79214.39" in prompt_text
+    assert "'slippage_bps': 1.2" in prompt_text
+    assert "SPY=$582.40 (-0.85% 24h" in prompt_text
+    assert "US10Y=4.28% (+1.12% 24h" in prompt_text
+
+    # 4. When no open orders exist on the exchange, Section 3C explicitly shows open_limit_orders: [] (none resting)
+    mock_btc_inst.open_orders.return_value = []
+    sensors_empty_oo = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
+    assert sensors_empty_oo.portfolio_summary["open_limit_orders"] == []
+    reconciler.synthesize_and_diagnose(
+        sensors_empty_oo, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor"
+    )
+    prompt_empty_oo = captured_prompts[-1]
+    assert "Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)" in prompt_empty_oo
+
+
+
 
 
 

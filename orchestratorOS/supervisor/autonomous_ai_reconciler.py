@@ -97,6 +97,7 @@ class TelemetrySensorSnapshot:
     market_breadth: Optional[Dict[str, Any]] = None
     sentiment_advisor: Optional[Dict[str, Any]] = None
     geopolitical_threat: Optional[Dict[str, Any]] = None
+    macro_benchmarks: Optional[Dict[str, Any]] = None
     breaking_news: List[Dict[str, Any]] = field(default_factory=list)
     active_heartbeats: Dict[str, Any] = field(default_factory=dict)
     state_files: Dict[str, Any] = field(default_factory=dict)

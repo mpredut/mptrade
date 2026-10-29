@@ -498,11 +498,157 @@ def reconcile_intents_from_execution_audit(
     return updated
 
 
+def _resolve_intent_execution_details(
+    i: dict[str, Any],
+    now_ts: float,
+    extract_notional_fn: Callable[..., Any],
+    recent_orders: Optional[dict[str, Any]] = None,
+    open_orders: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
+    from cachepaths import normalize_venue_name
+    from .base import extract_order_id, extract_order_price, extract_order_qty, extract_orig_qty
+
+    venue = normalize_venue_name(i.get("venue")) or i.get("venue")
+    symbol = str(i.get("symbol") or "").strip().upper()
+    side = extract_intent_side(i) or str(i.get("decision") or "").strip().upper()
+    order_type = str(i.get("order_type") or "MARKET").strip().upper()
+    exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
+    hist = i.get("history") if isinstance(i.get("history"), list) else []
+    last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
+    eff_notional = (
+        safe_pos_float(exec_pay.get("cummulativeQuoteQty"), default=None)
+        or safe_pos_float(exec_pay.get("cost"), default=None)
+        or safe_pos_float(exec_pay.get("filledValue"), default=None)
+        or safe_pos_float(i.get("clamped_notional_usd"), default=None)
+        or safe_pos_float(last_hist.get("notional_usd"), default=None)
+        or extract_notional_fn(i, default=None)
+    )
+    ts_val = safe_float(i.get("timestamp"), 0.0)
+    order_id = extract_order_id(exec_pay, default=None) or last_hist.get("order_id")
+
+    matched_open = None
+    if isinstance(open_orders, list):
+        for oo in open_orders:
+            if not isinstance(oo, dict):
+                continue
+            oo_oid = oo.get("order_id") or oo.get("orderId")
+            if order_id is not None and oo_oid is not None and str(oo_oid) == str(order_id):
+                matched_open = oo
+                break
+            if (
+                order_id is None
+                and order_type == "LIMIT"
+                and normalize_venue_name(oo.get("venue")) == venue
+                and str(oo.get("symbol") or "").strip().upper() == symbol
+                and str(oo.get("side") or "").strip().upper() == side
+            ):
+                matched_open = oo
+                break
+
+    fill_px = extract_order_price(exec_pay, default=None)
+    filled_qty = extract_order_qty(exec_pay, default=0.0)
+    orig_qty = extract_orig_qty(exec_pay, default=None) or safe_pos_float(last_hist.get("qty"), default=None)
+    if matched_open is not None:
+        open_filled = (
+            safe_nonneg_float(
+                matched_open.get("filled_qty")
+                if matched_open.get("filled_qty") is not None
+                else matched_open.get("executedQty"),
+                default=0.0,
+            )
+            or 0.0
+        )
+        if open_filled > filled_qty:
+            filled_qty = open_filled
+        if fill_px is None:
+            fill_px = safe_pos_float(matched_open.get("price"), default=None)
+
+    if isinstance(recent_orders, dict) and symbol:
+        ro_entry = recent_orders.get(f"{venue}:{symbol}") or recent_orders.get(symbol)
+        if isinstance(ro_entry, dict):
+            side_key = "last_buy" if side == "BUY" else ("last_sell" if side == "SELL" else "")
+            last_fill = ro_entry.get(side_key) if side_key else None
+            if isinstance(last_fill, dict):
+                f_ts_ms = safe_float(last_fill.get("ts_ms"), 0.0)
+                if ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= (ts_val - 120.0) * 1000.0:
+                    if fill_px is None:
+                        fill_px = safe_pos_float(last_fill.get("price"), default=None)
+                    if filled_qty <= 0:
+                        filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
+
+    raw_intent_st = str(i.get("status") or "").strip().upper()
+    venue_st = str(exec_pay.get("status") or "").strip().upper()
+    if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW"):
+        fill_px = safe_pos_float(
+            last_hist.get("price")
+            or i.get("requested_price")
+            or i.get("limit_price")
+            or i.get("reference_price"),
+            default=None,
+        )
+
+    if matched_open is not None:
+        exec_status = "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN_RESTING"
+    elif raw_intent_st == "EXECUTED":
+        if venue_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+            exec_status = venue_st
+        elif venue_st == "PARTIALLY_FILLED":
+            exec_status = "PARTIALLY_FILLED"
+        else:
+            exec_status = "FILLED"
+    elif raw_intent_st == "OBSERVED_SHADOW":
+        exec_status = "SHADOW_SIMULATED"
+    else:
+        exec_status = raw_intent_st or "UNKNOWN"
+
+    ref_px = safe_pos_float(
+        i.get("reference_price")
+        or i.get("limit_price")
+        or i.get("requested_price")
+        or last_hist.get("price")
+        or fill_px,
+        default=None,
+    )
+    slippage_bps: Optional[float] = None
+    if fill_px is not None and fill_px > 0 and ref_px is not None and ref_px > 0:
+        raw_slip = (
+            ((fill_px - ref_px) / ref_px) * 10_000.0
+            if side == "BUY"
+            else ((ref_px - fill_px) / ref_px) * 10_000.0
+        )
+        slippage_bps = round(raw_slip, 2)
+    elif exec_status in ("FILLED", "SHADOW_SIMULATED") and fill_px is not None:
+        slippage_bps = 0.0
+
+    eff_qty = filled_qty if filled_qty > 0 else (orig_qty if orig_qty is not None else None)
+    return {
+        "venue": venue,
+        "symbol": symbol,
+        "side": side,
+        "order_type": order_type,
+        "raw_status": i.get("status"),
+        "venue_status": venue_st or None,
+        "exec_status": exec_status,
+        "order_id": str(order_id) if order_id is not None else None,
+        "fill_px": round(fill_px, 6) if fill_px is not None else None,
+        "ref_px": round(ref_px, 6) if ref_px is not None else None,
+        "filled_qty": round(eff_qty, 8) if eff_qty is not None and eff_qty > 0 else None,
+        "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
+        "slippage_bps": slippage_bps,
+        "ts": i.get("timestamp"),
+        "ts_val": ts_val,
+    }
+
+
 def summarize_recent_ai_intents(
     intents_data: list[dict[str, Any]],
     scope: str,
     now_ts: float,
     extract_notional_fn: Callable[..., Any],
+    *,
+    recent_orders: Optional[dict[str, Any]] = None,
+    open_orders: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Summarize the most recent AI trade intents filtered by asset scope."""
     from cachepaths import normalize_venue_name
@@ -518,34 +664,91 @@ def summarize_recent_ai_intents(
     ]
     recent_intents_out: list[dict[str, Any]] = []
     for i in scoped_intents[-8:]:
-        exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
-        hist = i.get("history") if isinstance(i.get("history"), list) else []
-        last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
-        eff_notional = (
-            safe_pos_float(exec_pay.get("cummulativeQuoteQty"), default=None)
-            or safe_pos_float(exec_pay.get("cost"), default=None)
-            or safe_pos_float(i.get("clamped_notional_usd"), default=None)
-            or safe_pos_float(last_hist.get("notional_usd"), default=None)
-            or extract_notional_fn(i, default=None)
+        det = _resolve_intent_execution_details(
+            i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
         )
-        ts_val = safe_float(i.get("timestamp"), 0.0)
         intent_summary: dict[str, Any] = {
-            "decision": i.get("decision"),
+            "decision": i.get("decision") or det["side"],
             "symbol": i.get("symbol"),
-            "venue": normalize_venue_name(i.get("venue")) or i.get("venue"),
-            "order_type": i.get("order_type") or "MARKET",
-            "status": i.get("status"),
-            "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
-            "ts": i.get("timestamp"),
+            "venue": det["venue"],
+            "order_type": det["order_type"],
+            "status": det["raw_status"],
+            "notional_usd": det["notional_usd"],
+            "ts": det["ts"],
         }
         if i.get("limit_price") is not None:
             intent_summary["limit_price"] = i.get("limit_price")
-        if exec_pay.get("status"):
-            intent_summary["venue_status"] = str(exec_pay.get("status")).strip().upper()
-        if ts_val > 0 and now_ts >= ts_val:
-            intent_summary["age_h"] = round((now_ts - ts_val) / 3600.0, 2)
+        if det["venue_status"]:
+            intent_summary["venue_status"] = det["venue_status"]
+        if det["order_id"] is not None:
+            intent_summary["order_id"] = det["order_id"]
+        if det["fill_px"] is not None:
+            intent_summary["fill_px"] = det["fill_px"]
+        if det["filled_qty"] is not None:
+            intent_summary["filled_qty"] = det["filled_qty"]
+        if det["slippage_bps"] is not None:
+            intent_summary["slippage_bps"] = det["slippage_bps"]
+        if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
+            intent_summary["age_h"] = round((now_ts - det["ts_val"]) / 3600.0, 2)
         recent_intents_out.append(intent_summary)
     return recent_intents_out
+
+
+def build_last_cycle_execution_status(
+    intents_data: list[dict[str, Any]],
+    scope: str,
+    now_ts: float,
+    extract_notional_fn: Callable[..., Any],
+    *,
+    recent_orders: Optional[dict[str, Any]] = None,
+    open_orders: Optional[list[dict[str, Any]]] = None,
+) -> Optional[Any]:
+    """Build closed-loop mathematical fill confirmation (fill_px, slippage_bps, status) for the last cycle's intent(s)."""
+    from cachepaths import normalize_venue_name
+
+    scoped_intents = [
+        i
+        for i in intents_data
+        if isinstance(i, dict)
+        and (
+            scope not in ("equities", "crypto")
+            or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
+        )
+    ]
+    if not scoped_intents:
+        return None
+    last_ts = safe_float(scoped_intents[-1].get("timestamp"), 0.0)
+    if last_ts > 0:
+        cycle_intents = [
+            i for i in scoped_intents if abs(safe_float(i.get("timestamp"), 0.0) - last_ts) <= 90.0
+        ]
+    else:
+        cycle_intents = [scoped_intents[-1]]
+    out: list[dict[str, Any]] = []
+    for i in cycle_intents:
+        det = _resolve_intent_execution_details(
+            i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
+        )
+        rec: dict[str, Any] = {
+            "venue": det["venue"],
+            "symbol": det["symbol"],
+            "side": det["side"],
+            "order_type": det["order_type"],
+            "status": det["exec_status"],
+            "fill_px": det["fill_px"],
+            "ref_px": det["ref_px"],
+            "filled_qty": det["filled_qty"],
+            "notional_usd": det["notional_usd"],
+            "slippage_bps": det["slippage_bps"],
+        }
+        if det["order_id"] is not None:
+            rec["order_id"] = det["order_id"]
+        if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
+            rec["age_min"] = round((now_ts - det["ts_val"]) / 60.0, 1)
+        out.append(rec)
+    if not out:
+        return None
+    return out[0] if len(out) == 1 else out
 
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
@@ -1278,6 +1481,7 @@ def preflight_intent_and_resolve_price(
         })
         return False, intent_id, decision, symbol, venue, confidence, inst, effective_usd, 0.0, False
 
+    intent["reference_price"] = round(live_price, 8)
     px_ok, price, is_limit = resolve_intent_execution_price(
         intent,
         intent_id=intent_id,
@@ -1290,6 +1494,7 @@ def preflight_intent_and_resolve_price(
     if not px_ok:
         return False, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
 
+    intent["requested_price"] = round(price, 8)
     return True, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
 
 

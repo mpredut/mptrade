@@ -485,6 +485,48 @@ class T212Provider(MarketDataProvider):
                 f"cancel_order({order_id}): the order is still {terminal}"
             )
 
+    def open_orders(self, symbol: str) -> List[dict]:
+        """Return active open orders on Trading 212 matching ``symbol``."""
+        if not isinstance(symbol, str) or not symbol.strip():
+            return []
+        try:
+            cli = self._client()
+            list_fn = getattr(cli, "list_active_orders", None)
+            if not callable(list_fn):
+                return []
+            raw_orders = list_fn()
+            if not isinstance(raw_orders, list):
+                return []
+            out: List[dict] = []
+            for o in raw_orders:
+                if not isinstance(o, dict):
+                    continue
+                if not _t212_tickers_match(str(o.get("ticker") or ""), symbol):
+                    continue
+                raw_qty = safe_float(o.get("orderedQuantity", o.get("quantity")), default=0.0)
+                side = normalize_side(o.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
+                px = safe_pos_float(
+                    o.get("limitPrice", o.get("stopPrice", o.get("price"))),
+                    default=None,
+                )
+                orig_q = abs(raw_qty)
+                exec_q = abs(safe_float(o.get("filledQuantity", o.get("executedQty")), default=0.0))
+                oid = extract_order_id(o)
+                out.append({
+                    "id": oid,
+                    "orderId": oid,
+                    "symbol": symbol.strip().upper(),
+                    "side": side,
+                    "type": str(o.get("type") or "LIMIT").strip().upper(),
+                    "price": px,
+                    "origQty": orig_q,
+                    "executedQty": exec_q,
+                    "status": str(o.get("status") or "NEW").strip().upper(),
+                })
+            return out
+        except Exception:
+            return []
+
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         if not isinstance(symbol, str) or not symbol.strip():
             return None
