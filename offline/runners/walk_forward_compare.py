@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
+from binance_api.market_data import parse_interval_minutes
 from botcore import (
     _parse_bool_flag,
     safe_float,
@@ -169,11 +170,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
 
     if isinstance(report.get("intervals"), dict) and report["intervals"]:
         for interval_text, section in report["intervals"].items():
-            try:
-                interval = int(str(interval_text).strip())
-            except ValueError:
-                from binance_api.market_data import parse_interval_minutes
-                interval = parse_interval_minutes(str(interval_text))
+            interval = parse_interval_minutes(interval_text)
             if not isinstance(section, dict) or not isinstance(section.get("dataset"), dict):
                 raise ValueError(f"missing dataset metadata for {interval}m")
             records = _load_and_verify_frozen(
@@ -196,11 +193,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             or runtime_meta.get("interval")
         )
         if interval_raw is not None:
-            try:
-                interval = int(interval_raw)
-            except ValueError:
-                from binance_api.market_data import parse_interval_minutes
-                interval = parse_interval_minutes(str(interval_raw))
+            interval = parse_interval_minutes(interval_raw)
         elif safe_pos_float(dataset_meta.get("median_step_seconds"), default=0.0) > 0:
             step_min = int(round(safe_pos_float(dataset_meta["median_step_seconds"], default=60.0) / 60.0))
             interval = 1440 if step_min >= 1440 else max(1, step_min)

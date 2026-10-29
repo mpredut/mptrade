@@ -74,8 +74,8 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
         return np.array([]), np.array([]), []
     # Chronological ordering.
     cache_pairs = sorted(valid, key=lambda x: x[0])
-    ts = np.array([int(x[0]) for x in cache_pairs], dtype=np.int64)
-    prices = np.array([float(x[1]) for x in cache_pairs], dtype=np.float64)
+    ts = np.array([x[0] for x in cache_pairs], dtype=np.int64)
+    prices = np.array([x[1] for x in cache_pairs], dtype=np.float64)
     dt = [x[2] for x in cache_pairs]
     return ts, prices, dt
 
