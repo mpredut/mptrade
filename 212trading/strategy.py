@@ -459,7 +459,7 @@ def _sanitize_t212_state(st: dict) -> dict:
         clean_sold = []
         for item in raw_sold:
             lvl_f = _clean_pos_float(item)
-            if lvl_f is not None:
+            if lvl_f is not None and lvl_f not in clean_sold:
                 clean_sold.append(lvl_f)
         st["tp_sold_levels"] = clean_sold
     else:
@@ -815,11 +815,28 @@ class Strategy:
         self._persist_pending_submit(None)
         return "retryable"
 
-    def _close_cycle(self, exit_price: float, *, keep_pending_submit: bool = False) -> None:
+    def _record_tp_sold_level(self, level: object) -> None:
+        lvl_f = _clean_pos_float(level)
+        if lvl_f is None:
+            return
+        sold = self.s.setdefault("tp_sold_levels", [])
+        if lvl_f not in sold:
+            sold.append(lvl_f)
+
+    def _close_cycle(
+        self,
+        exit_price: float,
+        *,
+        keep_pending_submit: bool = False,
+        exit_kind: str | None = None,
+    ) -> None:
         self._cancel_all_orders()
         saved_orders = list(self.s.get("orders") or [])
         saved_pending_submit = self.s.get("pending_submit") if keep_pending_submit else None
-        was_sl = bool(self.s.get("sl_pending"))
+        was_sl = bool(
+            self.s.get("sl_pending")
+            or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
+        )
         pnl, net_tot, fees = (
             self.s["realized_pnl_usd"],
             self.s["realized_net_usd"],
@@ -893,7 +910,7 @@ class Strategy:
                 and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
             )
             if is_flat or is_dust_exit:
-                self._close_cycle(price)
+                self._close_cycle(price, exit_kind=order.get("kind"))
 
     # -- plasare / anulare -----------------------------------------------------
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
@@ -987,10 +1004,8 @@ class Strategy:
                 return False
             if _owned <= 1e-6:
                 log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
-                self._cancel_all_orders()
-                self.s["qty"] = 0.0
-                self.s["cost_usd"] = 0.0
-                self.s["spent_cash"] = 0.0
+                exit_px = _clean_pos_float(self.s.get("last_sell_price")) or limit
+                self._close_cycle(exit_px, exit_kind=kind)
                 self.s["locked_zero_until"] = self._now() + 300  # ignora adoptie stala 5 min
                 self._save()
             else:
@@ -1206,7 +1221,7 @@ class Strategy:
                 elif o.get("market") or price >= o["limit"]:
                     self._remove_order(o)
                     if o.get("level") is not None:
-                        self.s.setdefault("tp_sold_levels", []).append(o["level"])
+                        self._record_tp_sold_level(o["level"])
                     self._apply_fill(o, o["qty"], price if o.get("market") else o["limit"])
 
     # -- Live reconciliation: T212 portfolio is the source of truth -------------
@@ -1449,8 +1464,8 @@ class Strategy:
                 status = self._tracked_order_status(o, status_cache)
                 if status is not None and not isinstance(status, str) and status.status in {"closed", "canceled", "expired"}:
                     if (o["side"] == "SELL" and o.get("level") is not None
-                            and float(status.filled_qty or 0.0) > 1e-9):
-                        self.s.setdefault("tp_sold_levels", []).append(o["level"])
+                            and safe_nonneg_float(status.filled_qty, default=0.0) > 1e-9):
+                        self._record_tp_sold_level(o["level"])
                     self._remove_order(o)
                 elif status == "not_found":
                     misses = max(0, int(_clean_nonneg_float(o.get("lookup_misses"), 0.0))) + 1
@@ -1459,8 +1474,8 @@ class Strategy:
                     if misses >= max_misses:
                         log(f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking")
                         if (o.get("side") == "SELL" and o.get("level") is not None
-                                and float(o.get("applied_fill_qty") or 0.0) > 1e-9):
-                            self.s.setdefault("tp_sold_levels", []).append(o["level"])
+                                and safe_nonneg_float(o.get("applied_fill_qty"), default=0.0) > 1e-9):
+                            self._record_tp_sold_level(o["level"])
                         self._remove_order(o)
                 elif status is None:
                     # Transient status lookup failure (e.g. rate limit, network);
@@ -1583,15 +1598,19 @@ class Strategy:
                        source="T212", price=price, desktop=self.desktop)
         return True
 
-    def _vol_1h_ratio(self) -> tuple[float, str]:
-        """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
+    def _resolve_shadow_vol_1h_pct(self) -> float | None:
         if hasattr(self, "_shadow_vol_1h"):
             try:
-                vol = safe_pos_float(self._shadow_vol_1h(), default=None)
-                if vol is not None:
-                    return vol_pct_to_ratio(vol), "shadow"
+                return safe_pos_float(self._shadow_vol_1h(), default=None)
             except Exception:
-                pass
+                return None
+        return None
+
+    def _vol_1h_ratio(self) -> tuple[float, str]:
+        """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
+        vol = self._resolve_shadow_vol_1h_pct()
+        if vol is not None:
+            return vol_pct_to_ratio(vol), "shadow"
         if not self.replay_mode:
             cached = resolve_cached_volatility_1h(self.ticker)
             if cached is not None:
@@ -1781,12 +1800,7 @@ class Strategy:
         """
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
-        vol = None
-        if hasattr(self, "_shadow_vol_1h"):
-            try:
-                vol = safe_pos_float(self._shadow_vol_1h(), default=None)
-            except Exception:
-                vol = None
+        vol = self._resolve_shadow_vol_1h_pct()
         if vol is None and not self.replay_mode:
             vol = resolve_cached_volatility_1h_pct(self.ticker)
         if vol is None:

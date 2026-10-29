@@ -327,6 +327,61 @@ class TestCycleCompletionAndDust(unittest.TestCase):
         self.assertEqual(len(self.strat.s["orders"]), 1)
         self.assertTrue(self.strat.s["orders"][0].get("cancel_requested"))
 
+    def test_not_owned_zero_closes_cycle_and_resets_stale_state(self):
+        self.strat.s.update({
+            "qty": 2.0,
+            "cost_usd": 300.0,
+            "spent_cash": 300.0,
+            "entry_price": 150.0,
+            "last_buy_price": 140.0,
+            "dca_buys": 2,
+            "tp_sold_levels": [11.0, 20.0],
+            "loss_band": 3,
+            "pos_peak": 180.0,
+            "tr_armed": True,
+        })
+        self.client.place_limit_order = lambda tkr, q, lim, validity=None: (
+            400,
+            {"code": "selling-equity-not-owned", "message": "selling-equity-not-owned: owned=0"},
+        )
+
+        placed = self.strat._place_sell(2.0, 165.0, level=30.0, kind="TP")
+        self.assertFalse(placed)
+        self.assertEqual(self.strat.s["cycle"], 2)
+        self.assertEqual(self.strat.s["qty"], 0.0)
+        self.assertEqual(self.strat.s["dca_buys"], 0)
+        self.assertIsNone(self.strat.s["entry_price"])
+        self.assertIsNone(self.strat.s["last_buy_price"])
+        self.assertEqual(self.strat.s["tp_sold_levels"], [])
+        self.assertEqual(self.strat.s["loss_band"], 0)
+        self.assertEqual(self.strat.s["last_sell_price"], 165.0)
+        self.assertEqual(self.strat.s["post_sell_peak"], 165.0)
+        self.assertEqual(self.strat.s["post_sell_trough"], 165.0)
+        self.assertEqual(self.strat.s["locked_zero_until"], self.now_val + 300)
+
+    def test_reconcile_real_rejects_bool_filled_qty_and_deduplicates_tp_sold_levels(self):
+        self.strat.s["qty"] = 2.0
+        self.strat.s["cost_usd"] = 300.0
+        self.strat.s["tp_sold_levels"] = [11.0]
+        self.strat.s["orders"] = [
+            {"id": "BOOL-1", "side": "SELL", "qty": 1.0, "limit": 166.5, "level": 20.0, "kind": "TP"},
+            {"id": "DUP-1", "side": "SELL", "qty": 1.0, "limit": 166.5, "level": 11.0, "kind": "TP"},
+        ]
+        self.client.portfolio = [{"ticker": TICK, "quantity": 2.0, "averagePrice": 150.0}]
+        self.client.active = []
+
+        def _status_for(o, cache):
+            st = MagicMock()
+            st.status = "canceled"
+            st.filled_qty = True if o["id"] == "BOOL-1" else 0.5
+            st.cost = 0.0
+            st.fee = 0.0
+            return st
+
+        self.strat._tracked_order_status = _status_for
+        self.strat._reconcile_real(150.0)
+        self.assertEqual(self.strat.s["tp_sold_levels"], [11.0])
+
 
 if __name__ == "__main__":
     unittest.main()
