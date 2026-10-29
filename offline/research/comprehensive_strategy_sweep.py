@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import statistics
 import sys
 from pathlib import Path
 
@@ -255,13 +256,11 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
         cycles = sum(w["cycles"] for w in windows)
         fills = sum(w["fills"] for w in windows)
 
-        mean_ret = sum(returns) / len(returns)
-        sorted_rets = sorted(returns)
-        median_ret = (sorted_rets[len(sorted_rets)//2] if len(sorted_rets) % 2 == 1 
-                      else (sorted_rets[len(sorted_rets)//2 - 1] + sorted_rets[len(sorted_rets)//2]) / 2)
-        worst_ret = min(returns)
-        worst_dd = max(drawdowns)
-        mean_dd = sum(drawdowns) / len(drawdowns)
+        mean_ret = statistics.fmean(returns) if returns else 0.0
+        median_ret = statistics.median(returns) if returns else 0.0
+        worst_ret = min(returns) if returns else 0.0
+        worst_dd = max(drawdowns) if drawdowns else 0.0
+        mean_dd = statistics.fmean(drawdowns) if drawdowns else 0.0
         positive_count = sum(1 for r in returns if r > 0)
 
         results[name] = {
