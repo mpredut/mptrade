@@ -18,7 +18,13 @@
   - Every guard, reference window, difficulty tier, sizing rule, configuration key, and pipeline stage must be designed and maintained symmetrically across `BUY` and `SELL` (as well as across venues and modules) at every stage of coding.
   - Directional differences must be expressed exclusively through shared symmetric primitives (e.g., `opposite_side()`, `profit_diff_pct()`, `select_extreme_reference()`, `get_profit_guard_mode_cfg()`, `get_window_cfg()`, `get_dynamic_window_sec_cfg()`) rather than asymmetric one-sided code paths or mixed value types.
   - Sibling classes, persisted files, factory keys, module getters, constants, and polymorphic hooks must follow a uniform domain-consistent naming grammar (e.g., `Cache<Qualifier><Domain>Manager`, `cache_<qualifier>_<domain>.json[l]`, `get_<qualifier>_<domain>_manager()`, `<QUALIFIER>_<DOMAIN>_SYNC_INTERVAL_SEC`, `_is_valid_item()`, `rebuild_fetchtimes()`, `fetchtime_per_symbol`, `get_short_trend()`, `get_fresh_snapshot()`).
-- **Separation of Concerns (SoC):** Isolate distinct responsibilities and modular boundaries; minimize cross-cutting coupling.
+- **Reuse-First & Adapt-Before-Create (General-Purpose Design):**
+  - Before implementing any new feature, class, helper, or workflow, always search the codebase for existing similar mechanisms, base classes, or shared primitives.
+  - When comparable logic already exists, generalize, parameterize, and adapt it for reuse rather than creating parallel or duplicate implementations.
+  - Design all new or adapted abstractions to be general-purpose and composable across callers, venues, and workflows — never narrowly coupled to a single one-off scenario.
+- **Small, Modular Files & Separation of Concerns (SoC):**
+  - Keep files small, short, and focused on a single cohesive responsibility; prevent monolithic file growth by factoring distinct logic into compact, reusable modules.
+  - Isolate modular boundaries and minimize cross-cutting coupling so shared building blocks remain clean, composable, and easy to maintain.
 - **Concise File Naming & Domain-Driven Placement:** Keep new filenames short, simple, and topic-focused while strictly preserving naming symmetry with existing sibling files. Always place files within the established architectural directory hierarchy matching their functional domain, preserving the existing repository layout without ad-hoc paths or root-level clutter.
 - **Transactional Persistence & Crash Recovery (`.previous` + `.meta` + `state_io.py`):**
   - Every durable cache, market snapshot, and runtime state file (`cache_*.json[l]`, `priceanalysis.json`, `24trend/*.json`, bot/strategy/supervisor state files) must use the shared transactional primitives in `state_io.py` (`atomic_write_json`, `save_json_state`, `stage_previous_generation`, `commit_file_and_meta`, `read_recovering_previous`, `restore_previous_generation`, `load_json_state`) or inherit from `CacheManagerInterface`.
