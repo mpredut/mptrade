@@ -47,9 +47,7 @@ finally:
     sys.path[:] = _orig_sys_path
 
 from offline.backtests.datasets import (  # noqa: E402
-    align_previous_values,
     dataset_metadata,
-    drop_incomplete_last_bar,
     load_dataset,
     merge_datasets,
     save_dataset,
@@ -58,12 +56,10 @@ from offline.backtests.datasets import (  # noqa: E402
 from offline.backtests.evaluation import (  # noqa: E402
     add_walk_forward_cli_args,
     assess_decision_evidence,
-    automatic_window_sizes,
     build_execution_model_from_args,
     evaluate_walk_forward,
     resolve_window_sizes,
 )
-from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
 def periods_per_year(interval_minutes: int) -> float:

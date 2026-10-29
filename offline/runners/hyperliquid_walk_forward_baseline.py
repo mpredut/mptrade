@@ -50,7 +50,6 @@ from strategies.spot_replay import align_spot_interval_params
 
 from offline.backtests.datasets import (
     dataset_metadata,
-    dataset_sha256,
     load_dataset as load_frozen_dataset,
     save_dataset as save_frozen_dataset,
     validate_dataset,
@@ -58,18 +57,13 @@ from offline.backtests.datasets import (
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     assess_decision_evidence,
-    automatic_window_sizes,
     build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
-    extract_cfg_float,
-    extract_cfg_int,
-    iso_utc as _iso,
     load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
     resolve_window_sizes,
 )
-from offline.backtests.execution import ExecutionModel
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -33,7 +33,6 @@ from cachepaths import normalize_venue_name
 from offline.backtests.comparison import (
     dominates as _dominates,
     format_comparison_markdown,
-    format_number as _format_number,
     pareto_frontier as _pareto_names,
     relative_to_baseline as _relative,
 )

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from botcore import safe_nonneg_float
-from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
+from binance_api.market_data import fetch_ohlc_candles
 from binance_api.replay import make_binance_replay_adapter, StratParams
 from strategies.spot_replay import align_spot_interval_params
 from offline.backtests.datasets import (
@@ -30,19 +30,15 @@ from offline.backtests.datasets import (
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     assess_decision_evidence,
-    automatic_window_sizes,
     build_execution_model_from_args,
-    evaluate_segment as _evaluate_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
     extract_cfg_float,
     extract_cfg_int,
-    iso_utc as _iso,
     load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
     resolve_window_sizes,
 )
-from offline.backtests.execution import ExecutionModel
 
 
 def main(argv: list[str] | None = None) -> int:

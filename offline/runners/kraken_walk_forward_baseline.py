@@ -31,18 +31,15 @@ from strategies.spot_engine import StratParams  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,
-    dataset_sha256,
     load_dataset as load_frozen_dataset,
     save_dataset as save_frozen_dataset,
     validate_dataset,
 )
 from offline.backtests.evaluation import (  # noqa: E402
     add_walk_forward_cli_args,
-    automatic_window_sizes,
     build_execution_model_from_args,
     evaluate_segment as _evaluate_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
-    iso_utc as _iso,
     load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,

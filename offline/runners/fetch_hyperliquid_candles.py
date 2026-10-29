@@ -33,7 +33,7 @@ INTERVALS = _hl_md.INTERVALS
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
 normalize_closed_candles = _hl_md.normalize_closed_candles
 
-from offline.backtests.datasets import canonical_bytes, dataset_metadata, dataset_sha256
+from offline.backtests.datasets import canonical_bytes, dataset_metadata
 
 
 _post = _hl_md._post_info
