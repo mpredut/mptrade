@@ -144,11 +144,9 @@ def _fresh_price(symbol):
     """Return the freshest WS price, falling back to ``bapi.get_current_price``."""
     try:
         import cacheManager as cm
-        p = cm.get_current_price_manager().get_price_value(symbol)
-        if p is not None and not isinstance(p, bool):
-            pf = float(p)
-            if math.isfinite(pf) and pf > 0:
-                return pf
+        pf = safe_pos_float(cm.get_current_price_manager().get_price_value(symbol), default=None)
+        if pf is not None:
+            return pf
     except Exception:
         pass
     return api.get_current_price(symbol)
@@ -804,63 +802,39 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
 
 def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):
     """Cancel adverse opposing Binance orders without changing the target price."""
-    if isinstance(order_type, bool) or isinstance(requested_price, bool):
+    if isinstance(order_type, bool):
         raise SubmissionRefused("invalid_opposing_cancel_request")
     order_type = str(_normalize_side(order_type or "")).strip().upper()
-    try:
-        req_px = float(requested_price)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SubmissionRefused("invalid_opposing_cancel_request") from exc
-    if not math.isfinite(req_px) or req_px <= 0:
+    req_px = safe_pos_float(requested_price, default=None)
+    if req_px is None:
         raise SubmissionRefused("invalid_opposing_cancel_request")
-    if order_type == "BUY":
-        try:
-            if allowed_owners is not None:
-                open_orders = api.get_open_orders("SELL", symbol, strict=True, allowed_owners=allowed_owners)
-            else:
-                open_orders = api.get_open_orders("SELL", symbol, strict=True)
-        except Exception as exc:
-            raise SubmissionRefused(
-                "opposing_order_discovery_unavailable") from exc
-        for order_id, order_details in open_orders.items():
-            order_px = extract_order_price(order_details, default=0.0)
-            if order_px > 0 and order_px < req_px:
-                try:
-                    canceled = api.cancel_order(symbol, order_id)
-                except Exception as exc:
-                    raise SubmissionRefused(
-                        "opposing_cancel_unconfirmed") from exc
-                if not canceled:
-                    raise SubmissionRefused("opposing_cancel_unconfirmed")
-                try:
-                    import order_retry
-                    order_retry.resolve_accepted_order(symbol, order_id)
-                except Exception:
-                    pass
-    elif order_type == "SELL":
-        try:
-            if allowed_owners is not None:
-                open_orders = api.get_open_orders("BUY", symbol, strict=True, allowed_owners=allowed_owners)
-            else:
-                open_orders = api.get_open_orders("BUY", symbol, strict=True)
-        except Exception as exc:
-            raise SubmissionRefused(
-                "opposing_order_discovery_unavailable") from exc
-        for order_id, order_details in open_orders.items():
-            order_px = extract_order_price(order_details, default=0.0)
-            if order_px > 0 and order_px > req_px:
-                try:
-                    canceled = api.cancel_order(symbol, order_id)
-                except Exception as exc:
-                    raise SubmissionRefused(
-                        "opposing_cancel_unconfirmed") from exc
-                if not canceled:
-                    raise SubmissionRefused("opposing_cancel_unconfirmed")
-                try:
-                    import order_retry
-                    order_retry.resolve_accepted_order(symbol, order_id)
-                except Exception:
-                    pass
+    if order_type not in {"BUY", "SELL"}:
+        return
+    opp_side = "SELL" if order_type == "BUY" else "BUY"
+    try:
+        if allowed_owners is not None:
+            open_orders = api.get_open_orders(opp_side, symbol, strict=True, allowed_owners=allowed_owners)
+        else:
+            open_orders = api.get_open_orders(opp_side, symbol, strict=True)
+    except Exception as exc:
+        raise SubmissionRefused(
+            "opposing_order_discovery_unavailable") from exc
+    for order_id, order_details in open_orders.items():
+        order_px = extract_order_price(order_details, default=0.0)
+        is_adverse = (order_px < req_px) if order_type == "BUY" else (order_px > req_px)
+        if order_px > 0 and is_adverse:
+            try:
+                canceled = api.cancel_order(symbol, order_id)
+            except Exception as exc:
+                raise SubmissionRefused(
+                    "opposing_cancel_unconfirmed") from exc
+            if not canceled:
+                raise SubmissionRefused("opposing_cancel_unconfirmed")
+            try:
+                import order_retry
+                order_retry.resolve_accepted_order(symbol, order_id)
+            except Exception:
+                pass
 
 
 def adjust_price_and_cancel_opposite(order_type, symbol, price,

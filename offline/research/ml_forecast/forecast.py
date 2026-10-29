@@ -26,7 +26,7 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall, calculate_hurst_exponent as hurst_rs  # noqa: E402
-from botcore import safe_float as _safe_f, safe_int as _safe_int  # noqa: E402
+from botcore import safe_float as _safe_f, safe_pos_float as _safe_pos_f, safe_int as _safe_int  # noqa: E402
 
 HORIZON_H = 24
 WARMUP = 240            # history hours required for features; Hurst uses 240h
@@ -43,9 +43,9 @@ def _feat_row(i: int, logp: np.ndarray, px: np.ndarray) -> list[float]:
     vol24 = float(np.std(np.diff(logp[i - 24:i + 1])))
     vol72 = float(np.std(np.diff(logp[i - 72:i + 1])))
     _, mk_z_raw, _ = mann_kendall(px[i - 24:i + 1])
-    mk_z = float(mk_z_raw) if mk_z_raw is not None and np.isfinite(mk_z_raw) else 0.0
+    mk_z = _safe_f(mk_z_raw, 0.0)
     h_raw = hurst_rs(px[i - WARMUP:i + 1])
-    h = float(h_raw) if h_raw is not None and np.isfinite(h_raw) else 0.5
+    h = _safe_f(h_raw, 0.5)
     d = np.diff(px[i - 14:i + 1])
     up, dn = d[d > 0].sum(), -d[d < 0].sum()
     rsi = 100.0 * up / (up + dn) if up + dn > 0 else 50.0
@@ -62,15 +62,7 @@ def _to_price_array(px) -> np.ndarray:
         items = list(px)
     except TypeError:
         return np.empty(0, dtype=float)
-    cleaned: list[float] = []
-    for item in items:
-        if item is None or isinstance(item, bool):
-            cleaned.append(np.nan)
-            continue
-        try:
-            cleaned.append(float(item))
-        except (TypeError, ValueError, OverflowError):
-            cleaned.append(np.nan)
+    cleaned = [_safe_f(item, np.nan) for item in items]
     return np.asarray(cleaned, dtype=float).reshape(-1)
 
 
@@ -158,7 +150,7 @@ def live_forecast(px: np.ndarray, X, y_dir, y_mag, rep: dict, symbol: str) -> di
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
     raw_row = _feat_row(len(px_arr) - 1, logp, px_arr) if len(px_arr) > WARMUP else [0.0] * len(FEATURES)
-    clean_row = [float(v) if np.isfinite(v) else 0.0 for v in raw_row]
+    clean_row = [_safe_f(v, 0.0) for v in raw_row]
     row = np.array([clean_row], dtype=float)
     unique_classes = np.unique(y_dir) if len(y_dir) > 0 else np.array([], dtype=int)
     if len(X) > 0 and len(unique_classes) >= 2:
@@ -222,9 +214,10 @@ def main() -> int:
                 json.dump(out, f, indent=2)
             print(f"  -> {args.out}: trend={out['trend']} conf={out['confidence']} "
                   f"estimated move {out['expected_move_pct']:+.2f}% / {HORIZON_H}h")
-        if not (np.isfinite(args.loop) and args.loop > 0):
+        loop_min = _safe_pos_f(args.loop, default=None)
+        if loop_min is None:
             return 0
-        time.sleep(args.loop * 60)
+        time.sleep(loop_min * 60)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,20 @@
 """A manual simulation; it is not part of the live runtime."""
 
 import math
+import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import random
 import time
 from collections import deque
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from botcore import safe_float  # noqa: E402
+
 
 class PriceWindow:
     def __init__(self, window_size, max_index=1000000, epsilon=1e-5):
@@ -23,6 +32,11 @@ class PriceWindow:
         self.max_index = max(1, int(max_index))  # The threshold at which normalisation happens.
         self.epsilon = max(0.0, float(epsilon))  # The tolerance for approximately equal lows.
 
+    def _evict_expired(self, dq: deque) -> None:
+        cutoff = self.current_index - self.window_size
+        while dq and dq[0][0] <= cutoff:
+            dq.popleft()
+
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
         min_index = min(
@@ -34,13 +48,8 @@ class PriceWindow:
         self.current_index -= min_index  # Ajustam indexul curent
 
     def process_price(self, price):
-        if isinstance(price, bool) or price is None:
-            return
-        try:
-            px = float(price)
-        except (TypeError, ValueError):
-            return
-        if not math.isfinite(px):
+        px = safe_float(price, default=None)
+        if px is None:
             return
 
         # Add the new price to the price list.
@@ -51,10 +60,8 @@ class PriceWindow:
             self.prices.popleft()
 
         # Remove expired elements from both deques and normalize once before inserting.
-        while self.min_deque and self.min_deque[0][0] <= self.current_index - self.window_size:
-            self.min_deque.popleft()
-        while self.max_deque and self.max_deque[0][0] <= self.current_index - self.window_size:
-            self.max_deque.popleft()
+        self._evict_expired(self.min_deque)
+        self._evict_expired(self.max_deque)
         if self.current_index >= self.max_index:
             self.normalize_indices()
 
@@ -67,9 +74,7 @@ class PriceWindow:
 
     def _manage_minimum(self, price):
         """Handling of the current low in the window."""
-        # Remove the elements that are outside the window (too old).
-        while self.min_deque and self.min_deque[0][0] <= self.current_index - self.window_size:
-            self.min_deque.popleft()
+        self._evict_expired(self.min_deque)
 
         # Check whether the current price is approximately equal to any price already in `min_deque`.
         for index, existing_price in self.min_deque:
@@ -85,9 +90,7 @@ class PriceWindow:
 
     def _manage_maximum(self, price):
         """Handling of the current high in the window."""
-        # Remove the elements that are outside the window (too old).
-        while self.max_deque and self.max_deque[0][0] <= self.current_index - self.window_size:
-            self.max_deque.popleft()
+        self._evict_expired(self.max_deque)
 
         # Remove the trailing elements that are smaller than the current price (to keep the latest high).
         while self.max_deque and self.max_deque[-1][1] <= price:
@@ -96,21 +99,19 @@ class PriceWindow:
         # Add the current price.
         self.max_deque.append((self.current_index, price))
 
+    def _deque_front(self, dq: deque):
+        if not dq:
+            return None, None
+        idx, val = dq[0]
+        return val, idx - (self.current_index - len(self.prices))
+
     def get_min(self):
         """Return the current low in the window and its relative position."""
-        if not self.min_deque:
-            return None, None
-        min_index, min_price = self.min_deque[0]
-        relative_position = min_index - (self.current_index - len(self.prices))
-        return min_price, relative_position
+        return self._deque_front(self.min_deque)
 
     def get_max(self):
         """Return the current high in the window and its relative position."""
-        if not self.max_deque:
-            return None, None
-        max_index, max_price = self.max_deque[0]
-        relative_position = max_index - (self.current_index - len(self.prices))
-        return max_price, relative_position
+        return self._deque_front(self.max_deque)
 
     def get_prices(self):
         """Return every current price in the window."""

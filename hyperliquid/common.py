@@ -21,9 +21,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
 from botcore import (  # noqa: E402,F401  (re-export compatibility)
-    BUCHAREST, log, load_dotenv, load_env_stack, float_env, single_instance, are_close,
+    BUCHAREST, log, load_dotenv, load_env_stack, float_env, int_env, single_instance, are_close,
     required_env, defined_env, required_float_env, required_int_env, required_bool_env,
-    _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int,
+    _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
 )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))

@@ -17,7 +17,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float
+from cachepaths import normalize_venue_name
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -105,6 +106,22 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
 
 
 _INVALID_API_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
+
+
+def _require_pos_since_s(since_s: Any) -> float:
+    val = safe_pos_float(since_s, default=None)
+    if val is None:
+        raise ValueError("since_s must be finite and positive")
+    return val
+
+
+def _resolve_evaluated_at(now: Any) -> float:
+    if now is None:
+        return time.time()
+    val = safe_float(now, default=None)
+    if val is None:
+        raise ValueError("now must be finite")
+    return val
 
 
 def _parse_binance_order_id(order_id: Any, context: str) -> int:
@@ -206,14 +223,7 @@ class BinanceProvider(MarketDataProvider):
         from instrument_registry import select_instruments
         from .quantity import remaining_average_cost
 
-        if isinstance(since_s, bool) or since_s is None:
-            raise ValueError("since_s must be finite and positive")
-        try:
-            since_s = float(since_s)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("since_s must be finite and positive") from exc
-        if not math.isfinite(since_s) or since_s <= 0:
-            raise ValueError("since_s must be finite and positive")
+        since_s = _require_pos_since_s(since_s)
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None
         symbol = symbol.strip().upper()
@@ -428,14 +438,7 @@ class BinanceProvider(MarketDataProvider):
         # is active on BUY and safeback_sec was not explicitly passed by caller, use dynamic window.
         import order_guard
         from binance_api import bapi_placeorder as _po
-        sb = None
-        if safeback_sec is not None and not isinstance(safeback_sec, bool):
-            try:
-                sb_f = float(safeback_sec)
-                if math.isfinite(sb_f) and sb_f > 0:
-                    sb = sb_f
-            except (TypeError, ValueError, OverflowError):
-                sb = None
+        sb = safe_pos_float(safeback_sec, default=None)
         if sb is None:
             win_s = order_guard.get_window_cfg(
                 "binance",
@@ -445,15 +448,7 @@ class BinanceProvider(MarketDataProvider):
                 module=module,
                 reference_mode=reference_mode,
             )
-            win_f = None
-            if win_s is not None and not isinstance(win_s, bool):
-                try:
-                    cand = float(win_s)
-                    if math.isfinite(cand) and cand > 0:
-                        win_f = cand
-                except (TypeError, ValueError, OverflowError):
-                    win_f = None
-            sb = win_f if win_f is not None else _po.PLACE_ORDER_SAFEBACK_SEC
+            sb = safe_pos_float(win_s, default=_po.PLACE_ORDER_SAFEBACK_SEC)
         wr_kwargs = {}
         if reference_mode is not None:
             wr_kwargs["reference_mode"] = reference_mode
@@ -565,28 +560,21 @@ class BinanceProvider(MarketDataProvider):
         completed = list(klines or ())[:-1]
         valid = []
         for item in completed:
-            if not isinstance(item, (list, tuple)) or len(item) < 5 or isinstance(item[4], bool):
+            if not isinstance(item, (list, tuple)) or len(item) < 5:
                 continue
-            try:
-                c_f = float(item[4])
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(c_f) and c_f > 0:
+            c_f = safe_pos_float(item[4], default=None)
+            if c_f is not None:
                 valid.append((item, c_f))
         closes = tuple(c_f for _item, c_f in valid)
         ts_list = []
-        ts_ok = bool(valid) and all(len(item) > 6 and not isinstance(item[6], bool) for item, _ in valid)
+        ts_ok = bool(valid) and all(len(item) > 6 for item, _ in valid)
         if ts_ok:
             for item, _ in valid:
-                try:
-                    t_f = float(item[6]) / 1000.0
-                    if not math.isfinite(t_f) or t_f <= 0:
-                        ts_ok = False
-                        break
-                    ts_list.append(t_f)
-                except (TypeError, ValueError, OverflowError):
+                t_ms = safe_pos_float(item[6], default=None)
+                if t_ms is None:
                     ts_ok = False
                     break
+                ts_list.append(t_ms / 1000.0)
         timestamps = tuple(ts_list) if ts_ok else ()
         observed_at = timestamps[-1] if timestamps else None
         return ClosedPriceSeries(
@@ -690,12 +678,8 @@ class BinanceProvider(MarketDataProvider):
                 total += fee_info["fee_in_quote"]
             else:
                 asset = fee_info["fee_asset"]
-                conversion = _get_bapi().get_current_price(f"{asset}{quote}")
-                try:
-                    conv_f = float(conversion) if conversion is not None and not isinstance(conversion, bool) else 0.0
-                except (TypeError, ValueError, OverflowError):
-                    conv_f = 0.0
-                if not math.isfinite(conv_f) or conv_f <= 0.0:
+                conv_f = safe_pos_float(_get_bapi().get_current_price(f"{asset}{quote}"), default=0.0)
+                if conv_f <= 0.0:
                     raise ProviderError(
                         f"order_status({order_id}): cannot convert the fee {asset}->{quote}"
                     )
@@ -889,30 +873,18 @@ class MarketApi:
         side = normalize_side(side)
         if not side:
             raise ValueError("side must be BUY or SELL")
-        if isinstance(since_s, bool) or since_s is None:
-            raise ValueError("since_s must be finite and positive")
-        try:
-            since_s = float(since_s)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("since_s must be finite and positive") from exc
-        if not math.isfinite(since_s) or since_s <= 0:
-            raise ValueError("since_s must be finite and positive")
-        if isinstance(min_notional, bool):
-            raise ValueError("min_notional must be finite and non-negative")
-        if isinstance(max_notional, bool):
-            raise ValueError("max_notional must be finite and non-negative")
-        try:
-            min_value = None if min_notional is None else float(min_notional)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("min_notional must be finite and non-negative") from exc
-        try:
-            max_value = None if max_notional is None else float(max_notional)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("max_notional must be finite and non-negative") from exc
-        if min_value is not None and (not math.isfinite(min_value) or min_value < 0):
-            raise ValueError("min_notional must be finite and non-negative")
-        if max_value is not None and (not math.isfinite(max_value) or max_value < 0):
-            raise ValueError("max_notional must be finite and non-negative")
+        since_s = _require_pos_since_s(since_s)
+
+        def _opt_nonneg(val: Any, name: str) -> Optional[float]:
+            if val is None:
+                return None
+            res = safe_nonneg_float(val, default=None)
+            if res is None:
+                raise ValueError(f"{name} must be finite and non-negative")
+            return res
+
+        min_value = _opt_nonneg(min_notional, "min_notional")
+        max_value = _opt_nonneg(max_notional, "max_notional")
         if min_value is not None and max_value is not None and min_value > max_value:
             raise ValueError("min_notional cannot exceed max_notional")
         now_ms = time.time() * 1000.0
@@ -1127,14 +1099,7 @@ class MarketApi:
         trend_duration_seconds=0.0,
     ) -> MarketRegimeContext:
         """Resolve one reusable short-horizon context at the composition root."""
-        if isinstance(now, bool):
-            raise ValueError("now must be finite")
-        try:
-            evaluated_at = time.time() if now is None else float(now)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("now must be finite") from exc
-        if not math.isfinite(evaluated_at):
-            raise ValueError("now must be finite")
+        evaluated_at = _resolve_evaluated_at(now)
         use_runtime_snapshot = _parse_bool_flag(use_runtime_snapshot, True)
         allow_fallback = _parse_bool_flag(allow_fallback, True)
         if snapshot_max_age_seconds is None:
@@ -1259,14 +1224,7 @@ class MarketApi:
         include_alternates = _parse_bool_flag(include_alternates, False)
         service = self._regime_service_for(strength_threshold)
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        if isinstance(now, bool):
-            raise ValueError("now must be finite")
-        try:
-            evaluated_at = time.time() if now is None else float(now)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("now must be finite") from exc
-        if not math.isfinite(evaluated_at):
-            raise ValueError("now must be finite")
+        evaluated_at = _resolve_evaluated_at(now)
         if snapshot_max_age_seconds is None:
             snapshot_max_age_seconds = (
                 service.default_snapshot_max_age_seconds())
@@ -1424,13 +1382,7 @@ class MarketApi:
             return provider.round_quantity(symbol, qty)
         if hasattr(provider, "round_amount"):
             return provider.round_amount(symbol, qty)
-        if qty is None or isinstance(qty, bool):
-            return 0.0
-        try:
-            qf = float(qty)
-            return qf if math.isfinite(qf) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
+        return safe_float(qty, default=0.0)
 
     def round_amount(self, symbol: str, qty: float, provider_name=None) -> float:
         return self.round_quantity(symbol, qty, provider_name=provider_name)
@@ -1439,13 +1391,7 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         if hasattr(provider, "round_price"):
             return provider.round_price(symbol, price)
-        if price is None or isinstance(price, bool):
-            return 0.0
-        try:
-            pf = float(price)
-            return pf if math.isfinite(pf) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
+        return safe_float(price, default=0.0)
 
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
@@ -1506,7 +1452,7 @@ class MarketApi:
         sym_str = str(symbol or "").strip() if not isinstance(symbol, bool) else ""
         if quote is None and base and sym_str.upper().startswith(base.upper()) and sym_str.upper() != base.upper():
             quote = sym_str[len(base):].lstrip("/-_").strip() or None   # For example, BTCUSDC or HYPE/USDC gives BTC/HYPE and USDC.
-        if quote is None and str(prov_name).lower() == "hyperliquid":
+        if quote is None and normalize_venue_name(prov_name) == "hyperliquid":
             quote = "USDC"
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
                           base=base, quote=quote, params=inst_params or {}, api=self)
@@ -1535,7 +1481,6 @@ class MarketApi:
         found = self._by_name.get(key)
         if found is not None:
             return found
-        from cachepaths import normalize_venue_name
         return self._by_name.get(normalize_venue_name(key))
 
     @property

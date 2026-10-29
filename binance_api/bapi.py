@@ -259,21 +259,13 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                     continue
             original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
             raw_exec_qty = order.get('executedQty', order.get('z', order.get('vol_exec', 0.0)))
-            try:
-                exec_f = float(raw_exec_qty) if (raw_exec_qty is not None and not isinstance(raw_exec_qty, bool)) else 0.0
-                executed_qty = exec_f if (math.isfinite(exec_f) and exec_f >= 0.0) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                executed_qty = 0.0
+            executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0
             ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-            if 'time' in order and order.get('time') is not None and not isinstance(order.get('time'), bool):
-                try:
-                    raw_time = float(order['time'])
-                    if math.isfinite(raw_time) and raw_time >= 0.0:
-                        ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            raw_time = safe_nonneg_float(order.get('time'), default=None)
+            if raw_time is not None:
+                ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
             raw_oid = order.get('orderId')
             if isinstance(raw_oid, float):
                 if not math.isfinite(raw_oid) or not raw_oid.is_integer() or raw_oid <= 0:
@@ -312,19 +304,37 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         return {}
  
           
+def _resolve_valid_bapi_oid(order_id):
+    cleaned_oid = (
+        extract_order_id(order_id, default=None)
+        if not isinstance(order_id, (dict, list, tuple, set, frozenset))
+        else None
+    )
+    if isinstance(cleaned_oid, str):
+        cleaned_oid = _clean_bapi_oid_str(cleaned_oid)
+    if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
+        return None
+    return cleaned_oid
+
+
+def _cancel_and_resolve(symbol, order_id) -> bool:
+    if cancel_order(symbol, order_id):
+        try:
+            import order_retry
+            order_retry.resolve_accepted_order(symbol, order_id)
+        except Exception:
+            pass
+        return True
+    return False
+
+
 def cancel_order(symbol, order_id):
     try:
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         symbol = symbol.strip().upper()
-        cleaned_oid = (
-            extract_order_id(order_id, default=None)
-            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
-            else None
-        )
-        if isinstance(cleaned_oid, str):
-            cleaned_oid = _clean_bapi_oid_str(cleaned_oid)
-        if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
+        cleaned_oid = _resolve_valid_bapi_oid(order_id)
+        if cleaned_oid is None:
             return False
         if isinstance(order_id, int) and not isinstance(order_id, bool):
             if order_id <= 0:
@@ -352,12 +362,7 @@ def cancel_open_orders(order_type, symbol, allowed_owners=None):
         open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
         for order_id, order_details in open_orders.items():
             print(f"Cancelling order {order_id} for {symbol}")
-            if cancel_order(symbol, order_id):
-                try:
-                    import order_retry
-                    order_retry.resolve_accepted_order(symbol, order_id)
-                except Exception:
-                    pass
+            _cancel_and_resolve(symbol, order_id)
     except Exception as e:
         print(f"Error cancelling orders for {symbol}: {e}")
         
@@ -384,13 +389,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
 
         if order_time > 0 and current_time - order_time > expire_val:
-            cancel = cancel_order(symbol, order_id)
-            if cancel:
-                try:
-                    import order_retry
-                    order_retry.resolve_accepted_order(symbol, order_id)
-                except Exception:
-                    pass
+            if _cancel_and_resolve(symbol, order_id):
                 print(f"Cancelled {order_type} order with ID: {order_id} due to expiration.")
             else:
                  print(f"Needs cancel because expiration!")
@@ -418,13 +417,7 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
         age_sec = current_time - order_time
         if order_time > 0 and -5.0 <= age_sec <= max_age_val:  # Order is recent
-            cancel = cancel_order(symbol, order_id)
-            if cancel:
-                try:
-                    import order_retry
-                    order_retry.resolve_accepted_order(symbol, order_id)
-                except Exception:
-                    pass
+            if _cancel_and_resolve(symbol, order_id):
                 print(f"Cancelled {order_type} order with ID: {order_id} (recent order).")
                 count += 1
             else:
@@ -439,14 +432,8 @@ def check_order_filled(order_id, symbol):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         symbol = symbol.strip().upper()
-        cleaned_oid = (
-            extract_order_id(order_id, default=None)
-            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
-            else None
-        )
-        if isinstance(cleaned_oid, str):
-            cleaned_oid = _clean_bapi_oid_str(cleaned_oid)
-        if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
+        cleaned_oid = _resolve_valid_bapi_oid(order_id)
+        if cleaned_oid is None:
             return False
         from providers.market_api import api as market_api
         return market_api.order_status(symbol, cleaned_oid).fully_filled

@@ -6,8 +6,17 @@ Used for offline research and evaluation of sequence models against Lindy baseli
 
 from __future__ import annotations
 
+import os
+import sys
+
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from botcore import safe_float, safe_pos_float  # noqa: E402
 
 try:
     import torch
@@ -41,22 +50,12 @@ class PricePrediction:
         lr: float = 0.01,
         epochs: int = 30,
     ) -> None:
-        def _num(v, default: float) -> float:
-            if v is None or isinstance(v, bool):
-                return default
-            try:
-                f = float(v)
-                return f if np.isfinite(f) else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
-        ws_f = _num(window_size, 10.0)
-        hs_f = _num(hidden_size, 32.0)
-        lr_f = _num(lr, 0.01)
-        ep_f = _num(epochs, 30.0)
-        self.window_size = max(2, int(ws_f)) if np.isfinite(ws_f) else 10
-        safe_hidden = max(1, int(hs_f)) if np.isfinite(hs_f) else 32
-        safe_lr = lr_f if np.isfinite(lr_f) and lr_f > 0 else 0.01
+        ws_f = safe_float(window_size, default=10.0)
+        hs_f = safe_float(hidden_size, default=32.0)
+        ep_f = safe_float(epochs, default=30.0)
+        self.window_size = max(2, int(ws_f))
+        safe_hidden = max(1, int(hs_f))
+        safe_lr = safe_pos_float(lr, default=0.01)
         self.prices: list[float] = []
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         self._fallback_weights: np.ndarray | None = None
@@ -69,17 +68,11 @@ class PricePrediction:
             self.optimizer = None
             self.criterion = None
         self.trained = False
-        self.epochs = max(1, int(ep_f)) if np.isfinite(ep_f) else 30
+        self.epochs = max(1, int(ep_f))
 
     @staticmethod
     def _valid_price(price: object) -> float | None:
-        if isinstance(price, bool) or price is None:
-            return None
-        try:
-            val = float(price)
-        except (TypeError, ValueError):
-            return None
-        return val if np.isfinite(val) and val > 0 else None
+        return safe_pos_float(price, default=None)
 
     def process_price(self, price: float) -> None:
         """Append price and trigger periodic model retraining."""
@@ -161,17 +154,13 @@ class PricePrediction:
                 return None
             x_aug = np.append(last_seq_scaled.reshape(1, -1), [[1.0]], axis=1)
             pred_scaled = x_aug @ self._fallback_weights
-            pred = self.scaler.inverse_transform(pred_scaled)
-            val = float(pred[0][0])
-            return val if np.isfinite(val) else None
-
-        self.model.eval()
-        with torch.no_grad():
-            X_t = torch.tensor(last_seq_scaled, dtype=torch.float32)
-            pred_scaled = self.model(X_t).numpy()
-            pred = self.scaler.inverse_transform(pred_scaled)
-            val = float(pred[0][0])
-            return val if np.isfinite(val) else None
+        else:
+            self.model.eval()
+            with torch.no_grad():
+                X_t = torch.tensor(last_seq_scaled, dtype=torch.float32)
+                pred_scaled = self.model(X_t).numpy()
+        pred = self.scaler.inverse_transform(pred_scaled)
+        return safe_float(pred[0][0], default=None)
 
 
 if __name__ == "__main__":

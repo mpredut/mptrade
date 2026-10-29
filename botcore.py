@@ -416,14 +416,9 @@ def http_post_form(
 
 def diff_percent(value1: float, value2: float) -> float:
     """Return symmetric percentage difference relative to the values' absolute mean."""
-    if isinstance(value1, bool) or isinstance(value2, bool):
-        return float("nan")
-    try:
-        v1 = float(value1)
-        v2 = float(value2)
-    except (TypeError, ValueError, OverflowError):
-        return float("nan")
-    if not (math.isfinite(v1) and math.isfinite(v2)):
+    v1 = safe_float(value1, default=None)
+    v2 = safe_float(value2, default=None)
+    if v1 is None or v2 is None:
         return float("nan")
     if v1 == v2:
         return 0.0
@@ -438,13 +433,8 @@ def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> b
 
     For price thresholds, are_close(price, threshold, 0.05) treats a price within
     0.05% as reached, avoiding missed entries by a few cents."""
-    if isinstance(tolerance_percent, bool):
-        return False
-    try:
-        tol = float(tolerance_percent)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if not math.isfinite(tol) or tol < 0.0:
+    tol = safe_nonneg_float(tolerance_percent, default=None)
+    if tol is None:
         return False
     diff = diff_percent(value1, value2)
     return math.isfinite(diff) and diff <= tol
@@ -456,14 +446,9 @@ def diff_equals_percent(value1: float, value2: float, target_percent: float,
     deterministic two-sided band. Unlike are_close, this asks whether values differ by
     about X percent, e.g. whether price fell about 10%. Replaces the randomized
     utils.are_difference_equal_with_aprox_proc implementation."""
-    if isinstance(target_percent, bool) or isinstance(tolerance_percent, bool):
-        return False
-    try:
-        target = float(target_percent)
-        tol = float(tolerance_percent)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if not (math.isfinite(target) and math.isfinite(tol)) or target < 0.0 or tol < 0.0:
+    target = safe_nonneg_float(target_percent, default=None)
+    tol = safe_nonneg_float(tolerance_percent, default=None)
+    if target is None or tol is None:
         return False
     diff = diff_percent(value1, value2)
     return math.isfinite(diff) and abs(diff - target) <= tol

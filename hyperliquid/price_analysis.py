@@ -33,6 +33,7 @@ if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.
     _c_spec.loader.exec_module(_common_mod)
 load_env_stack = _common_mod.load_env_stack
 required_int_env = _common_mod.required_int_env
+safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
 
 load_env_stack(os.path.join(_HERE, ".env"))
@@ -51,6 +52,14 @@ def _fast_linear_slope_1d(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.dot(dev_x, y) / var_x)
 
 
+def _exact_min_int(val: object, min_val: int) -> int | None:
+    f = safe_float(val, default=None)
+    if f is None or not f.is_integer():
+        return None
+    i = int(f)
+    return i if i >= min_val else None
+
+
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW):
@@ -62,24 +71,12 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         or isinstance(prices, (bool, str, bytes))
     ):
         return None
-    if any(isinstance(v, bool) for v in (window_hours, step_hours, min_consecutive_blocks, noise_tolerance, min_points_per_window)):
-        return None
-    try:
-        wh_f = float(window_hours)
-        sh_f = float(step_hours)
-        mcb_f = float(min_consecutive_blocks)
-        nt_f = float(noise_tolerance)
-        mpw_f = float(min_points_per_window)
-        if not (math.isfinite(mcb_f) and mcb_f.is_integer() and math.isfinite(nt_f) and nt_f.is_integer() and math.isfinite(mpw_f) and mpw_f.is_integer()):
-            return None
-        mcb_i = int(mcb_f)
-        nt_i = int(nt_f)
-        mpw_i = int(mpw_f)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not (math.isfinite(wh_f) and wh_f > 0.0 and math.isfinite(sh_f) and sh_f > 0.0):
-        return None
-    if mcb_i < 1 or nt_i < 0 or mpw_i < 2:
+    wh_f = safe_pos_float(window_hours, default=None)
+    sh_f = safe_pos_float(step_hours, default=None)
+    mcb_i = _exact_min_int(min_consecutive_blocks, 1)
+    nt_i = _exact_min_int(noise_tolerance, 0)
+    mpw_i = _exact_min_int(min_points_per_window, 2)
+    if wh_f is None or sh_f is None or mcb_i is None or nt_i is None or mpw_i is None:
         return None
     try:
         raw_ts = list(timestamps)
@@ -90,14 +87,9 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         return None
     pairs: list[tuple[float, float]] = []
     for t_item, p_item in zip(raw_ts, raw_px):
-        if isinstance(t_item, bool) or isinstance(p_item, bool):
-            continue
-        try:
-            tf = float(t_item)
-            pf = float(p_item)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+        tf = safe_pos_float(t_item, default=None)
+        pf = safe_pos_float(p_item, default=None)
+        if tf is not None and pf is not None:
             pairs.append((tf, pf))
     if len(pairs) < 2:
         return None
@@ -174,17 +166,12 @@ def analyze(client, coin: str) -> dict | None:
     candles = client.candles(coin, "1h", lookback_hours=lookback)
     pts: list[tuple[float, float]] = []
     for c in candles or []:
-        if not isinstance(c, dict) or c.get("t") is None or c.get("c") is None:
+        if not isinstance(c, dict):
             continue
-        if isinstance(c.get("t"), bool) or isinstance(c.get("c"), bool):
-            continue
-        try:
-            t_s = float(c["t"]) / 1000.0
-            c_v = float(c["c"])
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(t_s) and t_s > 0 and math.isfinite(c_v) and c_v > 0:
-            pts.append((t_s, c_v))
+        t_ms = safe_pos_float(c.get("t"), default=None)
+        c_v = safe_pos_float(c.get("c"), default=None)
+        if t_ms is not None and c_v is not None:
+            pts.append((t_ms / 1000.0, c_v))
     if len(pts) < window_hours:
         return None
     ts = [p[0] for p in pts]

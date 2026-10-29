@@ -29,7 +29,7 @@ from typing import Dict, Optional, Set, Callable
 
 import symbols as sym
 import utils as u
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float
 
 try:
     from keys.apikeys import api_key_ws
@@ -67,8 +67,7 @@ def _as_bool(value, default: bool = False) -> bool:
 
 
 def _sanitize_timeout(timeout, default: float = WS_STOP_TIMEOUT) -> float:
-    t_f = safe_float(timeout, default=default)
-    return t_f if t_f >= 0.0 else float(default)
+    return safe_nonneg_float(timeout, default=float(default))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -170,22 +169,10 @@ class BinanceWSBase:
 
     # ─── Shared helpers ──────────────────────────────────────────────────────
     async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
-        if delay is None or isinstance(delay, bool):
+        delay_f = safe_pos_float(delay, default=None)
+        if delay_f is None:
             return
-        try:
-            delay_f = float(delay)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not math.isfinite(delay_f) or delay_f <= 0.0:
-            return
-        step_f = 0.2
-        if step is not None and not isinstance(step, bool):
-            try:
-                cand_step = float(step)
-                if math.isfinite(cand_step) and cand_step > 0.0:
-                    step_f = cand_step
-            except (TypeError, ValueError, OverflowError):
-                pass
+        step_f = safe_pos_float(step, default=0.2)
         elapsed = 0.0
         while elapsed < delay_f and not self._stop_event.is_set():
             await asyncio.sleep(min(step_f, delay_f - elapsed))
@@ -214,6 +201,13 @@ class BinancePriceStream(BinanceWSBase):
         get_all_prices(), subscribe(sub)/unsubscribe(sub), running_symbols.
     """
 
+    @staticmethod
+    def _norm_ws_symbol(symbol: object) -> Optional[str]:
+        if not isinstance(symbol, str):
+            return None
+        s = symbol.strip().upper().replace("/", "")
+        return s or None
+
     def __init__(self, symbols: Optional[list] = None):
         super().__init__()
         self._prices: Dict[str, float] = {}
@@ -226,8 +220,9 @@ class BinancePriceStream(BinanceWSBase):
             symbols = [symbols]
         if symbols:
             for s in symbols:
-                if isinstance(s, str) and s.strip():
-                    self._subscribed.add(s.strip().upper().replace("/", ""))
+                norm_s = self._norm_ws_symbol(s)
+                if norm_s:
+                    self._subscribed.add(norm_s)
 
     def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
         # Preserve the original non-daemon market-manager thread behavior.
@@ -395,9 +390,9 @@ class BinancePriceStream(BinanceWSBase):
 
     # ─── Public API ───────────────────────────────────────────────────────────
     def add_symbol(self, symbol: str) -> bool:
-        if not isinstance(symbol, str) or not symbol.strip():
+        symbol = self._norm_ws_symbol(symbol)
+        if not symbol:
             return False
-        symbol = symbol.strip().upper().replace("/", "")
         with self._lock:
             if symbol in self._subscribed:
                 logger.debug("[%s] Already subscribed", symbol)
@@ -410,9 +405,9 @@ class BinancePriceStream(BinanceWSBase):
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
-        if not isinstance(symbol, str) or not symbol.strip():
+        symbol = self._norm_ws_symbol(symbol)
+        if not symbol:
             return False
-        symbol = symbol.strip().upper().replace("/", "")
         with self._lock:
             if symbol not in self._subscribed:
                 logger.debug("[%s] Not subscribed", symbol)
@@ -423,10 +418,11 @@ class BinancePriceStream(BinanceWSBase):
         return True
 
     def get_price(self, symbol: str) -> Optional[float]:
-        if not isinstance(symbol, str) or not symbol.strip():
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
             return None
         with self._lock:
-            return self._prices.get(symbol.strip().upper().replace("/", ""))
+            return self._prices.get(norm_s)
 
     def get_all_prices(self) -> Dict[str, float]:
         with self._lock:
@@ -463,16 +459,8 @@ class BinanceAccountStream(BinanceWSBase):
         self.on_available = on_available or (lambda *_: None)
         self.on_healthy = on_healthy or (lambda: None)
         self.on_unhealthy = on_unhealthy or (lambda: None)
-        def _pos_float(val, default: float) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-                return f if (math.isfinite(f) and f > 0.0) else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-        self.keepalive_sec = _pos_float(keepalive_sec, float(WS_USERDATA_KEEPALIVE_SEC))
-        self.loss_timeout_sec = _pos_float(loss_timeout_sec, float(WS_USERDATA_LOSS_TIMEOUT_SEC))
+        self.keepalive_sec = safe_pos_float(keepalive_sec, default=float(WS_USERDATA_KEEPALIVE_SEC))
+        self.loss_timeout_sec = safe_pos_float(loss_timeout_sec, default=float(WS_USERDATA_LOSS_TIMEOUT_SEC))
         self._signing_key = u._load_ed25519_signing_key()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._health_lock = threading.Lock()

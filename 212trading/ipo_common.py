@@ -16,10 +16,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
 from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common import ...`)
-    BUCHAREST, HTTP_TIMEOUT, log, load_dotenv, parse_dotenv, float_env,
+    BUCHAREST, HTTP_TIMEOUT, log, load_dotenv, parse_dotenv, float_env, int_env,
     http_get, http_post_json, http_request, single_instance, are_close, diff_percent,
     required_env, required_float_env, required_int_env, required_bool_env,
-    _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int,
+    _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
 )
 
 ET = ZoneInfo("America/New_York")

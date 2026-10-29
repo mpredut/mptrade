@@ -47,7 +47,7 @@ from botcore import (
     parse_dotenv,
     required_bool_env,
     required_float_env,
-    safe_float as _safe_f,
+    safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -441,12 +441,12 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         buy_orders = api.get_orders(symbol, "BUY", maxage_trade_s)
     if sell_orders is None:
         sell_orders = api.get_orders(symbol, "SELL", maxage_trade_s)
-    buy_orders = buy_orders if isinstance(buy_orders, list) else list(buy_orders or ())
-    sell_orders = sell_orders if isinstance(sell_orders, list) else list(sell_orders or ())
+    buy_orders = buy_orders if isinstance(buy_orders, list) else ([] if buy_orders is None or isinstance(buy_orders, bool) else list(buy_orders))
+    sell_orders = sell_orders if isinstance(sell_orders, list) else ([] if sell_orders is None or isinstance(sell_orders, bool) else list(sell_orders))
 
     now_ts = safe_pos_float(now_ts, default=time.time())
     sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
-    maxage_f = _safe_f(maxage_trade_s, 0.0) or 0.0
+    maxage_f = safe_nonneg_float(maxage_trade_s, 0.0)
     cache_key = (_api_cache_identity(api), sym_key, maxage_f)
     total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
     total_sell_qty, total_sell_value, sell_sig = _summarize_orders(sell_orders)
@@ -555,10 +555,9 @@ def _save_mt_state(ts: float | None = None):
         cache_key = (st_file, serialized)
         if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(st_file):
             return
-        ts_val = _safe_f(ts, None)
         data = {
             "version": 1,
-            "ts": ts_val if (ts_val is not None and ts_val > 0) else time.time(),
+            "ts": safe_pos_float(ts, default=None) or time.time(),
             **payload,
         }
         save_json_state(st_file, data, indent=2)
@@ -575,8 +574,7 @@ def _load_mt_state(now_curr: float | None = None):
         data = read_recovering_previous(_effective_mt_state_file(), json.loads, default=None)
         if not isinstance(data, dict):
             return
-        now_val = _safe_f(now_curr, None)
-        now_curr = now_val if (now_val is not None and now_val > 0) else time.time()
+        now_curr = safe_pos_float(now_curr, default=None) or time.time()
         for key, target in (
             ("sl_bounce_state", _SL_BOUNCE_STATE),
             ("sl_episode_state", _SL_EPISODE_STATE),
@@ -945,8 +943,7 @@ def get_available_qty(symbol, api=None):
         else:
             base = u.base_asset(symbol)
             value = api.free_balance(base)
-        val_f = _safe_f(value, None)
-        return val_f if (val_f is not None and val_f >= 0.0) else None
+        return safe_nonneg_float(value, default=None)
     except Exception as e:
         print(f"get_available_qty {symbol}: {e}")
     return None
@@ -1200,14 +1197,12 @@ def _evaluate_hard_take_profit(
 
 def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, gain_threshold: float):
     ride_state = _TP_RIDE_STATE.get(symbol, {})
-    raw_peak_f = _safe_f(ride_state.get("peak_price"), 0.0) or 0.0
+    raw_peak_f = safe_pos_float(ride_state.get("peak_price"), 0.0)
     peak_px = raw_peak_f if raw_peak_f > 0.0 else snapshot.current_price
     pullback_from_peak = snapshot.pullback_ratio(peak_px)
-    lpt = _safe_f(ride_state.get("last_peak_time"), snapshot.current_time_s)
-    if lpt is None:
-        lpt = snapshot.current_time_s
+    lpt = safe_pos_float(ride_state.get("last_peak_time"), snapshot.current_time_s)
     stagnation_elapsed = snapshot.current_time_s - lpt
-    peak_gain = _safe_f(ride_state.get("peak_gain"), 0.0) or 0.0
+    peak_gain = safe_float(ride_state.get("peak_gain"), 0.0)
     profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
     if decision.metadata.get("state") == "initiated":
         print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={snapshot.gain_pct:.2f}%, "
@@ -1264,8 +1259,7 @@ def _execute_take_profit(
             _save_mt_state()
         return False
 
-    sell_frac_f = _safe_f(getattr(tp_decision, "sell_fraction", 1.0), 1.0)
-    sell_frac = sell_frac_f if (sell_frac_f is not None and sell_frac_f > 0.0) else 1.0
+    sell_frac = safe_pos_float(getattr(tp_decision, "sell_fraction", 1.0), 1.0)
     sell_qty = (
         round(sellable_qty * sell_frac, 8)
         if 0.0 < sell_frac < 1.0
@@ -1315,16 +1309,12 @@ def _execute_take_profit(
 
 def _log_sl_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, lost_threshold: float):
     bounce_state = _SL_BOUNCE_STATE.get(symbol, {})
-    raw_peak_f = _safe_f(bounce_state.get("peak_bounce_price"), 0.0) or 0.0
+    raw_peak_f = safe_pos_float(bounce_state.get("peak_bounce_price"), 0.0)
     peak_px = raw_peak_f if raw_peak_f > 0.0 else snapshot.current_price
-    st_f = _safe_f(bounce_state.get("started_at"), snapshot.current_time_s)
-    if st_f is None:
-        st_f = snapshot.current_time_s
+    st_f = safe_pos_float(bounce_state.get("started_at"), snapshot.current_time_s)
     elapsed = snapshot.current_time_s - st_f
     default_df = lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT
-    disaster_floor = _safe_f(decision.metadata.get("disaster_floor"), default_df)
-    if disaster_floor is None:
-        disaster_floor = default_df
+    disaster_floor = safe_pos_float(decision.metadata.get("disaster_floor"), default_df)
     if decision.metadata.get("state") == "initiated":
         print(f"[{symbol}] Stop-Loss entered bounce watch (trend up): dip={snapshot.loss_pct:.2f}%, "
               f"disaster_floor={disaster_floor*100:.2f}%, starting {MT_SL_TREND_DEFER_MAX_SEC:.0f}s timer")
@@ -1590,7 +1580,7 @@ def _can_pass_buy_quantity_policy(
         )
         if decision is None:
             return True
-        final_qty = _safe_f(getattr(decision, "final_qty", 0.0), 0.0) or 0.0
+        final_qty = safe_nonneg_float(getattr(decision, "final_qty", 0.0), 0.0)
         if final_qty <= 0.0:
             refuse_reason = getattr(decision, "refuse_reason", None) or "qty_zero_after_policy"
             balance_asset = getattr(decision, "balance_asset", None) or quote_asset or "quote"
@@ -1647,7 +1637,7 @@ def _can_pass_buy_quantity_policy(
                 f"intelligence_guard ({intel_reason})"
             )
             return False
-        intel_scale_f = _safe_f(intel_scale, 1.0)
+        intel_scale_f = safe_float(intel_scale, 1.0)
         if intel_scale_f is not None and 0.0 < intel_scale_f < 1.0:
             scaled_qty = final_qty * intel_scale_f
             round_fn = (
@@ -1753,7 +1743,7 @@ def _apply_post_stop_ai_guard(
                     market=False,
                 )
                 if q_dec is not None:
-                    policy_qty = _safe_f(getattr(q_dec, "final_qty", 0.0), 0.0) or 0.0
+                    policy_qty = safe_nonneg_float(getattr(q_dec, "final_qty", 0.0), 0.0)
                     if 0.0 < policy_qty < _est_qty:
                         _est_qty = round(policy_qty, 6)
             except Exception:
@@ -1770,7 +1760,7 @@ def _apply_post_stop_ai_guard(
             last_sell_time_s=sell_time,
             now=reentry_snap.current_time_s,
         )
-        ps_scale = _safe_f(getattr(_ps_dec, "suggested_scale", 1.0), 1.0)
+        ps_scale = safe_float(getattr(_ps_dec, "suggested_scale", 1.0), 1.0)
         if ps_scale is None or not (0.0 < ps_scale <= 1.0):
             ps_scale = 1.0
         if not _ps_dec.allowed:
@@ -1850,7 +1840,7 @@ def _execute_reentry_buy(
     else:
         reentry_bypass = {"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None
     extra_kwargs = {}
-    applied_scale_f = _safe_f(applied_scale, 1.0)
+    applied_scale_f = safe_float(applied_scale, 1.0)
     if applied_scale_f is not None and 0.0 < applied_scale_f < 1.0 and not _is_simulated_env_or_inst(inst):
         extra_kwargs["applied_scale"] = applied_scale_f
     placed = _place_guarded(
@@ -1896,7 +1886,7 @@ def _resolve_mt_inst_cfg(inst):
     buy_budget = inst.param("mt", "buy_budget", None, float)
     buy_qty_cfg = inst.param("mt", "buy_qty", None, float)
     max_budget = inst.param("mt", "max_budget", None, float)
-    min_qty = _safe_f(inst.min_qty(), 0.0) or 0.0
+    min_qty = safe_nonneg_float(inst.min_qty(), 0.0)
     prov_label = _inst_provider(inst)
     vals = (
         def_gain, def_lost, def_maxage_s,
@@ -2038,7 +2028,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         _TP_RIDE_STATE.pop(symbol, None)
         _save_mt_state()
     if trade_orders_buy and not position_closed_by_sell:
-        buy_price_f = _safe_f(buy_price, 0.0) or 0.0
+        buy_price_f = safe_pos_float(buy_price, 0.0)
         if buy_price_f <= 0.0:
             if _verbose:
                 print(f"No buy_price !!!!!")
@@ -2137,7 +2127,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
     # 4. Evaluate SELL history (only when the latest SELL is at least as recent as any BUY).
     if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
-        sell_price_f = _safe_f(sell_price, 0.0) or 0.0
+        sell_price_f = safe_pos_float(sell_price, 0.0)
         if sell_price_f <= 0.0:
             if _verbose:
                 print(f"No sell_price !!!!!")
