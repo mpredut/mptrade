@@ -15,7 +15,6 @@ deadlocks under the lock. State persists; the lock does not.
 """
 import os
 import json
-import math
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 import time
 import socket
@@ -41,7 +40,7 @@ def _is_active_entry(last, now: float, ttl: float) -> bool:
 
 def _sanitize_json_payload(value):
     if isinstance(value, float):
-        return value if math.isfinite(value) else None
+        return safe_float(value, default=None)
     if isinstance(value, dict):
         return {k: _sanitize_json_payload(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):

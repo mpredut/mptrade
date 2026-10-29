@@ -12,7 +12,7 @@ import math
 from typing import Sequence
 import numpy as np
 
-from botcore import safe_float
+from botcore import safe_float, safe_pos_float
 
 
 def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
@@ -82,8 +82,8 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
         m = (n // k) * k
         agg = r[:m].reshape(-1, k).sum(axis=1)
         if len(agg) >= 8:
-            v = float(np.var(agg))
-            if v > 0 and math.isfinite(v):
+            v = safe_pos_float(np.var(agg), default=None)
+            if v is not None:
                 ks.append(k)
                 vs.append(v)
         k *= 2
@@ -98,8 +98,7 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
     if var_x <= 0.0:
         return None
     slope = float(np.dot(dev_x, ly) / var_x)
-    h_val = float(slope / 2.0)
-    return h_val if math.isfinite(h_val) else None
+    return safe_float(slope / 2.0, default=None)
 
 
 def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -> str:

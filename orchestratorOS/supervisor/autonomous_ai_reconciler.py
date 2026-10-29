@@ -15,7 +15,6 @@ from dataclasses import asdict, dataclass, field
 import glob
 import json
 import logging
-import math
 import os
 import re
 import subprocess
@@ -684,14 +683,10 @@ class AutonomousAIReconciler:
     ) -> None:
         self.workspace_dir = workspace_dir or os.getcwd()
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
-        if (
-            isinstance(lookback_hours, bool)
-            or not isinstance(lookback_hours, (int, float))
-            or not math.isfinite(float(lookback_hours))
-            or float(lookback_hours) <= 0
-        ):
+        lb = safe_pos_float(lookback_hours, default=None) if isinstance(lookback_hours, (int, float)) else None
+        if lb is None:
             raise ValueError("lookback_hours must be a positive finite number")
-        self.lookback_hours = float(lookback_hours)
+        self.lookback_hours = lb
         self.logs_dirs = [os.path.join(self.workspace_dir, d) for d in (logs_dirs or ["logs", "logger"])]
         self.gemini_auditor = gemini_auditor or GeminiClient()
         self._intent_gateway = intent_gateway
@@ -978,8 +973,8 @@ class AutonomousAIReconciler:
                 if callable(free_fn):
                     try:
                         raw = free_fn(asset)
-                        if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(float(raw)):
-                            val_f = float(raw)
+                        if isinstance(raw, (int, float)):
+                            val_f = safe_float(raw, default=None)
                     except Exception:
                         val_f = None
                 balance_memo[key] = val_f

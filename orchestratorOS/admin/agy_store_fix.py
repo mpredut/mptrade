@@ -32,7 +32,6 @@ import glob
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -45,7 +44,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_pos_float
 
 from orchestratorOS.agy.paths import resolve_store_lock_path, visible_conversations_dir  # noqa: E402
 from orchestratorOS.agy.protobuf import (  # noqa: E402
@@ -373,10 +372,7 @@ def newest_daemon_log_ready(since: float, pid: str = "") -> bool:
 
 
 def mode_post(timeout: int = 50) -> int:
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
-        timeout_s = 50.0
-    else:
-        timeout_s = float(timeout)
+    timeout_s = safe_pos_float(timeout, default=50.0)
     start = time.time()
     deadline = start + timeout_s
     ready = False
@@ -593,12 +589,7 @@ def last_store_activity() -> float:
 
 
 def mode_ui_sync_check(idle_sec: int) -> int:
-    if (
-        isinstance(idle_sec, bool)
-        or not isinstance(idle_sec, (int, float))
-        or not math.isfinite(float(idle_sec))
-        or idle_sec <= 0
-    ):
+    if not isinstance(idle_sec, (int, float)) or safe_pos_float(idle_sec, default=None) is None:
         raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
