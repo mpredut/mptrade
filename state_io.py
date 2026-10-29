@@ -18,7 +18,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, fetch_public_json, safe_float
 from cachepaths import resolve_cachedb_filepath
 
 T = TypeVar("T")
@@ -818,4 +818,62 @@ def read_recovering_previous(
                 if mapped is not recovery_exc:
                     raise mapped from recovery_exc
             raise primary_exc from recovery_exc
+
+
+_JSON_DICT_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
+_ORIG_READ_RECOVERING_ID = id(read_recovering_previous)
+
+
+def read_json_recovering(path: str, *, default: Any = None) -> Any:
+    """Read and parse any UTF-8 JSON file with ``.previous`` recovery, returning ``default`` on error."""
+    return read_json_file(path, default=default, recover_previous=True)
+
+
+def read_json_dict_recovering(path: str, *, default: Any = None) -> dict[str, Any] | Any:
+    """Read and parse a UTF-8 JSON dict file with ``.previous`` recovery, returning ``default`` on error."""
+    return read_json_dict(path, default=default, recover_previous=True)
+
+
+def read_json_dict_cached(
+    path: str,
+    memo: dict[str, tuple[tuple, dict[str, Any]]] | None = None,
+    *,
+    max_entries: int = 32,
+) -> dict[str, Any] | None:
+    """Stat-memoized ``read_json_dict(..., default=None, recover_previous=True)`` checking both ``path`` and ``path.previous``."""
+    if not path or not isinstance(path, str):
+        return None
+    try:
+        resolved = str(resolve_cachedb_filepath(os.fspath(path)))
+    except Exception:
+        return None
+    backup_path = previous_generation_path(resolved)
+    st_main = None
+    st_bak = None
+    try:
+        st = os.stat(resolved)
+        st_main = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        pass
+    try:
+        sb = os.stat(backup_path)
+        st_bak = (sb.st_mtime_ns, sb.st_size)
+    except OSError:
+        pass
+    if st_main is None and st_bak is None and id(read_recovering_previous) == _ORIG_READ_RECOVERING_ID:
+        return None
+
+    cache_store = _JSON_DICT_MEMO if memo is None else memo
+    sig = (st_main, st_bak, id(read_recovering_previous), id(json.load))
+    cached = cache_store.get(resolved)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+
+    res = read_json_dict(resolved, default=None, backup_path=backup_path, recover_previous=True)
+    if isinstance(res, dict):
+        if len(cache_store) > max_entries:
+            cache_store.clear()
+        cache_store[resolved] = (sig, res)
+        return res
+    return None
 

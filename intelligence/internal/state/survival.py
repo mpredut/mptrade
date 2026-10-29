@@ -11,7 +11,6 @@ Estimates trend longevity distributions (Weibull / Kaplan-Meier) and calibrated 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -32,7 +31,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from state_io import read_recovering_previous, save_json_state
+from state_io import read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
@@ -317,26 +316,7 @@ _T_CACHE_FILE_MEMO: dict = {}
 
 
 def _read_t_cache_dict(t_cache_path: str) -> Optional[dict]:
-    if not t_cache_path or not isinstance(t_cache_path, str):
-        return None
-    stat_sig = None
-    try:
-        st = os.stat(t_cache_path)
-        stat_sig = (st.st_mtime_ns, st.st_size, id(read_recovering_previous))
-    except OSError:
-        stat_sig = None
-    if stat_sig is not None:
-        cached = _T_CACHE_FILE_MEMO.get(t_cache_path)
-        if cached is not None and cached[0] == stat_sig:
-            return cached[1]
-    loaded = read_recovering_previous(t_cache_path, json.loads, default=None)
-    if isinstance(loaded, dict):
-        if stat_sig is not None:
-            if len(_T_CACHE_FILE_MEMO) > 16:
-                _T_CACHE_FILE_MEMO.clear()
-            _T_CACHE_FILE_MEMO[t_cache_path] = (stat_sig, loaded)
-        return loaded
-    return None
+    return read_json_dict_cached(t_cache_path, _T_CACHE_FILE_MEMO, max_entries=16)
 
 
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:

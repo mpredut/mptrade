@@ -1144,37 +1144,8 @@ _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 
 
 def _read_json_recovering(path: str) -> Optional[dict]:
-    from cachepaths import resolve_cachedb_filepath
-    from state_io import previous_generation_path, read_json_dict, read_recovering_previous
-
-    resolved = str(resolve_cachedb_filepath(path))
-    backup_path = previous_generation_path(resolved)
-    st_main = None
-    st_bak = None
-    try:
-        st = os.stat(resolved)
-        st_main = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        pass
-    try:
-        sb = os.stat(backup_path)
-        st_bak = (sb.st_mtime_ns, sb.st_size)
-    except OSError:
-        pass
-    if st_main is None and st_bak is None:
-        return None
-
-    sig = (st_main, st_bak, id(read_recovering_previous), id(json.load))
-    cached = _JSON_RECOVERING_MEMO.get(resolved)
-    if cached is not None and cached[0] == sig:
-        return cached[1]
-
-    res = read_recovering_previous(resolved, read_json_dict, backup_path=backup_path)
-    if isinstance(res, dict):
-        if len(_JSON_RECOVERING_MEMO) > 32:
-            _JSON_RECOVERING_MEMO.clear()
-        _JSON_RECOVERING_MEMO[resolved] = (sig, res)
-    return res
+    from state_io import read_json_dict_cached
+    return read_json_dict_cached(path, _JSON_RECOVERING_MEMO, max_entries=32)
 
 
 def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:

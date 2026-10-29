@@ -406,6 +406,23 @@ def http_post_form(
     return http_request("POST", url, headers=headers, form=data)
 
 
+def fetch_public_json(
+    url: str,
+    *,
+    timeout: float = 5.0,
+    user_agent: str = "mptrade-intelligence/1.0",
+    headers: dict | None = None,
+) -> object:
+    """Fetch and decode a JSON payload from a public HTTP GET endpoint."""
+    req_headers = {"User-Agent": user_agent}
+    if isinstance(headers, dict):
+        req_headers.update(headers)
+    req = urllib.request.Request(url, headers=req_headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+
+
 # ── DETERMINISTIC percentage-based approximate comparisons ───────────────────
 # Single source for the fleet and bots. Replaces utils.are_close, whose random.randint
 # tolerance loop could return True OR False for the same input in [tol*1.01, tol*1.5],

@@ -32,8 +32,8 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
 from state_io import (
-    read_json_dict as read_json_cached,
     read_json_dict,
+    read_json_dict_recovering as read_json_cached,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
 )
@@ -697,8 +697,7 @@ def load_symbol_microstructure(
     from cachepaths import cache_symbol_variants
 
     if read_json_fn is None:
-        from orchestratorOS.lib.technical_repair_ssot import read_json_recovering
-        read_json_fn = read_json_recovering
+        read_json_fn = read_json_cached
     sym_cands = cache_symbol_variants(sym)
     ob = next(
         (

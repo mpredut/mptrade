@@ -47,11 +47,8 @@ def fetch_ohlc_candles(
     interval = int(itv_f)
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "mptrade/kraken-ohlc-fetcher"}
-    )
-    with urllib.request.urlopen(req, timeout=to_f) as r:
-        data = json.loads(r.read())
+    from botcore import fetch_public_json
+    data = fetch_public_json(url, timeout=to_f, user_agent="mptrade/kraken-ohlc-fetcher")
     if not isinstance(data, dict):
         raise RuntimeError(f"invalid Kraken OHLC payload: {data!r}")
     if data.get("error"):

@@ -15,14 +15,12 @@ from __future__ import annotations
 import configparser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
 import logging
 import os
 import re
 import threading
 import time
 import urllib.parse
-import urllib.request
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -47,6 +45,7 @@ except ImportError:  # pragma: no cover
 
 from botcore import (
     _parse_bool_flag,
+    fetch_public_json,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -166,18 +165,6 @@ def extract_high_severity_headlines_and_digest(
     )
     digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:max_digest_items])
     return high_sev, digest
-
-
-def fetch_public_json(
-    url: str,
-    *,
-    timeout: float = 5.0,
-    user_agent: str = "mptrade-intelligence/1.0",
-) -> Any:
-    """Fetch and parse a JSON payload from a public HTTP endpoint."""
-    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
 
 
 def obj_attr(obj: Any, key: str, default: Any = None) -> Any:

@@ -17035,3 +17035,35 @@ def test_iteration183_collector_json_fetch_hierarchical_mode_and_directional_tri
     assert latest == {"longShortRatio": "1.5"} and len(rows) == 2
 
 
+def test_iteration184_centralized_state_io_json_helpers_and_fetch_public_json(tmp_path):
+    import json
+    import botcore
+    import state_io
+    import intelligence.macro_sentiment_ssot as ssot
+
+    # 1. fetch_public_json is centralized in botcore/state_io and re-exported in macro_sentiment_ssot
+    assert state_io.fetch_public_json is botcore.fetch_public_json
+    assert ssot.fetch_public_json is botcore.fetch_public_json
+
+    # 2. read_json_recovering & read_json_dict_recovering handle missing, corrupt+.previous, and non-dict files
+    missing_path = str(tmp_path / "missing.json")
+    assert state_io.read_json_recovering(missing_path) is None
+    assert state_io.read_json_dict_recovering(missing_path) is None
+
+    list_path = tmp_path / "list_state.json"
+    list_path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert state_io.read_json_recovering(str(list_path)) == [1, 2, 3]
+    assert state_io.read_json_dict_recovering(str(list_path)) is None
+
+    # 3. read_json_dict_cached memoizes by stat signature and recovers from .previous
+    memo = {}
+    dict_path = tmp_path / "cached_dict.json"
+    prev_path = tmp_path / "cached_dict.json.previous"
+    dict_path.write_text("{corrupt", encoding="utf-8")
+    prev_path.write_text(json.dumps({"BTCUSDC": {"T": 12.0}}), encoding="utf-8")
+    loaded = state_io.read_json_dict_cached(str(dict_path), memo, max_entries=8)
+    assert loaded == {"BTCUSDC": {"T": 12.0}}
+    assert len(memo) == 1
+
+
+

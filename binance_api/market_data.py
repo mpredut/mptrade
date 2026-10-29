@@ -14,7 +14,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, fetch_public_json, safe_float, safe_pos_float
 
 API_URL = "https://api.binance.com/api/v3/klines"
 
@@ -166,15 +166,12 @@ def fetch_ohlc_candles(
             "limit": batch_limit,
         }
         url = f"{API_URL}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(
+        raw = fetch_public_json(
             url,
-            headers={
-                "User-Agent": "mptrade/binance-ohlc-fetcher",
-                "Accept": "application/json",
-            },
+            timeout=timeout_f,
+            user_agent="mptrade/binance-ohlc-fetcher",
+            headers={"Accept": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=timeout_f) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
 
         if not isinstance(raw, list) or not raw:
             break
