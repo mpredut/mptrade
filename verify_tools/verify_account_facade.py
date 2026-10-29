@@ -38,14 +38,14 @@ import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 base_of = utils.base_asset
 
 
-from botcore import safe_float as _f, safe_float, safe_pos_float
+from botcore import safe_float, safe_pos_float
 
 
 def free_direct(base):
     """Legacy full-account loop; unavailable account data is indistinguishable from zero."""
     for b in (api.get_account_assets_balances() or []):
         if isinstance(b, dict) and b.get("asset") == base:
-            return _f(b.get("free"), 0.0)
+            return safe_float(b.get("free"), default=0.0)
     return 0.0
 
 

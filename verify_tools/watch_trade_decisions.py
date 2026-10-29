@@ -21,7 +21,7 @@ from binance_api import bapi as api  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
-from botcore import safe_float as _f, safe_float, safe_pos_float  # noqa: E402
+from botcore import safe_float, safe_pos_float  # noqa: E402
 from instrument_registry import load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402
 
@@ -36,7 +36,7 @@ def free_qty(symbol):
     base = _base(symbol)
     for b in (api.get_account_assets_balances() or []):
         if isinstance(b, dict) and b.get("asset") == base:
-            return _f(b.get("free", 0), 0.0)
+            return safe_float(b.get("free", 0), default=0.0)
     return 0.0
 
 
@@ -82,7 +82,7 @@ def main():
         snap = mgr.get_snapshot(s) or {}
         if not isinstance(snap, dict):
             snap = {}
-        px = _f(snap.get("current_price"), 0.0) or _f(api.get_current_price(s), 0.0) or 0.0
+        px = safe_float(snap.get("current_price"), default=0.0) or safe_float(api.get_current_price(s), default=0.0) or 0.0
         target = snap
         fast_w = pw.fast_trend_window_for_symbol(s)
         dyn = snap.get("dynamic")
@@ -93,7 +93,7 @@ def main():
         raw_gc = target.get("growth_coefficient")
         if raw_gc is None or isinstance(raw_gc, bool):
             raw_gc = target.get("gradient_recent", 0.0)
-        gr = _f(raw_gc, 0.0)
+        gr = safe_float(raw_gc, default=0.0)
         avg, net, n_sells, last_buy = position(s)
         free = free_qty(s)
         ref = last_buy or avg   # The bot uses the LAST buy as its reference (TP_REFERENCE="last").
