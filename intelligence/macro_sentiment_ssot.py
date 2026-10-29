@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
 
 from botcore import (
     _parse_bool_flag,
-    fetch_public_json,
+    fetch_public_json as _fetch_public_json,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -53,6 +53,8 @@ from botcore import (
     safe_nonneg_float as safe_nonneg_ts,
     safe_pos_float,
 )
+
+fetch_public_json = _fetch_public_json
 from cachepaths import cache_path, resolve_cachedb_filepath
 from providers.base import normalize_side
 from state_io import (
