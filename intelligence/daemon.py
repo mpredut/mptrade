@@ -23,12 +23,12 @@ from botcore import _parse_bool_flag, load_dotenv, required_float_env
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
+    is_interval_due,
     obj_attr,
     obj_float,
     parse_symbol_list,
     prune_automated_cli_threads,
     resolve_now_ts,
-    safe_nonneg_ts,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat_files,
@@ -137,22 +137,20 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
         self._step_external_symbols(current_ts, force, results, bounded=False)
 
-        if not self.skip_macro:
-            last_macro = safe_nonneg_ts(self._last_macro_ts)
-            if force or not (0.0 <= (current_ts - last_macro) < self.macro_interval_sec):
-                try:
-                    macro_ok = self.update_macro(force=force, now=current_ts)
-                except TypeError:
-                    macro_ok = self.update_macro(force=force)
-                if macro_ok:
-                    results["macro_updated"] = True
-                    self._last_macro_ts = current_ts
+        if not self.skip_macro and is_interval_due(current_ts, self._last_macro_ts, self.macro_interval_sec, force=force):
+            try:
+                macro_ok = self.update_macro(force=force, now=current_ts)
+            except TypeError:
+                macro_ok = self.update_macro(force=force)
+            if macro_ok:
+                results["macro_updated"] = True
+                self._last_macro_ts = current_ts
 
-        if force or not (0.0 <= (current_ts - safe_nonneg_ts(self._last_thread_prune_ts)) < self.thread_prune_interval_sec):
+        if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):
             prune_automated_cli_threads(logger)
             self._last_thread_prune_ts = current_ts
 
-        if force or not (0.0 <= (current_ts - safe_nonneg_ts(self._last_stdout_hb_ts)) < 60.0):
+        if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
             logger.info("Telemetry cycle active: %d symbols monitored (PID=%d)", len(self.symbols), os.getpid())
             self._last_stdout_hb_ts = current_ts
 

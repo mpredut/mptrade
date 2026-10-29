@@ -81,13 +81,16 @@ def clean_scale(
     allow_percentage: bool = False,
     min_positive: bool = False,
 ) -> float:
-    """Normalize a scale factor into [0.0, 1.0], optionally converting (1.0, 100.0] percentages."""
-    f = safe_float(val, -1.0)
+    """Normalize a scale factor into [0.0, 1.0], optionally converting (1.0, 100.0] or '%' percentages."""
+    allow_pct = allow_percent or allow_percentage
+    if allow_pct and isinstance(val, str) and val.strip().endswith("%"):
+        pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
+        f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
+    else:
+        f = safe_float(val, -1.0)
+        if allow_pct and 1.0 < f <= 100.0:
+            f = round(f / 100.0, 4)
     if f < 0.0 or (min_positive and f <= 0.0):
-        return default
-    if (allow_percent or allow_percentage) and 1.0 < f <= 100.0:
-        f = f / 100.0
-    if min_positive and f <= 0.0:
         return default
     return f if 0.0 <= f <= 1.0 else default
 
@@ -111,6 +114,57 @@ def is_cache_fresh(
     lt = safe_nonneg_ts(last_ts, 0.0)
     ttl = safe_nonneg_ts(ttl_sec, 0.0)
     return lt > 0.0 and 0.0 <= (now_ts - lt) < ttl
+
+
+def is_interval_due(
+    current_ts: float,
+    last_ts: Any,
+    interval_sec: Any,
+    *,
+    force: Any = False,
+) -> bool:
+    """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
+    if _parse_bool_flag(force, False):
+        return True
+    lt = safe_nonneg_ts(last_ts, 0.0)
+    itv = safe_nonneg_float(interval_sec, 0.0)
+    return not (0.0 <= (current_ts - lt) < itv)
+
+
+def resolve_order_notional(
+    notional_eur: Any,
+    price: Any,
+    qty: Any,
+    *,
+    default: Optional[float] = None,
+    fallback_on_nonfinite: bool = True,
+) -> Optional[float]:
+    """Resolve positive order notional from explicit ``notional_eur`` or ``price * qty`` fallback."""
+    n_clean = safe_pos_float(notional_eur, 0.0)
+    if n_clean > 0.0:
+        return n_clean
+    if not fallback_on_nonfinite and notional_eur is not None and safe_float(notional_eur, None) is None:
+        return default
+    px_clean = safe_pos_float(price, 0.0)
+    qty_clean = safe_pos_float(qty, 0.0)
+    if px_clean > 0.0 and qty_clean > 0.0:
+        return px_clean * qty_clean
+    return default
+
+
+def extract_high_severity_headlines_and_digest(
+    news_snapshot: Any,
+    max_digest_items: int = 12,
+) -> Tuple[List[Any], str]:
+    """Extract high-severity headlines list and canonical digest string from a NewsFeedSnapshot."""
+    raw_hl = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
+    high_sev = (
+        [h for h in raw_hl if _parse_bool_flag(obj_attr(h, "is_high_severity", False), False)]
+        if isinstance(raw_hl, (list, tuple))
+        else []
+    )
+    digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:max_digest_items])
+    return high_sev, digest
 
 
 def obj_attr(obj: Any, key: str, default: Any = None) -> Any:
@@ -444,8 +498,7 @@ class ExternalTelemetryMixin:
         for sym in getattr(self, "symbols", ()):
             for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
                 ts_map: Dict[str, float] = getattr(self, ts_attr)
-                last_ts = safe_nonneg_ts(ts_map.get(sym, 0.0))
-                if force or not (0.0 <= (current_ts - last_ts) < interval_sec):
+                if is_interval_due(current_ts, ts_map.get(sym, 0.0), interval_sec, force=force):
                     ok = (
                         self._run_step_bounded(fn, sym, timeout_sec=timeout_s, label=f"{lbl_prefix}_{sym}")
                         if bounded

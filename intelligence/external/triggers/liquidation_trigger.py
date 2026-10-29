@@ -7,15 +7,16 @@ Identifies high-probability reversal points triggered by forced liquidations:
 
 from __future__ import annotations
 
-import time
 from typing import Any, Optional
 
 from botcore import safe_float, safe_pos_float
+from intelligence.internal.guards.guard_decision import snap_attr
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.bybit_liquidations import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
+from intelligence.macro_sentiment_ssot import resolve_now_ts
 
 
 class LiquidationCapitulationTrigger:
@@ -47,9 +48,7 @@ class LiquidationCapitulationTrigger:
             return None
         price = price_f
 
-        t_now = safe_pos_float(now, default=None) if now is not None else None
-        if t_now is None:
-            t_now = time.time()
+        t_now = resolve_now_ts(now)
         if summary is None and self.collector is not None:
             try:
                 summary = (
@@ -63,21 +62,18 @@ class LiquidationCapitulationTrigger:
         if summary is None:
             return None
 
-        def _sum_attr(key: str, default: Any = None) -> Any:
-            return summary.get(key, default) if isinstance(summary, dict) else getattr(summary, key, default)
-
-        long_liq = safe_float(_sum_attr("long_liq_usd", None), default=None)
-        short_liq = safe_float(_sum_attr("short_liq_usd", None), default=None)
-        total_usd = safe_float(_sum_attr("total_usd", None), default=None)
+        long_liq = safe_float(snap_attr(summary, "long_liq_usd", None), default=None)
+        short_liq = safe_float(snap_attr(summary, "short_liq_usd", None), default=None)
+        total_usd = safe_float(snap_attr(summary, "total_usd", None), default=None)
         if isinstance(summary, dict) and "total_usd" not in summary and long_liq is not None and short_liq is not None:
             total_usd = long_liq + short_liq
-        cap_ratio = safe_float(_sum_attr("capitulation_ratio", None), default=None)
+        cap_ratio = safe_float(snap_attr(summary, "capitulation_ratio", None), default=None)
         if isinstance(summary, dict) and "capitulation_ratio" not in summary and total_usd is not None and total_usd > 0.0 and long_liq is not None:
             cap_ratio = long_liq / total_usd
-        sq_ratio = safe_float(_sum_attr("squeeze_ratio", None), default=None)
+        sq_ratio = safe_float(snap_attr(summary, "squeeze_ratio", None), default=None)
         if isinstance(summary, dict) and "squeeze_ratio" not in summary and total_usd is not None and total_usd > 0.0 and short_liq is not None:
             sq_ratio = short_liq / total_usd
-        win_sec = safe_float(_sum_attr("window_sec", None), default=self.window_sec)
+        win_sec = safe_float(snap_attr(summary, "window_sec", None), default=self.window_sec)
         if (
             total_usd is None
             or long_liq is None

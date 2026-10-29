@@ -16914,6 +16914,49 @@ def test_iteration181_guard_ssot_helpers_and_cached_qlimit2_delegation():
     assert _resolve_window_ref_from_orders(fake_prov, "BTCUSDC", "SELL", 3600.0, recent_opp, "strict") == pytest.approx(110.0)
 
 
+def test_iteration182_ssot_interval_notional_headline_digest_and_smart_sl_helpers():
+    from types import SimpleNamespace
+    from intelligence.macro_sentiment_ssot import (
+        extract_high_severity_headlines_and_digest,
+        is_interval_due,
+        resolve_order_notional,
+    )
+    from intelligence.external.guards.smart_stop_loss_guard import (
+        _format_price_part,
+        _is_buy_price_changed,
+    )
 
+    # 1. is_interval_due handles elapsed, non-elapsed, future clock skew, None/bool/NaN, and force
+    assert is_interval_due(1050.0, 1000.0, 60.0) is False
+    assert is_interval_due(1060.0, 1000.0, 60.0) is True
+    assert is_interval_due(1050.0, 1000.0, 60.0, force=True) is True
+    assert is_interval_due(990.0, 1000.0, 60.0) is True
+    assert is_interval_due(1050.0, None, 60.0) is True
+    assert is_interval_due(1050.0, float("nan"), 60.0) is True
 
+    # 2. resolve_order_notional handles explicit notional, price*qty fallback, and nonfinite behavior
+    assert resolve_order_notional(800.0, 100.0, 2.0) == pytest.approx(800.0)
+    assert resolve_order_notional(None, 100.0, 2.5) == pytest.approx(250.0)
+    assert resolve_order_notional(0.0, 100.0, 2.5) == pytest.approx(250.0)
+    assert resolve_order_notional(None, 0.0, 2.5, default=None) is None
+    assert resolve_order_notional(float("nan"), 100.0, 10.0, default=0.0, fallback_on_nonfinite=False) == pytest.approx(0.0)
+
+    # 3. extract_high_severity_headlines_and_digest supports both dicts and objects
+    snap = SimpleNamespace(
+        headlines=[
+            SimpleNamespace(title="Breaking War", is_high_severity=True),
+            SimpleNamespace(title="Minor Update", is_high_severity=False),
+            {"title": "Oil Shock", "is_high_severity": "true"},
+        ]
+    )
+    high_sev, digest = extract_high_severity_headlines_and_digest(snap)
+    assert len(high_sev) == 2
+    assert digest == "Breaking War || Oil Shock"
+
+    # 4. SmartStopLossGuard helper deduplications
+    assert _format_price_part(105.0, 100.0) == " | $105.00 (Last Buy Price: $100.00)"
+    assert _format_price_part(105.0, None) == " @ $105.00"
+    assert _format_price_part(None, None) == ""
+    assert _is_buy_price_changed(100.0, 100.0) is False
+    assert _is_buy_price_changed(100.0, 101.0) is True
 

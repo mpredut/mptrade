@@ -28,6 +28,7 @@ from botcore import (
 )
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
+from intelligence.macro_sentiment_ssot import resolve_order_notional
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 from providers.base import (
     extract_order_price,
@@ -175,32 +176,23 @@ _DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
 }
 
 
+def _validate_discrete_cfg(val: Any, valid_set: Any, label: str) -> str:
+    if not isinstance(val, str):
+        raise ValueError(f"Invalid {label} {val!r}; must be a string in {sorted(valid_set)}")
+    mode = val.strip().lower()
+    if mode not in valid_set:
+        raise ValueError(f"Invalid {label} {val!r}; must be one of {sorted(valid_set)}")
+    return mode
+
+
 def validate_profit_guard_mode_cfg(val: Any) -> str:
     """Validate that a profit guard mode is strictly one of VALID_PROFIT_GUARD_MODES."""
-    if not isinstance(val, str):
-        raise ValueError(
-            f"Invalid profit guard mode {val!r}; must be a string in {sorted(VALID_PROFIT_GUARD_MODES)}"
-        )
-    mode = val.strip().lower()
-    if mode not in VALID_PROFIT_GUARD_MODES:
-        raise ValueError(
-            f"Invalid profit guard mode {val!r}; must be one of {sorted(VALID_PROFIT_GUARD_MODES)}"
-        )
-    return mode
+    return _validate_discrete_cfg(val, VALID_PROFIT_GUARD_MODES, "profit guard mode")
 
 
 def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
     """Validate that a guard / supervisor / gateway mode is strictly in VALID_GUARD_MODES."""
-    if not isinstance(val, str):
-        raise ValueError(
-            f"Invalid {key_name} {val!r}; must be a string in {sorted(VALID_GUARD_MODES)}"
-        )
-    mode = val.strip().lower()
-    if mode not in VALID_GUARD_MODES:
-        raise ValueError(
-            f"Invalid {key_name} {val!r}; must be one of {sorted(VALID_GUARD_MODES)}"
-        )
-    return mode
+    return _validate_discrete_cfg(val, VALID_GUARD_MODES, key_name)
 
 
 def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
@@ -218,11 +210,7 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
                 validate_profit_guard_mode_cfg(val)
 
     for policy_key, valid_set in _DISCRETE_POLICY_SETS.items():
-        raw_val = m[policy_key]
-        if not isinstance(raw_val, str) or raw_val.strip().lower() not in valid_set:
-            raise ValueError(
-                f"Invalid {policy_key} {raw_val!r} in {path}; must be one of {sorted(valid_set)}"
-            )
+        _validate_discrete_cfg(m[policy_key], valid_set, f"{policy_key}")
 
     min_auto_usd = safe_pos_float(m.get("autonomous_trading_min_notional_usd"), default=None)
     max_auto_usd = safe_pos_float(m.get("autonomous_trading_max_notional_usd"), default=None)
@@ -343,11 +331,7 @@ def resolve_caller_module(
         return None
 
 
-def _normalize_side_token(order_type: Any) -> str:
-    if not isinstance(order_type, str):
-        return ""
-    return normalize_side(order_type)
-
+_normalize_side_token = normalize_side
 
 # _parse_bool_flag imported from botcore (SSOT)
 
@@ -482,19 +466,8 @@ def symbol_regime(
     elif allow_fallback:
         # Graceful fallback for direct callers that did not inject a snapshot resolver
         try:
-            import cacheManager as _cm
-            import pricewindow as _pw
-            mgr = _cm.get_short_trend_manager()
-            snap_fn = getattr(mgr, "get_fresh_snapshot", None)
-            snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
-            if isinstance(snap, dict):
-                fast_w = _pw.fast_trend_window_for_symbol(symbol)
-                fw = safe_pos_float(fast_w, default=None)
-                dyn = snap.get("dynamic")
-                if fw is not None and isinstance(dyn, dict):
-                    w_snap = dyn.get(f"{fw:g}")
-                    if isinstance(w_snap, dict):
-                        snap = w_snap
+            from providers.market_api import _runtime_market_regime_snapshot
+            snap = _runtime_market_regime_snapshot(symbol, now=now)
         except Exception:
             snap = None
 
@@ -626,11 +599,15 @@ def _symbol_trend(
         return "unknown"
 
 
-def get_margin_cfg(provider_name):
-    """Return the venue's configured minimum profit percentage from order_guard.conf."""
+def _venue_cfg(provider_name, suffix: str = "", default: Any = None):
     m = _load_margins()
     venue = _provider_name(provider_name).strip().lower()
-    return m.get(venue, m["default"])
+    return m.get(f"{venue}{suffix}", m.get(f"default{suffix}", default))
+
+
+def get_margin_cfg(provider_name):
+    """Return the venue's configured minimum profit percentage from order_guard.conf."""
+    return _venue_cfg(provider_name)
 
 
 def _is_favorable_trend(side: str, trend: str) -> bool:
@@ -729,18 +706,14 @@ def get_window_cfg(
                 regime_context=regime_context,
             )
 
-    key = (name.lower() if name else "") + "_window_h"
-    hours_val = float(m.get(key, m["default_window_h"]))
-    return hours_val * 3600.0
+    return float(_venue_cfg(name, "_window_h")) * 3600.0
 
 
 def get_weight_proxy_cfg(provider_name):
     """Return the trend/Gaussian-weight proxy symbol from order_guard.conf when the current symbol lacks
     its own long trend (e.g. HYPE -> BTC until data exists). Uses `<venue>_weight_proxy`
     or `default_weight_proxy`."""
-    m = _load_margins()
-    venue = _provider_name(provider_name).strip().lower()
-    return m.get(venue + "_weight_proxy", m["default_weight_proxy"])
+    return _venue_cfg(provider_name, "_weight_proxy")
 
 
 def _order_ts_qty_price(o):
@@ -929,10 +902,7 @@ def window_reference(
 
 def get_chop_weight_cfg(provider_name):
     """Return the venue's conservative chop fallback weight from order_guard.conf."""
-    m = _load_margins()
-    venue = _provider_name(provider_name).strip().lower()
-    key = venue + "_chop_weight"
-    raw = m.get(key, m["default_chop_weight"])
+    raw = _venue_cfg(provider_name, "_chop_weight")
     val = safe_pos_float(raw, default=None)
     if val is None:
         raise ValueError(f"Invalid chop_weight in order_guard.conf: {raw!r}")
@@ -1046,24 +1016,17 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
 
 def get_max_daily_trades_cfg(provider_name):
     """Return the venue's 24h trade cap strictly from order_guard.conf."""
-    m = _load_margins()
-    venue = _provider_name(provider_name).strip().lower()
-    key = venue + "_max_daily_trades"
-    return int(m.get(key, m["default_max_daily_trades"]))
+    return int(_venue_cfg(provider_name, "_max_daily_trades"))
 
 
 def get_antispam_sec_cfg(provider_name):
     """Return the per-symbol anti-spam pause in seconds from order_guard.conf."""
-    m = _load_margins()
-    venue = _provider_name(provider_name).strip().lower()
-    return safe_nonneg_float(m.get(venue + "_antispam_sec", m.get("default_antispam_sec")), 30.0)
+    return safe_nonneg_float(_venue_cfg(provider_name, "_antispam_sec"), 30.0)
 
 
 def get_safeback_sec_cfg(provider_name):
     """Return the per-venue historical lookback window in seconds for the profit guard reference."""
-    m = _load_margins()
-    venue = _provider_name(provider_name).strip().lower()
-    return safe_nonneg_float(m.get(venue + "_safeback_sec", m.get("default_safeback_sec")), 120.0)
+    return safe_nonneg_float(_venue_cfg(provider_name, "_safeback_sec"), 120.0)
 
 
 DAILY_LIMIT_WINDOW_SEC = 86400.0
@@ -1238,20 +1201,24 @@ def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
     return None
 
 
-def _read_cached_trend_duration(symbol: str) -> float:
+def _scan_cached_long_trend(symbol: str, parser):
     try:
-        items = _read_cached_long_trend_entries(symbol)
-        if items:
-            for entry in reversed(items):
-                if entry is None:
-                    break
-                if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
-                    dur = safe_pos_float(entry.get("duration_seconds"), default=None)
-                    if dur is not None:
-                        return dur
+        for entry in reversed(_read_cached_long_trend_entries(symbol) or ()):
+            if entry is None:
+                break
+            if isinstance(entry, dict):
+                val = parser(entry)
+                if val is not None:
+                    return val
     except Exception:
         pass
-    return 0.0
+    return None
+
+
+def _read_cached_trend_duration(symbol: str) -> float:
+    return _scan_cached_long_trend(
+        symbol, lambda e: safe_pos_float(e.get("duration_seconds"), default=None)
+    ) or 0.0
 
 
 def _resolve_trend_duration(symbol: str) -> float:
@@ -1271,19 +1238,9 @@ def _resolve_trend_duration(symbol: str) -> float:
 
 
 def _read_cached_trend_direction(symbol: str) -> Optional[str]:
-    try:
-        items = _read_cached_long_trend_entries(symbol)
-        if items:
-            for entry in reversed(items):
-                if entry is None:
-                    break
-                if isinstance(entry, dict):
-                    norm_d = _normalize_trend_dir_token(entry.get("direction"))
-                    if norm_d is not None:
-                        return norm_d
-    except Exception:
-        pass
-    return None
+    return _scan_cached_long_trend(
+        symbol, lambda e: _normalize_trend_dir_token(e.get("direction"))
+    )
 
 
 def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
@@ -1481,6 +1438,7 @@ def check_intelligence_guards(
         (allowed: bool, reason: str, suggested_scale: float)
     """
     from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
+    from intelligence.macro_sentiment_ssot import resolve_order_notional
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
@@ -1497,13 +1455,7 @@ def check_intelligence_guards(
         return True, "not_supported_side", 1.0
 
     px_clean = safe_pos_float(price, 0.0)
-    qty_clean = safe_pos_float(qty, 0.0)
-    notional_clean = safe_pos_float(notional_eur, 0.0)
-    computed_notional = (
-        notional_clean
-        if notional_clean > 0.0
-        else ((px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else None)
-    )
+    computed_notional = resolve_order_notional(notional_eur, px_clean, qty, default=None)
     explicit_dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
 
     # Check if expensive static analysis is already cached on regime_context for this (side, intel_bypass) key
@@ -1699,14 +1651,7 @@ def _evaluate_intelligence_guards_raw(
     if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0
 
-    px_clean = safe_pos_float(price, 0.0)
-    qty_clean = safe_pos_float(qty, 0.0)
-    notional_clean = safe_pos_float(notional_eur, 0.0)
-    computed_notional = (
-        notional_clean
-        if notional_clean > 0.0
-        else ((px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else None)
-    )
+    computed_notional = resolve_order_notional(notional_eur, price, qty, default=None)
 
     effective_scale = 1.0
     active_reason = "ok"

@@ -22,6 +22,7 @@ from botcore import _parse_bool_flag, load_dotenv, required_float_env
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
+    is_interval_due,
     parse_symbol_list,
     resolve_now_ts,
     safe_pos_float,
@@ -185,23 +186,23 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             current_ts, force, results, bounded=True, on_symbol_done=lambda: self.write_heartbeat(results)
         )
 
-        if not self.skip_news and (force or not (0.0 <= (current_ts - self._last_news_ts) < self.news_interval_sec)):
+        if not self.skip_news and is_interval_due(current_ts, self._last_news_ts, self.news_interval_sec, force=force):
             if self._run_step_bounded(self.update_news, force, timeout_sec=15.0, label="news"):
                 results["news_updated"] = True
                 self._last_news_ts = current_ts
             self.write_heartbeat(results)
 
-        if force or not (0.0 <= (current_ts - self._last_fear_greed_ts) < self.fear_greed_interval_sec):
+        if is_interval_due(current_ts, self._last_fear_greed_ts, self.fear_greed_interval_sec, force=force):
             if self._run_step_bounded(self.update_fear_greed, force, timeout_sec=12.0, label="fear_greed"):
                 results["fear_greed_updated"] = True
                 self._last_fear_greed_ts = current_ts
 
-        if force or not (0.0 <= (current_ts - self._last_breadth_ts) < self.breadth_interval_sec):
+        if is_interval_due(current_ts, self._last_breadth_ts, self.breadth_interval_sec, force=force):
             if self._run_step_bounded(self.update_market_breadth, force, timeout_sec=15.0, label="breadth"):
                 results["breadth_updated"] = True
                 self._last_breadth_ts = current_ts
 
-        if force or not (0.0 <= (current_ts - self._last_stdout_hb_ts) < 60.0):
+        if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
             logger.info("Global telemetry cycle active: %d symbols monitored (PID=%d)", len(self.symbols), os.getpid())
             self._last_stdout_hb_ts = current_ts
 

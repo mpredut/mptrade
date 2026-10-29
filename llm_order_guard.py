@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     normalize_order_side as _normalize_side,
     obj_attr,
     resolve_now_ts as _resolve_now_ts,
+    resolve_order_notional,
     safe_pos_float as _pos_float,
 )
 
@@ -312,10 +313,7 @@ def check_llm_order_guards(
     effective_scale = 1.0
     active_reason = "ok"
 
-    notional_f = _pos_float(notional_eur, 0.0)
-    px_f = _pos_float(price, 0.0)
-    qty_f = _pos_float(qty, 0.0)
-    computed_notional = notional_f if notional_f > 0.0 else ((px_f * qty_f) if (px_f > 0.0 and qty_f > 0.0) else 0.0)
+    computed_notional = resolve_order_notional(notional_eur, price, qty, default=0.0) or 0.0
 
     # 1. GLLM1: High-Stake LLM Pre-Trade Guard (symmetric for BUY & SELL >= high_stake_min_notional_usd)
     has_id = bool(getattr(regime_context, "symbol", None) and getattr(regime_context, "provider", None))

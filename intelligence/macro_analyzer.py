@@ -26,6 +26,8 @@ from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
     compute_dynamic_geopolitical_interval,
     compute_dynamic_sentiment_interval,
+    extract_high_severity_headlines_and_digest,
+    is_interval_due,
     load_cached_fear_greed_snapshot,
     load_cached_market_breadth_snapshot,
     load_cached_whale_telemetry,
@@ -281,9 +283,7 @@ class MacroAnalyzer:
 
         headlines_changed = False
         if news_snap is not None:
-            raw_hl = getattr(news_snap, "headlines", None) or ()
-            high_sev = [h for h in raw_hl if _as_bool(getattr(h, "is_high_severity", False))]
-            digest = " || ".join(str(getattr(h, "title", "") or "") for h in high_sev[:12])
+            _, digest = extract_high_severity_headlines_and_digest(news_snap)
             last_digest = str(getattr(self.geopolitical_analyzer, "_last_headlines_digest", "") or "")
             headlines_changed = bool(digest and digest != last_digest)
 
@@ -302,7 +302,7 @@ class MacroAnalyzer:
         results["effective_geo_interval_sec"] = geo_interval
         results["geo_interval_reason"] = geo_reason
 
-        if force or not (0.0 <= (current_ts - self._last_macro_llm_ts) < geo_interval):
+        if is_interval_due(current_ts, self._last_macro_llm_ts, geo_interval, force=force):
             try:
                 geo_ok = self.assess_geopolitical_threat(force=force, now=current_ts)
             except TypeError:
@@ -335,7 +335,7 @@ class MacroAnalyzer:
         results["effective_advisor_interval_sec"] = adv_interval
         results["advisor_interval_reason"] = adv_reason
 
-        if force or not (0.0 <= (current_ts - self._last_advisor_ts) < adv_interval):
+        if is_interval_due(current_ts, self._last_advisor_ts, adv_interval, force=force):
             try:
                 adv_ok = self.assess_market_advisor(force=force, now=current_ts)
             except TypeError:
@@ -345,11 +345,11 @@ class MacroAnalyzer:
                 self._last_advisor_ts = current_ts
             self.write_heartbeat(results)
 
-        if force or not (0.0 <= (current_ts - self._last_thread_prune_ts) < self.thread_prune_interval_sec):
+        if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):
             results["threads_pruned"] = self.prune_cli_threads()
             self._last_thread_prune_ts = current_ts
 
-        if force or not (0.0 <= (current_ts - self._last_stdout_hb_ts) < 120.0):
+        if is_interval_due(current_ts, self._last_stdout_hb_ts, 120.0, force=force):
             logger.info(
                 "Macro analyzer cycle active (PID=%d, session=%s, adv_itv=%.0fs [%s], geo_itv=%.0fs [%s])",
                 os.getpid(), session_ctx.session_key, adv_interval, adv_reason, geo_interval, geo_reason,

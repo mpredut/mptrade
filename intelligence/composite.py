@@ -35,6 +35,7 @@ from intelligence.macro_sentiment_ssot import (
     normalize_order_side,
     obj_attr,
     resolve_now_ts,
+    resolve_order_notional,
     safe_float,
     safe_pos_float,
 )
@@ -227,11 +228,9 @@ class CompositeMarketIntelligence:
                 return veto
 
         # 8. Google Gemini High-Stake Guard (GLLM1)
-        computed_notional = safe_pos_float(notional_eur, default=None)
+        computed_notional = resolve_order_notional(notional_eur, price, qty, default=None)
         qty_finite = safe_pos_float(qty, default=None)
         price_finite = safe_pos_float(price, default=None)
-        if computed_notional is None and qty_finite is not None and price_finite is not None:
-            computed_notional = price_finite * qty_finite
         if (
             computed_notional is not None
             and computed_notional >= self.gemini_guard.min_notional_eur
@@ -358,14 +357,7 @@ class CompositeMarketIntelligence:
             guard_dec = GuardDecision.allow("NoActiveOrder", "idle")
 
         can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
-        raw_sc = getattr(guard_dec, "suggested_scale", 1.0)
-        sc_f = safe_float(raw_sc, default=None)
-        if sc_f is not None:
-            if 1.0 < sc_f <= 100.0:
-                sc_f = sc_f / 100.0
-            sc_val = min(1.0, max(0.0, sc_f))
-        else:
-            sc_val = 0.0
+        sc_val = clean_scale(getattr(guard_dec, "suggested_scale", 1.0), default=0.0, allow_percent=True)
         scale = (1.0 if side == "SELL" else sc_val) if can_exec else 0.0
         if scale <= 0.0:
             can_exec = False

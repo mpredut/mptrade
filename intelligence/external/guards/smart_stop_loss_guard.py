@@ -40,6 +40,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_mode,
     snap_attr as _obj_attr,
 )
+from intelligence.macro_sentiment_ssot import check_cooldown_gate
 
 _safe_float = safe_float
 
@@ -80,6 +81,24 @@ def _format_price(p: Optional[float]) -> str:
     if pf >= 1.0:
         return f"${pf:,.4f}"
     return f"${pf:.6g}"
+
+
+def _format_price_part(current_price: Any, buy_price: Any) -> str:
+    c_str = _format_price(current_price)
+    b_str = _format_price(buy_price)
+    if c_str and b_str:
+        return f" | {c_str} (Last Buy Price: {b_str})"
+    return f" @ {c_str}" if c_str else ""
+
+
+def _is_buy_price_changed(saved_buy_raw: Any, curr_buy_raw: Any) -> bool:
+    saved_buy = safe_float(saved_buy_raw, 0.0)
+    curr_buy = safe_float(curr_buy_raw, 0.0)
+    return (
+        saved_buy > 0.0
+        and curr_buy > 0.0
+        and abs(curr_buy - saved_buy) > max(1e-9, abs(saved_buy) * 1e-6)
+    )
 
 
 _LOADED_STATE_FILE_KEY: Optional[Tuple[str, float]] = None
@@ -145,6 +164,14 @@ def _save_grace_state() -> None:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 
 
+def _clear_grace_entry(sym_key: str, *, is_sim: bool) -> None:
+    tracker = _load_grace_state(is_sim=is_sim)
+    if sym_key in tracker:
+        tracker.pop(sym_key, None)
+        if not is_sim:
+            _save_grace_state()
+
+
 def _is_simulated_provider(provider: Optional[str]) -> bool:
     if provider and not isinstance(provider, bool) and str(provider).strip().lower() in (
         "replay", "backtest", "sim", "mock", "paper_sim", "test",
@@ -177,12 +204,7 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
         prov_tag = f" ({prov})" if prov else ""
         # Remove 'SAVED' from title as requested
         title = f"🎉 [P2 · SMART-SL] {sym}{prov_tag}"
-
-        c_str = _format_price(e.get("current_price"))
-        b_str = _format_price(e.get("buy_price"))
-        price_part = f" @ {c_str}" if c_str else ""
-        if c_str and b_str:
-            price_part = f" | {c_str} (Last Buy Price: {b_str})"
+        price_part = _format_price_part(e.get("current_price"), e.get("buy_price"))
 
         body_lines = [
             f"{sym}{prov_tag}{price_part}",
@@ -205,11 +227,7 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
         for e in events:
             sym = e["symbol"]
             p_tag = f" ({e['provider']})" if e.get("provider") else ""
-            c_str = _format_price(e.get("current_price"))
-            b_str = _format_price(e.get("buy_price"))
-            price_str = f" @ {c_str}" if c_str else ""
-            if c_str and b_str:
-                price_str = f" | {c_str} (Last Buy Price: {b_str})"
+            price_str = _format_price_part(e.get("current_price"), e.get("buy_price"))
             line = (
                 f"• {sym}{p_tag}: bounce in {e['elapsed']:.0f}s | "
                 f"dip {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%){price_str}"
@@ -304,11 +322,7 @@ class SmartStopLossGuard:
         meta["disaster_floor_pct"] = round(disaster_floor * 100.0, 3)
         if price_decrease >= disaster_floor:
             # Terminate grace immediately if active
-            tracker = _load_grace_state(is_sim=is_sim)
-            if sym_key in tracker:
-                tracker.pop(sym_key, None)
-                if not is_sim:
-                    _save_grace_state()
+            _clear_grace_entry(sym_key, is_sim=is_sim)
             reason = f"hard_disaster_floor_breached (loss {price_decrease*100:.2f}% >= {disaster_floor*100:.2f}%)"
             print(f"🛑 [P2 · SMART-SL] EMERGENCY EXIT {sym_key}: {reason}")
             return True, reason, meta
@@ -348,11 +362,7 @@ class SmartStopLossGuard:
 
         # 4. Crash / Active Cascade Detection: dumping with heavy momentum
         if taker_ratio < 0.70 and divergence_regime == "aggressive_shorting":
-            tracker = _load_grace_state(is_sim=is_sim)
-            if sym_key in tracker:
-                tracker.pop(sym_key, None)
-                if not is_sim:
-                    _save_grace_state()
+            _clear_grace_entry(sym_key, is_sim=is_sim)
             reason = f"active_crash_cascade (taker_ratio={taker_ratio:.2f}, regime={divergence_regime})"
             print(f"🛑 [P2 · SMART-SL] {sym_key}: {reason} -> executing stop-loss without delay")
             return True, reason, meta
@@ -374,15 +384,8 @@ class SmartStopLossGuard:
                 existing_start = safe_float(active_grace.get("start_ts"), -1.0)
                 if existing_start < 0.0 or existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
                     active_grace = None
-            if active_grace is not None and buy_price is not None:
-                saved_buy = safe_float(active_grace.get("buy_price"), 0.0)
-                curr_buy = safe_float(buy_price, 0.0)
-                if (
-                    saved_buy > 0.0
-                    and curr_buy > 0.0
-                    and abs(curr_buy - saved_buy) > max(1e-9, abs(saved_buy) * 1e-6)
-                ):
-                    active_grace = None
+            if active_grace is not None and buy_price is not None and _is_buy_price_changed(active_grace.get("buy_price"), buy_price):
+                active_grace = None
 
             if active_grace is None:
                 # Start Grace Period
@@ -407,27 +410,19 @@ class SmartStopLossGuard:
                 prefix = "[SMART_SL_SHADOW]" if self.mode == "shadow" else "[SMART_SL_ENFORCE]"
                 print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
 
-                if not is_sim:
-                    last_defer_ts = _LAST_DEFER_ALERT_TS.get(sym_key, -1e18)
-                    if not (0.0 <= (now_ts - last_defer_ts) < _RECOVERY_COOLDOWN_SEC):
-                        _LAST_DEFER_ALERT_TS[sym_key] = now_ts
-                        c_str = _format_price(current_price)
-                        b_str = _format_price(buy_price)
-                        price_part = f" @ {c_str}" if c_str else ""
-                        if c_str and b_str:
-                            price_part = f" | {c_str} (Last Buy Price: {b_str})"
-
-                        body_lines = [
-                            f"{sym_key}{prov_tag}{price_part}",
-                            f"Dip: {price_decrease*100:.2f}% (SL threshold: {threshold_pct:.2f}%).",
-                            f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.",
-                            f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window.",
-                        ]
-                        _send_ntfy_alert(
-                            title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}{prov_tag}",
-                            body="\n".join(body_lines),
-                            symbol=sym_key,
-                        )
+                if not is_sim and check_cooldown_gate(_LAST_DEFER_ALERT_TS, sym_key, now_ts, cooldown_sec=_RECOVERY_COOLDOWN_SEC):
+                    price_part = _format_price_part(current_price, buy_price)
+                    body_lines = [
+                        f"{sym_key}{prov_tag}{price_part}",
+                        f"Dip: {price_decrease*100:.2f}% (SL threshold: {threshold_pct:.2f}%).",
+                        f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.",
+                        f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window.",
+                    ]
+                    _send_ntfy_alert(
+                        title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}{prov_tag}",
+                        body="\n".join(body_lines),
+                        symbol=sym_key,
+                    )
                 if self.mode == "shadow":
                     return True, f"shadow_defer: {reason}", meta
                 return False, reason, meta
@@ -462,11 +457,7 @@ class SmartStopLossGuard:
                     saved_prov_tag = f" ({saved_prov_str})" if saved_prov_str else ""
                     c_p = current_price if current_price is not None else active_grace.get("current_price")
                     b_p = buy_price if buy_price is not None else active_grace.get("buy_price")
-                    c_str = _format_price(c_p)
-                    b_str = _format_price(b_p)
-                    price_part = f" @ {c_str}" if c_str else ""
-                    if c_str and b_str:
-                        price_part = f" | {c_str} (Last Buy Price: {b_str})"
+                    price_part = _format_price_part(c_p, b_p)
 
                     tracker.pop(sym_key, None)
                     if not is_sim:
@@ -474,29 +465,22 @@ class SmartStopLossGuard:
                     reason = f"grace_period_expired ({self.grace_seconds:.0f}s elapsed without bounce)"
                     print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
 
-                    if not is_sim:
-                        last_timeout_ts = _LAST_TIMEOUT_ALERT_TS.get(sym_key, -1e18)
-                        if not (0.0 <= (now_ts - last_timeout_ts) < _RECOVERY_COOLDOWN_SEC):
-                            _LAST_TIMEOUT_ALERT_TS[sym_key] = now_ts
-                            body_lines = [
-                                f"{sym_key}{saved_prov_tag}{price_part}",
-                                f"Grace period of {self.grace_seconds:.0f}s expired without price recovery.",
-                                f"Dip: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).",
-                                "Executing stop-loss now.",
-                            ]
-                            _send_ntfy_alert(
-                                title=f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}",
-                                body="\n".join(body_lines),
-                                symbol=sym_key,
-                            )
+                    if not is_sim and check_cooldown_gate(_LAST_TIMEOUT_ALERT_TS, sym_key, now_ts, cooldown_sec=_RECOVERY_COOLDOWN_SEC):
+                        body_lines = [
+                            f"{sym_key}{saved_prov_tag}{price_part}",
+                            f"Grace period of {self.grace_seconds:.0f}s expired without price recovery.",
+                            f"Dip: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).",
+                            "Executing stop-loss now.",
+                        ]
+                        _send_ntfy_alert(
+                            title=f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}",
+                            body="\n".join(body_lines),
+                            symbol=sym_key,
+                        )
                     return True, reason, meta
 
         # Microstructure not supportive of wick bounce
-        tracker = _load_grace_state(is_sim=is_sim)
-        if sym_key in tracker:
-            tracker.pop(sym_key, None)
-            if not is_sim:
-                _save_grace_state()
+        _clear_grace_entry(sym_key, is_sim=is_sim)
         return True, "microstructure_not_supportive", meta
 
     def on_recovered(
@@ -526,13 +510,7 @@ class SmartStopLossGuard:
             is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider"))
             if not is_sim:
                 _save_grace_state()
-            saved_buy = safe_float(grace_info.get("buy_price"), 0.0)
-            curr_buy = safe_float(buy_price, 0.0)
-            if (
-                saved_buy > 0.0
-                and curr_buy > 0.0
-                and abs(curr_buy - saved_buy) > max(1e-9, abs(saved_buy) * 1e-6)
-            ):
+            if _is_buy_price_changed(grace_info.get("buy_price"), buy_price):
                 return False
             now_ts = _resolve_now(now)
             price_decrease = safe_float(price_decrease, 0.0)
@@ -563,15 +541,13 @@ class SmartStopLossGuard:
                 return True
 
             # 30-minute cooldown per symbol to avoid spamming
-            last_alert = _LAST_RECOVERY_ALERT_TS.get(sym_key, -1e18)
-            if 0.0 <= (now_ts - last_alert) < _RECOVERY_COOLDOWN_SEC:
+            if not check_cooldown_gate(_LAST_RECOVERY_ALERT_TS, sym_key, now_ts, cooldown_sec=_RECOVERY_COOLDOWN_SEC):
                 logger.info(
                     "Smart SL recovery alert for %s in %.0fs cooldown; skipping push.",
                     sym_key,
                     _RECOVERY_COOLDOWN_SEC,
                 )
                 return True
-            _LAST_RECOVERY_ALERT_TS[sym_key] = now_ts
 
             rec_event = {
                 "symbol": sym_key,

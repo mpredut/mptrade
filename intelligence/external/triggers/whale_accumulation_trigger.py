@@ -8,15 +8,16 @@ Generates actionable entry/exit signals by monitoring:
 
 from __future__ import annotations
 
-import time
 from typing import Optional
 
 from botcore import safe_float, safe_pos_float
+from intelligence.internal.guards.guard_decision import snap_attr
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
+from intelligence.macro_sentiment_ssot import resolve_now_ts
 
 
 class WhaleAccumulationTrigger:
@@ -51,9 +52,7 @@ class WhaleAccumulationTrigger:
             return None
         price = price_f
 
-        t_now = safe_pos_float(now, default=None) if now is not None else None
-        if t_now is None:
-            t_now = time.time()
+        t_now = resolve_now_ts(now)
         if snapshot is None and self.collector is not None:
             try:
                 snapshot = self.collector.fetch(symbol, now=t_now) if now is not None else self.collector.fetch(symbol)
@@ -63,13 +62,10 @@ class WhaleAccumulationTrigger:
         if snapshot is None:
             return None
 
-        def _snap_attr(key: str, default=None):
-            return snapshot.get(key, default) if isinstance(snapshot, dict) else getattr(snapshot, key, default)
-
-        top_long_pct = safe_float(_snap_attr("top_traders_long_pct", None), default=None)
-        taker_ratio = safe_float(_snap_attr("taker_buy_sell_ratio", None), default=None)
-        oi_chg = safe_float(_snap_attr("open_interest_1h_change_pct", None), default=None)
-        raw_regime = _snap_attr("divergence_regime", "neutral")
+        top_long_pct = safe_float(snap_attr(snapshot, "top_traders_long_pct", None), default=None)
+        taker_ratio = safe_float(snap_attr(snapshot, "taker_buy_sell_ratio", None), default=None)
+        oi_chg = safe_float(snap_attr(snapshot, "open_interest_1h_change_pct", None), default=None)
+        raw_regime = snap_attr(snapshot, "divergence_regime", "neutral")
         regime_str = raw_regime.strip() if isinstance(raw_regime, str) and raw_regime.strip() else "neutral"
         if top_long_pct is None or taker_ratio is None or oi_chg is None:
             return None

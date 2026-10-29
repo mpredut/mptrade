@@ -11,6 +11,7 @@ from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     ACUTE_SHOCK_PHRASES,
     clean_scale,
+    extract_high_severity_headlines_and_digest,
     get_cache_filenames,
     has_acute_shock_keywords,
     normalize_recommended_brake,
@@ -150,12 +151,7 @@ class GeopoliticalThreatAnalyzer:
         is_stale = age_sec < 0.0 or age_sec >= effective_ttl
 
         raw_headlines = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
-        high_sev = (
-            [h for h in raw_headlines if self._as_bool_flag(obj_attr(h, "is_high_severity", False))]
-            if isinstance(raw_headlines, (list, tuple))
-            else []
-        )
-        headline_digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:12])
+        high_sev, headline_digest = extract_high_severity_headlines_and_digest(news_snapshot)
         has_new_acute_phrase = bool(
             high_sev
             and headline_digest != self._last_headlines_digest
