@@ -381,9 +381,9 @@ def mock_workspace(tmp_path):
     )
 
     cachedb = tmp_path / "cachedb"
-    cachedb.mkdir()
+    cachedb.mkdir(parents=True, exist_ok=True)
     logs = tmp_path / "logs"
-    logs.mkdir()
+    logs.mkdir(parents=True, exist_ok=True)
 
     (logs / "bot1.log").write_text("heartbeat")
     (cachedb / "fleet1.heartbeat").write_text("heartbeat")
@@ -1115,8 +1115,8 @@ def test_monitor_check_processes_requires_all_heartbeat_files_fresh(tmp_path, mo
     (tmp_path / "procs.conf").write_text(
         "rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat,logs/rtrade.log|180|fleet\n"
     )
-    (tmp_path / "cachedb").mkdir()
-    (tmp_path / "logs").mkdir()
+    (tmp_path / "cachedb").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
     hb = tmp_path / "cachedb" / "rtrade.heartbeat"
     lg = tmp_path / "logs" / "rtrade.log"
     hb.write_text("hb")
@@ -1731,7 +1731,7 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
     assert resolve_binance_lookup_symbol("XBTUSD") == "BTCUSDT"
 
     cache_dir = tmp_path / "cachedb"
-    cache_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     now_ms = 1_760_000_000_000
 
     # 1. Write full 24h series in cache_24_price_BTCUSDC.json AND 7d history in cache_365_price_BTCUSDC.jsonl
@@ -1785,7 +1785,7 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
         encoding="utf-8",
     )
     kraken_dir = tmp_path / "kraken"
-    kraken_dir.mkdir(parents=True)
+    kraken_dir.mkdir(parents=True, exist_ok=True)
     (kraken_dir / ".state_XBTUSD.json").write_text(
         json.dumps({"qty": 0.01, "cost": 800.0, "entry_price": 80000.0}),
         encoding="utf-8",
@@ -1843,13 +1843,13 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     assert "SPCXUSD" in cache_symbol_variants("SPCX_US_EQ")
 
     cache_dir = tmp_path / "cachedb"
-    cache_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     kraken_dir = tmp_path / "kraken"
-    kraken_dir.mkdir(parents=True)
+    kraken_dir.mkdir(parents=True, exist_ok=True)
     hl_dir = tmp_path / "hyperliquid"
-    hl_dir.mkdir(parents=True)
+    hl_dir.mkdir(parents=True, exist_ok=True)
     t212_dir = tmp_path / "212trading"
-    t212_dir.mkdir(parents=True)
+    t212_dir.mkdir(parents=True, exist_ok=True)
 
     (kraken_dir / "config.env").write_text(
         "KRAKEN_PAIR=HYPEUSD\n"
