@@ -364,11 +364,7 @@ def process_once(mkt, now=None):
             r.get("lifecycle") or "submit_pending").lower()
         symbol = r.get("symbol")
         if str(r.get("submission_state") or "").lower() == "producer_claimed":
-            try:
-                raw_cu = r.get("claim_until")
-                claim_until = 0.0 if isinstance(raw_cu, bool) else float(raw_cu or 0.0)
-            except (TypeError, ValueError, OverflowError):
-                claim_until = 0.0
+            claim_until = safe_float(r.get("claim_until"), default=0.0)
             if claim_until > float(now):
                 continue
             owner_state = oq.producer_claim_owner_state(r)

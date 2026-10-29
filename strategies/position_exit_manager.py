@@ -589,10 +589,9 @@ class PositionExitManager:
             episode = None
         same_buy = False
         if episode is not None and episode.get("buy_price") is not None:
-            try:
-                same_buy = math.isclose(float(episode["buy_price"]), float(buy_price), rel_tol=1e-9, abs_tol=1e-12)
-            except (TypeError, ValueError):
-                same_buy = False
+            ebp = safe_pos_float(episode.get("buy_price"), default=None)
+            cbp = safe_pos_float(buy_price, default=None)
+            same_buy = (ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12))
         if episode is None or not same_buy:
             self.sl_episode_state[sym_clean] = {
                 "started_at": now,
@@ -601,13 +600,9 @@ class PositionExitManager:
             }
             return candidate_floor, False
         armed = episode.get("disaster_floor")
-        if armed is not None and not isinstance(armed, bool):
-            try:
-                armed_f = float(armed)
-            except (TypeError, ValueError):
-                armed_f = float("nan")
-            if math.isfinite(armed_f) and 0 < armed_f < candidate_floor:
-                return armed_f, True
+        armed_f = safe_pos_float(armed, default=None)
+        if armed_f is not None and armed_f < candidate_floor:
+            return armed_f, True
         episode["disaster_floor"] = candidate_floor
         return candidate_floor, False
 
@@ -744,10 +739,8 @@ class PositionExitManager:
             self.sl_bounce_state.pop(symbol, None)
             existing_bounce = None
         if existing_bounce is not None and existing_bounce.get("buy_price") is not None:
-            try:
-                if not math.isclose(float(existing_bounce["buy_price"]), buy_price, rel_tol=1e-9, abs_tol=1e-12):
-                    self.sl_bounce_state.pop(symbol, None)
-            except (TypeError, ValueError):
+            ebp = safe_pos_float(existing_bounce.get("buy_price"), default=None)
+            if ebp is None or not math.isclose(ebp, buy_price, rel_tol=1e-9, abs_tol=1e-12):
                 self.sl_bounce_state.pop(symbol, None)
 
         in_sl_territory = snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct)
@@ -775,14 +768,13 @@ class PositionExitManager:
             disaster_meta = {**disaster_meta, "source": "episode_locked", "effective_buffer": disaster_buffer}
 
         episode_state = self.sl_episode_state.get(symbol) or {}
-        try:
-            episode_started_at = float(episode_state.get("started_at", now))
-        except (TypeError, ValueError):
-            episode_started_at = now
-        if not math.isfinite(episode_started_at) or episode_started_at < 0 or episode_started_at > now:
+        st_val = safe_nonneg_float(episode_state.get("started_at"), default=None)
+        if st_val is None or st_val > now:
             episode_started_at = now
             if symbol in self.sl_episode_state:
                 self.sl_episode_state[symbol]["started_at"] = now
+        else:
+            episode_started_at = st_val
         sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
 
         # ---------------------------------------------------------------------
@@ -843,13 +835,12 @@ class PositionExitManager:
                     metadata={"priority": 2, "state": "initiated", "disaster_floor": disaster_floor},
                 )
             else:
-                try:
-                    b_started_at = float(bounce_state.get("started_at", now))
-                except (TypeError, ValueError):
-                    b_started_at = now
-                if not math.isfinite(b_started_at) or b_started_at < 0 or b_started_at > now:
+                b_val = safe_nonneg_float(bounce_state.get("started_at"), default=None)
+                if b_val is None or b_val > now:
                     b_started_at = now
                     bounce_state["started_at"] = now
+                else:
+                    b_started_at = b_val
                 elapsed = now - b_started_at
                 if elapsed >= self.config.sl_trend_defer_max_sec or sl_episode_expired:
                     eff_elapsed = max(elapsed, now - episode_started_at)
@@ -863,19 +854,9 @@ class PositionExitManager:
                         metadata={"priority": 2, "sub_reason": "timeout", "elapsed": eff_elapsed, "sl_timer_expired": True},
                     )
 
-                try:
-                    lowest_px = float(bounce_state.get("lowest_price") or current_price)
-                except (TypeError, ValueError):
-                    lowest_px = current_price
-                if not math.isfinite(lowest_px) or lowest_px <= 0:
-                    lowest_px = current_price
+                lowest_px = safe_pos_float(bounce_state.get("lowest_price"), default=current_price)
                 bounce_state["lowest_price"] = lowest_px
-                try:
-                    peak_px = float(bounce_state.get("peak_bounce_price") or current_price)
-                except (TypeError, ValueError):
-                    peak_px = current_price
-                if not math.isfinite(peak_px) or peak_px <= 0:
-                    peak_px = current_price
+                peak_px = safe_pos_float(bounce_state.get("peak_bounce_price"), default=current_price)
                 bounce_state["peak_bounce_price"] = peak_px
                 bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
                 bounce_attempted = bounce_recovery >= self.config.sl_bounce_min_recovery_pct
@@ -915,11 +896,8 @@ class PositionExitManager:
                         },
                     )
 
-                try:
-                    min_loss_val = float(bounce_state.get("min_loss", price_decrease))
-                except (TypeError, ValueError):
-                    min_loss_val = price_decrease
-                if not math.isfinite(min_loss_val) or price_decrease < min_loss_val:
+                min_loss_val = safe_float(bounce_state.get("min_loss"), default=price_decrease)
+                if price_decrease < min_loss_val:
                     bounce_state["min_loss"] = price_decrease
 
                 pullback_from_peak = snapshot.pullback_ratio(peak_px)
@@ -1144,16 +1122,8 @@ class PositionExitManager:
             and self.config.hard_tp_pct > 0
             and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
         ):
-            raw_last_hard = self.hard_tp_last.get(symbol, 0.0)
-            try:
-                last_hard = (
-                    0.0
-                    if raw_last_hard is None or isinstance(raw_last_hard, bool)
-                    else float(raw_last_hard)
-                )
-            except (TypeError, ValueError, OverflowError):
-                last_hard = float("nan")
-            if not math.isfinite(last_hard) or last_hard > now:
+            last_hard = safe_nonneg_float(self.hard_tp_last.get(symbol), default=0.0)
+            if last_hard > now:
                 last_hard = 0.0
                 self.hard_tp_last.pop(symbol, None)
             if last_hard <= 0 or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
@@ -1180,23 +1150,16 @@ class PositionExitManager:
             self.tp_ride_state.pop(symbol, None)
             existing_ride = None
         if existing_ride is not None and existing_ride.get("buy_price") is not None:
-            try:
-                if not math.isclose(float(existing_ride["buy_price"]), buy_price, rel_tol=1e-9, abs_tol=1e-12):
-                    self.tp_ride_state.pop(symbol, None)
-            except (TypeError, ValueError):
+            ebp = safe_pos_float(existing_ride.get("buy_price"), default=None)
+            if ebp is None or not math.isclose(ebp, buy_price, rel_tol=1e-9, abs_tol=1e-12):
                 self.tp_ride_state.pop(symbol, None)
 
         # Gap down below cost while riding profit is an emergency breach of the profit floor
         if snapshot.gain_ratio <= 0:
             if symbol in self.tp_ride_state:
                 ride_state = self.tp_ride_state.pop(symbol)
-                try:
-                    raw_peak = ride_state.get("peak_price") if isinstance(ride_state, dict) else None
-                    peak_px = float(raw_peak or current_price)
-                    if not math.isfinite(peak_px) or peak_px <= 0:
-                        peak_px = current_price
-                except (TypeError, ValueError):
-                    peak_px = current_price
+                raw_peak = ride_state.get("peak_price") if isinstance(ride_state, dict) else None
+                peak_px = safe_pos_float(raw_peak, default=current_price)
                 reason = (
                     f"mdhtp_profit_floor_breached (price {current_price:.4f} dropped below cost "
                     f"under floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
@@ -1254,19 +1217,9 @@ class PositionExitManager:
                 )
         else:
             # Update peak trajectory
-            try:
-                cur_peak_px = float(ride_state.get("peak_price", current_price))
-            except (TypeError, ValueError):
-                cur_peak_px = current_price
-            if not math.isfinite(cur_peak_px) or cur_peak_px <= 0:
-                cur_peak_px = current_price
+            cur_peak_px = safe_pos_float(ride_state.get("peak_price"), default=current_price)
             ride_state["peak_price"] = cur_peak_px
-            try:
-                cur_peak_gain = float(ride_state.get("peak_gain", price_increase))
-            except (TypeError, ValueError):
-                cur_peak_gain = price_increase
-            if not math.isfinite(cur_peak_gain) or cur_peak_gain < 0:
-                cur_peak_gain = price_increase
+            cur_peak_gain = safe_nonneg_float(ride_state.get("peak_gain"), default=price_increase)
             ride_state["peak_gain"] = cur_peak_gain
             if current_price > cur_peak_px:
                 ride_state["peak_price"] = current_price
@@ -1275,17 +1228,11 @@ class PositionExitManager:
 
             peak_px = ride_state["peak_price"]
             pullback_from_peak = snapshot.pullback_ratio(peak_px)
-            last_peak_t = ride_state.get("last_peak_time", now)
-            if (
-                isinstance(last_peak_t, bool)
-                or not isinstance(last_peak_t, (int, float))
-                or not math.isfinite(float(last_peak_t))
-                or float(last_peak_t) < 0
-                or float(last_peak_t) > now
-            ):
+            last_peak_t = safe_nonneg_float(ride_state.get("last_peak_time"), default=None)
+            if last_peak_t is None or last_peak_t > now:
                 last_peak_t = now
-            ride_state["last_peak_time"] = float(last_peak_t)
-            stagnation_elapsed = now - ride_state["last_peak_time"]
+            ride_state["last_peak_time"] = last_peak_t
+            stagnation_elapsed = now - last_peak_t
 
             # Optional Advanced Guard: Fast profit reversal
             if self.config.fast_profit_guard_enabled:
