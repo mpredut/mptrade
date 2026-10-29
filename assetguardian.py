@@ -6,6 +6,7 @@ import time
 
 from binance_api import bapi as api
 from providers.base import (
+    extract_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -1176,7 +1177,7 @@ _rtrade_sell_block_since: dict = {}
 def _is_rtrade_order(order):
     if not isinstance(order, dict):
         return False
-    cid = str(order.get("clientOrderId") or order.get("client_order_id") or "").strip()
+    cid = extract_client_order_id(order, default="") or ""
     return cid.startswith(("RT_", "MO_RT_")) or api.resolve_order_owner(cid) == "rtrade"
 
 
@@ -1210,23 +1211,14 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
     remaining = []
     for order in open_sells:
         oid = extract_order_id(order, default=None)
-        oid_s = str(oid).strip() if oid is not None else ""
-        if oid_s.endswith(".0") and oid_s[:-2].lstrip("+-").isdigit():
-            oid_s = oid_s[:-2]
-        if oid_s.startswith("+") and oid_s[1:].isdigit():
-            oid_s = oid_s[1:]
-        if (
-            not oid_s
-            or oid_s in {"0", "0.0", "-0", "+0"}
-            or (oid_s.startswith("-") and oid_s[1:].replace(".", "", 1).isdigit())
-        ):
+        if not oid:
             remaining.append(order)
             continue
         try:
-            mkt.cancel_order(symbol, oid_s, provider_name="binance")
+            mkt.cancel_order(symbol, oid, provider_name="binance")
             print(
                 f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
-                f"(cid={order.get('clientOrderId')}) after {elapsed:.1f}s."
+                f"(cid={extract_client_order_id(order, default='')}) after {elapsed:.1f}s."
             )
         except Exception as exc:
             print(f"[{symbol}] Failed to cancel blocking rtrade SELL order {oid}: {exc}")

@@ -18,7 +18,7 @@ import symbols as sym
 from instrument_registry import single_symbol_for
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po   # Retained for the dead-safe WeightLimitBlock path.
-from providers.base import extract_order_id, extract_order_price
+from providers.base import extract_client_order_id, extract_order_id, extract_order_price
 from providers.market_api import api as mkt      # Single guarded Instrument.place proxy.
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.quantity import decide_quantity
@@ -1841,12 +1841,13 @@ class TradingBot:
             orphan_orders = [
                 order for order in venue.executor.open_orders(self.symbol)
                 if isinstance(order, dict)
-                and str(order.get("clientOrderId") or "").startswith("RT_")
-                and order.get("clientOrderId") not in known_client_ids
+                and (coid := extract_client_order_id(order))
+                and coid.startswith("RT_")
+                and coid not in known_client_ids
             ]
             for order in orphan_orders:
                 order_id = extract_order_id(order) or ""
-                client_id = order.get("clientOrderId")
+                client_id = extract_client_order_id(order)
                 venue.executor.cancel_order(self.symbol, order_id)
                 try:
                     import order_retry

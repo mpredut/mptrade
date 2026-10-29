@@ -33,6 +33,7 @@ from .base import (
     _normalize_order,
     bool_env,
     env_value,
+    extract_client_order_id,
     normalize_side,
     resolve_market_flag,
 )
@@ -473,7 +474,7 @@ class KrakenProvider(MarketDataProvider):
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
             normalized.append({
                 "orderId": clean_oid,
-                "clientOrderId": _clean_single_order_id(raw.get("cl_ord_id")),
+                "clientOrderId": extract_client_order_id(raw),
                 "side": side,
                 "price": price,
                 "origQty": original_qty,

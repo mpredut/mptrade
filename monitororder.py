@@ -13,6 +13,7 @@ from binance_api import bapi as api
 from binance_api import order_id_context as rc
 from providers.base import (
     _clean_single_order_id,
+    extract_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -271,8 +272,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         if not oid_str:
             print(f"Invalid order ID ({order_id}) for {symbol}, skipping.")
             continue
-        raw_cid = order.get("clientOrderId")
-        cid = _clean_monitor_id(raw_cid)
+        cid = extract_client_order_id(order, default="") or ""
         owner = rc.resolve_order_owner(cid)
         if owner == "order_retry":
             owner = accepted_owner_map.get(oid_str) or accepted_owner_map.get(cid) or owner

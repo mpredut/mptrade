@@ -34,6 +34,7 @@ from .base import (
     _clean_single_order_id,
     _derive_128bit_client_order_id,
     bool_env,
+    extract_client_order_id,
     extract_order_fee,
     extract_order_id,
     extract_order_price,
@@ -377,8 +378,7 @@ class HyperliquidProvider(MarketDataProvider):
                 sz = safe_nonneg_float(o.get("sz", o.get("qty")), default=None)
                 if price is None or sz is None:
                     continue
-                raw_orig = o.get("origSz", o.get("origQty"))
-                orig_sz = safe_nonneg_float(raw_orig, default=sz) if raw_orig is not None else safe_nonneg_float(extract_orig_qty(o, default=sz), default=sz)
+                orig_sz = safe_nonneg_float(extract_orig_qty(o, default=sz), default=sz)
                 if orig_sz is None:
                     continue
                 exec_sz = safe_nonneg_float(o.get("executedQty", orig_sz - sz), default=0.0) or 0.0
@@ -388,10 +388,7 @@ class HyperliquidProvider(MarketDataProvider):
                 side = extract_order_side(o) or "SELL"
                 out.append({
                     "orderId": oid_val,
-                    "clientOrderId": (
-                        _clean_single_order_id(o.get("cloid"))
-                        or _clean_single_order_id(o.get("clientOrderId"))
-                    ),
+                    "clientOrderId": extract_client_order_id(o),
                     "side": side,
                     "price": price,
                     "qty": sz,

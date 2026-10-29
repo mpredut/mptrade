@@ -890,10 +890,29 @@ class TestEnrichedPretradeTelemetry:
 
 def test_order_actor_resolution_and_recent_fills_tagging():
     """Verify AI vs BOT actor resolution on orders, open orders, and recent fills extraction."""
-    from providers.base import normalize_open_order, resolve_order_actor
+    from providers.base import (
+        extract_client_order_id,
+        format_actor_tag,
+        normalize_open_order,
+        resolve_order_actor,
+        resolve_order_origin,
+    )
     from intelligence.sentiment.guards.high_stake_guard import extract_symbol_recent_fills
 
-    # 1. resolve_order_actor tests
+    # 1. extract_client_order_id tests across venue shapes and edge cases
+    assert extract_client_order_id({"clientOrderId": "AI_12345"}) == "AI_12345"
+    assert extract_client_order_id({"client_order_id": "RT_order_1"}) == "RT_order_1"
+    assert extract_client_order_id({"cloid": "0x1234567890abcdef"}) == "0x1234567890abcdef"
+    assert extract_client_order_id({"cl_ord_id": "kraken_cloid_1"}) == "kraken_cloid_1"
+    assert extract_client_order_id({"userref": 998877}) == "998877"
+    assert extract_client_order_id({"userref": "998877.0"}) == "998877"
+    assert extract_client_order_id({"clientOrderId": "nan", "cloid": "valid_id"}) == "valid_id"
+    assert extract_client_order_id({"clientOrderId": "0", "cloid": "0.0"}) is None
+    assert extract_client_order_id({"clientOrderId": False}) is None
+    assert extract_client_order_id(None) is None
+    assert extract_client_order_id({}) is None
+
+    # 2. resolve_order_actor tests
     assert resolve_order_actor({"actor": "AI"}) == "AI"
     assert resolve_order_actor({"actor": "bot"}) == "BOT"
     assert resolve_order_actor({"clientOrderId": "AI_12345"}) == "AI"
@@ -904,13 +923,32 @@ def test_order_actor_resolution_and_recent_fills_tagging():
     assert resolve_order_actor({"orderId": 111}, known_ai_order_ids={"999"}) == "BOT"
     assert resolve_order_actor({}) == "BOT"
 
-    # 2. normalize_open_order actor field
+    # 3. resolve_order_origin and format_actor_tag tests
+    assert resolve_order_origin({"actor": "AI"}) == ("AI", None, None)
+    assert resolve_order_origin({"clientOrderId": "AGS_panic_stop"}) == ("BOT", "assetguardian", "SL_PROTECT")
+    assert resolve_order_origin({"clientOrderId": "AGB_level_1"}) == ("BOT", "assetguardian", "BUY_TIER")
+    assert resolve_order_origin({"clientOrderId": "MO_TA_kalman_up_1"}) == ("BOT", "tradeall", "KALMAN_UP")
+    assert resolve_order_origin({"clientOrderId": "RT_OR_dca_step_1"}) == ("BOT", "rtrade", "DCA_STEP")
+    assert resolve_order_origin(
+        {"orderId": "123"},
+        audit_origin_map={"123": ("tradeall", "kalman_shadow")},
+    ) == ("BOT", "tradeall", "kalman_shadow")
+
+    assert format_actor_tag("AI") == "AI"
+    assert format_actor_tag("BOT") == "BOT"
+    assert format_actor_tag("BOT", module="assetguardian", rule="SL_PANIC") == "BOT(module=assetguardian, rule=SL_PANIC)"
+    assert format_actor_tag("BOT", module="tradeall") == "BOT(module=tradeall)"
+
+    # 4. normalize_open_order actor and clientOrderId fields
     norm_ai = normalize_open_order({"orderId": "abc", "clientOrderId": "AI_99", "price": 100, "origQty": 1}, venue="BINANCE", symbol="BTCUSDC")
     assert norm_ai["actor"] == "AI"
+    assert norm_ai["clientOrderId"] == "AI_99"
+    assert norm_ai["client_order_id"] == "AI_99"
     norm_bot = normalize_open_order({"orderId": "xyz", "clientOrderId": "web_1", "price": 100, "origQty": 1}, venue="BINANCE", symbol="BTCUSDC")
     assert norm_bot["actor"] == "BOT"
+    assert norm_bot["clientOrderId"] == "web_1"
 
-    # 3. extract_symbol_recent_fills tagging
+    # 5. extract_symbol_recent_fills tagging
     orders = [
         {"orderId": "1", "clientOrderId": "AI_buy_1", "side": "BUY", "price": "100.0", "executedQty": "1.0", "status": "FILLED", "time": 1000},
         {"orderId": "2", "clientOrderId": "bot_sell_1", "side": "SELL", "price": "110.0", "executedQty": "1.0", "status": "FILLED", "time": 2000},

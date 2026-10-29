@@ -14,6 +14,7 @@ from binance_api import bapi_allorders as apiorders
 # is portable to HYPE. The facade still routes Binance symbols identically to bapi.
 # Placement and WebSocket paths remain Binance-specific.
 from providers.base import (
+    extract_client_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
@@ -1006,9 +1007,7 @@ def _is_pending_exit_active(
         return False
 
     active_sell_exists = False
-    p_cid = extract_order_id(pending_stop.get("client_order_id"), default=None)
-    if p_cid in (None, "0", "0.0", "-0", "+0"):
-        p_cid = None
+    p_cid = extract_client_order_id(pending_stop, default=None)
     prov = getattr(inst, "_provider", None)
     if p_cid and prov and hasattr(prov, "order_by_client_id"):
         try:

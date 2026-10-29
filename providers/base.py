@@ -488,17 +488,29 @@ _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
     ("SD", "trailing"),
 )
 _GENERIC_CID_TOKENS = frozenset({"OR", "MAINTHREAD", "WORKER", "BOT", "ORDER", "RETRY", "OUTBOX"})
+_CLIENT_ORDER_ID_KEYS = (
+    "clientOrderId",
+    "client_order_id",
+    "cloid",
+    "cl_ord_id",
+    "userref",
+)
+
+
+def extract_client_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
+    """Extract and normalize client order ID or user reference from any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    for key in _CLIENT_ORDER_ID_KEYS:
+        val = order.get(key)
+        cleaned = clean_order_id(val)
+        if cleaned is not None:
+            return cleaned
+    return default
 
 
 def _extract_order_cid(order: dict) -> str:
-    return str(
-        order.get("clientOrderId")
-        or order.get("client_order_id")
-        or order.get("cloid")
-        or order.get("cl_ord_id")
-        or order.get("userref")
-        or ""
-    ).strip()
+    return extract_client_order_id(order, default="") or ""
 
 
 def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
@@ -599,9 +611,10 @@ def normalize_open_order(
     """Normalize a venue open-order dict into a uniform telemetry record."""
     if not isinstance(order, dict):
         return None
-    oid = extract_order_id(order) or order.get("orderId") or order.get("id")
-    px = extract_order_price(order) or order.get("price")
-    orig_q = extract_orig_qty(order) or order.get("origQty") or order.get("vol") or order.get("qty")
+    oid = extract_order_id(order)
+    px = extract_order_price(order)
+    orig_q = extract_orig_qty(order)
+    cid = extract_client_order_id(order)
     raw_exec = (
         order.get("executedQty")
         if order.get("executedQty") is not None
@@ -654,6 +667,9 @@ def normalize_open_order(
         rec["module"] = mod
     if rule:
         rec["rule"] = rule
+    if cid:
+        rec["clientOrderId"] = cid
+        rec["client_order_id"] = cid
     return rec
 
 
