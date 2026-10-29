@@ -234,6 +234,7 @@ def aggregate_financial_windows(
             ),
         }
 
+    sum_net_pnl = sum(net_pnls)
     return {
         **summary,
         "mean_buy_hold_return_pct": _mean(
@@ -242,9 +243,9 @@ def aggregate_financial_windows(
         "initial_capital_usd": float(initial_capital),
         "mean_net_pnl_usd_per_window": statistics.fmean(net_pnls),
         "median_net_pnl_usd_per_window": statistics.median(net_pnls),
-        "sum_reset_net_pnl_usd": sum(net_pnls),
+        "sum_reset_net_pnl_usd": sum_net_pnl,
         "sum_reset_return_on_initial_capital_pct": (
-            sum(net_pnls) / float(initial_capital) * 100.0
+            sum_net_pnl / float(initial_capital) * 100.0
         ),
         "mean_max_drawdown_abs_usd": _mean(
             item.get("max_drawdown_abs") for item in metrics
