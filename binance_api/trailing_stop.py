@@ -332,9 +332,9 @@ class TrailingStop:
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for symbol in self.sym.symbols:
-            if symbol in TRAILING_INSTRUMENTS:
-                asset = TRAILING_INSTRUMENTS[symbol].base
-                yield (symbol, asset, symbol, self.trail_pct_for(symbol))
+            spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, symbol)
+            if spec is not None:
+                yield (symbol, spec.base, symbol, self.trail_pct_for(symbol))
 
     def begin_tick(self) -> bool:
         try:
@@ -550,7 +550,7 @@ def main() -> int:
     if args.status:
         state = ts._load()
         for s, _asset, _pair, tr in ts.assets():
-            st = state.get(s, {}) if isinstance(state, dict) else {}
+            st = casefold_get(state, s, {}) if isinstance(state, dict) else {}
             if not isinstance(st, dict):
                 st = {}
             peak = safe_pos_float(st.get("peak"), default=None)

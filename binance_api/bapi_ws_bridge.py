@@ -111,8 +111,9 @@ def persist_ws_updated_caches(
 def refresh_symbol_in_cache(manager: Any, symbol: str) -> None:
     """Refresh only one manager symbol efficiently for a WebSocket event."""
     try:
-        start_time = manager.fetchtime_per_symbol.get(
-            symbol, manager.fallback_time_default
+        from instrument_registry import casefold_get
+        start_time = casefold_get(
+            manager.fetchtime_per_symbol, symbol, manager.fallback_time_default
         )
         items = manager.get_remote_items(symbol, start_time)
         if items:

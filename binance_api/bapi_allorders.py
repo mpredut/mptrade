@@ -12,7 +12,6 @@ from binance.exceptions import BinanceAPIException
 from .bapi_client import client
 import symbols as sym
 from botcore import (
-    safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -28,7 +27,6 @@ from providers.base import (
 
 
 from .bapi import (
-    _clean_bapi_oid_str,
     _normalize_bapi_oid,
     _normalize_side,
     _parse_bool_flag,
@@ -244,12 +242,13 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     # A WebSocket can update a partially filled order in place. Copy each row
     # under the manager lock so financial totals never observe a torn mutation.
     from cachepaths import cache_symbol_variants
+    from instrument_registry import casefold_get
     with cache_order_manager.lock:
         raw_bucket = next(
             (
                 b
                 for cand in cache_symbol_variants(symbol)
-                if isinstance(b := cache_order_manager.cache.get(cand), (list, tuple)) and b
+                if isinstance(b := casefold_get(cache_order_manager.cache, cand), (list, tuple)) and b
             ),
             [],
         )

@@ -448,17 +448,17 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         sync_reader()
 
     # Copy one coherent snapshot while the manager may reload a new generation.
-    sym_u = str(symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    from cachepaths import cache_symbol_variants
+    from instrument_registry import casefold_get
     with manager.lock:
-        raw_bucket = (
-            manager.cache.get(symbol)
-            or manager.cache.get(sym_u)
-            or manager.cache.get(sym_clean)
-            or []
+        raw_bucket = next(
+            (
+                b
+                for cand in cache_symbol_variants(symbol)
+                if isinstance(b := casefold_get(manager.cache, cand), (list, tuple)) and b
+            ),
+            [],
         )
-        if not isinstance(raw_bucket, (list, tuple)):
-            raw_bucket = []
         trades = [
             dict(trade) for trade in raw_bucket
             if isinstance(trade, dict)
