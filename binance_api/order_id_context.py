@@ -7,7 +7,7 @@ import time
 
 
 from typing import Optional, Union, Iterable
-from botcore import safe_int
+from botcore import safe_nonneg_int
 
 CLIENT_ORDER_ID_MAX_LEN = 36
 
@@ -131,7 +131,7 @@ def _sanitize_name(value, default="unknown"):
 
 def _base36(value):
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    value = max(0, safe_int(value, default=0))
+    value = safe_nonneg_int(value, default=0)
     if value == 0:
         return "0"
 
