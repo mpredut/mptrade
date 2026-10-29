@@ -3162,7 +3162,7 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
         return {}
 
     mb_snap = collect_macro_benchmarks_snapshot(
-        cache_dir, now_ts=now_ts, persist=True, fetch_fn=_fake_fetch
+        cache_dir, now_ts=None, persist=True, fetch_fn=_fake_fetch
     )
     assert mb_snap is not None
     assert "SPY=$582.40 (-0.85% 24h" in mb_snap["summary_line"]

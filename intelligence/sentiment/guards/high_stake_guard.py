@@ -2392,11 +2392,12 @@ def collect_macro_benchmarks_snapshot(
     fetch_fn: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y 24h/1h/15m deltas from Yahoo Finance and persist to cachedb."""
+    import time as _time
     import urllib.parse as _urlparse
     from botcore import fetch_public_json
     from state_io import save_json_state
 
-    eff_now = safe_pos_float(now_ts, default=None) or time.time()
+    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
     _fetch = fetch_fn or fetch_public_json
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
