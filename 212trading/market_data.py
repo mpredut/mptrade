@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 import time
 import urllib.error
 import urllib.parse
@@ -218,8 +219,8 @@ def compute_ols_slope_pct(closes, bars: int = 12) -> float | None:
         return None
     n = len(clean_closes)
     mx = (n - 1) / 2.0
-    my = sum(clean_closes) / n
-    denom = sum((x - mx) ** 2 for x in range(n))
+    my = statistics.fmean(clean_closes)
+    denom = n * (n * n - 1) / 12.0
     my_f = safe_pos_float(my, default=None)
     if denom == 0 or my_f is None:
         return None
