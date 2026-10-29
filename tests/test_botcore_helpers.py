@@ -184,6 +184,11 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertEqual(botcore.safe_pos_int(True, 1), 1)
         self.assertIsNone(botcore.safe_pos_int("bad", None))
 
+        large_id = (1 << 53) + 7
+        self.assertEqual(botcore.safe_int(large_id, 0), large_id)
+        self.assertEqual(botcore.safe_int(str(large_id), 0), large_id)
+        self.assertEqual(botcore.safe_pos_int(str(large_id), None), large_id)
+
 
 class BoundNotifierTest(unittest.TestCase):
     def test_explicit_symbol_then_environment_priority_then_fallback(self):

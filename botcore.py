@@ -234,6 +234,15 @@ def safe_pos_float(val: object, default: float | None = 0.0) -> float | None:
 
 def safe_int(val: object, default: int | None = 0) -> int | None:
     """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, int):
+        return val
+    if isinstance(val, (str, bytes, bytearray)):
+        try:
+            return int(val, 10)
+        except (TypeError, ValueError):
+            pass
     f = safe_float(val, default=None)
     if f is None or not math.isfinite(f):
         return default
