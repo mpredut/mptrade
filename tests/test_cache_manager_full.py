@@ -2110,7 +2110,7 @@ class TestAtomicWrite(unittest.TestCase):
         # CacheAllPriceFetcherManager overwrite guard, null symbol_metadata resilience, and fetchtime cleanup
         from market_monitor import pricefetcher
 
-        pf_path = os.path.join(self.tmp, "cache_prices_multi.json")
+        pf_path = os.path.join(self.tmp, "cache_watcher_all_price.json")
         with open(pf_path, "w", encoding="utf-8") as fh:
             json.dump({"items": {"BTC": [[1000, 60000.0]]}, "fetchtime": {"BTC": 1000}, "symbol_metadata": None}, fh)
         with patch.object(pricefetcher, "PricePlatformFactory") as pf_cls:

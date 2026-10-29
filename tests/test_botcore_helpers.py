@@ -188,6 +188,8 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertEqual(botcore.safe_int(large_id, 0), large_id)
         self.assertEqual(botcore.safe_int(str(large_id), 0), large_id)
         self.assertEqual(botcore.safe_pos_int(str(large_id), None), large_id)
+        from lock.trade_cooldown import _clean_order_id_meta
+        self.assertEqual(_clean_order_id_meta(large_id), large_id)
 
 
 class BoundNotifierTest(unittest.TestCase):
@@ -300,7 +302,7 @@ class TestCachepaths(unittest.TestCase):
             "auto_technical_repair.heartbeat": "system/heartbeat",
             "auto_technical_repair.heartbeat.previous": "system/heartbeat",
             "auto_repair_eval.json": "system",
-            "overnight_monitor_status.json": "system",
+            "fleet_health_status.json": "system",
             "dev_regression_status.json": "system",
             "llm_topic_threads.json": "system",
             "notify_queue.json": "system",

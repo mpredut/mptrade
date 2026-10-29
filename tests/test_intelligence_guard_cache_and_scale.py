@@ -713,7 +713,7 @@ class TestSisterArchitecturalDefects:
         btc_file.write_text(json.dumps({"items": {"BTCUSDC": btc_items}}), encoding="utf-8")
 
         # 2. Create synthetic multi cache with base asset HYPE
-        multi_file = tmp_path / "cache_prices_multi.json"
+        multi_file = tmp_path / "cache_watcher_all_price.json"
         hype_items = [[(now_ts - i * 15) * 1000, 90.0 + i * 0.1] for i in range(60)]
         multi_file.write_text(json.dumps({"items": {"HYPE": hype_items}}), encoding="utf-8")
 
@@ -731,7 +731,7 @@ class TestSisterArchitecturalDefects:
         now_ts = time.time()
 
         # Multi cache contains only ETH
-        multi_file = tmp_path / "cache_prices_multi.json"
+        multi_file = tmp_path / "cache_watcher_all_price.json"
         eth_items = [[(now_ts - i * 10) * 1000, 3000.0] for i in range(50)]
         multi_file.write_text(json.dumps({"items": {"ETH": eth_items}}), encoding="utf-8")
 
@@ -8126,7 +8126,7 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
 
     import verify_tools.portfolio_snapshot as ps_mod
     from market_monitor.new_coins_discovery import DexScreenerSource, NewCoinsMonitor
-    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         LogEventSummary,
@@ -8166,7 +8166,7 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
     ncm.price_monitor = dummy_pm
     assert ncm.add_new_coin_to_watchlist({"symbol": "NEWCOIN", "name": "NewCoin"}) is True
 
-    # 3. AutonomousOvernightMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
+    # 3. FleetHealthMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
     cachedb = tmp_path / "cachedb"
     cachedb.mkdir(parents=True, exist_ok=True)
     (cachedb / "geopolitical_eval.json").write_text("[]", encoding="utf-8")
@@ -8174,7 +8174,7 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
         json.dumps({"mode": "enforce", "market_trading_decision": None}),
         encoding="utf-8",
     )
-    aom = AutonomousOvernightMonitor(workspace_dir=str(tmp_path))
+    aom = FleetHealthMonitor(workspace_dir=str(tmp_path))
     assert aom.check_processes(now=float("nan")) == []
     assert aom.check_processes(now=True) == []
     s_stat = aom.gather_sensor_status()
@@ -9598,8 +9598,8 @@ def test_iteration78_pricechecker_thresholds_alertnotifiers_and_sim_window_norma
     assert max_px == 30.0 and max_pos == 2
 
 
-def test_iteration79_alerts_config_price_notifier_and_verify_tools_safety(tmp_path):
-    """Verify Iteration 79 alerts_config validation/resolve, price_notifier status safety, and gen_alert_thresholds guards."""
+def test_iteration79_alerts_config_price_watcher_and_verify_tools_safety(tmp_path):
+    """Verify Iteration 79 alerts_config validation/resolve, price_watcher status safety, and gen_alert_thresholds guards."""
     import pytest
     from types import SimpleNamespace
     from market_monitor import alerts_config
@@ -9646,11 +9646,11 @@ def test_iteration79_alerts_config_price_notifier_and_verify_tools_safety(tmp_pa
 
 
 def test_iteration80_protobuf_summary_store_and_overnight_monitor_safety(tmp_path):
-    """Verify Iteration 80 protobuf varint/tag bounds, summary_store timezone offset parsing, and AutonomousOvernightMonitor validation."""
+    """Verify Iteration 80 protobuf varint/tag bounds, summary_store timezone offset parsing, and FleetHealthMonitor validation."""
     import pytest
     from datetime import datetime, timezone
     from orchestratorOS.agy import protobuf, summary_store
-    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 
     # 1. protobuf.dec_varint rejects overly long varints and parse_fields rejects tag 0
     with pytest.raises(ValueError, match="varint too long"):
@@ -9665,13 +9665,13 @@ def test_iteration80_protobuf_summary_store_and_overnight_monitor_safety(tmp_pat
     dt_pos = summary_store.parse_db_timestamp("2026-10-26T14:30:00.5+02:00")
     assert dt_pos == datetime(2026, 10, 26, 12, 30, 0, 500000, tzinfo=timezone.utc)
 
-    # 3. AutonomousOvernightMonitor parses float hb_stale_s and rejects invalid loop intervals
+    # 3. FleetHealthMonitor parses float hb_stale_s and rejects invalid loop intervals
     procs_file = tmp_path / "procs.conf"
     procs_file.write_text(
         "tradeall.py|$ROOT|python tradeall.py|tradeall|logs/tradeall.log|180.5|bot\n",
         encoding="utf-8",
     )
-    mon = AutonomousOvernightMonitor(workspace_dir=str(tmp_path))
+    mon = FleetHealthMonitor(workspace_dir=str(tmp_path))
     parsed = mon.parse_process_manifest()
     assert len(parsed) == 1
     assert parsed[0]["hb_stale_s"] == 180.5

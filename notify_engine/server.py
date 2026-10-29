@@ -455,9 +455,9 @@ class NotificationServer:
         price_topic = self._resolve_topic("PRICE")
         trades_topic = self._resolve_topic("TRADES")
 
-        # Strip any existing [price_notifier] or [macro_analyzer] prefix
+        # Strip any existing [price_watcher] or [macro_analyzer] prefix
         cleaned_title = re.sub(
-            r"^\[(?:price_notifier|macro_analyzer)(?:\.py)?\]\s*",
+            r"^\[(?:price_watcher|macro_analyzer)(?:\.py)?\]\s*",
             "",
             title,
             flags=re.IGNORECASE,
@@ -468,7 +468,7 @@ class NotificationServer:
         is_price = (
             topic == price_topic
             or cat == "PRICE"
-            or bot_name.lower() in ("price_notifier", "price_notifier.py", "price_alert")
+            or bot_name.lower() in ("price_watcher", "price_watcher.py", "price_alert")
             or str(source).lower() in ("price_alert", "coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
             or any(m in cleaned_title for m in ("▲", "▼"))
         )
@@ -624,7 +624,7 @@ class NotificationServer:
             parts = line.split("[NTFY]", 1)
             if len(parts) > 1:
                 msg = parts[1].strip()
-                if bot_name.lower() in ("price_notifier", "price_notifier.py"):
+                if bot_name.lower() in ("price_watcher", "price_watcher.py"):
                     title = "Price Alert"
                 else:
                     title = f"[{bot_name}] Alert" if bot_name else "Alert"
@@ -673,7 +673,7 @@ class NotificationServer:
                 if now - last_time >= cooldown_sec:
                     topic_cat = rule.get("topic_category", "ERROR").upper()
                     topic = self._resolve_topic(topic_cat)
-                    if topic_cat == "PRICE" or bot_name.lower() in ("price_notifier", "price_notifier.py"):
+                    if topic_cat == "PRICE" or bot_name.lower() in ("price_watcher", "price_watcher.py"):
                         full_title = rule["name"]
                     elif topic_cat == "TRADES":
                         provider = _resolve_provider_label(bot_name)

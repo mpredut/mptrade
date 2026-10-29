@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """One-shot / cron READ-ONLY: fetch the COMPLETE Kraken TradesHistory (paginated by
-`ofs`) and write <root>/kraken_trades_full.json plus a realized P&L summary.
+`ofs`) and write verify_tools/kraken_trades_full.json plus a realized P&L summary.
 
 WHY it is separate from kraken_cachemanager: that process intentionally retains a 14-day
 window (Kraken rate limit, expensive call), which is correct for TRADING because the reader
@@ -23,7 +23,7 @@ _safe_float = safe_float
 from providers.base import env_value
 
 KD = os.path.join(ROOT, 'kraken')
-OUT = os.path.join(ROOT, 'kraken_trades_full.json')
+OUT = os.path.join(_HERE, 'kraken_trades_full.json')
 
 
 def _client():

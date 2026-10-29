@@ -183,7 +183,7 @@ All bot and guard alerts flow through `notify_engine.alertnotifiers.notify` into
 | **GUARD** | `order_guard` | `ntfy-guard-1978` | P2 (Orderbook, Funding, Whale) and P3 High-Stake alerts. 30m per-symbol cooldown. |
 | **MACRO** | `macro_shadow` | `ntfy-macro-1978` | P3 Sentiment Advisor regimes and P3 Geopolitical Threat changes. |
 | **TRADES** | `tradeall`, `monitortrades` | `ntfy-trades-1978` | Live executions, position scaling, take-profit triggers. |
-| **PRICE** | `price_notifier` | `ntfy-price-1978` | Key price threshold breakouts and trend reversals. |
+| **PRICE** | `price_watcher` | `ntfy-price-1978` | Key price threshold breakouts and trend reversals. |
 | **ERROR** | `watchdog`, OS scripts | `ntfy-error-1978` | Critical system errors, auto-mirrored to SMTP Email via [`mailer.py`](file:///home/predut/mptrade/notify_engine/mailer.py). |
 | **SERVER** | `orchestrator`, `deadman` | `ntfy-server-1978` | Daemon lifecycle, config reload notifications, and deadman/heartbeat monitoring. |
 

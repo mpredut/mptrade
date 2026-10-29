@@ -1019,7 +1019,7 @@ def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbo
         CacheFactory._CONFIG = {}
     cfg = {
         "class": CacheAllPriceFetcherManager,
-        "filename": "cache_prices_multi.json",
+        "filename": "cache_watcher_all_price.json",
         "sync_ts": lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
         "cmc_api_key": cmc_api_key,
     }

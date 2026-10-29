@@ -8,7 +8,7 @@ Continuously tracks:
 4. DEV Machine Overnight Backtest Sweeps execution and progress.
 5. OS Resource Health (CPU load, Memory, Disk space).
 
-Persists periodic health status to cachedb/overnight_monitor_status.json.
+Persists periodic health status to cachedb/fleet_health_status.json.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("autonomous_overnight_monitor")
+logger = logging.getLogger("fleet_health_monitor")
 
 
 @dataclass
@@ -54,7 +54,7 @@ class ProcessHealth:
 
 
 @dataclass
-class OvernightMonitorReport:
+class FleetHealthReport:
     ts: float
     fleet_healthy: bool
     total_processes: int
@@ -67,7 +67,10 @@ class OvernightMonitorReport:
     system_resources: Dict[str, Any]
 
 
-class AutonomousOvernightMonitor:
+OvernightMonitorReport = FleetHealthReport
+
+
+class FleetHealthMonitor:
     """Orchestrates overnight monitoring of production trading fleet and dev backtests."""
 
     def __init__(
@@ -83,7 +86,7 @@ class AutonomousOvernightMonitor:
         self.cachedb_dir = os.path.join(self.workspace_dir, cachedb_dir)
         self.logs_dir = os.path.join(self.workspace_dir, logs_dir)
         self.procs_conf = os.path.join(self.workspace_dir, "procs.conf")
-        self.status_file = str(resolve_cachedb_filepath(os.path.join(self.cachedb_dir, "overnight_monitor_status.json")))
+        self.status_file = str(resolve_cachedb_filepath(os.path.join(self.cachedb_dir, "fleet_health_status.json")))
 
         self.dev_host = str(dev_host or "192.168.0.138").strip() or "192.168.0.138"
         p_int = safe_pos_int(dev_port, default=32238)
@@ -266,7 +269,7 @@ class AutonomousOvernightMonitor:
         """Reads local system resource utilization."""
         return gather_basic_os_resources(self.workspace_dir)
 
-    def run_cycle(self, persist: bool = True) -> OvernightMonitorReport:
+    def run_cycle(self, persist: bool = True) -> FleetHealthReport:
         """Executes one comprehensive audit cycle and saves report."""
         now = time.time()
         proc_health = self.check_processes(now=now)
@@ -279,7 +282,7 @@ class AutonomousOvernightMonitor:
         dev_status = self.check_dev_backtest_progress()
         resources = self.gather_system_resources()
 
-        report = OvernightMonitorReport(
+        report = FleetHealthReport(
             ts=now,
             fleet_healthy=healthy,
             total_processes=len(proc_health),
@@ -335,7 +338,7 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=60.0, help="Loop interval in seconds")
     args = parser.parse_args()
 
-    monitor = AutonomousOvernightMonitor()
+    monitor = FleetHealthMonitor()
     if args.once:
         rep = monitor.run_cycle(persist=True)
         print(json.dumps(asdict(rep), indent=2))
@@ -345,3 +348,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+AutonomousOvernightMonitor = FleetHealthMonitor

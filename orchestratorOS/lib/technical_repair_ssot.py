@@ -374,7 +374,7 @@ def resolve_manifest_process(target: Any, workspace_dir: str) -> Optional[Dict[s
         p_base = os.path.basename(p_pat).lower()
         if norm in (p_name, p_pat, p_base) or norm_base in (p_name, p_base):
             return p
-    # Pass 2: alias or stem match (e.g. 'hl_bot' -> 'HL-bot', 'price_notifier.py' -> 'price_notifier')
+    # Pass 2: alias or stem match (e.g. 'hl_bot' -> 'HL-bot', 'price_watcher.py' -> 'price_watcher')
     for p in manifest:
         alias_set = set(p.get("aliases") or [])
         if norm in alias_set or norm_base in alias_set or norm_stem in alias_set:

@@ -171,7 +171,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(_resolve_provider_label("Custom-PAIR", ""), "Custom")
 
     def test_price_alert_dispatch_formatting(self):
-        """Verify PriceAlert objects and dicts create rich titles without [price_notifier] prefix."""
+        """Verify PriceAlert objects and dicts create rich titles without [price_watcher] prefix."""
         alert = PriceAlert(
             symbol="TAOUSDC",
             alert_type="up",
@@ -181,7 +181,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             threshold=5.0,
             reference_time="2026-09-24 14:30:00",
         )
-        self.server.dispatch_alerts([alert], bot_name="price_notifier")
+        self.server.dispatch_alerts([alert], bot_name="price_watcher")
         self.assertEqual(len(self.dispatched), 1)
         dispatched = self.dispatched[0]
         self.assertEqual(dispatched["title"], "TAOUSDC ▲ +5.36%")
@@ -191,13 +191,13 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(dispatched["topic"], "ntfy-price-test")
 
     def test_new_coin_alert_dispatch(self):
-        """Verify new_coin_discovered alerts route to PRICE without [price_notifier] prefix."""
+        """Verify new_coin_discovered alerts route to PRICE without [price_watcher] prefix."""
         coin = {
             "type": "new_coin_discovered", "source": "coinmarketcap",
             "symbol": "RWS", "name": "Real World Services", "added_at": None,
             "price": 0.0154, "auto_added": True, "has_price": True,
         }
-        self.server.dispatch_alerts([coin], bot_name="price_notifier")
+        self.server.dispatch_alerts([coin], bot_name="price_watcher")
         self.assertEqual(len(self.dispatched), 1)
         dispatched = self.dispatched[0]
         self.assertEqual(dispatched["title"], "New Coin: RWS")
@@ -211,7 +211,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
 
         # Batch of 2 price alerts
         self.dispatched.clear()
-        self.server.dispatch_alerts([alert1, alert2], bot_name="price_notifier")
+        self.server.dispatch_alerts([alert1, alert2], bot_name="price_watcher")
         self.assertEqual(len(self.dispatched), 1)
         self.assertEqual(self.dispatched[0]["title"], "Price Alerts (2): TAOUSDC ▲, BTCUSDC ▼")
         self.assertIn("TAOUSDC: U +5.36%", self.dispatched[0]["message"])
@@ -223,7 +223,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             PriceAlert(f"COIN{i}USDC", "up" if i % 2 == 0 else "down", 100.0, 95.0, 5.0, 4.0)
             for i in range(10)
         ]
-        self.server.dispatch_alerts(many_alerts, bot_name="price_notifier")
+        self.server.dispatch_alerts(many_alerts, bot_name="price_watcher")
         self.assertEqual(len(self.dispatched), 1)
         self.assertEqual(self.dispatched[0]["title"], "Price Alerts (10 coins)")
 
@@ -233,7 +233,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             {"type": "new_coin_discovered", "source": "cmc", "symbol": "COINA"},
             {"type": "new_coin_discovered", "source": "cmc", "symbol": "COINB"},
         ]
-        self.server.dispatch_alerts(coins, bot_name="price_notifier")
+        self.server.dispatch_alerts(coins, bot_name="price_watcher")
         self.assertEqual(len(self.dispatched), 1)
         self.assertEqual(self.dispatched[0]["title"], "New Coins (2): COINA, COINB")
 
@@ -686,7 +686,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             recent_log_lines,
         )
         from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-        from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+        from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
 
         # 1. recent_log_lines: handles NaN file_mtime, None lines, and non-str items in lines
         self.assertEqual(recent_log_lines(None, 1000.0, 500.0), [])  # type: ignore[arg-type]
@@ -703,14 +703,14 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(gw.process_intent(None), {})  # type: ignore[arg-type]
         self.assertIsNone(gw.submit(None, source="test", max_mode="shadow"))  # type: ignore[arg-type]
 
-        # 3. AutonomousOvernightMonitor.gather_sensor_status: recovers from .previous when primary is missing or corrupt
+        # 3. FleetHealthMonitor.gather_sensor_status: recovers from .previous when primary is missing or corrupt
         cachedb = os.path.join(self._temp_dir.name, "cachedb")
         os.makedirs(cachedb, exist_ok=True)
         with open(os.path.join(cachedb, "geopolitical_eval.json"), "w", encoding="utf-8") as f:
             f.write("{corrupt")
         with open(os.path.join(cachedb, "geopolitical_eval.json.previous"), "w", encoding="utf-8") as f:
             json.dump({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered"}, f)
-        mon = AutonomousOvernightMonitor(workspace_dir=self._temp_dir.name)
+        mon = FleetHealthMonitor(workspace_dir=self._temp_dir.name)
         sensors = mon.gather_sensor_status()
         self.assertEqual(sensors["geopolitical_threat"]["threat_level"], "ELEVATED")
         self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)

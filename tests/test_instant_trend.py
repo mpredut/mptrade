@@ -815,7 +815,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         from market_monitor import pricefetcher as pf
         from unittest.mock import patch
 
-        pf_file = os.path.join(self.tmp, "cache_prices_multi.json")
+        pf_file = os.path.join(self.tmp, "cache_watcher_all_price.json")
         now_sec = time.time()
         payload = {
             "items": {"BTCUSDT": [[int(now_sec * 1000), 60500.0, "Binance"]]},

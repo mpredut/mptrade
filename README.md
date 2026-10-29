@@ -14,7 +14,7 @@ flowchart TD
     subgraph Infrastructure ["1. Infrastructure & Supervision Layer (OrchestratorOS)"]
         SVC["python_orchestrator.service\n(Systemd Daemon)"] --> ORCH["orchestratorTrade/orchestrator.py\n(Asyncio Loop & Hot-Reload)"]
         ORCH --> FLEET["Supervised Fleet: 21 Processes\n(procs.conf SSOT)"]
-        MON["Autonomous Overnight Monitor\n(autonomous_overnight_monitor.py)"] -.->|Continuous Audit 60s| FLEET
+        MON["Autonomous Overnight Monitor\n(fleet_health_monitor.py)"] -.->|Continuous Audit 60s| FLEET
     end
 
     subgraph Engines ["2. Multi-Venue Execution Engines"]
@@ -63,7 +63,7 @@ The live system is orchestrated by [`python_orchestrator.service`](file:///home/
 * **Single Process Manifest ([`procs.conf`](file:///home/predut/mptrade/procs.conf)):** Defines all 21 supervised processes, working directories, execution commands, heartbeat log locations, and maximum staleness thresholds (`hb_stale_s`).
 * **Hot-Reload Loop:** Watches `config.env`, `procs.conf`, `instruments.conf`, and `order_guard.conf` every 10 seconds. When configurations change, affected bots are automatically and gracefully restarted.
 * **Zombie / Hang Detection:** Monitors heartbeat file modification times. If a process is alive but its heartbeat exceeds `hb_stale_s`, the orchestrator terminates the hung process (`SIGTERM` -> `SIGKILL`) and restarts it cleanly, notifying via `ntfy`.
-* **Autonomous Overnight Monitor ([`autonomous_overnight_monitor.py`](file:///home/predut/mptrade/orchestratorOS/livecheck/autonomous_overnight_monitor.py)):** Audits fleet running state, heartbeat freshness, telemetry sensor scores, host resource utilization, and DEV backtest progress into `cachedb/overnight_monitor_status.json`.
+* **Autonomous Overnight Monitor ([`fleet_health_monitor.py`](file:///home/predut/mptrade/orchestratorOS/livecheck/fleet_health_monitor.py)):** Audits fleet running state, heartbeat freshness, telemetry sensor scores, host resource utilization, and DEV backtest progress into `cachedb/fleet_health_status.json`.
 
 ---
 
@@ -213,7 +213,7 @@ PROCS.CONF
     ├── monitortrades             (monitortrades.py)
     ├── monitororder              (monitororder.py)
     ├── rtrade                    (rtrade.py)
-    ├── price_notifier            (market_monitor/price_notifier.py)
+    ├── price_watcher            (market_monitor/price_watcher.py)
     ├── order_retry               (order_retry_worker.py)
     ├── globaltelemetry_collector (globaltelemetry_collector.py)
     └── macro_analyzer            (macro_analyzer.py)
@@ -243,7 +243,7 @@ Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to 
 
 | Objective | Command |
 | :--- | :--- |
-| **Fleet Healthcheck (Single Shot)** | `./myenv/bin/python orchestratorOS/livecheck/autonomous_overnight_monitor.py --once` |
+| **Fleet Healthcheck (Single Shot)** | `./myenv/bin/python orchestratorOS/livecheck/fleet_health_monitor.py --once` |
 | **Fleet Status / Logs** | `systemctl status python_orchestrator.service` / `journalctl -u python_orchestrator.service -f` |
 | **Restart Live Fleet** | `sudo systemctl restart python_orchestrator.service` *(Orchestrator also auto-reloads on config edit)* |
 | **Sync Code & Data to DEV** | `bash offline/runners/sync_cache_to.sh dev` |

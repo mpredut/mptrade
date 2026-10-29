@@ -66,7 +66,7 @@ backup_price_data_only() {
         -name 'cache_365_price_*.jsonl*' -o \
         -name 'cache_24_price_*.json*' -o \
         -name 'cache_sparse_price_*.jsonl*' -o \
-        -name 'cache_prices_multi.json*' \
+        -name 'cache_watcher_all_price.json*' \
     \) ! -name '*.tmp*' ! -name '*.previous' ! -name '*.lock' | sort)"
     [ -n "$PRICE_FILES" ] || { echo "❌ no raw price files found in cachedb/"; exit 1; }
 

@@ -413,7 +413,7 @@ class TestNewCoinsDiscovery(unittest.TestCase):
 
     def test_cleanup_old_symbols_purges_inactive_symbol_added_time(self):
         from market_monitor import pricefetcher
-        pf_path = os.path.join(tempfile.mkdtemp(prefix="pf_clean_"), "cache_prices_multi.json")
+        pf_path = os.path.join(tempfile.mkdtemp(prefix="pf_clean_"), "cache_watcher_all_price.json")
         with patch.object(pricefetcher, "PricePlatformFactory"):
             mgr = pricefetcher.CacheAllPriceFetcherManager(60, ["BTC"], pf_path, read_only=True)
             mgr.symbol_added_time["OLDCOIN"] = time.time() - 30 * 86400

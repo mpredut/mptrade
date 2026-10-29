@@ -5,12 +5,12 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 """Run new-coin discovery and watch-list price alerts in one process.
 
-``price_notifier.conf`` supplies the watch list, thresholds, scan intervals, sources,
+``price_watcher.conf`` supplies the watch list, thresholds, scan intervals, sources,
 and limits. Importing this module loads environment files, validates required alert
 configuration, and prints notification-channel status; only ``main`` starts monitor
 threads. Coin discovery additionally requires ``ALERT_NEW_COIN=TRUE``.
 
-Usage: ``python3 price_notifier.py [--config PATH] [--check]``.
+Usage: ``python3 price_watcher.py [--config PATH] [--check]``.
 """
 
 import argparse
@@ -240,7 +240,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main():
     ap = argparse.ArgumentParser(description="Alert monitor: new coins plus price thresholds (config-driven).")
-    ap.add_argument("--config", default=os.path.join(_HERE, "price_notifier.conf"))
+    ap.add_argument("--config", default=os.path.join(_HERE, "price_watcher.conf"))
     ap.add_argument("--check", action="store_true", help="validate the config plus the imports and exit (it does not start the monitor)")
     args = ap.parse_args()
 

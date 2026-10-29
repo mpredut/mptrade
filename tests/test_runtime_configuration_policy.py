@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_market_alerts_and_hyperliquid_provider_use_shared_env_stack():
-    market = (ROOT / "market_monitor/price_notifier.py").read_text(encoding="utf-8")
+    market = (ROOT / "market_monitor/price_watcher.py").read_text(encoding="utf-8")
     provider = (ROOT / "providers/hyperliquid_provider.py").read_text(encoding="utf-8")
     assert "load_env_stack(" in market
     assert "from dotenv import" not in market

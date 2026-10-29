@@ -772,7 +772,7 @@ class AutonomousAIReconciler:
                 snapshot.active_heartbeats[hb_name] = data
 
         # 6. Bot state files in workspace
-        for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json", "kraken_trades_full.json"):
+        for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json"):
             s_path = os.path.join(self.workspace_dir, s_file)
             if os.path.exists(s_path):
                 try:
@@ -785,8 +785,8 @@ class AutonomousAIReconciler:
         if include_fleet:
             base_res: Dict[str, Any] = {}
             try:
-                from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
-                monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
+                from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+                monitor = FleetHealthMonitor(workspace_dir=self.workspace_dir)
                 snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
                 base_res = dict(monitor.gather_system_resources() or {})
             except Exception:
@@ -850,7 +850,7 @@ class AutonomousAIReconciler:
         long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
         t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
         kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
-        prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_prices_multi.json"))
+        prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
         trailing_map: Dict[str, Dict[str, Any]] = {}
         for raw_trail, default_quote in (
             (_read_json(os.path.join(self.cache_dir, "trailing_state.json")), ""),

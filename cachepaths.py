@@ -48,12 +48,12 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
         "exact": (
             "cache_current_price.json",
             "cache_currentprice.json",
-            "cache_prices_multi.json",
+            "cache_watcher_all_price.json",
         ),
         "prefixes": (
             "cache_current_price.",
             "cache_currentprice.",
-            "cache_prices_multi.",
+            "cache_watcher_all_price.",
             "cache_24_price_",
             "cache_24price_",
             "cache_365_price_",
@@ -130,14 +130,14 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "system": {
         "exact": (
-            "overnight_monitor_status.json",
+            "fleet_health_status.json",
             "dev_regression_status.json",
             "llm_topic_threads.json",
             "notify_queue.json",
         ),
         "prefixes": (
             "auto_",
-            "overnight_monitor_status.",
+            "fleet_health_status.",
             "dev_regression_status.",
             "llm_topic_threads.",
             "notify_queue.",

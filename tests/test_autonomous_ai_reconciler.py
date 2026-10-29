@@ -1,4 +1,4 @@
-"""Unit tests for AutonomousAIReconciler and AutonomousOvernightMonitor."""
+"""Unit tests for AutonomousAIReconciler and FleetHealthMonitor."""
 from __future__ import annotations
 
 import json
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from orchestratorOS.livecheck.autonomous_overnight_monitor import (
-    AutonomousOvernightMonitor,
+from orchestratorOS.livecheck.fleet_health_monitor import (
+    FleetHealthMonitor,
     OvernightMonitorReport,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
@@ -410,7 +410,7 @@ def mock_workspace(tmp_path):
 
 
 def test_monitor_procs_inventory_parsing(mock_workspace):
-    monitor = AutonomousOvernightMonitor(workspace_dir=str(mock_workspace))
+    monitor = FleetHealthMonitor(workspace_dir=str(mock_workspace))
     procs = monitor.parse_process_manifest()
     assert len(procs) == 2
     assert procs[0]["name"] == "bot1"
@@ -418,7 +418,7 @@ def test_monitor_procs_inventory_parsing(mock_workspace):
 
 
 def test_monitor_gather_sensor_status(mock_workspace):
-    monitor = AutonomousOvernightMonitor(workspace_dir=str(mock_workspace))
+    monitor = FleetHealthMonitor(workspace_dir=str(mock_workspace))
     sensors = monitor.gather_sensor_status()
     assert sensors["geopolitical_threat"]["threat_level"] == "ELEVATED"
     assert sensors["supervisor_eval"]["mode"] == "enforce"
@@ -426,7 +426,7 @@ def test_monitor_gather_sensor_status(mock_workspace):
 
 
 def test_monitor_run_cycle_report(mock_workspace, monkeypatch):
-    monitor = AutonomousOvernightMonitor(workspace_dir=str(mock_workspace))
+    monitor = FleetHealthMonitor(workspace_dir=str(mock_workspace))
     monkeypatch.setattr(monitor, "check_dev_backtest_progress", lambda: {
         "reachable": True,
         "running": True,
@@ -441,7 +441,7 @@ def test_monitor_run_cycle_report(mock_workspace, monkeypatch):
     assert report.dev_backtest_status["running"] is True
     assert report.autonomous_ai_mode == "enforce"
 
-    status_file = mock_workspace / "cachedb" / "overnight_monitor_status.json"
+    status_file = mock_workspace / "cachedb" / "fleet_health_status.json"
     assert status_file.exists()
     data = json.loads(status_file.read_text())
     assert data["autonomous_ai_mode"] == "enforce"
@@ -862,7 +862,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
         )
     with open(os.path.join(cache_dir, "cache_T_trend.json"), "w", encoding="utf-8") as f:
         json.dump({"HYPEUSD": {"median_d": 3.0, "p90_d": 6.2}}, f)
-    with open(os.path.join(cache_dir, "cache_prices_multi.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "cache_watcher_all_price.json"), "w", encoding="utf-8") as f:
         json.dump({"items": {"HYPE": [[1000, 80.0], [2000, 74.5], [3000, 76.0]]}}, f)
     with open(os.path.join(cache_dir, "order_retry_queue.jsonl"), "w", encoding="utf-8") as f:
         f.write(json.dumps({
@@ -1126,7 +1126,7 @@ def test_monitor_check_processes_requires_all_heartbeat_files_fresh(tmp_path, mo
     os.utime(hb, (now - 300.0, now - 300.0))
     os.utime(lg, (now, now))
 
-    monitor = AutonomousOvernightMonitor(workspace_dir=str(tmp_path))
+    monitor = FleetHealthMonitor(workspace_dir=str(tmp_path))
     monkeypatch.setattr(monitor, "_is_process_running", lambda pat: True)
     res = monitor.check_processes(now=now)
     assert len(res) == 1
@@ -1200,13 +1200,13 @@ def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
 
     # 1. monitor_night.load_procs resolves fleet labels and comma-separated hb_log paths
     procs_text = (
-        "market_monitor/price_notifier.py|$ROOT|python market_monitor/price_notifier.py|price_notifier|cachedb/price_notifier.heartbeat,logs/price_notifier.log|180|fleet\n"
+        "market_monitor/price_watcher.py|$ROOT|python market_monitor/price_watcher.py|price_watcher|cachedb/price_watcher.heartbeat,logs/price_watcher.log|180|fleet\n"
         "hyperliquid/bot.py|$ROOT/hyperliquid|python bot.py|HL-bot|cachedb/HL-bot.heartbeat,logs/HL-bot.log|600|bot\n"
     )
     with patch.object(monitor_night, "run", return_value=procs_text):
         procs = monitor_night.load_procs(MagicMock())
     assert len(procs) == 2
-    assert procs[0].log == "logs/price_notifier.log"
+    assert procs[0].log == "logs/price_watcher.log"
     assert procs[1].log == "logs/HL-bot.log"
 
     # 2. portfolio_snapshot._ntfy encodes non-ASCII emojis safely for HTTP headers
@@ -1451,12 +1451,12 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
         persisted = json.load(f)
     assert persisted["market_trading_decision"]["confidence"] is None
 
-    # 4. AutonomousOvernightMonitor sanitizes sensor floats, strips quotes in order_guard.conf, and parses latest_overnight.log
+    # 4. FleetHealthMonitor sanitizes sensor floats, strips quotes in order_guard.conf, and parses latest_overnight.log
     with open(os.path.join(cache_dir, "geopolitical_eval.json"), "w", encoding="utf-8") as f:
         json.dump({"threat_level": None, "risk_score": True, "summary": None}, f)
     with open(os.path.join(cache_dir, "fear_greed_collect.json"), "w", encoding="utf-8") as f:
         json.dump({"value": "bad_val"}, f)
-    mon = AutonomousOvernightMonitor(workspace_dir=workspace)
+    mon = FleetHealthMonitor(workspace_dir=workspace)
     assert mon.get_autonomous_modes()["supervisor_mode"] == "shadow"
     s_stat = mon.gather_sensor_status()
     assert s_stat["geopolitical_threat"] == {"threat_level": "NORMAL", "risk_score": 0.0, "summary": ""}
@@ -2035,20 +2035,20 @@ def test_technical_repair_ssot_normalization_and_manifest_unification(tmp_path):
     (tmp_path / "procs.conf").write_text(
         "rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n"
         "hyperliquid/hl_bot.py|$ROOT/hyperliquid|python hl_bot.py|HL-bot|cachedb/HL-bot.heartbeat|600|bot\n"
-        "market_monitor/price_notifier.py|$ROOT|python market_monitor/price_notifier.py|price_notifier|cachedb/price_notifier.heartbeat|180|fleet\n",
+        "market_monitor/price_watcher.py|$ROOT|python market_monitor/price_watcher.py|price_watcher|cachedb/price_watcher.heartbeat|180|fleet\n",
         encoding="utf-8",
     )
 
     manifest = parse_procs_manifest(str(tmp_path), include_stdout_with_heartbeat_file=True)
     assert len(manifest) == 3
-    assert fleet_script_basenames(str(tmp_path)) == {"rtrade.py", "price_notifier.py"}
+    assert fleet_script_basenames(str(tmp_path)) == {"rtrade.py", "price_watcher.py"}
     # Dedicated .heartbeat file also appends logs/<stem>.log when include_stdout_with_heartbeat_file=True
     assert any(p.endswith("logs/rtrade.log") for p in manifest[0]["hb_files"])
 
     # Alias/stem resolution for bots and modules
     assert resolve_manifest_process("hl_bot", str(tmp_path))["name"] == "HL-bot"
     assert resolve_manifest_process("hyperliquid/hl_bot.py", str(tmp_path))["name"] == "HL-bot"
-    assert resolve_manifest_process("price_notifier.py", str(tmp_path))["name"] == "price_notifier"
+    assert resolve_manifest_process("price_watcher.py", str(tmp_path))["name"] == "price_watcher"
 
     # Synonym & target alias normalization (RESTART_BOT + FLEET/wgpia0/dns/SYSTEM -> canonical actions)
     n_bot = normalize_repair_action({"action": "REBOOT_BOT", "bot": "hl_bot.py", "reason": "stale"}, str(tmp_path))

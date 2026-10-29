@@ -1294,7 +1294,7 @@ def _read_cached_price_history(
     """Read rolling price history from local cache for parabolic surge evaluation.
 
     Prefers the authoritative 24h per-symbol cache (cachedb/cache_24_price_{symbol}.json)
-    which captures every high-resolution tick, and falls back to cache_prices_multi.json
+    which captures every high-resolution tick, and falls back to cache_watcher_all_price.json
     with exact normalized base-symbol matching for cross-venue assets (e.g. HYPE on Kraken).
     Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
     """
@@ -1387,9 +1387,9 @@ def _read_cached_price_history(
         except Exception:
             pass
 
-    # 2. Fallback: shared multi-symbol cache (cache_prices_multi.json)
+    # 2. Fallback: shared multi-symbol cache (cache_watcher_all_price.json)
     if not history:
-        p_multi = os.path.join(cachedb_dir, "cache_prices_multi.json")
+        p_multi = os.path.join(cachedb_dir, "cache_watcher_all_price.json")
         data = _read_json_recovering(p_multi)
         if isinstance(data, dict):
             try:

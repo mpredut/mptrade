@@ -4224,7 +4224,7 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
     from collections import defaultdict, deque
     from types import SimpleNamespace
     import orchestratorOS.agy.protobuf as pb
-    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     from orchestratorTrade.orchestrator import BotManager
@@ -4240,10 +4240,10 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
     assert pb.drop_entries(123, {"abc"}) == (b"", 0)  # type: ignore[arg-type]
     assert pb.replace_summary_entry(123, "abc", b"") == (b"", False)  # type: ignore[arg-type]
 
-    # 2. AutonomousOvernightMonitor sanitizes invalid dev_port and string/NaN persist flag
-    mon = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port=True)  # type: ignore[arg-type]
+    # 2. FleetHealthMonitor sanitizes invalid dev_port and string/NaN persist flag
+    mon = FleetHealthMonitor(workspace_dir=str(tmp_path), dev_port=True)  # type: ignore[arg-type]
     assert mon.dev_port == 32238
-    mon2 = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port=99999)
+    mon2 = FleetHealthMonitor(workspace_dir=str(tmp_path), dev_port=99999)
     assert mon2.dev_port == 32238
 
     # 3. AutonomousAIReconciler and AutonomousIntentGateway reject NaN notify_enabled and boolean symbols/venues
@@ -5169,11 +5169,11 @@ def test_batch36_t212_hyperliquid_kraken_and_ws_normalize_hardening(monkeypatch)
 
 
 def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(tmp_path, monkeypatch):
-    """Verify watchdog_common.save_state, agy_store_fix.mode_ui_sync_check, AutonomousOvernightMonitor default log hb, MacroAnalyzer whale variant lookup, and NewsFeedCollector._effective_history_file."""
+    """Verify watchdog_common.save_state, agy_store_fix.mode_ui_sync_check, FleetHealthMonitor default log hb, MacroAnalyzer whale variant lookup, and NewsFeedCollector._effective_history_file."""
     from types import SimpleNamespace
     from orchestratorOS.lib import watchdog_common
     from orchestratorOS.admin import agy_store_fix
-    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     from intelligence.macro_analyzer import MacroAnalyzer
     from intelligence.macro.news_feed_collector import NewsFeedCollector
 
@@ -5209,11 +5209,11 @@ def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(t
     assert rc3 == agy_store_fix.UI_SYNC_NOTHING
     assert not sync_state.exists() and not prev_sync.exists()
 
-    # 3. AutonomousOvernightMonitor.check_processes checks default logs/<name>.log when hb_log is empty and stale_threshold > 0
+    # 3. FleetHealthMonitor.check_processes checks default logs/<name>.log when hb_log is empty and stale_threshold > 0
     ws_dir = tmp_path / "ws"
     (ws_dir / "logs").mkdir(parents=True)
     (ws_dir / "procs.conf").write_text("tradeall.py|$ROOT|python tradeall.py|tradeall||300|bot\n", encoding="utf-8")
-    mon = AutonomousOvernightMonitor(workspace_dir=str(ws_dir))
+    mon = FleetHealthMonitor(workspace_dir=str(ws_dir))
     monkeypatch.setattr(mon, "_is_process_running", lambda pat: True)
     # Missing default log -> heartbeat_fresh is False
     ph_missing = mon.check_processes(now=1000.0)
@@ -6154,7 +6154,7 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     from notify_engine import alertnotifiers, mailer
     from orchestratorOS.admin import agy_store_fix
     from orchestratorOS.agy import topics
-    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     from orchestratorOS.supervisor.autonomous_ai_reconciler import (
         AutonomousAIReconciler,
         SupervisorAuditReport,
@@ -6176,10 +6176,10 @@ def test_batch46_notify_and_orchestrator_hardening(tmp_path, monkeypatch):
     assert topics._safe_int("2.9", 0) == 3
     assert topics._safe_int(True, 7) == 7
 
-    # 3. AutonomousOvernightMonitor dev_port float-string parsing
-    mon = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port="32238.0")  # type: ignore[arg-type]
+    # 3. FleetHealthMonitor dev_port float-string parsing
+    mon = FleetHealthMonitor(workspace_dir=str(tmp_path), dev_port="32238.0")  # type: ignore[arg-type]
     assert mon.dev_port == 32238
-    mon_bad = AutonomousOvernightMonitor(workspace_dir=str(tmp_path), dev_port="32238.5")  # type: ignore[arg-type]
+    mon_bad = FleetHealthMonitor(workspace_dir=str(tmp_path), dev_port="32238.5")  # type: ignore[arg-type]
     assert mon_bad.dev_port == 32238
 
     # 4. AutonomousAIReconciler apply_reconciliation & _apply_code_patch_safely directory & falsy string guards

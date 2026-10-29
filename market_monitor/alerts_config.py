@@ -1,4 +1,4 @@
-"""alerts_config.py — load the plain-text price_notifier.conf file for the alert monitor.
+"""alerts_config.py — load the plain-text price_watcher.conf file for the alert monitor.
 
 Line-oriented format (# starts a full-line or inline comment):
     watch    = BTC, TAO, HYPE          # watchlist (coins that are always monitored)
@@ -139,5 +139,5 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
 if __name__ == "__main__":
     import json
     import sys
-    p = sys.argv[1] if len(sys.argv) > 1 else "price_notifier.conf"
+    p = sys.argv[1] if len(sys.argv) > 1 else "price_watcher.conf"
     print(json.dumps(load_config(p), indent=2))
