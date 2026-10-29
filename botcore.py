@@ -378,6 +378,29 @@ def required_bool_env(key: str, env: dict | None = None) -> bool:
     return raw == "true"
 
 
+def resolve_cli_arg(
+    argv: list[str] | tuple[str, ...] | None,
+    flags: str | tuple[str, ...],
+    default: str | None = None,
+) -> str | None:
+    """Extract the last value of ``flags`` (e.g. ``'--env-file'``) from ``argv`` before full argparse."""
+    args = sys.argv if argv is None else argv
+    flag_set = (flags,) if isinstance(flags, str) else tuple(flags)
+    result = default
+    for i, arg in enumerate(args):
+        if not isinstance(arg, str):
+            continue
+        if arg in flag_set and i + 1 < len(args) and isinstance(args[i + 1], str):
+            result = args[i + 1]
+        else:
+            for fl in flag_set:
+                prefix = f"{fl}="
+                if arg.startswith(prefix):
+                    result = arg[len(prefix):]
+                    break
+    return result
+
+
 def http_request(
     method: str,
     url: str,

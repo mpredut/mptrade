@@ -49,7 +49,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "listing_watcher", "market_data", 
 try:
     from .ipo_common import (
         load_t212_environment, log, now_str, float_env, required_env,
-        required_float_env, required_bool_env,
+        required_float_env, required_bool_env, resolve_cli_arg,
     )
     from .listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
     from .market_data import check_market, t212_to_yahoo
@@ -59,19 +59,14 @@ try:
     from .strategy import Strategy, StratParams
 except ImportError:
     from ipo_common import (
-        load_t212_environment, log, now_str, float_env, required_env,
-        required_float_env, required_bool_env,
+        load_t212_environment, load_t212_market_data, log, now_str, float_env, required_env,
+        required_float_env, required_bool_env, resolve_cli_arg,
     )
     from listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
     try:
         from market_data import check_market, t212_to_yahoo
     except ImportError:
-        import importlib.util as _ilu
-        _md_spec = _ilu.spec_from_file_location(
-            "t212_ipo_md", os.path.join(_HERE, "market_data.py")
-        )
-        _md_mod = _ilu.module_from_spec(_md_spec)
-        _md_spec.loader.exec_module(_md_mod)
+        _md_mod = load_t212_market_data()
         check_market = _md_mod.check_market
         t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
@@ -128,17 +123,8 @@ def start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
 def main() -> int:
     import glob
     here = os.path.dirname(os.path.abspath(__file__))
-    env_file = os.environ.get("ENV_FILE", os.path.join(here, ".env"))
-    profile = os.environ.get("IPO_PROFILE")
-    for i, a in enumerate(sys.argv):
-        if a == "--env-file" and i + 1 < len(sys.argv):
-            env_file = sys.argv[i + 1]
-        elif a.startswith("--env-file="):
-            env_file = a.split("=", 1)[1]
-        if a in ("--profile", "-p") and i + 1 < len(sys.argv):
-            profile = sys.argv[i + 1]
-        elif a.startswith("--profile="):
-            profile = a.split("=", 1)[1]
+    env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(here, ".env")))
+    profile = resolve_cli_arg(sys.argv, ("--profile", "-p"), os.environ.get("IPO_PROFILE"))
     profile_file = None
     if profile:                                            # versioned per-profile config: config.<profile>.env
         cfg_dir = os.path.dirname(env_file) or "."

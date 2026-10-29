@@ -69,6 +69,7 @@ from order_retry import (  # noqa: E402
 )
 from credentials import kraken_credentials  # noqa: E402
 from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset  # noqa: E402
+from instrument_registry import casefold_get  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
 CACHE_TREND = cache_path("cache_short_trend.json")
@@ -157,8 +158,13 @@ class KrakenTrailing:
         asset_norm = asset.strip().upper()
         canon = canonical_base_asset(asset_norm)
         for cand in (asset, asset_norm, canon):
-            if cand and cand in TRAIL_PCT:
+            if not cand:
+                continue
+            if cand in TRAIL_PCT:
                 return TRAIL_PCT[cand]
+            val = casefold_get(TRAIL_PCT, cand)
+            if val is not None:
+                return val
         return DEFAULT_TRAIL_PCT
 
     def _balance_ex_map(self) -> dict | None:
@@ -179,14 +185,9 @@ class KrakenTrailing:
         bx_map = self._balance_ex_map()
         if not isinstance(bx_map, dict):
             return None
-        candidates = _kraken_balance_asset_candidates(asset)
-        for key in candidates:
-            entry = bx_map.get(key)
+        for key in _kraken_balance_asset_candidates(asset):
+            entry = bx_map.get(key) if key in bx_map else casefold_get(bx_map, key)
             if isinstance(entry, dict):
-                return entry
-        cands_up = {c.upper() for c in candidates}
-        for k_raw, entry in bx_map.items():
-            if str(k_raw).strip().upper() in cands_up and isinstance(entry, dict):
                 return entry
         return None
 
@@ -213,8 +214,11 @@ class KrakenTrailing:
             items_map = data.get("items") if isinstance(data.get("items"), dict) else data
             snap = None
             for cand in [pair] + cache_symbol_variants(pair):
-                if cand and isinstance(items_map.get(cand), dict):
-                    snap = items_map[cand]
+                if not cand:
+                    continue
+                cand_val = items_map.get(cand) if cand in items_map else casefold_get(items_map, cand)
+                if isinstance(cand_val, dict):
+                    snap = cand_val
                     break
             if isinstance(snap, dict):
                 raw_ts = extract_timestamp_s(snap, default=None)

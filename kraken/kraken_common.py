@@ -16,6 +16,7 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from common import
     BUCHAREST, HTTP_TIMEOUT, log, load_dotenv, load_env_stack, parse_dotenv, float_env, int_env, http_get,
     http_post_form, http_request, single_instance, are_close, diff_percent,
     defined_env, required_bool_env, required_env, required_float_env, required_int_env,
+    resolve_cli_arg,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_pos_int, safe_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int,
 )

@@ -43,7 +43,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # binance_a
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)   # also support direct execution (python binance_api/trailing_stop.py)
 
-from instrument_registry import select_instruments
+from instrument_registry import casefold_get, select_instruments
 from order_retry import (
     TrackedOrderLifecycle,
     propagate_submission_refusal,
@@ -178,8 +178,13 @@ class TrailingStop:
         sym_norm = str(symbol).strip().upper()
         canon = canonical_symbol_key(sym_norm)
         for cand in (sym_norm, canon, symbol):
-            if cand and cand in mapping:
+            if not cand:
+                continue
+            if cand in mapping:
                 return mapping[cand]
+            val = casefold_get(mapping, cand)
+            if val is not None:
+                return val
         return None
 
     def trail_pct_for(self, symbol: str) -> float:
@@ -364,8 +369,7 @@ class TrailingStop:
         try:
             cancel_fn = getattr(self.api, "cancel_open_orders", None)
             if callable(cancel_fn):
-                pair_norm = str(pair or "").strip().upper()
-                spec = TRAILING_INSTRUMENTS.get(pair_norm) or TRAILING_INSTRUMENTS.get(pair)
+                spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair)
                 asset = spec.base if spec is not None else None
                 if asset and self._balances:
                     bal = self._find_balance_row(self._balances, asset)

@@ -19,7 +19,7 @@ from typing import Any
 
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
-from botcore import float_env, parse_dotenv, safe_float, safe_int
+from botcore import exact_pos_int, float_env, parse_dotenv, safe_float, safe_int
 
 
 Ohlc = list[tuple[float, float, float, float]]
@@ -269,12 +269,15 @@ def parse_intervals(value: str) -> list[int]:
     """Parse comma-separated positive integer interval minutes."""
     if not isinstance(value, str):
         raise argparse.ArgumentTypeError("intervals must be positive minutes")
-    try:
-        intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("intervals must be positive minutes") from exc
-    if not intervals or any(interval <= 0 for interval in intervals):
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
         raise argparse.ArgumentTypeError("intervals must be positive minutes")
+    intervals = []
+    for part in parts:
+        iv = exact_pos_int(part, default=None)
+        if iv is None:
+            raise argparse.ArgumentTypeError("intervals must be positive minutes")
+        intervals.append(iv)
     return intervals
 
 
@@ -385,9 +388,9 @@ def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
             raise ValueError(f"invalid dataset spec {spec!r}; format is INTERVAL=PATH")
         try:
             interval, path = spec.split("=", 1)
-            interval_i = int(interval.strip())
+            interval_i = exact_pos_int(interval.strip(), default=None)
             p_str = path.strip()
-            if interval_i <= 0 or not p_str:
+            if interval_i is None or not p_str:
                 raise ValueError("interval must be positive and path non-empty")
             result[interval_i] = Path(p_str).expanduser().resolve()
         except (ValueError, OSError) as exc:

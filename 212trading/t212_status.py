@@ -23,7 +23,12 @@ from ipo_common import (  # noqa: E402
 )
 from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
-from providers.base import extract_order_id, extract_order_side  # noqa: E402
+from providers.base import (  # noqa: E402
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+)
 
 
 def _retry(fn, tries=4, pause=2):
@@ -96,10 +101,8 @@ def main() -> int:
     if not orders:
         print("    (none — the cash is not locked by orders)")
     for o in orders:
-        q = _sf(o, "quantity")
-        if q == 0.0:
-            q = _sf(o, "orderedQuantity", _sf(o, "qty"))
-        lp = o.get("limitPrice", o.get("price"))
+        q = extract_order_qty(o, default=0.0)
+        lp = extract_order_price(o, default=None)
         side = extract_order_side(o) or "UNKNOWN"
         inst = o.get("instrument") if isinstance(o.get("instrument"), dict) else {}
         ticker = o.get("ticker") or inst.get("ticker") or ""

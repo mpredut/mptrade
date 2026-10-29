@@ -23,17 +23,11 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import ET, log, safe_float
+    from ipo_common import ET, load_t212_market_data, log, safe_float
     try:
         from market_data import check_market
     except ImportError:
-        import importlib.util
-        _md_spec = importlib.util.spec_from_file_location(
-            "t212_listing_watcher_md", _os.path.join(_HERE, "market_data.py")
-        )
-        _md_mod = importlib.util.module_from_spec(_md_spec)
-        _md_spec.loader.exec_module(_md_mod)
-        check_market = _md_mod.check_market
+        check_market = load_t212_market_data().check_market
 
 from providers.t212_provider import _t212_tickers_match
 

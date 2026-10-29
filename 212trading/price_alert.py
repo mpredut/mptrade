@@ -23,20 +23,14 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
-from ipo_common import _parse_bool_flag, load_t212_environment, log, safe_pos_float  # noqa: E402
+from ipo_common import _parse_bool_flag, load_t212_environment, load_t212_market_data, log, safe_pos_float  # noqa: E402
 try:
     from .market_data import get_price_usd  # noqa: E402
 except ImportError:
     try:
         from market_data import get_price_usd  # noqa: E402
     except ImportError:
-        import importlib.util
-        _md_spec = importlib.util.spec_from_file_location(
-            "t212_price_alert_md", os.path.join(_HERE, "market_data.py")
-        )
-        _md_mod = importlib.util.module_from_spec(_md_spec)
-        _md_spec.loader.exec_module(_md_mod)
-        get_price_usd = _md_mod.get_price_usd
+        get_price_usd = load_t212_market_data().get_price_usd
 from alertnotifiers import AlertNotifier  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 

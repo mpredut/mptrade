@@ -38,6 +38,7 @@ log = _common_mod.log
 single_instance = _common_mod.single_instance
 required_env = _common_mod.required_env
 required_bool_env = _common_mod.required_bool_env
+resolve_cli_arg = _common_mod.resolve_cli_arg
 _parse_bool_flag = _common_mod._parse_bool_flag
 from strategies.spot_engine import Strategy, StratParams
 from providers.hyperliquid_provider import HyperliquidProvider
@@ -54,12 +55,7 @@ def state_dir_for(dry_run: bool) -> str:
 def main() -> int:
     # Load configuration before CLI defaults and PAPER/REAL calculation. `.env` wins
     # because load_dotenv does not override already defined variables.
-    env_file = os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env"))
-    for i, a in enumerate(sys.argv):
-        if a == "--env-file" and i + 1 < len(sys.argv):
-            env_file = sys.argv[i + 1]
-        elif a.startswith("--env-file="):
-            env_file = a.split("=", 1)[1]
+    env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
     load_env_stack(env_file)
 
     ap = argparse.ArgumentParser(description="base v2 (spot_dca) pe Hyperliquid HYPE.")

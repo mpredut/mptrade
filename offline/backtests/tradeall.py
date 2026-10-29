@@ -33,7 +33,8 @@ from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 from providers.replay_clock import SimClock as _SimClock  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
-from cachepaths import cache_path, legacy_filenames_for, migrate_legacy_filename_if_needed
+from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
+from instrument_registry import casefold_get
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
 )
@@ -242,10 +243,11 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
     full_ticks = _FILE_TICKS_CACHE.get(file_key)
     if full_ticks is None:
+        sym_variants = set(cache_symbol_variants(symbol, include_original=True))
         full_ticks = [
             parsed
             for rec in read_jsonl_dicts(path)
-            if rec.get("s") == symbol and (parsed := _parse_tick_pair(rec.get("i"))) is not None
+            if rec.get("s") in sym_variants and (parsed := _parse_tick_pair(rec.get("i"))) is not None
         ]
         if len(_FILE_TICKS_CACHE) >= 4:
             _FILE_TICKS_CACHE.clear()
@@ -292,7 +294,13 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     data = read_json_dict(path, default={}, recover_previous=True)
     items_map = data.get("items") if isinstance(data, dict) else None
-    entries = items_map.get(symbol, []) if isinstance(items_map, dict) else []
+    entries = []
+    if isinstance(items_map, dict):
+        for cand in cache_symbol_variants(symbol, include_original=True):
+            cand_val = items_map.get(cand) if cand in items_map else casefold_get(items_map, cand)
+            if isinstance(cand_val, list) and cand_val:
+                entries = cand_val
+                break
     for entry in entries:
         parsed = _parse_tick_pair(entry)
         if parsed is None:

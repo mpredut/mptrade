@@ -29,14 +29,14 @@ if _ROOT not in sys.path:
 
 try:
     from kraken.kraken_common import (log, required_bool_env, required_env,
-                                      required_int_env, load_env_stack,
+                                      required_int_env, resolve_cli_arg, load_env_stack,
                                       single_instance, safe_pos_float)
     from kraken.kraken_client import KrakenClient, KrakenError
     from kraken.market_data import check_pair_listing, get_price
     from kraken.notify import notify
 except ImportError:
     from kraken_common import (log, required_bool_env, required_env,
-                               required_int_env, load_env_stack,
+                               required_int_env, resolve_cli_arg, load_env_stack,
                                single_instance, safe_pos_float)
     from kraken_client import KrakenClient, KrakenError
     from market_data import check_pair_listing, get_price
@@ -64,12 +64,7 @@ def _build_executor(client: KrakenClient) -> AuditedStrategyExecutor:
 
 
 def main() -> int:
-    env_file = os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env"))
-    for i, a in enumerate(sys.argv):
-        if a == "--env-file" and i + 1 < len(sys.argv):
-            env_file = sys.argv[i + 1]
-        elif a.startswith("--env-file="):
-            env_file = a.split("=", 1)[1]
+    env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
     load_env_stack(env_file)
     poll_seconds = required_int_env("KRAKEN_BOT_POLL_SEC")
 
