@@ -67,7 +67,8 @@ def _builtin_trend(client, coin: str) -> dict:
     fast = required_int_env("SIGNAL_FAST_H")
     slow = required_int_env("SIGNAL_SLOW_H")
     band = required_float_env("SIGNAL_BAND_PCT") / 100
-    if fast <= 0 or slow <= 0 or not math.isfinite(band) or band < 0:
+    band_f = safe_nonneg_float(band, default=None)
+    if fast <= 0 or slow <= 0 or band_f is None:
         return {**NEUTRAL, "source": "builtin(insuf. date)"}
     candles = client.candles(coin, "1h", lookback_hours=slow + 6)
     closes = [
@@ -109,7 +110,8 @@ def _file_signal(path: str) -> dict:
         if ts_f >= 100_000_000_000.0:
             ts_f /= 1000.0
         age = time.time() - ts_f
-        if not math.isfinite(max_age) or max_age <= 0 or age > max_age or age < -60.0:
+        max_age_f = safe_pos_float(max_age, default=None)
+        if max_age_f is None or age > max_age_f or age < -60.0:
             return {**NEUTRAL, "source": "file(expired)"}
     tr = _normalize_signal_trend(d.get("trend", "neutral"))
     conf = max(0.0, min(1.0, safe_float(d.get("confidence", 0), 0.0)))

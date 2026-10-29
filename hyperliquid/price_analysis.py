@@ -130,10 +130,13 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         if s is None:
             break
         if np.sign(s) == current_sign:
-            blocks.append(idx); consecutive += 1; noise = 0
+            blocks.append(idx)
+            consecutive += 1
+            noise = 0
             confirm_lo = idx[0]
         elif noise < noise_tolerance:
-            noise += 1; blocks.append(idx)           # tentatively allow trend continuation past noise
+            noise += 1
+            blocks.append(idx)           # tentatively allow trend continuation past noise
         else:
             break                                    # noise beyond tolerance ends the trend here
         t_ws -= step_sec
