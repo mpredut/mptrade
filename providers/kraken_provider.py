@@ -21,7 +21,14 @@ import math
 import time
 from typing import Optional, List
 
-from botcore import _parse_bool_flag
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -295,12 +302,10 @@ class KrakenProvider(MarketDataProvider):
         """Return ascending public OHLC closes as timestamp/price mappings."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return None
-        if isinstance(lookback_h, bool):
+        lookback_f = safe_pos_float(lookback_h, default=None)
+        if lookback_f is None:
             return None
         try:
-            lookback_f = float(lookback_h)
-            if not math.isfinite(lookback_f) or lookback_f <= 0:
-                return None
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.
             raw_interval = max(1, int(math.ceil((lookback_f * 60.0) / 720.0)))
@@ -317,14 +322,9 @@ class KrakenProvider(MarketDataProvider):
             for r in rows:                       # [time, o, h, l, c, vwap, vol, cnt]
                 if not isinstance(r, (list, tuple)) or len(r) < 5:
                     continue
-                if isinstance(r[0], bool) or isinstance(r[4], bool):
-                    continue
-                try:
-                    t = float(r[0])
-                    p = float(r[4])
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if not (math.isfinite(t) and math.isfinite(p)) or p <= 0 or t < cutoff:
+                t = safe_pos_float(r[0], default=None)
+                p = safe_pos_float(r[4], default=None)
+                if t is None or p is None or t < cutoff:
                     continue
                 out.append({"timestamp": int(t * 1000), "price": p})
             out.sort(key=lambda x: x["timestamp"])
@@ -422,31 +422,14 @@ class KrakenProvider(MarketDataProvider):
                     f"open_orders({symbol}): order {order_id} without a pair")
             if not _kraken_pair_matches(symbol, pair):
                 continue
-            side = str(description.get("type") or raw.get("type") or "").strip().upper()
-            if side in {"B", "BID", "LONG"}:
-                side = "BUY"
-            elif side in {"S", "A", "ASK", "SHORT"}:
-                side = "SELL"
+            side = normalize_side(description.get("type") or raw.get("type"))
             if side not in {"BUY", "SELL"}:
                 raise ProviderError(
                     f"open_orders({symbol}): an invalid side for {order_id}")
-            raw_px = description.get("price", raw.get("price", 0.0))
-            raw_vol = raw.get("vol")
-            raw_vol_exec = raw.get("vol_exec")
-            if any(isinstance(v, bool) for v in (raw_px, raw_vol, raw_vol_exec)):
-                raise ProviderError(
-                    f"open_orders({symbol}): invalid values for {order_id}")
-            try:
-                price = float(raw_px or 0.0)
-                original_qty = float(raw_vol or 0.0)
-                executed_qty = float(raw_vol_exec or 0.0)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ProviderError(
-                    f"open_orders({symbol}): invalid values for {order_id}") from exc
-            if (not all(math.isfinite(value) for value in (
-                    price, original_qty, executed_qty))
-                    or price < 0 or original_qty <= 0 or executed_qty < 0
-                    or executed_qty > original_qty):
+            price = safe_nonneg_float(description.get("price", raw.get("price", 0.0)), default=None)
+            original_qty = safe_pos_float(raw.get("vol"), default=None)
+            executed_qty = safe_nonneg_float(raw.get("vol_exec", 0.0), default=None)
+            if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
             from .base import _clean_single_order_id
@@ -664,15 +647,8 @@ class KrakenProvider(MarketDataProvider):
             return
         if qty is None:
             return
-        if isinstance(qty, bool):
-            raise ProviderError(
-                f"preflight_order {symbol}: an invalid SELL quantity")
-        try:
-            requested = float(qty)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(
-                f"preflight_order {symbol}: an invalid SELL quantity") from exc
-        if not math.isfinite(requested) or requested <= 0:
+        requested = safe_pos_float(qty, default=None)
+        if requested is None:
             raise ProviderError(
                 f"preflight_order {symbol}: an invalid SELL quantity")
 
@@ -681,11 +657,11 @@ class KrakenProvider(MarketDataProvider):
         if not base_asset:
             raise ProviderError(
                 f"preflight_order {symbol}: base asset is unavailable")
-        available = self.free_balance(base_asset)
-        if available is None or isinstance(available, bool) or not math.isfinite(float(available)):
+        avail_f = safe_nonneg_float(self.free_balance(base_asset), default=None)
+        if avail_f is None:
             raise ProviderError(
                 f"preflight_order {symbol}: {base_asset} balance is unavailable")
-        available = max(0.0, float(available))
+        available = avail_f
         decimals = precision.volume_decimals if precision else 8
         tolerance = 0.5 * (10.0 ** -max(0, decimals))
         if requested > available + tolerance:
@@ -719,21 +695,11 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"order_status {order_id}: unknown Kraken status {raw_status!r}"
             )
-        raw_vol_exec = info.get("vol_exec")
-        raw_cost = info.get("cost")
-        raw_fee = info.get("fee")
-        raw_vol = info.get("vol")
-        if any(isinstance(v, bool) for v in (raw_vol_exec, raw_cost, raw_fee, raw_vol)):
-            raise ProviderError(f"order_status {order_id}: invalid fill values")
-        try:
-            filled_qty = float(raw_vol_exec or 0.0)
-            cost = float(raw_cost or 0.0)
-            fee = float(raw_fee or 0.0)
-            orig_qty = float(raw_vol or 0.0)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"order_status {order_id}: invalid fill values") from exc
-        if (not all(math.isfinite(v) for v in (filled_qty, cost, fee, orig_qty))
-                or filled_qty < 0.0 or cost < 0.0 or fee < 0.0 or orig_qty < 0.0):
+        filled_qty = safe_nonneg_float(info.get("vol_exec", 0.0), default=None)
+        cost = safe_nonneg_float(info.get("cost", 0.0), default=None)
+        fee = safe_nonneg_float(info.get("fee", 0.0), default=None)
+        orig_qty = safe_nonneg_float(info.get("vol", 0.0), default=None)
+        if None in (filled_qty, cost, fee, orig_qty):
             raise ProviderError(f"order_status {order_id}: invalid fill values")
         return OrderStatus(
             status=norm_status,

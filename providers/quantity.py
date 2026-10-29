@@ -6,7 +6,7 @@ import math
 from typing import Callable, Optional
 
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from .base import _clean_single_order_id, normalize_side
 
 
@@ -131,46 +131,23 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
     if not asset:
         return None, asset
     if side == "BUY":
-        if isinstance(price, bool):
-            return None, asset
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return None, asset
-        if not math.isfinite(price_f) or price_f <= 0:
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             return None, asset
     else:
         price_f = 0.0
-    raw = free_balance(asset)
-    if raw is None or isinstance(raw, bool):
-        return None, asset
-    try:
-        balance = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None, asset
-    if not math.isfinite(balance) or balance < 0:
+    balance = safe_nonneg_float(free_balance(asset), default=None)
+    if balance is None:
         return None, asset
     return (balance if side == "SELL" else balance / price_f), asset
 
 
 def fee_cap_quantity(available_qty: float, fee_rate: float) -> float:
     """Return the base-quantity cap after reserving for fees."""
-    if available_qty is None or isinstance(available_qty, bool):
+    available_f = safe_pos_float(available_qty, default=None)
+    if available_f is None:
         return 0.0
-    try:
-        available_f = float(available_qty)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(available_f) or available_f <= 0.0:
-        return 0.0
-    fee_f = 0.0
-    if fee_rate is not None and not isinstance(fee_rate, bool):
-        try:
-            cand_fee = float(fee_rate)
-            if math.isfinite(cand_fee) and cand_fee > 0.0:
-                fee_f = cand_fee
-        except (TypeError, ValueError, OverflowError):
-            fee_f = 0.0
+    fee_f = safe_pos_float(fee_rate, default=0.0) or 0.0
     return available_f / (1.0 + fee_f)
 
 
@@ -220,38 +197,21 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
             symbol, side, price, requested, balance_cap,
             base=base, quote=quote,
             cancelorders=_parse_bool_flag(cancelorders, default=False), hours=hours)
-        if raw_policy_cap is None or isinstance(raw_policy_cap, bool):
+        policy_cap = safe_nonneg_float(raw_policy_cap, default=None)
+        if policy_cap is None:
             return QuantityDecision(requested, balance_cap, None, None, 0.0,
                                     "policy_unavailable", asset)
-        try:
-            policy_cap_f = float(raw_policy_cap)
-        except (TypeError, ValueError, OverflowError):
-            return QuantityDecision(requested, balance_cap, None, None, 0.0,
-                                    "policy_unavailable", asset)
-        if math.isnan(policy_cap_f):
-            return QuantityDecision(requested, balance_cap, None, None, 0.0,
-                                    "policy_unavailable", asset)
-        policy_cap = max(0.0, policy_cap_f)
     raw_fee_cap = provider.fee_cap_quantity(symbol, side, price, balance_cap)
-    try:
-        fee_cap_f = float(raw_fee_cap) if (raw_fee_cap is not None and not isinstance(raw_fee_cap, bool)) else 0.0
-    except (TypeError, ValueError, OverflowError):
-        fee_cap_f = 0.0
-    fee_cap = max(0.0, fee_cap_f) if not math.isnan(fee_cap_f) else 0.0
+    fee_cap = safe_nonneg_float(raw_fee_cap, default=0.0) or 0.0
     final = min(requested, balance_cap, policy_cap, fee_cap)
 
     round_fn = getattr(provider, "round_amount", None)
     if round_fn is None:
         round_fn = getattr(provider, "round_quantity", None)
     if callable(round_fn) and final > 0:
-        res = round_fn(symbol, final)
-        if res is not None and not isinstance(res, bool):
-            try:
-                res_f = float(res)
-                if math.isfinite(res_f) and res_f >= 0.0:
-                    final = res_f
-            except (TypeError, ValueError, OverflowError):
-                pass
+        res_f = safe_nonneg_float(round_fn(symbol, final), default=None)
+        if res_f is not None:
+            final = res_f
 
     # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
     # Applied per-order without mutating the shared market context.
@@ -263,14 +223,7 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     if effective_scale is None and regime_context is not None and is_buy_side:
         effective_scale = getattr(regime_context, "suggested_scale", None)
 
-    eff_scale_f = None
-    if effective_scale is not None and not isinstance(effective_scale, bool):
-        try:
-            cand_s = float(effective_scale)
-            if math.isfinite(cand_s):
-                eff_scale_f = cand_s
-        except (TypeError, ValueError, OverflowError):
-            eff_scale_f = None
+    eff_scale_f = safe_float(effective_scale, default=None)
 
     if (
         eff_scale_f is not None
@@ -283,14 +236,9 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         else:
             scaled_amount = final * eff_scale_f
             if callable(round_fn):
-                res = round_fn(symbol, scaled_amount)
-                if res is not None and not isinstance(res, bool):
-                    try:
-                        res_f = float(res)
-                        if math.isfinite(res_f) and res_f >= 0.0:
-                            scaled_amount = res_f
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+                res_f = safe_nonneg_float(round_fn(symbol, scaled_amount), default=None)
+                if res_f is not None:
+                    scaled_amount = res_f
         print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
               f"{final} -> {scaled_amount} (scale={eff_scale_f:.2f})")
         final = scaled_amount

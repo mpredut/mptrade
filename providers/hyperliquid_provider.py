@@ -23,7 +23,14 @@ import threading
 import time
 from typing import List, Optional
 
-from botcore import _parse_bool_flag
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -248,17 +255,15 @@ class HyperliquidProvider(MarketDataProvider):
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending granular spot closes over the last ``lookback_h`` hours."""
         self.validate_symbol(symbol)
-        if isinstance(lookback_h, bool):
+        lookback_f = safe_nonneg_float(lookback_h, default=None)
+        if lookback_f is None:
             return None
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
             return None
         try:
-            lookback_f = float(lookback_h or 0.0)
-            if not math.isfinite(lookback_f):
-                return None
-            lookback_h = max(lookback_f, 0.0)
+            lookback_h = lookback_f
             interval = "1m" if lookback_h <= 24 else "15m"
             end = int(time.time() * 1000)
             start = end - int(lookback_h * 3600 * 1000)
@@ -267,18 +272,11 @@ class HyperliquidProvider(MarketDataProvider):
             for k in candles:
                 if not isinstance(k, dict):
                     continue
-                raw_t = k.get("t")
-                raw_c = k.get("c")
-                if isinstance(raw_t, bool) or isinstance(raw_c, bool):
+                t_f = safe_pos_float(k.get("t"), default=None)
+                c_f = safe_pos_float(k.get("c"), default=None)
+                if t_f is None or c_f is None:
                     continue
-                try:
-                    t_f = float(raw_t)
-                    c_f = float(raw_c)
-                    if not (math.isfinite(t_f) and math.isfinite(c_f)) or t_f <= 0 or c_f <= 0:
-                        continue
-                    out.append({"timestamp": int(t_f), "price": c_f})
-                except (TypeError, ValueError, OverflowError):
-                    continue
+                out.append({"timestamp": int(t_f), "price": c_f})
             out.sort(key=lambda x: x["timestamp"])
             return out
         except Exception as e:  # noqa: BLE001
@@ -315,13 +313,9 @@ class HyperliquidProvider(MarketDataProvider):
                     if not isinstance(b, dict):
                         continue
                     if str(b.get("coin") or "").strip().upper() == target_coin:
-                        raw_total = b.get("total")
-                        raw_hold = b.get("hold")
-                        if isinstance(raw_total, bool) or isinstance(raw_hold, bool):
-                            return None
-                        total = float(raw_total or 0.0)
-                        hold = float(raw_hold or 0.0)
-                        if not (math.isfinite(total) and math.isfinite(hold)) or total < 0.0 or hold < 0.0:
+                        total = safe_nonneg_float(b.get("total"), default=None)
+                        hold = safe_nonneg_float(b.get("hold"), default=None)
+                        if total is None or hold is None:
                             return None
                         return max(total - hold, 0.0)
             return 0.0
@@ -335,13 +329,8 @@ class HyperliquidProvider(MarketDataProvider):
         Exclude perpetual HYPE fills to avoid mixing delta-neutral activity.
         """
         self.validate_symbol(symbol)
-        if since_s is None or isinstance(since_s, bool):
-            return []
-        try:
-            since_val = float(since_s)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(since_val) or since_val < 0:
+        since_val = safe_nonneg_float(since_s, default=None)
+        if since_val is None:
             return []
         c = self._hl()
         pair = self._pair()
@@ -389,31 +378,18 @@ class HyperliquidProvider(MarketDataProvider):
             for o in orders:
                 if not isinstance(o, dict):
                     continue
-                try:
-                    if "limitPx" in o and o["limitPx"] is not None:
-                        if isinstance(o["limitPx"], bool) or not math.isfinite(float(o["limitPx"])):
-                            continue
-                    price = extract_order_price(o, default=0.0)
-                    raw_sz = o.get("sz", o.get("qty", 0.0))
-                    if isinstance(raw_sz, bool):
+                if "limitPx" in o and o["limitPx"] is not None:
+                    if safe_float(o.get("limitPx"), default=None) is None:
                         continue
-                    sz = float(raw_sz or 0.0)
-                    raw_orig = o.get("origSz", o.get("origQty"))
-                    if raw_orig is not None:
-                        if isinstance(raw_orig, bool):
-                            continue
-                        orig_sz = float(raw_orig or sz)
-                    else:
-                        orig_sz = float(extract_orig_qty(o, default=sz) or sz)
-                    raw_exec = o.get("executedQty", orig_sz - sz)
-                    if isinstance(raw_exec, bool):
-                        continue
-                    exec_f = float(raw_exec or 0.0)
-                    if not all(math.isfinite(v) for v in (price, sz, orig_sz, exec_f)) or price < 0 or sz < 0 or orig_sz < 0:
-                        continue
-                    exec_sz = max(0.0, exec_f)
-                except (TypeError, ValueError, OverflowError):
+                price = safe_nonneg_float(extract_order_price(o, default=0.0), default=None)
+                sz = safe_nonneg_float(o.get("sz", o.get("qty")), default=None)
+                if price is None or sz is None:
                     continue
+                raw_orig = o.get("origSz", o.get("origQty"))
+                orig_sz = safe_nonneg_float(raw_orig, default=sz) if raw_orig is not None else safe_nonneg_float(extract_orig_qty(o, default=sz), default=sz)
+                if orig_sz is None:
+                    continue
+                exec_sz = safe_nonneg_float(o.get("executedQty", orig_sz - sz), default=0.0) or 0.0
                 oid_val = extract_order_id(o, default=None)
                 if not oid_val or oid_val == "0":
                     continue
@@ -491,30 +467,14 @@ class HyperliquidProvider(MarketDataProvider):
         )
 
         if is_market:
-            raw_curr = self.get_current_price(symbol)
-            try:
-                curr_px = float(raw_curr) if raw_curr is not None and not isinstance(raw_curr, bool) else 0.0
-                if not math.isfinite(curr_px) or curr_px <= 0.0:
-                    curr_px = 0.0
-            except (TypeError, ValueError, OverflowError):
-                curr_px = 0.0
-            try:
-                fb_px = float(price) if price is not None and not isinstance(price, bool) else 0.0
-                if not math.isfinite(fb_px) or fb_px <= 0.0:
-                    fb_px = 0.0
-            except (TypeError, ValueError, OverflowError):
-                fb_px = 0.0
-            base_px = curr_px if curr_px > 0 else fb_px
-            if base_px <= 0:
+            curr_px = safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
+            fb_px = safe_pos_float(price, default=0.0) or 0.0
+            base_px = curr_px if curr_px > 0.0 else fb_px
+            if base_px <= 0.0:
                 print(f"[HL] place_order {side} {symbol}: market price unavailable")
                 return None
-            raw_slip = kwargs.get("slippage", 0.05)
-            try:
-                slippage = float(raw_slip) if raw_slip is not None and not isinstance(raw_slip, bool) else 0.05
-                if not math.isfinite(slippage) or slippage < 0.0 or slippage >= 1.0:
-                    slippage = 0.05
-            except (TypeError, ValueError, OverflowError):
-                slippage = 0.05
+            s_val = safe_nonneg_float(kwargs.get("slippage"), default=0.05) or 0.05
+            slippage = s_val if s_val < 1.0 else 0.05
             aggressive_px = base_px * (1.0 + slippage if is_buy else 1.0 - slippage)
             submit_px = self.round_price(symbol, aggressive_px)
             order_tif = "Ioc"
@@ -609,22 +569,14 @@ class HyperliquidProvider(MarketDataProvider):
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
-        if isinstance(interval_min, bool) or interval_min is None:
+        interval = safe_pos_int(interval_min, default=None)
+        if interval is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         client = self._hl()
         pair = self._pair()
         if client is None or pair is None:
             raise ProviderError(
                 f"ohlc_series({symbol}): client/pair unavailable")
-        try:
-            itv_f = float(interval_min)
-            if not math.isfinite(itv_f) or not itv_f.is_integer():
-                raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
-            interval = int(itv_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}") from exc
-        if interval <= 0:
-            raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         lookback_h = max(1, int(90 * interval / 60))
         try:
             completed = list(
@@ -634,32 +586,19 @@ class HyperliquidProvider(MarketDataProvider):
             for item in completed:
                 if not isinstance(item, dict):
                     continue
-                raw_c = item.get("c")
-                if raw_c is None or isinstance(raw_c, bool):
-                    continue
-                try:
-                    c_f = float(raw_c)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if math.isfinite(c_f) and c_f > 0:
+                c_f = safe_pos_float(item.get("c"), default=None)
+                if c_f is not None:
                     valid.append((item, c_f))
             closes = tuple(c_f for _item, c_f in valid)
             raw_timestamps = [item.get("T") for item, _c_f in valid]
             ts_list = []
             ts_ok = bool(raw_timestamps)
             for value in raw_timestamps:
-                if value is None or isinstance(value, bool):
+                ts_f = safe_pos_float(value, default=None)
+                if ts_f is None:
                     ts_ok = False
                     break
-                try:
-                    ts_f = float(value) / 1000.0
-                except (TypeError, ValueError, OverflowError):
-                    ts_ok = False
-                    break
-                if not math.isfinite(ts_f) or ts_f <= 0:
-                    ts_ok = False
-                    break
-                ts_list.append(ts_f)
+                ts_list.append(ts_f / 1000.0)
             timestamps = tuple(ts_list) if ts_ok else ()
             observed_at = timestamps[-1] if timestamps else None
             return ClosedPriceSeries(
@@ -687,12 +626,15 @@ class HyperliquidProvider(MarketDataProvider):
         is_market = _parse_bool_flag(market, False)
         px = price
         if is_market or px is None:
-            mid = self.get_current_price(symbol)
-            if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
+            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
+            if mid_f is None:
                 raise ProviderError(f"submit_order({symbol}) market: price unavailable")
-            px = float(mid) * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
-        elif isinstance(px, bool):
-            raise ProviderError(f"submit_order({symbol}): invalid price={px!r}")
+            px = mid_f * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
+        else:
+            px_f = safe_pos_float(px, default=None)
+            if px_f is None:
+                raise ProviderError(f"submit_order({symbol}): invalid price={px!r}")
+            px = px_f
         px = self.round_price(symbol, px)
         if px <= 0:
             raise ProviderError(f"submit_order({symbol}): non-positive price={price!r}")
@@ -750,36 +692,26 @@ class HyperliquidProvider(MarketDataProvider):
             return
         if qty is None:
             return
-        if isinstance(qty, bool):
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
-        try:
-            qty_f = float(qty)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity") from exc
-        if not math.isfinite(qty_f) or qty_f <= 0:
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
         if price is None:
-            mid = self.get_current_price(symbol)
-            if mid is None or isinstance(mid, bool) or not math.isfinite(float(mid)) or float(mid) <= 0:
+            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
+            if mid_f is None:
                 raise ProviderError(f"preflight_order({symbol}): price unavailable")
-            price = float(mid) * (1.05 if _parse_bool_flag(market, False) else 1.0)
-        elif isinstance(price, bool):
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY price") from exc
-        if not math.isfinite(price_f) or price_f <= 0:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
+            price_f = mid_f * (1.05 if _parse_bool_flag(market, False) else 1.0)
+        else:
+            price_f = safe_pos_float(price, default=None)
+            if price_f is None:
+                raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
         required = qty_f * price_f
         if not math.isfinite(required) or required <= 0:
             raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
-        available = self.free_balance("USDC")
-        if available is None or isinstance(available, bool) or not math.isfinite(float(available)) or float(available) < 0:
+        avail_f = safe_nonneg_float(self.free_balance("USDC"), default=None)
+        if avail_f is None:
             raise ProviderError(
                 f"preflight_order({symbol}): the USDC balance cannot be confirmed"
             )
-        avail_f = float(available)
         tolerance = max(1e-9, required * 1e-12)
         if avail_f + tolerance < required:
             raise ProviderError(
