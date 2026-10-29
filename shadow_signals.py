@@ -122,12 +122,14 @@ class KalmanStateTracker:
         import json
         try:
             if (
-                os.path.basename(self.state_path) == "kalman_state.json"
+                os.path.basename(self.state_path) in ("cache_kalman_trend.json", "kalman_state.json")
                 and not os.path.exists(self.state_path)
             ):
-                legacy_path = os.path.join(os.path.dirname(self.state_path), "shadow_state.json")
-                if os.path.exists(legacy_path):
-                    os.replace(legacy_path, self.state_path)
+                for legacy_name in ("kalman_state.json", "shadow_state.json"):
+                    legacy_path = os.path.join(os.path.dirname(self.state_path), legacy_name)
+                    if legacy_path != self.state_path and os.path.exists(legacy_path):
+                        os.replace(legacy_path, self.state_path)
+                        break
             loaded = read_recovering_previous(self.state_path, json.loads, default=None)
             if isinstance(loaded, dict):
                 self._state = loaded

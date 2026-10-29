@@ -195,9 +195,9 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
 
 
 def get_kalman_state_path() -> str:
-    """Return the canonical path to kalman_state.json honoring MPTRADE_CACHEDB_DIR."""
+    """Return the canonical path to cache_kalman_trend.json honoring MPTRADE_CACHEDB_DIR."""
     from cachepaths import cache_path
-    return cache_path("kalman_state.json")
+    return cache_path("cache_kalman_trend.json")
 
 
 def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:

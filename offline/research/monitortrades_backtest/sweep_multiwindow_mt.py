@@ -36,7 +36,7 @@ def run_multiwindow_sweep(use_365: bool = False):
     sigs = {}
 
     for sym in all_symbols:
-        npz_path = cache_path(f"{sym}.npz")
+        npz_path = cache_path(f"cache_365_price_{sym}.npz")
         if use_365 and os.path.exists(npz_path):
             z = np.load(npz_path)
             series = list(zip(z["ts"].tolist(), z["px"].tolist()))

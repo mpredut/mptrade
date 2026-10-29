@@ -244,7 +244,7 @@ def main():
     print("=" * 110)
 
     for sym in symbols:
-        npz_path = cache_path(f"{sym}.npz")
+        npz_path = cache_path(f"cache_365_price_{sym}.npz")
         if os.path.exists(npz_path):
             z = np.load(npz_path)
             ts = z["ts"].astype(np.float64)
@@ -298,7 +298,7 @@ def main():
     print("=" * 110)
 
     for sym in ["TAOUSDC", "BTCUSDC", "ARBUSDC", "HYPEUSD"]:
-        npz_path = cache_path(f"{sym}.npz")
+        npz_path = cache_path(f"cache_365_price_{sym}.npz")
         if os.path.exists(npz_path):
             z = np.load(npz_path)
             ts = z["ts"].astype(np.float64)

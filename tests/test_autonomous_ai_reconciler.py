@@ -836,7 +836,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
             },
             f,
         )
-    with open(os.path.join(cache_dir, "kalman_state.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "HYPEUSD": {

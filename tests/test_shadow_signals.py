@@ -230,12 +230,12 @@ class TestShadowRuntime(unittest.TestCase):
             self.assertEqual(mock_place.call_args.kwargs.get("reason"), "accel_plunge_down")
 
     def test_kalman_state_tracker_ports_legacy_shadow_state_to_kalman_state(self):
-        """KalmanStateTracker ports legacy shadow_state.json to kalman_state.json on init and loads state."""
+        """KalmanStateTracker ports legacy shadow_state.json to cache_kalman_trend.json on init and loads state."""
         import json
         import tempfile
         with tempfile.TemporaryDirectory() as tmp_dir:
             legacy_path = os.path.join(tmp_dir, "shadow_state.json")
-            new_path = os.path.join(tmp_dir, "kalman_state.json")
+            new_path = os.path.join(tmp_dir, "cache_kalman_trend.json")
             payload = {"TAOUSDC": {"kalman_trend": -1, "vol_1h_pct": 1.45, "ts": 1000.0, "price": 275.0}}
             with open(legacy_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f)

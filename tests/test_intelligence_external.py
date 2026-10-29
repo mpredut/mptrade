@@ -749,7 +749,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            kalman_path = os.path.join(tmpdir, "kalman_state.json")
+            kalman_path = os.path.join(tmpdir, "cache_kalman_trend.json")
             with open(kalman_path, "w", encoding="utf-8") as f:
                 json.dump({"TAOUSDC": {"vol_1h_pct": 3.2}, "HYPEUSDC": {"vol_1h_pct": 4.5}}, f)
             self.assertAlmostEqual(resolve_cached_volatility_1h("TAOUSD", state_path=kalman_path), 0.032)

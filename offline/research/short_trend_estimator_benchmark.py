@@ -51,8 +51,8 @@ def _set_data_dir(path):
 
 
 def load_series(sym):
-    """Return (ts_sec, px) from <D>/<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
-    npz = str(resolve_cachedb_filepath(os.path.join(D, f"{sym}.npz")))
+    """Return (ts_sec, px) from <D>/cache_365_price_<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
+    npz = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.npz")))
     if os.path.exists(npz):
         z = np.load(npz)
         return z["ts"], z["px"]

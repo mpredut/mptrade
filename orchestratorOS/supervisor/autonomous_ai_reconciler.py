@@ -849,7 +849,7 @@ class AutonomousAIReconciler:
         trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
         long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
         t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
-        kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
+        kalman_data = _read_json(os.path.join(self.cache_dir, "cache_kalman_trend.json"))
         prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
         trailing_map: Dict[str, Dict[str, Any]] = {}
         for raw_trail, default_quote in (

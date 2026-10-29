@@ -819,7 +819,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 "ETHUSDT": {"vol_1h_pct": 0.05},    # 0.05% low vol -> ratio 0.0005 (NOT 0.05!)
                 "USDCUSDT": {"vol_1h_pct": 0.0031}, # 0.0031% very low vol -> ratio 0.000031
             }
-            with open(os.path.join(tmp_dir, "kalman_state.json"), "w", encoding="utf-8") as f:
+            with open(os.path.join(tmp_dir, "cache_kalman_trend.json"), "w", encoding="utf-8") as f:
                 json.dump(state_data, f)
 
             with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):

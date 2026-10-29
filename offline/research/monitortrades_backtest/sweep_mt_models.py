@@ -222,7 +222,7 @@ def evaluate_dataset(use_365: bool = False):
 
     for sym in all_symbols:
         t0 = time.time()
-        npz_path = cache_path(f"{sym}.npz")
+        npz_path = cache_path(f"cache_365_price_{sym}.npz")
         if use_365 and os.path.exists(npz_path):
             z = np.load(npz_path)
             series = list(zip(z["ts"].tolist(), z["px"].tolist()))

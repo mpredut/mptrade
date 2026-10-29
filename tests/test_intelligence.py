@@ -234,7 +234,7 @@ class TestIntelligenceState(unittest.TestCase):
     def test_get_kalman_state_path(self):
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/custom/cache"}):
             path = get_kalman_state_path()
-            self.assertTrue(path.endswith("kalman_state.json"))
+            self.assertTrue(path.endswith("cache_kalman_trend.json"))
             self.assertIn("/custom/cache", path.replace("\\", "/"))
 
     def test_resolve_cached_volatility_1h_from_instant_trend_cache(self):

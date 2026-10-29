@@ -728,7 +728,7 @@ def _lookup_symbol_dict(mapping, symbol):
 def build_analysis_state_text(symbol, active_summary=None):
     """Combine current live tradeall analysis with its Kalman state and active intents.
 
-    tradeall writes kalman_state.json directly because cacheManager owns the
+    tradeall writes cache_kalman_trend.json directly because cacheManager owns the
     trend cache file.
     """
     try:
