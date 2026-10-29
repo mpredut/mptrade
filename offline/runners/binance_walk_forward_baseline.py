@@ -98,22 +98,24 @@ def main(argv: list[str] | None = None) -> int:
         source_label = "frozen_csv"
         if frozen_path is not None:
             records = load_frozen_dataset(frozen_path)
+            if len(records) < 20:
+                print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
+                continue
+            records = validate_dataset(records, interval_minutes=interval)
         else:
             source_label = "binance_public_klines"
-            records = fetch_ohlc_candles(
+            raw_records = fetch_ohlc_candles(
                 symbol,
                 interval=interval,
                 lookback_days=180,
                 drop_incomplete=True,
             )
+            if not raw_records or len(raw_records) < 20:
+                print(f"[!] Insufficient bars for {symbol} {interval}m ({len(raw_records or ())} < 20); skipping.")
+                continue
+            records = validate_dataset(raw_records, interval_minutes=interval)
             frozen_path = dataset_dir / f"{symbol}_{interval}m.csv"
             save_frozen_dataset(records, frozen_path)
-
-        if len(records) < 20:
-            print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
-            continue
-
-        records = validate_dataset(records, interval_minutes=interval)
         train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
 
         adapter = make_binance_replay_adapter(

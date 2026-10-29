@@ -1811,6 +1811,46 @@ def test_batch56_intelligence_backtest_full_composite_and_research_hardening(mon
     assert full_stats.sentiment_downscales == 1
 
 
+def test_batch57_binance_wf_baseline_t212_report_and_tradeall_backtest_guards(tmp_path):
+    import json
+    from unittest.mock import patch
+    from offline.runners import binance_walk_forward_baseline as bwf
+    from offline.research.t212_continuous_grid import report as t212_report
+    from offline.backtests import tradeall as bt_ta
 
+    # 1. binance_walk_forward_baseline skips saving frozen CSV when fetch_ohlc_candles returns < 20 bars
+    out_dir = tmp_path / "bwf_short"
+    with patch.object(bwf, "fetch_ohlc_candles", return_value=[]):
+        rc = bwf.main(["--intervals", "60", "--symbol", "BTCUSDC", "--output-dir", str(out_dir)])
+        assert rc == 0
+    assert not (out_dir / "datasets" / "BTCUSDC_60m.csv").exists()
+
+    # 2. t212_continuous_grid.report sorts 1d-only generalisation rows by 1d median return descending
+    res_jsonl = tmp_path / "results.jsonl"
+    res_jsonl.write_text(
+        json.dumps({"profile": "nvda", "variant": "live", "asset": "AAPL", "1d": {"ret": 5.0, "dd": 5.0}}) + "\n"
+        + json.dumps({"profile": "nvda", "variant": "tp5", "asset": "AAPL", "1d": {"ret": 20.0, "dd": 4.0}}) + "\n",
+        encoding="utf-8",
+    )
+    rep_md = t212_report.generate_report(str(tmp_path))
+    assert rep_md.index("| tp5 |") < rep_md.index("| live |")
+
+    # 3. tradeall backtest _iter_jsonl_ticks and load_ticks_cache24 support start_ts=None
+    jsonl_file = tmp_path / "ticks.jsonl"
+    jsonl_file.write_text(
+        json.dumps({"s": "BTCUSDC", "i": [1700000000000, 100.0]}) + "\n"
+        + json.dumps({"s": "BTCUSDC", "i": [1700000010000, 101.0]}) + "\n",
+        encoding="utf-8",
+    )
+    ticks = list(bt_ta.load_ticks_cache24("BTCUSDC", None, None, filename=str(jsonl_file)))
+    assert ticks == [(1700000000.0, 100.0), (1700000010.0, 101.0)]
+
+    json_file = tmp_path / "ticks.json"
+    json_file.write_text(
+        json.dumps({"items": {"BTCUSDC": [[1700000000000, 100.0], [1700000020000, 102.0]]}}),
+        encoding="utf-8",
+    )
+    ticks_json = list(bt_ta.load_ticks_cache24("BTCUSDC", None, None, filename=str(json_file)))
+    assert ticks_json == [(1700000000.0, 100.0), (1700000020.0, 102.0)]
 
 

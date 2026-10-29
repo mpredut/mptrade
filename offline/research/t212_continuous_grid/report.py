@@ -114,7 +114,9 @@ def generate_report(exp_dir=None):
                 st.median(dd_rets) if dd_rets else 0.0,
                 st.median(dd_dds) if dd_dds else 0.0,
             ))
-        for med, v, n, bl1, pos1, dd1, n2, bl2, pos2, med2, dd2 in sorted(items, key=lambda x: -x[0]):
+        for med, v, n, bl1, pos1, dd1, n2, bl2, pos2, med2, dd2 in sorted(
+            items, key=lambda x: (x[2] == 0, -x[0], -x[9])
+        ):
             L.append(f"| {v} | {bl1}/{n} | {pos1}/{n} | {med:+.1f} | {dd1:.1f} | {bl2}/{n2} | {pos2}/{n2} | {med2:+.1f} | {dd2:.1f} |")
 
     if errors:

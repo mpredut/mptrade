@@ -253,7 +253,7 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
     ticks = [
         (ts, price)
         for ts, price in full_ticks
-        if ts >= start_ts and (end_ts is None or ts <= end_ts)
+        if (start_ts is None or ts >= start_ts) and (end_ts is None or ts <= end_ts)
     ]
     if len(_TICK_SLICE_CACHE) >= 8:
         _TICK_SLICE_CACHE.clear()
@@ -297,7 +297,7 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         if parsed is None:
             continue
         ts, price = parsed
-        if ts < start_ts:
+        if start_ts is not None and ts < start_ts:
             continue
         if end_ts is not None and ts > end_ts:
             continue
