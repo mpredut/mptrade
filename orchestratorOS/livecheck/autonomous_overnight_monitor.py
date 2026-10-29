@@ -17,13 +17,11 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT_DIR not in sys.path:
@@ -85,7 +83,6 @@ class AutonomousOvernightMonitor:
         self.cachedb_dir = os.path.join(self.workspace_dir, cachedb_dir)
         self.logs_dir = os.path.join(self.workspace_dir, logs_dir)
         self.procs_conf = os.path.join(self.workspace_dir, "procs.conf")
-        from cachepaths import resolve_cachedb_filepath
         self.status_file = str(resolve_cachedb_filepath(os.path.join(self.cachedb_dir, "overnight_monitor_status.json")))
 
         self.dev_host = str(dev_host or "192.168.0.138").strip() or "192.168.0.138"

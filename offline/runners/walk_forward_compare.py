@@ -11,7 +11,6 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
 from pathlib import Path
 import sys
 from typing import Any
@@ -530,12 +529,9 @@ def main(argv: list[str] | None = None) -> int:
         fee_stripped = fee_text.strip()
         if not fee_stripped:
             continue
-        try:
-            fee = float(fee_stripped)
-        except ValueError:
+        fee = safe_nonneg_float(fee_stripped, default=None)
+        if fee is None:
             parser.error(f"invalid fee value: {fee_stripped!r}")
-        if not math.isfinite(fee) or fee < 0:
-            parser.error("the fee cannot be negative or non-finite")
         windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
         fee_key = f"{fee:.3f}".rstrip("0").rstrip(".") if round(fee, 2) != round(fee, 3) else f"{fee:.2f}"
         fee_stress[fee_key] = {

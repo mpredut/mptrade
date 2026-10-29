@@ -11,8 +11,6 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
-import os
 from pathlib import Path
 import sys
 
@@ -21,7 +19,7 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import parse_dotenv, required_env, required_float_env
+from botcore import required_env, required_float_env, safe_nonneg_float
 import importlib.util
 
 _orig_sys_path = list(sys.path)
@@ -66,6 +64,7 @@ from offline.backtests.evaluation import (
     extract_cfg_float,
     extract_cfg_int,
     iso_utc as _iso,
+    load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
     resolve_window_sizes,
@@ -95,21 +94,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    cfg: dict[str, str] = {}
-    for path_str in (args.config_file, args.env_file):
-        p = Path(path_str)
-        if p.exists():
-            cfg.update(dict(parse_dotenv(str(p))))
-    for k, v in os.environ.items():
-        if k.startswith("HL_") or (k.startswith("STRAT_") and k not in cfg):
-            cfg[k] = v
+    cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("HL_",))
 
     coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
     direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
     if direction not in ("long", "short"):
         parser.error(f"Invalid direction: {direction!r}")
     fee_pct = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
-    if not math.isfinite(fee_pct) or fee_pct < 0:
+    if safe_nonneg_float(fee_pct, default=None) is None:
         parser.error("--fee cannot be negative")
 
     if args.engine == "spot":

@@ -12,7 +12,6 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
 from pathlib import Path
 import sys
 
@@ -175,11 +174,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown", type=Path)
     args = parser.parse_args()
-    for name in ("train", "validation", "test", "step"):
-        if getattr(args, name) <= 0:
-            parser.error(f"--{name} must be positive")
-    if args.warmup < 0 or not math.isfinite(args.regime_threshold) or args.regime_threshold < 0:
-        parser.error("warmup and regime-threshold cannot be negative")
+    benchmark.validate_financial_benchmark_args(parser, args)
     args.baseline = args.baseline.expanduser().resolve()
     args.dataset = args.dataset.expanduser().resolve()
     args.manifest = args.manifest.expanduser().resolve()

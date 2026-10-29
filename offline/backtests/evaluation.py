@@ -12,13 +12,13 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
-import math
+import os
 from pathlib import Path
 from typing import Any
 
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
-from botcore import float_env, safe_float, safe_int
+from botcore import float_env, parse_dotenv, safe_float, safe_int
 
 
 Ohlc = list[tuple[float, float, float, float]]
@@ -286,6 +286,27 @@ def extract_cfg_int(cfg: Any, key: str, default: int) -> int:
     """Extract an integer parameter from configuration mapping."""
     val = extract_cfg_float(cfg, key, float(default))
     return int(val)
+
+
+def load_layered_env_config(
+    config_file: str | Path,
+    env_file: str | Path,
+    *,
+    override_prefixes: Sequence[str] = (),
+    fallback_prefixes: Sequence[str] = ("STRAT_",),
+) -> dict[str, str]:
+    """Load config_file then env_file, applying os.environ overrides and fallbacks."""
+    cfg: dict[str, str] = {}
+    for path_str in (config_file, env_file):
+        p = Path(path_str)
+        if p.exists():
+            cfg.update(dict(parse_dotenv(str(p))))
+    ov_tuple = tuple(override_prefixes)
+    fb_tuple = tuple(fallback_prefixes)
+    for k, v in os.environ.items():
+        if (ov_tuple and k.startswith(ov_tuple)) or (fb_tuple and k.startswith(fb_tuple) and k not in cfg):
+            cfg[k] = v
+    return cfg
 
 
 def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:

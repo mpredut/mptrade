@@ -11,14 +11,8 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
 from pathlib import Path
-import re
 import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--fx-to-usd and --fx-dataset are alternatives")
     if args.dataset is not None and args.seed_dataset is not None:
         parser.error("--dataset and --seed-dataset are alternatives")
-    if args.fx_to_usd is not None and (not math.isfinite(args.fx_to_usd) or args.fx_to_usd <= 0):
+    if args.fx_to_usd is not None and safe_pos_float(args.fx_to_usd, default=None) is None:
         parser.error("--fx-to-usd must be positive")
     execution = build_execution_model_from_args(parser, args)
     warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup

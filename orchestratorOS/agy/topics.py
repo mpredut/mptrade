@@ -177,13 +177,23 @@ def get_topic_canonical_titles(registry_path: Optional[str] = None) -> Dict[str,
     return out
 
 
+def _apply_and_mirror_topic_title(base: str, cid: str, title: str) -> None:
+    try:
+        bot_row = read_summary_row(base, cid)
+        if bot_row is not None:
+            upsert_ui_visible_summary(base, bot_row, title)
+        else:
+            write_annotation_title(base, cid, title)
+    except OSError:
+        pass
+    mirror_topic_thread_to_ui(cid, title, bot_cli_base=base)
+
+
 def sync_all_topic_titles(
     cli_base: Optional[str] = None,
     registry_path: Optional[str] = None,
 ) -> int:
     """Ensure registry, bot store, and UI store carry the canonical TopicSpec title for every registered topic."""
-    from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
-
     base = resolve_bot_cli_base(cli_base)
     reg = load_topic_registry(registry_path)
     updated = 0
@@ -199,15 +209,7 @@ def sync_all_topic_titles(
         cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
         if not cid:
             continue
-        try:
-            bot_row = read_summary_row(base, cid)
-            if bot_row is not None:
-                upsert_ui_visible_summary(base, bot_row, canonical)
-            else:
-                write_annotation_title(base, cid, canonical)
-        except OSError:
-            pass
-        mirror_topic_thread_to_ui(cid, canonical, bot_cli_base=base)
+        _apply_and_mirror_topic_title(base, cid, canonical)
         updated += 1
     if changed_reg:
         save_topic_registry(reg, registry_path)
@@ -435,12 +437,4 @@ def record_topic_turn(
     reg[resolved] = entry
     save_topic_registry(reg, registry_path)
     if active_cid:
-        try:
-            bot_row = read_summary_row(base, active_cid)
-            if bot_row is not None:
-                upsert_ui_visible_summary(base, bot_row, spec.title)
-            else:
-                write_annotation_title(base, active_cid, spec.title)
-        except OSError:
-            pass
-        mirror_topic_thread_to_ui(active_cid, spec.title, bot_cli_base=base)
+        _apply_and_mirror_topic_title(base, active_cid, spec.title)

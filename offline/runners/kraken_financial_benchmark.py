@@ -7,8 +7,6 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -21,8 +19,7 @@ if str(ROOT) not in sys.path:
 if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
-from botcore import parse_dotenv, safe_float, safe_int, safe_pos_float  # noqa: E402
-from kraken.kraken_common import load_dotenv  # noqa: E402
+from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
@@ -30,7 +27,7 @@ from offline.backtests.datasets import (  # noqa: E402
     load_dataset,
     validate_dataset,
 )
-from offline.backtests.evaluation import evaluate_segment, iso_utc  # noqa: E402
+from offline.backtests.evaluation import evaluate_segment, iso_utc, load_layered_env_config  # noqa: E402
 from offline.backtests.financial_benchmark import (  # noqa: E402
     aggregate_financial_windows,
     default_scenarios,
@@ -101,14 +98,7 @@ def strat_params_from_dict(values: dict) -> StratParams:
 
 
 def _load_params(args) -> StratParams:
-    cfg: dict[str, str] = {}
-    for path_str in (args.config_file, args.env_file):
-        p = Path(path_str)
-        if p.exists():
-            cfg.update(dict(parse_dotenv(str(p))))
-    for k, v in os.environ.items():
-        if k.startswith("STRAT_") and k not in cfg:
-            cfg[k] = v
+    cfg = load_layered_env_config(args.config_file, args.env_file)
     if not args.params_report:
         return StratParams.from_env(cfg)
     with args.params_report.open(encoding="utf-8") as handle:
@@ -333,6 +323,14 @@ def _projection(report: dict) -> dict:
     }
 
 
+def validate_financial_benchmark_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    for name in ("train", "validation", "test", "step"):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name} must be positive")
+    if args.warmup < 0 or safe_nonneg_float(args.regime_threshold, default=None) is None:
+        parser.error("warmup and regime-threshold cannot be negative")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=KRAKEN_DIR / ".env")
@@ -353,11 +351,7 @@ def main() -> int:
     parser.add_argument("--markdown", type=Path)
     args = parser.parse_args()
 
-    for name in ("train", "validation", "test", "step"):
-        if getattr(args, name) <= 0:
-            parser.error(f"--{name} must be positive")
-    if args.warmup < 0 or not math.isfinite(args.regime_threshold) or args.regime_threshold < 0:
-        parser.error("warmup and regime-threshold cannot be negative")
+    validate_financial_benchmark_args(parser, args)
     args.dataset = args.dataset.expanduser().resolve()
     args.manifest = args.manifest.expanduser().resolve()
     if args.params_report:

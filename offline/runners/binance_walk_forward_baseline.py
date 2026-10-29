@@ -11,15 +11,13 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
-import os
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import parse_dotenv
+from botcore import safe_nonneg_float
 from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
 from binance_api.replay import make_binance_replay_adapter, StratParams
 from strategies.spot_replay import align_spot_interval_params
@@ -39,6 +37,7 @@ from offline.backtests.evaluation import (
     extract_cfg_float,
     extract_cfg_int,
     iso_utc as _iso,
+    load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
     resolve_window_sizes,
@@ -62,17 +61,10 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir", type=Path, default=ROOT / "offline/results/binance_walk_forward",
     )
     args = parser.parse_args(argv)
-    if not math.isfinite(args.fee) or args.fee < 0:
+    if safe_nonneg_float(args.fee, default=None) is None:
         parser.error("--fee cannot be negative")
 
-    cfg: dict[str, str] = {}
-    for path_str in (args.config_file, args.env_file):
-        p = Path(path_str)
-        if p.exists():
-            cfg.update(dict(parse_dotenv(str(p))))
-    for k, v in os.environ.items():
-        if k.startswith("BINANCE_") or (k.startswith("STRAT_") and k not in cfg):
-            cfg[k] = v
+    cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("BINANCE_",))
 
     symbol = (args.symbol or cfg.get("SYMBOL") or cfg.get("BINANCE_PAIR") or "BTCUSDT").strip().upper()
 

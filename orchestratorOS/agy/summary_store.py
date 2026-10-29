@@ -177,6 +177,25 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     atomic_write_bytes(path, content)
 
 
+def upsert_summary_row_dict(cli_base: str, row_dict: dict) -> None:
+    """Insert or replace a conversation_summaries row matching the table's existing columns."""
+    if not isinstance(row_dict, dict):
+        return
+    conn = sqlite3.connect(summaries_db(cli_base))
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
+        common = [c for c in cols if c in row_dict]
+        if common:
+            conn.execute(
+                f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
+                f"VALUES ({','.join('?' for _ in common)})",
+                [row_dict[c] for c in common],
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     """Insert/replace a summary row with the CLI source cleared and ``title`` applied (column + proto)."""
     if not isinstance(row, dict):
@@ -189,19 +208,7 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)
-    conn = sqlite3.connect(summaries_db(cli_base))
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
-        common = [c for c in cols if c in row]
-        if common:
-            conn.execute(
-                f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
-                f"VALUES ({','.join('?' for _ in common)})",
-                [row[c] for c in common],
-            )
-            conn.commit()
-    finally:
-        conn.close()
+    upsert_summary_row_dict(cli_base, row)
     raw_sum = row.get("raw_summary")
     if raw_sum:
         for name in SUMMARIES_PB_FILES:

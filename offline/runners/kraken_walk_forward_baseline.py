@@ -13,8 +13,6 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-import math
-import os
 from pathlib import Path
 import sys
 
@@ -26,7 +24,7 @@ if str(ROOT) not in sys.path:
 if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
-from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, safe_nonneg_float  # noqa: E402
 from kraken import market_data as kraken_market_data  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -45,6 +43,7 @@ from offline.backtests.evaluation import (  # noqa: E402
     evaluate_segment as _evaluate_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
     iso_utc as _iso,
+    load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
     parse_intervals as _parse_intervals,
     resolve_window_sizes,
@@ -112,19 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not math.isfinite(args.fee) or args.fee < 0:
+    if safe_nonneg_float(args.fee, default=None) is None:
         parser.error("--fee cannot be negative")
     execution = build_execution_model_from_args(parser, args)
 
     # The same order as kraken_bot.py: .env takes priority, config.env fills in the rest.
-    cfg: dict[str, str] = {}
-    for path_str in (args.config_file, args.env_file):
-        p = Path(path_str)
-        if p.exists():
-            cfg.update(dict(parse_dotenv(str(p))))
-    for k, v in os.environ.items():
-        if k.startswith("KRAKEN_") or (k.startswith("STRAT_") and k not in cfg):
-            cfg[k] = v
+    cfg = load_layered_env_config(args.config_file, args.env_file, override_prefixes=("KRAKEN_",))
     pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
     if not pair:
         parser.error("missing pair: --pair or KRAKEN_PAIR")

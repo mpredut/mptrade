@@ -33,12 +33,14 @@ if not hasattr(_summary_store, "_safe_step_count"):
     except Exception:
         pass
 from orchestratorOS.agy.summary_store import (
+    _clean_cid_set,
     checkpoint_db,
     conversation_db,
     drop_wal_sidecars,
     get_thread_step_count,
     read_summary_row,
     summaries_db,
+    upsert_summary_row_dict,
     upsert_ui_visible_summary,
 )
 from state_io import durable_replace_file
@@ -62,17 +64,10 @@ def sync_topic_thread_from_ui(
     """Pull newer user turns from the Web UI store back into the isolated bot store before a CLI turn."""
     dst_base = resolve_bot_cli_base(bot_cli_base)
     src_base = resolve_ui_cli_base(ui_cli_base)
-    if (
-        not cid
-        or not isinstance(cid, str)
-        or not cid.strip()
-        or cid.strip() in {".", ".."}
-        or "/" in cid
-        or "\\" in cid
-        or os.path.abspath(src_base) == os.path.abspath(dst_base)
-    ):
+    clean_cids = _clean_cid_set([cid])
+    if not clean_cids or os.path.abspath(src_base) == os.path.abspath(dst_base):
         return False
-    cid = cid.strip()
+    cid = next(iter(clean_cids))
     ui_db = conversation_db(src_base, cid)
     if not os.path.exists(ui_db):
         vis_db = os.path.join(visible_conversations_dir(src_base), f"{cid}.db")
@@ -128,19 +123,7 @@ def sync_topic_thread_from_ui(
                 merged["project_id"] = bot_row["project_id"]
             if not str(merged.get("title") or "").strip() and bot_row and bot_row.get("title"):
                 merged["title"] = bot_row["title"]
-            conn = sqlite3.connect(bot_sum_db)
-            try:
-                cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
-                common = [c for c in cols if c in merged]
-                if common:
-                    conn.execute(
-                        f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
-                        f"VALUES ({','.join('?' for _ in common)})",
-                        [merged[c] for c in common],
-                    )
-                    conn.commit()
-            finally:
-                conn.close()
+            upsert_summary_row_dict(dst_base, merged)
         return True
     except (OSError, sqlite3.Error) as e:
         logger.warning("Failed syncing topic thread %s from the UI store: %s", cid, e)
@@ -160,16 +143,10 @@ def mirror_topic_thread_to_ui(
     ui_cli_base: Optional[str] = None,
 ) -> bool:
     """Copy one topic thread into the UI store as a UI-visible conversation named ``title``."""
-    if (
-        not cid
-        or not isinstance(cid, str)
-        or not cid.strip()
-        or cid.strip() in {".", ".."}
-        or "/" in cid
-        or "\\" in cid
-    ):
+    clean_cids = _clean_cid_set([cid])
+    if not clean_cids:
         return False
-    cid = cid.strip()
+    cid = next(iter(clean_cids))
     src_base = resolve_bot_cli_base(bot_cli_base)
     dst_base = resolve_ui_cli_base(ui_cli_base)
     src_db = conversation_db(src_base, cid)
