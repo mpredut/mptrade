@@ -143,6 +143,10 @@ class StratParams:
             raw = d.get(key, default)
             if raw is None:
                 return default
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                if raw not in (0, 1):
+                    raise ValueError(f"invalid numeric boolean for {key}: {raw!r}")
+                return bool(raw)
             parsed = _parse_bool_flag(raw, default=None)
             if parsed is None:
                 raise ValueError(f"invalid boolean value for {key}: {raw!r}")
