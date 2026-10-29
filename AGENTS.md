@@ -10,8 +10,9 @@
 # Core Tenets
 - **Unification & Compaction:** Consolidate fragmented logic into single linear choke points; eliminate redundancy.
 - **Single Source of Truth (SSOT):** Canonical definition and resolution for all domain state, config, and rules.
-- **Zero Configuration Fallbacks (Fail-Fast at Module Init):**
-  - Configuration parameters (`config.env`, `order_guard.conf`, `*.conf`, `*.env`) must never have hardcoded fallback defaults, silent seed dictionaries, or synonym/alias guessing in code.
+- **Zero Configuration Fallbacks & Zero Hardcoded Values (Fail-Fast at Module Init):**
+  - Configuration parameters (`config.env`, `order_guard.conf`, `instruments.conf`, `*.conf`, `*.env`) must never have hardcoded fallback defaults, silent seed dictionaries, or synonym/alias guessing in code.
+  - Never hardcode magic numbers, thresholds, intervals, limits, URLs/endpoints, symbol lists, or policy strings inside Python modules — all static tunables and configuration strings must reside in configuration files.
   - Every module must validate its required configuration during initialization (or config load) and raise `ValueError` or `KeyError` immediately if a setting is missing, empty, or invalid.
   - Fallbacks are strictly reserved for **dynamic runtime strategy/operational resilience** (e.g., WS/REST transport fallback, proxy/chop weight fallback when live market data or long trend is unavailable, fail-closed guard behavior on runtime read errors) — never for missing static configuration or duplicate function/key aliases.
 - **Architectural, Directional & Naming Symmetry (BUY / SELL, Venues, Modules, Identifiers):**
@@ -26,11 +27,41 @@
   - Keep files small, short, and focused on a single cohesive responsibility; prevent monolithic file growth by factoring distinct logic into compact, reusable modules.
   - Isolate modular boundaries and minimize cross-cutting coupling so shared building blocks remain clean, composable, and easy to maintain.
 - **Concise File Naming & Domain-Driven Placement:** Keep new filenames short, simple, and topic-focused while strictly preserving naming symmetry with existing sibling files. Always place files within the established architectural directory hierarchy matching their functional domain, preserving the existing repository layout without ad-hoc paths or root-level clutter.
-- **Transactional Persistence & Crash Recovery (`.previous` + `.meta` + `state_io.py`):**
-  - Every durable cache, market snapshot, and runtime state file (`cache_*.json[l]`, `priceanalysis.json`, `24trend/*.json`, bot/strategy/supervisor state files) must use the shared transactional primitives in `state_io.py` (`atomic_write_json`, `save_json_state`, `stage_previous_generation`, `commit_file_and_meta`, `read_recovering_previous`, `restore_previous_generation`, `load_json_state`) or inherit from `CacheManagerInterface`.
-  - Never write durable JSON/JSONL files in place with raw `open(..., "w")` + `json.dump()` or read shared durable state without `.previous` recovery (`read_recovering_previous()` / `load_json_state()`), so interrupted writes, crashes, or power loss automatically heal from certified `.previous` backups and verified `.meta` manifests without data loss.
+- **Transactional Persistence & File I/O (`state_io.py` & `CacheManagerInterface`):**
+  - Never use raw `open()`, `json.dump()`, or `json.load()` for state, cache, snapshot, or data files. All file I/O must go through `state_io.py` or `CacheManagerInterface`:
+    - *JSON / State:* `load_json_state()`, `save_json_state()`, `read_json_dict()`, `read_json_file()`, `atomic_write_json()`, `commit_file_and_meta()`, `read_recovering_previous()`, `stage_previous_generation()`, `restore_previous_generation()`.
+    - *JSONL / Archives:* `read_jsonl_dicts()`, `read_tail_jsonl_dicts()`, `read_last_jsonl_dict()`, `truncate_file_bytes()`, `prune_rotated_archives()`, `atomic_gzip_file()`.
+    - *Text / CSV / Bytes:* `read_text_file()`, `read_text_lines()`, `atomic_write_text()`, `read_csv_dicts()`, `read_bytes_file()`, `atomic_write_bytes()`.
 - **Holistic & General Solutions Over Point Fixes:**
   - Always solve classes of problems at the architectural choke point (e.g., transport layer, order gateway, state layer) rather than scattering per-caller `if/else` patches across modules.
   - Reject ad-hoc special cases, band-aid flags, and hardcoded magic percentages/timers when a single unified invariant or dynamic market-relative mechanism (e.g., relative to volatility/ATR/regime) can govern the behavior cleanly.
   - Before adding a new branch, cooldown, or state tracker, check whether existing complexity can be deleted or unified instead. Simpler, linear code with fewer states is strictly preferred over deeply nested special-case handling.
   - When a bug is found in one caller or venue, audit the common boundary so the fix prevents the entire category of bug everywhere at once.
+
+# Project-Specific Directives & Mandatory Libraries
+- **`cachedb/` Subdomains & Module-Synchronized Naming (`cachepaths.py`):**
+  - Resolve all `cachedb/` paths exclusively via `cachepaths.py` (`cache_path()`, `resolve_cachedb_filepath()`, `get_cachedb_dir()`, `telemetry_cache_file_path()`); never build raw `"cachedb/..."` strings manually.
+  - Register every new cache/state file in `CACHEDB_SUBDOMAINS` (`cachepaths.py`) and strictly synchronize its filename with its owning module and subdomain grammar:
+    - `prices/`: `cache_current_price.json`, `cache_watcher_all_price.json`, `cache_<24|365|sparse>_price_<SYMBOL>.json[l|.npz]` ↔ `Cache<Qualifier>PriceManager`.
+    - `trends/`: `cache_<short|long|T|kalman>_trend.json`, `priceanalysis.json`, `24trend/live_<SYMBOL>.json` ↔ `Cache<Qualifier>TrendManager`.
+    - `orders/`: `cache_order.json`, `cache_trade.jsonl`, `cache_asset_value.jsonl`, `order_retry_queue.jsonl` ↔ `CacheOrderManager`, `CacheTradeManager`, `CacheAssetValueManager`, `order_retry`.
+    - `state/`: `<module_name>_state.json` (e.g., `assetguardian_state.json`, `mt_state.json`, `trailing_state.json`, `rtrade_pairs_state.json`, `smart_stop_loss_state.json`, `autonomous_trade_intents_state.json`).
+    - `macro/`: `<module_stem>_collect.json` for collectors and `<module_stem>_eval.json` for evaluators.
+    - `telemetry/`: `<telemetry_prefix>_<SAFE_SYMBOL>.json` (`orderbook_depth_`, `derivatives_telemetry_`, `whale_snapshot_`) via `telemetry_cache_file_path()`.
+    - `system/` & `system/heartbeat/`: `<agent>_eval.json`, `<domain>_status.json`, and `<module_name>.heartbeat`.
+- **Core Coercion, Config, Deterministic Math & HTTP (`botcore.py` & `utils.py`):**
+  - Coerce external/cache values exclusively with `botcore.py` (`safe_float()`, `safe_pos_float()`, `safe_nonneg_float()`, `safe_int()`, `safe_pos_int()`, `exact_int()`, `exact_nonneg_int()`, `_parse_bool_flag()`); never call raw `float()`/`int()` on untrusted inputs.
+  - Load and validate config/env via `load_dotenv()`, `load_env_stack()`, `parse_dotenv()`, `required_env()`, `required_float_env()`, `required_int_env()`, `required_bool_env()`, `conf_or_override()`.
+  - Use deterministic percentage/decay math (`botcore.diff_percent()`, `botcore.are_close()`, `botcore.diff_equals_percent()`, `utils.asymptotic_decrease()`, `utils.exponential_decrease()`, `utils.gaussian_weights_from_idx()`), `botcore.single_instance()` for process locks, and `botcore.http_get()` / `http_post_json()` / `fetch_public_json()` / `providers/http_resilience.py` for HTTP transport.
+- **Symbols, Venues, Instrument Registry & Multi-Venue Payloads (`cachepaths.py`, `instrument_registry.py`, `providers/base.py`):**
+  - Never slice symbol strings manually (e.g., `.replace("USDC", "")`). Use `normalize_venue_name()`, `normalize_cache_base_asset()`, `canonical_base_asset()`, `canonical_symbol_key()`, `split_symbol_assets()`, `cache_symbol_variants()`, `resolve_binance_lookup_symbol()`, `resolve_kraken_lookup_symbol()` (`cachepaths.py`) and `resolve_assets()` (`providers/quantity.py`).
+  - Source all instrument lists and roles from `instruments.conf` via `instrument_registry.py` (`load_registry()`, `select_instruments()`, `symbols_for()`, `single_symbol_for()`, `tracked_price_instruments()`).
+  - Extract order/fill fields across venues exclusively via `providers/base.py` (`normalize_side()`, `extract_order_id()`, `extract_order_price()`, `extract_order_qty()`, `extract_timestamp_ms()`, `extract_timestamp_s()`, `normalize_timestamp_ms()`).
+- **Order Execution Gateway, Sizing & Guard Hierarchy (`instrument.py`, `order_guard.py`, `guard_hierarchy.py`, `providers/quantity.py`):**
+  - Route all order placements through `Instrument.place()` (`instrument.py`) so `order_guard`, `ExecutionAudit`, `order_outcomes_log`, and `order_retry` execute uniformly; never call venue REST order endpoints directly from strategies.
+  - Compute balances, fee caps, lot rounding, filter checks, and average cost via `providers/quantity.py` (`balance_cap_quantity()`, `venue_fee_cap_quantity()`, `round_provider_qty()`, `check_order_filter_refusal()`, `remaining_average_cost()`) and `providers/binance_filters.py`.
+  - Reference all guards and bypasses through the canonical SSOT hierarchy in `guard_hierarchy.py` (`GO1`, `GT_S`, `GT_M`, `GT_L`, `G_PROF`, `G_QLIMIT1`, `G_QLIMIT2`, `GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`, `GLLM1..3`).
+- **Locking, Logging, Alerts & Text Hygiene (`lock/`, `log.py`, `notify_engine/`, `CLAUDE.md`):**
+  - Use `FileLock` (`lock/file_lock.py`), `generation_lock_path()` (`state_io.py`), and `lock/trade_cooldown.py` / `lock/cooldown.py` for inter-process coordination.
+  - Route process logging through `log.py` / `botcore.log()` and all alerts through `notify_engine/alertnotifiers.py`.
+  - Never write Romanian diacritics anywhere in the repository; preserve the intentional bilingual safety markers in `alertnotifiers.py` and `verify_tools/watchdogfor_anomaly.py`.

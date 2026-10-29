@@ -59,16 +59,6 @@ verify_tools/translation_audit.py verify <file>   # prove an edit touched prose 
 Those are now English like everything else, but the flag remains useful: translating
 one of them changes what the operator sees, so it is a behaviour change, not a cleanup.
 
-## Line endings
-
-LF everywhere, enforced by `.gitattributes` (`* text=auto eol=lf`). The repo runs
-on Linux but is often edited from Windows, where `core.autocrlf=true` silently
-introduces CRLF. A single `\r` in a `.sh` file makes it unrunnable on the server
-(`bad interpreter`), and in `.conf`/`.env` it corrupts values read with `cut`/`grep`.
-
-Binary files (`.h5`, `.mp3`, `.wav`, images, archives) are marked `binary` because
-they contain legitimate `0x0D` bytes that line-ending normalisation would corrupt.
-
 ## Deployment
 
 Edit locally, commit, push to `main`, then `git pull --ff-only` on the server. No
