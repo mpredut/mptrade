@@ -21,6 +21,7 @@ from providers.base import (
     extract_remaining_qty,
     extract_timestamp_ms,
     extract_timestamp_s,
+    resolve_order_actor,
 )
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
@@ -2072,11 +2073,11 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if current_trend_up is None:
             current_trend_up = bool(is_trend_up(symbol))
         latest_sell = trade_orders_sell[0] if isinstance(trade_orders_sell[0], dict) else {}
-        latest_sell_cid = str(
-            latest_sell.get("clientOrderId") or latest_sell.get("client_order_id") or ""
-        ).strip().upper()
         latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
-        is_ai_sell = latest_sell_cid.startswith("AI_") or latest_sell_kind.startswith("AI_")
+        is_ai_sell = (
+            resolve_order_actor(latest_sell) == "AI"
+            or latest_sell_kind.startswith("AI_")
+        )
         explicit_exit_kind = _LAST_EXIT_KIND.get(symbol) or (latest_sell_kind or None)
         if (
             not explicit_exit_kind

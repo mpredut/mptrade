@@ -25,7 +25,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
-from alertnotifiers import AlertNotifier
+from alertnotifiers import AlertNotifier, format_ntfy_url
 from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float
 from market_monitor.alerts_config import load_config
 
@@ -35,11 +35,7 @@ ALERT_NEW_COIN = required_bool_env("ALERT_NEW_COIN")
 # Price alerts route to their dedicated ntfy topic, passed explicitly to the batch
 # notifier (no PHONE_ALERT_URL indirection).
 _price_topic = required_env("NTFY_TOPIC_PRICE")
-PRICE_WEBHOOK_URL = (
-    _price_topic
-    if _price_topic.startswith(("http://", "https://"))
-    else f"https://ntfy.sh/{_price_topic.lstrip('/')}"
-)
+PRICE_WEBHOOK_URL = format_ntfy_url(_price_topic)
 
 CMC_API_KEY = required_env("CMC_API_KEY")
 TIME_INTERVAL_CLEANUP = 6 * 60 * 60  # 6 hours in seconds

@@ -19,8 +19,11 @@ from botcore import (
 from cachepaths import normalize_venue_name
 from state_io import read_json_dict
 from notify_engine.alertnotifiers import (
+    AlertNotifier,
     _alert_attr,
     _external_notifications_disabled,
+    _is_provider_daily_limit,
+    format_ntfy_url,
     is_fake_alert_text,
 )
 from notify_engine.mailer import (
@@ -291,17 +294,12 @@ class NotificationServer:
         if not is_retry and not skip_email and is_email_mirrored(topic_str):
             self._send_email(title, message)
         
-        topic_str = "" if isinstance(topic_str, bool) else str(topic_str or "").strip()
-        if not topic_str:
+        url = format_ntfy_url(topic_str)
+        if not url:
             return True
-        if topic_str.startswith(("http://", "https://")):
-            url = topic_str
-        else:
-            url = f"https://ntfy.sh/{topic_str.lstrip('/')}"
-        clean_header_title = re.sub(r"[\r\n]+", " ", "" if isinstance(title, bool) else str(title or "Alert")).strip()
         clean_priority = re.sub(r"[\r\n]+", " ", "" if isinstance(priority, bool) else str(priority or "default")).strip() or "default"
         headers = {
-            "Title": clean_header_title.encode("utf-8").decode("latin-1", "ignore"),
+            "Title": AlertNotifier.utf8_header(title or "Alert") or "Alert",
             "Priority": clean_priority
         }
         if self.ntfy_token:
@@ -310,8 +308,8 @@ class NotificationServer:
         try:
             resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
             if getattr(resp, "status_code", None) == 429:
-                text = getattr(resp, "text", "") or ""
-                if "daily" in text.lower() or "42908" in text:
+                if _is_provider_daily_limit(resp):
+                    text = getattr(resp, "text", "") or ""
                     logging.warning(f"ntfy daily limit reached: {text}")
                     from notify_engine.alertnotifiers import _mark_provider_daily_limit
                     _mark_provider_daily_limit("ntfy")

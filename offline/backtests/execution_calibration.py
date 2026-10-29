@@ -37,7 +37,7 @@ def _client_order_id_valid(venue: object, client_order_id: object) -> bool | Non
 
 
 def _clean_finite_floats(values: Iterable[object] | None) -> list[float]:
-    if not values:
+    if not values or isinstance(values, (str, bytes, bool)):
         return []
     return [vf for value in values if (vf := _f(value, default=None)) is not None]
 

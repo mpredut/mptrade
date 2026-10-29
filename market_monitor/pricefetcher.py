@@ -17,6 +17,7 @@ import symbols as sym
 from binance_api import bapi as api
 from botcore import exact_pos_int, required_env, safe_pos_float, safe_pos_int
 from cachepaths import cache_path, normalize_venue_name
+from instrument_registry import casefold_get
 
 # Import the base classes from cacheManager
 from cacheManager import CacheFactory, CacheManagerInterface
@@ -67,9 +68,14 @@ class PricePlatformInterface(ABC):
     def _supports_in_set(self, symbol: str, symbols_set: Set[str]) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
             return False
-        sym_up = symbol.strip().upper()
+        sym_clean = symbol.strip()
+        sym_up = sym_clean.upper()
+        base_up = get_base_symbol(sym_up)
         self.refresh_symbols()
-        return sym_up in symbols_set or get_base_symbol(sym_up) in symbols_set
+        if sym_clean in symbols_set or sym_up in symbols_set or base_up in symbols_set:
+            return True
+        upper_set = {s.upper() for s in symbols_set if isinstance(s, str)}
+        return sym_up in upper_set or base_up in upper_set
 
 
 class BinancePricePlatform(PricePlatformInterface):
@@ -257,13 +263,23 @@ class HyperliquidPricePlatform(PricePlatformInterface):
         try:
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
-            symbol = symbol.strip().upper()
+            sym_clean = symbol.strip()
+            sym_up = sym_clean.upper()
+            base_up = get_base_symbol(sym_up)
             self.refresh_symbols()
-            lookup_key = symbol if symbol in self._all_mids else get_base_symbol(symbol)
-            if lookup_key not in self._all_mids:
-                print(f"[HyperliquidPlatform] Symbol {symbol} not found")
+            raw_val = self._all_mids.get(sym_clean)
+            if raw_val is None:
+                raw_val = self._all_mids.get(sym_up)
+            if raw_val is None and base_up:
+                raw_val = self._all_mids.get(base_up)
+            if raw_val is None:
+                raw_val = casefold_get(self._all_mids, sym_clean)
+            if raw_val is None and base_up:
+                raw_val = casefold_get(self._all_mids, base_up)
+            if raw_val is None:
+                print(f"[HyperliquidPlatform] Symbol {sym_up} not found")
                 return None
-            return safe_pos_float(self._all_mids[lookup_key], default=None)
+            return safe_pos_float(raw_val, default=None)
         except Exception as e:
             print(f"[HyperliquidPlatform] Warning for {symbol}: {e}")
             return None
@@ -711,6 +727,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 self.symbol_preferred_source = {}
 
             preferred_source = self.symbol_preferred_source.get(symbol)
+            if preferred_source is None:
+                preferred_source = casefold_get(self.symbol_preferred_source, symbol)
             if preferred_source and isinstance(preferred_source, str) and preferred_source.strip():
                 pref_norm = normalize_venue_name(preferred_source) or preferred_source.strip().lower()
                 for platform in self.price_factory._platforms:
@@ -804,7 +822,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         with self.lock:
             entries = self.cache.get(symbol)
             if entries is None:
-                entries = self.cache.get(sym_clean, [])
+                entries = self.cache.get(sym_clean)
+            if entries is None:
+                entries = casefold_get(self.cache, sym_clean, [])
             if isinstance(entries, (list, tuple)) and entries:
                 for entry in reversed(entries):
                     if isinstance(entry, (list, tuple)) and len(entry) >= 2:
@@ -824,7 +844,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         with self.lock:
             raw_entries = self.cache.get(symbol)
             if raw_entries is None:
-                raw_entries = self.cache.get(sym_clean, ())
+                raw_entries = self.cache.get(sym_clean)
+            if raw_entries is None:
+                raw_entries = casefold_get(self.cache, sym_clean, ())
             entries = raw_entries[-limit_i:] if isinstance(raw_entries, (list, tuple)) else ()
 
         history: List[Dict] = []

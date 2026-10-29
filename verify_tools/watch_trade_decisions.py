@@ -23,7 +23,7 @@ import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
 from botcore import safe_float, safe_pos_float  # noqa: E402
 _f = safe_float
-from instrument_registry import load_registry, symbols_for  # noqa: E402
+from instrument_registry import casefold_get, load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402
 
 SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
@@ -34,9 +34,9 @@ _base = utils.base_asset
 
 
 def free_qty(symbol):
-    base = _base(symbol)
+    base_up = str(_base(symbol) or "").strip().upper()
     for b in (api.get_account_assets_balances() or []):
-        if isinstance(b, dict) and b.get("asset") == base:
+        if isinstance(b, dict) and str(b.get("asset") or "").strip().upper() == base_up:
             return safe_float(b.get("free", 0), default=0.0)
     return 0.0
 
@@ -75,7 +75,7 @@ def main():
 
     print(f"==== TRADE WATCH {time.strftime('%Y-%m-%d %H:%M:%S')} ====")
     for s in SYMBOLS:
-        spec = specs_by_sym.get(s)
+        spec = specs_by_sym.get(s) or casefold_get(specs_by_sym, s)
         try:
             gain_pct = safe_pos_float(spec.number("mt.gain") if spec else None, default=9.2)
         except Exception:

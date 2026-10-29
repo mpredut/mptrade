@@ -131,10 +131,9 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
-    if any(
-        _parse_bool_flag(os.environ.get(k), False)
-        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
-    ):
+    from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url
+
+    if _external_notifications_disabled():
         return
     topic = (os.environ.get("NTFY_TOPIC") or "").strip()
     if not topic:
@@ -145,13 +144,11 @@ def _ntfy(title: str, body: str) -> None:
                 topic = (parse_dotenv(cfg).get("NTFY_TOPIC") or "").strip()
             except OSError:
                 topic = ""
-    if not topic:
+    url = format_ntfy_url(topic)
+    if not url:
         return
-    import re
     import urllib.request
-    clean_title = re.sub(r"[\r\n]+", " ", "" if isinstance(title, bool) else str(title or "Alert")).strip()
-    safe_title = clean_title.encode("utf-8").decode("latin-1", "ignore")
-    url = topic if topic.startswith(("http://", "https://")) else f"https://ntfy.sh/{topic.lstrip('/')}"
+    safe_title = AlertNotifier.utf8_header(title or "Alert") or "Alert"
     body_str = "" if isinstance(body, bool) else str(body or "")
     req = urllib.request.Request(
         url, data=body_str.encode("utf-8"),

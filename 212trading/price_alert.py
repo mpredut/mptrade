@@ -31,7 +31,7 @@ except ImportError:
         from market_data import get_price_usd  # noqa: E402
     except ImportError:
         get_price_usd = load_t212_market_data().get_price_usd
-from alertnotifiers import AlertNotifier  # noqa: E402
+from alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 
 
@@ -42,15 +42,15 @@ def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
 
 
 def push(topic: str, title: str, body: str) -> bool:
-    clean_topic = str(topic or "").strip()
-    if not clean_topic:
+    url = format_ntfy_url(topic)
+    if not url:
         return False
     alert = {
         "type": "bot_event", "symbol": title.split(" ", 1)[0],
         "name": title, "source": "price_alert", "body": body,
     }
     return AlertNotifier.send_phone_webhook_batch(
-        [alert], webhook_url=f"https://ntfy.sh/{clean_topic}",
+        [alert], webhook_url=url,
     )
 
 

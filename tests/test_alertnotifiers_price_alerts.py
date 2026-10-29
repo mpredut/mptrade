@@ -425,6 +425,18 @@ class TestNewCoinsDiscovery(unittest.TestCase):
             self.assertNotIn("OLDCOIN", mgr.symbol_preferred_source)
             self.assertEqual(mgr.cleanup_old_symbols(max_age_days=7), [])
 
+    def test_format_ntfy_url_canonicalization(self):
+        from alertnotifiers import format_ntfy_url
+
+        self.assertEqual(format_ntfy_url("my_alerts"), "https://ntfy.sh/my_alerts")
+        self.assertEqual(format_ntfy_url("/slash_topic"), "https://ntfy.sh/slash_topic")
+        self.assertEqual(format_ntfy_url("https://custom.ntfy.lan/topic"), "https://custom.ntfy.lan/topic")
+        self.assertEqual(format_ntfy_url("http://custom.ntfy.lan/topic"), "http://custom.ntfy.lan/topic")
+        self.assertEqual(format_ntfy_url(""), "")
+        self.assertEqual(format_ntfy_url(None), "")
+        self.assertEqual(format_ntfy_url(True), "")
+        self.assertEqual(format_ntfy_url(False), "")
+
 
 if __name__ == "__main__":
     unittest.main()

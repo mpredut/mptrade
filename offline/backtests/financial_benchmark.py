@@ -67,7 +67,7 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
                 ),
             ),
         )
-    if venue_norm in ("hyperliquid", "hl"):
+    if venue_norm == "hyperliquid":
         return (
             BenchmarkScenario(
                 name="central",
@@ -92,7 +92,7 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
                 ),
             ),
         )
-    if venue_norm in ("t212", "trading212"):
+    if venue_norm == "t212":
         return (
             BenchmarkScenario(
                 name="central",
@@ -145,10 +145,6 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
             ),
         ),
     )
-
-
-def _present(values: Iterable[float | int | None]) -> list[float]:
-    return [vf for value in values if (vf := safe_float(value, default=None)) is not None]
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:

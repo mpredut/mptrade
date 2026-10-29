@@ -888,5 +888,40 @@ class TestEnrichedPretradeTelemetry:
             subprocess.run = orig_run
 
 
+def test_order_actor_resolution_and_recent_fills_tagging():
+    """Verify AI vs BOT actor resolution on orders, open orders, and recent fills extraction."""
+    from providers.base import normalize_open_order, resolve_order_actor
+    from intelligence.sentiment.guards.high_stake_guard import extract_symbol_recent_fills
+
+    # 1. resolve_order_actor tests
+    assert resolve_order_actor({"actor": "AI"}) == "AI"
+    assert resolve_order_actor({"actor": "bot"}) == "BOT"
+    assert resolve_order_actor({"clientOrderId": "AI_12345"}) == "AI"
+    assert resolve_order_actor({"cloid": "sd_manual_1"}) == "AI"
+    assert resolve_order_actor({"userref": "AI_KRAKEN"}) == "AI"
+    assert resolve_order_actor({"orderId": 999}, known_ai_order_ids={"999"}) == "AI"
+    assert resolve_order_actor({"orderId": 111}, known_ai_order_ids={"999"}) == "BOT"
+    assert resolve_order_actor({}) == "BOT"
+
+    # 2. normalize_open_order actor field
+    norm_ai = normalize_open_order({"orderId": "abc", "clientOrderId": "AI_99", "price": 100, "origQty": 1}, venue="BINANCE", symbol="BTCUSDC")
+    assert norm_ai["actor"] == "AI"
+    norm_bot = normalize_open_order({"orderId": "xyz", "clientOrderId": "web_1", "price": 100, "origQty": 1}, venue="BINANCE", symbol="BTCUSDC")
+    assert norm_bot["actor"] == "BOT"
+
+    # 3. extract_symbol_recent_fills tagging
+    orders = [
+        {"orderId": "1", "clientOrderId": "AI_buy_1", "side": "BUY", "price": "100.0", "executedQty": "1.0", "status": "FILLED", "time": 1000},
+        {"orderId": "2", "clientOrderId": "bot_sell_1", "side": "SELL", "price": "110.0", "executedQty": "1.0", "status": "FILLED", "time": 2000},
+    ]
+    res = extract_symbol_recent_fills(orders)
+    assert res is not None
+    assert res["last_action_actor"] == "BOT"
+    assert res["last_action_side"] == "SELL"
+    assert res["last_buy"]["actor"] == "AI"
+    assert res["last_sell"]["actor"] == "BOT"
+
+
+
 
 

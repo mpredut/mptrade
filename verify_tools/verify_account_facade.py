@@ -43,8 +43,9 @@ from botcore import safe_float, safe_pos_float
 
 def free_direct(base):
     """Legacy full-account loop; unavailable account data is indistinguishable from zero."""
+    base_up = str(base or "").strip().upper()
     for b in (api.get_account_assets_balances() or []):
-        if isinstance(b, dict) and b.get("asset") == base:
+        if isinstance(b, dict) and str(b.get("asset") or "").strip().upper() == base_up:
             return safe_float(b.get("free"), default=0.0)
     return 0.0
 

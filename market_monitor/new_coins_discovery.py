@@ -9,6 +9,7 @@ from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod
 
 from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_pos_int
+from instrument_registry import casefold_get
 
 # ============================================
 # Global configuration
@@ -749,6 +750,8 @@ class NewCoinsMonitor:
         if not isinstance(added_map, dict):
             return True
         added_time = added_map.get(symbol)
+        if added_time is None:
+            added_time = casefold_get(added_map, symbol)
         ts_val = safe_float(added_time, 0.0)
         if ts_val <= 0.0:
             return True

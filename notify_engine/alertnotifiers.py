@@ -72,6 +72,19 @@ def is_fake_alert_text(*parts: Any) -> bool:
     return any(marker in joined for marker in _FAKE_ALERT_MARKERS)
 
 
+def format_ntfy_url(topic: Any) -> str:
+    """Format an ntfy topic name or full HTTP(S) URL into a canonical ntfy endpoint URL."""
+    if isinstance(topic, bool) or topic is None:
+        return ""
+    clean = str(topic).strip()
+    if not clean:
+        return ""
+    if clean.startswith(("http://", "https://")):
+        return clean
+    clean_topic = clean.lstrip("/")
+    return f"https://ntfy.sh/{clean_topic}" if clean_topic else ""
+
+
 def _alert_attr(item: Any, key: str, default: Any = None) -> Any:
     """Extract an attribute or dict key from an alert payload."""
     if isinstance(item, dict):

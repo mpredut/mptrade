@@ -16,6 +16,7 @@ from urllib.parse import quote
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants, canonical_base_asset
+from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
 from market_monitor.pricefetcher import get_base_symbol
 
@@ -260,18 +261,10 @@ class PriceChecker:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
         if not isinstance(symbol_added_time, dict) or isinstance(symbol, bool) or symbol is None:
             return False
-        cands = cache_symbol_variants(symbol)
-        raw_ts = next((symbol_added_time[c] for c in cands if c in symbol_added_time and symbol_added_time[c] is not None), None)
-        if raw_ts is None:
-            cands_u = {c.upper() for c in cands}
-            raw_ts = next(
-                (
-                    v
-                    for k, v in symbol_added_time.items()
-                    if not isinstance(k, bool) and k is not None and str(k).strip().upper() in cands_u
-                ),
-                None,
-            )
+        raw_ts = next(
+            (v for c in cache_symbol_variants(symbol) if (v := casefold_get(symbol_added_time, c)) is not None),
+            None,
+        )
         return safe_pos_float(raw_ts, default=None) is not None
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:
