@@ -8,16 +8,13 @@ from typing import Any, Callable, Optional, Tuple
 
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import normalize_venue_name
+from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 from .base import _clean_single_order_id, normalize_side
 
 logger = logging.getLogger(__name__)
 
 
 QUOTE_SUFFIXES = ("USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
-_LEGACY_KRAKEN_X_BASES = frozenset({
-    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP", "XMLN",
-})
 
 
 def _clean_fill_id(val: object) -> str:

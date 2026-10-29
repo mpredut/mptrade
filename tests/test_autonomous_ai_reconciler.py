@@ -3623,6 +3623,7 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
         build_cycle_fallback_prices,
         collect_pretrade_telemetry,
         harvest_tradable_positions_and_orders,
+        resolve_venue_fee_and_limits,
     )
 
     # 1. build_cycle_fallback_prices falls back to (best_bid + best_ask) / 2.0 when ob_mid_price is absent
@@ -3631,6 +3632,31 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
         {},
     )
     assert fb_px["BTCUSDC"] == 80_100.0
+
+    # 1b. resolve_venue_fee_and_limits reads Kraken _cli / AssetPairs tuple cache and _minqty
+    krk_inst = MagicMock(symbol="HYPEUSD", provider_name="kraken", params={})
+    krk_inst._provider._minqty = {"HYPEUSD": 0.1}
+    krk_inst._provider._cli._CACHE = {
+        ("AssetPairs", (("pair", "HYPEUSD"),)): (
+            9999999999.0,
+            {
+                "HYPEUSD": {
+                    "fees_maker": [[0, 0.12]],
+                    "fees": [[0, 0.22]],
+                    "costmin": "1.5",
+                    "lot_decimals": 2,
+                    "pair_decimals": 3,
+                }
+            },
+        )
+    }
+    krk_limits = resolve_venue_fee_and_limits("kraken", "HYPEUSD", krk_inst, price=45.0)
+    assert krk_limits["maker_fee_bps"] == 12.0
+    assert krk_limits["taker_fee_bps"] == 22.0
+    assert krk_limits["min_qty"] == 0.1
+    assert krk_limits["exchange_min_notional_usd"] == 1.5
+    assert krk_limits["step_size"] == 0.01
+    assert krk_limits["tick_size"] == 0.001
 
     # 2. harvest_tradable_positions_and_orders forwards gateway_max_usd to resolve_venue_fee_and_limits
     inst_mock = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
@@ -3710,6 +3736,13 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
         encoding="utf-8",
     )
     telem = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
+    assert "Orderbook Depth Imbalance" in telem
+    assert "$210,000 @ $80,600.00" in telem["Orderbook Ask Wall Ahead"]
+    assert "$180,000 @ $79,500.00" in telem["Orderbook Bid Wall Ahead"]
+    assert "Perpetual Funding Rate" in telem
+    assert "Derivatives Open Interest" in telem
+    assert "Whale Positioning" in telem
+    assert "Whale Taker Flow" in telem
     assert "Orderbook Bid-Ask Spread" in telem
     assert "Orderbook Depth Within 1%" in telem
     assert "15m Cumulative Volume Delta (CVD)" in telem

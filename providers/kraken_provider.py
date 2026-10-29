@@ -54,13 +54,12 @@ _KRAKEN_CACHE_FILE = os.path.join(os.path.dirname(_KRAKEN_DIR), "cachedb", "cach
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
 
 
+from cachepaths import _LEGACY_KRAKEN_X_BASES
+
 _KRAKEN_QUOTES = (
     "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
     "BTC", "XBT", "ETH",
 )
-_LEGACY_KRAKEN_X_BASES = frozenset({
-    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP",
-})
 
 
 def _split_kraken_pair(value: str) -> tuple[str, str]:

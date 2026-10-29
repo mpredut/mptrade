@@ -528,7 +528,7 @@ CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (
 
 
 _LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
-    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP",
+    "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP", "XMLN",
 })
 
 

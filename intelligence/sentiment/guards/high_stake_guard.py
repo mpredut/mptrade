@@ -1244,11 +1244,27 @@ def resolve_venue_fee_and_limits(
     # Non-blocking inspection of already-cached provider metadata (Kraken / Hyperliquid / Binance)
     prov = getattr(inst, "_provider", None) if inst is not None else None
     if v_norm == "kraken" and prov is not None:
-        client = getattr(prov, "_client", None)
+        sym_u = str(symbol or "").strip().upper()
+        minqty_map = getattr(prov, "_minqty", None)
+        if isinstance(minqty_map, dict):
+            mq_cached = safe_pos_float(minqty_map.get(sym_u) or minqty_map.get(symbol), default=None)
+            if mq_cached is not None:
+                min_qty = mq_cached
+        client = getattr(prov, "_cli", None) or getattr(prov, "_client", None)
         cache_dict = getattr(client, "_CACHE", None)
+        if not isinstance(cache_dict, dict):
+            import sys as _sys
+
+            kc_mod = _sys.modules.get("kraken_client") or _sys.modules.get("kraken.kraken_client")
+            cache_dict = getattr(kc_mod, "_CACHE", None)
         if isinstance(cache_dict, dict):
-            cached_pair = cache_dict.get(f"pair:{symbol}")
+            cached_pair = cache_dict.get(f"pair:{symbol}") or cache_dict.get(f"pair:{sym_u}")
             p_meta = cached_pair[1] if isinstance(cached_pair, tuple) and len(cached_pair) >= 2 else None
+            if not isinstance(p_meta, dict):
+                ap_hit = cache_dict.get(("AssetPairs", (("pair", sym_u),)))
+                ap_res = ap_hit[1] if isinstance(ap_hit, tuple) and len(ap_hit) >= 2 else None
+                if isinstance(ap_res, dict):
+                    p_meta = next((v for v in ap_res.values() if isinstance(v, dict)), None)
             if isinstance(p_meta, dict):
                 fees_m = p_meta.get("fees_maker")
                 fees_t = p_meta.get("fees")
@@ -3171,11 +3187,20 @@ def collect_pretrade_telemetry(
     if cachedb_dir == "cachedb":
         from cachepaths import get_cachedb_dir
         cachedb_dir = get_cachedb_dir()
+    sym_variants = cache_symbol_variants(symbol)
+
+    def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
+        for cand in sym_variants:
+            d = read_json_cached(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
+            if isinstance(d, dict):
+                return d
+        return None
+
     telemetry: Dict[str, Any] = {}
     # 1. Spot Microstructure: Orderbook Depth & Walls (Pillar 2)
     try:
         from external_order_guard import get_orderbook_collector
-        ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
+        ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False) or _disk_telem("orderbook_depth_")
         if ob_snap is not None:
             imb_f = safe_float(obj_attr(ob_snap, "imbalance_ratio", None), default=None)
             if imb_f is not None:
@@ -3200,7 +3225,7 @@ def collect_pretrade_telemetry(
     # 2. Perpetual Derivatives: Funding Rate & Open Interest (Pillar 2)
     try:
         from external_order_guard import get_derivatives_collector
-        f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
+        f_snap = get_derivatives_collector().fetch(symbol, allow_network=False) or _disk_telem("derivatives_telemetry_")
         if f_snap is not None:
             fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
             if fr_f is not None:
@@ -3214,7 +3239,7 @@ def collect_pretrade_telemetry(
     # 3. Whale Positioning: Top Traders & Aggressive Flow (Pillar 2)
     try:
         from external_order_guard import get_whale_collector
-        w_snap = get_whale_collector().fetch(symbol, allow_network=False)
+        w_snap = get_whale_collector().fetch(symbol, allow_network=False) or _disk_telem("whale_snapshot_")
         if w_snap is not None:
             lp_f = safe_float(obj_attr(w_snap, "top_traders_long_pct", None), default=None)
             lr_f = safe_float(obj_attr(w_snap, "top_traders_long_ratio", None), default=None)
@@ -3245,8 +3270,6 @@ def collect_pretrade_telemetry(
         telemetry["Trend Duration"] = f"{df / 3600.0:.1f} hours"
 
     # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
-    from cachepaths import cache_symbol_variants, canonical_base_asset
-    sym_variants = cache_symbol_variants(symbol)
     try:
         cur_p_data = read_json_cached(os.path.join(cachedb_dir, "cache_current_price.json"))
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
