@@ -670,9 +670,9 @@ def build_supervisor_prompt(
     )
 
     if spec is None:
-        from orchestratorOS.agy.topics import get_topic_spec
+        from orchestratorOS.agy.topics import topic_spec
 
-        spec = get_topic_spec(topic_key or "auto_cryptotrade_executor")
+        spec = topic_spec(topic_key or "auto_cryptotrade_executor")
     if min_notional_usd is not None:
         min_usd = float(min_notional_usd)
     if max_notional_usd is not None:
