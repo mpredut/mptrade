@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 
 from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from cachepaths import canonical_base_asset
+from providers.quantity import resolve_assets
 
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
 _SETTING_KEYS = {
@@ -119,8 +121,6 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     sym_str = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
     sym_up = sym_str.upper()
     sym_low = sym_str.lower()
-    from cachepaths import canonical_base_asset
-    from providers.quantity import resolve_assets
     base = resolve_assets(sym_up)[0]
     canon = canonical_base_asset(sym_up)
     for cand in (sym_str, sym_up, sym_low, base, base.upper(), base.lower(), canon, canon.lower()):
