@@ -51,34 +51,13 @@ log = _common_mod.log
 _load_dotenv = _common_mod.load_dotenv
 from botcore import safe_pos_float
 from offline.backtests.metrics import format_performance_summary
-try:
-    import market_data as _md_local
-    if hasattr(_md_local, "fetch_funding_history"):
-        fetch_ohlc_candles = _md_local.fetch_ohlc_candles
-        fetch_funding_history = _md_local.fetch_funding_history
-    else:
-        raise ImportError("colliding market_data module")
-except ImportError:
-    import importlib.util
-    _md_spec = importlib.util.spec_from_file_location(
-        "hyperliquid_market_data", os.path.join(_HERE, "market_data.py")
-    )
-    _md_local = importlib.util.module_from_spec(_md_spec)
-    _md_spec.loader.exec_module(_md_local)
-    fetch_ohlc_candles = _md_local.fetch_ohlc_candles
-    fetch_funding_history = _md_local.fetch_funding_history
+_md_local = _load_hl_local("market_data")
+fetch_ohlc_candles = _md_local.fetch_ohlc_candles
+fetch_funding_history = _md_local.fetch_funding_history
 
-try:
-    import importlib.util
-    _hl_spec = importlib.util.spec_from_file_location(
-        "hyperliquid_backtest_replay", os.path.join(_HERE, "replay.py")
-    )
-    _hl_mod = importlib.util.module_from_spec(_hl_spec)
-    _hl_spec.loader.exec_module(_hl_mod)
-    run_replay = _hl_mod.run_replay
-    funding_at = _hl_mod.funding_at
-except Exception:
-    from replay import run_replay, funding_at
+_hl_mod = _load_hl_local("replay")
+run_replay = _hl_mod.run_replay
+funding_at = _hl_mod.funding_at
 
 
 def fetch_funding(coin, start_ms):

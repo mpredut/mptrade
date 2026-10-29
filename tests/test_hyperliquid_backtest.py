@@ -715,6 +715,14 @@ def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
     assert sig_res["trend"] == "neutral"
     assert sig_res["source"] == "file(corrupt)"
 
+    builtin_res = signals._builtin_trend(FakeCandleClient(), "HYPE")
+    assert builtin_res["trend"] in ("up", "down", "neutral")
+    assert builtin_res["source"] == "builtin"
+
+    import numpy as np
+    assert price_analysis.detect_long_term_trend(np.array([True, True, True]), [100.0, 101.0, 102.0]) is None
+    assert price_analysis.detect_long_term_trend([1000.0, 2000.0, 3000.0], np.array([True, False, True])) is None
+
 
 def test_walk_forward_compare_preserves_zero_fee():
     from offline.runners.walk_forward_compare import _build_venue_evaluator

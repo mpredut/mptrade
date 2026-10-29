@@ -69,6 +69,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         or prices is None
         or isinstance(timestamps, (bool, str, bytes))
         or isinstance(prices, (bool, str, bytes))
+        or (isinstance(timestamps, np.ndarray) and timestamps.dtype == bool)
+        or (isinstance(prices, np.ndarray) and prices.dtype == bool)
     ):
         return None
     wh_f = safe_pos_float(window_hours, default=None)
