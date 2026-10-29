@@ -182,7 +182,8 @@ def main() -> int:
         meta = dataset_metadata(records, interval_minutes=interval)
         digest = meta["sha256"]
         path = output_dir / f"{stem}_{interval}m_hlspot_{digest[:12]}.csv"
-        path.write_bytes(raw)
+        from state_io import atomic_write_bytes, atomic_write_json
+        atomic_write_bytes(path, raw)
         manifest["datasets"][str(interval)] = {
             "file": str(path),
             **meta,
@@ -191,7 +192,6 @@ def main() -> int:
 
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     manifest_path = output_dir.parent / f"manifest_{stamp}.json"
-    from state_io import atomic_write_json
     atomic_write_json(manifest_path, manifest, indent=2, ensure_ascii=False)
     print(f"Manifest: {manifest_path}")
     return 0
