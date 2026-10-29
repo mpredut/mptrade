@@ -21,7 +21,11 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+from intelligence.internal.guards.guard_decision import (
+    BrakeAction,
+    GuardDecision,
+    normalize_guard_mode,
+)
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
     clean_scale,
@@ -58,20 +62,7 @@ def clear_post_stop_reentry_cache() -> None:
 class PostStopReentryGuard:
     """Evaluates re-entry buy orders following a STOP-LOSS exit using Gemini LLM reasoning."""
 
-    @staticmethod
-    def _normalize_mode(val: Any, default: str = "enforce") -> str:
-        if val is False:
-            return "off"
-        if val is True:
-            return "enforce"
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return default if not math.isfinite(float(val)) else ("off" if float(val) == 0.0 else "enforce")
-        raw_m = str(val if val is not None else default).strip().lower()
-        if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
-            return "off"
-        if raw_m in ("1", "1.0", "true", "yes", "on", ""):
-            return "enforce"
-        return raw_m
+    _normalize_mode = staticmethod(normalize_guard_mode)
 
     _as_bool_flag = staticmethod(_parse_bool_flag)
 

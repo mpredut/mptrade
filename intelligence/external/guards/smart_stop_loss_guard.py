@@ -27,10 +27,18 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag, load_dotenv, required_float_env
+from botcore import (
+    _parse_bool_flag,
+    load_dotenv,
+    required_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import cache_path
 from intelligence.internal.guards.guard_decision import (
     clean_guard_symbol_key,
+    normalize_guard_mode,
     safe_guard_float as _safe_float,
     snap_attr as _obj_attr,
 )
@@ -59,30 +67,19 @@ _PENDING_RECOVERIES: list[Dict[str, Any]] = []
 
 
 def _resolve_now(now: Any) -> float:
-    if now is not None and not isinstance(now, bool):
-        try:
-            f = float(now)
-            if math.isfinite(f) and f >= 0.0:
-                return f
-        except (TypeError, ValueError):
-            pass
-    return time.time()
+    f = safe_nonneg_float(now, default=None)
+    return f if f is not None else time.time()
 
 
 def _format_price(p: Optional[float]) -> str:
-    if p is None or isinstance(p, bool):
+    pf = safe_pos_float(p, default=None)
+    if pf is None:
         return ""
-    try:
-        pf = float(p)
-        if not math.isfinite(pf) or pf <= 0:
-            return ""
-        if pf >= 100.0:
-            return f"${pf:,.2f}"
-        if pf >= 1.0:
-            return f"${pf:,.4f}"
-        return f"${pf:.6g}"
-    except (TypeError, ValueError):
-        return ""
+    if pf >= 100.0:
+        return f"${pf:,.2f}"
+    if pf >= 1.0:
+        return f"${pf:,.4f}"
+    return f"${pf:.6g}"
 
 
 _LOADED_STATE_FILE_KEY: Optional[Tuple[str, float]] = None
@@ -115,15 +112,9 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
             clean_data = {}
             for k, v in data.items():
                 if isinstance(v, dict):
-                    raw_sts = v.get("start_ts")
-                    if raw_sts is None or isinstance(raw_sts, bool):
-                        continue
-                    try:
-                        sts = float(raw_sts)
-                    except (TypeError, ValueError):
-                        continue
+                    sts = safe_float(v.get("start_ts"), None)
                     if (
-                        math.isfinite(sts)
+                        sts is not None
                         and sts > 1_000_000_000
                         and -5.0 <= (now_curr - sts) < 3600.0
                     ):
@@ -242,22 +233,7 @@ def flush_smart_stop_loss_alerts() -> int:
 class SmartStopLossGuard:
     """Evaluates whether a triggered stop-loss is an artificial wick hunt absorbed by whales."""
 
-    @staticmethod
-    def _normalize_mode(val: Any, default: str = "enforce") -> str:
-        if val is False:
-            return "off"
-        if val is True:
-            return "enforce"
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            if not math.isfinite(float(val)):
-                return default
-            return "off" if float(val) == 0.0 else "enforce"
-        raw_m = str(val if val is not None else default).strip().lower()
-        if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
-            return "off"
-        if raw_m in ("1", "1.0", "true", "yes", "on", ""):
-            return "enforce"
-        return raw_m
+    _normalize_mode = staticmethod(normalize_guard_mode)
 
     def __init__(
         self,
@@ -269,16 +245,12 @@ class SmartStopLossGuard:
         min_taker_ratio: float = 0.85,
     ) -> None:
         self.mode = self._normalize_mode(mode, default="enforce")
-        max_t = _safe_float(max_threshold_pct, 6.0)
-        self.max_threshold_pct = max_t if max_t > 0.0 else 6.0
-        grace_s = _safe_float(grace_seconds, 120.0)
-        self.grace_seconds = grace_s if grace_s >= 0.0 else 120.0
-        dis_buf = _safe_float(disaster_buffer_pct, 0.85)
-        self.disaster_buffer_pct = dis_buf if dis_buf >= 0.0 else 0.85
-        min_w = _safe_float(min_whale_long_pct, 0.60)
-        self.min_whale_long_pct = min_w if 0.0 <= min_w <= 1.0 else 0.60
-        min_tr = _safe_float(min_taker_ratio, 0.85)
-        self.min_taker_ratio = min_tr if min_tr > 0.0 else 0.85
+        self.max_threshold_pct = safe_pos_float(max_threshold_pct, 6.0)
+        self.grace_seconds = safe_nonneg_float(grace_seconds, 120.0)
+        self.disaster_buffer_pct = safe_nonneg_float(disaster_buffer_pct, 0.85)
+        min_w = safe_nonneg_float(min_whale_long_pct, 0.60)
+        self.min_whale_long_pct = min_w if min_w <= 1.0 else 0.60
+        self.min_taker_ratio = safe_pos_float(min_taker_ratio, 0.85)
 
     def evaluate(
         self,
@@ -327,9 +299,7 @@ class SmartStopLossGuard:
             return True, "wide_stop_exempt", meta
 
         # 2. Hard Disaster Floor: absolute safety circuit breaker
-        eff_buf = _safe_float(disaster_buffer_pct, self.disaster_buffer_pct)
-        if eff_buf < 0.0:
-            eff_buf = self.disaster_buffer_pct
+        eff_buf = safe_nonneg_float(disaster_buffer_pct, self.disaster_buffer_pct)
         disaster_floor = lost_threshold + (eff_buf / 100.0)
         meta["disaster_floor_pct"] = round(disaster_floor * 100.0, 3)
         if price_decrease >= disaster_floor:
@@ -401,7 +371,7 @@ class SmartStopLossGuard:
             if not isinstance(active_grace, dict):
                 active_grace = None
             if active_grace is not None:
-                existing_start = _safe_float(active_grace.get("start_ts"), -1.0)
+                existing_start = safe_float(active_grace.get("start_ts"), -1.0)
                 if existing_start < 0.0 or existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
                     active_grace = None
             if active_grace is not None and buy_price is not None:
@@ -468,9 +438,7 @@ class SmartStopLossGuard:
                     active_grace["current_price"] = cp_clean
                 if bp_clean > 0.0 and active_grace.get("buy_price") is None:
                     active_grace["buy_price"] = bp_clean
-                start_ts = _safe_float(active_grace.get("start_ts"), -1.0)
-                if start_ts < 0.0:
-                    start_ts = now_ts
+                start_ts = safe_pos_float(active_grace.get("start_ts"), now_ts)
                 elapsed = max(0.0, now_ts - start_ts)
                 meta["grace_elapsed_sec"] = round(elapsed, 1)
 
@@ -652,16 +620,16 @@ def evaluate_smart_stop_loss(
         mode = "off"
     elif ext_master == "shadow" and mode == "enforce":
         mode = "shadow"
-    max_thresh = _safe_float(m.get("smart_sl_max_threshold_pct"), 6.0)
-    grace_sec = _safe_float(m.get("smart_sl_grace_seconds"), 120.0)
-    default_disaster_buf = _safe_float(m.get("smart_sl_disaster_buffer_pct"), 0.85)
-    min_whale = _safe_float(m.get("smart_sl_min_whale_long_pct"), 0.60)
-    min_taker = _safe_float(m.get("smart_sl_min_taker_ratio"), 0.85)
+    max_thresh = safe_pos_float(m.get("smart_sl_max_threshold_pct"), 6.0)
+    grace_sec = safe_nonneg_float(m.get("smart_sl_grace_seconds"), 120.0)
+    default_disaster_buf = safe_nonneg_float(m.get("smart_sl_disaster_buffer_pct"), 0.85)
+    min_whale = safe_nonneg_float(m.get("smart_sl_min_whale_long_pct"), 0.60)
+    min_taker = safe_pos_float(m.get("smart_sl_min_taker_ratio"), 0.85)
 
     effective_disaster_buf = (
         default_disaster_buf
         if disaster_buffer_pct is None
-        else _safe_float(disaster_buffer_pct, default_disaster_buf)
+        else safe_nonneg_float(disaster_buffer_pct, default_disaster_buf)
     )
 
     guard = SmartStopLossGuard(

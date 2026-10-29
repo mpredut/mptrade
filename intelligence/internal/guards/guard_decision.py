@@ -25,6 +25,22 @@ def normalize_guard_side(side: Any) -> str:
     return normalize_side(side)
 
 
+def normalize_guard_mode(val: Any, default: str = "enforce") -> str:
+    """Normalize guard mode strings/booleans ('enforce', 'shadow', 'off')."""
+    if val is False:
+        return "off"
+    if val is True:
+        return "enforce"
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return default if not math.isfinite(float(val)) else ("off" if float(val) == 0.0 else "enforce")
+    raw_m = str(val if val is not None else default).strip().lower()
+    if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
+        return "off"
+    if raw_m in ("1", "1.0", "true", "yes", "on", ""):
+        return "enforce"
+    return raw_m
+
+
 def clean_guard_symbol_key(symbol: Any) -> str:
     """Return uppercase symbol stripped of '/', '-', '_'."""
     if not isinstance(symbol, str):

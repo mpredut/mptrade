@@ -391,8 +391,7 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     )
 
     def _safe_order_ts(o: Dict[str, Any]) -> float:
-        ts_ms = extract_timestamp_ms(o, default=None)
-        return float(ts_ms) if ts_ms is not None else 0.0
+        return safe_nonneg_ts(extract_timestamp_ms(o, default=None), 0.0)
 
     ordered = sorted(
         enumerate(valid),
