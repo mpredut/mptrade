@@ -751,27 +751,9 @@ class Strategy:
         ticker = str(order.get("ticker") or nested_ticker or "").upper()
         side = extract_order_side(order) or ""
         raw_qty = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
-        qty: float | None = None
-        if raw_qty is not None and not isinstance(raw_qty, bool):
-            try:
-                q_val = abs(float(raw_qty))
-                if math.isfinite(q_val) and q_val > 0.0:
-                    qty = q_val
-            except (TypeError, ValueError, OverflowError):
-                pass
-        if qty is None:
-            qty = extract_orig_qty(order, default=0.0) or None
+        qty: float | None = safe_pos_float(raw_qty, default=None) or extract_orig_qty(order, default=0.0) or None
         raw_limit = order.get("limitPrice", order.get("limit"))
-        limit: float | None = None
-        if raw_limit is not None and not isinstance(raw_limit, bool):
-            try:
-                l_val = float(raw_limit)
-                if math.isfinite(l_val) and l_val > 0.0:
-                    limit = l_val
-            except (TypeError, ValueError, OverflowError):
-                pass
-        if limit is None:
-            limit = extract_order_price(order, default=0.0) or None
+        limit: float | None = safe_pos_float(raw_limit, default=None) or extract_order_price(order, default=0.0) or None
         return ticker, side, qty, limit
 
     def _active_matches_pending(self, order: dict, pending: dict) -> bool:
@@ -1005,9 +987,8 @@ class Strategy:
             if _m is None:
                 log("  ! [STRAT] selling-not-owned without the owned quantity — NOT resetting the position")
                 return False
-            try:
-                _owned = float(_m.group(1))
-            except (TypeError, ValueError, OverflowError):
+            _owned = safe_nonneg_float(_m.group(1), default=None)
+            if _owned is None:
                 return False
             if _owned <= 1e-6:
                 log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
@@ -1068,14 +1049,7 @@ class Strategy:
                 raw_amount = raw_ord.get("amount")
                 usd_notional = p["qty"] * p["limit"]
                 fallback_amt = (usd_notional / self.fx_to_usd) if self.fx_to_usd > 0 else usd_notional
-                amount = fallback_amt
-                if raw_amount is not None and not isinstance(raw_amount, bool):
-                    try:
-                        cand_amt = float(raw_amount)
-                        if math.isfinite(cand_amt) and cand_amt > 0.0:
-                            amount = cand_amt
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+                amount = safe_pos_float(raw_amount, default=fallback_amt)
                 return bool(self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY")))
             return False
 
@@ -1250,16 +1224,9 @@ class Strategy:
             if not isinstance(p, dict):
                 continue
             if _t212_tickers_match(p.get("ticker", ""), self.ticker):
-                raw_q = p.get("quantity")
-                raw_avg = p.get("averagePrice")
-                if isinstance(raw_q, bool) or isinstance(raw_avg, bool):
-                    return None
-                try:
-                    q_f = float(0.0 if raw_q is None else raw_q)
-                    avg_f = float(0.0 if raw_avg is None else raw_avg)
-                except (TypeError, ValueError, OverflowError):
-                    return None
-                if not (math.isfinite(q_f) and q_f >= 0.0 and math.isfinite(avg_f) and avg_f >= 0.0):
+                q_f = safe_nonneg_float(p.get("quantity"), default=0.0 if p.get("quantity") is None else None)
+                avg_f = safe_nonneg_float(p.get("averagePrice"), default=0.0 if p.get("averagePrice") is None else None)
+                if q_f is None or avg_f is None:
                     return None
                 return q_f, avg_f
         return 0.0, 0.0   # No holding.
@@ -1320,19 +1287,16 @@ class Strategy:
                 order.get("applied_fill_cost"),
                 order.get("applied_fill_fee"),
             )
-            if any(isinstance(v, bool) for v in raw_vals):
+            cq = safe_nonneg_float(status.filled_qty, default=None)
+            cc = safe_nonneg_float(status.cost, default=None)
+            cf = safe_float(status.fee, default=0.0)
+            aq = safe_nonneg_float(order.get("applied_fill_qty"), default=0.0)
+            ac = safe_nonneg_float(order.get("applied_fill_cost"), default=0.0)
+            af = safe_float(order.get("applied_fill_fee"), default=0.0)
+            if cq is None or cc is None or cf is None or aq is None or ac is None or af is None:
                 continue
-            try:
-                cumulative_qty = float(status.filled_qty or 0.0)
-                cumulative_cost = float(status.cost or 0.0)
-                cumulative_fee = float(status.fee or 0.0)
-                applied_qty = float(order.get("applied_fill_qty") or 0.0)
-                applied_cost = float(order.get("applied_fill_cost") or 0.0)
-                applied_fee = float(order.get("applied_fill_fee") or 0.0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not all(math.isfinite(v) for v in (cumulative_qty, cumulative_cost, cumulative_fee, applied_qty, applied_cost, applied_fee)):
-                continue
+            cumulative_qty, cumulative_cost, cumulative_fee = cq, cc, cf
+            applied_qty, applied_cost, applied_fee = aq, ac, af
             if cumulative_qty + 1e-9 < applied_qty or cumulative_cost + 1e-9 < applied_cost:
                 log(f"  ! [STRAT] fill T212 {order.get('id')} a regresat cumulativ — ignor")
                 continue

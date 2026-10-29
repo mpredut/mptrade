@@ -10341,8 +10341,19 @@ def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypa
     from strategies.spot_replay import run_replay
 
     import dataclasses
-    orig_params = dataclasses.replace(
-        SpotStratParams.from_env(), dca_drop_pct=2.0, reentry_drop_pct=1.0
+    orig_params = SpotStratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.2,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=1.0,
+        takeprofit_pct=2.0,
+        max_budget=1000.0,
+        max_dca_buys=5,
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        reentry_drop_pct=1.0,
     )
     ohlc = [
         (100.0, 101.0, 99.0, 100.0, 1000),
@@ -10377,7 +10388,10 @@ def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypa
     import os
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.setitem(sys.modules, "strategy", sys.modules.get("strategy"))
+    if "strategy" in sys.modules:
+        monkeypatch.setitem(sys.modules, "strategy", sys.modules["strategy"])
+    else:
+        monkeypatch.delitem(sys.modules, "strategy", raising=False)
     spec_hl_r = importlib.util.spec_from_file_location(
         "hl_replay_iter93", os.path.join(root_dir, "hyperliquid", "replay.py")
     )

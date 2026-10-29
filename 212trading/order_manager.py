@@ -385,19 +385,15 @@ def place_order_with_retry(
     if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
         log(f"  ! [ORDER] validity invalid: {validity!r}")
         return False
-    if isinstance(quantity, bool) or isinstance(limit_price, bool) or isinstance(retry_delay, bool):
+    qty_f = safe_pos_float(quantity, default=None)
+    price_f = safe_pos_float(limit_price, default=None)
+    retry_delay_f = safe_nonneg_float(retry_delay, default=None)
+    if qty_f is None or price_f is None or retry_delay_f is None:
         log("  ! [ORDER] parametri numerici invalizi: bool nu este permis")
         return False
-    try:
-        qty_r = round(float(quantity), 2)
-        price_r = round(float(limit_price), 2)
-        retry_delay_f = float(retry_delay)
-    except (TypeError, ValueError, OverflowError) as exc:
-        log(f"  ! [ORDER] parametri numerici invalizi: {exc}")
-        return False
-    if (not math.isfinite(qty_r) or qty_r <= 0
-            or not math.isfinite(price_r) or price_r <= 0
-            or not math.isfinite(retry_delay_f) or retry_delay_f < 0):
+    qty_r = round(qty_f, 2)
+    price_r = round(price_f, 2)
+    if qty_r <= 0 or price_r <= 0:
         log("  ! [ORDER] qty/price/retry_delay must be finite and valid")
         return False
 
