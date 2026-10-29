@@ -130,7 +130,7 @@ def step_wols(series, p):
 
 def exp_steps(series, half_life):
     k = np.arange(1, N_WIN, dtype=np.float64)
-    lam = math.log(2.0) / half_life
+    lam = float(np.log(2.0)) / half_life
     return conv_steps(series, kernel_newest_first(np.exp(lam * (k - (N_WIN - 1)))))
 
 
