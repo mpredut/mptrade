@@ -1043,6 +1043,7 @@ def cancel_existing_ai_open_orders(
     log: Optional[Any] = None,
     *,
     known_ai_order_ids: Optional[set[str]] = None,
+    intents: Optional[list[dict[str, Any]]] = None,
 ) -> list[str]:
     """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
     canceled_ids: list[str] = []
@@ -1056,7 +1057,13 @@ def cancel_existing_ai_open_orders(
             return canceled_ids
         from providers.base import extract_order_id, normalize_side
 
-        ai_oids = known_ai_order_ids or set()
+        ai_oids = set(known_ai_order_ids or ())
+        if isinstance(intents, list):
+            for item in intents:
+                if isinstance(item, dict):
+                    oid_rec = extract_order_id(item.get("execution_payload"), default="")
+                    if oid_rec:
+                        ai_oids.add(str(oid_rec))
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue
@@ -1139,27 +1146,31 @@ def resolve_intent_execution_price(
 ) -> tuple[bool, float, bool]:
     """Validate and resolve MARKET or LIMIT execution price against live_price.
 
-    Returns ``(ok, effective_price, is_limit)``. When ``ok`` is False, mutates ``intent``
-    with ``status='REJECTED_INVALID_LIMIT_PRICE'`` and appends history.
+    Returns ``(ok, effective_price, is_limit)``. When ``order_type == 'LIMIT'`` and
+    ``limit_price`` is missing or outside ``[0.5x, 2.0x]`` of ``live_price``, clamps to a
+    safe passive offset (``0.995 * live_price`` for BUY, ``1.005 * live_price`` for SELL)
+    so valid trading decisions are never left unsent.
     """
     order_type = extract_intent_order_type(intent)
     limit_px = extract_intent_limit_price(intent, default=None)
     if order_type == "LIMIT":
         if limit_px is None or limit_px <= 0 or limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
+            fallback_mult = 0.995 if decision == "BUY" else 1.005
+            price = round(live_price * fallback_mult, 8)
             if log:
                 log.warning(
-                    "[INTENT GATEWAY] Intent %s rejected: invalid or out-of-bounds limit_price %r vs live $%.4g for %s",
-                    intent_id, limit_px, live_price, symbol,
+                    "[INTENT GATEWAY] Intent %s limit_price %r missing or out of [0.5x, 2.0x] bounds vs live $%.4g; "
+                    "using passive fallback $%.4g for %s",
+                    intent_id, limit_px, live_price, price, symbol,
                 )
-            intent["status"] = "REJECTED_INVALID_LIMIT_PRICE"
             append_intent_history(intent, {
                 "ts": now_ts,
-                "action": "REJECTED_INVALID_LIMIT_PRICE",
-                "limit_price": limit_px,
+                "action": "FALLBACK_PASSIVE_LIMIT_PRICE",
+                "requested_limit_price": limit_px,
+                "fallback_limit_price": price,
                 "live_price": live_price,
             })
-            return False, live_price, True
-        if decision == "BUY" and limit_px > live_price:
+        elif decision == "BUY" and limit_px > live_price:
             price = live_price
         elif decision == "SELL" and limit_px < live_price:
             price = live_price
