@@ -12,7 +12,13 @@ from binance.exceptions import BinanceAPIException
 # MYLIB
 from .bapi_client import client
 import symbols as sym
-from botcore import safe_int, safe_pos_int, safe_nonneg_float, safe_pos_float
+from botcore import (
+    safe_int,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 from providers.base import (
     extract_order_price,
     extract_order_qty,
@@ -61,12 +67,8 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
             raise ValueError("symbol must be a non-empty string")
         return []
     symbol = symbol.strip().upper()
-    start_i = safe_int(start_time_ms, default=None)
+    start_i = safe_nonneg_int(start_time_ms, default=None)
     if start_i is None:
-        if strict:
-            raise ValueError("start_time_ms must be a valid timestamp")
-        return []
-    if start_i < 0:
         if strict:
             raise ValueError("start_time_ms must be a finite non-negative timestamp")
         return []
@@ -122,8 +124,8 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
         order_type = _normalize_side(order_type)
         sym.validate_symbols(symbol)
         sym.validate_ordertype(order_type)
-        start_i = safe_int(startTime, default=None)
-        if start_i is None or start_i < 0:
+        start_i = safe_nonneg_int(startTime, default=None)
+        if start_i is None:
             raise ValueError("startTime must be a valid timestamp")
         startTime = start_i
 
