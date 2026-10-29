@@ -31,7 +31,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
     required_int_env, required_bool_env, _parse_bool_flag, safe_float,
-    safe_pos_float, safe_nonneg_float,
+    safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -240,10 +240,12 @@ class StratParams:
             if clean_raw.count(":") == 2 and "," not in clean_raw:
                 try:
                     p_min, p_max, p_steps = clean_raw.split(":")
-                    steps_f = float(p_steps)
-                    if not math.isfinite(steps_f) or not steps_f.is_integer():
+                    steps_i = safe_pos_int(p_steps, default=None)
+                    min_f = safe_float(p_min, default=None)
+                    max_f = safe_float(p_max, default=None)
+                    if steps_i is None or min_f is None or max_f is None:
                         raise ValueError("non-integer or non-finite steps")
-                    _ladder = generate_tp_ladder(float(p_min), float(p_max), int(steps_f), curve=ladder_curve)
+                    _ladder = generate_tp_ladder(min_f, max_f, steps_i, curve=ladder_curve)
                 except (ValueError, OverflowError) as exc:
                     raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
             else:
@@ -254,14 +256,11 @@ class StratParams:
                     if ":" not in _part:
                         raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
                     _lvl, _frac = _part.split(":", 1)
-                    try:
-                        lvl_f = float(_lvl)
-                        frac_f = float(_frac) / 100.0
-                        if not (math.isfinite(lvl_f) and math.isfinite(frac_f)) or lvl_f <= 0.0 or frac_f <= 0.0:
-                            raise ValueError("non-finite or non-positive ladder rung")
-                        _ladder.append((lvl_f, frac_f))
-                    except ValueError as exc:
-                        raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
+                    lvl_f = safe_pos_float(_lvl, default=None)
+                    frac_raw = safe_pos_float(_frac, default=None)
+                    if lvl_f is None or frac_raw is None:
+                        raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
+                    _ladder.append((lvl_f, frac_raw / 100.0))
                 if sum(f for _, f in _ladder) > 1.0 + 1e-6:
                     raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
         elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
@@ -281,13 +280,9 @@ class StratParams:
             _max_dca = max(0, int((_budget - _entry) // _dca)) if _dca > 0 else 0
             _entry = _budget - _max_dca * _dca   # Entry absorbs remainder to cover the full budget.
         elif _mdb:
-            try:
-                _mdb_f = float(_mdb)
-                if not math.isfinite(_mdb_f) or _mdb_f < 0 or not _mdb_f.is_integer():
-                    raise ValueError("invalid STRAT_MAX_DCA_BUYS")
-                _max_dca = int(_mdb_f)
-            except (ValueError, OverflowError) as exc:
-                raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}") from exc
+            _max_dca = safe_nonneg_int(_mdb, default=None)
+            if _max_dca is None:
+                raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}")
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         return cls(
@@ -621,8 +616,7 @@ class Strategy:
         cost = _clean_pos_float(self.s.get("cost_usd"))
         if qty is None or qty <= 1e-9 or cost is None:
             return None
-        avg = cost / qty
-        return avg if (math.isfinite(avg) and avg > 0.0) else None
+        return safe_pos_float(cost / qty, default=None)
 
     def _qty_for_amount(self, amount: float, price: float) -> float:
         amt_f = _clean_pos_float(amount)
@@ -630,8 +624,8 @@ class Strategy:
         fx_f = _clean_pos_float(self.fx_to_usd)
         if amt_f is None or px_f is None or fx_f is None:
             return 0.0
-        usd = amt_f * fx_f
-        return round(usd / px_f, 2) if (math.isfinite(usd) and px_f > 0) else 0.0
+        usd = safe_pos_float(amt_f * fx_f, default=None)
+        return round(usd / px_f, 2) if usd is not None else 0.0
 
     def _has_open(self, side: str) -> bool:
         if isinstance(side, bool):

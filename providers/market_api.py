@@ -12,7 +12,6 @@ those mechanics. Account WebSocket streams remain outside this facade.
 Imports of Binance modules are lazy because ``cacheManager`` imports this module;
 eagerly importing modules that lead back to ``cacheManager`` would create a cycle.
 """
-import math
 import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
@@ -22,6 +21,7 @@ from cachepaths import canonical_symbol_key, normalize_venue_name
 from .base import (
     MarketDataProvider,
     _normalize_order,
+    clean_order_id,
     extract_order_fee,
     extract_order_price,
     extract_order_qty,
@@ -126,23 +126,16 @@ def _resolve_evaluated_at(now: Any) -> float:
 
 
 def _parse_binance_order_id(order_id: Any, context: str) -> int:
-    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set, frozenset)):
+    clean_id = clean_order_id(order_id)
+    if clean_id is None or not clean_id.isdigit():
         raise ProviderError(f"{context}: invalid order id")
-    if isinstance(order_id, float):
-        if not math.isfinite(order_id) or not order_id.is_integer() or order_id <= 0:
-            raise ProviderError(f"{context}: invalid order id")
-        return int(order_id)
-    if isinstance(order_id, int):
-        if order_id <= 0:
-            raise ProviderError(f"{context}: invalid order id")
-        return order_id
-    s = str(order_id).strip()
-    if s.endswith(".0") and s[:-2].lstrip("+").isdigit():
-        s = s[:-2]
     try:
-        oid = int(s)
+        oid = int(clean_id)
     except (ValueError, TypeError, OverflowError) as exc:
         raise ProviderError(f"{context}: invalid order id") from exc
+    if oid <= 0:
+        raise ProviderError(f"{context}: invalid order id")
+    return oid
     if oid <= 0:
         raise ProviderError(f"{context}: invalid order id")
     return oid
@@ -467,8 +460,7 @@ class BinanceProvider(MarketDataProvider):
         is_auto = qty is None or (
             not isinstance(qty, bool)
             and isinstance(qty, (int, float))
-            and math.isinf(qty)
-            and qty > 0
+            and qty == float("inf")
         )
         return _po.apply_weight_limit(
             symbol, side, price,
@@ -879,8 +871,8 @@ class MarketApi:
             if (timestamp < cutoff_ms or timestamp > now_ms + 60_000 or
                     price <= 0 or qty <= 0):
                 continue
-            notional = price * qty
-            if not math.isfinite(notional):
+            notional = safe_pos_float(price * qty, default=None)
+            if notional is None:
                 continue
             if min_value is not None and notional < min_value:
                 continue
@@ -939,28 +931,10 @@ class MarketApi:
 
     @staticmethod
     def _clean_order_id_arg(order_id: Any, provider_name: str) -> str:
-        if order_id is None or isinstance(order_id, bool):
+        clean_id = clean_order_id(order_id)
+        if clean_id is None:
             raise ProviderError(f"{provider_name}: invalid order_id")
-        if isinstance(order_id, float):
-            if not math.isfinite(order_id) or not order_id.is_integer() or order_id <= 0:
-                raise ProviderError(f"{provider_name}: invalid order_id")
-            return str(int(order_id))
-        if isinstance(order_id, int):
-            if order_id <= 0:
-                raise ProviderError(f"{provider_name}: invalid order_id")
-            return str(order_id)
-        if not isinstance(order_id, str):
-            raise ProviderError(f"{provider_name}: invalid order_id")
-        text = order_id.strip()
-        if text.endswith(".0") and text[:-2].lstrip("+-").isdigit():
-            text = text[:-2]
-        if not text or text.startswith("-") or text.lower() in _INVALID_API_ID_STRINGS:
-            raise ProviderError(f"{provider_name}: invalid order_id")
-        if text.lstrip("+").isdigit() and int(text) <= 0:
-            raise ProviderError(f"{provider_name}: invalid order_id")
-        if text.startswith("+") and text[1:].isdigit():
-            text = text[1:]
-        return text
+        return clean_id
 
     def order_status(self, symbol: str, order_id: str, *,
                      provider_name=None) -> OrderStatus:

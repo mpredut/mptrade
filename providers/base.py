@@ -110,7 +110,7 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
     return default
 
 
-def _clean_single_order_id(val: Any) -> Optional[str]:
+def clean_order_id(val: Any) -> Optional[str]:
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, float):
@@ -140,6 +140,9 @@ def _clean_single_order_id(val: Any) -> Optional[str]:
     if text.startswith("+") and text[1:].isdigit():
         text = text[1:]
     return text
+
+
+_clean_single_order_id = clean_order_id
 
 
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
