@@ -21,7 +21,9 @@ from botcore import (
     required_bool_env,
     required_int_env,
     safe_float,
-    safe_pos_float as _clean_pos_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
 )
 from providers.base import normalize_side
 from state_io import (
@@ -85,16 +87,11 @@ def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
         raw = list(manager.cache.get(symbol, []))
     out: List[Tuple[int, float]] = []
     for item in raw:
-        try:
-            ts_raw, p_raw = item[0], item[1]
-            if ts_raw is None or p_raw is None or isinstance(ts_raw, bool) or isinstance(p_raw, bool):
-                continue
-            ts_f = float(ts_raw)
-            p_f = float(p_raw)
-            if math.isfinite(ts_f) and ts_f > 0 and math.isfinite(p_f) and p_f > 0:
-                out.append((int(ts_f), p_f))
-        except (TypeError, ValueError, IndexError, OverflowError):
-            continue
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            ts = safe_pos_int(item[0], default=None)
+            p = safe_pos_float(item[1], default=None)
+            if ts is not None and p is not None:
+                out.append((ts, p))
     return out
 
 
@@ -189,7 +186,7 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
 
 # Weighted moving average (WMA).
 def trend_wma(symbol: str, window_hours: int = 6):
-    window_hours = _clean_pos_float(window_hours, 6.0)
+    window_hours = safe_pos_float(window_hours, 6.0)
     data = priceLstFor(symbol)
     if len(data) < 2:
         return None
@@ -256,10 +253,10 @@ def slope_tolerance_per_(symbol, price,
                               ):
     min_tol = 0.0005
     max_tol = 2000.0
-    price_f = _clean_pos_float(price, None)
+    price_f = safe_pos_float(price, default=None)
     if price_f is None:
         return min_tol
-    base_f = _clean_pos_float(base_tolerance, 0.0015)
+    base_f = safe_pos_float(base_tolerance, 0.0015)
     relative_tolerance = base_f * price_f
     adaptive_tolerance = min(max(relative_tolerance, min_tol), max_tol)
     return adaptive_tolerance
@@ -287,10 +284,10 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
                                 slope_tolerance: float = 0.0028, persistence_factor: float = 1.5,
                                 lookback_days=30, draw: bool = True) -> Optional[dict]:
 
-    window_hours = _clean_pos_float(window_hours, 24.0)
-    step_hours = _clean_pos_float(step_hours, 8.0)
-    persistence_factor = _clean_pos_float(persistence_factor, 1.5)
-    lookback_days = _clean_pos_float(lookback_days, 30.0)
+    window_hours = safe_pos_float(window_hours, 24.0)
+    step_hours = safe_pos_float(step_hours, 8.0)
+    persistence_factor = safe_pos_float(persistence_factor, 1.5)
+    lookback_days = safe_pos_float(lookback_days, 30.0)
     data: List[Tuple[int, float]] = priceLstFor(symbol)
     if len(data) < 2:
         return None
@@ -421,7 +418,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
 
 def format_duration(seconds):
     """Convert seconds to the human-readable ``Xd Yh Zm`` format."""
-    sec_f = _clean_pos_float(seconds, None)
+    sec_f = safe_pos_float(seconds, default=None)
     if sec_f is None:
         return "0m"
     days = int(sec_f // 86400)
@@ -441,14 +438,10 @@ def format_duration(seconds):
 
 def format_timestamp(ts):
     """Convert a timestamp to a human-readable representation."""
-    if ts is None or isinstance(ts, bool):
-        return datetime.fromtimestamp(0).strftime('%Y-%m-%d %H:%M:%S')
+    ts_f = safe_nonneg_float(ts, default=0.0)
     try:
-        ts_f = float(ts)
-        if not math.isfinite(ts_f) or ts_f < 0:
-            ts_f = 0.0
         return datetime.fromtimestamp(ts_f).strftime('%Y-%m-%d %H:%M:%S')
-    except (TypeError, ValueError, OSError, OverflowError):
+    except (ValueError, OSError, OverflowError):
         return datetime.fromtimestamp(0).strftime('%Y-%m-%d %H:%M:%S')
 
 
@@ -712,7 +705,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     # detection_lag_hours models the empirical delay between trend start and
     # detector confirmation. mk_alpha requires current-window Mann-Kendall
     # significance; None disables that filter.
-    lookback_days = _clean_pos_float(lookback_days, 30.0)
+    lookback_days = safe_pos_float(lookback_days, 30.0)
     data: List[Tuple[int, float]] = priceLstFor(symbol)
     if len(data) < 2:
         return None
@@ -794,11 +787,11 @@ def write_all_trends(all_trends, filename=None):
         emoji = "📈" if direction == 'up' else "📉"
         
         start_str = format_timestamp(trend_data.get('start_timestamp', 0))
-        dur_sec = _clean_pos_float(trend_data.get('duration_seconds', 0), 0.0)
+        dur_sec = safe_pos_float(trend_data.get('duration_seconds', 0), 0.0)
         duration_str = format_duration(dur_sec)
         duration_days = dur_sec / 86400
         
-        future_hours = _clean_pos_float(trend_data.get('estimated_future_hours', 0), 0.0)
+        future_hours = safe_pos_float(trend_data.get('estimated_future_hours', 0), 0.0)
         future_str = format_duration(future_hours * 3600)
         future_days = future_hours / 24
         
@@ -903,23 +896,10 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         print(f" No trend in cache for symbol {symbol}.")
         return None
 
-    raw_dur = trend.get("duration_seconds")
-    if raw_dur is None or isinstance(raw_dur, bool):
-        return None
-    try:
-        dur_sec = float(raw_dur)
-        t_quanta_f = float(T_quanta)
-        quant_sec_f = float(quant_seconds)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not (
-        math.isfinite(dur_sec)
-        and dur_sec > 0
-        and math.isfinite(t_quanta_f)
-        and t_quanta_f > 0
-        and math.isfinite(quant_sec_f)
-        and quant_sec_f > 0
-    ):
+    dur_sec = safe_pos_float(trend.get("duration_seconds"), default=None)
+    t_quanta_f = safe_pos_float(T_quanta, default=None)
+    quant_sec_f = safe_pos_float(quant_seconds, default=None)
+    if dur_sec is None or t_quanta_f is None or quant_sec_f is None:
         print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
         return None
 
@@ -932,24 +912,11 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         return None
 
     duration_days = dur_sec / 86400.0
-    raw_start_ts = trend.get("start_timestamp")
-    start_ts_val = 0.0
-    if raw_start_ts is not None and not isinstance(raw_start_ts, bool):
-        try:
-            st_f = float(raw_start_ts)
-            if math.isfinite(st_f):
-                start_ts_val = st_f
-        except (TypeError, ValueError, OverflowError):
-            start_ts_val = 0.0
+    start_ts_val = safe_float(trend.get("start_timestamp"), default=0.0)
     print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
     print(f"   Start trend:     {format_timestamp(start_ts_val)}")
     print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
-    timestamp = trend.get("timestamp")
-    if isinstance(timestamp, bool) or (
-        isinstance(timestamp, (int, float))
-        and (not math.isfinite(float(timestamp)) or float(timestamp) <= 0.0)
-    ):
-        timestamp = None
+    timestamp = safe_pos_float(trend.get("timestamp"), default=None)
     # Include order type, T, and direction in the memo key because their weights differ
     # and automatic T or direction may change after re-estimation.
     memo_key = (
@@ -1028,21 +995,18 @@ last_duration = {}
 def get_trade_weight(T, trend_len, trend, order_type,
                      exceed_percent=0.4, max_against_trend=0.15,
                      peak_weight=0.95, min_weight=0.02, lindy_plateau=True):
-    if isinstance(T, bool) or isinstance(trend_len, bool) or not isinstance(order_type, str) or not isinstance(trend, str):
+    if not isinstance(order_type, str) or not isinstance(trend, str):
         return np.array([]), np.array([])
-    try:
-        T_f = float(T)
-        trend_len_f = float(trend_len)
-    except (TypeError, ValueError, OverflowError):
-        return np.array([]), np.array([])
-    if not (math.isfinite(T_f) and T_f > 0 and math.isfinite(trend_len_f) and trend_len_f >= 0):
+    T_f = safe_pos_float(T, default=None)
+    trend_len_f = safe_nonneg_float(trend_len, default=None)
+    if T_f is None or trend_len_f is None:
         return np.array([]), np.array([])
     T = T_f
     trend_len = trend_len_f
-    exceed_percent = max(0.0, safe_float(exceed_percent, 0.4))
-    max_against_trend = max(0.0, safe_float(max_against_trend, 0.15))
-    peak_weight = max(0.0, safe_float(peak_weight, 0.95))
-    min_weight = max(0.0, safe_float(min_weight, 0.02))
+    exceed_percent = safe_nonneg_float(exceed_percent, 0.4)
+    max_against_trend = safe_nonneg_float(max_against_trend, 0.15)
+    peak_weight = safe_nonneg_float(peak_weight, 0.95)
+    min_weight = safe_nonneg_float(min_weight, 0.02)
     side_u = normalize_side(order_type)
     if side_u not in ("BUY", "SELL"):
         return np.array([]), np.array([])
