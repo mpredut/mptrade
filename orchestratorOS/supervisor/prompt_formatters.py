@@ -76,10 +76,11 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
 
 def _format_macro_and_news_section(sensors: Any) -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
-    fg = sensors.fear_greed or {}
-    mb = sensors.market_breadth or {}
-    sa = sensors.sentiment_advisor or {}
-    gt = sensors.geopolitical_threat or {}
+    macro = getattr(sensors, "macro_and_sentiment", None) or {}
+    fg = getattr(sensors, "fear_greed", None) or macro.get("fear_greed") or {}
+    mb = getattr(sensors, "market_breadth", None) or macro.get("market_breadth") or {}
+    sa = getattr(sensors, "sentiment_advisor", None) or macro.get("sentiment_advisor") or {}
+    gt = getattr(sensors, "geopolitical_threat", None) or macro.get("geopolitical") or {}
 
     fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
     fg_line = (
@@ -110,7 +111,8 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
     )
     gt_line = (
         f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
-        f"brake={gt.get('recommended_brake', 'N/A')}"
+        f"brake={gt.get('recommended_brake', 'N/A')} "
+        "(advisory volatility signal for legacy bots only — NOT a binding prohibition on your contrarian dip/scale-in buys)"
         + (f", age={gt.get('age_min')}m" if gt.get("age_min") is not None else "")
         + f" | summary={gt.get('summary', '')}"
         if gt else "None"
@@ -122,9 +124,10 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         f"- Macro Sentiment Advisor: {sa_line}",
         f"- Geopolitical Threat Shield: {gt_line}",
     ]
-    if sensors.breaking_news:
+    breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
+    if breaking_news:
         lines.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
-        for hn in sensors.breaking_news:
+        for hn in breaking_news:
             sev_tag = "[HIGH-SEV] " if hn.get("is_high_severity") else ""
             kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
             age_sfx = f" (age={hn.get('age_min')}m)" if hn.get("age_min") is not None else ""
@@ -276,6 +279,22 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                     pos15_sfx = f" pos_15m={pinfo['pos_15m_pct']}%" if pinfo.get("pos_15m_pct") is not None else ""
                     tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
                 extras.append(tape_str)
+        if (
+            pinfo.get("poc_px") is not None
+            and pinfo.get("val_px") is not None
+            and pinfo.get("vah_px") is not None
+        ):
+            poc_d = _parse_finite_float(pinfo.get("poc_dist_pct"), 0.0)
+            val_d = _parse_finite_float(pinfo.get("val_dist_pct"), 0.0)
+            vah_d = _parse_finite_float(pinfo.get("vah_dist_pct"), 0.0)
+            va_pos = pinfo.get("va_pos_pct")
+            va_reg = pinfo.get("va_regime") or "INSIDE_VA"
+            extras.append(
+                f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%], "
+                f"VAL={pinfo.get('val_px')}[{val_d:+.2f}%], "
+                f"VAH={pinfo.get('vah_px')}[{vah_d:+.2f}%], "
+                f"va_pos={va_pos}%, regime={va_reg})"
+            )
 
         if not sym.endswith(("_EQ", "_US_EQ")) and canonical_base_asset(sym) != "BTC":
             vs_btc_parts: List[str] = []
@@ -420,6 +439,35 @@ def _format_microstructure_section(
             cur_px = ob_mid
         bw_dist = f", dist={(bw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and bw_px_f > 0 else ""
         aw_dist = f", dist={(aw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and aw_px_f > 0 else ""
+        spread_sfx = ""
+        if minfo.get("spread_bps") is not None:
+            b_bid = _parse_finite_float(minfo.get("best_bid"), 0.0)
+            b_ask = _parse_finite_float(minfo.get("best_ask"), 0.0)
+            ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
+            spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}"
+
+        def _fmt_liq_usd(val: Any) -> str:
+            vf = _parse_finite_float(val, 0.0)
+            if vf >= 1_000_000.0:
+                return f"${vf / 1_000_000.0:.2f}M"
+            if vf >= 1_000.0:
+                return f"${vf / 1_000.0:.1f}K"
+            return f"${vf:.0f}"
+
+        liq_sfx = ""
+        if minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+            ll_d = _parse_finite_float(minfo.get("long_liq_dist_pct"), 0.0)
+            sl_d = _parse_finite_float(minfo.get("short_liq_dist_pct"), 0.0)
+            lld_d = _parse_finite_float(minfo.get("long_liq_deep_dist_pct"), 0.0)
+            sld_d = _parse_finite_float(minfo.get("short_liq_deep_dist_pct"), 0.0)
+            liq_sfx = (
+                f", liq_clusters("
+                f"long_liq=${minfo.get('long_liq_px')}[{_fmt_liq_usd(minfo.get('long_liq_usd'))}, {ll_d:+.2f}%], "
+                f"short_liq=${minfo.get('short_liq_px')}[{_fmt_liq_usd(minfo.get('short_liq_usd'))}, {sl_d:+.2f}%], "
+                f"deep_long=${minfo.get('long_liq_deep_px')}[{_fmt_liq_usd(minfo.get('long_liq_deep_usd'))}, {lld_d:+.2f}%], "
+                f"deep_short=${minfo.get('short_liq_deep_px')}[{_fmt_liq_usd(minfo.get('short_liq_deep_usd'))}, {sld_d:+.2f}%], "
+                f"magnet={minfo.get('liq_magnet_bias')})"
+            )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
@@ -429,7 +477,7 @@ def _format_microstructure_section(
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
             f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}), "
             f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-            f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+            f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{spread_sfx}{liq_sfx}"
         )
     return lines
 
@@ -477,11 +525,40 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
                 t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
             if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
                 t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
-            fee_bps = (
+            default_taker = (
                 10 if pos.get("venue") == "binance"
                 else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
             )
-            t_extra += f", venue_fee_per_leg={fee_bps}bps"
+            default_maker = (
+                10 if pos.get("venue") == "binance"
+                else (16 if pos.get("venue") == "kraken" else (4 if pos.get("venue") == "hyperliquid" else 15))
+            )
+            taker_bps = _parse_finite_float(pos.get("taker_fee_bps"), default_taker)
+            maker_bps = _parse_finite_float(pos.get("maker_fee_bps"), default_maker)
+            fee_tier = pos.get("fee_tier") or (
+                "VIP0" if pos.get("venue") == "binance"
+                else ("PRO_TIER0" if pos.get("venue") == "kraken" else ("SPOT_TIER0" if pos.get("venue") == "hyperliquid" else "INVEST_RTH"))
+            )
+            sp_part = f", spread={pos.get('spread_bps')}bps" if pos.get("spread_bps") is not None else ""
+            t_extra += (
+                f", venue_fee_per_leg={taker_bps:g}bps "
+                f"(tier={fee_tier}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
+            )
+            lim_parts: List[str] = []
+            if pos.get("exchange_min_notional_usd") is not None:
+                lim_parts.append(f"min_notional=${_parse_finite_float(pos.get('exchange_min_notional_usd'), 0.0):g}")
+            if pos.get("min_qty") is not None:
+                lim_parts.append(f"min_qty={pos.get('min_qty')}")
+            if pos.get("step_size") is not None:
+                lim_parts.append(f"step={pos.get('step_size')}")
+            if pos.get("tick_size") is not None:
+                lim_parts.append(f"tick={pos.get('tick_size')}")
+            if pos.get("effective_max_buy_usd") is not None:
+                lim_parts.append(f"max_buy=${pos.get('effective_max_buy_usd')}")
+            if pos.get("effective_max_sell_usd") is not None:
+                lim_parts.append(f"max_sell=${pos.get('effective_max_sell_usd')}")
+            if lim_parts:
+                t_extra += f", limits({', '.join(lim_parts)})"
             fb_val = pos.get("free_base")
             val_usd = pos.get("value_usd")
             fb_str = (
@@ -571,13 +648,18 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
 def build_supervisor_prompt(
     sensors: Any,
     logs: Any,
-    spec: Any,
-    lookback_hours: float,
+    spec: Any = None,
+    lookback_hours: float = 1.0,
     focus_symbols: Optional[List[str]] = None,
     *,
     min_usd: float = 10.0,
     max_usd: float = 2000.0,
     min_conf: float = 0.85,
+    topic_key: Optional[str] = None,
+    min_notional_usd: Optional[float] = None,
+    max_notional_usd: Optional[float] = None,
+    min_confidence: Optional[float] = None,
+    **_extra: Any,
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
     from orchestratorOS.lib.technical_repair_ssot import (
@@ -587,19 +669,33 @@ def build_supervisor_prompt(
         DIAGNOSED_SEVERITIES,
     )
 
+    if spec is None:
+        from orchestratorOS.agy.topics import get_topic_spec
+
+        spec = get_topic_spec(topic_key or "auto_cryptotrade_executor")
+    if min_notional_usd is not None:
+        min_usd = float(min_notional_usd)
+    if max_notional_usd is not None:
+        max_usd = float(max_notional_usd)
+    if min_confidence is not None:
+        min_conf = float(min_confidence)
+
     is_pure_sre = bool(spec.can_self_heal and not spec.can_trade)
     context_items: List[str] = []
     if not is_pure_sre:
         context_items.extend(_format_macro_and_news_section(sensors))
     if spec.can_self_heal:
         context_items.extend(_format_sre_and_fleet_section(sensors, logs, lookback_hours))
-    if not is_pure_sre and sensors.prices_and_trends:
-        context_items.extend(_format_market_prices_section(sensors.prices_and_trends))
-    if not is_pure_sre and sensors.microstructure:
-        context_items.extend(_format_microstructure_section(sensors.microstructure, sensors.prices_and_trends))
-    if not is_pure_sre and sensors.portfolio_summary:
+    prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
+    microstructure = getattr(sensors, "microstructure", None) or {}
+    portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
+    if not is_pure_sre and prices_and_trends:
+        context_items.extend(_format_market_prices_section(prices_and_trends))
+    if not is_pure_sre and microstructure:
+        context_items.extend(_format_microstructure_section(microstructure, prices_and_trends))
+    if not is_pure_sre and portfolio_summary:
         context_items.extend(
-            _format_portfolio_section(sensors.portfolio_summary, getattr(spec, "asset_scope", "all"))
+            _format_portfolio_section(portfolio_summary, getattr(spec, "asset_scope", "all"))
         )
     if not is_pure_sre and focus_symbols:
         raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
@@ -670,6 +766,24 @@ def build_supervisor_prompt(
             "fixed slices when conviction or profitability is clear: when a position is clearly in profit (e.g. above "
             "`active_avg_buy_px` / `last_buy_px` or after a strong upward swing), you are completely free to sell a large "
             f"quantity or the entire profitable position (`50%–100%` of `value_usd`, up to {max_usd:g} USD) at once.\n"
+            "   - CONTRARIAN DIP ACCUMULATION & ADVISORY STATUS OF MACRO/GEOPOLITICAL LABELS: Categorical labels such as "
+            "`brake=HARD_VETO_NEW_BUYS`, `level=CRITICAL_SHOCK`, `EXTREME_FEAR`, or compressed breadth (`advance_ratio < 0.20`) "
+            "emitted by the Geopolitical Threat Shield or Macro Sentiment Advisor are strictly advisory high-volatility warnings "
+            "aimed at legacy deterministic bots—they are NEVER a binding prohibition on you. Paradoxically, the highest-EV "
+            "mean-reversion buying opportunities (capitulation dips, liquidation cascades, oversold support tests) occur precisely "
+            "when `advance_ratio < 0.20`, fear is extreme, and `HARD_VETO_NEW_BUYS` is active. Whenever you identify strong "
+            "microstructure absorption or support defense (e.g. a large `bid_wall` / positive `ob_imbalance`, `taker_ratio > 1.3`, "
+            "seller exhaustion at 24h/7d/cycle support, and ample dry powder), you are explicitly authorized and encouraged to "
+            "override `HARD_VETO_NEW_BUYS` and execute contrarian dip accumulation (scale-in) in controlled small/medium tranches "
+            "($200–$500 USD).\n"
+            "   - DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Because intra-cycle "
+            "wicks between 10-minute evaluations can touch key support or resistance levels and bounce before the next cycle, "
+            "you may submit either immediate market orders (`\"order_type\": \"MARKET\"`, `\"limit_price\": null`) OR passive resting "
+            "limit orders (`\"order_type\": \"LIMIT\"`, `\"limit_price\": <float>`, `\"replace_open_orders\": true`) in the exchange "
+            "orderbook (e.g. resting a passive `BUY LIMIT` at a major `bid_wall` / support level below spot with $200–$500 tranches, "
+            "or a passive `SELL LIMIT` at an `ask_wall` / take-profit target above spot). Setting `\"replace_open_orders\": true` "
+            "automatically cancels any prior unfilled AI limit order on the same symbol and side before placing the updated order; "
+            "returning `'HOLD'` leaves existing resting open orders untouched in the book.\n"
             f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
             f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
             "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
@@ -677,8 +791,8 @@ def build_supervisor_prompt(
         )
         schema.append(
             f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
-            f'"venue": {venue_schema}, "confidence": 0.90, '
-            f'"suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
+            f'"venue": {venue_schema}, "order_type": "MARKET" | "LIMIT", "limit_price": null, "replace_open_orders": false, '
+            f'"confidence": 0.90, "suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
         )
 
     if spec.can_self_heal:

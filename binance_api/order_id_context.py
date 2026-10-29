@@ -36,10 +36,11 @@ for _pfx, _bot in (
     ("MO_MT", "monitortrades"), ("MO_SD", "spot_dca"),
     ("TA_OR", "tradeall"), ("MN_OR", "manual"), ("MO_OR", "monitororder"),
     ("RT_OR", "rtrade"), ("MT_OR", "monitortrades"), ("SD_OR", "spot_dca"),
-    ("AG_OR", "assetguardian"),
+    ("AG_OR", "assetguardian"), ("AI_OR", "ai_executor"),
     ("RT", "rtrade"), ("TA", "tradeall"), ("MO", "monitororder"),
     ("MT", "monitortrades"), ("SD", "spot_dca"), ("AG", "assetguardian"),
     ("MN", "manual"), ("OR", "order_retry"), ("SRV", "server"),
+    ("AI", "ai_executor"),
 ):
     BOT_PREFIX_MAP[f"{_pfx}_"] = _bot
     BOT_PREFIX_MAP[_pfx] = _bot

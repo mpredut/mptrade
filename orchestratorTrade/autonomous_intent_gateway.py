@@ -83,6 +83,9 @@ class TradeIntentRecord:
     venue: str                             # "binance" | "kraken" | "hyperliquid" | "t212"
     confidence: float
     suggested_notional_usd: float
+    order_type: str = "MARKET"             # "MARKET" | "LIMIT"
+    limit_price: Optional[float] = None
+    replace_open_orders: bool = False
     urgency: str = "NORMAL"
     thesis: str = ""
     status: str = "PENDING"                # "PENDING" | "OBSERVED_SHADOW" | "EXECUTED" | "BLOCKED_BY_GUARD" | "REJECTED_LOW_CONFIDENCE" | "REJECTED_UNKNOWN_INSTRUMENT" | "FAILED"
@@ -116,14 +119,19 @@ from instruments_config import (
 from intelligence.macro_sentiment_ssot import clean_scale, clean_symbol_key
 from providers.execution_audit import (
     append_intent_history as _append_intent_history,
+    cancel_existing_ai_open_orders,
     execute_enforce_intent_order,
+    extract_intent_limit_price as _extract_intent_limit_price,
     extract_intent_notional as _extract_intent_notional,
+    extract_intent_order_type as _extract_intent_order_type,
     extract_intent_side as _extract_intent_side,
     generate_unique_intent_id,
+    normalize_intent_fields,
     parse_intent_confidence as _parse_intent_confidence,
     reconcile_intents_from_execution_audit,
     record_shadow_intent_observation,
     resolve_intent_topic_tag,
+    validate_and_build_intent_dict,
 )
 
 _norm_sym = clean_symbol_key
@@ -315,23 +323,8 @@ class AutonomousIntentGateway:
             mode = self.mode
         else:
             mode = str(mode)
-        raw_iid = intent.get("intent_id")
-        if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
-            raw_iid = intent.get("id")
-        if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
-            raw_iid = f"intent_{int(time.time())}"
-        intent_id = str(raw_iid).strip()
-        decision = _extract_intent_side(intent)
-        raw_sym = intent.get("symbol", "")
-        symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
-        raw_venue = intent.get("venue", "binance")
-        if isinstance(raw_venue, bool):
-            venue = "__invalid__"
-        elif raw_venue is None or not str(raw_venue).strip():
-            venue = "binance"
-        else:
-            venue = normalize_venue_name(str(raw_venue)) or str(raw_venue).strip().lower()
         now = time.time()
+        intent_id, decision, symbol, venue = normalize_intent_fields(intent, now)
 
         if decision not in ("BUY", "SELL"):
             intent["status"] = "REJECTED_INVALID_DECISION"
@@ -369,14 +362,48 @@ class AutonomousIntentGateway:
         suggested_usd = _extract_intent_notional(intent, self.max_notional_usd)
         effective_usd = max(self.min_notional_usd, min(suggested_usd, self.max_notional_usd))
 
-        price = safe_pos_float(self._get_live_price(inst), default=None)
-        if price is None:
+        live_price = safe_pos_float(self._get_live_price(inst), default=None)
+        if live_price is None:
             logger.warning("[INTENT GATEWAY] Intent %s rejected: invalid price for %s", intent_id, symbol)
             intent["status"] = "REJECTED_PRICE_UNAVAILABLE"
             _append_intent_history(intent, {
                 "ts": now, "action": "REJECTED_PRICE_UNAVAILABLE", "symbol": symbol
             })
             return intent
+
+        order_type = _extract_intent_order_type(intent)
+        limit_px = _extract_intent_limit_price(intent, default=None)
+        is_limit = bool(order_type == "LIMIT" and limit_px is not None and limit_px > 0)
+        if is_limit:
+            if limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
+                logger.warning(
+                    "[INTENT GATEWAY] Intent %s rejected: limit_price $%.4g out of [0.5x, 2.0x] bounds vs live $%.4g for %s",
+                    intent_id, limit_px, live_price, symbol,
+                )
+                intent["status"] = "REJECTED_INVALID_LIMIT_PRICE"
+                _append_intent_history(intent, {
+                    "ts": now,
+                    "action": "REJECTED_INVALID_LIMIT_PRICE",
+                    "limit_price": limit_px,
+                    "live_price": live_price,
+                })
+                return intent
+            if decision == "BUY" and limit_px > live_price:
+                price = live_price
+            elif decision == "SELL" and limit_px < live_price:
+                price = live_price
+            else:
+                price = limit_px
+            intent["order_type"] = "LIMIT"
+            intent["limit_price"] = price
+        else:
+            price = live_price
+            intent["order_type"] = "MARKET"
+
+        if mode == "enforce" and _parse_bool_flag(intent.get("replace_open_orders"), default=False):
+            canceled_ids = self._cancel_existing_ai_open_orders(inst, decision)
+            if canceled_ids:
+                intent["canceled_prior_open_orders"] = canceled_ids
 
         # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Strategy or Daily-Cap Guards):
         # Clamp desired notional strictly to real spot wallet free liquidity.
@@ -410,6 +437,7 @@ class AutonomousIntentGateway:
                 thesis=thesis,
                 trade_tag=trade_tag,
                 now_ts=now,
+                is_limit=is_limit,
                 dispatch_notify_fn=self._dispatch_notify,
                 log=logger,
             )
@@ -439,9 +467,14 @@ class AutonomousIntentGateway:
             trade_tag=trade_tag,
             now_ts=now,
             bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+            is_limit=is_limit,
             dispatch_notify_fn=self._dispatch_notify,
             log=logger,
         )
+
+    def _cancel_existing_ai_open_orders(self, inst: Any, side: str) -> List[str]:
+        """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
+        return cancel_existing_ai_open_orders(inst, side, log=logger)
 
     def submit(
         self,
@@ -451,57 +484,21 @@ class AutonomousIntentGateway:
         max_mode: str,
         instruments_map: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Single linear entry point for autonomous LLM trade decisions.
-
-        Validates confidence and symbol/venue, clamps the USD notional, persists the intent, and
-        processes it immediately in the more restrictive of the gateway mode and ``max_mode``
-        (the producer's own mode), so a shadow producer can never trigger a live order.
-        """
-        if not isinstance(decision, dict):
-            return None
-        side = _extract_intent_side(decision)
-        if side not in ("BUY", "SELL"):
-            raw_dec = str(decision.get("decision") or decision.get("action") or decision.get("side") or "HOLD").strip().upper() or "HOLD"
-            logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, raw_dec)
-            return None
-        raw_sym = decision.get("symbol", "")
-        symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
-        raw_venue = decision.get("venue", "")
-        venue = "" if isinstance(raw_venue, bool) or raw_venue is None else normalize_venue_name(str(raw_venue))
-        if not symbol or not venue:
-            logger.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
-            return None
-        confidence = _parse_intent_confidence(decision.get("confidence"), 0.0)
-        if confidence < self.min_confidence:
-            logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
-                        source, side, symbol, confidence, self.min_confidence)
-            return None
-        notional = _extract_intent_notional(decision, self.max_notional_usd)
-        notional = max(self.min_notional_usd, min(notional, self.max_notional_usd))
-
+        """Single linear entry point for autonomous LLM trade decisions."""
         now = time.time()
         intents = self.load_all_intents()
-        intent_id = generate_unique_intent_id(now, side, symbol, intents)
-        raw_urg = decision.get("urgency", "NORMAL")
-        urgency = (
-            "NORMAL"
-            if isinstance(raw_urg, bool) or raw_urg is None or not str(raw_urg).strip()
-            else str(raw_urg).strip().upper()
+        intent = validate_and_build_intent_dict(
+            decision,
+            source=source,
+            min_confidence=self.min_confidence,
+            min_notional_usd=self.min_notional_usd,
+            max_notional_usd=self.max_notional_usd,
+            existing_intents=intents,
+            now_ts=now,
+            log=logger,
         )
-        raw_thesis = decision.get("thesis", "")
-        thesis = "" if isinstance(raw_thesis, bool) or raw_thesis is None else str(raw_thesis).strip()
-        intent = asdict(TradeIntentRecord(
-            intent_id=intent_id,
-            timestamp=now,
-            decision=side,
-            symbol=symbol,
-            venue=venue,
-            confidence=confidence,
-            suggested_notional_usd=notional,
-            urgency=urgency,
-            thesis=thesis,
-            created_by=str(source or "").strip(),
-        ))
+        if intent is None:
+            return None
         intents.append(intent)
         self.save_all_intents(intents)
         norm_max_mode = (

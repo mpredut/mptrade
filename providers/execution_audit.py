@@ -545,10 +545,13 @@ def summarize_recent_ai_intents(
             "decision": i.get("decision"),
             "symbol": i.get("symbol"),
             "venue": normalize_venue_name(i.get("venue")) or i.get("venue"),
+            "order_type": i.get("order_type") or "MARKET",
             "status": i.get("status"),
             "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
             "ts": i.get("timestamp"),
         }
+        if i.get("limit_price") is not None:
+            intent_summary["limit_price"] = i.get("limit_price")
         if ts_val > 0 and now_ts >= ts_val:
             intent_summary["age_h"] = round((now_ts - ts_val) / 3600.0, 2)
         recent_intents_out.append(intent_summary)
@@ -581,6 +584,37 @@ def extract_intent_notional(data: dict[str, Any], default: Any = None) -> Any:
     if isinstance(raw_notional, str):
         raw_notional = _CURRENCY_STRIP_RE.sub("", raw_notional).strip()
     return safe_pos_float(raw_notional, default)
+
+
+def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
+    """Extract and parse positive passive limit price across aliases and currency strings."""
+    if not isinstance(data, dict):
+        return default
+    raw_px = data.get("limit_price")
+    if raw_px is None:
+        for pk in ("target_price", "order_price", "limit_px"):
+            if data.get(pk) is not None:
+                raw_px = data.get(pk)
+                break
+        if raw_px is None and str(data.get("order_type") or data.get("type") or "").strip().upper() == "LIMIT":
+            raw_px = data.get("price")
+    if isinstance(raw_px, str):
+        raw_px = _CURRENCY_STRIP_RE.sub("", raw_px).strip()
+    return safe_pos_float(raw_px, default)
+
+
+def extract_intent_order_type(data: dict[str, Any]) -> str:
+    """Resolve normalized order execution type ('MARKET' or 'LIMIT') for an intent."""
+    if not isinstance(data, dict):
+        return "MARKET"
+    raw_type = data.get("order_type") or data.get("type")
+    norm_type = "" if isinstance(raw_type, bool) or raw_type is None else str(raw_type).strip().upper()
+    limit_px = extract_intent_limit_price(data, default=None)
+    if norm_type == "MARKET":
+        return "MARKET"
+    if norm_type == "LIMIT" or limit_px is not None:
+        return "LIMIT" if limit_px is not None else "MARKET"
+    return "MARKET"
 
 
 def parse_intent_confidence(raw_conf: Any, default: float = 0.0) -> float:
@@ -624,6 +658,13 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
             extracted_usd = extract_intent_notional(d, default=None)
             if extracted_usd is not None:
                 d["suggested_notional_usd"] = extracted_usd
+            limit_px = extract_intent_limit_price(d, default=None)
+            order_type = extract_intent_order_type(d)
+            d["order_type"] = order_type
+            if limit_px is not None and order_type == "LIMIT":
+                d["limit_price"] = limit_px
+            if "replace_open_orders" in d:
+                d["replace_open_orders"] = _parse_bool_flag(d.get("replace_open_orders"), False)
             candidates.append(d)
 
     def _sort_key(d: dict[str, Any]) -> tuple[int, float]:
@@ -696,18 +737,20 @@ def record_shadow_intent_observation(
     thesis: str,
     trade_tag: str,
     now_ts: float,
+    is_limit: bool = False,
     dispatch_notify_fn: Optional[Callable[..., Any]] = None,
     log: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Record a shadow-mode intent observation and dispatch notification."""
+    ord_lbl = f"{decision} LIMIT" if is_limit else decision
     if log:
         log.info(
             "[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=$%.2f) on %s. Thesis: %s",
-            decision, inst.symbol, target_qty, price, effective_usd, inst.provider_name, thesis,
+            ord_lbl, inst.symbol, target_qty, price, effective_usd, inst.provider_name, thesis,
         )
-    title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {decision} {inst.symbol} ${effective_usd:.0f}"
+    title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {ord_lbl} {inst.symbol} ${effective_usd:.0f}"
     body = (
-        f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
+        f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} ({'LIMIT' if is_limit else 'MARKET'})\n"
         f"Confidence: {confidence:.2f} · Notional: ${effective_usd:.2f}\n"
         f"Operational Preflight: {'PASSED' if guard_allowed else guard_reason}\n"
         f"Thesis: {thesis}"
@@ -716,7 +759,7 @@ def record_shadow_intent_observation(
         dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
     intent["status"] = "OBSERVED_SHADOW"
-    append_intent_history(intent, {
+    hist_entry: dict[str, Any] = {
         "ts": now_ts,
         "action": "OBSERVED_SHADOW",
         "guard_allowed": guard_allowed,
@@ -724,7 +767,11 @@ def record_shadow_intent_observation(
         "price": price,
         "qty": target_qty,
         "notional_usd": effective_usd,
-    })
+    }
+    if is_limit:
+        hist_entry["order_type"] = "LIMIT"
+        hist_entry["limit_price"] = price
+    append_intent_history(intent, hist_entry)
     return intent
 
 
@@ -743,17 +790,19 @@ def execute_enforce_intent_order(
     trade_tag: str,
     now_ts: float,
     bypass_guards: Any,
+    is_limit: bool = False,
     dispatch_notify_fn: Optional[Callable[..., Any]] = None,
     log: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Execute an enforce-mode trade intent via Instrument.place with 1 retry on stale account cache."""
+    ord_lbl = f"{decision} LIMIT" if is_limit else decision
     if not guard_allowed:
         if log:
             log.warning(
                 "[LLM TRADER · ENFORCE] Operational guard blocked %s %s: %s",
-                decision, inst.symbol, guard_reason,
+                ord_lbl, inst.symbol, guard_reason,
             )
-        title = f"🛡 {trade_tag} BLOCKED {decision} {inst.symbol}"
+        title = f"🛡 {trade_tag} BLOCKED {ord_lbl} {inst.symbol}"
         body = (
             f"Venue: {inst.provider_name} · Price: ${price:,.2f} · Notional: ${effective_usd:.0f}\n"
             f"Reason: {guard_reason}\n"
@@ -775,8 +824,8 @@ def execute_enforce_intent_order(
 
     if log:
         log.warning(
-            "[LLM TRADER · ENFORCE] Executing %s %s (qty=%g, notional=$%.2f) on %s...",
-            decision, inst.symbol, target_qty, effective_usd, inst.provider_name,
+            "[LLM TRADER · ENFORCE] Executing %s %s (qty=%g, price=$%.2f, notional=$%.2f) on %s...",
+            ord_lbl, inst.symbol, target_qty, price, effective_usd, inst.provider_name,
         )
 
     try:
@@ -785,19 +834,22 @@ def execute_enforce_intent_order(
         order_res = None
         for attempt in range(2):
             outcome_ctx.clear()
-            order_res = inst.place(
-                side=decision,
-                qty=target_qty,
-                price=price,
-                market=True,
-                enforce_business_minimum=False,
-                wait_for_trend=False,
-                intent_id=intent_id,
-                client_order_id=intent_cid,
-                regime_context=None,
-                bypass_guards=bypass_guards,
-                _outcome_context=outcome_ctx,
-            )
+            place_kwargs: dict[str, Any] = {
+                "side": decision,
+                "qty": target_qty,
+                "price": price,
+                "market": not is_limit,
+                "enforce_business_minimum": False,
+                "wait_for_trend": False,
+                "intent_id": intent_id,
+                "client_order_id": intent_cid,
+                "regime_context": None,
+                "bypass_guards": bypass_guards,
+                "_outcome_context": outcome_ctx,
+            }
+            if is_limit:
+                place_kwargs["smart"] = False
+            order_res = inst.place(**place_kwargs)
             if (
                 order_res
                 or attempt > 0
@@ -810,17 +862,19 @@ def execute_enforce_intent_order(
                 break
             time.sleep(0.25)
         if order_res:
-            from providers.base import extract_order_id
+            from providers.base import extract_order_id, normalize_side
 
             if log:
                 log.info(
                     "[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
-                    decision, inst.symbol, order_res,
+                    ord_lbl, inst.symbol, order_res,
                 )
-            title = f"🚀 {trade_tag} EXECUTED {decision} {inst.symbol} ${effective_usd:.0f}"
+            act_verb = "PLACED LIMIT" if is_limit else "EXECUTED"
+            title = f"🚀 {trade_tag} {act_verb} {decision} {inst.symbol} ${effective_usd:.0f}"
             order_id_str = extract_order_id(order_res, default="N/A")
             body = (
-                f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} (${effective_usd:,.0f})\n"
+                f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} "
+                f"({'LIMIT' if is_limit else 'MARKET'} · ${effective_usd:,.0f})\n"
                 f"Order ID: {order_id_str}\n"
                 f"Thesis: {thesis}"
             )
@@ -829,12 +883,16 @@ def execute_enforce_intent_order(
 
             intent["status"] = "EXECUTED"
             intent["execution_payload"] = order_res
-            append_intent_history(intent, {
+            hist_exec: dict[str, Any] = {
                 "ts": now_ts,
                 "action": "EXECUTED",
                 "notional_usd": effective_usd,
                 "payload": order_res,
-            })
+            }
+            if is_limit:
+                hist_exec["order_type"] = "LIMIT"
+                hist_exec["limit_price"] = price
+            append_intent_history(intent, hist_exec)
         else:
             refusal_reason = str(outcome_ctx.get("reason") or "Instrument.place returned None")
             refusal_cat = str(outcome_ctx.get("category") or "")
@@ -873,6 +931,154 @@ def execute_enforce_intent_order(
         })
 
     return intent
+
+
+def normalize_intent_fields(
+    intent: dict[str, Any],
+    now_ts: float,
+) -> tuple[str, str, str, str]:
+    """Extract and normalize (intent_id, decision, symbol, venue) from an intent dict."""
+    from cachepaths import normalize_venue_name
+
+    raw_iid = intent.get("intent_id")
+    if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
+        raw_iid = intent.get("id")
+    if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
+        raw_iid = f"intent_{int(now_ts)}"
+    intent_id = str(raw_iid).strip()
+    decision = extract_intent_side(intent)
+    raw_sym = intent.get("symbol", "")
+    symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
+    raw_venue = intent.get("venue", "binance")
+    if isinstance(raw_venue, bool):
+        venue = "__invalid__"
+    elif raw_venue is None or not str(raw_venue).strip():
+        venue = "binance"
+    else:
+        venue = normalize_venue_name(str(raw_venue)) or str(raw_venue).strip().lower()
+    return intent_id, decision, symbol, venue
+
+
+def validate_and_build_intent_dict(
+    decision: dict[str, Any],
+    *,
+    source: str,
+    min_confidence: float,
+    min_notional_usd: float,
+    max_notional_usd: float,
+    existing_intents: list[dict[str, Any]],
+    now_ts: float,
+    log: Optional[Any] = None,
+) -> Optional[dict[str, Any]]:
+    """Validate an LLM trading decision and build a canonical TradeIntentRecord dict, or return None if non-actionable."""
+    from cachepaths import normalize_venue_name
+
+    if not isinstance(decision, dict):
+        return None
+    side = extract_intent_side(decision)
+    if side not in ("BUY", "SELL"):
+        raw_dec = (
+            str(decision.get("decision") or decision.get("action") or decision.get("side") or "HOLD").strip().upper()
+            or "HOLD"
+        )
+        if log:
+            log.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, raw_dec)
+        return None
+    raw_sym = decision.get("symbol", "")
+    symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()
+    raw_venue = decision.get("venue", "")
+    venue = "" if isinstance(raw_venue, bool) or raw_venue is None else normalize_venue_name(str(raw_venue))
+    if not symbol or not venue:
+        if log:
+            log.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
+        return None
+    confidence = parse_intent_confidence(decision.get("confidence"), 0.0)
+    if confidence < min_confidence:
+        if log:
+            log.info(
+                "[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
+                source, side, symbol, confidence, min_confidence,
+            )
+        return None
+    notional = extract_intent_notional(decision, max_notional_usd)
+    notional = max(min_notional_usd, min(notional, max_notional_usd))
+    intent_id = generate_unique_intent_id(now_ts, side, symbol, existing_intents)
+    raw_urg = decision.get("urgency", "NORMAL")
+    urgency = (
+        "NORMAL"
+        if isinstance(raw_urg, bool) or raw_urg is None or not str(raw_urg).strip()
+        else str(raw_urg).strip().upper()
+    )
+    raw_thesis = decision.get("thesis", "")
+    thesis = "" if isinstance(raw_thesis, bool) or raw_thesis is None else str(raw_thesis).strip()
+    order_type = extract_intent_order_type(decision)
+    limit_px = extract_intent_limit_price(decision, default=None) if order_type == "LIMIT" else None
+    replace_open = _parse_bool_flag(decision.get("replace_open_orders"), default=False)
+    return {
+        "intent_id": intent_id,
+        "timestamp": now_ts,
+        "decision": side,
+        "symbol": symbol,
+        "venue": venue,
+        "confidence": confidence,
+        "suggested_notional_usd": notional,
+        "order_type": order_type,
+        "limit_price": limit_px,
+        "replace_open_orders": replace_open,
+        "urgency": urgency,
+        "thesis": thesis,
+        "status": "PENDING",
+        "execution_payload": None,
+        "created_by": str(source or "").strip(),
+        "history": [],
+    }
+
+
+def cancel_existing_ai_open_orders(
+    inst: Any,
+    side: str,
+    log: Optional[Any] = None,
+) -> list[str]:
+    """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
+    canceled_ids: list[str] = []
+    open_fn = getattr(inst, "open_orders", None)
+    cancel_fn = getattr(inst, "cancel_order", None)
+    if not callable(open_fn) or not callable(cancel_fn):
+        return canceled_ids
+    try:
+        raw_open = open_fn()
+        if not isinstance(raw_open, list):
+            return canceled_ids
+        from providers.base import extract_order_id, normalize_side
+
+        for oo in raw_open:
+            if not isinstance(oo, dict):
+                continue
+            oo_side = normalize_side(oo.get("side") or oo.get("type"))
+            if oo_side != side:
+                continue
+            raw_cid = str(oo.get("clientOrderId") or oo.get("cloid") or oo.get("userref") or "").strip()
+            if not raw_cid.startswith(("AI_", "SD_")):
+                continue
+            oid = extract_order_id(oo, default="")
+            if oid:
+                try:
+                    cancel_fn(str(oid))
+                    canceled_ids.append(str(oid))
+                    if log:
+                        log.info(
+                            "[INTENT GATEWAY] Canceled prior AI open %s order %s on %s before replacement.",
+                            side, oid, getattr(inst, "symbol", ""),
+                        )
+                except Exception as ce:
+                    if log:
+                        log.debug("Could not cancel open AI order %s: %s", oid, ce)
+    except Exception as e:
+        if log:
+            log.debug("Open order scan failed before replacement: %s", e)
+    return canceled_ids
+
+
 
 
 

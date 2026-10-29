@@ -802,6 +802,156 @@ def test_notional_confidence_t212_floor_and_account_cache_retry_hardening(temp_w
     assert pending_list[0]["execution_payload"]["cummulativeQuoteQty"] == "501.0"
 
 
+def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_workspace):
+    import json
+    from binance_api.order_id_context import REPRICEABLE_BOTS, resolve_order_owner
+    from orchestratorOS.agy.topics import condense_decision
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from providers.execution_audit import normalize_trading_decisions, summarize_recent_ai_intents
+
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    # 1. AI_ clientOrderId prefix resolves to ai_executor (never repriced by monitororder)
+    assert resolve_order_owner("AI_OR_998877") == "ai_executor"
+    assert resolve_order_owner("AI_123456") == "ai_executor"
+    assert "ai_executor" not in REPRICEABLE_BOTS
+
+    # 2. Passive BUY LIMIT order with replace_open_orders=True cancels prior AI_ open BUY orders
+    #    and calls inst.place(..., price=79850.0, market=False, smart=False)
+    btc_inst = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance")
+    btc_inst._provider.name = "binance"
+    btc_inst._provider.get_current_price.return_value = 80500.0
+    btc_inst._provider.free_balance.return_value = 5000.0
+    btc_inst.open_orders.return_value = [
+        {"orderId": "ai_old_buy", "clientOrderId": "AI_OR_111", "side": "BUY", "price": "79200.0"},
+        {"orderId": "ai_sell_keep", "clientOrderId": "AI_OR_222", "side": "SELL", "price": "83000.0"},
+        {"orderId": "bot_buy_keep", "clientOrderId": "TO_333", "side": "BUY", "price": "79000.0"},
+    ]
+    btc_inst.place.return_value = {"orderId": "ai_new_limit_1", "status": "NEW", "price": "79850.0", "origQty": "0.00501"}
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 79850.0,
+            "replace_open_orders": True,
+            "confidence": 0.91,
+            "suggested_notional_usd": 400.0,
+            "thesis": "Passive buy limit at 79,850 support bid wall during geopolitical dip",
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+
+    assert rec["status"] == "EXECUTED"
+    assert rec["order_type"] == "LIMIT"
+    assert rec["limit_price"] == pytest.approx(79850.0)
+    assert rec["replace_open_orders"] is True
+    assert rec["canceled_prior_open_orders"] == ["ai_old_buy"]
+    btc_inst.cancel_order.assert_called_once_with("ai_old_buy")
+    place_kwargs = btc_inst.place.call_args.kwargs
+    assert place_kwargs["market"] is False
+    assert place_kwargs["smart"] is False
+    assert place_kwargs["price"] == pytest.approx(79850.0)
+    assert place_kwargs["qty"] == pytest.approx(400.0 / 79850.0, rel=1e-4)
+
+    # 3. Crossing limit price (BUY limit_price > live_price) clamps safely to live_price
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_clamp = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 81000.0,
+            "confidence": 0.90,
+            "suggested_notional_usd": 250.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+    assert rec_clamp["status"] == "EXECUTED"
+    assert rec_clamp["limit_price"] == pytest.approx(80500.0)
+
+    # 4. Out-of-bounds limit_price (< 0.5x or > 2.0x live price) is rejected with REJECTED_INVALID_LIMIT_PRICE
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        rec_bad = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 10000.0,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+    assert rec_bad["status"] == "REJECTED_INVALID_LIMIT_PRICE"
+
+    # 5. normalize_trading_decisions, summarize_recent_ai_intents, condense_decision, and prompt_formatters
+    norm = normalize_trading_decisions({
+        "market_trading_decisions": [
+            {
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "order_type": "limit",
+                "limit_price": "79850",
+                "replace_open_orders": True,
+                "confidence": 0.91,
+                "suggested_notional_usd": 400.0,
+            }
+        ]
+    })
+    assert norm[0]["order_type"] == "LIMIT"
+    assert norm[0]["limit_price"] == pytest.approx(79850.0)
+    assert norm[0]["replace_open_orders"] is True
+
+    from providers.execution_audit import extract_intent_notional
+    recent_summary = summarize_recent_ai_intents(
+        gw.load_all_intents(),
+        "crypto",
+        1793306600.0,
+        extract_intent_notional,
+    )
+    assert any(r.get("order_type") == "LIMIT" and r.get("limit_price") == pytest.approx(79850.0) for r in recent_summary)
+
+    condensed = condense_decision(json.dumps({
+        "summary": "Resting passive limit bid at BTC support.",
+        "market_trading_decisions": norm,
+    }))
+    assert "BUY(LIMIT@79850.0):BTCUSDC@0.91" in condensed
+
+    from orchestratorOS.agy.topics import topic_spec
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import TelemetrySensorSnapshot
+
+    # Verify prompt contains contrarian dip accumulation & dual execution mode instructions
+    snap = TelemetrySensorSnapshot(
+        geopolitical_threat={
+            "threat_level": "CRITICAL_SHOCK",
+            "risk_score": 0.96,
+            "recommended_brake": "HARD_VETO_NEW_BUYS",
+            "summary": "Headline shock",
+        },
+        prices_and_trends={"BTCUSDC": {"venue": "binance", "price": 80500.0}},
+        portfolio_summary={
+            "balances": {"USDC": 7900.0},
+            "tradable_positions": [],
+            "recent_ai_intents": recent_summary,
+        },
+    )
+
+    prompt = build_supervisor_prompt(
+        sensors=snap,
+        logs=LogEventSummary(0, 0, 0),
+        spec=topic_spec("auto_cryptotrade_executor"),
+        min_conf=0.85,
+        min_usd=10.0,
+        max_usd=2000.0,
+    )
+    assert "advisory volatility signal for legacy bots only" in prompt
+    assert "CONTRARIAN DIP ACCUMULATION & ADVISORY STATUS OF MACRO/GEOPOLITICAL LABELS" in prompt
+    assert "DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK" in prompt
+    assert '"order_type": "MARKET" | "LIMIT"' in prompt
+    assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt
+
+
+
 
 
 
