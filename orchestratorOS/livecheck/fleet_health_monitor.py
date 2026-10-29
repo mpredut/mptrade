@@ -27,12 +27,11 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float, safe_pos_int
+from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_pos_float, safe_pos_int
 from cachepaths import resolve_cachedb_filepath
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
     gather_basic_os_resources,
-    parse_finite_float,
     parse_procs_manifest,
     read_json_recovering,
     resolve_heartbeat_paths,
@@ -108,7 +107,7 @@ class FleetHealthMonitor:
 
     def check_processes(self, now: Optional[float] = None) -> List[ProcessHealth]:
         """Audits process running state and heartbeat timestamps."""
-        now_val = parse_finite_float(now, None)
+        now_val = safe_float(now, default=None)
         now_ts = now_val if (now_val is not None and now_val > 0) else time.time()
         results: List[ProcessHealth] = []
 
@@ -175,7 +174,7 @@ class FleetHealthMonitor:
         if geo:
             sensors["geopolitical_threat"] = {
                 "threat_level": str(geo.get("threat_level") or "NORMAL"),
-                "risk_score": parse_finite_float(geo.get("risk_score"), 0.0),
+                "risk_score": safe_float(geo.get("risk_score"), default=0.0),
                 "summary": str(geo.get("summary") or ""),
             }
 
@@ -196,18 +195,18 @@ class FleetHealthMonitor:
             sensors["supervisor_eval"] = {
                 "mode": str(sup.get("mode") or "enforce"),
                 "decision": str(dec.get("decision") or "HOLD"),
-                "confidence": parse_finite_float(dec.get("confidence"), 0.0),
+                "confidence": safe_float(dec.get("confidence"), default=0.0),
                 "summary": str(sup.get("summary") or ""),
             }
 
         # 4. Fear & Greed & Market Breadth
         fg = _read("fear_greed_collect.json")
         if fg:
-            sensors["fear_greed"] = parse_finite_float(fg.get("value"), None)
+            sensors["fear_greed"] = safe_float(fg.get("value"), default=None)
 
         mb = _read("market_breadth_collect.json")
         if mb:
-            sensors["market_breadth"] = parse_finite_float(mb.get("advance_ratio"), None)
+            sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
 
         return sensors
 

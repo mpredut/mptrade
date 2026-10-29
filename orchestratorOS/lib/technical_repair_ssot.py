@@ -15,7 +15,9 @@ import re
 import shutil
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from botcore import _parse_bool_flag, safe_float as parse_finite_float
+from botcore import _parse_bool_flag, safe_float
+
+parse_finite_float = safe_float
 
 # ---------------------------------------------------------------------------
 # 1. Canonical Taxonomy: Repair Actions, Targets & Issue Categories (SSOT)
@@ -182,7 +184,7 @@ as_bool_flag = _parse_bool_flag
 def clean_json_value(val: Any) -> Any:
     """Recursively sanitize non-finite floats (NaN/Inf -> None) and normalize dict keys to strings."""
     if isinstance(val, float):
-        return parse_finite_float(val, default=None)
+        return safe_float(val, default=None)
     if isinstance(val, dict):
         return {str(k): clean_json_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):
@@ -302,7 +304,7 @@ def parse_procs_manifest(
                 pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
                 if role not in roles or (require_cmd and not cmd):
                     continue
-                hb_val = parse_finite_float(hbstale, 0.0) or 0.0
+                hb_val = safe_float(hbstale, default=0.0) or 0.0
                 hb_stale_s = hb_val if hb_val > 0 else 0.0
 
                 resolved_dir = dr.replace("$ROOT", workspace_dir)
@@ -658,7 +660,7 @@ def gather_system_and_vpn_telemetry(
         offenders = [
             {"key": k, "reasons": v.get("last_reasons"), "consecutive_high": v.get("high")}
             for k, v in rw_state["tracked"].items()
-            if isinstance(v, dict) and (parse_finite_float(v.get("high"), 0.0) or 0.0) > 0
+            if isinstance(v, dict) and (safe_float(v.get("high"), default=0.0) or 0.0) > 0
         ]
         if offenders:
             sys_vpn["resource_watchdog_offenders"] = offenders
