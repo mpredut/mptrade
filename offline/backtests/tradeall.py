@@ -554,9 +554,12 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
                 if not shadow.compute_vol and shadow_fields:
                     v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
+                    adapt_re, adapt_dca = shadow_signals.adaptive_thresholds(v1h)
                     shadow_fields = {
                         **shadow_fields,
                         "vol_1h_pct": v1h,
+                        "adapt_reentry_pct": adapt_re,
+                        "adapt_dca_pct": adapt_dca,
                     }
                 last_state = {symbol: {
                     "current_price": price, "final_trend": gradient,

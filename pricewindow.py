@@ -1111,8 +1111,24 @@ class PriceWindow:
                 self._cached_eval_val = res
                 return float(k_val * res[4])
             prices = list(self.prices)
-        grad = np.gradient(np.array(prices))
-        return float(k_val * np.std(grad))
+        return float(k_val * self._std_of_gradient(prices))
+
+    @staticmethod
+    def _std_of_gradient(prices) -> float:
+        """Return std(np.gradient(prices)) in a single centered pass using the exact telescoping mean."""
+        n = len(prices)
+        if n < 2:
+            return 0.0
+        if n == 2:
+            return 0.0
+        mean_g = (1.5 * (prices[n - 1] - prices[0]) - 0.5 * (prices[n - 2] - prices[1])) / n
+        d0 = (prices[1] - prices[0]) - mean_g
+        dn = (prices[n - 1] - prices[n - 2]) - mean_g
+        ssq = d0 * d0 + dn * dn
+        for i in range(1, n - 1):
+            di = 0.5 * (prices[i + 1] - prices[i - 1]) - mean_g
+            ssq += di * di
+        return math.sqrt(ssq / n)
 
     def get_short_trend(self):
         """Return ``(final_trend, growth_coefficient, slope_full, gradient_recent)``.

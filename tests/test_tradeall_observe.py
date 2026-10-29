@@ -219,6 +219,9 @@ def test_load_order_events_recognizes_tradeall_via_market_api_and_filters_other_
         "100.0|BTCUSDC|BUY|85000.0|0.1|accepted||tradeall.py|trend_confirmed_up",
         "200.0|BTCUSDC|BUY|85100.0|0.1|refused|deferred|market_api.py|kalman_primary_up",
         "300.0|BTCUSDC|SELL|85500.0|0.1|accepted||market_api.py|consistent_or_old_down",
+        "350.0|BTCUSDC|SELL|85400.0|0.1|accepted||market_api.py|small_window_plunge_down",
+        "360.0|BTCUSDC|SELL|85350.0|0.1|accepted||market_api.py|accel_plunge_down",
+        "370.0|BTCUSDC|BUY|84900.0|0.1|accepted||market_api.py|slope<=-5.1_and_old_down",
         "400.0|BTCUSDC|BUY|85200.0|0.1|refused|error|market_api.py|rtrade_pair_quote",
         "500.0|BTCUSDC|SELL|85300.0|0.1|accepted||monitortrades.py|monitortrades_exit",
         "600.0|TAOUSDC|BUY|300.0|1.0|accepted||tradeall.py|trend_confirmed_up",
@@ -226,9 +229,16 @@ def test_load_order_events_recognizes_tradeall_via_market_api_and_filters_other_
     log_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
     btc_events = observe.load_order_events("BTCUSDC", 1)
-    assert len(btc_events) == 3
-    assert [e["ts"] for e in btc_events] == [100.0, 200.0, 300.0]
-    assert [e["reason"] for e in btc_events] == ["trend_confirmed_up", "kalman_primary_up", "consistent_or_old_down"]
+    assert len(btc_events) == 6
+    assert [e["ts"] for e in btc_events] == [100.0, 200.0, 300.0, 350.0, 360.0, 370.0]
+    assert [e["reason"] for e in btc_events] == [
+        "trend_confirmed_up",
+        "kalman_primary_up",
+        "consistent_or_old_down",
+        "small_window_plunge_down",
+        "accel_plunge_down",
+        "slope<=-5.1_and_old_down",
+    ]
 
     tao_events = observe.load_order_events("TAOUSDC", 1)
     assert len(tao_events) == 1

@@ -114,11 +114,19 @@ class ReplayTrendSource:
         slope==0 and gradient>0), reading from the REPLAY window, not the live file.
         Without enough data yet -> False (the same "neutral" fallback as today:
         monitortrades.is_trend_up() returns False when it has no snapshot yet)."""
-        if window_seconds is None:
+        win = self._windows.get(symbol)
+        use_cache = window_seconds is None
+        if not use_cache and win is not None and not isinstance(window_seconds, bool):
+            try:
+                use_cache = math.isclose(
+                    float(window_seconds), win.window_seconds, rel_tol=0.0, abs_tol=1e-6
+                )
+            except (TypeError, ValueError, OverflowError):
+                use_cache = False
+        if use_cache:
             cached = self._cached_trend_up.get(symbol)
             if cached is not None:
                 return cached
-        win = self._windows.get(symbol)
         if win is None or len(win.prices) < 2:
             res = False
         else:
@@ -127,9 +135,36 @@ class ReplayTrendSource:
                 eps=win.get_noise_epsilon(k=1.0),
                 n_samples=len(win.prices),
             )
-        if window_seconds is None:
+        if use_cache:
             self._cached_trend_up[symbol] = res
         return res
+
+    def should_wait(
+        self,
+        side: str,
+        symbol: str,
+        window_seconds: Optional[float] = None,
+        fast: bool = False,
+        use_noise_gate: bool = True,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Replicate CacheShortTrendManager.should_wait against the replay PriceWindow."""
+        side_raw = "" if isinstance(side, bool) or side is None else str(side).strip().upper()
+        side_str = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
+        if side_str not in ("BUY", "SELL"):
+            return False
+        win = self._windows.get(symbol)
+        if win is None or len(win.prices) < 2:
+            return False
+        _ft, gc, _sf, gr = win.get_short_trend()
+        g = gr if fast else gc
+        if use_noise_gate:
+            eps = win.get_noise_epsilon(k=1.0)
+            if abs(g) <= eps:
+                return True
+        if side_str == "BUY":
+            return g < 0
+        return g > 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -260,11 +295,7 @@ class DynamicReplayTrendSource:
         prices, sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 2:
             return False
-        eps = (
-            float(np.std(np.gradient(np.asarray(prices, dtype=np.float64))))
-            if len(prices) >= 3
-            else 0.0
-        )
+        eps = pw.PriceWindow._std_of_gradient(prices) if len(prices) >= 3 else 0.0
         return _is_trend_up_tuple(
             _instant_trend_from_slice(prices, sample_rate, symbol=symbol),
             eps=eps,
@@ -313,7 +344,6 @@ class DynamicReplayTrendSource:
             _instant_trend_from_slice(prices, _sample_rate, symbol=symbol)
         g = growth_coefficient
         if use_noise_gate:
-            arr = np.array(prices)
             ek = 1.0
             if not isinstance(epsilon_k, bool) and epsilon_k is not None:
                 try:
@@ -324,7 +354,7 @@ class DynamicReplayTrendSource:
                     pass
             m_steps = float(len(prices) - 1)
             scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
-            eps = float(ek * scale * np.std(np.gradient(arr)))
+            eps = float(ek * scale * pw.PriceWindow._std_of_gradient(prices))
             if abs(g) <= eps:
                 return True
         side_raw = "" if isinstance(side, bool) or side is None else str(side).strip().upper()

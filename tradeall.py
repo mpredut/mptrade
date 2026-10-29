@@ -866,6 +866,10 @@ class TrendCoordinator:
 
         win = self.instant_mgr.get_window(symbol)
         win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
+        analyzer = self.instant_mgr.get_analyzer(symbol)
+        analyzer_big = self.instant_mgr.get_analyzer(symbol, self.instant_mgr.window_big_sec)
+        if win is None or win_big is None or analyzer is None or analyzer_big is None:
+            return None
         kalman_fields = {}
         prev_ktrend = None
         new_ktrend = None
@@ -889,8 +893,8 @@ class TrendCoordinator:
             symbol, current_price,
             win,
             win_big,
-            self.instant_mgr.get_analyzer(symbol),
-            self.instant_mgr.get_analyzer(symbol, self.instant_mgr.window_big_sec),
+            analyzer,
+            analyzer_big,
             self.trend_states[symbol], self.trend_states_big[symbol],
             regime_ctx=regime_ctx,
         )

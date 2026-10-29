@@ -387,7 +387,8 @@ def _is_tradeall_order(caller: str, motivation: str) -> bool:
         return True
     if caller == "market_api.py" and motivation:
         return any(motivation.startswith(prefix) for prefix in (
-            "trend_", "kalman_", "consistent_", "force_", "test_", "surge_"
+            "trend_", "kalman_", "consistent_", "force_", "test_", "surge_",
+            "small_window_", "accel_", "slope<=", "slope>=",
         ))
     return False
 

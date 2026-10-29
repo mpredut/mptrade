@@ -258,6 +258,19 @@ class TestStepWolsGeneralization(unittest.TestCase):
         rts = ReplayTrendSource(["TAOUSDC", "BTCUSDC"])
         self.assertEqual(rts._windows["TAOUSDC"].window_seconds, 90.0)
         self.assertAlmostEqual(rts._windows["BTCUSDC"].window_seconds, 222.0, places=6)
+        for i in range(10):
+            rts.advance("TAOUSDC", 1000.0 + i, 300.0 + i * 2.0)
+        self.assertTrue(rts.is_trend_up("TAOUSDC", window_seconds=90.0))
+        self.assertEqual(rts._cached_trend_up["TAOUSDC"], True)
+        self.assertFalse(rts.should_wait("BUY", "TAOUSDC", window_seconds=90.0, use_noise_gate=False))
+        self.assertTrue(rts.should_wait("SELL", "TAOUSDC", window_seconds=90.0, use_noise_gate=False))
+
+        sample_grad_px = [100.0, 102.0, 98.0, 102.0, 98.0, 100.01]
+        self.assertAlmostEqual(
+            pw.PriceWindow._std_of_gradient(sample_grad_px),
+            float(np.std(np.gradient(np.asarray(sample_grad_px, dtype=np.float64)))),
+            places=12,
+        )
 
         drts = DynamicReplayTrendSource(["TAOUSDC"])
         # Oscillating noisy prices with tiny positive final step: gc is tiny (< 0.25 * eps) -> False
