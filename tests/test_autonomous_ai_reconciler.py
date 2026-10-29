@@ -2671,7 +2671,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     hl_dir.mkdir(exist_ok=True)
     (hl_dir / ".state_TAO_LONG.json").write_text(
         json.dumps({
-            "qty": 0.0,
+            "qty": 1.0,
             "cost": 248.46,
             "entry_price": 248.46,
             "last_buy_price": 248.46,
@@ -2721,7 +2721,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
 
     hl_tao = MagicMock(symbol="TAOUSDC", provider_name="hyperliquid", base="TAO", quote="USDC", params={})
     hl_tao._provider.get_current_price.return_value = 228.5
-    hl_tao._provider.free_balance.side_effect = lambda a: 0.0 if a == "TAO" else 32.5
+    hl_tao._provider.free_balance.side_effect = lambda a: 1.0 if a == "TAO" else 32.5
     hl_tao._provider.get_orders.return_value = []
     hl_tao.open_orders.return_value = []
 
@@ -2749,7 +2749,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     # Hyperliquid HYPEUSDC must NOT have Kraken's 82.23 peak or positive dd_from_peak
     assert "dd_from_peak=13." not in crypto_prompt
     # Hyperliquid TAOUSDC must use its own cycle anchor (248.46) rather than Binance's 241.9
-    assert "[hyperliquid] TAOUSDC: free_TAO=0.0 ($0.0 USD), free_USDC=$32.5, px=228.5, avg_buy_px=248.46" in crypto_prompt
+    assert "[hyperliquid] TAOUSDC: free_TAO=1.0 ($228.5 USD), free_USDC=$32.5, px=228.5, avg_buy_px=248.46" in crypto_prompt
     # Orderbook wall distance uses ob_mid_price (78.865) instead of mismatched 93.35 (-16%)
     assert "bid_wall=78.39 ($36000.0, dist=-0.60%)" in crypto_prompt
     assert "ask_wall=79.0 ($90000.0, dist=+0.17%)" in crypto_prompt
@@ -2781,13 +2781,10 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     mock_gw.load_tradable_instruments.return_value = {"T212_NVDA": nvda_inst}
 
     now_s = int(time.time())
-    fake_chart = {
-        "timestamp": [now_s - (20 - i) * 300 for i in range(21)],
-        "indicators": {"quote": [{"close": [200.0 + i * 0.7 for i in range(21)]}]},
-    }
+    fake_bars = [(now_s - (20 - i) * 300, 200.0 + i * 0.7, 1000.0) for i in range(21)]
     import types
     fake_md = types.ModuleType("market_data")
-    fake_md._chart = lambda sym, rng="5d", interval="5m": fake_chart
+    fake_md._chart = lambda sym, rng="5d", interval="5m": ({"regularMarketPrice": 214.0}, fake_bars)
     monkeypatch.setitem(os.sys.modules, "market_data", fake_md)
 
     reconciler.run_cycle(topic_key="auto_sharetrade_executor")
