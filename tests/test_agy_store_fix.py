@@ -21,8 +21,8 @@ def store(tmp_path, monkeypatch):
     cli = tmp_path / ".gemini" / "antigravity-cli"
     d1 = cli / "conversations"
     d2 = tmp_path / ".gemini" / "antigravity" / "conversations"
-    d1.mkdir(parents=True)
-    d2.mkdir(parents=True)
+    d1.mkdir(parents=True, exist_ok=True)
+    d2.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(asf, "CLI", str(cli))
     monkeypatch.setattr(asf, "D1", str(d1))
     monkeypatch.setattr(asf, "D2", str(d2))
@@ -122,7 +122,7 @@ def test_mirrored_5min_topic_thread_does_not_block_idle_sync(store, tmp_path):
     (d1 / "human.db").write_text("h")
     _age_store(d1, 1200)                         # human session has been idle for 20 minutes
     (d1 / "topic-5m.db").write_text("bot")       # 5-minute bot thread just mirrored now
-    (cli / "brain" / "topic-5m").mkdir(parents=True)
+    (cli / "brain" / "topic-5m").mkdir(parents=True, exist_ok=True)
     (cli / "brain" / "topic-5m" / "step.txt").write_text("bot")
     _set_rows(["human", "topic-5m"])
     (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["human"]))
@@ -193,7 +193,7 @@ def test_active_webui_daemon_log_or_new_running_thread_blocks_ui_sync(store):
 
     # 1. Active Web UI session in daemon log (after 'Connection status: Connected') blocks ui-sync
     log_dir = cli / "log"
-    log_dir.mkdir(parents=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "cli-20261024_221208.log"
     log_file.write_text(
         "I1024 22:12:13.000000 1 remote_control_v2.go:2056] Connection status: Connected\n"

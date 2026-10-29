@@ -105,7 +105,7 @@ def test_t212_launchers_use_the_shared_environment_loader():
 def test_t212_environment_precedence_is_effective(monkeypatch, tmp_path):
     root = tmp_path / "checkout"
     t212 = root / "212trading"
-    t212.mkdir(parents=True)
+    t212.mkdir(parents=True, exist_ok=True)
     (root / ".env").write_text("LAYER=shared\nSHARED_ONLY=yes\n", encoding="utf-8")
     secrets = t212 / ".env"
     secrets.write_text("LAYER=t212\nT212_ONLY=yes\n", encoding="utf-8")

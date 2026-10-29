@@ -479,7 +479,7 @@ def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
 
     cli_dir = tmp_path / "store" / "antigravity-cli"
     proj_dir = tmp_path / "store" / "config" / "projects"
-    proj_dir.mkdir(parents=True)
+    proj_dir.mkdir(parents=True, exist_ok=True)
     (proj_dir / "bad.json").write_text("[1, 2, 3]", encoding="utf-8")
     (proj_dir / "good.json").write_text('{"id": "p1", "name": "mptrade"}', encoding="utf-8")
     assert "p1" in resolve_project_ids(["mptrade"], [str(cli_dir)])
@@ -1506,13 +1506,13 @@ def test_backup_sync_common_modular_primitives(tmp_path):
     fake_home = tmp_path / "home"
     src_dir = tmp_path / "src_backup"
     dst_dir = tmp_path / "dst_repo"
-    (src_dir / "cachedb").mkdir(parents=True)
-    (src_dir / ".ssh_backup").mkdir(parents=True)
-    (src_dir / "logs").mkdir(parents=True)
+    (src_dir / "cachedb").mkdir(parents=True, exist_ok=True)
+    (src_dir / ".ssh_backup").mkdir(parents=True, exist_ok=True)
+    (src_dir / "logs").mkdir(parents=True, exist_ok=True)
     (src_dir / "cachedb" / "cache_365_price_BTCUSDC.jsonl").write_text('{"p":1}\n', encoding="utf-8")
     (src_dir / ".ssh_backup" / "id_ed25519").write_text("secret", encoding="utf-8")
     (src_dir / "logs" / "prod.log").write_text("log", encoding="utf-8")
-    dst_dir.mkdir(parents=True)
+    dst_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = (
         f'export HOME="{fake_home}"; '

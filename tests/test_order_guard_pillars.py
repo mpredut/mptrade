@@ -737,8 +737,8 @@ def test_batch38b_summary_store_visible_dir_topics_intent_gateway_and_geo_guard(
     gem_dir = tmp_path / ".gemini"
     cli_base = gem_dir / "antigravity-cli"
     vis_dir = gem_dir / "antigravity" / "conversations"
-    (cli_base / "conversations").mkdir(parents=True)
-    vis_dir.mkdir(parents=True)
+    (cli_base / "conversations").mkdir(parents=True, exist_ok=True)
+    vis_dir.mkdir(parents=True, exist_ok=True)
     db_path = cli_base / "conversation_summaries.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, step_count INTEGER, status TEXT)")

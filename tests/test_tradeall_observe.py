@@ -77,7 +77,7 @@ def test_price_sampling_deduplicates_an_unchanged_snapshot(tmp_path, monkeypatch
 
 def test_history_tail_keeps_first_record_when_file_is_smaller_than_tail(tmp_path, monkeypatch):
     cachedb = tmp_path / "cachedb"
-    cachedb.mkdir()
+    cachedb.mkdir(parents=True, exist_ok=True)
     history = cachedb / "cache_sparse_price_BTCUSDC.jsonl"
     history.write_text(
         '\n'.join(

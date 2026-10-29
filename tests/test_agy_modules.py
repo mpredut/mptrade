@@ -34,7 +34,7 @@ from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui, sync_topic_t
 def _isolated_agy_stores(tmp_path, monkeypatch):
     """Never let topic mirroring touch the real Web UI store or topic registry."""
     ui_base = tmp_path / "ui_home" / ".gemini" / "antigravity-cli"
-    (ui_base / "conversations").mkdir(parents=True)
+    (ui_base / "conversations").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("AGY_UI_CLI_BASE", str(ui_base))
     monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(tmp_path / "llm_topic_threads.json"))
 
@@ -239,7 +239,7 @@ class TestMirrorTopicThreadToUi:
     def test_mirror_marks_ui_visible_and_drops_stale_visible_copy(self, tmp_path):
         cid = "cid-mirror-1"
         bot_base = tmp_path / "bot" / ".gemini" / "antigravity-cli"
-        (bot_base / "conversations").mkdir(parents=True)
+        (bot_base / "conversations").mkdir(parents=True, exist_ok=True)
         _make_conv_db(str(bot_base / "conversations" / f"{cid}.db"))
         raw = enc_fields([(1, 2, b"t"), (20, 0, 17)])
         _make_summary_db(str(bot_base / "conversation_summaries.db"),
@@ -248,7 +248,7 @@ class TestMirrorTopicThreadToUi:
         ui_base = paths.resolve_ui_cli_base()
         _make_summary_db(os.path.join(ui_base, "conversation_summaries.db"), [])
         visible = visible_conversations_dir(ui_base)
-        os.makedirs(visible)
+        os.makedirs(visible, exist_ok=True)
         stale = os.path.join(visible, f"{cid}.db")
         with open(stale, "w") as f:
             f.write("old")
@@ -269,7 +269,7 @@ class TestMirrorTopicThreadToUi:
     def test_bidirectional_sync_preserves_user_interventions_in_ui_and_hybrid_markdown_json(self, tmp_path):
         cid = "cid-interactive-topic"
         bot_base = tmp_path / "bot" / ".gemini" / "antigravity-cli"
-        (bot_base / "conversations").mkdir(parents=True)
+        (bot_base / "conversations").mkdir(parents=True, exist_ok=True)
         _make_conv_db(str(bot_base / "conversations" / f"{cid}.db"), source=17)
         raw = enc_fields([(1, 2, b"t"), (20, 0, 17)])
         _make_summary_db(

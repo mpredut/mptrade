@@ -1181,7 +1181,7 @@ def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
     from orchestratorTrade import autonomous_intent_gateway as aig
 
     bracket_dir = tmp_path / "dir[with]brackets"
-    bracket_dir.mkdir(parents=True)
+    bracket_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. state_io.prune_rotated_archives finds and prunes archives inside bracketed directories
     base_file = bracket_dir / "state.json"
@@ -1207,7 +1207,7 @@ def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
 
     # 3. active_intents.build_active_intent_index discovers files inside bracketed root directories
     kr_dir = bracket_dir / "kraken"
-    kr_dir.mkdir()
+    kr_dir.mkdir(parents=True, exist_ok=True)
     (kr_dir / ".state_BTCUSD.json").write_text(
         json.dumps({"orders": [{"txid": "TX-42", "side": "buy", "px": 100.0, "vol": 1.0}]}),
         encoding="utf-8",
@@ -1218,7 +1218,7 @@ def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
 
     # 4. autonomous_intent_gateway discovers T212 configs, Kraken export pairs, and audit files inside bracketed dir
     t212_dir = bracket_dir / "212trading"
-    t212_dir.mkdir()
+    t212_dir.mkdir(parents=True, exist_ok=True)
     (t212_dir / "config.nvda.env").write_text("export T212_TICKER=NVDA_US_EQ\n", encoding="utf-8")
     eqs = aig._discover_t212_equities(str(bracket_dir))
     assert ("T212_NVDA", "NVDA_US_EQ", "NVDA_US_EQ", "USD") in eqs
@@ -1299,7 +1299,7 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
 
     # 2. agy_store_fix.newest_daemon_log_ready finds logs in bracketed paths
     bracket_logs = tmp_path / "home[1]" / "log"
-    bracket_logs.mkdir(parents=True)
+    bracket_logs.mkdir(parents=True, exist_ok=True)
     log_file = bracket_logs / "cli-20261026_120000.log"
     log_file.write_text(
         "language server process with pid 4242\nsummary store: reconciliation complete\n",
@@ -1310,7 +1310,7 @@ def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
 
     # 3. kraken_pnl_backfill.env_value parses export lines and closes files
     env_dir = tmp_path / "kraken_cfg"
-    env_dir.mkdir()
+    env_dir.mkdir(parents=True, exist_ok=True)
     (env_dir / ".env").write_text('export KRAKEN_API_KEY_SPARE="spare_key_123"\n', encoding="utf-8")
     assert kpb.env_value(str(env_dir), "KRAKEN_API_KEY_SPARE") == "spare_key_123"
 
@@ -1347,7 +1347,7 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
 
     # 1. providers.base.env_value strips export prefix and unquoted inline comments
     cfg_dir = tmp_path / "venue_cfg"
-    cfg_dir.mkdir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "config.env").write_text(
         "export VENUE_FLAG=true   # inline comment\n"
         'QUOTED_HASH="abc#def"\n',
@@ -3347,7 +3347,7 @@ def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
     # 1. delete_threads refuses empty/dot/traversal cids and never wipes root brain/ dir
     cli_base = tmp_path / "antigravity-cli"
     brain_keep = cli_base / "brain" / "keep_cid"
-    brain_keep.mkdir(parents=True)
+    brain_keep.mkdir(parents=True, exist_ok=True)
     (brain_keep / "artifact.md").write_text("safe", encoding="utf-8")
     cnt, freed = summary_store.delete_threads({"", "  ", ".", "..", "../outside", "a/b"}, str(cli_base), dry_run=False)
     assert (cnt, freed) == (0, 0)
@@ -3360,7 +3360,7 @@ def test_batch13_agy_summary_store_topics_and_ui_mirror_safety(tmp_path):
 
     # 2. resolve_project_ids ignores unhashable id/name values in project JSON files
     proj_dir = tmp_path / "config" / "projects"
-    proj_dir.mkdir(parents=True)
+    proj_dir.mkdir(parents=True, exist_ok=True)
     (proj_dir / "bad.json").write_text(json.dumps({"id": ["unhashable"], "name": {"k": 1}}), encoding="utf-8")
     (proj_dir / "good.json").write_text(json.dumps({"id": "proj-123", "name": "mptrade"}), encoding="utf-8")
     assert summary_store.resolve_project_ids([" mptrade "], [str(cli_base)]) == {"mptrade", "proj-123"}
@@ -4462,7 +4462,7 @@ def test_batch30_trigger_gate_common_grid_reports_and_monitortrades_pilot_harden
 
     # 3. kraken_continuous_grid report.py and report3.py handle malformed/null nested full/year/0.26 payloads
     exp_dir = tmp_path / "kgrid"
-    exp_dir.mkdir()
+    exp_dir.mkdir(parents=True, exist_ok=True)
     (exp_dir / "results.jsonl").write_text(
         json.dumps({
             "cfg": "live",
@@ -5211,7 +5211,7 @@ def test_batch36b_watchdog_overnight_monitor_agy_store_fix_and_macro_hardening(t
 
     # 3. FleetHealthMonitor.check_processes checks default logs/<name>.log when hb_log is empty and stale_threshold > 0
     ws_dir = tmp_path / "ws"
-    (ws_dir / "logs").mkdir(parents=True)
+    (ws_dir / "logs").mkdir(parents=True, exist_ok=True)
     (ws_dir / "procs.conf").write_text("tradeall.py|$ROOT|python tradeall.py|tradeall||300|bot\n", encoding="utf-8")
     mon = FleetHealthMonitor(workspace_dir=str(ws_dir))
     monkeypatch.setattr(mon, "_is_process_running", lambda pat: True)
