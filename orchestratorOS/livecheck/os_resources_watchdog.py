@@ -10,7 +10,7 @@ _LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
-from botcore import safe_int as _safe_int
+from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_float, safe_pos_int
 from technical_repair_ssot import fleet_script_basenames, parse_finite_float
 
 ROOT = wc.ROOT
@@ -185,9 +185,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         now = time.time()
     total_ticks = _system_ticks() if total_ticks is None else total_ticks
     processes = _processes() if processes is None else processes
-    cpu_count = (os.cpu_count() or 1) if cpu_count is None else _safe_int(cpu_count, 1)
-    if cpu_count <= 0:
-        cpu_count = 1
+    cpu_count = (os.cpu_count() or 1) if cpu_count is None else safe_pos_int(cpu_count, default=1)
     state = wc.load_state(STATE_FILE)
     if not isinstance(state, dict):
         state = {}
@@ -223,7 +221,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             last_alert = 0.0
             item["last_alert"] = 0.0
         if reasons:
-            item["high"] = max(0, _safe_int(item.get("high", 0), 0)) + 1
+            item["high"] = safe_nonneg_int(item.get("high", 0), default=0) + 1
             item["normal"] = 0
             item["last_reasons"] = reasons
             if item["high"] >= CONSECUTIVE and (not alerted or
@@ -233,7 +231,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
                 item["last_alert"] = now
         else:
             item["high"] = 0
-            item["normal"] = max(0, _safe_int(item.get("normal", 0), 0)) + 1
+            item["normal"] = safe_nonneg_int(item.get("normal", 0), default=0) + 1
             if alerted and item["normal"] >= RECOVERY_CHECKS:
                 recovered.append(proc)
                 item["alerted"] = False

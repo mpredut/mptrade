@@ -42,11 +42,14 @@ from botcore import (
     _parse_bool_flag,
     required_float_env,
     safe_float,
-    safe_int as _safe_int,
+    safe_int,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     single_instance,
 )
+
+_safe_int = safe_int
 from cachepaths import split_symbol_assets
 from lock import FileLock
 from providers.base import normalize_side
@@ -1162,7 +1165,7 @@ def _alert_giveups(records, now):
     try:
         events = []
         for rec in records:
-            attempts_val = max(0, _safe_int(rec.get("attempts"), 0))
+            attempts_val = safe_nonneg_int(rec.get("attempts"), default=0)
             reason = ("attempt_limit" if oq.RETRY_MAX_ATTEMPTS > 0
                       and attempts_val >= oq.RETRY_MAX_ATTEMPTS
                       else "active_ttl")

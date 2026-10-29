@@ -62,8 +62,10 @@ WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up this long.
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
-from botcore import safe_pos_float as _safe_pos_float
+from botcore import safe_pos_float
 from cachepaths import canonical_base_asset
+
+_safe_pos_float = safe_pos_float
 
 _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
 
@@ -87,7 +89,7 @@ class LiquidationSignal:
         ]
         if not self._symbols:
             self._symbols = list(DEFAULT_SYMBOLS)
-        self._retention = _safe_pos_float(retention_sec, MAX_RETENTION_SEC)
+        self._retention = safe_pos_float(retention_sec, MAX_RETENTION_SEC)
         # symbol -> deque[(ts, LONG|SHORT, notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
         self._lock = threading.Lock()
@@ -110,7 +112,7 @@ class LiquidationSignal:
     def stop(self, timeout: float = 8.0) -> None:
         self._stop.set()
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=_safe_pos_float(timeout, 8.0))
+            self._thread.join(timeout=safe_pos_float(timeout, 8.0))
 
     @property
     def is_running(self) -> bool:
@@ -166,8 +168,8 @@ class LiquidationSignal:
                 self._ingest(raw)
 
     async def _sleep(self, delay: float, step: float = 0.2) -> None:
-        eff_delay = _safe_pos_float(delay, 0.0)
-        eff_step = _safe_pos_float(step, 0.2)
+        eff_delay = safe_pos_float(delay, 0.0)
+        eff_step = safe_pos_float(step, 0.2)
         elapsed = 0.0
         while elapsed < eff_delay and not self._stop.is_set():
             await asyncio.sleep(min(eff_step, eff_delay - elapsed))
@@ -206,8 +208,8 @@ class LiquidationSignal:
                     side = _SHORT
                 else:
                     continue
-                vol = _safe_pos_float(item.get("v"), None)
-                px = _safe_pos_float(item.get("p"), None)
+                vol = safe_pos_float(item.get("v"), default=None)
+                px = safe_pos_float(item.get("p"), default=None)
                 if vol is None or px is None:
                     continue
                 notional = vol * px
@@ -230,7 +232,7 @@ class LiquidationSignal:
         net_usd       = short_liq_usd - long_liq_usd  (>0 squeeze up, <0 capitulation)
         """
         symbol = str(symbol or "").strip().upper()
-        eff_win = _safe_pos_float(window_sec, 300.0)
+        eff_win = safe_pos_float(window_sec, 300.0)
         now = time.time()
         cutoff = now - eff_win
         long_usd = short_usd = 0.0
@@ -270,8 +272,8 @@ class LiquidationSignal:
         to the average rate over ``baseline_sec``. >1 = above average; a threshold
         like >=3 is a reasonable "capitulation" trigger, but the strategy owns the
         final number. Returns 0.0 until there is enough baseline history."""
-        eff_win = _safe_pos_float(window_sec, 120.0)
-        eff_base = max(_safe_pos_float(baseline_sec, 3600.0), eff_win)
+        eff_win = safe_pos_float(window_sec, 120.0)
+        eff_base = max(safe_pos_float(baseline_sec, 3600.0), eff_win)
         recent = self.get_signal(symbol, eff_win)["long_liq_usd"]
         base = self.get_signal(symbol, eff_base)["long_liq_usd"]
         recent_rate = recent / max(eff_win, 1.0)

@@ -35,8 +35,10 @@ from botcore import (
     required_float_env,
     required_int_env,
     safe_nonneg_float,
-    safe_pos_float as _safe_pos_float,
+    safe_pos_float,
 )
+
+_safe_pos_float = safe_pos_float
 
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
 
@@ -77,7 +79,7 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     for candidate_key in (oid_str, cid_str):
         if not candidate_key:
             continue
-        val = _safe_pos_float(custom_map.get(candidate_key), None)
+        val = safe_pos_float(custom_map.get(candidate_key), default=None)
         if val is not None:
             return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
 
@@ -94,8 +96,8 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
 
 
 def _format_order_notify_fields(symbol, order_type, price, quantity, owner=None):
-    qty = _safe_pos_float(quantity, 0.0)
-    px = _safe_pos_float(price, 0.0)
+    qty = safe_pos_float(quantity, 0.0)
+    px = safe_pos_float(price, 0.0)
     val = px * qty
     quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
     side = normalize_side(order_type) or str(order_type).upper()
@@ -236,7 +238,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         print(f"For {symbol} there are no open {order_type} orders to begin with.")
         return
     
-    current_price = _safe_pos_float(api.get_current_price(symbol), None)
+    current_price = safe_pos_float(api.get_current_price(symbol), default=None)
     if current_price is None:
         print("Could not obtain the current price.")
         return
@@ -324,7 +326,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 
-        init_px_f = _safe_pos_float(initial_prices.get(order_id), None)
+        init_px_f = safe_pos_float(initial_prices.get(order_id), default=None)
         if init_px_f is not None:
             initial_prices[order_id] = init_px_f
         else:
@@ -361,7 +363,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):
-                rounded = _safe_pos_float(round_px(symbol, new_price), None)
+                rounded = safe_pos_float(round_px(symbol, new_price), default=None)
                 if rounded is not None:
                     effective_new_price = rounded
             if (
@@ -373,13 +375,13 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     f"{price}; skipping redundant cancel/replace."
                 )
                 continue
-            original_quantity = _safe_pos_float(
-                order.get("quantity", order.get("origQty", order.get("qty"))), None
+            original_quantity = safe_pos_float(
+                order.get("quantity", order.get("origQty", order.get("qty"))), default=None
             )
             quantity = (
-                _safe_pos_float(order.get("remainingQty"), None)
+                safe_pos_float(order.get("remainingQty"), default=None)
                 if "remainingQty" in order
-                else _safe_pos_float(extract_remaining_qty(order, default=original_quantity), None)
+                else safe_pos_float(extract_remaining_qty(order, default=original_quantity), default=None)
             )
             if not original_quantity or not quantity:
                 print(
