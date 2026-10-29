@@ -1,7 +1,7 @@
 
 import math
 
-
+from botcore import safe_pos_float
 from instrument_registry import load_registry, symbols_for
 
 
@@ -62,24 +62,10 @@ def validate_params(order_type, symbol, price = 1, qty = 1):
     if norm_type not in ['BUY', 'SELL']:
         raise ValueError(f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL'.")
 
-    price_ok = False
-    if price is not None and not isinstance(price, bool):
-        try:
-            pf = float(price)
-            price_ok = math.isfinite(pf) and pf > 0
-        except (TypeError, ValueError, OverflowError):
-            price_ok = False
-    if not price_ok:
+    if safe_pos_float(price, default=None) is None:
         raise ValueError(f"Invalid price '{price}'. Price must be a positive number.")
 
-    qty_ok = False
-    if qty is not None and not isinstance(qty, bool):
-        try:
-            qf = float(qty)
-            qty_ok = math.isfinite(qf) and qf > 0
-        except (TypeError, ValueError, OverflowError):
-            qty_ok = False
-    if not qty_ok:
+    if safe_pos_float(qty, default=None) is None:
         raise ValueError(f"Invalid quantity '{qty}'. Quantity must be a positive number.")
 
     norm_sym = _normalize_symbol(symbol)
@@ -122,14 +108,9 @@ def get_quantity_precision(symbol):
             return 8
         for f in info["filters"]:
             if isinstance(f, dict) and f.get("filterType") == "LOT_SIZE":
-                raw_step = f.get("stepSize")
-                if raw_step is None or isinstance(raw_step, bool):
-                    continue
-                step_size = float(raw_step or 0)
-                if step_size <= 0 or not math.isfinite(step_size):
-                    break
-                precision = max(0, int(round(-math.log10(step_size), 0)))
-                return precision
+                step_size = safe_pos_float(f.get("stepSize"), default=None)
+                if step_size is not None:
+                    return max(0, int(round(-math.log10(step_size), 0)))
     except Exception as e:
         print(f"Error getting quantity precision: {e}")
     return 8  # Default value.
