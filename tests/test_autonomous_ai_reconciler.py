@@ -2460,3 +2460,114 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
         "SELL", 100.0, 90.0, 0.01, 0.01
     )
 
+
+def test_swing_wave_metrics_and_3_to_8_pct_harvest_rules(tmp_path):
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+        AutonomousAIReconciler,
+        GeminiClient,
+        _compute_swing_wave_metrics,
+        _evaluate_position_swing_signal,
+    )
+
+    # 1. ZigZag 3%–8% wave extraction on rally (+8.68%) and subsequent drop (-7.67%)
+    series_rally = [
+        [1000, 0.1750],
+        [2000, 0.1636],  # swing low (-6.51%)
+        [3000, 0.1700],
+        [4000, 0.1778],  # +8.68% rally peak
+    ]
+    m_up = _compute_swing_wave_metrics(series_rally)
+    assert m_up["swing_low_px"] == 0.1636
+    assert m_up["swing_high_px"] == 0.1778
+    assert m_up["rally_from_swing_low_pct"] == 8.68
+    assert m_up["pullback_from_swing_high_pct"] == 0.0
+    assert m_up["swing_action_zone"] == "STRONG_SELL_HARVEST_ZONE(+5%..+8%+)"
+    assert m_up["recent_swings_7d"] == ["-6.5%", "+8.7%"]
+
+    series_drop = series_rally + [[5000, 0.1639]]  # -7.82% pullback from 0.1778
+    m_dn = _compute_swing_wave_metrics(series_drop)
+    assert m_dn["swing_high_px"] == 0.1778
+    assert m_dn["pullback_from_swing_high_pct"] == -7.82
+    assert m_dn["swing_action_zone"] == "STRONG_BUY_DIP_ZONE(-5%..-8%+)"
+    assert m_dn["recent_swings_7d"] == ["-6.5%", "+8.7%", "-7.8%"]
+
+    # 2. Position swing signal: harvest on +3%..+8% advance, anti-whipsaw after shallow post-sell dip, buy on -3%..-8% dip
+    sig_harvest = _evaluate_position_swing_signal(
+        {
+            "value_usd": 2200.0,
+            "last_action_side": "BUY",
+            "pnl_vs_avg_pct": 2.53,
+            "pnl_vs_cycle_cost_pct": 5.18,
+            "pnl_vs_last_buy_pct": 8.33,
+        },
+        m_up,
+    )
+    assert sig_harvest is not None
+    assert "STRONG_SELL_HARVEST_CANDIDATE" in sig_harvest
+
+    sig_whipsaw = _evaluate_position_swing_signal(
+        {
+            "value_usd": 600.0,
+            "last_action_side": "SELL",
+            "chg_vs_last_sell_pct": -1.04,
+            "pnl_vs_last_buy_pct": 2.43,
+        },
+        {"rally_from_swing_low_pct": 2.68, "pullback_from_swing_high_pct": -1.68},
+    )
+    assert sig_whipsaw is not None
+    assert "ANTI_WHIPSAW_HOLD_NO_REBUY" in sig_whipsaw
+
+    sig_dip = _evaluate_position_swing_signal(
+        {
+            "value_usd": 600.0,
+            "last_action_side": "SELL",
+            "chg_vs_last_sell_pct": -5.39,
+        },
+        m_dn,
+    )
+    assert sig_dip is not None
+    assert "STRONG_BUY_DIP_CANDIDATE" in sig_dip
+
+    # 3. End-to-end prompt formatting includes swing_wave, SWING_3_8_RULE, and 3%–8% quantitative rules
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
+    (cache_dir / "cache_watcher_all_price.json").write_text(
+        json.dumps({"items": {"ARBUSDC": series_rally}}),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"ARBUSDC": 0.1778}}),
+        encoding="utf-8",
+    )
+    arb_inst = MagicMock(symbol="ARBUSDC", provider_name="binance", base="ARB", quote="USDC", params={})
+    arb_inst._provider.get_current_price.return_value = 0.1778
+    arb_inst._provider.free_balance.side_effect = lambda a: 5000.0 if a == "ARB" else 400.0
+    arb_inst.open_orders.return_value = []
+
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.load_tradable_instruments.return_value = {"ARBUSDC": arb_inst}
+
+    captured = []
+    auditor = GeminiClient(
+        custom_runner=lambda prompt, model, timeout: (
+            captured.append(prompt)
+            or json.dumps({"summary": "ok", "market_trading_decisions": []})
+        )
+    )
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir="cachedb",
+        mode="shadow",
+        notify_enabled=False,
+        gemini_auditor=auditor,
+        intent_gateway=mock_gw,
+    )
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    assert len(captured) == 1
+    prompt_out = captured[0]
+    assert "swing_wave(low=0.1636, high=0.1778, rally_low=+8.68%" in prompt_out
+    assert "SWING_3_8_RULE=STRONG_SELL_HARVEST_CANDIDATE" in prompt_out
+    assert "QUANTITATIVE 3%–8% SWING HARVESTING RULES" in prompt_out
+
+

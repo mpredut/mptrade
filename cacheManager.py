@@ -39,7 +39,6 @@ from lock import FileLock
 import binance_cache_health as account_cache_health
 
 #my imports
-import log
 import utils as u
 import symbols as sym
 from binance_api import bapi as api

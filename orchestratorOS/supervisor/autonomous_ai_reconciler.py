@@ -352,8 +352,244 @@ def _set_pos_anchor(
         pos[pct_key] = round(((cur_px - a_f) / a_f) * 100.0, 2)
 
 
+def _compute_swing_wave_metrics(
+    series_or_vals: List[Any],
+    *,
+    reversal_pct: float = 3.0,
+    decimals: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Extract 3%–8%+ ZigZag swing waves, active swing low/high, rally/pullback %, and action zone from a price series."""
+    if not isinstance(series_or_vals, list) or len(series_or_vals) < 2:
+        return {}
+    vals: List[float] = []
+    for item in series_or_vals:
+        if isinstance(item, (list, tuple)) and len(item) > 1:
+            v = _parse_finite_float(item[1], 0.0)
+        else:
+            v = _parse_finite_float(item, 0.0)
+        if v > 0.0:
+            vals.append(v)
+    if len(vals) < 2:
+        return {}
+
+    cur_v = vals[-1]
+    thr = max(0.5, float(reversal_pct)) / 100.0
+    pivots: List[Tuple[str, int, float]] = []
+    direction = 0
+    hi_px, hi_idx = vals[0], 0
+    lo_px, lo_idx = vals[0], 0
+
+    for idx, v in enumerate(vals[1:], start=1):
+        if direction == 0:
+            if v > hi_px:
+                hi_px, hi_idx = v, idx
+            if v < lo_px:
+                lo_px, lo_idx = v, idx
+            if lo_px > 0 and (v - lo_px) / lo_px >= thr and lo_idx < idx:
+                pivots.append(("LOW", lo_idx, lo_px))
+                direction = 1
+                hi_px, hi_idx = v, idx
+            elif hi_px > 0 and (hi_px - v) / hi_px >= thr and hi_idx < idx:
+                pivots.append(("HIGH", hi_idx, hi_px))
+                direction = -1
+                lo_px, lo_idx = v, idx
+        elif direction == 1:
+            if v >= hi_px:
+                hi_px, hi_idx = v, idx
+            elif hi_px > 0 and (hi_px - v) / hi_px >= thr:
+                pivots.append(("HIGH", hi_idx, hi_px))
+                direction = -1
+                lo_px, lo_idx = v, idx
+        else:
+            if v <= lo_px:
+                lo_px, lo_idx = v, idx
+            elif lo_px > 0 and (v - lo_px) / lo_px >= thr:
+                pivots.append(("LOW", lo_idx, lo_px))
+                direction = 1
+                hi_px, hi_idx = v, idx
+
+    chain: List[Tuple[str, int, float]] = list(pivots)
+    if direction == 1 and chain and chain[-1][2] > 0:
+        if (hi_px - chain[-1][2]) / chain[-1][2] >= thr:
+            chain.append(("HIGH", hi_idx, hi_px))
+    elif direction == -1 and chain and chain[-1][2] > 0:
+        if (chain[-1][2] - lo_px) / chain[-1][2] >= thr:
+            chain.append(("LOW", lo_idx, lo_px))
+
+    swing_legs_pct: List[float] = []
+    for i in range(1, len(chain)):
+        p0, p1 = chain[i - 1][2], chain[i][2]
+        if p0 > 0:
+            swing_legs_pct.append(round(((p1 - p0) / p0) * 100.0, 2))
+
+    major_low_px: Optional[float] = None
+    if direction == 1 and pivots:
+        swing_low_px = pivots[-1][2]
+        swing_high_px = max(hi_px, cur_v)
+        if len(pivots) >= 3 and pivots[-3][0] == "LOW" and pivots[-3][2] < swing_low_px:
+            major_low_px = pivots[-3][2]
+    elif direction == -1 and pivots:
+        swing_high_px = pivots[-1][2]
+        swing_low_px = min(lo_px, cur_v)
+        if len(pivots) >= 2 and pivots[-2][0] == "LOW" and pivots[-2][2] < swing_low_px:
+            major_low_px = pivots[-2][2]
+    else:
+        swing_low_px = min(vals)
+        swing_high_px = max(vals)
+
+    rally_pct = round(((cur_v / swing_low_px) - 1.0) * 100.0, 2) if swing_low_px > 0 else 0.0
+    pullback_pct = round(((cur_v / swing_high_px) - 1.0) * 100.0, 2) if swing_high_px > 0 else 0.0
+    major_rally_pct = (
+        round(((cur_v / major_low_px) - 1.0) * 100.0, 2)
+        if major_low_px and major_low_px > 0
+        else None
+    )
+    eff_rally_pct = rally_pct
+    if major_rally_pct is not None and pullback_pct >= -2.0 and major_rally_pct > eff_rally_pct:
+        eff_rally_pct = major_rally_pct
+
+    if eff_rally_pct >= 5.0 and pullback_pct > -3.0:
+        zone = "STRONG_SELL_HARVEST_ZONE(+5%..+8%+)"
+    elif eff_rally_pct >= 3.0 and pullback_pct > -3.0:
+        zone = "SELL_HARVEST_ZONE(+3%..+5%)"
+    elif pullback_pct <= -5.0 and rally_pct < 3.0:
+        zone = "STRONG_BUY_DIP_ZONE(-5%..-8%+)"
+    elif pullback_pct <= -3.0 and rally_pct < 3.0:
+        zone = "BUY_DIP_ZONE(-3%..-5%)"
+    else:
+        zone = "MID_SWING_NEUTRAL(<3%)"
+
+    out: Dict[str, Any] = {
+        "swing_low_px": round(swing_low_px, decimals) if decimals is not None else swing_low_px,
+        "swing_high_px": round(swing_high_px, decimals) if decimals is not None else swing_high_px,
+        "rally_from_swing_low_pct": rally_pct,
+        "pullback_from_swing_high_pct": pullback_pct,
+        "swing_action_zone": zone,
+    }
+    if major_rally_pct is not None and major_low_px is not None and major_rally_pct > rally_pct:
+        out["major_swing_low_px"] = round(major_low_px, decimals) if decimals is not None else major_low_px
+        out["rally_from_major_low_pct"] = major_rally_pct
+    if swing_legs_pct:
+        out["recent_swings_7d"] = [f"{x:+.1f}%" for x in swing_legs_pct[-5:]]
+        out["avg_swing_amp_7d_pct"] = round(
+            sum(abs(x) for x in swing_legs_pct) / len(swing_legs_pct), 2
+        )
+    return out
+
+
+def _evaluate_position_swing_signal(
+    pos: Dict[str, Any],
+    pinfo: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Compute a deterministic 3%–8% swing-harvest / dip-buy / anti-whipsaw guidance label for a tradable position."""
+    if not isinstance(pos, dict):
+        return None
+    p_dict = pinfo if isinstance(pinfo, dict) else {}
+    val_usd = _parse_finite_float(pos.get("value_usd"), 0.0)
+    last_side = str(pos.get("last_action_side") or "").upper()
+    pnl_last_buy = _parse_finite_float(pos.get("pnl_vs_last_buy_pct"), None)
+    pnl_low_buy = _parse_finite_float(pos.get("pnl_vs_lowest_buy_pct"), None)
+    pnl_cyc_cost = _parse_finite_float(pos.get("pnl_vs_cycle_cost_pct"), None)
+    pnl_avg = _parse_finite_float(pos.get("pnl_vs_avg_pct"), None)
+    chg_last_sell = _parse_finite_float(pos.get("chg_vs_last_sell_pct"), None)
+
+    rally_low = _parse_finite_float(p_dict.get("rally_from_swing_low_pct"), None)
+    rally_maj = _parse_finite_float(p_dict.get("rally_from_major_low_pct"), None)
+    pullback_high = _parse_finite_float(p_dict.get("pullback_from_swing_high_pct"), None)
+    bnc_24h = _parse_finite_float(p_dict.get("bounce_24h_low_pct"), None)
+    dd_24h = _parse_finite_float(p_dict.get("dd_24h_high_pct"), None)
+
+    eff_pullback = (
+        pullback_high
+        if pullback_high is not None
+        else (dd_24h if dd_24h is not None else 0.0)
+    )
+
+    # 1. Anti-whipsaw guard right after a SELL when price has only pulled back shallowly (< 3%)
+    if (
+        last_side == "SELL"
+        and chg_last_sell is not None
+        and -3.0 < chg_last_sell < 0.0
+        and eff_pullback > -3.0
+    ):
+        return (
+            f"ANTI_WHIPSAW_HOLD_NO_REBUY(shallow_post_sell_dip={chg_last_sell:+.2f}%_vs_last_sell, "
+            f"pullback_high={eff_pullback:+.2f}% < 3.0% threshold — wait for -3%..-8% pullback before re-buying)"
+        )
+
+    # 2. Swing harvest SELL signal (+3% to +8%+ rally from swing low or buy tranches)
+    tranche_gains = [
+        g for g in (pnl_last_buy, pnl_low_buy, pnl_cyc_cost, pnl_avg) if g is not None
+    ]
+    wave_gains = [
+        g
+        for g in (
+            rally_low,
+            bnc_24h,
+            rally_maj if eff_pullback >= -2.0 else None,
+        )
+        if g is not None
+    ]
+    can_harvest_after_sell = (
+        last_side != "SELL"
+        or chg_last_sell is None
+        or chg_last_sell >= 0.0
+        or ((rally_low or 0.0) >= 3.0 and max(tranche_gains, default=0.0) >= 3.0)
+    )
+    if val_usd >= 10.0 and eff_pullback > -3.0 and can_harvest_after_sell:
+        max_gain = max(tranche_gains + wave_gains, default=0.0)
+        best_tranche = max(tranche_gains, default=None)
+        if max_gain >= 5.0 and (
+            best_tranche is None or best_tranche >= 1.5 or (rally_low or 0.0) >= 5.0
+        ):
+            return (
+                f"STRONG_SELL_HARVEST_CANDIDATE(advance={max_gain:+.2f}% in +5%..+8%+ zone — "
+                "harvest profit tranche now)"
+            )
+        if max_gain >= 3.0 and (
+            best_tranche is None or best_tranche >= 1.0 or (rally_low or 0.0) >= 3.0
+        ):
+            return (
+                f"SELL_HARVEST_CANDIDATE(advance={max_gain:+.2f}% in +3%..+5% zone — "
+                "harvest profit tranche on stall/exhaustion)"
+            )
+
+    # 3. Swing dip BUY signal (-3% to -8%+ pullback from swing high or last sell)
+    pb_cands = [
+        x
+        for x in (
+            pullback_high,
+            dd_24h,
+            chg_last_sell if last_side == "SELL" else None,
+        )
+        if x is not None
+    ]
+    min_pb = min(pb_cands, default=0.0)
+    if min_pb <= -5.0 and (rally_low is None or rally_low < 3.0):
+        return (
+            f"STRONG_BUY_DIP_CANDIDATE(pullback={min_pb:+.2f}% in -5%..-8%+ zone — "
+            "accumulate tranche on support/stabilization)"
+        )
+    if min_pb <= -3.0 and (rally_low is None or rally_low < 3.0):
+        return (
+            f"BUY_DIP_CANDIDATE(pullback={min_pb:+.2f}% in -3%..-5% zone — "
+            "accumulate tranche on support/stabilization)"
+        )
+    if (
+        last_side == "BUY"
+        and pnl_last_buy is not None
+        and -3.0 < pnl_last_buy < -0.5
+        and min_pb > -3.0
+    ):
+        return (
+            f"ANTI_WHIPSAW_NO_DCA_YET(shallow_dip={pnl_last_buy:+.2f}%_vs_last_buy, "
+            f"pullback_high={min_pb:+.2f}% < 3.0% threshold — wait for -3%..-8% pullback)"
+        )
+    return None
+
+
 def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None) -> Dict[str, Any]:
-    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) from a price series."""
+    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%–8% swing waves from a price series."""
     if not isinstance(vals, list) or len(vals) < 2 or vals[0] <= 0:
         return {}
     raw_low, raw_high, cur_v = min(vals), max(vals), vals[-1]
@@ -371,6 +607,7 @@ def _compute_7d_range_metrics(vals: List[float], decimals: Optional[int] = None)
         metrics["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
     if h7_v > l7_v > 0:
         metrics["pos_7d_pct"] = round(((cur_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
+    metrics.update(_compute_swing_wave_metrics(vals, decimals=decimals))
     return metrics
 
 
@@ -1557,9 +1794,22 @@ class AutonomousAIReconciler:
             if isinstance(ro, dict):
                 lb = ro.get("last_buy")
                 ls = ro.get("last_sell")
+                if ro.get("last_action_side"):
+                    pos["last_action_side"] = str(ro.get("last_action_side")).upper()
                 _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
                 _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
                 _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
+                r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
+                low_buy_px = min(
+                    (
+                        _parse_finite_float(b.get("price"), 0.0)
+                        for b in r_buys
+                        if isinstance(b, dict) and _parse_finite_float(b.get("price"), 0.0) > 0
+                    ),
+                    default=0.0,
+                )
+                if low_buy_px > 0:
+                    _set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
             venue_cyc_maps = (
                 (hyperliquid_cycles, kraken_cycles, t212_cycles)
                 if p_venue == "hyperliquid"
@@ -1578,9 +1828,23 @@ class AutonomousAIReconciler:
                 if not isinstance(cyc, dict):
                     continue
                 _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+                _set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
+            sym_pinfo = snapshot.prices_and_trends.get(p_sym)
+            if not isinstance(sym_pinfo, dict):
+                sym_pinfo = next(
+                    (
+                        snapshot.prices_and_trends[c]
+                        for c in p_variants
+                        if isinstance(snapshot.prices_and_trends.get(c), dict)
+                    ),
+                    None,
+                )
+            sw_sig = _evaluate_position_swing_signal(pos, sym_pinfo)
+            if sw_sig:
+                pos["swing_signal"] = sw_sig
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents_state.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -2083,6 +2347,30 @@ class AutonomousAIReconciler:
                     extras.append(
                         f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
                     )
+                if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None:
+                    sw_l = pinfo.get("swing_low_px")
+                    sw_h = pinfo.get("swing_high_px")
+                    sw_ral = _parse_finite_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
+                    sw_pb = _parse_finite_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
+                    sw_zone = pinfo.get("swing_action_zone") or "MID_SWING_NEUTRAL(<3%)"
+                    maj_sfx = ""
+                    if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None:
+                        maj_sfx = (
+                            f", major_low={pinfo.get('major_swing_low_px')}"
+                            f"(rally={_parse_finite_float(pinfo.get('rally_from_major_low_pct'), 0.0):+.2f}%)"
+                        )
+                    hist_sfx = ""
+                    if isinstance(pinfo.get("recent_swings_7d"), list) and pinfo["recent_swings_7d"]:
+                        amp_s = (
+                            f", avg_amp={pinfo.get('avg_swing_amp_7d_pct')}%"
+                            if pinfo.get("avg_swing_amp_7d_pct") is not None
+                            else ""
+                        )
+                        hist_sfx = f" swings_7d=[{', '.join(str(x) for x in pinfo['recent_swings_7d'])}]{amp_s}"
+                    extras.append(
+                        f"swing_wave(low={sw_l}, high={sw_h}, rally_low={sw_ral:+.2f}%, "
+                        f"pullback_high={sw_pb:+.2f}%{maj_sfx}, zone={sw_zone}){hist_sfx}"
+                    )
                 if "slope_15m" in pinfo:
                     fast_sfx = ""
                     if (
@@ -2193,8 +2481,18 @@ class AutonomousAIReconciler:
                     t_extra = ""
                     if pos.get("active_avg_buy_px") is not None:
                         t_extra += f", avg_buy_px={pos.get('active_avg_buy_px')} (pnl_vs_avg={pos.get('pnl_vs_avg_pct')}%)"
+                    if (
+                        pos.get("cycle_avg_cost_px") is not None
+                        and pos.get("cycle_avg_cost_px") != pos.get("active_avg_buy_px")
+                    ):
+                        t_extra += f", cycle_avg_cost={pos.get('cycle_avg_cost_px')} (pnl_vs_cycle_cost={pos.get('pnl_vs_cycle_cost_pct')}%)"
                     if pos.get("last_buy_px") is not None:
                         t_extra += f", last_buy_px={pos.get('last_buy_px')} (pnl_vs_last_buy={pos.get('pnl_vs_last_buy_pct')}%)"
+                    if (
+                        pos.get("lowest_buy_px") is not None
+                        and pos.get("lowest_buy_px") != pos.get("last_buy_px")
+                    ):
+                        t_extra += f", lowest_buy_px={pos.get('lowest_buy_px')} (pnl_vs_lowest_buy={pos.get('pnl_vs_lowest_buy_pct')}%)"
                     if pos.get("last_sell_px") is not None:
                         t_extra += f", last_sell_px={pos.get('last_sell_px')} (chg_vs_last_sell={pos.get('chg_vs_last_sell_pct')}%)"
                     if pos.get("trailing_peak") is not None:
@@ -2206,6 +2504,8 @@ class AutonomousAIReconciler:
                         else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
                     )
                     t_extra += f", venue_fee_per_leg={fee_bps}bps"
+                    if pos.get("swing_signal"):
+                        t_extra += f" | SWING_3_8_RULE={pos.get('swing_signal')}"
                     context_items.append(
                         f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={pos.get('free_base')} "
                         f"(${pos.get('value_usd')} USD), free_{pos['quote']}=${pos.get('free_quote')}, "
@@ -2330,27 +2630,36 @@ class AutonomousAIReconciler:
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} using the complete "
                 "macro sentiment, geopolitical risk, live breaking news, multi-horizon price evolution "
-                "(1m/3m/5m/15m/30m/1h/3h/6h/12h/24h/7d, 15m tick tape, 24h & 7d range geometry, relative vs_btc deltas, and alt_btc_24h range geometry), "
+                "(1m/3m/5m/15m/30m/1h/3h/6h/12h/24h/7d, 15m tick tape, 24h & 7d range geometry, 7d 3%–8% swing waves from cache_watcher_all_price.json, relative vs_btc deltas, and alt_btc_24h range geometry), "
                 "dynamic slopes, volatility, and real wallet/account balances + "
                 "cycle entry anchors above.\n"
-                "   - FULL AI AUTHORITY & QUANTITATIVE GUIDANCE (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "
+                "   - FULL AI AUTHORITY & QUANTITATIVE 3%–8% SWING HARVESTING RULES (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "
                 "is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
                 "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
                 "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
                 "symmetrically on both BUY and SELL. You hold 100% autonomous quantitative judgment for profit harvesting, "
-                "multi-tranche scaling, and capital protection, guided by these core principles:\n"
-                "     * SELL (Take-Profit, Tranche Harvesting OR Defensive Risk Reduction): Emit 'SELL' on any tradable instrument "
-                f"with free base inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion / approaches "
-                "major resistance (including harvesting profitable dip-buy tranches when `pnl_vs_last_buy` is "
-                "solidly positive) AND when protective/defensive de-risking is warranted EVEN BELOW entry/last-BUY price "
+                "multi-tranche scaling, and capital protection, governed by these explicit quantitative swing rules:\n"
+                "     * SELL (Mandatory +3% to +8% Swing Profit Harvesting, Tranche Scaling OR Defensive Risk Reduction): Emit 'SELL' on EVERY tradable instrument "
+                f"(across Binance, Kraken, Hyperliquid, or T212) with free base inventory >= ${min_usd:g} USD when:\n"
+                "       (a) SWING RALLY HARVEST (+3% to +8%+ RULE): Whenever a coin advances by >= +3.0% (and with high urgency as it approaches +5.0% to +8.0%+) "
+                "from its active swing low (`rally_low` / `major_low` in `swing_wave(...)` from `cache_watcher_all_price.json`, or `bounce_low` in 24h range) "
+                "OR vs its buy anchors (`pnl_vs_last_buy`, `pnl_vs_lowest_buy`, `pnl_vs_cycle_cost`, or `pnl_vs_avg` >= +3.0%, or `SWING_3_8_RULE` shows "
+                "`*SELL_HARVEST_CANDIDATE*`) and short-term momentum decelerates/plateaus near upper range (`pos_24h >= 75-95%` or flattening 1m/3m/5m/15m slopes), "
+                "actively harvest profits in tranches! Scale SELL tranche size progressively higher as the move extends from +3% toward +7%–8%+, harvesting profitable "
+                "lower dip-buy tranches even if an older historical cycle average is higher, and evaluate ALL venues symmetrically (do NOT leave profitable Kraken/Hyperliquid "
+                "positions like HYPEUSD unsold while harvesting Binance coins).\n"
+                "       (b) DEFENSIVE DE-RISKING: Also emit 'SELL' EVEN BELOW entry/last-BUY price when protective de-risking is warranted "
                 "(e.g. structural breakdown, accelerating multi-horizon selloff, distribution, or macro/geopolitical shock "
                 "where cutting/trimming exposure protects capital against a deeper drop). Distinguish true structural "
                 "breakdowns from shallow liquidity sweeps into strong support/bid walls.\n"
-                "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable instrument whose venue has free quote "
-                f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals near support/bid walls, steady upward "
-                "recovery/inflection after a prior exit, or confirmed momentum breakouts (scaling in across cycles while "
-                "avoiding immediate whipsaw buybacks at the same price right after a take-profit SELL unless a structural "
-                "breakout is confirmed).\n"
+                "     * BUY (Mandatory -3% to -8% Swing Dip Accumulation, Strict Anti-Whipsaw Cooldown & Breakout): Emit 'BUY' on any tradable instrument whose venue has free quote "
+                f"cash >= ${min_usd:g} USD when:\n"
+                "       (a) SWING DIP ACCUMULATION (-3% to -8%+ RULE): The coin has pulled back by -3.0% to -8.0%+ from its recent swing high (`pullback_high` in `swing_wave(...)` "
+                "or `dd_high` in 24h range <= -3.0%, or `SWING_3_8_RULE` shows `*BUY_DIP_CANDIDATE*`) OR is down >= -3.0% below `last_sell_px` / `last_buy_px` and shows "
+                "washed-out selling exhaustion / stabilization near support/bid walls.\n"
+                "       (b) STRICT ANTI-WHIPSAW / NO SHALLOW RE-BUY RULE: Right after a take-profit SELL (or recent BUY), do NOT re-buy on a shallow pullback of < 2.5%–3.0% "
+                "(e.g. when `chg_vs_last_sell` is only -0.5% to -2.0% or `SWING_3_8_RULE` shows `ANTI_WHIPSAW_*`). Preserve quote cash for a real -3% to -8% retracement wave "
+                "(unless a confirmed structural momentum breakout above the prior swing peak occurs).\n"
                 f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
                 "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
