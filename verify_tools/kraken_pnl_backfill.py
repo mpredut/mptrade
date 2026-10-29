@@ -17,7 +17,9 @@ ROOT = os.path.dirname(_HERE)                      # Repository root (parent of 
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import safe_float as _safe_float
+from botcore import safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+
+_safe_float = safe_float
 from providers.base import env_value
 
 KD = os.path.join(ROOT, 'kraken')
@@ -62,7 +64,7 @@ def fetch_all_trades(cli):
         raw_trades = res.get('trades')
         batch = raw_trades if isinstance(raw_trades, dict) else {}
         if total is None:
-            total = int(_safe_float(res.get('count'), 0.0))
+            total = safe_nonneg_int(res.get('count'), default=0)
         if not batch:
             break
         all_trades.update(batch)
@@ -90,11 +92,11 @@ def main():
         if not isinstance(t, dict):
             continue
         pair = str(t.get('pair') or '?').strip() or '?'
-        px = _safe_float(extract_order_price(t), 0.0)
-        qty = _safe_float(extract_order_qty(t), 0.0)
+        px = safe_pos_float(extract_order_price(t), default=0.0)
+        qty = safe_pos_float(extract_order_qty(t), default=0.0)
         if px <= 0.0 or qty <= 0.0:
             continue
-        cost = _safe_float(t.get('cost'), 0.0)
+        cost = safe_pos_float(t.get('cost'), default=0.0)
         if cost <= 0.0:
             cost = px * qty
         by_sym.setdefault(pair, []).append(dict(
@@ -102,7 +104,7 @@ def main():
             price=px,
             qty=qty,
             cost=cost,
-            fee=max(0.0, _safe_float(t.get('fee'), 0.0)),
+            fee=safe_nonneg_float(t.get('fee'), default=0.0),
             time=extract_timestamp_ms(t, default=0) or 0))
     out = {'items': by_sym, 'source': 'TradesHistory full (read-only)',
            'total': total, 'generated': dt.datetime.now().isoformat()}

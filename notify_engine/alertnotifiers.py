@@ -22,11 +22,14 @@ from botcore import (
     _parse_bool_flag,
     float_env,
     int_env,
-    safe_float as _safe_float,
-    safe_int as _safe_int,
-    safe_pos_float as _safe_pos_float,
-    safe_pos_int as _safe_pos_int,
+    safe_float,
+    safe_int,
+    safe_nonneg_int,
+    safe_pos_float,
 )
+
+_safe_float = safe_float
+_safe_pos_float = safe_pos_float
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -90,12 +93,12 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def _safe_pos_int(val: Any, default: int = 1) -> int:
-    f = _safe_pos_float(val, default=None)
+    f = safe_pos_float(val, default=None)
     return int(f) if (f is not None and f.is_integer()) else default
 
 
 def _resolve_gate_now(now: Optional[float]) -> float:
-    nf = _safe_pos_float(now, default=None)
+    nf = safe_pos_float(now, default=None)
     if nf is not None and nf < 32503680000.0:
         return nf
     return time.time()
@@ -443,7 +446,7 @@ def pass_common_gate(
             state["channels"][channel] = raw_ch
         channel_state = raw_ch
         if channel == "ntfy" and channel_state.get("blocked"):
-            blocked_until = _safe_float(channel_state.get("blocked_until", 0.0), 0.0)
+            blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
             if blocked_until > 0 and now_ts >= blocked_until:
                 channel_state["blocked"] = False
             else:
@@ -454,7 +457,7 @@ def pass_common_gate(
         cutoff = now_ts - 2 * 24 * 60 * 60
         cleaned_last: dict[str, float] = {}
         for key, value in last.items():
-            v_f = _safe_float(value, -1.0)
+            v_f = safe_float(value, -1.0)
             if cutoff <= v_f <= now_ts:
                 cleaned_last[key] = v_f
         channel_state["last"] = cleaned_last
@@ -477,19 +480,19 @@ def pass_common_gate(
 
         # 2. Eliminate if sent/seen within dedup or similarity window
         prev_fp = channel_state["last"].get(fingerprint)
-        prev_fp_f = _safe_float(prev_fp, -1.0)
+        prev_fp_f = safe_float(prev_fp, -1.0)
         if prev_fp is not None and prev_fp_f >= 0.0 and 0 <= now_ts - prev_fp_f < sim_window:
             _save_delivery_state(path, state)
             return False, "duplicate", False, None
 
         prev_sim = channel_state["last"].get(sim_key)
-        prev_sim_f = _safe_float(prev_sim, -1.0)
+        prev_sim_f = safe_float(prev_sim, -1.0)
         if prev_sim is not None and prev_sim_f >= 0.0 and 0 <= now_ts - prev_sim_f < sim_window:
             _save_delivery_state(path, state)
             return False, "similar_eliminated", False, None
 
         # 3. Daily routine budget check for ntfy
-        sent = max(0, int(_safe_float(channel_state.get("sent", 0), 0.0)))
+        sent = safe_nonneg_int(channel_state.get("sent", 0), default=0)
         if channel == "ntfy" and not urgent:
             budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
             reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
@@ -500,7 +503,7 @@ def pass_common_gate(
                 return False, "local_daily_budget", warn, None
 
         # 4. Check the 5-minute Common Gate
-        last_gate_ts = _safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
+        last_gate_ts = safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
         if last_gate_ts > now_ts:
             last_gate_ts = 0.0
         if gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
@@ -571,7 +574,7 @@ def pop_due_bulk_batch(
         pending_bulk: list[dict] = [it for it in raw_bulk if isinstance(it, dict)]
         if not pending_bulk:
             return None
-        last_gate_ts = _safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
+        last_gate_ts = safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
         if last_gate_ts > now_ts:
             last_gate_ts = 0.0
         if not force and gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
@@ -579,7 +582,7 @@ def pop_due_bulk_batch(
         items = list(pending_bulk)
         channel_state["pending_bulk"] = []
         channel_state["last_gate_ts"] = now_ts
-        prev_sent = max(0, int(_safe_float(channel_state.get("sent", 0), 0.0)))
+        prev_sent = safe_nonneg_int(channel_state.get("sent", 0), default=0)
         channel_state["sent"] = prev_sent + 1
         _save_delivery_state(path, state)
         return synthesize_bulk_notifications(items)
@@ -600,9 +603,7 @@ def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple
 def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:
     """Block the channel with a rolling cooldown and request one alternate warning."""
     now = time.time()
-    cd_sec = _safe_float(cooldown_seconds, 900.0)
-    if cd_sec <= 0.0:
-        cd_sec = 900.0
+    cd_sec = safe_pos_float(cooldown_seconds, default=900.0)
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -636,7 +637,7 @@ class AlertNotifier:
         if value is None or isinstance(value, bool):
             return "N/A"
         if isinstance(value, (int, float)):
-            vf = _safe_pos_float(value, default=None)
+            vf = safe_pos_float(value, default=None)
             if vf is None:
                 return str(value)
             try:
@@ -676,14 +677,14 @@ class AlertNotifier:
     @staticmethod
     def format_new_coin_message(alert: dict) -> str:
         raw_price = alert.get("price")
-        px_val = _safe_pos_float(raw_price, default=None)
+        px_val = safe_pos_float(raw_price, default=None)
         if px_val is not None:
             price_str = f"Price: ${px_val:.4f}"
         elif (
             isinstance(raw_price, str)
             and raw_price.strip()
             and raw_price.strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
-            and _safe_float(raw_price, default=None) is None
+            and safe_float(raw_price, default=None) is None
         ):
             price_str = f"Price: {raw_price}"
         else:
@@ -729,9 +730,9 @@ class AlertNotifier:
 
             alert_type = _alert_attr(alert, "alert_type", "")
             symbol = _alert_attr(alert, "symbol", "N/A")
-            pct_change = _safe_float(_alert_attr(alert, "percent_change", 0.0), 0.0)
-            current_price = _safe_float(_alert_attr(alert, "current_price", 0.0), 0.0)
-            ref_price = _safe_float(_alert_attr(alert, "reference_price", 0.0), 0.0)
+            pct_change = safe_float(_alert_attr(alert, "percent_change", 0.0), 0.0)
+            current_price = safe_float(_alert_attr(alert, "current_price", 0.0), 0.0)
+            ref_price = safe_float(_alert_attr(alert, "reference_price", 0.0), 0.0)
             ref_time_val = _alert_attr(alert, "reference_time") or _alert_attr(alert, "timestamp")
             url = _alert_attr(alert, "url")
 
@@ -790,9 +791,9 @@ class AlertNotifier:
                 )
                 sym = getattr(alert, "symbol", "N/A")
                 atype = getattr(alert, "alert_type", "")
-                pchg = _safe_float(getattr(alert, "percent_change", 0.0), 0.0)
-                cprice = _safe_float(getattr(alert, "current_price", 0.0), 0.0)
-                rprice = _safe_float(getattr(alert, "reference_price", 0.0), 0.0)
+                pchg = safe_float(getattr(alert, "percent_change", 0.0), 0.0)
+                cprice = safe_float(getattr(alert, "current_price", 0.0), 0.0)
+                rprice = safe_float(getattr(alert, "reference_price", 0.0), 0.0)
                 f.write(f"[{datetime.now().isoformat()}] {sym} - {atype} - {pchg:+.2f}%\n")
                 f.write(f"  Price: ${cprice:.4f}\n")
                 f.write(f"  Reference: ${rprice:.4f} (at {reference_time})\n")

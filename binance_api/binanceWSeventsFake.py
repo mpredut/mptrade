@@ -2,7 +2,7 @@ import math
 import threading
 import time
 
-from botcore import safe_float as _safe_float
+from botcore import safe_float
 from . import bapi as api   # package-local Binance API facade
 
 
@@ -34,9 +34,9 @@ def handle_execution_report(data):
             "side": side,
             "type": data.get("o", ""),
             "status": status,
-            "price": _safe_float(data.get("p"), 0.0),
-            "origQty": _safe_float(data.get("q"), 0.0),
-            "executedQty": _safe_float(data.get("z"), 0.0),
+            "price": safe_float(data.get("p"), 0.0),
+            "origQty": safe_float(data.get("q"), 0.0),
+            "executedQty": safe_float(data.get("z"), 0.0),
             "updateTime": data.get("E"),
         }
         if len(orders_cache) > _MAX_ORDERS_CACHE:
@@ -49,8 +49,8 @@ def handle_execution_report(data):
             "orderId": order_id,
             "symbol": symbol,
             "side": side,
-            "price": _safe_float(data.get("L", data.get("p")), 0.0),
-            "qty": _safe_float(data.get("l", data.get("z")), 0.0),
+            "price": safe_float(data.get("L", data.get("p")), 0.0),
+            "qty": safe_float(data.get("l", data.get("z")), 0.0),
             "time": data.get("T", data.get("E")),
         }
         trades_cache.append(trade)
@@ -64,8 +64,8 @@ def handle_balance_update(asset, delta, timestamp):
     if not isinstance(asset, str) or not asset.strip():
         return
     asset = asset.strip()
-    delta_f = _safe_float(delta, 0.0)
-    prev_f = _safe_float(balances_cache.get(asset, 0.0), 0.0)
+    delta_f = safe_float(delta, 0.0)
+    prev_f = safe_float(balances_cache.get(asset, 0.0), 0.0)
     balances_cache[asset] = prev_f + delta_f
     print(f"[BALANCE UPDATE] {asset}: {delta_f:+f} (at {timestamp})")
 
@@ -80,8 +80,8 @@ def handle_account_position(balances):
         if not isinstance(raw_asset, str) or not raw_asset.strip():
             continue
         asset = raw_asset.strip()
-        free = _safe_float(bal.get("f", bal.get("free", 0)), 0.0)
-        locked = _safe_float(bal.get("l", bal.get("locked", 0)), 0.0)
+        free = safe_float(bal.get("f", bal.get("free", 0)), 0.0)
+        locked = safe_float(bal.get("l", bal.get("locked", 0)), 0.0)
         balances_cache[asset] = free + locked
         updated += 1
         #print(f"asset {asset}, {balances_cache[asset]}")

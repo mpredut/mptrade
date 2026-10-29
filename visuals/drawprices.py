@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
-from botcore import safe_float, safe_int, safe_pos_int as _safe_pos_int
+from botcore import safe_float, safe_int, safe_pos_int
 import symbols as sym
 import cacheManager as cm
 
@@ -208,7 +208,7 @@ def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarr
 
 
 def make_sequences(series: np.ndarray, window: int):
-    win = _safe_pos_int(window, 1)
+    win = safe_pos_int(window, 1)
     if series is None or isinstance(series, (bool, str, bytes)) or len(series) <= win:
         return np.empty((0, win, 1), dtype=np.float64), np.empty((0,), dtype=np.float64)
     X, y = [], []
@@ -241,10 +241,10 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     if not ok:
         return None, f"LSTM indisponibil: {tf_or_err}"
 
-    window = _safe_pos_int(window, 20)
-    epochs = _safe_pos_int(epochs, 50)
-    batch_size = _safe_pos_int(batch_size, 16)
-    horizon = _safe_pos_int(horizon, 20)
+    window = safe_pos_int(window, 20)
+    epochs = safe_pos_int(epochs, 50)
+    batch_size = safe_pos_int(batch_size, 16)
+    horizon = safe_pos_int(horizon, 20)
 
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."

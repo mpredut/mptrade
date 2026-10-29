@@ -11,12 +11,17 @@ import requests
 from collections import defaultdict
 from typing import Dict, Any, List
 
-from botcore import _parse_bool_flag, load_env_stack, safe_nonneg_float
+from botcore import (
+    _parse_bool_flag,
+    load_env_stack,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+)
 from cachepaths import normalize_venue_name
 from notify_engine.alertnotifiers import (
     _alert_attr,
     _external_notifications_disabled,
-    _safe_float,
     is_fake_alert_text,
 )
 from notify_engine.mailer import (
@@ -403,7 +408,7 @@ class NotificationServer:
                 if len(alerts) == 1:
                     sym = _alert_attr(first, "symbol", "N/A")
                     atype = _alert_attr(first, "alert_type", "alert")
-                    pchg = _safe_float(_alert_attr(first, "percent_change", 0.0), 0.0)
+                    pchg = safe_float(_alert_attr(first, "percent_change", 0.0), 0.0)
                     dir_str = "▲" if atype == "up" else "▼"
                     title = f"{sym} {dir_str} {pchg:+.2f}%"
                 else:
@@ -799,10 +804,9 @@ class NotificationServer:
                                 f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
                             )
                         else:
-                            from notify_engine.alertnotifiers import _safe_float
                             failed_intents.add(intent)
                             queue_dirty = True
-                            retries = max(0, int(_safe_float(payload.get("retry_count", 0), 0.0))) + 1
+                            retries = safe_nonneg_int(payload.get("retry_count", 0), default=0) + 1
                             if retries >= _MAX_QUEUE_RETRIES:
                                 logging.warning(
                                     f"Dropping queued {intent} notification after {retries} failed retries"
