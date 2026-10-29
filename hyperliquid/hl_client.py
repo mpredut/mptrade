@@ -267,13 +267,10 @@ class HLClient:
                 raw_entry = p.get("entryPx")
                 if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
                     raise HLError(f"Invalid boolean position state for {coin}")
-                try:
-                    szi = float(raw_szi or 0.0)
-                    entry = float(raw_entry or 0.0)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise HLError(f"Invalid numeric position state for {coin}") from exc
-                if not (math.isfinite(szi) and math.isfinite(entry)) or entry < 0.0:
-                    raise HLError(f"Invalid non-finite position state for {coin}")
+                szi = safe_float(raw_szi or 0.0, default=None)
+                entry = safe_nonneg_float(raw_entry or 0.0, default=None)
+                if szi is None or entry is None:
+                    raise HLError(f"Invalid numeric position state for {coin}")
                 return szi, entry
         return 0.0, 0.0
 
@@ -362,12 +359,9 @@ class HLClient:
                 raw_tot = b.get("total")
                 if isinstance(raw_tot, bool):
                     raise HLError(f"Invalid boolean spot balance for {token}")
-                try:
-                    tot = float(raw_tot or 0.0)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise HLError(f"Invalid numeric spot balance for {token}") from exc
-                if not math.isfinite(tot) or tot < 0.0:
-                    raise HLError(f"Invalid non-finite spot balance for {token}")
+                tot = safe_nonneg_float(raw_tot or 0.0, default=None)
+                if tot is None:
+                    raise HLError(f"Invalid numeric spot balance for {token}")
                 return tot
         return 0.0
 
@@ -482,16 +476,13 @@ class HLClient:
             return False, None, "invalid tif"
         if isinstance(sz, bool) or isinstance(px, bool) or isinstance(sz_decimals, bool):
             return False, None, "invalid boolean order parameter"
-        try:
-            sz_f = float(sz)
-            px_f = float(px)
-            dec_f = float(sz_decimals)
-            if not math.isfinite(dec_f) or not dec_f.is_integer() or int(dec_f) < 0:
-                return False, None, "invalid numeric order parameter"
-            dec_i = max(0, min(int(dec_f), 18))
-        except (TypeError, ValueError, OverflowError):
+        sz_f = safe_float(sz, default=None)
+        px_f = safe_float(px, default=None)
+        dec_raw = _exact_int_in_range(sz_decimals, 0)
+        if sz_f is None or px_f is None or dec_raw is None:
             return False, None, "invalid numeric order parameter"
-        if not (math.isfinite(sz_f) and sz_f > 0 and math.isfinite(px_f) and px_f > 0):
+        dec_i = min(dec_raw, 18)
+        if sz_f <= 0 or px_f <= 0:
             return False, None, "invalid non-positive sz or px"
         sz = round(sz_f, dec_i)
         px = _round_px(px_f, dec_i, is_perp=False)
@@ -536,12 +527,11 @@ class HLClient:
             return False, None, "invalid non-boolean is_buy or reduce_only"
         if isinstance(sz, bool) or isinstance(px, bool):
             return False, None, "invalid boolean order parameter"
-        try:
-            sz_f = float(sz)
-            px_f = float(px)
-        except (TypeError, ValueError, OverflowError):
+        sz_f = safe_float(sz, default=None)
+        px_f = safe_float(px, default=None)
+        if sz_f is None or px_f is None:
             return False, None, "invalid numeric order parameter"
-        if not (math.isfinite(sz_f) and sz_f > 0 and math.isfinite(px_f) and px_f > 0):
+        if sz_f <= 0 or px_f <= 0:
             return False, None, "invalid non-positive sz or px"
         dec_i = self.sz_decimals(coin)
         sz = round(sz_f, dec_i)
@@ -566,20 +556,15 @@ class HLClient:
         ):
             return False
         coin = coin.strip()
-        try:
-            if isinstance(oid, (int, float)):
-                oid_f = float(oid)
-            elif isinstance(oid, str):
-                s_oid = oid.strip()
-                if s_oid.endswith(".0") and s_oid[:-2].lstrip("+").isdigit():
-                    s_oid = s_oid[:-2]
-                oid_f = float(int(s_oid))
-            else:
+        if isinstance(oid, str):
+            s_oid = oid.strip()
+            if s_oid.endswith(".0") and s_oid[:-2].lstrip("+").isdigit():
+                s_oid = s_oid[:-2]
+            if not s_oid.lstrip("+").isdigit():
                 return False
-            if not math.isfinite(oid_f) or not oid_f.is_integer() or int(oid_f) <= 0:
-                return False
-            oid_i = int(oid_f)
-        except (TypeError, ValueError, OverflowError):
+            oid = s_oid
+        oid_i = _exact_int_in_range(oid, 1)
+        if oid_i is None:
             return False
         try:
             res = self.exchange.cancel(coin, oid_i)

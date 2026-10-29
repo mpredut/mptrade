@@ -185,29 +185,10 @@ class BybitLiquidationCollector:
         for item in data_items:
             if not isinstance(item, dict):
                 continue
-            try:
-                raw_sym = item["s"]
-                if not isinstance(raw_sym, str):
-                    continue
-                symbol = raw_sym.strip().upper().replace("/", "").replace("-", "").replace("_", "")
-                if not symbol:
-                    continue
-                side = _normalize_liq_side(item.get("S"))
-                if side is None:
-                    continue
-                v = safe_pos_float(item.get("v"), default=None)
-                p = safe_pos_float(item.get("p"), default=None)
-                if v is None or p is None:
-                    continue
-                notional = v * p
-            except (KeyError, ValueError, TypeError):
-                continue
-            with self._lock:
-                dq = self._events.setdefault(symbol, deque())
-                dq.append((now, side, notional))
-                cutoff = now - self._retention
-                while dq and (not math.isfinite(dq[0][0]) or dq[0][0] < cutoff):
-                    dq.popleft()
+            v = safe_pos_float(item.get("v"), default=None)
+            p = safe_pos_float(item.get("p"), default=None)
+            if v is not None and p is not None:
+                self.record_event(item.get("s"), item.get("S"), v * p, ts=now)
 
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""

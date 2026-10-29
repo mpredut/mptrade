@@ -29,12 +29,8 @@ def remaining_average_cost(fills, held_qty):
     Matching inventory is necessary evidence, not proof of complete transfer history.
     """
     try:
-        if isinstance(held_qty, bool):
-            return None
-        held_qty = float(held_qty)
-        if not math.isfinite(held_qty) or held_qty <= 0:
-            return None
-        if fills is None or isinstance(fills, (str, bytes, bool)):
+        held_qty = safe_pos_float(held_qty, default=None)
+        if held_qty is None or fills is None or isinstance(fills, (str, bytes, bool)):
             return None
         qty, cost, last_ts = 0.0, 0.0, 0.0
         seen = set()
@@ -170,15 +166,10 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     if requested_qty is None:
         requested = float("inf")
     else:
-        if isinstance(requested_qty, bool):
+        raw_req = safe_float(requested_qty, default=None)
+        if raw_req is None:
             raise ValueError("requested quantity must be finite")
-        try:
-            requested = float(requested_qty)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("requested quantity must be finite") from exc
-        if not math.isfinite(requested):
-            raise ValueError("requested quantity must be finite")
-        requested = max(0.0, requested)
+        requested = max(0.0, raw_req)
     if known_balance is not None:
         balance_cap, asset = balance_cap_quantity(
             lambda _asset: known_balance, symbol, side, price, base=base, quote=quote)

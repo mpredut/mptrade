@@ -25,6 +25,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from cachepaths import canonical_symbol_key
 
 from .strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
@@ -175,7 +176,7 @@ class AuditedStrategyExecutor:
     def _norm_symbol_key(symbol: object) -> str:
         if symbol is None or isinstance(symbol, bool):
             return ""
-        return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        return canonical_symbol_key(symbol) or str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
 
     @staticmethod
     def _norm_order_id_key(order_id: object) -> str:

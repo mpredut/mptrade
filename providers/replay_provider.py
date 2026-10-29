@@ -20,7 +20,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import utils
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_base_asset
 from providers.base import MarketDataProvider, normalize_side
 from providers.strategy_executor import PairPrecision
@@ -60,15 +60,13 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
                 continue
             try:
                 ts_ms, price = rec["i"]
-                if isinstance(ts_ms, bool) or isinstance(price, bool):
-                    continue
-                ts_sec = float(ts_ms) / 1000.0
-                px_val = float(price)
-                if not (ts_sec == ts_sec and abs(ts_sec) != float("inf") and ts_sec > 0 and px_val == px_val and abs(px_val) != float("inf") and px_val > 0):
-                    continue
-                out.append((ts_sec, px_val))
-            except (KeyError, TypeError, ValueError, OverflowError):
+            except (KeyError, TypeError, ValueError):
                 continue
+            ts_ms_f = safe_pos_float(ts_ms, default=None)
+            px_val = safe_pos_float(price, default=None)
+            if ts_ms_f is None or px_val is None:
+                continue
+            out.append((ts_ms_f / 1000.0, px_val))
     out.sort(key=lambda x: x[0])
     return out
 
@@ -144,17 +142,10 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
         Return ``None`` when the series has ended and do not advance beyond it.
         """
-        if isinstance(steps, bool) or steps is None:
+        steps_f = safe_float(steps, default=None)
+        if steps_f is None or not steps_f.is_integer() or int(steps_f) <= 0:
             return None
-        try:
-            steps_f = float(steps)
-            if not math.isfinite(steps_f) or not steps_f.is_integer():
-                return None
-            steps_int = int(steps_f)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if steps_int <= 0:
-            return None
+        steps_int = int(steps_f)
         series = self._series.get(symbol)
         if not series:
             return None

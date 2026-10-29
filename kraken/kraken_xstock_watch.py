@@ -285,17 +285,10 @@ BOT_LOG = os.path.join(_HERE, "xstock_bot.log")
 
 
 def _bot_alive(pid) -> bool:
-    if not pid or isinstance(pid, (bool, dict, list, tuple, set)):
+    pf = safe_float(pid, default=None)
+    if pf is None or not pf.is_integer() or int(pf) <= 1:
         return False
-    try:
-        pf = float(pid)
-        if not math.isfinite(pf) or pf != int(pf):
-            return False
-        pid = int(pf)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if pid <= 1:
-        return False
+    pid = int(pf)
     try:
         # Reap a dead child; otherwise kill(0) would incorrectly report it as alive.
         done, _ = os.waitpid(pid, os.WNOHANG)

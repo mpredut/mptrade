@@ -17,8 +17,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float
-from cachepaths import normalize_venue_name
+from botcore import _parse_bool_flag, safe_float, safe_int, safe_pos_float, safe_nonneg_float
+from cachepaths import canonical_symbol_key, normalize_venue_name
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -271,13 +271,10 @@ class BinanceProvider(MarketDataProvider):
                 quote_fee=fee_info["quote_fee"]))
         def _trade_sort_key(item: dict) -> tuple[int, int, str]:
             raw_id = item.get("id")
-            if not isinstance(raw_id, bool):
-                try:
-                    id_int = int(raw_id)
-                    return (int(item["timestamp"]), 0, f"{id_int:020d}")
-                except (TypeError, ValueError, OverflowError):
-                    pass
-            return (int(item["timestamp"]), 1, str(raw_id or ""))
+            id_int = safe_int(raw_id, default=None)
+            if id_int is not None:
+                return (int(item["timestamp"]), 0, f"{id_int:020d}")
+            return (int(item["timestamp"]), 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
 
         normalized.sort(key=_trade_sort_key)
         return remaining_average_cost(normalized, held_qty)
@@ -302,14 +299,11 @@ class BinanceProvider(MarketDataProvider):
             raw_exec = order.get("executedQty")
             if any(isinstance(v, bool) for v in (raw_px, raw_orig, raw_exec)):
                 raise ProviderError(f"open_orders({symbol}): boolean numeric field in order")
-            try:
-                price_f = float(raw_px or 0.0)
-                orig_f = float(raw_orig or 0.0)
-                exec_f = float(raw_exec or 0.0)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ProviderError(f"open_orders({symbol}): invalid numeric field in order") from exc
-            if not all(math.isfinite(v) and v >= 0.0 for v in (price_f, orig_f, exec_f)):
-                raise ProviderError(f"open_orders({symbol}): non-finite or negative field in order")
+            price_f = safe_nonneg_float(raw_px or 0.0, default=None)
+            orig_f = safe_nonneg_float(raw_orig or 0.0, default=None)
+            exec_f = safe_nonneg_float(raw_exec or 0.0, default=None)
+            if None in (price_f, orig_f, exec_f):
+                raise ProviderError(f"open_orders({symbol}): invalid or negative numeric field in order")
             raw_oid = order.get("orderId")
             try:
                 oid_int = _parse_binance_order_id(raw_oid, f"open_orders({symbol})")
@@ -653,23 +647,10 @@ class BinanceProvider(MarketDataProvider):
         for trade in trades:
             if not isinstance(trade, dict):
                 continue
-            raw_tid = trade.get("orderId", -1)
-            if raw_tid is None or isinstance(raw_tid, bool):
-                continue
             try:
-                if isinstance(raw_tid, int):
-                    tid_i = raw_tid
-                elif isinstance(raw_tid, str):
-                    s_tid = raw_tid.strip()
-                    tid_i = int(s_tid) if s_tid.lstrip("+-").isdigit() else int(float(s_tid))
-                else:
-                    tid_f = float(raw_tid)
-                    if not math.isfinite(tid_f) or not tid_f.is_integer():
-                        continue
-                    tid_i = int(tid_f)
-                if tid_i != order_id:
+                if _parse_binance_order_id(trade.get("orderId"), "_order_fee_quote") != order_id:
                     continue
-            except (TypeError, ValueError, OverflowError):
+            except ProviderError:
                 continue
             fee_info = extract_order_fee(trade, base_asset=base, quote_asset=quote)
             if fee_info is None or fee_info["fee"] <= 0.0:
@@ -713,13 +694,10 @@ class BinanceProvider(MarketDataProvider):
         raw_orig = o.get("origQty")
         if any(isinstance(v, bool) for v in (raw_exec, raw_cost, raw_orig)):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
-        try:
-            executed_qty = float(raw_exec or 0.0)
-            cost_val = float(raw_cost or 0.0)
-            orig_val = float(raw_orig or 0.0)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"order_status({order_id}): invalid fill values") from exc
-        if not all(math.isfinite(v) and v >= 0.0 for v in (executed_qty, cost_val, orig_val)):
+        executed_qty = safe_nonneg_float(raw_exec or 0.0, default=None)
+        cost_val = safe_nonneg_float(raw_cost or 0.0, default=None)
+        orig_val = safe_nonneg_float(raw_orig or 0.0, default=None)
+        if None in (executed_qty, cost_val, orig_val):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
         fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0
         st_map = {
@@ -894,17 +872,12 @@ class MarketApi:
                 symbol, since_s, provider_name=provider_name) or []:
             if extract_order_side(trade) != side:
                 continue
-            try:
-                raw_ts = extract_timestamp_ms(trade, default=0) or 0
-                timestamp = float(raw_ts)
-                if 0 < timestamp < 10_000_000_000:  # Seconds to milliseconds.
-                    timestamp *= 1000.0
-                price = extract_order_price(trade, default=0.0)
-                qty = extract_order_qty(trade, default=0.0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if (not all(math.isfinite(value) for value in (timestamp, price, qty)) or
-                    timestamp < cutoff_ms or timestamp > now_ms + 60_000 or
+            timestamp = float(extract_timestamp_ms(trade, default=0) or 0)
+            if 0 < timestamp < 10_000_000_000:  # Seconds to milliseconds.
+                timestamp *= 1000.0
+            price = extract_order_price(trade, default=0.0)
+            qty = extract_order_qty(trade, default=0.0)
+            if (timestamp < cutoff_ms or timestamp > now_ms + 60_000 or
                     price <= 0 or qty <= 0):
                 continue
             notional = price * qty
@@ -1243,7 +1216,7 @@ class MarketApi:
             benchmark = item.strip()
             if not benchmark:
                 raise ValueError("benchmark symbols must be non-empty")
-            identity = benchmark.upper().replace("/", "").replace("-", "").replace("_", "")
+            identity = canonical_symbol_key(benchmark) or benchmark.upper().replace("/", "").replace("-", "").replace("_", "")
             if identity not in seen_benchmarks:
                 normalized_benchmarks.append(benchmark)
                 seen_benchmarks.add(identity)
@@ -1425,8 +1398,10 @@ class MarketApi:
             try:
                 from instrument_registry import select_instruments
                 sym_clean = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+                sym_canon = canonical_symbol_key(symbol)
                 for spec in select_instruments(prov_name).values():
-                    if str(spec.symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "") == sym_clean:
+                    spec_clean = str(spec.symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+                    if spec_clean == sym_clean or (sym_canon and canonical_symbol_key(spec.symbol) == sym_canon):
                         inst_params = dict(spec.params or {})
                         if base is None and spec.base:
                             base = spec.base

@@ -10,7 +10,7 @@ import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
-from botcore import safe_int
+from botcore import safe_int, safe_pos_int
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -198,12 +198,9 @@ def nonzero_counts(counts: dict[str, int]) -> dict[str, int]:
         return {}
     out: dict[str, int] = {}
     for symbol, count in counts.items():
-        if not isinstance(symbol, str) or not symbol or isinstance(count, bool):
+        if not isinstance(symbol, str) or not symbol:
             continue
-        try:
-            c_int = int(count)
-        except (TypeError, ValueError, OverflowError):
-            continue
+        c_int = safe_pos_int(count, default=0)
         if c_int > 0:
             out[symbol] = c_int
     return out

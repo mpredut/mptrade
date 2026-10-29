@@ -63,7 +63,8 @@ STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up th
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
 from botcore import safe_pos_float
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, canonical_symbol_key
+from providers.base import normalize_side
 
 _safe_pos_float = safe_pos_float
 
@@ -196,26 +197,19 @@ class LiquidationSignal:
         for item in raw_data:
             if not isinstance(item, dict):
                 continue
-            try:
-                symbol = str(item["s"]).strip().upper()
-                if not symbol:
-                    continue
-                # Bybit: "Buy" = long liquidated, "Sell" = short liquidated.
-                raw_side = str(item["S"]).strip()
-                if raw_side == "Buy":
-                    side = _LONG
-                elif raw_side == "Sell":
-                    side = _SHORT
-                else:
-                    continue
-                vol = safe_pos_float(item.get("v"), default=None)
-                px = safe_pos_float(item.get("p"), default=None)
-                if vol is None or px is None:
-                    continue
-                notional = vol * px
-                if not math.isfinite(notional) or notional <= 0:
-                    continue
-            except (KeyError, ValueError, TypeError, OverflowError):
+            raw_sym = item.get("s")
+            if isinstance(raw_sym, bool) or not isinstance(raw_sym, str):
+                continue
+            symbol = raw_sym.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+            # Bybit: "Buy" = long liquidated, "Sell" = short liquidated.
+            norm_side = normalize_side(item.get("S"))
+            side = _LONG if norm_side == "BUY" else (_SHORT if norm_side == "SELL" else None)
+            vol = safe_pos_float(item.get("v"), default=None)
+            px = safe_pos_float(item.get("p"), default=None)
+            if not symbol or side is None or vol is None or px is None:
+                continue
+            notional = safe_pos_float(vol * px, default=None)
+            if notional is None:
                 continue
             with self._lock:
                 dq = self._events.setdefault(symbol, deque())
@@ -232,6 +226,7 @@ class LiquidationSignal:
         net_usd       = short_liq_usd - long_liq_usd  (>0 squeeze up, <0 capitulation)
         """
         symbol = str(symbol or "").strip().upper()
+        sym_clean = symbol.replace("/", "").replace("-", "").replace("_", "")
         eff_win = safe_pos_float(window_sec, 300.0)
         now = time.time()
         cutoff = now - eff_win
@@ -239,11 +234,19 @@ class LiquidationSignal:
         long_n = short_n = 0
         last_ts = 0.0
         with self._lock:
-            items = list(self._events.get(symbol, ()))
+            items = list(self._events.get(sym_clean) or self._events.get(symbol) or ())
             if not items and symbol:
+                canon_key = canonical_symbol_key(symbol)
                 canon_base = canonical_base_asset(symbol)
-                if canon_base:
-                    items = list(self._events.get(f"{canon_base}USDT", ()))
+                for cand in (
+                    canon_key,
+                    f"{canon_base}USDT" if canon_base else "",
+                    f"{canon_base}USDC" if canon_base else "",
+                    f"{canon_base}USD" if canon_base else "",
+                ):
+                    if cand and cand in self._events:
+                        items = list(self._events[cand])
+                        break
         for ts, side, notional in items:
             if ts < cutoff:
                 continue

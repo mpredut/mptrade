@@ -20,7 +20,7 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 from ipo_common import (  # noqa: E402
-    http_get, load_t212_environment, required_env, required_float_env,
+    http_get, load_t212_environment, required_env, required_float_env, safe_float,
 )
 from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
@@ -61,14 +61,7 @@ def main() -> int:
             return None
 
     def _sf(obj: dict, key: str, default: float = 0.0) -> float:
-        raw = obj.get(key)
-        if raw is None or isinstance(raw, bool):
-            return default
-        try:
-            val = float(raw)
-        except (TypeError, ValueError, OverflowError):
-            return default
-        return val if math.isfinite(val) else default
+        return safe_float(obj.get(key), default=default)
 
     cash = _retry(get_cash)
     print("============ TRADING 212 ACCOUNT ============")
