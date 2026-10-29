@@ -256,15 +256,9 @@ class CacheShortTrendManager(CacheManagerInterface):
             if read_only is None
             else _parse_bool_flag(read_only, default=False)
         )
-        if isinstance(symbols, str):
-            norm_symbols = [symbols.strip()] if symbols.strip() else []
-        elif symbols is not None:
-            norm_symbols = list(symbols)
-        else:
-            norm_symbols = []
         super().__init__(
             effective_sync_ts,
-            norm_symbols,
+            symbols,
             filename,
             append_mode=False,
             api_client=effective_api,
@@ -767,6 +761,31 @@ class CacheShortTrendManager(CacheManagerInterface):
         except Exception:
             return []
 
+    @staticmethod
+    def _strip_internal_fields(mapping: dict) -> dict:
+        return {k: v for k, v in mapping.items() if not k.startswith("_")}
+
+    def _normalize_dynamic_window_request(
+        self, symbol, window_seconds, now=None, *, log_clamp: bool = False
+    ) -> Optional[tuple[float, str, Optional[float]]]:
+        req = safe_pos_float(window_seconds, default=None)
+        if req is None:
+            return None
+        if now is not None:
+            now = safe_pos_float(now, default=None)
+            if now is None:
+                return None
+        min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
+        max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
+        clamped = min(max(req, min_sec), max_sec)
+        if log_clamp and clamped != req:
+            print(
+                f"[get_short_trend_for_window] {symbol}: window_seconds={req:.0f} "
+                f"outside [{min_sec:.0f}, {max_sec:.0f}] "
+                f"-> clamped to {clamped:.0f}"
+            )
+        return clamped, _dynamic_window_key(clamped), now
+
     def _eval_and_persist_window_slice(
         self,
         target_sym: str,
@@ -802,7 +821,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                     and cached.get("_last_tick_ts_ms") == newest_ts_ms
                     and cached.get("n_samples") == n_samples
                 ):
-                    hit = {k: v for k, v in cached.items() if not k.startswith("_")}
+                    hit = self._strip_internal_fields(cached)
                     hit["ts"] = now_val
                     return hit
         ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
@@ -832,23 +851,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         per-symbol persistence (cachedb/24trend/live_<SYMBOL>.json) so repeated
         requests for the same tick state are served directly from persistence.
         """
-        req = safe_pos_float(window_seconds, default=None)
-        if req is None:
+        norm = self._normalize_dynamic_window_request(
+            symbol, window_seconds, now=now, log_clamp=True
+        )
+        if norm is None:
             return None
-        if now is not None:
-            now = safe_pos_float(now, default=None)
-            if now is None:
-                return None
-        min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
-        max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
-        clamped = min(max(req, min_sec), max_sec)
-        if clamped != req:
-            print(
-                f"[get_short_trend_for_window] {symbol}: window_seconds={req:.0f} "
-                f"outside [{min_sec:.0f}, {max_sec:.0f}] "
-                f"-> clamped to {clamped:.0f}"
-            )
-        w_key = _dynamic_window_key(clamped)
+        clamped, w_key, now = norm
 
         if self._cache24_managers is None:
             # Reader process: check published live_<SYMBOL>.json / shared file first,
@@ -935,7 +943,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             if not sym_live:
                 return
             clean = {
-                wk: {k: v for k, v in wv.items() if not k.startswith("_")}
+                wk: self._strip_internal_fields(wv)
                 for wk, wv in sym_live.items()
                 if isinstance(wv, dict)
             }
@@ -955,17 +963,12 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
-        req = safe_pos_float(window_seconds, default=None)
-        if req is None:
+        norm = self._normalize_dynamic_window_request(
+            symbol, window_seconds, now=now, log_clamp=False
+        )
+        if norm is None:
             return None
-        if now is not None:
-            now = safe_pos_float(now, default=None)
-            if now is None:
-                return None
-        min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
-        max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
-        clamped = min(max(req, min_sec), max_sec)
-        w_key = _dynamic_window_key(clamped)
+        clamped, w_key, now = norm
         now = now if now is not None else time.time()
 
         def _check_fresh(dyn):
@@ -980,7 +983,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             if "current_price" in dyn and dyn.get("current_price") is not None:
                 if safe_pos_float(dyn.get("current_price"), default=None) is None:
                     return None
-            return {k: v for k, v in dyn.items() if not k.startswith("_")}
+            return self._strip_internal_fields(dyn)
 
         variants = _short_trend_symbol_variants(symbol)
 
@@ -1167,26 +1170,25 @@ class CacheShortTrendManager(CacheManagerInterface):
             return slope > noise_floor
         return eps == 0.0 and gradient > 0
 
-    def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
-        """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""
+    def _resolve_snapshot_for_window(self, symbol, window_seconds=None, now=None):
+        """Resolve (snapshot, is_non_primary_dynamic) for primary or dynamic window queries."""
         if window_seconds is not None:
             win_sec = safe_pos_float(window_seconds, default=None)
             if win_sec is None:
-                return False
+                return None, True
             if not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6):
-                dyn = self.get_short_trend_for_window(
-                    symbol, win_sec, now=now
-                )
-                return self._eval_upward_formula(dyn)
+                return self.get_short_trend_for_window(symbol, win_sec, now=now), True
         snap = self.get_fresh_snapshot(symbol, now=now)
-        if snap is not None:
-            return self._eval_upward_formula(snap)
-        if window_seconds is not None:
-            dyn = self.get_short_trend_for_window(
-                symbol, window_seconds, now=now
-            )
-            return self._eval_upward_formula(dyn)
-        return False
+        if snap is None and window_seconds is not None:
+            snap = self.get_short_trend_for_window(symbol, window_seconds, now=now)
+        return snap, False
+
+    def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
+        """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""
+        snap, _ = self._resolve_snapshot_for_window(
+            symbol, window_seconds=window_seconds, now=now
+        )
+        return self._eval_upward_formula(snap)
 
     def is_trend_up_for_window(self, symbol, window_seconds, now=None):
         """Evaluate upward-trend condition over a configurable window in seconds."""
@@ -1572,33 +1574,15 @@ class CacheShortTrendManager(CacheManagerInterface):
         fast = _parse_bool_flag(fast, default=False)
         use_noise_gate = _parse_bool_flag(use_noise_gate, default=True)
 
-        if window_seconds is not None:
-            win_sec = safe_pos_float(window_seconds, default=None)
-            if win_sec is None:
-                return False
-            if not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6):
-                dyn = self.get_short_trend_for_window(
-                    symbol, win_sec, now=now
-                )
-                return self._should_wait_on_snap(
-                    dyn,
-                    side,
-                    fast=False,
-                    use_noise_gate=use_noise_gate,
-                    allow_zero_eps=True,
-                )
-
-        snap = self.get_fresh_snapshot(symbol, now=now)
-        if snap is None and window_seconds is not None:
-            snap = self.get_short_trend_for_window(
-                symbol, window_seconds, now=now
-            )
+        snap, is_dyn = self._resolve_snapshot_for_window(
+            symbol, window_seconds=window_seconds, now=now
+        )
         return self._should_wait_on_snap(
             snap,
             side,
-            fast=fast,
+            fast=(False if is_dyn else fast),
             use_noise_gate=use_noise_gate,
-            allow_zero_eps=False,
+            allow_zero_eps=is_dyn,
         )
 
     def wait_for_favorable_entry(

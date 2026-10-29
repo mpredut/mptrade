@@ -694,6 +694,14 @@ class CacheManagerInterface(ABC):
             ),
         )
 
+    def _sanitized_rest_sync_cursor_locked(self) -> dict[str, int]:
+        return {
+            str(symbol): max(0, int(cursor))
+            for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
+            if isinstance(cursor, (int, float))
+            and safe_float(cursor, default=None) is not None
+        }
+
     def save_state_to_file_if_enabled(self):
         """Persist enabled writers and return whether the commit succeeded."""
         if self.save_state:
@@ -718,12 +726,7 @@ class CacheManagerInterface(ABC):
                 if self.append_persist:
                     return self._save_jsonl_append()
                 fetchtime = dict(self.fetchtime_per_symbol)
-                rest_sync_cursor = {
-                    str(symbol): max(0, int(cursor))
-                    for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
-                    if isinstance(cursor, (int, float))
-                    and safe_float(cursor, default=None) is not None
-                }
+                rest_sync_cursor = self._sanitized_rest_sync_cursor_locked()
                 counts = {symbol: len(items) for symbol, items in self.cache.items()}
                 payload = {
                     "items": self.cache,
@@ -804,12 +807,7 @@ class CacheManagerInterface(ABC):
                     )
 
                 fetchtime = dict(self.fetchtime_per_symbol)
-                rest_sync_cursor = {
-                    str(symbol): max(0, int(cursor))
-                    for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
-                    if isinstance(cursor, (int, float))
-                    and safe_float(cursor, default=None) is not None
-                }
+                rest_sync_cursor = self._sanitized_rest_sync_cursor_locked()
                 counts = {
                     symbol: len(items)
                     for symbol, items in self.cache.items()
@@ -2080,15 +2078,20 @@ class CacheManagerInterface(ABC):
         return unique_new
         
     
+    @staticmethod
+    def _coerce_item_list(new_items) -> list:
+        if isinstance(new_items, dict):
+            return [new_items]
+        if isinstance(new_items, list):
+            return new_items
+        return list(new_items) if isinstance(new_items, tuple) else [new_items]
+
     def update_cache_per_symbol(self, symbol, new_items):
         if new_items is None:
             return
         current_time = int(time.time() * 1000)
         if self.append_mode:
-            if isinstance(new_items, dict):
-                new_items = [new_items]
-            elif not isinstance(new_items, list):
-                new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
+            new_items = self._coerce_item_list(new_items)
 
         count_new_items = len(new_items) if isinstance(new_items, (list, tuple, dict)) else 1
         print(f"[{self.cls_name}][Info] {symbol}:  new_items {new_items}")
@@ -2377,20 +2380,13 @@ class CacheTradeManager(CacheManagerInterface):
         """Route direct update_cache_per_symbol calls through full-history ID deduplication."""
         if new_items is None:
             return
-        if isinstance(new_items, dict):
-            new_items = [new_items]
-        elif not isinstance(new_items, list):
-            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
-        self._persist_items(symbol, new_items)
+        self._persist_items(symbol, self._coerce_item_list(new_items))
 
     def _persist_items(self, symbol, new_items):
         """Append immutable fills once and reject conflicting duplicate IDs."""
         if not new_items:
             return
-        if isinstance(new_items, dict):
-            new_items = [new_items]
-        elif not isinstance(new_items, list):
-            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
+        new_items = self._coerce_item_list(new_items)
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
             persisted_count = self._persisted_counts.get(symbol, 0)
@@ -2585,11 +2581,7 @@ class CacheOrderManager(CacheManagerInterface):
         """Route direct update_cache_per_symbol calls through fill-level order aggregation."""
         if new_items is None:
             return
-        if isinstance(new_items, dict):
-            new_items = [new_items]
-        elif not isinstance(new_items, list):
-            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
-        self._persist_items(symbol, new_items)
+        self._persist_items(symbol, self._coerce_item_list(new_items))
 
     def _persist_items(self, symbol, new_items):
         """Merge each immutable fill exactly once into its order aggregate.
@@ -2610,10 +2602,7 @@ class CacheOrderManager(CacheManagerInterface):
         """
         if not new_items:
             return
-        if isinstance(new_items, dict):
-            new_items = [new_items]
-        elif not isinstance(new_items, list):
-            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
+        new_items = self._coerce_item_list(new_items)
         now_ms = int(time.time() * 1000)
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
@@ -2766,19 +2755,8 @@ class CacheOrderManager(CacheManagerInterface):
 CacheOrder = CacheOrderManager
 
 
-class CacheSparsePriceManager(CacheManagerInterface):
-    """Store sparse three-minute price samples for two years in JSONL.
-
-    Unlike dense WebSocket-pushed Cache24 managers, this periodically asks for the
-    current price. ``Sparse`` describes the stable sampling mechanism rather than the
-    mutable retention policy. priceAnalysis is its only consumer.
-    """
-
-    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
-        # Continuous append-only three-minute history uses JSONL append persistence.
-        super().__init__(sync_ts, symbols, filename, append_mode=True,
-                         api_client=api_client, append_persist=True,
-                         read_only=read_only)
+class _PriceSeriesCacheMixin:
+    """Shared price-series fetchtime, remote initialization, and symbol helpers."""
 
     def rebuild_fetchtimes(self):
         if not self.cache:
@@ -2795,14 +2773,14 @@ class CacheSparsePriceManager(CacheManagerInterface):
     def get_remote_items(self, symbol, startTime):
         # Preserve the observation timestamp supplied by get_price. Using only a cached
         # value with ``time.time`` would record a stale price as freshly observed during
-        # a network outage, corrupting the long-term history.
+        # a network outage, corrupting the history.
         try:
             entry = get_current_price_manager().get_price(symbol)
         except Exception as e:
             print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
             return []
 
-        if not entry:
+        if not entry or entry[1] is None:
             return []
         ts_ms, price = entry
         ts_val = safe_pos_int(ts_ms, default=None)
@@ -2820,10 +2798,25 @@ class CacheSparsePriceManager(CacheManagerInterface):
         return self.symbols
 
 
+class CacheSparsePriceManager(_PriceSeriesCacheMixin, CacheManagerInterface):
+    """Store sparse three-minute price samples for two years in JSONL.
+
+    Unlike dense WebSocket-pushed Cache24 managers, this periodically asks for the
+    current price. ``Sparse`` describes the stable sampling mechanism rather than the
+    mutable retention policy. priceAnalysis is its only consumer.
+    """
+
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
+        # Continuous append-only three-minute history uses JSONL append persistence.
+        super().__init__(sync_ts, symbols, filename, append_mode=True,
+                         api_client=api_client, append_persist=True,
+                         read_only=read_only)
+
+
 CacheSparsePrice = CacheSparsePriceManager
 
 
-class Cache24PriceManager(CacheManagerInterface):
+class Cache24PriceManager(_PriceSeriesCacheMixin, CacheManagerInterface):
     """Collect maximum-granularity prices over the latest ``KEEP_HOURS``.
 
     This manager neither polls nor subscribes directly to WebSocket. It receives every
@@ -2835,7 +2828,10 @@ class Cache24PriceManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api_client, read_only=read_only)
-        # Remove unrelated symbols loaded from legacy redundant files that stored every coin.
+        self._filter_maps_to_configured_symbols_locked()
+
+    def _filter_maps_to_configured_symbols_locked(self):
+        """Remove unrelated symbols loaded from legacy redundant files that stored every coin."""
         with self.lock:
             self.cache = {s: v for s, v in self.cache.items() if s in self.symbols}
             self.fetchtime_per_symbol = {
@@ -2905,45 +2901,6 @@ class Cache24PriceManager(CacheManagerInterface):
 
     # ── CacheManagerInterface ─────────────────────────────────────────────────
 
-    def rebuild_fetchtimes(self):
-        if not self.cache:
-            return {}
-        last_times = {}
-        for symbol in self.symbols:
-            entries = self.cache.get(symbol, [])
-            if isinstance(entries, list) and entries:
-                max_ts = max((self._entry_timestamp_ms(entry) for entry in entries), default=0)
-                if max_ts > 0:
-                    last_times[symbol] = max_ts
-        return last_times
-
-    def get_remote_items(self, symbol, startTime):
-        """Fetch initialization data only when the persisted file is missing.
-
-        Preserve the real observation timestamp from ``get_price`` so a cached value
-        during an outage is not recorded as falsely fresh.
-        """
-        try:
-            entry = get_current_price_manager().get_price(symbol)
-            if not entry or entry[1] is None:
-                return []
-            ts_ms, price = entry
-            ts_val = safe_pos_int(ts_ms, default=None)
-            price_val = safe_pos_float(price, default=None)
-            if ts_val is None or price_val is None:
-                return []
-            with self.lock:
-                entries = self.cache.get(symbol)
-                if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
-                    return []
-            return [[ts_val, price_val]]
-        except Exception as e:
-            print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
-            return []
-
-    def get_all_symbols_from_cache(self):
-        return self.symbols
-
     def _should_poll(self):
         # Prices arrive exclusively through CurrentPrice's ``on_price_update`` callback.
         # Base periodic_sync only saves, resynchronizes, and maintains; it does not poll.
@@ -2976,15 +2933,7 @@ class Cache365PriceManager(Cache24PriceManager):
         CacheManagerInterface.__init__(self, sync_ts, symbols, filename,
                                         append_mode=True, api_client=api_client,
                                         append_persist=True, read_only=read_only)
-        # Mirror Cache24PriceManager's cleanup of unrelated symbols from legacy files.
-        with self.lock:
-            self.cache = {s: v for s, v in self.cache.items() if s in self.symbols}
-            self.fetchtime_per_symbol = {
-                s: v for s, v in self.fetchtime_per_symbol.items() if s in self.symbols
-            }
-            self._rest_sync_cursor_per_symbol = {
-                s: v for s, v in self._rest_sync_cursor_per_symbol.items() if s in self.symbols
-            }
+        self._filter_maps_to_configured_symbols_locked()
 
     @staticmethod
     def _tail_lines(path, limit, block_size=1024 * 1024):
@@ -3550,16 +3499,19 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def _timestamps_deque_locked(self, symbol: str):
+        sym_u = str(symbol or "").strip().upper()
+        return (
+            self._update_timestamps.get(symbol)
+            if symbol in self._update_timestamps
+            else self._update_timestamps.get(sym_u)
+        )
+
     def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
         """Return the mean update interval, or ``fallback`` when samples are insufficient."""
         fb = safe_pos_float(fallback, default=1.0) or 1.0
-        sym_u = str(symbol or "").strip().upper()
         with self.lock:
-            dq = (
-                self._update_timestamps.get(symbol)
-                if symbol in self._update_timestamps
-                else self._update_timestamps.get(sym_u)
-            )
+            dq = self._timestamps_deque_locked(symbol)
             samples = list(dq) if dq else []
         if len(samples) < 2:
             return fb
@@ -3571,13 +3523,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     def get_update_frequency(self, symbol: str) -> float:
         """Return updates per second over the latest frequency window."""
         cutoff = time.time() - self.FREQ_WINDOW_SEC
-        sym_u = str(symbol or "").strip().upper()
         with self.lock:
-            dq = (
-                self._update_timestamps.get(symbol)
-                if symbol in self._update_timestamps
-                else self._update_timestamps.get(sym_u)
-            )
+            dq = self._timestamps_deque_locked(symbol)
             if dq:
                 while dq and dq[0] < cutoff:
                     dq.popleft()

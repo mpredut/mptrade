@@ -27,6 +27,7 @@ from instrument_registry import symbols_for
 # environment variables below. load_dotenv does not overwrite real environment.
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
     load_dotenv as _load_dotenv,
     required_env,
     required_float_env,
@@ -910,18 +911,46 @@ def _buy_remaining_cash(state, threshold, allocation):
     return max(0.0, target_cash - prior_spent), target_cash, prior_spent
 
 
-def _sell_client_order_id(symbol, state, threshold, attempt):
+def _ag_client_order_id(prefix, kind, symbol, anchor_ts, threshold, attempt):
     raw = (
-        f"assetguardian:sell:{symbol}:{state.get('trough_ts')}:"
+        f"assetguardian:{kind}:{symbol}:{anchor_ts}:"
         f"{float(threshold):g}:{int(attempt)}")
-    return "AGS" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:29]
+    return prefix + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:29]
+
+
+def _sell_client_order_id(symbol, state, threshold, attempt):
+    return _ag_client_order_id(
+        "AGS", "sell", symbol, state.get("trough_ts"), threshold, attempt)
 
 
 def _buy_client_order_id(symbol, state, threshold, attempt):
-    raw = (
-        f"assetguardian:buy:{symbol}:{state.get('peak_ts')}:"
-        f"{float(threshold):g}:{int(attempt)}")
-    return "AGB" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:29]
+    return _ag_client_order_id(
+        "AGB", "buy", symbol, state.get("peak_ts"), threshold, attempt)
+
+
+def _finalize_terminal_campaign_state(
+        symbol, kind, state, pending, threshold, status, filled_qty, cost_val, fee_val):
+    raw_terminal = state.get("terminal_orders")
+    terminal = list(raw_terminal)[-19:] if isinstance(raw_terminal, (list, tuple)) else []
+    terminal.append({
+        "order_id": pending.get("order_id"),
+        "client_order_id": pending.get("client_order_id"),
+        "threshold": threshold,
+        "status": status.status,
+        "filled_qty": filled_qty,
+        "cost": cost_val,
+        "fee": fee_val,
+        "terminal_ts": time.time(),
+    })
+    state["terminal_orders"] = terminal
+    state.pop("pending", None)
+    _save_symbol_campaign(symbol, kind, state)
+    print(
+        f"[{symbol}] {kind.upper()} tier terminal: threshold={threshold:g}% "
+        f"status={status.status} orderId={pending.get('order_id')} "
+        f"filled={filled_qty:.8f} cost={cost_val:.8f} "
+        f"fee={fee_val:.8f}")
+    return state
 
 
 def _record_terminal_buy(symbol, state, status):
@@ -964,27 +993,8 @@ def _record_terminal_buy(symbol, state, status):
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
 
-    raw_terminal = state.get("terminal_orders")
-    terminal = list(raw_terminal)[-19:] if isinstance(raw_terminal, (list, tuple)) else []
-    terminal.append({
-        "order_id": pending.get("order_id"),
-        "client_order_id": pending.get("client_order_id"),
-        "threshold": threshold,
-        "status": status.status,
-        "filled_qty": filled_qty,
-        "cost": cost_val,
-        "fee": fee_val,
-        "terminal_ts": time.time(),
-    })
-    state["terminal_orders"] = terminal
-    state.pop("pending", None)
-    _save_symbol_campaign(symbol, "buy", state)
-    print(
-        f"[{symbol}] BUY tier terminal: threshold={threshold:g}% "
-        f"status={status.status} orderId={pending.get('order_id')} "
-        f"filled={filled_qty:.8f} cost={cost_val:.8f} "
-        f"fee={fee_val:.8f}")
-    return state
+    return _finalize_terminal_campaign_state(
+        symbol, "buy", state, pending, threshold, status, filled_qty, cost_val, fee_val)
 
 
 def _record_terminal_sell(symbol, state, status):
@@ -1036,27 +1046,8 @@ def _record_terminal_sell(symbol, state, status):
 
     cost_val = max(0.0, _finite_float(status.cost) or 0.0)
     fee_val = max(0.0, _finite_float(status.fee) or 0.0)
-    raw_terminal = state.get("terminal_orders")
-    terminal = list(raw_terminal)[-19:] if isinstance(raw_terminal, (list, tuple)) else []
-    terminal.append({
-        "order_id": pending.get("order_id"),
-        "client_order_id": pending.get("client_order_id"),
-        "threshold": threshold,
-        "status": status.status,
-        "filled_qty": filled_qty,
-        "cost": cost_val,
-        "fee": fee_val,
-        "terminal_ts": time.time(),
-    })
-    state["terminal_orders"] = terminal
-    state.pop("pending", None)
-    _save_symbol_campaign(symbol, "sell", state)
-    print(
-        f"[{symbol}] SELL tier terminal: threshold={threshold:g}% "
-        f"status={status.status} orderId={pending.get('order_id')} "
-        f"filled={filled_qty:.8f} cost={cost_val:.8f} "
-        f"fee={fee_val:.8f}")
-    return state
+    return _finalize_terminal_campaign_state(
+        symbol, "sell", state, pending, threshold, status, filled_qty, cost_val, fee_val)
 
 
 def _campaign_pending_persistor(symbol, kind, state):
@@ -1099,91 +1090,67 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     return state
 
 
-def _normalize_legacy_sell_pending(symbol, pending):
+def _normalize_legacy_pending(symbol, pending, side, kind):
     """Add generic identity fields to pending rows created before the refactor."""
     normalized = dict(pending)
     normalized.setdefault("intent_id", normalized.get("client_order_id"))
     normalized.setdefault("symbol", symbol)
-    normalized.setdefault("side", "SELL")
-    normalized.setdefault("kind", "ASSET_GUARDIAN_SELL_TIER")
+    normalized.setdefault("side", side)
+    normalized.setdefault("kind", kind)
     normalized.setdefault("requested_price", None)
     return normalized
+
+
+def _normalize_legacy_sell_pending(symbol, pending):
+    return _normalize_legacy_pending(symbol, pending, "SELL", "ASSET_GUARDIAN_SELL_TIER")
 
 
 def _normalize_legacy_buy_pending(symbol, pending):
-    normalized = dict(pending)
-    normalized.setdefault("intent_id", normalized.get("client_order_id"))
-    normalized.setdefault("symbol", symbol)
-    normalized.setdefault("side", "BUY")
-    normalized.setdefault("kind", "ASSET_GUARDIAN_BUY_TIER")
-    normalized.setdefault("requested_price", None)
-    return normalized
+    return _normalize_legacy_pending(symbol, pending, "BUY", "ASSET_GUARDIAN_BUY_TIER")
+
+
+def _reconcile_pending_campaign(symbol, kind, state, normalize_fn, record_terminal_fn):
+    """Adapt generic tracked-order truth to BUY/SELL campaign accounting."""
+    pending = state.get("pending")
+    if not isinstance(pending, dict) or not pending:
+        return state, "none"
+    side_label = kind.upper()
+    pending = normalize_fn(symbol, pending)
+    box, persist = _campaign_pending_persistor(symbol, kind, state)
+    if pending != state.get("pending"):
+        persist(pending)
+    try:
+        result = ORDER_LIFECYCLE.reconcile(pending, persist=persist)
+    except Exception as exc:
+        print(f"[{symbol}] Invalid/corrupt {side_label} pending; block fail-closed: {exc}")
+        return box["state"], "active"
+    state = box["state"]
+    if result.outcome == "terminal":
+        return record_terminal_fn(symbol, state, result.status), "terminal"
+    if result.outcome in {"absent", "retryable"}:
+        state = _reuse_unaccepted_attempt(symbol, kind, state, result.intent)
+        truth = ("confirmed absent" if result.outcome == "absent"
+                 else "lookup unavailable")
+        print(
+            f"[{symbol}] {side_label} intent {truth}; release for same-ID, revalidated retry "
+            "without completing tier.")
+        return state, "retryable"
+    status_label = result.status.status if result.status is not None else "unknown"
+    print(
+        f"[{symbol}] {side_label} tier pending: status={status_label} "
+        f"orderId={result.intent.get('order_id')} "
+        f"filled={_finite_float(result.intent.get('filled_qty')) or 0.0:.8f}")
+    return state, "active"
 
 
 def _reconcile_pending_sell(symbol, state):
-    """Adapt generic tracked-order truth to the SELL campaign accounting."""
-    pending = state.get("pending")
-    if not isinstance(pending, dict) or not pending:
-        return state, "none"
-    pending = _normalize_legacy_sell_pending(symbol, pending)
-    box, persist = _campaign_pending_persistor(symbol, "sell", state)
-    if pending != state.get("pending"):
-        persist(pending)
-    try:
-        result = ORDER_LIFECYCLE.reconcile(pending, persist=persist)
-    except Exception as exc:
-        print(f"[{symbol}] Invalid/corrupt SELL pending; block fail-closed: {exc}")
-        return box["state"], "active"
-    state = box["state"]
-    if result.outcome == "terminal":
-        return _record_terminal_sell(symbol, state, result.status), "terminal"
-    if result.outcome in {"absent", "retryable"}:
-        state = _reuse_unaccepted_attempt(symbol, "sell", state, result.intent)
-        truth = ("confirmed absent" if result.outcome == "absent"
-                 else "lookup unavailable")
-        print(
-            f"[{symbol}] SELL intent {truth}; release for same-ID, revalidated retry "
-            "without completing tier.")
-        return state, "retryable"
-    status_label = result.status.status if result.status is not None else "unknown"
-    print(
-        f"[{symbol}] SELL tier pending: status={status_label} "
-        f"orderId={result.intent.get('order_id')} "
-        f"filled={_finite_float(result.intent.get('filled_qty')) or 0.0:.8f}")
-    return state, "active"
+    return _reconcile_pending_campaign(
+        symbol, "sell", state, _normalize_legacy_sell_pending, _record_terminal_sell)
 
 
 def _reconcile_pending_buy(symbol, state):
-    """Adapt generic tracked-order truth to BUY campaign accounting."""
-    pending = state.get("pending")
-    if not isinstance(pending, dict) or not pending:
-        return state, "none"
-    pending = _normalize_legacy_buy_pending(symbol, pending)
-    box, persist = _campaign_pending_persistor(symbol, "buy", state)
-    if pending != state.get("pending"):
-        persist(pending)
-    try:
-        result = ORDER_LIFECYCLE.reconcile(pending, persist=persist)
-    except Exception as exc:
-        print(f"[{symbol}] Invalid/corrupt BUY pending; block fail-closed: {exc}")
-        return box["state"], "active"
-    state = box["state"]
-    if result.outcome == "terminal":
-        return _record_terminal_buy(symbol, state, result.status), "terminal"
-    if result.outcome in {"absent", "retryable"}:
-        state = _reuse_unaccepted_attempt(symbol, "buy", state, result.intent)
-        truth = ("confirmed absent" if result.outcome == "absent"
-                 else "lookup unavailable")
-        print(
-            f"[{symbol}] BUY intent {truth}; release for same-ID, revalidated retry "
-            "without completing tier.")
-        return state, "retryable"
-    status_label = result.status.status if result.status is not None else "unknown"
-    print(
-        f"[{symbol}] BUY tier pending: status={status_label} "
-        f"orderId={result.intent.get('order_id')} "
-        f"filled={_finite_float(result.intent.get('filled_qty')) or 0.0:.8f}")
-    return state, "active"
+    return _reconcile_pending_campaign(
+        symbol, "buy", state, _normalize_legacy_buy_pending, _record_terminal_buy)
 
 
 def _active_sell_orders(provider, symbol):
@@ -1390,60 +1357,78 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
 
 def _safe_tier_attempt(attempts_map, key):
     raw_val = attempts_map.get(key) if isinstance(attempts_map, dict) else None
-    f = safe_float(raw_val, default=None)
-    if f is None or not f.is_integer():
-        return 1
-    return max(0, int(f)) + 1
+    prior = exact_nonneg_int(raw_val, default=None)
+    return 1 if prior is None else prior + 1
 
 
-def _submit_sell_tier(symbol, current_price, tier, state):
-    threshold, allocation, qty = tier
+def _submit_campaign_tier(
+        symbol, kind, state, threshold, requested_qty, requested_price,
+        client_id_fn, intent_kind, metadata, refusal_reason, submit_fn):
+    side_label = kind.upper()
     key = _tier_key(threshold)
     raw_attempts = state.get("attempts_by_tier")
     attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
     attempt = _safe_tier_attempt(attempts, key)
     attempts[key] = attempt
-    client_order_id = _sell_client_order_id(symbol, state, threshold, attempt)
+    client_order_id = client_id_fn(symbol, state, threshold, attempt)
     state = dict(state)
     state["attempts_by_tier"] = attempts
     intent = ORDER_LIFECYCLE.new_intent(
         intent_id=client_order_id,
         client_order_id=client_order_id,
         symbol=symbol,
-        side="SELL",
-        requested_qty=qty,
-        requested_price=current_price,
-        kind="ASSET_GUARDIAN_SELL_TIER",
+        side=side_label,
+        requested_qty=requested_qty,
+        requested_price=requested_price,
+        kind=intent_kind,
         attempt=attempt,
-        metadata={"threshold": threshold, "allocation": allocation},
+        metadata=metadata,
     )
-    box, persist = _campaign_pending_persistor(symbol, "sell", state)
+    box, persist = _campaign_pending_persistor(symbol, kind, state)
     _LAST_SUBMIT_OUTCOME.clear()
 
-    def _submit_sell():
-        resp = sell_asset(
-            symbol, qty=qty, current_price=current_price,
-            client_order_id=client_order_id, tier_threshold=threshold)
+    def _submit():
+        resp = submit_fn(client_order_id)
         if resp is False and not _LAST_SUBMIT_OUTCOME.get("state"):
-            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="sell_not_accepted")
+            _LAST_SUBMIT_OUTCOME.update(
+                accepted=False, state="refused", reason=refusal_reason)
         return propagate_submission_refusal(resp, _LAST_SUBMIT_OUTCOME)
 
     try:
         result = ORDER_LIFECYCLE.submit(
             intent,
             persist=persist,
-            submit=_submit_sell,
+            submit=_submit,
         )
     except Exception as exc:
-        print(f"[{symbol}] SELL tracked submit failed before/around submit: {exc}")
+        print(f"[{symbol}] {side_label} tracked submit failed before/around submit: {exc}")
         return False
     if result.outcome == "refused":
         persist(None)
-        _reuse_unaccepted_attempt(symbol, "sell", box["state"], result.intent)
+        _reuse_unaccepted_attempt(symbol, kind, box["state"], result.intent)
         return False
     # Known order ID means venue acceptance was observed.  An ambiguous response
     # remains pending and is recovered by client ID in a later evaluator cycle.
     return result.order_known
+
+
+def _submit_sell_tier(symbol, current_price, tier, state):
+    threshold, allocation, qty = tier
+    return _submit_campaign_tier(
+        symbol,
+        "sell",
+        state,
+        threshold,
+        qty,
+        current_price,
+        _sell_client_order_id,
+        "ASSET_GUARDIAN_SELL_TIER",
+        {"threshold": threshold, "allocation": allocation},
+        "sell_not_accepted",
+        lambda client_order_id: sell_asset(
+            symbol, qty=qty, current_price=current_price,
+            client_order_id=client_order_id, tier_threshold=threshold),
+    )
 
 
 def _submit_buy_tier(symbol, current_price, cash_amount, tier, state):
@@ -1455,58 +1440,28 @@ def _submit_buy_tier(symbol, current_price, cash_amount, tier, state):
     px_f = _finite_float(current_price, positive=True)
     if cash_f is None or px_f is None:
         return False
-    key = _tier_key(threshold)
-    raw_attempts = state.get("attempts_by_tier")
-    attempts = dict(raw_attempts) if isinstance(raw_attempts, dict) else {}
-    attempt = _safe_tier_attempt(attempts, key)
-    attempts[key] = attempt
-    client_order_id = _buy_client_order_id(symbol, state, threshold, attempt)
-    qty = cash_f / px_f
-    state = dict(state)
-    state["attempts_by_tier"] = attempts
-    intent = ORDER_LIFECYCLE.new_intent(
-        intent_id=client_order_id,
-        client_order_id=client_order_id,
-        symbol=symbol,
-        side="BUY",
-        requested_qty=qty,
-        requested_price=current_price,
-        kind="ASSET_GUARDIAN_BUY_TIER",
-        attempt=attempt,
-        metadata={
+    return _submit_campaign_tier(
+        symbol,
+        "buy",
+        state,
+        threshold,
+        cash_f / px_f,
+        current_price,
+        _buy_client_order_id,
+        "ASSET_GUARDIAN_BUY_TIER",
+        {
             "threshold": threshold,
             "allocation": allocation,
             "requested_cash": cash_amount,
         },
-    )
-    _box, persist = _campaign_pending_persistor(symbol, "buy", state)
-    _LAST_SUBMIT_OUTCOME.clear()
-
-    def _submit_buy():
-        resp = buy_with_all_cash(
+        "buy_not_accepted",
+        lambda client_order_id: buy_with_all_cash(
             buy_symbol=symbol,
             cash_amount=cash_amount,
             client_order_id=client_order_id,
             respect_guard=respect_guard,
-        )
-        if resp is False and not _LAST_SUBMIT_OUTCOME.get("state"):
-            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="buy_not_accepted")
-        return propagate_submission_refusal(resp, _LAST_SUBMIT_OUTCOME)
-
-    try:
-        result = ORDER_LIFECYCLE.submit(
-            intent,
-            persist=persist,
-            submit=_submit_buy,
-        )
-    except Exception as exc:
-        print(f"[{symbol}] BUY tracked submit failed before/around submit: {exc}")
-        return False
-    if result.outcome == "refused":
-        persist(None)
-        _reuse_unaccepted_attempt(symbol, "buy", _box["state"], result.intent)
-        return False
-    return result.order_known
+        ),
+    )
 
 
 def _next_check_seconds():

@@ -66,32 +66,25 @@ MT_NOTIFY_ONLY = required_bool_env("MT_NOTIFY_ONLY")
 
 
 
-def print_number_of_trades(maxage_trade_s):
-    print(f"TRADE COUNT")
+def _print_trade_order_counts(header: str, fetch_fn, maxage_trade_s):
+    print(header)
+    days = u.secondsToDays(maxage_trade_s)
     for symbol in sym.symbols:
         print(f"For {symbol}")
-        close_buy_orders = apitrades.get_trade_orders("BUY", symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Found {len(close_buy_orders)} close 'BUY' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+        close_buy_orders = fetch_fn("BUY", symbol, maxage_trade_s)
+        print(f"get_trade_orders:           Found {len(close_buy_orders)} close 'BUY' orders in the last {days} days.")
+        close_sell_orders = fetch_fn("SELL", symbol, maxage_trade_s)
+        print(f"get_trade_orders:           Found {len(close_sell_orders)} close 'SELL' orders in the last {days} days.")
+        orders = fetch_fn(None, symbol, maxage_trade_s)
+        print(f"get_trade_orders:           Total found {len(orders)} orders in the last {days} days.")
 
-        close_sell_orders = apitrades.get_trade_orders("SELL", symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
 
-        orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Total found {len(orders)} orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+def print_number_of_trades(maxage_trade_s):
+    _print_trade_order_counts("TRADE COUNT", apitrades.get_trade_orders, maxage_trade_s)
 
 
 def print_number_of_orders(maxage_trade_s):
-    print(f"ORDER COUNT")
-    for symbol in sym.symbols:
-        print(f"For {symbol}")
-        close_buy_orders = apiorders.get_trade_orders("BUY", symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Found {len(close_buy_orders)} close 'BUY' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
-
-        close_sell_orders = apiorders.get_trade_orders("SELL", symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
-
-        orders = apiorders.get_trade_orders(None, symbol, maxage_trade_s)
-        print(f"get_trade_orders:           Total found {len(orders)} orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+    _print_trade_order_counts("ORDER COUNT", apiorders.get_trade_orders, maxage_trade_s)
 
 
 class _FifoTradeIdTracker:
@@ -254,7 +247,6 @@ def is_trend_up(symbol, window_seconds=None, now=None):
         import pricewindow as pw
         mgr = cm.get_short_trend_manager()
         if window_seconds is None:
-            import pricewindow as pw
             fast_w = pw.fast_trend_window_for_symbol(symbol)
             if fast_w is not None and hasattr(mgr, "get_short_trend_for_window"):
                 dyn = mgr.get_short_trend_for_window(symbol, fast_w, now=now)
@@ -979,17 +971,14 @@ def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: f
     if sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty):
         return True
     prov = getattr(inst, "_provider", None)
-    filter_check = getattr(prov, "order_filter_refusal", None) if prov is not None else None
-    if callable(filter_check) and current_price and current_price > 0:
-        try:
-            refusal = filter_check(
-                symbol, "SELL", current_price, sellable_qty,
-                market=True, enforce_business_minimum=False,
-            )
-            if _is_terminal_dust_refusal(refusal):
-                return True
-        except Exception:
-            pass
+    if prov is not None and current_price and current_price > 0:
+        from providers.quantity import check_order_filter_refusal
+        refusal = check_order_filter_refusal(
+            prov, symbol, "SELL", current_price, sellable_qty,
+            market=True, enforce_business_minimum=False,
+        )
+        if _is_terminal_dust_refusal(refusal):
+            return True
     return False
 
 
@@ -1525,6 +1514,32 @@ def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_by
     return res
 
 
+def _eval_reentry_buy_quantity_decision(
+    inst, provider, symbol: str, current_price: float, requested_qty: float, reentry_bg: set[str]
+):
+    from guard_hierarchy import GUARD_REGISTRY
+    from providers.quantity import resolve_assets
+    bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
+    base_asset, quote_asset = resolve_assets(
+        symbol,
+        getattr(inst, "base", None),
+        getattr(inst, "quote", None),
+    )
+    decision = provider.quantity_decision(
+        symbol,
+        "BUY",
+        current_price,
+        requested_qty,
+        base=base_asset,
+        quote=quote_asset,
+        cancelorders=True,
+        hours=float(MT_BUY_SAFEBACK_HOURS),
+        apply_policy=not bypass_qlimit1,
+        market=False,
+    )
+    return decision, quote_asset
+
+
 def _can_pass_buy_quantity_policy(
     inst, symbol: str, current_price: float, requested_qty: float, min_qty: float = 0.0
 ) -> bool:
@@ -1540,26 +1555,10 @@ def _can_pass_buy_quantity_policy(
         return True
     try:
         import order_guard
-        from guard_hierarchy import GUARD_REGISTRY
-        from providers.quantity import resolve_assets
+        from providers.quantity import check_order_filter_refusal, round_provider_qty
         reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass={"G_PROF", "GLLM1"})
-        bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
-        base_asset, quote_asset = resolve_assets(
-            symbol,
-            getattr(inst, "base", None),
-            getattr(inst, "quote", None),
-        )
-        decision = provider.quantity_decision(
-            symbol,
-            "BUY",
-            current_price,
-            requested_qty,
-            base=base_asset,
-            quote=quote_asset,
-            cancelorders=True,
-            hours=float(MT_BUY_SAFEBACK_HOURS),
-            apply_policy=not bypass_qlimit1,
-            market=False,
+        decision, quote_asset = _eval_reentry_buy_quantity_decision(
+            inst, provider, symbol, current_price, requested_qty, reentry_bg
         )
         if decision is None:
             return True
@@ -1578,22 +1577,21 @@ def _can_pass_buy_quantity_policy(
                 f"qty_below_min ({final_qty} < {min_qty})"
             )
             return False
-        filter_check = getattr(provider, "order_filter_refusal", None)
-        if callable(filter_check):
-            refusal = filter_check(
-                symbol,
-                "BUY",
-                current_price,
-                final_qty,
-                market=False,
-                enforce_business_minimum=True,
+        refusal = check_order_filter_refusal(
+            provider,
+            symbol,
+            "BUY",
+            current_price,
+            final_qty,
+            market=False,
+            enforce_business_minimum=True,
+        )
+        if refusal:
+            print(
+                f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                f"qty {final_qty} refused by filter ({refusal})"
             )
-            if refusal:
-                print(
-                    f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
-                    f"qty {final_qty} refused by filter ({refusal})"
-                )
-                return False
+            return False
         if callable(getattr(provider, "get_orders", None)):
             dl_res = order_guard.daily_limit_guard(
                 provider, symbol, "BUY", bypass_guards=reentry_bg
@@ -1622,36 +1620,28 @@ def _can_pass_buy_quantity_policy(
             return False
         intel_scale_f = safe_float(intel_scale, 1.0)
         if intel_scale_f is not None and 0.0 < intel_scale_f < 1.0:
-            scaled_qty = final_qty * intel_scale_f
-            round_fn = (
-                getattr(provider, "round_amount", None)
-                or getattr(provider, "round_quantity", None)
-            )
-            if callable(round_fn):
-                res_f = safe_float(round_fn(symbol, scaled_qty), default=None)
-                if res_f is not None:
-                    scaled_qty = res_f
+            scaled_qty = round_provider_qty(provider, symbol, final_qty * intel_scale_f)
             if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
                 print(
                     f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
                     f"late-scaled qty {scaled_qty} below min_qty {min_qty} (scale={float(intel_scale):.2f})"
                 )
                 return False
-            if callable(filter_check):
-                scaled_refusal = filter_check(
-                    symbol,
-                    "BUY",
-                    current_price,
-                    scaled_qty,
-                    market=False,
-                    enforce_business_minimum=True,
+            scaled_refusal = check_order_filter_refusal(
+                provider,
+                symbol,
+                "BUY",
+                current_price,
+                scaled_qty,
+                market=False,
+                enforce_business_minimum=True,
+            )
+            if scaled_refusal:
+                print(
+                    f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                    f"late-scaled qty {scaled_qty} (scale={float(intel_scale):.2f}) refused by filter ({scaled_refusal})"
                 )
-                if scaled_refusal:
-                    print(
-                        f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
-                        f"late-scaled qty {scaled_qty} (scale={float(intel_scale):.2f}) refused by filter ({scaled_refusal})"
-                    )
-                    return False
+                return False
         if not _is_simulated_env_or_inst(inst) and _is_trend_gate_deferred(symbol, inst, side="BUY"):
             print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: trend_deferred")
             return False
@@ -1702,25 +1692,8 @@ def _apply_post_stop_ai_guard(
             and callable(getattr(provider, "free_balance", None))
         ):
             try:
-                from providers.quantity import resolve_assets
-                reentry_bg = {"G_PROF", "GLLM1"} | caller_bg
-                bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
-                base_asset, quote_asset = resolve_assets(
-                    symbol,
-                    getattr(inst, "base", None),
-                    getattr(inst, "quote", None),
-                )
-                q_dec = provider.quantity_decision(
-                    symbol,
-                    "BUY",
-                    current_price,
-                    _est_qty,
-                    base=base_asset,
-                    quote=quote_asset,
-                    cancelorders=True,
-                    hours=float(MT_BUY_SAFEBACK_HOURS),
-                    apply_policy=not bypass_qlimit1,
-                    market=False,
+                q_dec, _ = _eval_reentry_buy_quantity_decision(
+                    inst, provider, symbol, current_price, _est_qty, {"G_PROF", "GLLM1"} | caller_bg
                 )
                 if q_dec is not None:
                     policy_qty = safe_nonneg_float(getattr(q_dec, "final_qty", 0.0), 0.0)
@@ -1751,14 +1724,8 @@ def _apply_post_stop_ai_guard(
             scale = float(ps_scale)
             scaled_qty = _est_qty * scale
             if provider is not None and not isinstance(provider, str):
-                round_fn = (
-                    getattr(provider, "round_amount", None)
-                    or getattr(provider, "round_quantity", None)
-                )
-                if callable(round_fn):
-                    res_f = safe_float(round_fn(symbol, scaled_qty), default=None)
-                    if res_f is not None:
-                        scaled_qty = res_f
+                from providers.quantity import check_order_filter_refusal, round_provider_qty
+                scaled_qty = round_provider_qty(provider, symbol, scaled_qty)
                 min_qty_fn = getattr(inst, "min_qty", None)
                 min_q = float(min_qty_fn() or 0.0) if callable(min_qty_fn) else 0.0
                 if scaled_qty <= 0.0 or (min_q and scaled_qty < min_q):
@@ -1767,22 +1734,21 @@ def _apply_post_stop_ai_guard(
                         f"scaled qty {scaled_qty} below min_qty {min_q} (scale={scale:.2f})"
                     )
                     return False, buy_budget, buy_qty_cfg, qty
-                filter_check = getattr(provider, "order_filter_refusal", None)
-                if callable(filter_check):
-                    scaled_refusal = filter_check(
-                        symbol,
-                        "BUY",
-                        current_price,
-                        scaled_qty,
-                        market=False,
-                        enforce_business_minimum=True,
+                scaled_refusal = check_order_filter_refusal(
+                    provider,
+                    symbol,
+                    "BUY",
+                    current_price,
+                    scaled_qty,
+                    market=False,
+                    enforce_business_minimum=True,
+                )
+                if scaled_refusal:
+                    print(
+                        f"[{symbol}] Post-STOP re-entry deferred after AI downscale: "
+                        f"scaled qty {scaled_qty} (scale={scale:.2f}) refused by filter ({scaled_refusal})"
                     )
-                    if scaled_refusal:
-                        print(
-                            f"[{symbol}] Post-STOP re-entry deferred after AI downscale: "
-                            f"scaled qty {scaled_qty} (scale={scale:.2f}) refused by filter ({scaled_refusal})"
-                        )
-                        return False, buy_budget, buy_qty_cfg, qty
+                    return False, buy_budget, buy_qty_cfg, qty
             if buy_budget:
                 buy_budget = min(buy_budget * scale, scaled_qty * current_price)
             elif buy_qty_cfg:

@@ -32,6 +32,7 @@ from order_retry import (
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 from botcore import (
     _parse_bool_flag,
+    exact_int,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -275,35 +276,43 @@ class _LivePairVenue:
 
     @staticmethod
     def _parse_bounded_revision(value, *, int_err: str, range_err: str | None = None) -> int:
-        f = safe_float(value, default=None)
-        if f is None or not f.is_integer():
+        rev = exact_int(value, default=None)
+        if rev is None:
             raise ValueError(int_err)
-        rev = int(f)
         if not 0 <= rev <= 1_000_000:
             raise ValueError(range_err or int_err)
         return rev
 
     @classmethod
-    def _limit_kind(cls, revision):
-        revision = cls._parse_bounded_revision(
+    def _kind_for_revision(cls, prefix: str, revision, *, label: str) -> str:
+        rev = cls._parse_bounded_revision(
             revision,
-            int_err="limit revision must be an integer",
-            range_err="limit revision must be between 0 and 1000000",
+            int_err=f"{label} revision must be an integer",
+            range_err=f"{label} revision must be between 0 and 1000000",
         )
-        return "limit" if revision == 0 else f"limit_{revision}"
+        return prefix if rev == 0 else f"{prefix}_{rev}"
 
     @staticmethod
-    def _limit_revision(kind):
+    def _revision_from_kind(kind, prefix: str):
         kind = str(kind)
-        if kind == "limit":
+        if kind == prefix:
             return 0
-        if not kind.startswith("limit_"):
+        pfx = f"{prefix}_"
+        if not kind.startswith(pfx):
             return None
-        suffix = kind.removeprefix("limit_")
+        suffix = kind.removeprefix(pfx)
         if not suffix.isdigit():
             return None
         revision = int(suffix)
         return revision if 0 < revision <= 1_000_000 else None
+
+    @classmethod
+    def _limit_kind(cls, revision):
+        return cls._kind_for_revision("limit", revision, label="limit")
+
+    @classmethod
+    def _limit_revision(cls, kind):
+        return cls._revision_from_kind(kind, "limit")
 
     def _persist_callback(self, pair_id, side, kind, requested_qty):
         if self.pair_store is None:
@@ -564,18 +573,9 @@ class _LivePairVenue:
         self._set_pair_recovery_blocked(pair_id, pending_recovery)
         return recovered
 
-    @staticmethod
-    def _hard_stop_revision_from_kind(kind):
-        kind = str(kind)
-        if kind == "hard_stop":
-            return 0
-        if not kind.startswith("hard_stop_"):
-            return None
-        suffix = kind.removeprefix("hard_stop_")
-        if not suffix.isdigit():
-            return None
-        revision = int(suffix)
-        return revision if 0 < revision <= 1_000_000 else None
+    @classmethod
+    def _hard_stop_revision_from_kind(cls, kind):
+        return cls._revision_from_kind(kind, "hard_stop")
 
     def merge_checkpoint_intents(self, record, state):
         """Merge fsynced intents that raced ahead of a coordinator checkpoint.
@@ -766,12 +766,8 @@ class _LivePairVenue:
         fee-cap, precision, preflight, or client-order-ID auditing.
         """
         side = side.upper()
-        revision = self._parse_bounded_revision(
-            revision,
-            int_err="hard-stop revision must be an integer",
-            range_err="hard-stop revision must be between 0 and 1000000",
-        )
-        store_kind = "hard_stop" if revision == 0 else f"hard_stop_{revision}"
+        store_kind = self._kind_for_revision("hard_stop", revision, label="hard-stop")
+        revision = int(store_kind.removeprefix("hard_stop_")) if store_kind != "hard_stop" else 0
         self._last_place_failures.pop(side, None)
         if pair_id:
             existing_state, existing_ticket, _snapshot = (
@@ -1170,6 +1166,17 @@ def _followup_force(symbol, side):
     return True
 
 
+_TERMINAL_UNFILLED_REFUSALS = frozenset({
+    "qty_zero_after_weight",
+    "qty_zero_after_policy",
+    "below_min_notional",
+    "profit_guard",
+    "trend_deferred",
+    "medium_trend_deferred",
+    "aborted_by_caller",
+})
+
+
 class TradingBot:
     def __init__(self, symbol, qty, DEFAULT_ADJUSTMENT_PERCENT):
         self.symbol = symbol
@@ -1389,15 +1396,7 @@ class TradingBot:
 
                 if buy_order is None:
                     refusal_reason = outcome_context.get("reason")
-                    terminal_unfilled = refusal_reason in {
-                        "qty_zero_after_weight",
-                        "qty_zero_after_policy",
-                        "below_min_notional",
-                        "profit_guard",
-                        "trend_deferred",
-                        "medium_trend_deferred",
-                        "aborted_by_caller",
-                    }
+                    terminal_unfilled = refusal_reason in _TERMINAL_UNFILLED_REFUSALS
                     self._finish_side_precheck(
                         "BUY",
                         aborted=bool(terminal_unfilled and not self.is_sell_filled),
@@ -1623,15 +1622,7 @@ class TradingBot:
 
                 if sell_order is None:
                     refusal_reason = outcome_context.get("reason")
-                    terminal_unfilled = refusal_reason in {
-                        "qty_zero_after_weight",
-                        "qty_zero_after_policy",
-                        "below_min_notional",
-                        "profit_guard",
-                        "trend_deferred",
-                        "medium_trend_deferred",
-                        "aborted_by_caller",
-                    }
+                    terminal_unfilled = refusal_reason in _TERMINAL_UNFILLED_REFUSALS
                     self._finish_side_precheck(
                         "SELL",
                         aborted=bool(terminal_unfilled and not self.is_buy_filled),
@@ -2082,6 +2073,10 @@ class TradingBot:
                 # could destroy valid legs owned by other pair IDs.
                 time.sleep(RTRADE_PAIR_POLL_SEC)
 
+    def _cancel_all_rtrade_open_orders(self):
+        api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+        api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+
     def _reconcile_startup_from_cache(self):
         """Reconcile open RT_ orders and recent fill state from the cached API on reboot."""
         try:
@@ -2124,8 +2119,7 @@ class TradingBot:
                     f"[{self.symbol}] startup recovery: cancelling {len(open_buys)} BUY and "
                     f"{len(open_sells)} SELL leftover RT_ orders."
                 )
-                api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
-                api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+                self._cancel_all_rtrade_open_orders()
         except Exception as exc:
             print(f"[{self.symbol}] startup order cleanup warning: {exc}")
 
@@ -2153,8 +2147,7 @@ class TradingBot:
                     # If the asset trends clearly, keep the spread bot idle for this cycle
                     # to avoid catching a falling knife. Retry on the next iteration.
                     if _trend_too_strong(self.symbol):
-                        api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
-                        api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+                        self._cancel_all_rtrade_open_orders()
                         time.sleep(WAIT_FOR_ORDER)
                         continue
 
@@ -2164,8 +2157,7 @@ class TradingBot:
                         with self.lock:
                             self.buy_filled = self.sell_filled = False
                         if getattr(self, "_round_placed_order", True):
-                            api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
-                            api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+                            self._cancel_all_rtrade_open_orders()
                         time.sleep(WAIT_FOR_ORDER)
                         continue
 
@@ -2188,8 +2180,7 @@ class TradingBot:
                     with self.lock:
                         self.buy_filled = self.sell_filled = False
                     # Guarantee atomic cleanup of all rtrade open orders on worker failure.
-                    api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
-                    api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+                    self._cancel_all_rtrade_open_orders()
                     time.sleep(1)
                 
                 

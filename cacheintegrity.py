@@ -9,7 +9,7 @@ import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
-from botcore import safe_float, safe_int, safe_pos_int
+from botcore import exact_int, safe_float, safe_int, safe_pos_int
 from state_io import read_json_dict
 
 CACHE_META_SCHEMA_VERSION = 2
@@ -93,13 +93,8 @@ def trade_records_digest(
 
 
 def _strict_int_field(val: Any) -> int:
-    if isinstance(val, bool) or val is None or not isinstance(val, (int, float, str)):
+    if not isinstance(val, (int, float, str)):
         raise ValueError("invalid Trade row field type")
-    if isinstance(val, float):
-        vf = safe_float(val, default=None)
-        if vf is None or not vf.is_integer():
-            raise ValueError("invalid Trade row field type")
-        return int(vf)
     if isinstance(val, str):
         s = val.strip()
         if s.endswith(".0"):
@@ -108,7 +103,7 @@ def _strict_int_field(val: Any) -> int:
         if not digits or not digits.isdigit():
             raise ValueError("invalid Trade row field type")
         val = s
-    parsed = safe_int(val, default=None)
+    parsed = exact_int(val, default=None)
     if parsed is None:
         raise ValueError("invalid Trade row field type")
     return parsed
@@ -316,17 +311,10 @@ def load_versioned_account_meta_file(
                 raw_rest_cursor,
                 error_message="invalid cache manifest rest_sync_cursor",
             )
-        normalized_counts: dict[str, int] = {}
-        for symbol, count in counts.items():
-            if (
-                not isinstance(symbol, str)
-                or not symbol.strip()
-                or isinstance(count, bool)
-                or not isinstance(count, int)
-                or count < 0
-            ):
-                raise ValueError("invalid cache manifest count")
-            normalized_counts[symbol] = count
+        normalized_counts = normalize_timestamp_map(
+            counts,
+            error_message="invalid cache manifest count",
+        )
         result: dict[str, Any] = {
             "schema_version": schema_version,
             "data_version": version,

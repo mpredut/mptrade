@@ -29,7 +29,7 @@ from pricewindow import (
 # config.env before reading any environment variables below.
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
-from botcore import (load_dotenv as _load_dotenv,
+from botcore import (exact_nonneg_int, exact_pos_int, load_dotenv as _load_dotenv,
                      required_bool_env, required_float_env, required_int_env,
                      safe_nonneg_float, safe_pos_float)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -125,12 +125,12 @@ def _validate_tradeall_config():
         "TREND_CONSISTENT_CONFIRMS": TREND_CONSISTENT_CONFIRMS,
     }
     for name, value in nonnegative_counts.items():
-        if int(value) < 0:
+        if exact_nonneg_int(value, default=None) is None:
             raise ValueError(f"tradeall config invalid: {name}={value!r}")
     if safe_nonneg_float(TREND_MIN_VALIDATED_SECONDS, default=None) is None:
         raise ValueError(
             f"tradeall config invalid: TREND_MIN_VALIDATED_SECONDS={TREND_MIN_VALIDATED_SECONDS!r}")
-    if FIRE_MAX_PER_TREND < 1:
+    if exact_pos_int(FIRE_MAX_PER_TREND, default=None) is None:
         raise ValueError(
             f"tradeall config invalid: FIRE_MAX_PER_TREND={FIRE_MAX_PER_TREND!r}")
 

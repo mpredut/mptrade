@@ -15,6 +15,7 @@ from datetime import datetime
 import utils as u
 from botcore import (
     _parse_bool_flag,
+    exact_int,
     load_dotenv as _load_dotenv,
     required_bool_env,
     required_int_env,
@@ -173,19 +174,38 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
     return wma
 
 
+def _load_sorted_price_series(
+    symbol: str,
+    lookback_days: Optional[float] = None,
+    *,
+    log_insufficient: bool = False,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    data: List[Tuple[int, float]] = priceLstFor(symbol)
+    if len(data) < 2:
+        return None
+    data = sorted(data, key=lambda x: x[0])
+    if lookback_days is not None:
+        cutoff_timestamp = time.time() - (lookback_days * 86400)
+        data = [(ts, p) for ts, p in data if (ts / 1000.0 if ts > 1e11 else ts) > cutoff_timestamp]
+        if len(data) < 2:
+            if log_insufficient:
+                print(f"[{symbol}] Not enough data in the last {lookback_days} days")
+            return None
+    timestamps, prices = zip(*data)
+    ts_arr = np.array(timestamps, dtype=float)
+    if ts_arr[-1] > 1e11:
+        ts_arr = ts_arr / 1000.0
+    px_arr = np.array(prices, dtype=float)
+    return ts_arr, px_arr
+
+
 # Weighted moving average (WMA).
 def trend_wma(symbol: str, window_hours: int = 6):
     window_hours = safe_pos_float(window_hours, 6.0)
-    data = priceLstFor(symbol)
-    if len(data) < 2:
+    series = _load_sorted_price_series(symbol)
+    if series is None:
         return None
-
-    data = sorted(data, key=lambda x: x[0])
-    timestamps, prices = zip(*data)
-    timestamps = np.array(timestamps, dtype=float)
-    if timestamps[-1] > 1e11:
-        timestamps = timestamps / 1000.0
-    prices = np.array(prices, dtype=float)
+    timestamps, prices = series
 
     delta = float(np.median(np.diff(timestamps)))
     if not np.isfinite(delta) or delta <= 0:
@@ -277,22 +297,10 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
     step_hours = safe_pos_float(step_hours, 8.0)
     persistence_factor = safe_pos_float(persistence_factor, 1.5)
     lookback_days = safe_pos_float(lookback_days, 30.0)
-    data: List[Tuple[int, float]] = priceLstFor(symbol)
-    if len(data) < 2:
+    series = _load_sorted_price_series(symbol, lookback_days=lookback_days)
+    if series is None:
         return None
-    data = sorted(data, key=lambda x: x[0])
-    
-    # Select the last N days.
-    cutoff_timestamp = time.time() - (lookback_days * 86400)
-    data = [(ts, p) for ts, p in data if (ts / 1000.0 if ts > 1e11 else ts) > cutoff_timestamp]
-    if len(data) < 2:
-        return None
-    
-    timestamps, prices = zip(*data)
-    timestamps = np.array(timestamps, dtype=float)
-    if timestamps[-1] > 1e11:
-        timestamps = timestamps / 1000.0  # Convert milliseconds to seconds.
-    prices = np.array(prices, dtype=float)
+    timestamps, prices = series
     
     delta = float(np.median(np.diff(timestamps)))
     if not np.isfinite(delta) or delta <= 0:
@@ -444,22 +452,28 @@ _TREND_MEMO_NONE = object()
 
 
 def _parse_strict_int(val):
-    f = safe_float(val, default=None)
-    if f is None or not f.is_integer():
+    iv = exact_int(val, default=None)
+    if iv is None:
         raise ValueError("not integral")
-    return int(f)
+    return iv
+
+
+def _clone_trend_result(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        out = dict(value)
+        if "blocks" in out and isinstance(out["blocks"], list):
+            out["blocks"] = list(out["blocks"])
+        return out
+    return value
 
 
 def _store_trend_memo(cache_key: tuple, value):
     if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
         _trend_memo_cache.clear()
     _trend_memo_cache[cache_key] = _TREND_MEMO_NONE if value is None else value
-    if value is None:
-        return None
-    out = dict(value)
-    if "blocks" in out and isinstance(out["blocks"], list):
-        out["blocks"] = list(out["blocks"])
-    return out
+    return _clone_trend_result(value)
 
 
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
@@ -596,12 +610,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     if cached is _TREND_MEMO_NONE:
         return None
     if cached is not None:
-        if isinstance(cached, dict):
-            out = dict(cached)
-            if "blocks" in out and isinstance(out["blocks"], list):
-                out["blocks"] = list(out["blocks"])
-            return out
-        return cached
+        return _clone_trend_result(cached)
 
     window_sec = window_hours * 3600.0
     step_sec = step_hours * 3600.0
@@ -685,25 +694,10 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     # detector confirmation. mk_alpha requires current-window Mann-Kendall
     # significance; None disables that filter.
     lookback_days = safe_pos_float(lookback_days, 30.0)
-    data: List[Tuple[int, float]] = priceLstFor(symbol)
-    if len(data) < 2:
+    series = _load_sorted_price_series(symbol, lookback_days=lookback_days, log_insufficient=True)
+    if series is None:
         return None
-
-    data = sorted(data, key=lambda x: x[0])
-    
-    # Select the last N days.
-    cutoff_timestamp = time.time() - (lookback_days * 86400)
-    data = [(ts, p) for ts, p in data if (ts / 1000.0 if ts > 1e11 else ts) > cutoff_timestamp]
-    
-    if len(data) < 2:
-        print(f"[{symbol}] Not enough data in the last {lookback_days} days")
-        return None
-    
-    timestamps, prices = zip(*data)
-    timestamps = np.array(timestamps, dtype=float)
-    if timestamps[-1] > 1e11:
-        timestamps = timestamps / 1000.0      # Milliseconds to seconds.
-    prices = np.array(prices, dtype=float)
+    timestamps, prices = series
 
     # Use time-defined windows to tolerate uneven density while respecting gaps.
     res = detect_long_term_trend(
@@ -791,6 +785,17 @@ def write_all_trends(all_trends, filename=None):
     return all_trends
     
     
+def _normalize_up_down_trend(raw_dir) -> Optional[str]:
+    if not isinstance(raw_dir, str):
+        return None
+    d = raw_dir.strip().lower()
+    if d in ("up", "bull"):
+        return "up"
+    if d in ("down", "bear"):
+        return "down"
+    return None
+
+
 def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=None, quant_seconds=3600*24, draw=False):
     """Use an empirical per-symbol T when ``T_quanta`` is None.
 
@@ -868,12 +873,8 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         print(f"[{symbol}] duration_seconds/T_quanta invalid, return None")
         return None
 
-    direction = str(trend.get("direction") or "").strip().lower()
-    if direction == "bull":
-        direction = "up"
-    elif direction == "bear":
-        direction = "down"
-    if direction not in ("up", "down"):
+    direction = _normalize_up_down_trend(trend.get("direction"))
+    if direction is None:
         return None
 
     duration_days = dur_sec / 86400.0
@@ -975,12 +976,8 @@ def get_trade_weight(T, trend_len, trend, order_type,
     side_u = normalize_side(order_type)
     if side_u not in ("BUY", "SELL"):
         return np.array([]), np.array([])
-    trend_norm = trend.strip().lower()
-    if trend_norm == "bull":
-        trend_norm = "up"
-    elif trend_norm == "bear":
-        trend_norm = "down"
-    if trend_norm not in ("up", "down"):
+    trend_norm = _normalize_up_down_trend(trend)
+    if trend_norm is None:
         return np.array([]), np.array([])
     aligned = (
         (side_u == "BUY"  and trend_norm == "up") or
