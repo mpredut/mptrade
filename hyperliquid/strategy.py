@@ -201,6 +201,19 @@ def _clean_oid(val: object) -> str | None:
     return _clean_single_order_id(val)
 
 
+def _normalize_stored_oid(raw_oid: object) -> int | str | None:
+    clean_oid = _clean_oid(raw_oid)
+    if clean_oid is None:
+        return None
+    if isinstance(raw_oid, (int, float)) and not isinstance(raw_oid, bool) and clean_oid.isdigit():
+        return int(clean_oid)
+    return clean_oid
+
+
+def _is_live_order_oid(oid: object) -> bool:
+    return oid is not None and not str(oid).startswith("PAPER")
+
+
 def _sanitize_state(raw: dict) -> dict:
     merged = _new_state()
     if isinstance(raw, dict):
@@ -220,16 +233,15 @@ def _sanitize_state(raw: dict) -> dict:
         for o in raw_orders:
             if not isinstance(o, dict) or o.get("role") not in ("open", "close"):
                 continue
-            raw_oid = o.get("oid")
-            clean_oid = _clean_oid(raw_oid)
-            if clean_oid is None:
+            stored_oid = _normalize_stored_oid(o.get("oid"))
+            if stored_oid is None:
                 continue
             px_f = safe_pos_float(o.get("px"), 0.0)
             sz_f = safe_pos_float(o.get("sz"), 0.0)
             if px_f <= 0.0 or sz_f <= 0.0:
                 continue
             o_copy = dict(o)
-            o_copy["oid"] = int(clean_oid) if (isinstance(raw_oid, (int, float)) and clean_oid.isdigit()) else clean_oid
+            o_copy["oid"] = stored_oid
             o_copy["px"] = px_f
             o_copy["sz"] = sz_f
             o_copy["amount"] = safe_nonneg_float(o_copy.get("amount", 0.0), 0.0)
@@ -340,9 +352,8 @@ class Strategy:
                                      "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
             return
         ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
-        clean_oid = _clean_oid(oid)
-        if ok and clean_oid is not None:
-            stored_oid = int(clean_oid) if (isinstance(oid, (int, float)) and clean_oid.isdigit()) else clean_oid
+        stored_oid = _normalize_stored_oid(oid)
+        if ok and stored_oid is not None:
             log(f"  [STRAT] {role.upper()}({side}) {kind} placed oid={stored_oid} {sz} @ {px:.4f} ({msg})")
             self.s["orders"].append({"oid": stored_oid, "role": role, "side": side, "sz": sz, "px": px,
                                      "amount": amount, "kind": kind, "ts": time.time()})
@@ -354,7 +365,7 @@ class Strategy:
         if not o:
             return True
         oid = o.get("oid")
-        if not self.dry_run and not self.replay_mode and oid is not None and not str(oid).startswith("PAPER"):
+        if not self.dry_run and not self.replay_mode and _is_live_order_oid(oid):
             if self.client.cancel(self.coin, oid) is False:
                 if not self.replay_mode:
                     log(f"  ! [STRAT] failed to cancel close {oid} — keeping tracked")
@@ -424,7 +435,7 @@ class Strategy:
             }
 
         prev = self.s["qty"]
-        prev_cost = float(self.s.get("cost", 0.0) or 0.0)
+        prev_cost = safe_nonneg_float(self.s.get("cost", 0.0), default=0.0)
 
         if qty_now > prev + 1e-9:        # position opened or increased
             fq = qty_now - prev
@@ -469,11 +480,17 @@ class Strategy:
             self._apply_close(self._avg() or entry or close_px, close_px, prev - qty_now,
                               real_qty=qty_now, real_avg=entry)
         else:
-            self.s["qty"] = qty_now
-            if qty_now > 1e-12 and entry > 0: self.s["cost"] = qty_now * entry
+            if qty_now <= 1e-12:
+                self.s["qty"] = 0.0
+                self.s["cost"] = 0.0
+                self.s["spent"] = 0.0
+            else:
+                self.s["qty"] = qty_now
+                if entry > 0:
+                    self.s["cost"] = qty_now * entry
 
         for o in list(self.s["orders"]):
-            if str(o.get("oid", "")).startswith("PAPER"): continue
+            if not _is_live_order_oid(o.get("oid")): continue
             if _clean_oid(o.get("oid")) not in active:
                 self._remove(o)
             elif orders_ok and self._open_is_stale(o, price):
@@ -553,7 +570,7 @@ class Strategy:
             self.s["cycles_completed"] = self.s.get("cycles_completed", 0) + 1
             remaining_orders = []
             for o in list(self.s.get("orders", [])):
-                if not self.dry_run and not self.replay_mode and self.client and not str(o.get("oid", "")).startswith("PAPER"):
+                if not self.dry_run and not self.replay_mode and self.client and _is_live_order_oid(o.get("oid")):
                     try:
                         if not self.client.cancel(self.coin, o["oid"]):
                             remaining_orders.append(o)
@@ -596,7 +613,7 @@ class Strategy:
             close_cancel_failed = False
             for o in list(self.s["orders"]):
                 oid = o.get("oid")
-                if not self.dry_run and not self.replay_mode and oid is not None and not str(oid).startswith("PAPER"):
+                if not self.dry_run and not self.replay_mode and _is_live_order_oid(oid):
                     if self.client.cancel(self.coin, oid) is False:
                         log(f"  ! [STRAT] failed to cancel {oid} before SL — keeping tracked")
                         if o.get("role") == "close":

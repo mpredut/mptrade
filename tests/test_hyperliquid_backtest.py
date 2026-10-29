@@ -808,5 +808,62 @@ def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
     assert hl_report["windows"]["signal_warmup_bars"] == 5
 
 
+def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
+    import json
+    from unittest.mock import MagicMock, patch
+    from providers.market_api import _clean_client_order_id
+
+    _spec = importlib.util.spec_from_file_location("hl_md_case_test", os.path.join(_HL_DIR, "market_data.py"))
+    _hl_md = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_hl_md)
+
+    fake_candles = [
+        {"t": 1700000000000, "T": 1700003599999, "s": "HYPE", "i": "1h",
+         "o": "20.0", "c": "21.0", "h": "22.0", "l": "19.5", "v": "100.0", "n": 50},
+    ]
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(fake_candles).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        records = _hl_md.fetch_ohlc_candles("HYPE", "1H", drop_incomplete=False)
+        assert len(records) == 1
+        assert records[0]["close"] == 21.0
+
+    # Zero-qty reconcile branch resets dust cost/spent
+    Strategy = hl_replay.Strategy
+    StratParams = hl_replay.StratParams
+
+    class ZeroPosClient:
+        def sz_decimals(self, coin):
+            return 2
+
+        def position_strict(self, coin):
+            return (0.0, 0.0)
+
+        def open_orders_strict(self, coin):
+            return []
+
+    strat = Strategy(
+        client=ZeroPosClient(),
+        coin="HYPE",
+        params=StratParams(direction="long"),
+        dry_run=False,
+        replay_mode=True,
+    )
+    strat.s["qty"] = 0.0
+    strat.s["cost"] = 12.34
+    strat.s["spent"] = 12.34
+    assert strat.reconcile(100.0) is True
+    assert strat.s["cost"] == 0.0
+    assert strat.s["spent"] == 0.0
+
+    # _clean_client_order_id rejects negative numeric strings and booleans
+    assert _clean_client_order_id("-123") is None
+    assert _clean_client_order_id(True) is None
+    assert _clean_client_order_id("valid-coid-1") == "valid-coid-1"
+
+
+
 
 

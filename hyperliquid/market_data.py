@@ -143,9 +143,10 @@ def fetch_ohlc_candles(
     if isinstance(interval, str):
         rev_intervals = {v: k for k, v in INTERVALS.items()}
         cleaned = interval.strip()
-        if cleaned in rev_intervals:
-            interval_str = cleaned
-            interval_min = rev_intervals[cleaned]
+        cleaned_norm = cleaned.lower() if cleaned.lower() in rev_intervals else cleaned
+        if cleaned_norm in rev_intervals:
+            interval_str = cleaned_norm
+            interval_min = rev_intervals[cleaned_norm]
         elif cleaned.isascii() and cleaned.isdigit():
             interval_min = int(cleaned)
             interval_str = INTERVALS.get(interval_min)
@@ -199,7 +200,7 @@ def fetch_ohlc_candles(
             "startTime": final_start,
             "endTime": final_end,
         },
-    }, timeout=timeout)
+    }, timeout=to_f)
     if not isinstance(payload, list):
         raise RuntimeError(f"invalid candleSnapshot response: {payload!r}")
 
@@ -217,7 +218,7 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
     if start_f is None or int(start_f) < 0 or timeout_f is None:
         return []
     try:
-        data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_f)}, timeout=timeout)
+        data = _post_info({"type": "fundingHistory", "coin": coin.strip(), "startTime": int(start_f)}, timeout=timeout_f)
         if not isinstance(data, list):
             return []
         entries: list[tuple[int, float]] = []

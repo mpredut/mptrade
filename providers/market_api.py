@@ -109,6 +109,27 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
 _INVALID_API_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
 
 
+def _clean_client_order_id(raw_coid: Any) -> Optional[str]:
+    if (
+        raw_coid is None
+        or isinstance(raw_coid, (bool, dict, list, tuple, set, frozenset))
+        or (isinstance(raw_coid, (int, float)) and raw_coid <= 0)
+    ):
+        return None
+    s = str(raw_coid).strip()
+    if not s or s.lower() in _INVALID_API_ID_STRINGS:
+        return None
+    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
+        return None
+    return s
+
+
+def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
+    if raw is None or raw == "":
+        return 0.0
+    return safe_nonneg_float(raw, default=None)
+
+
 def _require_pos_since_s(since_s: Any) -> float:
     val = safe_pos_float(since_s, default=None)
     if val is None:
@@ -290,9 +311,9 @@ class BinanceProvider(MarketDataProvider):
             raw_exec = order.get("executedQty")
             if any(isinstance(v, bool) for v in (raw_px, raw_orig, raw_exec)):
                 raise ProviderError(f"open_orders({symbol}): boolean numeric field in order")
-            price_f = safe_nonneg_float(raw_px or 0.0, default=None)
-            orig_f = safe_nonneg_float(raw_orig or 0.0, default=None)
-            exec_f = safe_nonneg_float(raw_exec or 0.0, default=None)
+            price_f = _parse_nonneg_order_field(raw_px)
+            orig_f = _parse_nonneg_order_field(raw_orig)
+            exec_f = _parse_nonneg_order_field(raw_exec)
             if None in (price_f, orig_f, exec_f):
                 raise ProviderError(f"open_orders({symbol}): invalid or negative numeric field in order")
             raw_oid = order.get("orderId")
@@ -304,14 +325,7 @@ class BinanceProvider(MarketDataProvider):
             raw_status = order.get("status")
             if isinstance(raw_side, bool) or isinstance(raw_status, bool):
                 raise ProviderError(f"open_orders({symbol}): boolean status/side field in order")
-            raw_coid = order.get("clientOrderId")
-            clean_coid = (
-                str(raw_coid).strip()
-                if raw_coid is not None
-                and not isinstance(raw_coid, (bool, dict, list, tuple, set, frozenset))
-                and str(raw_coid).strip().lower() not in _INVALID_API_ID_STRINGS
-                else None
-            )
+            clean_coid = _clean_client_order_id(order.get("clientOrderId"))
             side_norm = normalize_side(raw_side) or str(raw_side or "").strip().upper()
             normalized.append({
                 "orderId": str(oid_int),
@@ -657,14 +671,9 @@ class BinanceProvider(MarketDataProvider):
 
         if not isinstance(o, dict):
             raise ProviderError(f"order_status({order_id}): order payload is invalid")
-        raw_exec = o.get("executedQty")
-        raw_cost = o.get("cummulativeQuoteQty")
-        raw_orig = o.get("origQty")
-        if any(isinstance(v, bool) for v in (raw_exec, raw_cost, raw_orig)):
-            raise ProviderError(f"order_status({order_id}): invalid fill values")
-        executed_qty = safe_nonneg_float(raw_exec or 0.0, default=None)
-        cost_val = safe_nonneg_float(raw_cost or 0.0, default=None)
-        orig_val = safe_nonneg_float(raw_orig or 0.0, default=None)
+        executed_qty = _parse_nonneg_order_field(o.get("executedQty"))
+        cost_val = _parse_nonneg_order_field(o.get("cummulativeQuoteQty"))
+        orig_val = _parse_nonneg_order_field(o.get("origQty"))
         if None in (executed_qty, cost_val, orig_val):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
         fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0
@@ -891,20 +900,14 @@ class MarketApi:
         if not callable(method):
             raise ProviderError(
                 f"{provider.name}: declared order_by_client_id is missing")
-        if (
-            client_order_id is None
-            or isinstance(client_order_id, bool)
-            or not isinstance(client_order_id, (str, int))
-            or (isinstance(client_order_id, int) and client_order_id <= 0)
-            or not str(client_order_id).strip()
-            or str(client_order_id).strip().lower() in _INVALID_API_ID_STRINGS
-            or (
-                str(client_order_id).strip().startswith("-")
-                and str(client_order_id).strip()[1:].replace(".", "", 1).isdigit()
-            )
-        ):
+        clean_coid = (
+            _clean_client_order_id(client_order_id)
+            if isinstance(client_order_id, (str, int)) and not isinstance(client_order_id, bool)
+            else None
+        )
+        if clean_coid is None:
             raise ProviderError(f"{provider.name}: invalid client_order_id")
-        return method(symbol, str(client_order_id).strip())
+        return method(symbol, clean_coid)
 
     @staticmethod
     def _clean_order_id_arg(order_id: Any, provider_name: str) -> str:
@@ -1321,13 +1324,10 @@ class MarketApi:
         # Mechanics-only provider dispatch without guards. Real placement must use
         # guarded .place(); this remains for internal and dry-run cases.
         provider_name = kwargs.pop("provider_name", None)
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
         if force and "force" not in kwargs:
-            return self._provider_explicit_or_routed(symbol, provider_name).place_order(
-                symbol, side, price, qty, force=force, **kwargs
-            )
-        return self._provider_explicit_or_routed(symbol, provider_name).place_order(
-            symbol, side, price, qty, **kwargs
-        )
+            kwargs["force"] = force
+        return provider.place_order(symbol, side, price, qty, **kwargs)
 
     def place(self, symbol: str, side: str, price: float, qty: Optional[float] = None,
               base: Optional[str] = None, quote: Optional[str] = None, **kwargs):
