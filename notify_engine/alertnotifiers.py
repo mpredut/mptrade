@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess  # noqa: F401
 import sys
 import time
 from datetime import datetime, timezone
