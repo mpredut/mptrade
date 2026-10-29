@@ -555,7 +555,6 @@ if __name__ == "__main__":
             logger.error("Failed backtest for %s: %s", sym, e, exc_info=True)
 
     out_file = os.path.join(ROOT, "logger", "intelligence_backtest_results.json")
-    os.makedirs(os.path.dirname(out_file), exist_ok=True)
-    with open(out_file, "w") as f:
-        json.dump(all_results, f, indent=2)
+    from state_io import atomic_write_json
+    atomic_write_json(out_file, all_results, indent=2)
     logger.info("Saved backtest results to %s", out_file)
