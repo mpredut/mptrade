@@ -12,6 +12,11 @@ It writes ed25519_private.pem and ed25519_public.pem into the current directory 
 prints the public key in base64.
 """
 import base64
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -21,6 +26,8 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
+from state_io import atomic_write_bytes
+
 def generate_ed25519_keypair(priv_path: str = 'ed25519_private.pem', pub_path: str = 'ed25519_public.pem') -> str:
     private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
@@ -28,10 +35,8 @@ def generate_ed25519_keypair(priv_path: str = 'ed25519_private.pem', pub_path: s
     pub_bytes = public_key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
     priv_bytes = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
 
-    with open(priv_path, 'wb') as f:
-        f.write(priv_bytes)
-    with open(pub_path, 'wb') as f:
-        f.write(pub_bytes)
+    atomic_write_bytes(priv_path, priv_bytes)
+    atomic_write_bytes(pub_path, pub_bytes)
 
     return base64.b64encode(pub_bytes).decode()
 
