@@ -4,7 +4,6 @@ from __future__ import annotations
 import requests
 import hashlib
 import json
-import math
 import os
 import re
 import subprocess

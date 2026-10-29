@@ -14,7 +14,6 @@ Usage: ``python3 price_notifier.py [--config PATH] [--check]``.
 """
 
 import argparse
-import math
 import os
 import platform
 import threading

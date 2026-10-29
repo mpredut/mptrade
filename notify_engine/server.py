@@ -4,7 +4,6 @@ import os
 import sys
 import json
 import logging
-import math
 import re
 import time
 import requests

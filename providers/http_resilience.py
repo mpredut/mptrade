@@ -17,8 +17,6 @@ cache (see systemd/DNS_RESILIENCE.md).
 """
 from __future__ import annotations
 
-import math
-
 from botcore import _parse_bool_flag, safe_nonneg_float, safe_nonneg_int, safe_pos_int
 
 

@@ -8,7 +8,6 @@ positions, and PENDING orders. Explains invested, available, and blocked amounts
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import time

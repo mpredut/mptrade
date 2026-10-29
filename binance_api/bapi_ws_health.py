@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import builtins
-import math
 import sys
 import threading
 import time

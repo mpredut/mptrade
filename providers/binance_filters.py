@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
-import math
 from botcore import _parse_bool_flag
 
 
