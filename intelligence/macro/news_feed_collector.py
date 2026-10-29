@@ -232,7 +232,7 @@ class NewsFeedCollector:
                 title_str = getattr(h_item, "title", "")
                 if not isinstance(title_str, str) or not title_str:
                     continue
-                updated_kws = match_high_severity_keywords(title_str, cache_dir=cache_dir)
+                updated_kws = match_high_severity_keywords(title_str, cache_dir=cache_dir, now_ts=now)
                 if updated_kws and not self._as_bool_flag(getattr(h_item, "is_high_severity", False)):
                     existing_kws = getattr(h_item, "matched_keywords", ()) or ()
                     merged_kws = tuple(dict.fromkeys(list(existing_kws) + list(updated_kws)))
@@ -319,9 +319,9 @@ class NewsFeedCollector:
         for item in raw_items:
             title = item["title"]
             lower_title = title.lower()
-            matched_list = list(match_high_severity_keywords(title, cache_dir=cache_dir))
+            matched_list = list(match_high_severity_keywords(title, cache_dir=cache_dir, now_ts=now))
             for em_term in emerging_terms:
-                if em_term not in matched_list and re.search(r"\b" + re.escape(em_term) + r"\b", lower_title):
+                if em_term in lower_title and em_term not in matched_list and re.search(r"\b" + re.escape(em_term) + r"\b", lower_title):
                     matched_list.append(em_term)
             matched = tuple(matched_list)
             parsed_headlines.append(
@@ -336,7 +336,7 @@ class NewsFeedCollector:
             )
 
         high_sev = [h for h in parsed_headlines if h.is_high_severity]
-        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords([h.title for h in high_sev], cache_dir=cache_dir)
+        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords([h.title for h in high_sev], cache_dir=cache_dir, now_ts=now)
         return NewsFeedSnapshot(
             headlines=tuple(parsed_headlines[:25]),
             total_fetched=len(parsed_headlines),

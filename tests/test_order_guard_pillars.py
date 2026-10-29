@@ -1428,9 +1428,10 @@ def test_batch48_offline_runners_backtests_and_legacy_tools_hardening(tmp_path, 
     assert cleaned_data["items"]["_meta"] == {"version": 1}
 
 
-def test_batch49_cmc_platform_and_news_feed_deadline_hardening(monkeypatch):
+def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeypatch):
     import market_monitor.pricefetcher as pf_mod
     from intelligence.macro.news_feed_collector import NewsFeedCollector
+    import intelligence.macro_sentiment_ssot as ssot
 
     # 1. Explicit api_key=None or api_key="" does not fall back to os.environ["CMC_API_KEY"]
     monkeypatch.setenv("CMC_API_KEY", "env-cmc-secret-key")
@@ -1470,6 +1471,22 @@ def test_batch49_cmc_platform_and_news_feed_deadline_hardening(monkeypatch):
     assert calls[0][0] == "https://feed1.example/rss"
     assert calls[0][1] <= 4.0
     assert res is not None and res.total_fetched == 1
+
+    # 3. Dynamic lexicon stat cache avoids redundant disk parses and invalidates on update
+    ssot.update_dynamic_lexicon(["hormuz blockade"], cache_dir=str(tmp_path), now_ts=1700000000.0)
+    matched1 = ssot.match_high_severity_keywords(
+        "Oil tankers halt after Hormuz blockade",
+        cache_dir=str(tmp_path),
+        now_ts=1700000010.0,
+    )
+    assert "hormuz blockade" in matched1
+    ssot.update_dynamic_lexicon(["suez freeze"], cache_dir=str(tmp_path), now_ts=1700000010.0)
+    matched2 = ssot.match_high_severity_keywords(
+        "Shipping delays after Suez freeze",
+        cache_dir=str(tmp_path),
+        now_ts=1700000010.0,
+    )
+    assert "suez freeze" in matched2
 
 
 

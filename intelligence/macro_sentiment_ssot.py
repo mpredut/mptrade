@@ -743,6 +743,10 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 # 2. Specialized Multi-Source Feeds & Dynamic Crisis Lexicon Discovery
 # ============================================================================
 
+_LEXICON_FILE_CACHE: Dict[str, Tuple[int, int, Any]] = {}
+_LEXICON_EVAL_CACHE: Dict[Tuple[str, int, int, int, float], Dict[str, Tuple[str, ...]]] = {}
+
+
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
     fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
     return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname))) if cache_dir else cache_path(fname)
@@ -761,15 +765,32 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         "dynamic_severity_keywords": (),
         "dynamic_acute_shock_phrases": (),
     }
-    if not (os.path.exists(path) or os.path.exists(f"{path}.previous")):
+    stat_sig: Optional[Tuple[int, int]] = None
+    for candidate in (path, f"{path}.previous"):
+        try:
+            st = os.stat(candidate)
+            stat_sig = (st.st_mtime_ns, st.st_size)
+            break
+        except OSError:
+            continue
+    if stat_sig is None:
         return empty_res
+    eval_key = (path, stat_sig[0], stat_sig[1], int(now), ttl)
+    cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
+    if cached_eval is not None:
+        return cached_eval
     try:
-        data = read_recovering_previous(path, json.loads, default=None)
+        cached_raw = _LEXICON_FILE_CACHE.get(path)
+        if cached_raw is not None and cached_raw[0] == stat_sig[0] and cached_raw[1] == stat_sig[1]:
+            data = cached_raw[2]
+        else:
+            data = read_recovering_previous(path, json.loads, default=None)
+            _LEXICON_FILE_CACHE[path] = (stat_sig[0], stat_sig[1], data)
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             return empty_res
-        high_terms: List[str] = []
-        acute_terms: List[str] = []
+        high_seen: Dict[str, None] = {}
+        acute_seen: Dict[str, None] = {}
         for term, meta in entries.items():
             if not isinstance(term, str) or not term.strip():
                 continue
@@ -777,17 +798,20 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
             ts = safe_float(meta.get("ts") if isinstance(meta, dict) else meta, 0.0)
             tier = str(meta.get("tier", "high")).lower() if isinstance(meta, dict) else "high"
             if ts > 0.0 and (now - ts) <= ttl:
-                if t_clean not in high_terms:
-                    high_terms.append(t_clean)
-                if tier == "acute" and t_clean not in acute_terms:
-                    acute_terms.append(t_clean)
-        high_tup, acute_tup = tuple(high_terms), tuple(acute_terms)
-        return {
+                high_seen.setdefault(t_clean, None)
+                if tier == "acute":
+                    acute_seen.setdefault(t_clean, None)
+        high_tup, acute_tup = tuple(high_seen), tuple(acute_seen)
+        res = {
             "high_severity_terms": high_tup,
             "acute_shock_phrases": acute_tup,
             "dynamic_severity_keywords": high_tup,
             "dynamic_acute_shock_phrases": acute_tup,
         }
+        if len(_LEXICON_EVAL_CACHE) >= 32:
+            _LEXICON_EVAL_CACHE.clear()
+        _LEXICON_EVAL_CACHE[eval_key] = res
+        return res
     except Exception as exc:
         logger.debug("Could not load dynamic lexicon from %s: %s", path, exc)
         return empty_res
@@ -840,24 +864,22 @@ def update_dynamic_lexicon(
             save_json_state(path, {"updated_ts": now, "entries": existing_entries}, indent=2)
         except Exception as exc:
             logger.debug("Could not save dynamic lexicon to %s: %s", path, exc)
+        _LEXICON_FILE_CACHE.pop(path, None)
+        _LEXICON_EVAL_CACHE.clear()
 
     return load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now)
 
 
 def get_active_severity_keywords(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = list(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True))
-    for item in load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("high_severity_terms", ()):
-        if item not in seed:
-            seed.append(item)
-    return tuple(seed)
+    seed = _split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)
+    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("high_severity_terms", ())
+    return tuple(dict.fromkeys((*seed, *dyn)))
 
 
 def get_active_acute_shock_phrases(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    seed = list(_split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True))
-    for item in load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ()):
-        if item not in seed:
-            seed.append(item)
-    return tuple(seed)
+    seed = _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
+    dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ())
+    return tuple(dict.fromkeys((*seed, *dyn)))
 
 
 def discover_dynamic_terms_from_headlines(
@@ -973,9 +995,11 @@ def match_high_severity_keywords(
 ) -> Tuple[str, ...]:
     """Return all matched high-severity keywords for ``text`` using the active lexicon."""
     lower = (text or "").lower()
+    if not lower:
+        return ()
     return tuple(
         kw for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
-        if re.search(r"\b" + re.escape(kw) + r"\b", lower)
+        if kw in lower and re.search(r"\b" + re.escape(kw) + r"\b", lower)
     )
 
 
