@@ -90,7 +90,7 @@ def per_bot(symbol):
         elif side == "SELL":
             a["sq"] += eq; a["sv"] += cqq
     print(f"\n  {symbol} (the last {len(orders)} orders):")
-    print(f"    {'sursa':<16}{'buy$':>9}{'sell$':>9}{'net_qty':>12}{'realized_own':>14}")
+    print(f"    {'source':<16}{'buy$':>9}{'sell$':>9}{'net_qty':>12}{'realized_own':>14}")
     for b, a in sorted(g.items(), key=lambda x: -(x[1]["bq"] + x[1]["sq"])):
         avg_b = a["bv"] / a["bq"] if a["bq"] else 0.0
         avg_s = a["sv"] / a["sq"] if a["sq"] else 0.0
@@ -100,8 +100,8 @@ def per_bot(symbol):
 
 
 def main():
-    print(f"\n=== RAPORT P&L FLOTA ({time.strftime('%Y-%m-%d %H:%M')}) ===")
-    print(f"{'sursa':<22}{'realized':>11}{'unrealized':>12}{'pozitie':>12}")
+    print(f"\n=== FLEET P&L REPORT ({time.strftime('%Y-%m-%d %H:%M')}) ===")
+    print(f"{'source':<22}{'realized':>11}{'unrealized':>12}{'position':>12}")
     tot_r = tot_u = 0.0
 
     for sym in symbols_for("binance"):
@@ -109,9 +109,9 @@ def main():
             d = binance_symbol(sym)
             tot_r += d["realized"]; tot_u += d["unreal"]
             print(f"{'Binance '+sym:<22}{d['realized']:>+11.2f}{d['unreal']:>+12.2f}"
-                  f"{d['pos']:>10.4f}  ({d['n']} fills 120z, {d['buys']}b/{d['sells']}s @ {d['cur']})")
+                  f"{d['pos']:>10.4f}  ({d['n']} fills 120d, {d['buys']}b/{d['sells']}s @ {d['cur']})")
         except Exception as e:
-            print(f"{'Binance '+sym:<22} EROARE: {e}")
+            print(f"{'Binance '+sym:<22} ERROR: {e}")
 
     # Kraken HYPE (kraken_bot)
     from state_io import read_recovering_previous
@@ -127,7 +127,7 @@ def main():
         tot_r += kr; tot_u += ku
         print(f"{'Kraken HYPE (bot)':<22}{kr:>+11.2f}{ku:>+12.2f}{k_qty:>10.4f}  (avg cost {k_cost/k_qty if k_qty else 0:.2f}, cur ~{hy})")
     except Exception as e:
-        print(f"{'Kraken HYPE':<22} EROARE: {e}")
+        print(f"{'Kraken HYPE':<22} ERROR: {e}")
 
     # Hyperliquid dn_bot (delta-neutral: profit = funding - fees, price-independent)
     try:
@@ -141,7 +141,7 @@ def main():
         tot_r += hl
         print(f"{'HL dn_bot (funding)':<22}{hl:>+11.2f}{0.0:>+12.2f}{h_spot:>10.4f}  (delta-neutral: funding {h_fund:.2f} - fee {h_fees:.2f})")
     except Exception as e:
-        print(f"{'HL dn_bot':<22} EROARE: {e}")
+        print(f"{'HL dn_bot':<22} ERROR: {e}")
 
     print("-" * 57)
     print(f"{'TOTAL':<22}{tot_r:>+11.2f}{tot_u:>+12.2f}   -> NET {tot_r+tot_u:+.2f} USD")

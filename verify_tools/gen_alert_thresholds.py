@@ -129,9 +129,9 @@ def main() -> int:
         try:
             r = suggest(s)
         except Exception as e:  # noqa: BLE001
-            print(f"# {s}: eroare ({e})"); continue
+            print(f"# {s}: error ({e})"); continue
         if not r:
-            print(f"# {s}: date insuficiente / negasit pe CoinGecko"); continue
+            print(f"# {s}: insufficient data / not found on CoinGecko"); continue
         print(f"{r['symbol']:<8} = {r['up']} / {r['down']}    "
               f"# {r['name']} | tipic zilnic +{r['up_median']}/-{r['down_median']}% ({r['points']} puncte)")
     return 0

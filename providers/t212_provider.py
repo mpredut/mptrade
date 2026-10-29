@@ -404,7 +404,7 @@ class T212Provider(MarketDataProvider):
         expected_symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
         if ticker and expected_symbol and not _t212_tickers_match(ticker, expected_symbol):
             raise ProviderError(
-                f"order_status({order_id}): ticker {ticker!r}, asteptat {symbol!r}")
+                f"order_status({order_id}): ticker {ticker!r}, expected {symbol!r}")
 
         venue_status = str(raw.get("status") or "").strip().upper()
         if venue_status in _OPEN_STATUSES:

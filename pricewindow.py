@@ -1185,11 +1185,11 @@ class WindowAnalyzer:
 
     # ══════════════════════════════════════════════════════════════════════════════
     # [HISTORICAL EXPERIMENTS & DRAFT METRICS — PRESERVE FOR REFERENCE — DO NOT DELETE]
-    # Păstrate pentru analiză și potențială reutilizare/recalibrare în strategii.
-    # Notă: evaluate_buy_sell_opportunity a fost ștearsă conform cerinței (era stub gol).
+    # Preserved for analysis and potential reuse/recalibration in strategies.
+    # Note: evaluate_buy_sell_opportunity was removed per requirement (empty stub).
     # ══════════════════════════════════════════════════════════════════════════════
     # def calculate_slope_max_min(self):
-    #     """Calculează panta directă între extremele ferestrei (min și max)."""
+    #     """Calculate direct slope between window extremes (min and max)."""
     #     w = self.window
     #     if len(w.sorted_prices) < 2:
     #         return 0
@@ -1200,7 +1200,7 @@ class WindowAnalyzer:
     #     return (max_price - min_price) / (max_index - min_index)
     #
     # def calculate_proximities(self, current_price):
-    #     """Proximitatea prețului curent față de min (0..1) și max (0..1) din fereastră."""
+    #     """Current price proximity to min (0..1) and max (0..1) within window."""
     #     if current_price is None or isinstance(current_price, bool):
     #         return 0, 0
     #     try:
@@ -1221,7 +1221,7 @@ class WindowAnalyzer:
     #     return max(min_proximity, 0), max(max_proximity, 0)
     #
     # def calculate_positions(self):
-    #     """Poziția temporală normalizată (index / window_size) a minimului și maximului."""
+    #     """Normalized temporal position (index / window_size) of min and max."""
     #     w = self.window
     #     min_price, min_index = w.get_min_and_index()
     #     max_price, max_index = w.get_max_and_index()
@@ -1234,7 +1234,7 @@ class WindowAnalyzer:
     #
     # def _analyze_price_movement(self, min_price, min_index, max_price, max_index,
     #                             newest_price, newest_index, price_diff):
-    #     """Analiză asimetrică a pantei dintre noul preț și cele două extreme (min/max)."""
+    #     """Asymmetric slope analysis between latest price and both extremes (min/max)."""
     #     price_diff_min = u.calculate_difference_percent(min_price, newest_price)
     #     price_diff_max = u.calculate_difference_percent(max_price, newest_price)
     #     grow = price_diff_max < price_diff_min

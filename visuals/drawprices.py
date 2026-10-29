@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
 from botcore import safe_float, safe_int, safe_pos_int
 from cachepaths import cache_symbol_variants
+from state_io import atomic_write_json
 import symbols as sym
 import cacheManager as cm
 
@@ -371,6 +372,5 @@ if __name__ == "__main__":
     )
 
     # 3) Optionally save a JSON report of the results.
-    with open("forecast_results.json", "w", encoding="utf-8") as f:
-        json.dump(res, f, ensure_ascii=False, indent=2)
+    atomic_write_json("forecast_results.json", res, ensure_ascii=False, indent=2)
     print("\nThe images were saved in ./plots and the summary in forecast_results.json")

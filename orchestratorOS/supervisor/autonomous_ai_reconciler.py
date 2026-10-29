@@ -2621,9 +2621,10 @@ class AutonomousAIReconciler:
                 logger.warning("Search block not found in %s. Skipping patch.", target_file)
                 return False
 
+            from state_io import atomic_write_text
+
             new_content = content.replace(search_block, replace_block, 1)
-            with open(real_target, "w", encoding="utf-8") as f:
-                f.write(new_content)
+            atomic_write_text(real_target, new_content)
 
             pytest_bin = "pytest"
             for cand in (".venv/bin/pytest", "myenv/bin/pytest"):
@@ -2643,16 +2644,15 @@ class AutonomousAIReconciler:
                 return True
             else:
                 logger.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
-                with open(real_target, "w", encoding="utf-8") as f:
-                    f.write(content)
+                atomic_write_text(real_target, content)
                 subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
                 return False
         except Exception as e:
             logger.error("Error during safe code patching: %s. Performing rollback.", e)
             if content is not None:
                 try:
-                    with open(real_target, "w", encoding="utf-8") as f:
-                        f.write(content)
+                    from state_io import atomic_write_text
+                    atomic_write_text(real_target, content)
                 except OSError:
                     pass
             subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)

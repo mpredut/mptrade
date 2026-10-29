@@ -30,7 +30,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
     if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
         sys.modules.pop(_mod_name, None)
 
-from state_io import atomic_write_json
+from state_io import atomic_write_json, previous_generation_path, read_recovering_previous
 from providers.base import extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
@@ -100,7 +100,7 @@ def order_already_placed() -> bool:
     try:
         record = _read_marker(ORDER_MARKER)
     except RuntimeError as exc:
-        log(f"  ! [ORDER] marker ilizibil — fail closed: {exc}")
+        log(f"  ! [ORDER] unreadable marker — fail closed: {exc}")
         return True
     return bool(record and str(record.get("lifecycle") or "").lower() not in {
         "canceled", "cancelled", "expired",
@@ -108,16 +108,24 @@ def order_already_placed() -> bool:
 
 
 def _read_marker(path: str) -> dict | None:
-    try:
-        with open(path, encoding="utf-8") as handle:
+    target = os.fspath(path)
+    backup = previous_generation_path(target)
+    if not os.path.exists(target) and not os.path.exists(backup):
+        return None
+
+    def _loader(candidate: str) -> dict:
+        with open(candidate, encoding="utf-8") as handle:
             value = json.load(handle)
+        if not isinstance(value, dict):
+            raise RuntimeError(f"invalid T212 marker {path}: expected JSON object")
+        return value
+
+    try:
+        return read_recovering_previous(target, _loader, backup_path=backup)
     except FileNotFoundError:
         return None
     except (OSError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"marker T212 ilizibil {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise RuntimeError(f"marker T212 invalid {path}: obiect JSON asteptat")
-    return value
+        raise RuntimeError(f"unreadable T212 marker {path}: {exc}") from exc
 
 
 def _safe_marker_component(value: str) -> str:
@@ -395,7 +403,7 @@ def place_order_with_retry(
     price_f = safe_pos_float(limit_price, default=None)
     retry_delay_f = safe_nonneg_float(retry_delay, default=None)
     if qty_f is None or price_f is None or retry_delay_f is None:
-        log("  ! [ORDER] parametri numerici invalizi: bool nu este permis")
+        log("  ! [ORDER] invalid numeric parameters: bool not allowed")
         return False
     qty_r = round(qty_f, 2)
     price_r = round(price_f, 2)

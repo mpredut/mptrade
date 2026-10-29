@@ -372,5 +372,5 @@ if __name__ == "__main__":
     ok = got == expected
     log(f"signature self-test: {'OK ✅' if ok else 'FAILED ❌'}")
     if not ok:
-        log(f"  asteptat: {expected}")
-        log(f"  obtinut : {got}")
+        log(f"  expected: {expected}")
+        log(f"  got     : {got}")

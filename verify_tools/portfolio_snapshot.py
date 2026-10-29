@@ -258,7 +258,7 @@ def main() -> int:
     if args.alert:
         print(f"  risk-alert: {'; '.join(fired) if fired else 'nothing over the threshold'}")
 
-    print(f"=== PORTOFOLIU {snap['ts']} ===")
+    print(f"=== PORTFOLIO {snap['ts']} ===")
     print(f"  {'engine':<22}{'qty':>12}{'value$':>11}{'realised$':>11}{'unreal$':>10}{'budget':>10}")
     for r in kr:
         print(f"  {r['engine']:<22}{r['qty']:>12.4f}{r['value_usd']:>11.2f}"
@@ -267,8 +267,8 @@ def main() -> int:
         print(f"  {hl['engine']:<22}{hl['qty']:>12.4f}{hl['value_usd']:>11.2f}"
               f"{'—':>11}{'—':>10}  cash ${hl.get('cash_usd', 0):.0f}")
     elif hl:
-        print(f"  HL: eroare ({hl['error']})")
-    print(f"  --- Kraken REAL: realizat ${real_total:+.2f} | nerealizat ${upnl_total:+.2f} ---")
+        print(f"  HL: error ({hl['error']})")
+    print(f"  --- Kraken REAL: realized ${real_total:+.2f} | unrealized ${upnl_total:+.2f} ---")
     return 0
 
 

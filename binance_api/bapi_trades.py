@@ -4,7 +4,7 @@ import time
 import json
 import threading
 from collections import defaultdict
-from state_io import atomic_write_json
+from state_io import atomic_write_json, load_json_state
 
 # Repository imports.
 import utils as u
@@ -330,16 +330,16 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     # Initialize the main collection as a list.
     all_trades_list = []
 
-    # Load existing data when the file exists.
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)  # The on-disk structure is a list.
-                all_trades_list = loaded if isinstance(loaded, list) else []
-                print(f"Loaded {len(all_trades_list)} total trades from {filename}.")
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            print(f"Warning: Failed to decode JSON from {filename}. Starting with an empty list.")
-            all_trades_list = []
+    # Load existing data with .previous recovery.
+    try:
+        all_trades_list = load_json_state(
+            filename, default_factory=list, fail_closed=False, label="bapi_trades", root_type=list
+        )
+        if all_trades_list:
+            print(f"Loaded {len(all_trades_list)} total trades from {filename}.")
+    except Exception:
+        print(f"Warning: Failed to decode JSON from {filename}. Starting with an empty list.")
+        all_trades_list = []
 
     # Select existing fills for the current symbol.
     existing_trades = [
@@ -430,17 +430,16 @@ def load_trades_from_file(filename):
 
     global trade_cache
 
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-                trade_cache = loaded if isinstance(loaded, list) else []
-                print(f"Cache loaded with {len(trade_cache)} trades.")
-        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-            print("Error reading file.")
-            trade_cache = []
-    else:
-        print(f"File {filename} not found.")
+    try:
+        trade_cache = load_json_state(
+            filename, default_factory=list, fail_closed=False, label="bapi_trades", root_type=list
+        )
+        if trade_cache:
+            print(f"Cache loaded with {len(trade_cache)} trades.")
+        elif not os.path.exists(filename):
+            print(f"File {filename} not found.")
+    except Exception:
+        print("Error reading file.")
         trade_cache = []
         
     print(set(trade.get('symbol') for trade in trade_cache if isinstance(trade, dict) and trade.get('symbol')))

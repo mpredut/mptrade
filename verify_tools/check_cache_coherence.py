@@ -57,7 +57,7 @@ def main() -> int:
     problems = []
     print(f"=== cache coherence @ {time.strftime('%Y-%m-%d %H:%M:%S')} (stale>{int(STALE_S)}s) ===")
     exp = expected_symbols()
-    print(f"simboluri asteptate: {exp}")
+    print(f"expected symbols: {exp}")
 
     # 1. short trend
     raw_st = load("cache_short_trend.json") or {}

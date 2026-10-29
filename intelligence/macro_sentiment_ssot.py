@@ -352,9 +352,8 @@ def write_daemon_heartbeat_files(
                     try:
                         os.unlink(hb_target)
                     except OSError:
-                        os.utime(hb_target, None)
-                with open(hb_target, "w", encoding="utf-8") as f:
-                    json.dump(payload, f)
+                        pass
+                atomic_write_json(hb_target, payload, indent=2)
             except Exception as fallback_err:
                 log.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
 

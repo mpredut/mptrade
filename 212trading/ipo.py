@@ -107,12 +107,12 @@ def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bo
     if not found_isin:
         return True
     if found_isin.upper() != expected_isin.strip().upper():
-        log(f"  ! ISIN {found_isin} != asteptat {expected_isin} — OPRESC (instrument gresit).")
-        notify(title=f"⚠ {ticker}: ISIN nepotrivit!",
+        log(f"  ! ISIN {found_isin} != expected {expected_isin} — STOPPING (wrong instrument).")
+        notify(title=f"⚠ {ticker}: ISIN mismatch!",
                body=f"Found isin={found_isin}, expected {expected_isin}. Not trading.",
                source="verify")
         return False
-    log(f"  [verify] {ticker} confirmat (isin {expected_isin})")
+    log(f"  [verify] {ticker} confirmed (isin {expected_isin})")
     return True
 
 
