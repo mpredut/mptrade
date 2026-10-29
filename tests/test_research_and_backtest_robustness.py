@@ -6709,4 +6709,49 @@ def test_surge_sweep_slices_kraken_grid_report_errors_and_walk_forward_venue(tmp
     assert r_single["h2_profit_usd"] == r_group[0]["h2_profit_usd"]
 
 
+def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize():
+    """Verify ReplayMarketDataProvider.advance exact_pos_int, harness.evaluate_asset custom replay_fn, and tradeall sanitization."""
+    from providers.replay_provider import ReplayMarketDataProvider
+    from offline.research.hybrid_reentry.harness import evaluate_asset
+    from offline.backtests.tradeall import _parse_tick_pair, _sanitize
+    from offline.runners.kraken_financial_benchmark import _format
+    from strategies.spot_engine import StratParams
+
+    # 1. ReplayMarketDataProvider.advance rejects non-positive/boolean/fractional steps
+    prov = ReplayMarketDataProvider({"BTCUSDC": [(1000.0, 100.0), (1060.0, 101.0), (1120.0, 102.0)]})
+    assert prov.advance("BTCUSDC", True) is None
+    assert prov.advance("BTCUSDC", 0) is None
+    assert prov.advance("BTCUSDC", -1) is None
+    assert prov.advance("BTCUSDC", 1.5) is None
+    assert prov.advance("BTCUSDC", "2") == 101.0
+
+    # 2. evaluate_asset with custom replay_fn and initial_cash=None (equities path)
+    bars = [(20.0 + (i % 4) * 0.2, 20.5 + (i % 4) * 0.2, 19.5 + (i % 4) * 0.2, 20.1 + (i % 4) * 0.2) for i in range(40)]
+    called_kwargs = []
+
+    def _custom_replay(**kw):
+        called_kwargs.append(kw)
+        return {"total": 25.0, "max_drawdown_pct": 3.0, "exposure_pct": 40.0, "cycles": 2, "wins": 2, "fills": 4}
+
+    rows = evaluate_asset(
+        "NVDA",
+        bars,
+        StratParams.from_dict({"max_budget": 500.0}),
+        bar_minutes=1440.0,
+        initial_cash=None,
+        replay_fn=_custom_replay,
+    )
+    assert len(rows) == 5
+    assert all("initial_cash" not in kw and "fee_pct" not in kw for kw in called_kwargs)
+    assert rows[0]["total_return_pct"] == 5.0
+
+    # 3. tradeall._sanitize and _parse_tick_pair
+    assert _sanitize("a|b\rc\nd") == "a/b c d"
+    assert _parse_tick_pair([0, 100.0]) is None
+    assert _parse_tick_pair([-1000, 100.0]) is None
+    assert _parse_tick_pair([2000, 100.0]) == (2.0, 100.0)
+
+    # 4. kraken_financial_benchmark._format
+    assert _format(1.2345, signed=True) == "+1.234"
+    assert _format(float("nan")) == "n/a"
 

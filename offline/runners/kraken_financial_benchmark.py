@@ -105,16 +105,19 @@ def _scenario_windows(records: list[dict], params: StratParams, scenario, *,
         raise ValueError("the dataset is too small for the walk-forward schema")
 
     aligned_params = align_spot_interval_params(params, interval)
+    adapter = kraken_replay.make_kraken_replay_adapter(
+        aligned_params,
+        bar_minutes=interval,
+        execution=scenario.execution,
+        fee_model=scenario.fees,
+    )
     windows = []
     for fold_index, fold in enumerate(folds, start=1):
         test_records = records[fold.test]
         warmup_records = records[max(0, fold.test.start - warmup):fold.test.start]
         segment = evaluate_segment(
             test_records,
-            lambda ohlc, warmup_ohlc, _context: kraken_replay.run_replay(
-                ohlc, aligned_params, bar_minutes=interval, warmup_ohlc=warmup_ohlc,
-                execution=scenario.execution, fee_model=scenario.fees,
-            ),
+            adapter,
             warmup_records=warmup_records,
         )
         metrics = segment["metrics"]
@@ -216,10 +219,8 @@ def build_report(
 
 
 def _format(value, *, signed: bool = False) -> str:
-    fval = safe_float(value, default=None)
-    if fval is None:
-        return "n/a"
-    return f"{fval:+.3f}" if signed else f"{fval:.3f}"
+    from offline.backtests.comparison import format_number
+    return format_number(value, signed=signed)
 
 
 def markdown_report(report: dict) -> str:

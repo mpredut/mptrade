@@ -12,15 +12,13 @@ from dataclasses import asdict, replace
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
 import subprocess
-from unittest.mock import patch
 
 from dotenv import dotenv_values
 from botcore import safe_pos_float
 from state_io import atomic_write_json, read_json_file
-from strategies.spot_replay import align_spot_interval_params, run_replay
+from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
 from offline.backtests.evaluation import evaluate_segment, to_ohlc
@@ -43,8 +41,7 @@ def revision_params(spec: str) -> StratParams:
         for k, v in dotenv_values(stream=io.StringIO(text), interpolate=False).items()
         if v is not None
     }
-    with patch.dict(os.environ, env, clear=True):
-        return StratParams.from_env(env)
+    return StratParams.from_env(env)
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:
@@ -81,14 +78,17 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
                                    "validation": 180, "test": 90, "step": 90, "warmup": 40},
                   "scenarios": {}}
         for scenario in scenarios:
-            def run(ohlc, warmup=(), _p=aligned_params, _s=scenario):
-                return run_replay(ohlc, _p, bar_minutes=240, warmup_ohlc=warmup,
-                                  execution=_s.execution, fee_model=_s.fees,
-                                  initial_cash=cash)
+            adapter = make_spot_replay_adapter(
+                aligned_params,
+                bar_minutes=240,
+                execution=scenario.execution,
+                fee_model=scenario.fees,
+                initial_cash=cash,
+            )
             windows = []
             for index, fold in enumerate(folds, 1):
                 segment = evaluate_segment(
-                    records[fold.test], lambda bars, warm, _context: run(bars, warm),
+                    records[fold.test], adapter,
                     warmup_records=records[max(0, fold.test.start - 40):fold.test.start])
                 metrics = segment["metrics"]
                 windows.append({"key": f"240m/fold-{index:02d}", "bars": segment["bars"],
@@ -99,8 +99,9 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
             report["scenarios"][scenario.name] = {
                 "assumptions": scenario.as_dict(), "windows": windows,
                 "aggregate": aggregate_financial_windows(windows, initial_capital=cash),
-                "continuous": run(to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
-                                  to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start])),
+                "continuous": adapter(to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
+                                      to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start]),
+                                      None),
             }
         reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,

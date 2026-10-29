@@ -10,13 +10,14 @@ T212_DIR = os.path.join(ROOT, "212trading")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import parse_dotenv, safe_pos_float
+from botcore import parse_dotenv
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
+    evaluate_asset,
     format_ablation_result,
     load_ohlc_csv,
 )
-from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series
+from strategies.spot_replay import align_spot_interval_params
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 
@@ -101,40 +102,27 @@ def main():
         cfg.update(BASE_CONFIG)
         cfg["YAHOO_SYMBOL"] = symbol
         base_params = align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
-        variants = build_equity_variants(base_params)
-        
-        warmup_n = min(30, len(ohlc) // 5)
-        warmup_ohlc = ohlc[:warmup_n]
-        run_ohlc = ohlc[warmup_n:]
-        if not run_ohlc:
+        asset_rows = evaluate_asset(
+            asset_name=symbol,
+            ohlc=ohlc,
+            base_params=base_params,
+            bar_minutes=1440.0,
+            initial_cash=None,
+            replay_fn=rp.run_replay,
+        )
+        if not asset_rows:
             print(f"Skipping {symbol}: insufficient bars after warmup.")
             continue
-
-        prewarm_trend_series(ohlc, warmup=warmup_n, params=base_params, bar_minutes=1440.0)
-        for test_id, (variant_name, params) in variants.items():
-            try:
-                res = rp.run_replay(
-                    ohlc=run_ohlc,
-                    params=params,
-                    bar_minutes=1440.0,  # 1 day
-                    warmup_ohlc=warmup_ohlc,
-                )
-                budget = safe_pos_float(getattr(params, "max_budget", None), default=500.0)
-                row = format_ablation_result(symbol, test_id, variant_name, res, budget)
-                results.append(row)
+        for row in asset_rows:
+            results.append(row)
+            if "error" in row:
+                print(f"  {row['test_id']} ({row['variant']:<18}): ERROR {row['error']}")
+            else:
                 print(
-                    f"  {test_id} ({variant_name:<18}): Return {row['total_return_pct']:+6.2f}% "
+                    f"  {row['test_id']} ({row['variant']:<18}): Return {row['total_return_pct']:+6.2f}% "
                     f"| MaxDD {row['max_drawdown_pct']:5.2f}% | Exposure {row['exposure_pct']:5.2f}% "
                     f"| Cycles {row['cycles']}"
                 )
-            except Exception as exc:
-                print(f"  {test_id} ({variant_name:<18}): ERROR {exc}")
-                results.append({
-                    "asset": symbol,
-                    "test_id": test_id,
-                    "variant": variant_name,
-                    "error": str(exc),
-                })
 
     out_json = os.path.join(OUT_DIR, "equities_ablation_results.json")
     from state_io import atomic_write_json

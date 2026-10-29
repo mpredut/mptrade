@@ -40,7 +40,8 @@ from offline.research.monitortrades_backtest.replay_trend_source import (  # noq
 
 
 def _sanitize(value):
-    return str(value).replace("|", "/").replace("\n", " ") if value is not None else ""
+    import shadow_signals
+    return shadow_signals.KalmanJournal._sanitize(value)
 
 
 FEE_PCT = 0.1   # comision spot Binance ~0.1% per leg (taker)
@@ -208,7 +209,7 @@ _FILE_TICKS_CACHE = {}
 def _parse_tick_pair(item):
     if not isinstance(item, (list, tuple)) or len(item) < 2:
         return None
-    ts_ms = safe_float(item[0], default=None)
+    ts_ms = safe_pos_float(item[0], default=None)
     price = safe_pos_float(item[1], default=None)
     if ts_ms is None or price is None:
         return None

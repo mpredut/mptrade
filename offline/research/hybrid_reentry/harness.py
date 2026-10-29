@@ -162,10 +162,11 @@ def format_ablation_result(
 def evaluate_asset(
     asset_name: str,
     ohlc: list[tuple[float, float, float, float]],
-    base_params: strat.StratParams,
+    base_params: Any,
     fee_pct: float = 0.26,
     bar_minutes: float = 240.0,
-    initial_cash: float = 3900.0,
+    initial_cash: float | None = 3900.0,
+    replay_fn: Any = None,
 ) -> list[dict[str, Any]]:
     """Run all ablation tests on an asset and return structured metrics."""
     if not ohlc:
@@ -180,18 +181,27 @@ def evaluate_asset(
     if not run_ohlc:
         return []
 
+    runner = replay_fn or run_replay
     prewarm_trend_series(ohlc, warmup=warmup_n, params=aligned_base, bar_minutes=bar_minutes)
     for test_id, (variant_name, params) in variants.items():
         try:
-            res = run_replay(
-                ohlc=run_ohlc,
-                params=params,
-                fee_pct=fee_pct,
-                bar_minutes=bar_minutes,
-                warmup_ohlc=warmup_ohlc,
-                initial_cash=initial_cash,
+            replay_kw: dict[str, Any] = {
+                "ohlc": run_ohlc,
+                "params": params,
+                "bar_minutes": bar_minutes,
+                "warmup_ohlc": warmup_ohlc,
+            }
+            if replay_fn is None:
+                replay_kw["fee_pct"] = fee_pct
+            if initial_cash is not None:
+                replay_kw["initial_cash"] = initial_cash
+            res = runner(**replay_kw)
+            capital = (
+                initial_cash
+                if initial_cash is not None
+                else safe_pos_float(getattr(params, "max_budget", None), default=500.0)
             )
-            results.append(format_ablation_result(asset_name, test_id, variant_name, res, initial_cash))
+            results.append(format_ablation_result(asset_name, test_id, variant_name, res, capital))
         except Exception as exc:
             results.append({
                 "asset": asset_name,

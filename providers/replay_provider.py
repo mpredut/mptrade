@@ -18,7 +18,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import utils
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import exact_pos_int, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from providers.base import MarketDataProvider, normalize_side
 from providers.strategy_executor import PairPrecision
@@ -133,10 +133,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
         Return ``None`` when the series has ended and do not advance beyond it.
         """
-        steps_f = safe_float(steps, default=None)
-        if steps_f is None or not steps_f.is_integer() or int(steps_f) <= 0:
+        steps_int = exact_pos_int(steps, default=None)
+        if steps_int is None:
             return None
-        steps_int = int(steps_f)
         series = self._series.get(symbol)
         if not series:
             return None
