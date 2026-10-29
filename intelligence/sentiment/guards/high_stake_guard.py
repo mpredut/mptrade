@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import statistics
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
@@ -362,11 +363,11 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
                 rets_b.append(b1 / b0 - 1.0)
         n_r = len(rets_b)
         if n_r >= 6:
-            mean_a = sum(rets_a) / n_r
-            mean_b = sum(rets_b) / n_r
-            cov = sum((ra - mean_a) * (rb - mean_b) for ra, rb in zip(rets_a, rets_b)) / n_r
-            var_a = sum((ra - mean_a) ** 2 for ra in rets_a) / n_r
-            var_b = sum((rb - mean_b) ** 2 for rb in rets_b) / n_r
+            mean_a = statistics.fmean(rets_a)
+            mean_b = statistics.fmean(rets_b)
+            var_a = statistics.pvariance(rets_a, mu=mean_a)
+            var_b = statistics.pvariance(rets_b, mu=mean_b)
+            cov = statistics.fmean((ra - mean_a) * (rb - mean_b) for ra, rb in zip(rets_a, rets_b))
             if var_b > 1e-12:
                 out["beta_btc_24h"] = round(cov / var_b, 2)
                 if var_a > 1e-12:
