@@ -248,13 +248,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
         for o in reversed(orders):
             ts = o["timestamp"]
             if ts < cutoff_ms:
-                low_ms = float(ts)
+                low_ms = safe_float(ts, default=-1e18)
                 break
             if side_u is None or o["side"] == side_u:
                 out.append(o)
         out.reverse()
         out._sorted_desc = len(out) <= 1
-        high_ms = float(out[0]["timestamp"]) if out else 1e18
+        high_ms = safe_float(out[0]["timestamp"], default=1e18) if out else 1e18
         self._orders_cache[cache_key] = (self._orders_version, low_ms, high_ms, out)
         return out
 
