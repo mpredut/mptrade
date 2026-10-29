@@ -22,7 +22,7 @@ import time
 import contextlib
 import configparser
 
-from botcore import safe_pos_float
+from botcore import exact_pos_int
 from .cooldown import Cooldown
 from providers.base import (
     _clean_single_order_id,
@@ -73,13 +73,8 @@ def _valid_pair_id(pair_id) -> bool:
 
 
 def _clean_order_id_meta(val):
-    if isinstance(val, int) and not isinstance(val, bool):
-        return val if val > 0 else None
-    if isinstance(val, float):
-        f = safe_pos_float(val, default=None)
-        if f is not None and f.is_integer():
-            return int(f)
-        return None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return exact_pos_int(val, default=None)
     return _clean_single_order_id(val)
 
 

@@ -17,6 +17,7 @@ from typing import Any, Optional
 from lock import FileLock
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int as _safe_pos_int,
     float_env,
     int_env,
     safe_float,
@@ -83,11 +84,6 @@ def _alert_attr(item: Any, key: str, default: Any = None) -> Any:
 def _positive_int_env(name: str, default: int) -> int:
     val = int_env(name)
     return val if (val is not None and val >= 0) else default
-
-
-def _safe_pos_int(val: Any, default: int = 1) -> int:
-    f = safe_pos_float(val, default=None)
-    return int(f) if (f is not None and f.is_integer()) else default
 
 
 def _resolve_gate_now(now: Optional[float]) -> float:

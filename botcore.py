@@ -267,6 +267,38 @@ def safe_nonneg_int(val: object, default: int | None = 0) -> int | None:
     return i if (i is not None and i >= 0) else default
 
 
+def exact_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to an exact integer without truncating fractional floats or strings."""
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, int):
+        return val
+    if isinstance(val, (str, bytes, bytearray)):
+        try:
+            return int(val, 10)
+        except (TypeError, ValueError):
+            pass
+    f = safe_float(val, default=None)
+    if f is None or not f.is_integer():
+        return default
+    try:
+        return int(f)
+    except (ValueError, OverflowError):
+        return default
+
+
+def exact_pos_int(val: object, default: int | None = 1) -> int | None:
+    """Safely coerce ``val`` to a strictly positive exact integer (>= 1), otherwise return ``default``."""
+    i = exact_int(val, default=None)
+    return i if (i is not None and i >= 1) else default
+
+
+def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to a non-negative exact integer (>= 0), otherwise return ``default``."""
+    i = exact_int(val, default=None)
+    return i if (i is not None and i >= 0) else default
+
+
 def float_env(key: str, env: dict | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     The optional `env` argument preserves compatibility with legacy float_env(key) calls."""
@@ -280,10 +312,12 @@ def float_env(key: str, env: dict | None = None) -> float | None:
 
 def int_env(key: str, env: dict | None = None) -> int | None:
     """Read an integer from os.environ or an injected dictionary, ignoring inline comments."""
-    f = float_env(key, env)
-    if f is None or not f.is_integer():
+    src = os.environ if env is None else env
+    val = src.get(key)
+    if val is None or isinstance(val, bool):
         return None
-    return int(f)
+    raw = str(val).split("#", 1)[0].strip()
+    return exact_int(raw, default=None) if raw else None
 
 
 def required_env(key: str, env: dict | None = None) -> str:

@@ -16,6 +16,7 @@ from typing import Mapping, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -26,13 +27,7 @@ from providers.base import normalize_side
 
 
 def _resolve_provider_name(provider) -> Optional[str]:
-    if provider is None or isinstance(provider, bool):
-        return None
-    p_raw = getattr(provider, "name", None)
-    p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else None)
-    if isinstance(p_str, str) and p_str.strip():
-        return normalize_venue_name(p_str)
-    return None
+    return normalize_venue_name(provider, default=None)
 
 
 def normalize_market_regime_snapshot(
@@ -798,8 +793,8 @@ class MarketRegimeService:
             if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
                 raise ValueError("the regime interval and window must be positive")
             if interval_min is not None:
-                im_i = safe_pos_int(interval_min, default=None)
-                if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
+                im_i = exact_pos_int(interval_min, default=None)
+                if im_i is None:
                     raise ValueError("the regime interval and window must be positive")
             if window_seconds is not None:
                 ws_f = safe_pos_float(window_seconds, default=None)
@@ -1076,8 +1071,8 @@ class MarketRegimeService:
             series = reader(symbol, interval_min)
             if isinstance(series, Mapping):
                 raw_iv = series.get("interval_min", interval_min)
-                iv_i = safe_pos_int(raw_iv, default=None)
-                if iv_i is None or (isinstance(raw_iv, float) and not raw_iv.is_integer()):
+                iv_i = exact_pos_int(raw_iv, default=None)
+                if iv_i is None:
                     raise ValueError("ohlc_series returned the wrong interval")
                 series = ClosedPriceSeries(
                     tuple(series.get("closes") or ()),
@@ -1087,8 +1082,8 @@ class MarketRegimeService:
                 )
             if not isinstance(series, ClosedPriceSeries):
                 raise TypeError("ohlc_series must return ClosedPriceSeries")
-            s_iv_i = safe_pos_int(series.interval_min, default=None)
-            if s_iv_i is None or (isinstance(series.interval_min, float) and not series.interval_min.is_integer()) or s_iv_i != interval_min:
+            s_iv_i = exact_pos_int(series.interval_min, default=None)
+            if s_iv_i is None or s_iv_i != interval_min:
                 raise ValueError("ohlc_series returned the wrong interval")
             return series
         return ClosedPriceSeries(
@@ -1129,11 +1124,15 @@ class MarketRegimeService:
             continuous = continuous and abs(declared - normalized[-1]) <= tolerance
         return normalized[-1], continuous
 
+    @staticmethod
+    def _window_sample_count(interval_min: int, window_seconds: float) -> int:
+        return max(3, int(math.ceil(window_seconds / (interval_min * 60.0))))
+
     def _evaluate_provider_source(self, provider, symbol: str, *,
                                   interval_min=1, window_seconds=900.0):
-        im_i = safe_pos_int(interval_min, default=None)
+        im_i = exact_pos_int(interval_min, default=None)
         win_f = safe_pos_float(window_seconds, default=None)
-        if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()) or win_f is None:
+        if im_i is None or win_f is None:
             raise ValueError("the regime interval and window must be positive")
         interval_min = im_i
         window_seconds = win_f
@@ -1164,10 +1163,7 @@ class MarketRegimeService:
             series = self._closed_series(provider, symbol, interval_min)
             closes = tuple(series.closes)
             timestamps = tuple(series.timestamps or ())
-            needed = max(
-                3,
-                int(math.ceil(window_seconds / (interval_min * 60))),
-            )
+            needed = self._window_sample_count(interval_min, window_seconds)
             if not timestamps or len(timestamps) == len(closes):
                 closes = closes[-needed:]
                 timestamps = timestamps[-needed:]
@@ -1220,8 +1216,8 @@ class MarketRegimeService:
         if interval_min is None:
             interval = configured_interval
         else:
-            im_i = safe_pos_int(interval_min, default=None)
-            if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
+            im_i = exact_pos_int(interval_min, default=None)
+            if im_i is None:
                 raise ValueError("the regime interval must be positive")
             interval = im_i
         return parsed, interval, window_seconds
@@ -1232,7 +1228,7 @@ class MarketRegimeService:
         _parsed, interval, window_seconds = cls._resolve_horizon_window(
             horizon, interval_min=interval_min
         )
-        return max(3, int(math.ceil(window_seconds / (interval * 60))))
+        return cls._window_sample_count(interval, window_seconds)
 
     _EVAL_CLOSES_CACHE: dict = {}
     _EVAL_CLOSES_CACHE_MAX = 262144
@@ -1255,12 +1251,12 @@ class MarketRegimeService:
                         window_seconds=900.0) -> MarketRegimeDecision:
         if closes is None or isinstance(closes, (str, bytes, bool)):
             return self.evaluator.unknown("invalid_ohlc")
-        im_i = safe_pos_int(interval_min, default=None)
+        im_i = exact_pos_int(interval_min, default=None)
         win = safe_pos_float(window_seconds, default=None)
-        if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()) or win is None:
+        if im_i is None or win is None:
             return self.evaluator.unknown("invalid_window_metadata")
         itv = im_i
-        needed = max(3, int(math.ceil(win / (itv * 60))))
+        needed = self._window_sample_count(itv, win)
         try:
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
             tail = seq[-needed:]

@@ -25,7 +25,7 @@ if _HERE not in sys.path:
 
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary
-from botcore import parse_dotenv, safe_float, safe_pos_float
+from botcore import exact_nonneg_int, parse_dotenv, safe_float, safe_pos_float
 
 import dataclasses
 try:
@@ -59,8 +59,9 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
                 return val
         return default
 
-    maxdca_f = _pick(("maxdca",), float(p.max_dca_buys))
-    if not float(maxdca_f).is_integer() or int(maxdca_f) < 0:
+    raw_maxdca = base.get("maxdca") if base.get("maxdca") is not None else p.max_dca_buys
+    maxdca_i = exact_nonneg_int(raw_maxdca, default=None)
+    if maxdca_i is None:
         raise ValueError(f"invalid value not allowed for maxdca: {base.get('maxdca')!r}")
     fields = dict(
         entry_amount=_pick(("entry",), p.entry_amount),
@@ -68,7 +69,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
         entry_discount_pct=_pick(("disc",), p.entry_discount_pct),
         dca_drop_pct=_pick(("drop_fallback", "drop"), p.dca_drop_pct),
         takeprofit_pct=_pick(("tp",), p.takeprofit_pct),
-        max_dca_buys=int(maxdca_f),
+        max_dca_buys=maxdca_i,
         max_budget=_pick(("budget",), p.max_budget),
         stop_loss_pct=_pick(("sl",), p.stop_loss_pct),
         tp_trail_pct=_pick(("trail",), p.tp_trail_pct),

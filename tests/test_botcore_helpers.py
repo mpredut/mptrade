@@ -188,6 +188,17 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertEqual(botcore.safe_int(large_id, 0), large_id)
         self.assertEqual(botcore.safe_int(str(large_id), 0), large_id)
         self.assertEqual(botcore.safe_pos_int(str(large_id), None), large_id)
+        self.assertEqual(botcore.exact_int(large_id, 0), large_id)
+        self.assertEqual(botcore.exact_int(str(large_id), 0), large_id)
+        self.assertEqual(botcore.exact_int("5.0", 0), 5)
+        self.assertIsNone(botcore.exact_int("5.5", None))
+        self.assertIsNone(botcore.exact_int(5.5, None))
+        self.assertIsNone(botcore.exact_pos_int(0, None))
+        self.assertEqual(botcore.exact_nonneg_int(0, None), 0)
+        from cachepaths import normalize_venue_name
+        from types import SimpleNamespace
+        self.assertEqual(normalize_venue_name(SimpleNamespace(name="Kraken_Spot")), "kraken")
+        self.assertIsNone(normalize_venue_name(SimpleNamespace(name=True), default=None))
         from lock.trade_cooldown import _clean_order_id_meta
         from order_retry import _rev_int
         from state_io import _exact_nonneg_int

@@ -628,10 +628,17 @@ _VENUE_ALIASES: dict[str, str] = {
 }
 
 
-def normalize_venue_name(venue: object, default: str = "") -> str:
-    """Return the canonical lowercase venue identifier ('binance' | 'kraken' | 'hyperliquid' | 't212')."""
-    if isinstance(venue, bool) or not isinstance(venue, str):
+def normalize_venue_name(venue: object, default: str | None = "") -> str | None:
+    """Return the canonical lowercase venue identifier ('binance' | 'kraken' | 'hyperliquid' | 't212').
+
+    Accepts either a venue string or a provider object exposing a string ``.name`` attribute.
+    """
+    if venue is None or isinstance(venue, bool):
         return default
+    if not isinstance(venue, str):
+        venue = getattr(venue, "name", None)
+        if isinstance(venue, bool) or not isinstance(venue, str):
+            return default
     v = venue.strip().lower().replace("-", "_").replace(" ", "_")
     if not v:
         return default

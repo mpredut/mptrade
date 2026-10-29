@@ -36,6 +36,7 @@ from typing import Callable, Dict, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_int,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -786,10 +787,7 @@ def enqueue_claimed(
 
 
 def _rev_int(val, default=-1):
-    if isinstance(val, int) and not isinstance(val, bool):
-        return val
-    f = safe_float(val, default=None)
-    return int(f) if (f is not None and f.is_integer()) else default
+    return exact_int(val, default=default)
 
 
 def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id: str) -> bool:

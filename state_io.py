@@ -18,17 +18,14 @@ import tempfile
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
-from botcore import _parse_bool_flag, fetch_public_json, safe_float
+from botcore import _parse_bool_flag, exact_nonneg_int, fetch_public_json, safe_float
 from cachepaths import resolve_cachedb_filepath
 
 T = TypeVar("T")
 
 
 def _exact_nonneg_int(val: Any) -> int | None:
-    if isinstance(val, int) and not isinstance(val, bool):
-        return val if val >= 0 else None
-    f = safe_float(val, default=None)
-    return int(f) if (f is not None and f.is_integer() and int(f) >= 0) else None
+    return exact_nonneg_int(val, default=None)
 
 
 class StateReadError(RuntimeError):

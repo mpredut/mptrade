@@ -20,6 +20,7 @@ import time
 import json
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -278,13 +279,8 @@ _load_margins()
 
 
 def _provider_name(provider):
-    if provider is None or isinstance(provider, bool):
-        return ""
-    raw_name = provider if isinstance(provider, str) else getattr(provider, "name", "")
-    if not raw_name or isinstance(raw_name, bool):
-        return ""
     from cachepaths import normalize_venue_name
-    return normalize_venue_name(str(raw_name))
+    return normalize_venue_name(provider, default="")
 
 
 _PROCESS_TO_MODULE = {
@@ -1048,11 +1044,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     order_type = _normalize_side_token(order_type)
     if order_type not in ("BUY", "SELL"):
         return False, "invalid_side"
-    resolved_max_trades = safe_int(max_daily_trades, default=None)
-    if isinstance(max_daily_trades, float) and not max_daily_trades.is_integer():
-        resolved_max_trades = None
-    elif resolved_max_trades is not None and resolved_max_trades < 0:
-        resolved_max_trades = None
+    resolved_max_trades = exact_nonneg_int(max_daily_trades, default=None)
     max_daily_trades = (
         resolved_max_trades
         if resolved_max_trades is not None
