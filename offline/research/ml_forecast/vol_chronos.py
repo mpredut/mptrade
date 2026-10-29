@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_int  # noqa: E402
+from offline.research.ml_forecast.forecast import _to_price_array  # noqa: E402
 
 _safe_int = safe_int
 
@@ -35,12 +36,7 @@ BATCH = 8                               # test windows batched per call
 
 def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
     """Return trailing [i-win, i] log-return standard deviation, with NaN before history."""
-    if isinstance(px, np.ndarray) and px.dtype.kind in ("f", "i", "u"):
-        px_arr = px.astype(float, copy=False).reshape(-1)
-    elif px is None or isinstance(px, (str, bytes, bool)):
-        px_arr = np.empty(0, dtype=float)
-    else:
-        px_arr = np.asarray([safe_float(item, default=np.nan) for item in px], dtype=float).reshape(-1)
+    px_arr = _to_price_array(px)
     win = safe_pos_int(win, default=24)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)

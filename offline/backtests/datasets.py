@@ -87,6 +87,37 @@ def load_dataset(source: Path) -> list[dict]:
         return [normalize_record(row) for row in reader]
 
 
+def load_ohlc_tuples_csv(
+    path: str | Path,
+    *,
+    strict: bool = False,
+) -> list[tuple[int, float, float, float, float]]:
+    """Load valid (timestamp, open, high, low, close) tuples from a CSV file via state_io.read_csv_dicts."""
+    if isinstance(path, (bool, int, float)):
+        return []
+    from state_io import read_csv_dicts
+
+    rows: list[tuple[int, float, float, float, float]] = []
+    for r in read_csv_dicts(path, strict=strict):
+        ts_f = safe_pos_float(r.get("timestamp"), default=None)
+        o = safe_pos_float(r.get("open"), default=None)
+        h = safe_pos_float(r.get("high"), default=None)
+        l = safe_pos_float(r.get("low"), default=None)
+        c = safe_pos_float(r.get("close"), default=None)
+        if (
+            ts_f is not None
+            and int(ts_f) > 0
+            and o is not None
+            and h is not None
+            and l is not None
+            and c is not None
+            and h >= max(o, l, c)
+            and l <= min(o, h, c)
+        ):
+            rows.append((int(ts_f), o, h, l, c))
+    return rows
+
+
 def merge_datasets(*datasets: Iterable[Mapping]) -> list[dict]:
     """Merge overlapping OHLC windows; the newer source wins at the same timestamp."""
     by_timestamp = {}

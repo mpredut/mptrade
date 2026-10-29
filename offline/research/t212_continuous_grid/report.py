@@ -85,7 +85,7 @@ def generate_report(exp_dir=None):
             d = {a: r for a, r in by[(profile, v)].items() if a != home}
             h = [(a, g(r, "1h", "ret"), g(r, "1h", "dd")) for a, r in d.items() if g(r, "1h", "ret") is not None]
             dd = [(a, g(r, "1d", "ret"), g(r, "1d", "dd")) for a, r in d.items() if g(r, "1d", "ret") is not None]
-            if not h:
+            if not h and not dd:
                 continue
 
             def _beats_live(asset, ret, itv):

@@ -16,6 +16,7 @@ from offline.research.hybrid_reentry.harness import (
     format_ablation_result,
     load_ohlc_csv,
 )
+from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 
@@ -118,7 +119,7 @@ def main():
         cfg = parse_dotenv(profile_path) if os.path.isfile(profile_path) else {}
         cfg.update(BASE_CONFIG)
         cfg["YAHOO_SYMBOL"] = symbol
-        base_params = _strat.StratParams.from_env(cfg)
+        base_params = align_spot_interval_params(_strat.StratParams.from_env(cfg), 1440.0)
         variants = build_equity_variants(base_params)
         
         warmup_n = min(30, len(ohlc) // 5)
@@ -127,7 +128,8 @@ def main():
         if not run_ohlc:
             print(f"Skipping {symbol}: insufficient bars after warmup.")
             continue
-        
+
+        prewarm_trend_series(ohlc, warmup=warmup_n, params=base_params, bar_minutes=1440.0)
         for test_id, (variant_name, params) in variants.items():
             try:
                 res = rp.run_replay(

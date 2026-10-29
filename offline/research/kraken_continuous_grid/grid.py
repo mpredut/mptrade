@@ -37,8 +37,9 @@ from botcore import (
 
 _safe_f = safe_float
 _safe_int = safe_int
-from strategies import spot_dca as strat  # noqa: E402
+from strategies import spot_engine as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
+from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_layered_env_config  # noqa: E402
 
 _KRAKEN_CFG = load_layered_env_config(
@@ -134,25 +135,7 @@ def load(path):
     cached = _LOAD_CACHE.get(path)
     if cached is not None:
         return cached
-    from state_io import read_csv_dicts
-    rows = []
-    for r in read_csv_dicts(path, strict=True):
-        ts_f = safe_pos_float(r.get("timestamp"), default=None)
-        o = safe_pos_float(r.get("open"), default=None)
-        h = safe_pos_float(r.get("high"), default=None)
-        l = safe_pos_float(r.get("low"), default=None)
-        c = safe_pos_float(r.get("close"), default=None)
-        if (
-            ts_f is not None
-            and int(ts_f) > 0
-            and o is not None
-            and h is not None
-            and l is not None
-            and c is not None
-            and h >= max(o, l, c)
-            and l <= min(o, h, c)
-        ):
-            rows.append((int(ts_f), o, h, l, c))
+    rows = load_ohlc_tuples_csv(path, strict=True)
     _LOAD_CACHE[path] = rows
     return rows
 

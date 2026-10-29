@@ -455,13 +455,18 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
     import dataclasses
 
     if dataclasses.is_dataclass(params):
-        return dataclasses.replace(
-            params,
-            trend_interval=itv,
-            tp_trail_vol_interval=itv,
-            dca_vol_interval=itv,
-            regime_min_samples=clamped_min_samples,
-        )
+        field_names = {f.name for f in dataclasses.fields(params) if f.init}
+        updates = {
+            k: v
+            for k, v in (
+                ("trend_interval", itv),
+                ("tp_trail_vol_interval", itv),
+                ("dca_vol_interval", itv),
+                ("regime_min_samples", clamped_min_samples),
+            )
+            if k in field_names
+        }
+        return dataclasses.replace(params, **updates) if updates else params
     cloned = copy.copy(params)
     cloned.trend_interval = itv
     cloned.tp_trail_vol_interval = itv

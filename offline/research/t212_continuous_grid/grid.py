@@ -30,6 +30,8 @@ try:
     _rp_spec.loader.exec_module(rp)
     strat = rp._strat
     from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
+    from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
+    from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series  # noqa: E402
 
     _safe_f = safe_float
     _safe_int = safe_int
@@ -106,28 +108,13 @@ def load(asset, itv):
         _LOAD_CACHE[key] = None
         _SPLIT_CACHE[key] = (None, None)
         return None
-    from state_io import read_csv_dicts
-    rows = []
-    for r in read_csv_dicts(path):
-        ts_val = safe_pos_int(r.get("timestamp"), default=None)
-        o = safe_pos_float(r.get("open"), default=None)
-        h = safe_pos_float(r.get("high"), default=None)
-        l = safe_pos_float(r.get("low"), default=None)
-        c = safe_pos_float(r.get("close"), default=None)
-        if (
-            ts_val is not None
-            and o is not None
-            and h is not None
-            and l is not None
-            and c is not None
-            and h >= max(o, l, c)
-            and l <= min(o, h, c)
-        ):
-            rows.append((ts_val, o, h, l, c))
+    rows = load_ohlc_tuples_csv(path, strict=False)
     res = rows if len(rows) > WARM + 20 else None
     _LOAD_CACHE[key] = res
     if res is not None:
-        _SPLIT_CACHE[key] = ([b[1:] for b in res], [b[0] for b in res])
+        ohlc_list = [b[1:] for b in res]
+        prewarm_trend_series(ohlc_list, warmup=WARM, bar_minutes=60.0 if itv == "1h" else 1440.0)
+        _SPLIT_CACHE[key] = (ohlc_list, [b[0] for b in res])
     else:
         _SPLIT_CACHE[key] = (None, None)
     return res
@@ -154,7 +141,8 @@ def run(bars, params, peak, minutes, ohlc=None, ts=None):
             ts = [b[0] for b in bars]
         if len(ohlc) <= WARM:
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "fills": 0, "bh": 0.0}
-        m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
+        interval_params = align_spot_interval_params(params, minutes)
+        m = rp.run_replay(ohlc[WARM:], interval_params, bar_minutes=minutes,
                           warmup_ohlc=ohlc[:WARM],
                           timestamps=ts[WARM:])
         budget = safe_pos_float(params.max_budget, 0.0)

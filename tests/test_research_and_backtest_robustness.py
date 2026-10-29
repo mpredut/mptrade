@@ -6546,4 +6546,50 @@ def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monk
     assert all("error" not in r for r in rows)
 
 
+def test_ohlc_tuples_csv_t212_grid_interval_alignment_and_vol_chronos_scalar_guard(tmp_path):
+    """Verify load_ohlc_tuples_csv SSOT, t212 grid 1d interval alignment & report 1d-only rows, and vol_chronos scalar guard."""
+    import json
+    from offline.backtests.datasets import load_ohlc_tuples_csv
+    from offline.research.ml_forecast.vol_chronos import realized_vol_series
+    from offline.research.t212_continuous_grid import grid as t212_grid
+    from offline.research.t212_continuous_grid import report as t212_report
+
+    # 1. load_ohlc_tuples_csv filters invalid OHLC invariants and non-positive values
+    csv_path = tmp_path / "sample.csv"
+    csv_path.write_text(
+        "timestamp,open,high,low,close\n"
+        "1700000000,100.0,105.0,98.0,102.0\n"
+        "1700003600,102.0,95.0,98.0,100.0\n"  # invalid high < open
+        "0,100.0,101.0,99.0,100.0\n",          # invalid timestamp <= 0
+        encoding="utf-8",
+    )
+    tuples = load_ohlc_tuples_csv(csv_path)
+    assert tuples == [(1700000000, 100.0, 105.0, 98.0, 102.0)]
+    assert load_ohlc_tuples_csv(True) == []
+
+    # 2. t212_continuous_grid.grid.run aligns 60m profile trend_interval to 1440m on 1d bars
+    bars = [
+        (1700000000 + i * 86400, 100.0 + i * 0.2, 101.0 + i * 0.2, 99.0 + i * 0.2, 100.5 + i * 0.2)
+        for i in range(40)
+    ]
+    params, peak = t212_grid.params_for("nvda", "live")
+    res_1d = t212_grid.run(bars, params, peak, 1440)
+    assert "ret" in res_1d and "dd" in res_1d
+
+    # 3. t212_continuous_grid.report.generate_report retains 1d-only generalisation rows
+    res_jsonl = tmp_path / "results.jsonl"
+    res_jsonl.write_text(
+        json.dumps({"profile": "nvda", "variant": "live", "asset": "AAPL", "1d": {"ret": 10.0, "dd": 5.0}}) + "\n"
+        + json.dumps({"profile": "nvda", "variant": "tp5", "asset": "AAPL", "1d": {"ret": 15.0, "dd": 4.0}}) + "\n",
+        encoding="utf-8",
+    )
+    rep_md = t212_report.generate_report(str(tmp_path))
+    assert "| tp5 | 0/0 | 0/0 | +0.0 | 0.0 | 1/1 | 1/1 | +15.0 | 4.0 |" in rep_md
+
+    # 4. realized_vol_series safely returns empty array on non-iterable scalar inputs
+    assert len(realized_vol_series(123, 24)) == 0
+    assert len(realized_vol_series(None, 24)) == 0
+
+
+
 
