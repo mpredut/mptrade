@@ -112,8 +112,8 @@ def main():
 
     # Save raw results
     out_json = os.path.join(OUT_DIR, "ablation_results.json")
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2)
+    from state_io import atomic_write_json
+    atomic_write_json(out_json, all_results, indent=2)
     print(f"\nRaw results saved to {out_json}")
 
     # Aggregate by test variant
@@ -142,7 +142,7 @@ def main():
             "best_return_pct": round(max(rets), 2),
             "median_drawdown_pct": round(statistics.median(dds), 2),
             "max_drawdown_pct": round(max(dds), 2),
-            "mean_exposure_pct": round(sum(exposures) / n, 2),
+            "mean_exposure_pct": round(statistics.fmean(exposures), 2),
             "total_cycles": sum(cycles),
             "total_wins": sum(wins),
         }
@@ -158,8 +158,7 @@ def main():
     print("=" * 105)
 
     summary_json = os.path.join(OUT_DIR, "ablation_summary.json")
-    with open(summary_json, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    atomic_write_json(summary_json, summary, indent=2)
 
 
 if __name__ == "__main__":

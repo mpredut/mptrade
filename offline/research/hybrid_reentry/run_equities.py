@@ -154,8 +154,8 @@ def main():
                 })
 
     out_json = os.path.join(OUT_DIR, "equities_ablation_results.json")
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    from state_io import atomic_write_json
+    atomic_write_json(out_json, results, indent=2)
     print(f"\nEquities results saved to {out_json}")
 
 
