@@ -45,15 +45,18 @@ def compute_exact_time_window_signals(
 ):
     """Exact O(N) sliding two-pointer + chunked O(1) prefix-sum evaluation for dynamic window `win_sec`."""
     N = len(ts)
+    w_sec = max(0.0, float(win_sec))
     # Two-pointer to find a[b] = first index with ts[a] >= ts[b] - win_sec
-    a = np.searchsorted(ts, ts - win_sec, side="left")
+    a = np.searchsorted(ts, ts - w_sec, side="left")
+    if N > 0:
+        a = np.minimum(a, N - 1)
     b = np.arange(N, dtype=np.int64)
     m_f = np.maximum(1.0, (b - a).astype(np.float64))
     elapsed = np.maximum(1.0, ts[b] - ts[a]) if N > 0 else np.zeros(0, dtype=np.float64)
     sr = np.maximum(0.5, elapsed / m_f)
 
     res = compute_window_signals_from_bounds(
-        px, a, sr, symbol=symbol, recent_win_sec=win_sec, min_valid_n=3
+        px, a, sr, symbol=symbol, recent_win_sec=w_sec, min_valid_n=3
     )
     res["legacy"] = res["legacy_raw"]
     return res
@@ -91,6 +94,8 @@ def simulate_should_wait(
     for k, idx in enumerate(sample_idx):
         t0 = ts[idx]
         p0 = px[idx]
+        if p0 <= 0:
+            continue
         deadline = t0 + max_wait_sec
 
         # BUY: wait while wait_buy_mask[j] is True and ts[j] < deadline
@@ -148,6 +153,8 @@ def evaluate_regime_900s(
         if i1 <= i0:
             continue
         p0 = px[i0]
+        if p0 <= 0:
+            continue
         window_px = px[i0 : i1 + 1]
         p_min = float(np.min(window_px))
         p_max = float(np.max(window_px))

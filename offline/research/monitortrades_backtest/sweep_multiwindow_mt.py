@@ -80,7 +80,7 @@ def run_multiwindow_sweep(use_365: bool = False):
         ("8. 2-of-3 Majority (60s, 222s, 900s)",
          lambda d, sym="": ((_up_arr(d[60]).astype(int) + _up_arr(d[222]).astype(int) + _up_arr(d[900]).astype(int)) >= 2).tolist()),
         ("9. Per-Coin PROD (TAO 90s, others 222s)",
-         lambda d, sym="": _up_arr(d[int(pw.fast_trend_window_for_symbol(sym) or 222)]).tolist()),
+         lambda d, sym="": _up_arr(d.get(int(pw.fast_trend_window_for_symbol(sym) or 222), d[222])).tolist()),
     ]
 
     hdr = f"{'Multi-Window Policy':<36} | " + " | ".join(f"{sym:>14}" for sym in symbols) + f" | {'PORTFOLIO NET':>14}"
@@ -96,10 +96,10 @@ def run_multiwindow_sweep(use_365: bool = False):
             key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
             rrb._TREND_TAPE_CACHE[key] = fn(sigs[sym], sym) if fn.__code__.co_argcount >= 2 else fn(sigs[sym])
             cfg = rrb.SYMBOLS[sym]
-            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series)
-            net = res["net"]
+            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+            net = float(res.get("net") or 0.0)
             tot_net += net
-            cells.append(f"{net:>+8.2f} ({res['buys']:>2}B/{res['sells']:>2}S)")
+            cells.append(f"{net:>+8.2f} ({int(res.get('buys') or 0):>2}B/{int(res.get('sells') or 0):>2}S)")
         print(f"{m_name:<36} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
 
 

@@ -54,8 +54,8 @@ def load_series(sym):
     """Return (ts_sec, px) from <D>/cache_365_price_<sym>.npz, building it from cache_365_price_<sym>.jsonl."""
     npz = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.npz")))
     if os.path.exists(npz):
-        z = np.load(npz)
-        return z["ts"], z["px"]
+        with np.load(npz) as z:
+            return z["ts"], z["px"]
     ts, px = [], []
     sym_cands = cache_symbol_variants(sym)
     jsonl_path = next(
@@ -81,9 +81,11 @@ def load_series(sym):
         t = safe_float(item[0], default=None)
         p = safe_pos_float(item[1], default=None)
         if t is not None and p is not None:
-            ts.append(t / 1000.0)
+            ts.append(t / 1000.0 if t > 1e11 else t)
             px.append(p)
-    ts, px = np.asarray(ts), np.asarray(px)
+    if not ts:
+        return np.empty(0), np.empty(0)
+    ts, px = np.asarray(ts, dtype=np.float64), np.asarray(px, dtype=np.float64)
     o = np.argsort(ts, kind="stable")
     ts, px = ts[o], px[o]
     keep = np.concatenate(([True], np.diff(ts) > 0))
@@ -94,6 +96,8 @@ def load_series(sym):
 
 def conv_steps(series, w):
     """sig[t] = sum_k w_k * dy_{t-m+k}, k=1..m (w normalized), m = N_WIN-1."""
+    if len(series) == 0:
+        return np.empty(0, dtype=np.float64)
     dy = np.diff(series, prepend=series[0])
     w = w / w.sum()
     full = fftconvolve(dy, w, mode="full")[: len(dy)]
@@ -187,6 +191,8 @@ def build_candidates(px):
 
 
 def fwd_index(ts, h):
+    if len(ts) == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=bool)
     idx = np.searchsorted(ts, ts + h)
     ok = idx < len(ts)
     idx = np.minimum(idx, len(ts) - 1)
@@ -195,6 +201,8 @@ def fwd_index(ts, h):
 
 
 def turning_points(ts, px, half=180, prom=0.003):
+    if len(px) == 0:
+        return [], []
     smooth = median_filter(px, size=61, mode="nearest")
     mx = maximum_filter1d(smooth, size=2 * half + 1, mode="nearest")
     mn = minimum_filter1d(smooth, size=2 * half + 1, mode="nearest")
@@ -210,15 +218,22 @@ def turning_points(ts, px, half=180, prom=0.003):
 
 
 def trigger_indices(ts, px, lo, hi, lookback_s, thr_bps, sign, min_gap_s):
-    j, ok = fwd_index(ts, -lookback_s)  # index ~lookback ago (searchsorted on negative h)
-    j = np.searchsorted(ts, ts - lookback_s)
-    move = (px - px[j]) / px[j] * 1e4
-    cand = np.where((move * sign >= thr_bps) & (np.arange(len(ts)) >= lo) & (np.arange(len(ts)) < hi))[0]
+    if len(ts) == 0 or hi <= lo:
+        return []
+    j = np.minimum(np.searchsorted(ts, ts - lookback_s), len(ts) - 1)
+    base_px = px[j]
+    move = np.divide(px - base_px, base_px, out=np.zeros_like(px, dtype=np.float64), where=base_px > 0) * 1e4
+    idx_arr = np.arange(len(ts))
+    cand = np.where((move * sign >= thr_bps) & (idx_arr >= lo) & (idx_arr < hi))[0]
     out, last_t = [], -1e18
     for i in cand:
         if ts[i] - last_t >= min_gap_s:
             out.append(int(i)); last_t = ts[i]
     return out
+
+
+def _safe_mean(arr) -> float:
+    return float(np.mean(arr)) if len(arr) > 0 else float("nan")
 
 
 def evaluate(sym):
@@ -228,8 +243,11 @@ def evaluate(sym):
     N = len(ts)
     sys.stderr.write(f"[bench] evaluating {sym} ({N:,} ticks)...\n")
     sys.stderr.flush()
+    if N < N_WIN + 20:
+        return sym, N, {}
     t_split = ts[0] + IS_FRAC * (ts[-1] - ts[0])
     i_split = int(np.searchsorted(ts, t_split))
+    i_split = min(max(N_WIN + 11, i_split), N - 11)
 
     i60, ok60 = fwd_index(ts, 60.0)
     i180, ok180 = fwd_index(ts, 180.0)
@@ -263,12 +281,12 @@ def evaluate(sym):
             s = sgn[sl]
             m60 = ok60[sl]; m180 = ok180[sl]
             up, dn = s > 0, s < 0
-            spread60 = np.mean(r60[sl][up & m60]) - np.mean(r60[sl][dn & m60])
-            spread180 = np.mean(r180[sl][up & m180]) - np.mean(r180[sl][dn & m180])
+            spread60 = _safe_mean(r60[sl][up & m60]) - _safe_mean(r60[sl][dn & m60])
+            spread180 = _safe_mean(r180[sl][up & m180]) - _safe_mean(r180[sl][dn & m180])
             big = m180 & (np.abs(r180[sl]) >= 8.0) & (s != 0)
-            hit = np.mean(np.sign(r180[sl][big]) == s[big]) * 100
-            minutes = (ts[hi - 1] - ts[lo]) / 60.0
-            flips = np.sum(s[1:] * s[:-1] < 0) / minutes
+            hit = _safe_mean(np.sign(r180[sl][big]) == s[big]) * 100
+            minutes = max((ts[hi - 1] - ts[lo]) / 60.0, 1e-9) if hi > lo else 1e-9
+            flips = float(np.sum(s[1:] * s[:-1] < 0) / minutes)
             lags = []
             for ix, want in [(i, 1) for i in mins] + [(i, -1) for i in maxs]:
                 if ix < lo or ix >= hi:
@@ -296,11 +314,11 @@ def evaluate(sym):
                 sp60=spread60, sp180=spread180, hit=hit, flips=flips,
                 lag_med=float(np.median(lags)) if lags else np.nan,
                 lag_mean=float(np.mean(lags)) if lags else np.nan,
-                buy=float(np.mean(buy_sav)), sell=float(np.mean(sell_sav)), ride=float(np.mean(ride)),
+                buy=_safe_mean(buy_sav), sell=_safe_mean(sell_sav), ride=_safe_mean(ride),
                 n_dip=len(buy_sav), n_rally=len(sell_sav), n_tp=len(lags),
             )
             out[sname]["edge"] = out[sname]["buy"] + out[sname]["sell"] + out[sname]["ride"]
-            out[sname]["raw"] = (np.asarray(buy_sav), np.asarray(sell_sav), np.asarray(ride))
+            out[sname]["raw"] = (np.asarray(buy_sav, dtype=np.float64), np.asarray(sell_sav, dtype=np.float64), np.asarray(ride, dtype=np.float64))
         res[cname] = out
     return sym, N, res
 
@@ -323,6 +341,9 @@ def main():
             results = pool.map(evaluate, syms)
     agg = {}
     for sym, N, res in results:
+        if not res:
+            print(f"\n=== {sym}: {N:,} ticks (insufficient history) ===")
+            continue
         any_c = next(iter(res.values()))
         print(f"\n=== {sym}: {N:,} ticks | IS dips/rallies/TPs={any_c['IS']['n_dip']}/{any_c['IS']['n_rally']}/{any_c['IS']['n_tp']}"
               f" | OOS={any_c['OOS']['n_dip']}/{any_c['OOS']['n_rally']}/{any_c['OOS']['n_tp']} ===")
@@ -335,7 +356,8 @@ def main():
                     a.setdefault(k, []).append(v)
     base = "LEGACY (sf+gr)/2"
     rng = np.random.default_rng(0)
-    boot_cands = list(results[0][2].keys()) if os.environ.get("BENCH_ONLY") else [
+    non_empty_res = [r[2] for r in results if r[2]]
+    boot_cands = (list(non_empty_res[0].keys()) if non_empty_res else []) if os.environ.get("BENCH_ONLY") else [
         "SW p1", "SW p2", "SW p3", "EXP hl30",
         "SW p2 + NoiseGate0.02", "SW p2 + NoiseGate0.025", "SW p2 + NoiseGate0.03", "SW p2 + NoiseGate0.04", "SW p2 + NoiseGate0.05",
         "SW p3 + NoiseGate0.02", "SW p3 + NoiseGate0.025", "SW p3 + NoiseGate0.03", "SW p3 + NoiseGate0.04", "SW p3 + NoiseGate0.05",
@@ -352,11 +374,14 @@ def main():
                 for ci in range(3):
                     d = res[c][s]["raw"][ci] - res[base][s]["raw"][ci]
                     comps.append(d)
-                point = sum(float(np.mean(d)) for d in comps)
+                point = sum(_safe_mean(d) for d in comps)
                 boots = np.zeros(2000)
                 for d in comps:
-                    idx = rng.integers(0, len(d), size=(2000, len(d)))
-                    boots += d[idx].mean(axis=1)
+                    if len(d) > 0:
+                        idx = rng.integers(0, len(d), size=(2000, len(d)))
+                        boots += d[idx].mean(axis=1)
+                    else:
+                        boots += np.nan
                 lo, hi = np.percentile(boots, [2.5, 97.5])
                 cells.append(f"{s} {point:+.2f} [{lo:+.2f},{hi:+.2f}]")
             print(f"{sym:<8} {c:<24} " + " | ".join(cells))

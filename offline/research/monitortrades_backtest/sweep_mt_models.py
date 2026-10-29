@@ -30,6 +30,7 @@ import offline.research.monitortrades_backtest.run_replay_backtest as rrb
 
 def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SECONDS):
     """Replicate exact cur_len, sample_rate, and [a, b] bounds of prewarm_trend_series."""
+    w_sec = safe_pos_float(win_sec, rrb.DEFAULT_WINDOW_SECONDS)
     N = len(ts)
     a_arr = np.zeros(N, dtype=np.int64)
     sr_arr = np.full(N, pw.DEFAULT_SAMPLE_RATE_SEC, dtype=np.float64)
@@ -43,7 +44,7 @@ def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SE
             rate = safe_pos_float(t - prev_ts, default=None)
             if rate is not None:
                 sample_rate = rate
-                new_size = min(100000, max(10, int(win_sec / rate)))
+                new_size = min(100000, max(10, int(w_sec / rate)))
                 if new_size != win_size:
                     win_size = new_size
                     if cur_len > new_size:
@@ -310,11 +311,11 @@ def evaluate_dataset(use_365: bool = False):
             key = rrb._series_cache_key(sym, series, rrb.DEFAULT_WINDOW_SECONDS)
             rrb._TREND_TAPE_CACHE[key] = tape_fn(sig_map[sym])
             cfg = rrb.SYMBOLS[sym]
-            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series)
-            net = res["net"]
-            bh_Wait[sym] = res["buy_hold"]
+            res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
+            net = float(res.get("net") or 0.0)
+            bh_Wait[sym] = float(res.get("buy_hold") or 0.0)
             tot_net += net
-            cells.append(f"{net:>+8.2f} ({res['buys']:>2}B/{res['sells']:>2}S)")
+            cells.append(f"{net:>+8.2f} ({int(res.get('buys') or 0):>2}B/{int(res.get('sells') or 0):>2}S)")
         print(f"{m_name:<34} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
 
     bh_tot = sum(bh_Wait.values())

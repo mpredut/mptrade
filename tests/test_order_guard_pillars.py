@@ -1552,6 +1552,47 @@ def test_batch52_macro_analyzer_and_daemon_sigterm_exit_and_agy_store_fix(tmp_pa
     assert sleep_calls == []
 
 
+def test_batch53_short_trend_benchmark_and_mt_backtest_hardening(tmp_path, monkeypatch):
+    import numpy as np
+    import offline.research.short_trend_estimator_benchmark as st_bench
+    from offline.research.monitortrades_backtest.backtest_wait_and_regime import (
+        compute_exact_time_window_signals,
+        evaluate_regime_900s,
+        simulate_should_wait,
+    )
+    from offline.research.monitortrades_backtest.sweep_mt_models import compute_window_bounds
 
+    # 1. short_trend_estimator_benchmark: empty/non-matching JSONL does not raise ValueError on np.diff or write poisoned .npz
+    jsonl_file = tmp_path / "cache_365_price_TESTCOIN.jsonl"
+    jsonl_file.write_text('{"s": "OTHERCOIN", "i": [1700000000000, 100.0]}\n', encoding="utf-8")
+    monkeypatch.setattr(st_bench, "D", str(tmp_path))
+    monkeypatch.setattr(st_bench, "resolve_cachedb_filepath", lambda p: p)
+    ts_empty, px_empty = st_bench.load_series("TESTCOIN")
+    assert len(ts_empty) == 0 and len(px_empty) == 0
+    assert not (tmp_path / "cache_365_price_TESTCOIN.npz").exists()
+
+    # 2. evaluate(sym) on empty/short series returns empty dict cleanly; conv_steps/fwd_index/trigger_indices handle empty arrays
+    assert len(st_bench.conv_steps(np.empty(0), np.ones(5))) == 0
+    idx_e, ok_e = st_bench.fwd_index(np.empty(0), 60.0)
+    assert len(idx_e) == 0 and len(ok_e) == 0
+    assert st_bench.trigger_indices(np.empty(0), np.empty(0), 0, 10, 120.0, 20.0, -1, 600.0) == []
+    sym_out, n_out, res_out = st_bench.evaluate("TESTCOIN")
+    assert sym_out == "TESTCOIN" and n_out == 0 and res_out == {}
+
+    # 3. compute_exact_time_window_signals with negative win_sec and compute_window_bounds with non-positive win_sec
+    ts_arr = np.array([1000.0, 1001.0, 1002.0, 1003.0], dtype=np.float64)
+    px_arr = np.array([100.0, 101.0, 102.0, 103.0], dtype=np.float64)
+    sig = compute_exact_time_window_signals(ts_arr, px_arr, -10.0, "BTCUSDC")
+    assert len(sig["gc"]) == 4
+    a_arr, sr_arr = compute_window_bounds(ts_arr, win_sec=-5.0)
+    assert len(a_arr) == 4 and len(sr_arr) == 4
+
+    # 4. simulate_should_wait and evaluate_regime_900s guard zero price without ZeroDivisionError
+    px_zero = np.array([0.0, 100.0, 101.0, 102.0], dtype=np.float64)
+    mask = np.array([True, False, False, False], dtype=bool)
+    wait_res = simulate_should_wait(ts_arr, px_zero, mask, mask, stride=1)
+    assert np.isfinite(wait_res["buy_bps"]) and np.isfinite(wait_res["sell_bps"])
+    reg_res, _, _ = evaluate_regime_900s(ts_arr, px_zero, sig, stride=1)
+    assert len(reg_res) == 6
 
 
