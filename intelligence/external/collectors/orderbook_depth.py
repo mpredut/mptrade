@@ -17,11 +17,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
-from intelligence.macro_sentiment_ssot import (
-    resolve_now_ts as _effective_now_ts,
-    safe_nonneg_ts as _clean_nonneg_float,
-    safe_pos_float as _clean_pos_float,
-)
+from intelligence.macro_sentiment_ssot import resolve_now_ts as _effective_now_ts
 from cachepaths import (
     cache_symbol_variants,
     normalize_cache_base_asset,
@@ -65,9 +61,9 @@ class _DiskBackedSymbolCollector:
         disk_ttl_sec: float,
         default_disk_ttl: float,
     ) -> None:
-        self.cache_ttl_sec = _clean_nonneg_float(cache_ttl_sec, default_cache_ttl)
+        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
         self.cache_dir = cache_dir
-        self.disk_ttl_sec = _clean_nonneg_float(disk_ttl_sec, default_disk_ttl)
+        self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
         self._cache: Dict[str, tuple[float, Any]] = {}
 
     def _effective_cache_dir(self) -> Optional[str]:
@@ -228,8 +224,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         disk_ttl_sec: float = 60.0,
     ) -> None:
         super().__init__(cache_ttl_sec, 5.0, cache_dir, disk_ttl_sec, 60.0)
-        self.depth_band_pct = _clean_pos_float(depth_band_pct, 1.5)
-        self.whale_wall_usd = _clean_pos_float(whale_wall_usd, 500_000.0)
+        self.depth_band_pct = safe_pos_float(depth_band_pct, default=1.5) or 1.5
+        self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
 
     def fetch(
         self,

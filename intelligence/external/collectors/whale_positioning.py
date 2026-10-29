@@ -18,7 +18,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-from botcore import safe_float
+from botcore import safe_float, safe_pos_float
 from cachepaths import telemetry_cache_file_path
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
@@ -126,17 +126,12 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     d = read_recovering_previous(p, json.loads, default=None)
                     if not isinstance(d, dict):
                         continue
-                    raw_ts = d.get("ts")
-                    if raw_ts is None or isinstance(raw_ts, bool):
+                    ts_val = safe_pos_float(d.get("ts"), default=None)
+                    if ts_val is None or not (0.0 <= (now_ts - ts_val) < max_age):
                         continue
-                    ts_val = float(raw_ts)
-                    if not math.isfinite(ts_val) or ts_val <= 0 or not (0.0 <= (now_ts - ts_val) < max_age):
-                        continue
-                    fr = d.get("funding_rate")
-                    if fr is not None and not isinstance(fr, bool):
-                        fr_val = float(fr)
-                        if math.isfinite(fr_val):
-                            return fr_val
+                    fr_val = safe_float(d.get("funding_rate"), default=None)
+                    if fr_val is not None:
+                        return fr_val
                 except Exception:
                     continue
         except Exception as e:
@@ -160,40 +155,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         3. Taker Buy/Sell ratio (aggressive market execution dominance)
         4. Funding Rate (crowded short vs long pressure)
         """
-        import math
-        try:
-            p_chg = float(price_1h_change_pct) if not isinstance(price_1h_change_pct, bool) else 0.0
-            price_1h_change_pct = p_chg if math.isfinite(p_chg) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            price_1h_change_pct = 0.0
-        try:
-            o_chg = float(oi_change_pct) if not isinstance(oi_change_pct, bool) else 0.0
-            oi_change_pct = o_chg if math.isfinite(o_chg) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            oi_change_pct = 0.0
-        try:
-            t_rat = float(taker_ratio) if not isinstance(taker_ratio, bool) else 1.0
-            taker_ratio = t_rat if math.isfinite(t_rat) and t_rat > 0 else 1.0
-        except (TypeError, ValueError, OverflowError):
-            taker_ratio = 1.0
-        if funding_rate is not None:
-            if isinstance(funding_rate, bool):
-                funding_rate = None
-            else:
-                try:
-                    fr_f = float(funding_rate)
-                    funding_rate = fr_f if math.isfinite(fr_f) else None
-                except (TypeError, ValueError, OverflowError):
-                    funding_rate = None
-        if top_long_pct is not None:
-            if isinstance(top_long_pct, bool):
-                top_long_pct = None
-            else:
-                try:
-                    tl_f = float(top_long_pct)
-                    top_long_pct = tl_f if math.isfinite(tl_f) else None
-                except (TypeError, ValueError, OverflowError):
-                    top_long_pct = None
+        price_1h_change_pct = safe_float(price_1h_change_pct, default=0.0)
+        oi_change_pct = safe_float(oi_change_pct, default=0.0)
+        taker_ratio = safe_pos_float(taker_ratio, default=1.0) or 1.0
+        funding_rate = safe_float(funding_rate, default=None)
+        top_long_pct = safe_float(top_long_pct, default=None)
         prev_reg_norm = prev_regime.strip().lower() if isinstance(prev_regime, str) else ""
         # 1. Price rising (> +0.2%)
         if price_1h_change_pct > 0.2:
@@ -262,15 +228,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        p1h_f = 0.0
-        if price_1h_change_pct is not None and not isinstance(price_1h_change_pct, bool):
-            try:
-                cand_p1h = float(price_1h_change_pct)
-                if math.isfinite(cand_p1h):
-                    p1h_f = cand_p1h
-            except (TypeError, ValueError, OverflowError):
-                p1h_f = 0.0
-        price_1h_change_pct = p1h_f
+        price_1h_change_pct = safe_float(price_1h_change_pct, default=0.0)
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 

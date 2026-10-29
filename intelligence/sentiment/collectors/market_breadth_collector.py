@@ -88,9 +88,9 @@ class MarketBreadthCollector:
             if not symbol.endswith(quote_suffixes) or any(sp in symbol for sp in excluded_suffixes):
                 continue
 
-            quote_vol = safe_float(item.get("quoteVolume"), float("nan"))
-            change_pct = safe_float(item.get("priceChangePercent"), float("nan"))
-            if math.isfinite(quote_vol) and math.isfinite(change_pct) and quote_vol >= min_vol:
+            quote_vol = safe_float(item.get("quoteVolume"), default=None)
+            change_pct = safe_float(item.get("priceChangePercent"), default=None)
+            if quote_vol is not None and change_pct is not None and quote_vol >= min_vol:
                 filtered.append((symbol, change_pct))
 
         if len(filtered) < 5:

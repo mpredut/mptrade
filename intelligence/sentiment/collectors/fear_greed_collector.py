@@ -64,21 +64,21 @@ class FearGreedCollector:
             return None
 
         current = data[0]
-        val_f = safe_float(current.get("value"), float("nan"))
-        if not math.isfinite(val_f):
+        val_f = safe_float(current.get("value"), default=None)
+        if val_f is None:
             return None
         val = max(0, min(100, int(round(val_f))))
 
         raw_cls = current.get("value_classification")
         classification = raw_cls.strip() if isinstance(raw_cls, str) and raw_cls.strip() else "Neutral"
-        ts_f = safe_pos_float(current.get("timestamp"), -1.0)
+        ts_f = safe_pos_float(current.get("timestamp"), default=0.0) or 0.0
         ts = (ts_f / 1000.0 if ts_f > 1e11 else ts_f) if ts_f > 0 else time.time()
 
         history: list[int] = []
         for item in data:
             if isinstance(item, dict):
-                v_f = safe_float(item.get("value"), float("nan"))
-                if math.isfinite(v_f):
+                v_f = safe_float(item.get("value"), default=None)
+                if v_f is not None:
                     history.append(max(0, min(100, int(round(v_f)))))
 
         trend_7d = (history[0] - history[6]) if len(history) >= 7 else ((history[0] - history[-1]) if len(history) > 1 else 0)
