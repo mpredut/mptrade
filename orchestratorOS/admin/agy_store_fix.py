@@ -44,6 +44,14 @@ if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with 
     sys.path.insert(0, _ROOT_DIR)
 
 from botcore import _parse_bool_flag, safe_pos_float
+from state_io import (  # noqa: E402
+    atomic_write_bytes,
+    discard_generation_file,
+    read_bytes_file,
+    read_json_dict,
+    read_text_file,
+    save_json_state,
+)
 
 from orchestratorOS.agy.paths import resolve_store_lock_path, visible_conversations_dir  # noqa: E402
 from orchestratorOS.agy.protobuf import (  # noqa: E402
@@ -131,8 +139,6 @@ def disable_webrtc_mesh(stamp: str) -> str:
     whose hardcoded 1228-byte SCTP MTU exceeds the wgpia0 WireGuard MTU (1200) and freezes streams."""
     if not os.path.isfile(AGY_BIN):
         return "missing"
-    from state_io import read_bytes_file
-
     data = read_bytes_file(AGY_BIN, default=None)
     if data is None:
         log.warning("cannot read %s", AGY_BIN)
@@ -159,8 +165,6 @@ def disable_webrtc_mesh(stamp: str) -> str:
 def webrtc_mesh_status() -> str:
     if not os.path.isfile(AGY_BIN):
         return "missing"
-    from state_io import read_bytes_file
-
     data = read_bytes_file(AGY_BIN, default=None)
     if data is None:
         return "unreadable"
@@ -324,8 +328,6 @@ def repair_summaries(mt: dict) -> int:
             out += enc_fields([(1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, raw)]))])
     for cid, sec in mt.items():
         out += enc_fields([(2, 2, enc_fields([(1, 2, cid.encode()), (2, 0, sec)]))])
-    from state_io import atomic_write_bytes
-
     for pb_path in (PB, os.path.join(CLI, "jetbox_summaries_proto.pb")):
         if pb_path != PB and not os.path.exists(pb_path):
             continue
@@ -357,8 +359,6 @@ def main_pid() -> str:
 def newest_daemon_log_ready(since: float, pid: str = "") -> bool:
     """True once THIS daemon instance (matched by PID, else by log-file start time >= since) logged the end of
     its startup reconciliation. Never matches the log of a previous instance."""
-    from state_io import read_text_file
-
     for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")):
         if not pid and log_started_at(lf) < since:
             continue
@@ -438,8 +438,6 @@ UI_SYNC_READY, UI_SYNC_NOTHING, UI_SYNC_BUSY, UI_SYNC_STUCK = 0, 10, 11, 12
 
 def daemon_known_cids() -> set[str]:
     """Conversation IDs the running daemon holds in memory (as persisted in agyhub_summaries_proto.pb)."""
-    from state_io import read_bytes_file
-
     data = read_bytes_file(PB, default=None)
     return list_entry_cids(data) if data is not None else set()
 
@@ -557,8 +555,6 @@ def last_store_activity() -> float:
         try:
             cli_logs = sorted(glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")), key=os.path.getmtime, reverse=True)
             if cli_logs:
-                from state_io import read_text_file
-
                 latest_log = cli_logs[0]
                 txt = read_text_file(latest_log, default="", errors="ignore")
                 conn_idx = txt.rfind("Connection status: Connected")
@@ -596,7 +592,6 @@ def mode_ui_sync_check(idle_sec: int) -> int:
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
         return UI_SYNC_NOTHING
-    from state_io import discard_generation_file, read_json_dict, save_json_state
     entries = pending_ui_sync()
     if not entries:
         discard_generation_file(UI_SYNC_STATE, include_previous=True)

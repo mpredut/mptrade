@@ -20,9 +20,16 @@ if _ROOT_DIR not in sys.path:
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
 from botcore import _parse_bool_flag, safe_nonneg_int
-from state_io import atomic_write_bytes, read_json_dict
+from state_io import (
+    atomic_write_bytes,
+    read_bytes_file,
+    read_json_dict,
+    read_text_file,
+    read_text_lines,
+)
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
+_as_bool_flag = _parse_bool_flag
 
 SUMMARIES_DB = "conversation_summaries.db"
 SUMMARIES_PB_FILES = ("agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb")
@@ -144,8 +151,6 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
 
 def read_annotation_title(cli_base: str, cid: str) -> str:
     """Read ``title`` from annotations/<cid>.pbtxt, or '' if absent."""
-    from state_io import read_text_file
-
     txt = read_text_file(
         os.path.join(cli_base, "annotations", f"{cid}.pbtxt"),
         default="",
@@ -157,8 +162,6 @@ def read_annotation_title(cli_base: str, cid: str) -> str:
 
 def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
-    from state_io import read_text_lines
-
     clean_cids = _clean_cid_set([cid])
     if not clean_cids:
         return
@@ -211,8 +214,6 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     upsert_summary_row_dict(cli_base, row)
     raw_sum = row.get("raw_summary")
     if raw_sum:
-        from state_io import read_bytes_file
-
         for name in SUMMARIES_PB_FILES:
             pb_path = os.path.join(cli_base, name)
             if os.path.exists(pb_path):
@@ -247,9 +248,6 @@ def _clean_cid_set(cids: Iterable[Any]) -> Set[str]:
     }
 
 
-_as_bool_flag = _parse_bool_flag
-
-
 def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
@@ -268,8 +266,7 @@ def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
     for name in SUMMARIES_PB_FILES:
         path = os.path.join(cli_base, name)
         if os.path.exists(path):
-            with open(path, "rb") as f:
-                buf, removed = drop_entries(f.read(), clean_cids)
+            buf, removed = drop_entries(read_bytes_file(path, default=b""), clean_cids)
             if removed:
                 atomic_write_bytes(path, buf)
 

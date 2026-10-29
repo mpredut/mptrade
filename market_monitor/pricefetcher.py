@@ -415,7 +415,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         """
         if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
             if not self.api_key:
-                print(f"[CMCPlatform] Missing API key")
+                print("[CMCPlatform] Missing API key")
             return None
         symbol = symbol.strip().upper()
 
@@ -693,7 +693,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             self._load_symbol_metadata()
     
     def _log_symbol_support(self):
-        print(f"[Pricefetcher] Checking symbol support:")
+        print("[Pricefetcher] Checking symbol support:")
         for symbol in self.original_symbols:
             support = self.price_factory.check_symbol_support(symbol)
             supported_platforms = [p for p, s in support.items() if s]
@@ -1044,7 +1044,7 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
     register_enhanced_cachePriceAll(cmc_api_key, max_symbols=eff_max)
     cachePriceAll = CacheFactory.get("PriceMulti", symbols=all_symbols)
     cachePriceAll.max_monitored_symbols = eff_max
-    thread = cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)
+    cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)
 
     return cachePriceAll
 

@@ -1076,7 +1076,7 @@ def execute_enforce_intent_order(
                 break
             time.sleep(0.25)
         if order_res:
-            from providers.base import extract_order_id, normalize_side
+            from providers.base import extract_order_id
 
             if log:
                 log.info(

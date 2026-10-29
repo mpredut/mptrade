@@ -24,7 +24,7 @@ from botcore import (
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
 from providers.execution_audit import intent_client_order_id
-from providers.strategy_executor import ProviderError
+from providers.strategy_executor import ProviderError, StrategyExecutor
 from order_retry import (
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,

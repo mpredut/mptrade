@@ -15,7 +15,7 @@ from operator import itemgetter
 from urllib.parse import quote
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import cache_symbol_variants, canonical_base_asset
+from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
 from market_monitor.pricefetcher import get_base_symbol

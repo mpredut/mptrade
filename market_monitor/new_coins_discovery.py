@@ -581,7 +581,7 @@ class NewCoinsMonitor:
         def run():
             print(f"[NewCoinsMonitor] 🔄 Monitoring started (refresh every {interval_seconds}s)")
             print(f"[NewCoinsMonitor] 📡 Active sources: {self.factory.get_available_sources()}")
-            print(f"[NewCoinsMonitor] ⚠️ Only CoinMarketCap coins will be auto-added (they include price data)")
+            print("[NewCoinsMonitor] ⚠️ Only CoinMarketCap coins will be auto-added (they include price data)")
             while self._running:
                 try:
                     old_symbols = self.all_symbols.copy()
@@ -662,7 +662,7 @@ class NewCoinsMonitor:
         The filters are informational only - the coin is added regardless.
         """
         if not self.price_monitor:
-            print(f"[NewCoinsMonitor] No price_monitor available")
+            print("[NewCoinsMonitor] No price_monitor available")
             return False
         if not isinstance(coin_info, dict) or not coin_info.get('symbol') or isinstance(coin_info.get('symbol'), bool):
             return False
@@ -739,7 +739,7 @@ class NewCoinsMonitor:
                 print(f"[NewCoinsMonitor] ✅ {symbol} added to the watchlist (price from {source})")
                 return True
             else:
-                print(f"[NewCoinsMonitor] ⚠️ price_monitor does not have add_symbol()")
+                print("[NewCoinsMonitor] ⚠️ price_monitor does not have add_symbol()")
                 return False
         except Exception as e:
             print(f"[NewCoinsMonitor] Error while adding {symbol}: {e}")
