@@ -22,6 +22,7 @@ from intelligence.external.collectors.orderbook_depth import (
     _effective_now_ts,
     _resolve_binance_lookup_symbol,
     _symbol_variants,
+    is_cache_fresh,
 )
 from state_io import read_json_dict
 
@@ -122,8 +123,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     d = read_json_dict(p, default=None, recover_previous=True)
                     if not isinstance(d, dict):
                         continue
-                    ts_val = safe_pos_float(d.get("ts"), default=None)
-                    if ts_val is None or not (0.0 <= (now_ts - ts_val) < max_age):
+                    if not is_cache_fresh(d.get("ts"), now_ts, max_age):
                         continue
                     fr_val = safe_float(d.get("funding_rate"), default=None)
                     if fr_val is not None:

@@ -251,11 +251,10 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
             raw_items = cdata.get("items")
             items = raw_items if isinstance(raw_items, dict) else {}
             sym_u = str(inst.symbol or "").strip().upper()
-            candidates = cache_symbol_variants(inst.symbol, include_original=True)
             inst_base = getattr(inst, "base", None) or (split_symbol_assets(sym_u) or (sym_u, ""))[0]
+            candidates = cache_symbol_variants(inst.symbol, include_original=True)
             if inst_base:
-                for suffix in ("USDC", "USDT", "USD"):
-                    cand = f"{str(inst_base).upper()}{suffix}"
+                for cand in cache_symbol_variants(str(inst_base)):
                     if cand not in candidates:
                         candidates.append(cand)
 

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
+    is_cache_fresh,
     resolve_now_ts as _effective_now_ts,
 )
 from cachepaths import (
@@ -104,8 +105,7 @@ class _DiskBackedSymbolCollector:
                 break
         if cached:
             c_ts = cached[0] if isinstance(cached, tuple) and len(cached) >= 2 else getattr(cached, "ts", None)
-            c_ts_f = safe_float(c_ts, default=None)
-            if c_ts_f is not None and 0.0 <= (now - c_ts_f) < self.cache_ttl_sec:
+            if is_cache_fresh(c_ts, now, self.cache_ttl_sec):
                 return cached, (cached[1] if isinstance(cached, tuple) else cached)
         return cached, None
 
@@ -121,7 +121,7 @@ class _DiskBackedSymbolCollector:
                 if not isinstance(data, dict):
                     continue
                 snapshot = self._SNAPSHOT_CLS.from_dict(data)
-                if snapshot.ts > 0.0 and 0.0 <= (now - snapshot.ts) < max_age:
+                if is_cache_fresh(snapshot.ts, now, max_age):
                     self._cache[symbol.strip().upper()] = (snapshot.ts, snapshot)
                     return snapshot
                 if ignore_ttl_b:
@@ -145,16 +145,7 @@ class _DiskBackedSymbolCollector:
                 return cached[1]
             if self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
                 return cached
-        for cand in _symbol_variants(symbol):
-            p = self._disk_path(cand)
-            if p:
-                try:
-                    data = read_json_dict(p, default=None, recover_previous=True)
-                    if isinstance(data, dict):
-                        return self._SNAPSHOT_CLS.from_dict(data)
-                except Exception:
-                    pass
-        return None
+        return self._load_from_disk(symbol, 0.0, ignore_ttl=True)
 
     def _record_item(self, item: Any, save_to_disk: bool = False) -> None:
         if isinstance(item, dict):

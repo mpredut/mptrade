@@ -3462,6 +3462,64 @@ def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
     assert "If a bot BOUGHT prematurely or when it should NOT have" in prompt_text
 
 
+def test_harvest_recent_orders_multi_venue_cache_and_symbol_collision(temp_env):
+    from intelligence.sentiment.guards.high_stake_guard import harvest_recent_orders_and_enrich_positions
+
+    _, cache_dir, _ = temp_env
+    with open(os.path.join(cache_dir, "cache_order.json"), "w") as f:
+        json.dump(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {"orderId": "b1", "side": "BUY", "price": "70000.0", "executedQty": "0.01", "time": 1700000001000}
+                    ]
+                }
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "cache_trade_hyperliquid.json"), "w") as f:
+        json.dump(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {"orderId": "hl1", "side": "BUY", "price": "71000.0", "executedQty": "0.02", "time": 1700000002000}
+                    ]
+                }
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "cache_trade_t212.json"), "w") as f:
+        json.dump(
+            {
+                "items": {
+                    "NVDA_US_EQ": [
+                        {"orderId": "t1", "side": "BUY", "price": "125.5", "executedQty": "2.0", "time": 1700000003000}
+                    ]
+                }
+            },
+            f,
+        )
+
+    positions = [
+        {"symbol": "BTCUSDC", "venue": "hyperliquid", "free_base": 0.02, "price": 71500.0},
+        {"symbol": "NVDA_US_EQ", "venue": "t212", "free_base": 2.0, "price": 128.0},
+    ]
+    recent = harvest_recent_orders_and_enrich_positions(
+        cache_dir,
+        {},
+        positions,
+        {},
+        {},
+        {},
+        {},
+    )
+    assert recent["BTCUSDC"]["last_buy"]["price"] == 70000.0
+    assert recent["hyperliquid:BTCUSDC"]["last_buy"]["price"] == 71000.0
+    assert recent["NVDA_US_EQ"]["last_buy"]["price"] == 125.5
+    assert positions[0]["last_buy_px"] == 71000.0
+    assert positions[1]["last_buy_px"] == 125.5
+
+
 
 
 

@@ -583,8 +583,6 @@ def extract_symbol_recent_fills(
         key=lambda item: (safe_nonneg_ts(extract_timestamp_ms(item[1], default=None), 0.0), item[0]),
     )
     chron = [o for _, o in ordered]
-    last_buy = next((o for o in reversed(chron) if extract_order_side(o) == "BUY"), None)
-    last_sell = next((o for o in reversed(chron) if extract_order_side(o) == "SELL"), None)
     last_any = chron[-1]
 
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
@@ -617,30 +615,12 @@ def extract_symbol_recent_fills(
                 else:
                     cost_qty -= q_f
 
-    lb_norm = _norm_fill(last_buy) if last_buy else (None, None, None)
-    ls_norm = _norm_fill(last_sell) if last_sell else (None, None, None)
     return {
         "last_action_side": extract_order_side(last_any) or last_any.get("side"),
         "last_action_actor": _fill_actor(last_any),
         "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
-        "last_buy": (
-            {
-                "price": lb_norm[0],
-                "qty": lb_norm[1],
-                "ts_ms": lb_norm[2],
-                "actor": _fill_actor(last_buy),
-            }
-            if last_buy else None
-        ),
-        "last_sell": (
-            {
-                "price": ls_norm[0],
-                "qty": ls_norm[1],
-                "ts_ms": ls_norm[2],
-                "actor": _fill_actor(last_sell),
-            }
-            if last_sell else None
-        ),
+        "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
+        "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
         "recent_buys": buys_fmt[-4:],
         "recent_sells": sells_fmt[-3:],
     }
@@ -2185,6 +2165,8 @@ def harvest_recent_orders_and_enrich_positions(
     for order_cache_name, cache_venue in (
         ("cache_order.json", "binance"),
         ("cache_trade_kraken.json", "kraken"),
+        ("cache_trade_hyperliquid.json", "hyperliquid"),
+        ("cache_trade_t212.json", "t212"),
     ):
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
@@ -2192,7 +2174,10 @@ def harvest_recent_orders_and_enrich_positions(
                 fills = extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids)
                 if fills:
                     venue_recent_orders[cache_venue][sym] = fills
-                    recent_orders.setdefault(sym, fills)
+                    if sym in recent_orders and cache_venue != "binance":
+                        recent_orders[f"{cache_venue}:{sym}"] = fills
+                    else:
+                        recent_orders.setdefault(sym, fills)
     for inst in inst_by_sym.values():
         sym = str(getattr(inst, "symbol", "")).upper()
         v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
