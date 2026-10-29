@@ -984,6 +984,8 @@ def test_auto_technical_repair_persistent_errors_config_patching_and_system_rebo
         f.write("supervisor_mode = enforce\nsupervisor_notify = false\nmalformed_line_without_equals\n")
     with open(os.path.join(workspace, "procs.conf"), "w", encoding="utf-8") as f:
         f.write("rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n")
+    with open(os.path.join(workspace, "instruments.conf"), "w", encoding="utf-8") as f:
+        f.write("[BINANCE_BTC]\nprovider = binance\nsymbol = BTCUSDC\nenabled = yes\n")
 
     now = time.time()
     stamp = lambda ago: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - ago))  # noqa: E731
@@ -1008,6 +1010,8 @@ def test_auto_technical_repair_persistent_errors_config_patching_and_system_rebo
     sensors = reconciler.harvest_sensors_telemetry(include_fleet=True)
     cfg_audit = sensors.system_and_vpn.get("config_audit", {})
     assert "order_guard.conf" in cfg_audit.get("checked_files", [])
+    assert "instruments.conf" in cfg_audit.get("checked_files", [])
+    assert not any("instruments.conf" in iss for iss in cfg_audit.get("issues", []))
     assert any("malformed_line_without_equals" in iss for iss in cfg_audit.get("issues", []))
 
     # 2. _apply_code_patch_safely allows fixing config files (order_guard.conf, procs.conf) while protecting .env

@@ -224,6 +224,12 @@ class BotManager:
                 except Exception:
                     pass
                 self.log_files.pop(name, None)
+            transport = getattr(process, "_transport", None)
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
 
     async def stop_bot(self, name: str, sig=signal.SIGTERM):
         if name in self.processes:
@@ -257,6 +263,12 @@ class BotManager:
                         await asyncio.wait_for(proc.wait(), timeout=2.0)
                     except (asyncio.TimeoutError, TimeoutError):
                         pass
+            transport = getattr(proc, "_transport", None)
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
 
     async def restart_bot(self, name: str):
         await self.stop_bot(name)
@@ -270,6 +282,7 @@ class BotManager:
         self.running = False
         for name in list(self.processes.keys()):
             await self.stop_bot(name)
+            self.processes.pop(name, None)
 
     def _hash_file(self, filepath: str) -> str:
         import hashlib

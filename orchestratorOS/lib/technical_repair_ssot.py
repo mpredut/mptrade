@@ -553,9 +553,21 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
                     line = raw_l.split("#", 1)[0].strip()
                     if not line:
                         continue
-                    parts = [p.strip() for p in line.split("|")]
-                    if len(parts) < 6:
-                        issues.append(f"instruments.conf:{idx} has {len(parts)} fields (expected >=6)")
+                    if line.startswith("[") and line.endswith("]"):
+                        if not line[1:-1].strip():
+                            issues.append(f"instruments.conf:{idx} empty section header")
+                        continue
+                    if "|" in line:
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) < 6:
+                            issues.append(f"instruments.conf:{idx} has {len(parts)} fields (expected >=6)")
+                        continue
+                    if "=" in line:
+                        k, _ = line.split("=", 1)
+                        if not k.strip():
+                            issues.append(f"instruments.conf:{idx} empty key name")
+                        continue
+                    issues.append(f"instruments.conf:{idx} malformed line: {line[:60]!r}")
         except Exception as exc:
             issues.append(f"{cfg_name} read error: {exc}")
     return {"checked_files": checked, "issues": issues}
@@ -666,3 +678,270 @@ def gather_system_and_vpn_telemetry(
 
     sys_vpn["config_audit"] = audit_workspace_configs(workspace_dir)
     return sys_vpn
+
+
+# ---------------------------------------------------------------------------
+# 7. Log Anomaly Harvesting & Audit Error Classification SSOT
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field
+import re
+import time
+from botcore import safe_nonneg_float, safe_pos_float
+
+_FULL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
+_GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})")
+_CLOCK_TS_RE = re.compile(r"^\.*\[?(\d{2}):(\d{2}):(\d{2})\b")
+
+
+@dataclass
+class LogEventSummary:
+    """Summary of log anomalies and guard interventions collected within the lookback window."""
+    total_scanned_files: int
+    error_count: int
+    warning_count: int
+    critical_events: List[str] = field(default_factory=list)
+    guard_interventions: List[str] = field(default_factory=list)
+    persistent_errors: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> List[str]:
+    """Return the tail of ``lines`` whose own timestamps are >= cutoff_ts (chronological order)."""
+    from datetime import datetime, timedelta
+
+    if not isinstance(lines, (list, tuple)) or not lines:
+        return []
+    fm = safe_pos_float(file_mtime, default=None) or time.time()
+    cutoff_ts = safe_nonneg_float(cutoff_ts, default=0.0) or 0.0
+    try:
+        ref = datetime.fromtimestamp(fm)
+    except (ValueError, OverflowError, OSError):
+        fm = time.time()
+        ref = datetime.fromtimestamp(fm)
+    day = ref.date()
+    prev_ts = float(fm)
+    picked: List[str] = []
+
+    def _resolve_fold_ts(dt_naive: datetime, upper_ts: float) -> float:
+        ts0 = dt_naive.replace(fold=0).timestamp()
+        ts1 = dt_naive.replace(fold=1).timestamp()
+        if ts1 > ts0 and ts1 <= upper_ts + 300.0:
+            return ts1
+        return ts0
+
+    pending_unstamped: List[str] = []
+    for line in reversed(lines):
+        if not isinstance(line, str):
+            continue
+        ts: Optional[float] = None
+        has_stamp_token = False
+        m = _FULL_TS_RE.search(line)
+        if m:
+            has_stamp_token = True
+            try:
+                dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
+                day = dt.date()
+                ts = _resolve_fold_ts(dt, prev_ts)
+                prev_ts = ts
+            except ValueError:
+                pass
+        else:
+            g = _GLOG_TS_RE.match(line)
+            c = None if g else _CLOCK_TS_RE.match(line)
+            if g:
+                has_stamp_token = True
+                try:
+                    dt = datetime(
+                        ref.year, int(g.group(1)), int(g.group(2)),
+                        int(g.group(3)), int(g.group(4)), int(g.group(5)),
+                    )
+                    if (dt - ref).total_seconds() > 86400:
+                        dt = datetime(
+                            ref.year - 1, int(g.group(1)), int(g.group(2)),
+                            int(g.group(3)), int(g.group(4)), int(g.group(5)),
+                        )
+                    day = dt.date()
+                    ts = _resolve_fold_ts(dt, prev_ts)
+                    prev_ts = ts
+                except ValueError:
+                    pass
+            elif c and int(c.group(1)) < 24 and int(c.group(2)) < 60 and int(c.group(3)) < 60:
+                has_stamp_token = True
+                secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
+                dt_same = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
+                ts0 = dt_same.replace(fold=0).timestamp()
+                ts1 = dt_same.replace(fold=1).timestamp()
+                if ts1 > ts0 and ts1 <= prev_ts + 300.0:
+                    ts = ts1
+                elif ts0 <= prev_ts + 300.0:
+                    ts = ts0
+                else:
+                    day -= timedelta(days=1)
+                    dt_prev = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
+                    ts = _resolve_fold_ts(dt_prev, prev_ts)
+                prev_ts = ts
+        if ts is not None and ts < cutoff_ts:
+            break
+        if has_stamp_token:
+            if pending_unstamped:
+                picked.extend(pending_unstamped)
+                pending_unstamped.clear()
+            picked.append(line)
+        else:
+            pending_unstamped.append(line)
+    else:
+        if pending_unstamped:
+            picked.extend(pending_unstamped)
+    picked.reverse()
+    return picked
+
+
+def normalize_error_signature(line: str) -> str:
+    """Strip timestamps, PIDs, and hex addresses so recurring log errors group into one signature."""
+    s = _FULL_TS_RE.sub("", line)
+    s = _GLOG_TS_RE.sub("", s)
+    s = _CLOCK_TS_RE.sub("", s)
+    s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
+    s = re.sub(r"\b\d{4,}\b", "NUM", s)
+    return " ".join(s.strip().split())[:180]
+
+
+def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float) -> LogEventSummary:
+    """Parse recent log files across ``logs_dirs`` for errors, persistent unresolved exceptions, and guard vetoes."""
+    cutoff_ts = time.time() - (lookback_hours * 3600.0)
+    critical_events: List[str] = []
+    guard_interventions: List[str] = []
+    persistent_errors: List[Dict[str, Any]] = []
+    error_count = 0
+    warning_count = 0
+    scanned_count = 0
+
+    err_pattern = re.compile(
+        r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b)",
+        re.IGNORECASE,
+    )
+    benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
+    supervisor_summary_pattern = re.compile(
+        r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
+        r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
+        r"ntfy delivery gated by common policy|Dispatched ntfy alert to|"
+        r"<!--\s*a padding to disable MSIE|<(?:head|center)>.*500 Internal Server Error|"
+        r"Exception ignored in:.*BaseSubprocessTransport\.__del__|RuntimeError:\s+Event loop is closed)",
+        re.IGNORECASE,
+    )
+    guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
+
+    for l_dir in logs_dirs:
+        if not os.path.isdir(l_dir):
+            continue
+        try:
+            for fname in os.listdir(l_dir):
+                if not (fname.endswith(".log") or fname.endswith(".txt")):
+                    continue
+                fpath = os.path.join(l_dir, fname)
+                try:
+                    mtime = os.path.getmtime(fpath)
+                    if mtime < cutoff_ts:
+                        continue
+                    scanned_count += 1
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                        lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
+                        total_lines = len(lines)
+                        tail_start_idx = max(0, total_lines - max(10, total_lines // 4))
+                        file_sig_stats: Dict[str, Dict[str, Any]] = {}
+                        for idx, line in enumerate(lines):
+                            if supervisor_summary_pattern.search(line):
+                                continue
+                            if err_pattern.search(line) and not (
+                                benign_warn_pattern.search(line)
+                                and not re.search(
+                                    r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)",
+                                    line,
+                                    re.IGNORECASE,
+                                )
+                            ):
+                                error_count += 1
+                                cleaned = line.strip()
+                                if cleaned not in critical_events and len(critical_events) < 50:
+                                    critical_events.append(cleaned)
+                                sig = normalize_error_signature(cleaned)
+                                if sig:
+                                    st = file_sig_stats.setdefault(
+                                        sig,
+                                        {"file": fname, "count": 0, "unresolved_at_tail": False, "sample": cleaned},
+                                    )
+                                    st["count"] += 1
+                                    st["sample"] = cleaned
+                                    if idx >= tail_start_idx:
+                                        st["unresolved_at_tail"] = True
+                            elif guard_pattern.search(line):
+                                warning_count += 1
+                                cleaned = line.strip()
+                                if cleaned not in guard_interventions and len(guard_interventions) < 50:
+                                    guard_interventions.append(cleaned)
+                        for st in file_sig_stats.values():
+                            if st["count"] >= 2 or st["unresolved_at_tail"]:
+                                persistent_errors.append(st)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    persistent_errors.sort(
+        key=lambda item: (1 if item.get("unresolved_at_tail") else 0, int(item.get("count", 0))),
+        reverse=True,
+    )
+    return LogEventSummary(
+        total_scanned_files=scanned_count,
+        error_count=error_count,
+        warning_count=warning_count,
+        critical_events=critical_events,
+        guard_interventions=guard_interventions,
+        persistent_errors=persistent_errors[:25],
+    )
+
+
+def is_bot_or_code_error_report(report: Any) -> bool:
+    """Return True strictly for trading bot exceptions, fleet/config anomalies, or code/config patches."""
+    for issue in getattr(report, "diagnosed_issues", None) or []:
+        if not isinstance(issue, dict):
+            continue
+        cat = str(issue.get("category") or "").strip().upper()
+        sev = str(issue.get("severity") or "").strip().upper()
+        if cat in BOT_AND_ORDER_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
+            return True
+    code_rem = getattr(report, "code_remediation", None)
+    if isinstance(code_rem, dict) and _parse_bool_flag(code_rem.get("has_fix"), False):
+        return True
+    if getattr(report, "tests_passed", None) is False:
+        return True
+    for act in getattr(report, "venue_actions", None) or []:
+        if isinstance(act, dict):
+            norm_act = normalize_repair_action(act, "").get("action")
+            if norm_act in BOT_OR_FLEET_ERROR_ACTIONS:
+                return True
+    return False
+
+
+def is_system_os_error_report(report: Any) -> bool:
+    """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
+    for issue in getattr(report, "diagnosed_issues", None) or []:
+        if not isinstance(issue, dict):
+            continue
+        cat = str(issue.get("category") or "").strip().upper()
+        sev = str(issue.get("severity") or "").strip().upper()
+        if cat in SYSTEM_OS_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
+            return True
+        if sev in ACTIONABLE_ERROR_SEVERITIES and cat not in BOT_AND_ORDER_ERROR_CATEGORIES:
+            return True
+    for act in getattr(report, "venue_actions", None) or []:
+        if isinstance(act, dict):
+            norm_act = normalize_repair_action(act, "").get("action")
+            if norm_act in SYSTEM_OS_ERROR_ACTIONS:
+                return True
+    return False
+
+
+def is_error_report(report: Any) -> bool:
+    """Return True if the audit report diagnoses any bot/order/code error or system/OS error."""
+    return is_bot_or_code_error_report(report) or is_system_os_error_report(report)
