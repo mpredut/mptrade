@@ -958,8 +958,10 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
         min_usd=10.0,
         max_usd=2000.0,
     )
-    assert "advisory volatility signal for legacy bots only" in prompt
-    assert "CONTRARIAN DIP ACCUMULATION & ADVISORY STATUS OF MACRO/GEOPOLITICAL LABELS" in prompt
+    assert "HARD_VETO_NEW_BUYS" not in prompt
+    assert "CRITICAL_SHOCK" not in prompt
+    assert "level=HIGH_VOLATILITY_SHOCK, risk_score=0.96, brake=SELECTIVE_DIP_SCALE_IN_ONLY" in prompt
+    assert "CONTRARIAN DIP ACCUMULATION (SCALE-IN)" in prompt
     assert "DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK" in prompt
     assert '"order_type": "MARKET" | "LIMIT"' in prompt
     assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt

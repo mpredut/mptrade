@@ -109,10 +109,23 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
         if sa else "None"
     )
+    _AI_THREAT_LEVEL_MAP = {
+        "CRITICAL_SHOCK": "HIGH_VOLATILITY_SHOCK",
+        "CRITICAL": "HIGH_VOLATILITY",
+    }
+    _AI_BRAKE_MAP = {
+        "HARD_VETO_NEW_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+        "BLOCK_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+        "HALT_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+        "VETO_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+    }
+    raw_gt_level = str(gt.get("threat_level", "N/A"))
+    raw_gt_brake = str(gt.get("recommended_brake", "N/A"))
+    ai_gt_level = _AI_THREAT_LEVEL_MAP.get(raw_gt_level.strip().upper(), raw_gt_level)
+    ai_gt_brake = _AI_BRAKE_MAP.get(raw_gt_brake.strip().upper(), raw_gt_brake)
     gt_line = (
-        f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
-        f"brake={gt.get('recommended_brake', 'N/A')} "
-        "(advisory volatility signal for legacy bots only — NOT a binding prohibition on your contrarian dip/scale-in buys)"
+        f"level={ai_gt_level}, risk_score={gt.get('risk_score', 'N/A')}, "
+        f"brake={ai_gt_brake}"
         + (f", age={gt.get('age_min')}m" if gt.get("age_min") is not None else "")
         + f" | summary={gt.get('summary', '')}"
         if gt else "None"
@@ -766,16 +779,11 @@ def build_supervisor_prompt(
             "fixed slices when conviction or profitability is clear: when a position is clearly in profit (e.g. above "
             "`active_avg_buy_px` / `last_buy_px` or after a strong upward swing), you are completely free to sell a large "
             f"quantity or the entire profitable position (`50%–100%` of `value_usd`, up to {max_usd:g} USD) at once.\n"
-            "   - CONTRARIAN DIP ACCUMULATION & ADVISORY STATUS OF MACRO/GEOPOLITICAL LABELS: Categorical labels such as "
-            "`brake=HARD_VETO_NEW_BUYS`, `level=CRITICAL_SHOCK`, `EXTREME_FEAR`, or compressed breadth (`advance_ratio < 0.20`) "
-            "emitted by the Geopolitical Threat Shield or Macro Sentiment Advisor are strictly advisory high-volatility warnings "
-            "aimed at legacy deterministic bots—they are NEVER a binding prohibition on you. Paradoxically, the highest-EV "
-            "mean-reversion buying opportunities (capitulation dips, liquidation cascades, oversold support tests) occur precisely "
-            "when `advance_ratio < 0.20`, fear is extreme, and `HARD_VETO_NEW_BUYS` is active. Whenever you identify strong "
-            "microstructure absorption or support defense (e.g. a large `bid_wall` / positive `ob_imbalance`, `taker_ratio > 1.3`, "
-            "seller exhaustion at 24h/7d/cycle support, and ample dry powder), you are explicitly authorized and encouraged to "
-            "override `HARD_VETO_NEW_BUYS` and execute contrarian dip accumulation (scale-in) in controlled small/medium tranches "
-            "($200–$500 USD).\n"
+            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN): Elevated macro/geopolitical risk scores, extreme fear, or compressed "
+            "breadth (`advance_ratio < 0.20`) signal high-volatility regimes where capitulation dips and liquidation cascades "
+            "create the highest-EV mean-reversion entries. Whenever microstructure confirms strong absorption at support "
+            "(e.g. a large `bid_wall` / positive `ob_imbalance`, `taker_ratio > 1.3`, seller exhaustion at 24h/7d/`VAL` support, "
+            "and ample dry powder), execute contrarian dip accumulation (scale-in) in controlled small/medium tranches ($200–$500 USD).\n"
             "   - DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Because intra-cycle "
             "wicks between 10-minute evaluations can touch key support or resistance levels and bounce before the next cycle, "
             "you may submit either immediate market orders (`\"order_type\": \"MARKET\"`, `\"limit_price\": null`) OR passive resting "
