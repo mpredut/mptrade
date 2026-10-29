@@ -431,10 +431,9 @@ def main():
 
     # Save complete JSON
     out_dir = ROOT / "offline" / "results" / "strategy_sweep"
-    out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "sweep_results.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(master, f, indent=2)
+    from state_io import atomic_write_json
+    atomic_write_json(json_path, master, indent=2)
     print(f"\nSaved raw JSON to {json_path}")
 
     # Generate Markdown Summary Report
