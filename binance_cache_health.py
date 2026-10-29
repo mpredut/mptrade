@@ -123,7 +123,8 @@ def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
     timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         _writer_path = os.fspath(path)
-        writer_pid = _exact_int(pid) or os.getpid()
+        cand_pid = _exact_int(pid)
+        writer_pid = cand_pid if (cand_pid is not None and cand_pid > 0) else os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
             _writer_enabled = False
@@ -243,6 +244,8 @@ def record_persisted_version(cache_name: str, data_version: str, *,
 def _exact_int(value: Any) -> Optional[int]:
     if isinstance(value, bool) or value is None:
         return None
+    if isinstance(value, int):
+        return value
     try:
         f = float(value)
         return int(f) if math.isfinite(f) and f.is_integer() else None
