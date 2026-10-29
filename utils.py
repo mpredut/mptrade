@@ -1,10 +1,13 @@
+import base64
 import os
+import platform
+import random
+import re as _re
 import time
 import math
-import random
-import platform
-import numpy as np
 from datetime import datetime, timedelta
+import nacl.signing
+import numpy as np
 
 import botcore   # single are_close/diff_percent source shared by fleet and bots
 
@@ -56,8 +59,7 @@ def value_diff_to_percent(value1, value2):
         return 0.0
     if v1 == 0.0:
         return v2
-    percent = ((v1 - v2) / v1) * 100.0
-    return percent if math.isfinite(percent) else 0.0
+    return botcore.safe_float(((v1 - v2) / v1) * 100.0, default=0.0)
 
 def slope(val1, idx1, val2, idx2):
     v1 = botcore.safe_float(val1, default=None)
@@ -66,8 +68,7 @@ def slope(val1, idx1, val2, idx2):
     i2 = botcore.safe_float(idx2, default=None)
     if v1 is None or i1 is None or v2 is None or i2 is None or i1 == i2:
         return 0.0
-    res = (v2 - v1) / (i2 - i1)
-    return res if math.isfinite(res) else 0.0
+    return botcore.safe_float((v2 - v1) / (i2 - i1), default=0.0)
 
 # Values lie within an interval around the percentage.
 def are_difference_equal_with_aprox_proc(value1, value2, target_percent = 10.0):
@@ -197,13 +198,10 @@ def decrese_value_by_increment_exp(increment_factor, value, coeficient=0.05):
     if inc_f is None or val_f is None or coef_f is None:
         return 0.0, 0.0
     denom = 1.0 + coef_f * (inc_f ** 2)
-    adjustment_v1 = val_f / denom if (math.isfinite(denom) and denom != 0.0) else 0.0
+    adjustment_v1 = botcore.safe_float(val_f / denom, default=0.0) if denom != 0.0 else 0.0
     exp_arg = max(-700.0, min(700.0, -coef_f * inc_f))
-    adjustment_v2 = val_f * math.exp(exp_arg)
-    return (
-        adjustment_v1 if math.isfinite(adjustment_v1) else 0.0,
-        adjustment_v2 if math.isfinite(adjustment_v2) else 0.0,
-    )
+    adjustment_v2 = botcore.safe_float(val_f * math.exp(exp_arg), default=0.0)
+    return adjustment_v1, adjustment_v2
 
 
 def gaussian_weights_from_idx(T, idx: int):
@@ -232,11 +230,6 @@ def gaussian_weights_from_idx(T, idx: int):
 # Canonical alias for full Gaussian domain
 gaussian_weights = gaussian_weights_from_idx
 
-
-
-import base64
-import nacl.signing
-import re as _re
 
 # ── Ed25519 signing ──
 def _load_ed25519_signing_key():

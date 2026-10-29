@@ -240,12 +240,12 @@ class StratParams:
             if clean_raw.count(":") == 2 and "," not in clean_raw:
                 try:
                     p_min, p_max, p_steps = clean_raw.split(":")
-                    steps_i = safe_pos_int(p_steps, default=None)
+                    steps_f = safe_pos_float(p_steps, default=None)
                     min_f = safe_float(p_min, default=None)
                     max_f = safe_float(p_max, default=None)
-                    if steps_i is None or min_f is None or max_f is None:
+                    if steps_f is None or not steps_f.is_integer() or min_f is None or max_f is None:
                         raise ValueError("non-integer or non-finite steps")
-                    _ladder = generate_tp_ladder(min_f, max_f, steps_i, curve=ladder_curve)
+                    _ladder = generate_tp_ladder(min_f, max_f, int(steps_f), curve=ladder_curve)
                 except (ValueError, OverflowError) as exc:
                     raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
             else:
@@ -280,9 +280,10 @@ class StratParams:
             _max_dca = max(0, int((_budget - _entry) // _dca)) if _dca > 0 else 0
             _entry = _budget - _max_dca * _dca   # Entry absorbs remainder to cover the full budget.
         elif _mdb:
-            _max_dca = safe_nonneg_int(_mdb, default=None)
-            if _max_dca is None:
+            _mdb_f = safe_nonneg_float(_mdb, default=None)
+            if _mdb_f is None or not _mdb_f.is_integer():
                 raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}")
+            _max_dca = int(_mdb_f)
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         return cls(

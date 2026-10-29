@@ -136,9 +136,6 @@ def _parse_binance_order_id(order_id: Any, context: str) -> int:
     if oid <= 0:
         raise ProviderError(f"{context}: invalid order id")
     return oid
-    if oid <= 0:
-        raise ProviderError(f"{context}: invalid order id")
-    return oid
 
 
 def _step_decimals(step: str) -> int:
