@@ -38,7 +38,6 @@ import dataclasses
 import difflib
 import io
 import json
-import math
 import os
 import sys
 import time
@@ -376,7 +375,7 @@ def main() -> int:
         print(f"[shadow_live] skipped: {reason}")
         return 0
 
-    loop_min = args.loop if math.isfinite(args.loop) and args.loop > 0 else 0.0
+    loop_min = safe_pos_float(args.loop, default=0.0)
     while True:
         try:
             snapshot(pair, args.interval, args.fee, quiet=args.quiet)

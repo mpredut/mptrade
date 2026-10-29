@@ -1,7 +1,6 @@
 
 from __future__ import annotations
 
-import math
 import time
 from collections import defaultdict
 from typing import Any, Optional
@@ -13,6 +12,7 @@ from binance.exceptions import BinanceAPIException
 from .bapi_client import client
 import symbols as sym
 from botcore import (
+    safe_float,
     safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -36,8 +36,10 @@ from .bapi import (
 
 
 def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
-    if isinstance(raw_tid, float) and (not math.isfinite(raw_tid) or not raw_tid.is_integer()):
-        return None
+    if isinstance(raw_tid, float):
+        f = safe_float(raw_tid, default=None)
+        if f is None or not f.is_integer():
+            return None
     if isinstance(raw_tid, str):
         s = raw_tid.strip().removeprefix("+")
         if s.endswith(".0"):
@@ -162,8 +164,10 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
 
         for idx, t in enumerate(filtered):
             raw_oid = t['orderId']
-            if isinstance(raw_oid, float) and math.isfinite(raw_oid) and raw_oid.is_integer():
-                raw_oid = int(raw_oid)
+            if isinstance(raw_oid, float):
+                oid_f = safe_pos_float(raw_oid, default=None)
+                if oid_f is not None and oid_f.is_integer():
+                    raw_oid = int(oid_f)
             elif isinstance(raw_oid, str):
                 raw_oid = _clean_bapi_oid_str(raw_oid)
             valid_oid = (

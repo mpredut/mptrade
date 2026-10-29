@@ -6,7 +6,6 @@ market_data.py — Yahoo Finance market data: prices, FX rates, and real-trading
 from __future__ import annotations
 
 import json
-import math
 import re
 import time
 import urllib.error
@@ -14,12 +13,12 @@ import urllib.parse
 import urllib.request
 
 try:
-    from ipo_common import http_get, log, safe_int, safe_nonneg_float, safe_pos_float
+    from ipo_common import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 except ImportError:
     try:
-        from .ipo_common import http_get, log, safe_int, safe_nonneg_float, safe_pos_float
+        from .ipo_common import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
     except ImportError:
-        from botcore import http_get, log, safe_int, safe_nonneg_float, safe_pos_float
+        from botcore import http_get, log, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
@@ -221,11 +220,11 @@ def compute_ols_slope_pct(closes, bars: int = 12) -> float | None:
     mx = (n - 1) / 2.0
     my = sum(clean_closes) / n
     denom = sum((x - mx) ** 2 for x in range(n))
-    if denom == 0 or my == 0 or not math.isfinite(my):
+    my_f = safe_pos_float(my, default=None)
+    if denom == 0 or my_f is None:
         return None
-    slope = sum((i - mx) * (clean_closes[i] - my) for i in range(n)) / denom
-    res = slope / my * 100.0
-    return res if math.isfinite(res) else None
+    slope = sum((i - mx) * (clean_closes[i] - my_f) for i in range(n)) / denom
+    return safe_float(slope / my_f * 100.0, default=None)
 
 
 def trend_slope_pct(sym: str, bars: int = 12) -> float | None:

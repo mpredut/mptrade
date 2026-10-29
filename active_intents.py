@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import math
 import os
 from dataclasses import dataclass
 from typing import Iterable
@@ -56,7 +55,7 @@ def _first(row: dict, *names):
         value = row.get(name)
         if value is None or isinstance(value, (bool, dict, list, tuple, set)):
             continue
-        if isinstance(value, float) and not math.isfinite(value):
+        if isinstance(value, float) and safe_float(value, default=None) is None:
             continue
         if isinstance(value, str):
             s = value.strip()

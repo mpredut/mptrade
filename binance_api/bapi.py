@@ -1,7 +1,6 @@
 
 import os
 import time
-import math
 import sys
 import threading
 import signal
@@ -40,10 +39,7 @@ _load_dotenv(os.path.join(_ROOT, "config.env"))
 BINANCE_REST_PRICE_CACHE_TTL_SEC = required_float_env(
     "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC"
 )
-if (
-    not math.isfinite(BINANCE_REST_PRICE_CACHE_TTL_SEC)
-    or BINANCE_REST_PRICE_CACHE_TTL_SEC <= 0
-):
+if BINANCE_REST_PRICE_CACHE_TTL_SEC <= 0:
     raise ValueError(
         "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC must be finite and positive")
 
@@ -256,10 +252,8 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
             raw_oid = order.get('orderId')
             if isinstance(raw_oid, float):
-                if not math.isfinite(raw_oid) or not raw_oid.is_integer() or raw_oid <= 0:
-                    raw_oid = None
-                else:
-                    raw_oid = int(raw_oid)
+                oid_f = safe_pos_float(raw_oid, default=None)
+                raw_oid = int(oid_f) if oid_f is not None and oid_f.is_integer() else None
             elif isinstance(raw_oid, str):
                 raw_oid = _clean_bapi_oid_str(raw_oid)
             elif not isinstance(raw_oid, int) or isinstance(raw_oid, bool) or raw_oid <= 0:

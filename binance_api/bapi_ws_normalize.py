@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import builtins
-import math
 import time
 from typing import Any
 
-from botcore import safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from providers.base import (
     extract_order_price,
     extract_order_side,
@@ -41,11 +40,12 @@ def _normalize_ws_order_id(raw_id: Any, *, strict_float: bool = False) -> int | 
             raise ValueError("boolean Binance order ID")
         return None
     if isinstance(raw_id, float):
-        if not math.isfinite(raw_id) or not raw_id.is_integer():
+        f = safe_float(raw_id, default=None)
+        if f is None or not f.is_integer():
             if strict_float:
                 raise ValueError("non-integer Binance order ID")
             return None
-        raw_id = int(raw_id)
+        raw_id = int(f)
     elif isinstance(raw_id, str):
         raw_id = _strip_int_str(raw_id)
         if raw_id is not None and (
@@ -107,8 +107,10 @@ def parse_order_execution_report(
         raw_s = event.get("S")
         if isinstance(raw_t, bool) or isinstance(raw_i, bool) or isinstance(raw_s, bool):
             raise ValueError("boolean Binance trade/order ID or side")
-        if isinstance(raw_t, float) and (not math.isfinite(raw_t) or not raw_t.is_integer()):
-            raise ValueError("non-integer Binance trade ID")
+        if isinstance(raw_t, float):
+            f = safe_float(raw_t, default=None)
+            if f is None or not f.is_integer():
+                raise ValueError("non-integer Binance trade ID")
         elif isinstance(raw_t, str):
             raw_t = _strip_int_str(raw_t) or ""
         raw_i = _normalize_ws_order_id(raw_i, strict_float=True)
@@ -182,10 +184,11 @@ def parse_trade_execution_report(
         builtins.print("[cacheManager][WS] rejected Trade report with boolean ID")
         return None
     if isinstance(raw_trade_id, float):
-        if not math.isfinite(raw_trade_id) or not raw_trade_id.is_integer():
+        f = safe_float(raw_trade_id, default=None)
+        if f is None or not f.is_integer():
             builtins.print("[cacheManager][WS] rejected Trade report with non-integer float trade ID")
             return None
-        raw_trade_id = int(raw_trade_id)
+        raw_trade_id = int(f)
     elif isinstance(raw_trade_id, str):
         raw_trade_id = _strip_int_str(raw_trade_id)
         if raw_trade_id is not None and (

@@ -27,7 +27,6 @@ Run: cd kraken && python kraken_cachemanager.py
 import os
 import sys
 import json
-import math
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -253,7 +252,7 @@ def _ledger_to_fills(ledger):
             continue
         is_buyer = ba > 0
         px = abs(qa) / abs(ba)
-        if not math.isfinite(px) or px <= 0.0:
+        if safe_pos_float(px, default=None) is None:
             continue
         fill = {
             "symbol": raw_symbol,

@@ -1,6 +1,5 @@
 import os
 import time
-import math
 import sys
 import threading
 from dataclasses import dataclass
@@ -222,7 +221,7 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     max_trade_value = total_value_reference * weight
     remaining_trade_value = max(0.0, max_trade_value - traded_value)
     remaining_trade_qty = remaining_trade_value / price
-    if not all(math.isfinite(value) for value in (
+    if any(safe_float(value, default=None) is None for value in (
             total_value_reference, max_trade_value, remaining_trade_value,
             remaining_trade_qty, adjusted_qty)):
         raise SubmissionRefused("invalid_weight_policy_result")

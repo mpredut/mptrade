@@ -29,10 +29,11 @@ Commands:
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 import time
+
+from botcore import safe_pos_float
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
@@ -224,7 +225,7 @@ def main() -> int:
         raise ValueError(f"Invalid ORDER_VALIDITY: {_val!r}")
     order_validity   = "GOOD_TILL_CANCEL" if _val in ("GTC", "GOOD_TILL_CANCEL") else "DAY"
     order_dry        = args.paper or not (args.execute or required_bool_env("ORDER_EXECUTE"))
-    interval         = max(args.interval, 30.0) if math.isfinite(args.interval) else 30.0
+    interval         = max(safe_pos_float(args.interval, default=30.0), 30.0)
 
     # --- one-shot commands ---
     if args.find_ticker:
