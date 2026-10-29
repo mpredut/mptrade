@@ -1418,12 +1418,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             dec_init = pem.evaluate_stop_loss(snap_init)
             self.assertEqual(dec_init.action, ExitAction.HOLD)
 
-            # Still ascendent at 120s (< 300s) -> HOLD
+            # Still ascending at 120s (< 300s) -> HOLD
             snap_mid = PositionSnapshot(symbol=SYMBOL, current_price=94.1, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0 + 120.0, trend_up=True)
             dec_mid = pem.evaluate_stop_loss(snap_mid)
             self.assertEqual(dec_mid.action, ExitAction.HOLD)
 
-            # Still ascendent at 305s (>= 300s) -> releases SELL order with sub_reason == "timeout"
+            # Still ascending at 305s (>= 300s) -> releases SELL order with sub_reason == "timeout"
             snap_timeout = PositionSnapshot(symbol=SYMBOL, current_price=94.2, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0 + 305.0, trend_up=True)
             dec_timeout = pem.evaluate_stop_loss(snap_timeout)
             self.assertEqual(dec_timeout.action, ExitAction.SELL)

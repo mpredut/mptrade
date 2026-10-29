@@ -165,9 +165,12 @@ def sample_current_prices(symbols):
     if not os.path.exists(CACHE_TREND_PATH):
         return
     try:
-        with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
-            snapshot = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+        from state_io import read_recovering_previous
+        def _loader(path: str):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        snapshot = read_recovering_previous(CACHE_TREND_PATH, _loader)
+    except (OSError, json.JSONDecodeError, ValueError) as e:
         print(f"[tradeall_observe] error reading cache_short_trend.json: {e}")
         return
     if not isinstance(snapshot, dict):
@@ -264,8 +267,11 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
             return []
         return entries
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        from state_io import read_recovering_previous
+        def _loader(p: str):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        data = read_recovering_previous(path, _loader)
         items = data.get("items") if isinstance(data, dict) else None
         return items.get(symbol, []) if isinstance(items, dict) else []
     except (OSError, json.JSONDecodeError, ValueError):
@@ -732,22 +738,24 @@ def build_analysis_state_text(symbol, active_summary=None):
     trend cache file.
     """
     try:
-        with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
-            raw_trend = json.load(f)
-            trend_map = raw_trend.get("items") if isinstance(raw_trend, dict) and isinstance(raw_trend.get("items"), dict) else raw_trend
-            entry = _lookup_symbol_dict(trend_map, symbol)
-    except (OSError, json.JSONDecodeError):
+        from state_io import read_recovering_previous
+        def _loader(p: str):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        raw_trend = read_recovering_previous(CACHE_TREND_PATH, _loader)
+        trend_map = raw_trend.get("items") if isinstance(raw_trend, dict) and isinstance(raw_trend.get("items"), dict) else raw_trend
+        entry = _lookup_symbol_dict(trend_map, symbol)
+    except (OSError, json.JSONDecodeError, ValueError):
         entry = None
     if not isinstance(entry, dict) or not entry:
         return None
     try:
-        with open(get_kalman_state_path(), "r", encoding="utf-8") as f:
-            raw_sh = json.load(f)
-            sh_map = raw_sh.get("items") if isinstance(raw_sh, dict) and isinstance(raw_sh.get("items"), dict) else raw_sh
-            sh = _lookup_symbol_dict(sh_map, symbol)
+        raw_sh = read_recovering_previous(get_kalman_state_path(), _loader)
+        sh_map = raw_sh.get("items") if isinstance(raw_sh, dict) and isinstance(raw_sh.get("items"), dict) else raw_sh
+        sh = _lookup_symbol_dict(sh_map, symbol)
         if isinstance(sh, dict) and sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, ValueError):
         pass
     age = max(0.0, time.time() - safe_float(entry.get("ts"), 0.0))
 
@@ -787,10 +795,13 @@ def build_backtest_state_text(directory, symbol):
     """Load simulated analysis state written by offline/backtests/tradeall.py."""
     path = os.path.join(directory, "analysis_state.json")
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw_state = json.load(f)
-            entry = _lookup_symbol_dict(raw_state, symbol)
-    except (OSError, json.JSONDecodeError):
+        from state_io import read_recovering_previous
+        def _loader(p: str):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        raw_state = read_recovering_previous(path, _loader)
+        entry = _lookup_symbol_dict(raw_state, symbol)
+    except (OSError, json.JSONDecodeError, ValueError):
         entry = None
     if not isinstance(entry, dict) or not entry:
         return None

@@ -104,7 +104,7 @@ def main() -> int:
     label       = required_env("SYMBOL_LABEL")
     strategy_execution = required_bool_env("STRAT_EXECUTE")
     strat_dry = kraken_strategy_dry_run(args.paper, strategy_execution)
-    observe_only = _parse_bool_flag(os.environ.get("KRAKEN_BOT_OBSERVE_ONLY"), False)
+    observe_only = required_bool_env("KRAKEN_BOT_OBSERVE_ONLY")
     interval    = max(args.interval, 15)
 
     # --- one-shot commands ---

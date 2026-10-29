@@ -713,7 +713,7 @@ def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
     corrupt_sig.write_text("[1, 2, 3]", encoding="utf-8")
     sig_res = signals._file_signal(str(corrupt_sig))
     assert sig_res["trend"] == "neutral"
-    assert sig_res["source"] == "file(corupt)"
+    assert sig_res["source"] == "file(corrupt)"
 
 
 def test_walk_forward_compare_preserves_zero_fee():

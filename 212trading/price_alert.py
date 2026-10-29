@@ -91,15 +91,19 @@ def main() -> int:
 
     safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
-    st = {}
-    if os.path.exists(state_path):
-        try:
-            with open(state_path, "r", encoding="utf-8") as fh:
-                loaded = json.load(fh)
-            if isinstance(loaded, dict):
-                st = loaded
-        except (OSError, ValueError):
-            st = {}
+    from state_io import read_recovering_previous
+
+    def _loader(candidate_path: str):
+        with open(candidate_path, "r", encoding="utf-8") as fh:
+            val = json.load(fh)
+        if not isinstance(val, dict):
+            raise ValueError("state must be a dict")
+        return val
+
+    try:
+        st = read_recovering_previous(state_path, _loader, default={})
+    except (OSError, ValueError):
+        st = {}
     armed = _parse_armed_flag(st.get("armed", True), default=True)
 
     hit_below = args.below is not None and price <= args.below

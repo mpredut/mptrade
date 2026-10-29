@@ -19,7 +19,7 @@ import market_data as md  # noqa: E402
 
 
 def chart(price=None, meta_vol=0, meta_age_s=None, state="REGULAR", series=None):
-    """series = [(age_secunde, close, volume), ...] cele mai recente bare."""
+    """series = [(age_seconds, close, volume), ...] most recent bars."""
     meta = {"marketState": state, "currency": "USD"}
     if price is not None:
         meta["regularMarketPrice"] = price

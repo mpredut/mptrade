@@ -82,32 +82,35 @@ def _builtin_trend(client, coin: str) -> dict:
     trend = "up" if diff > band else "down" if diff < -band else "neutral"
     conf = round(min(1.0, abs(diff) / (band * 3)), 2) if band > 0 else 0.0
     return {"trend": trend, "confidence": conf, "source": "builtin",
-            "detail": f"medie{fast}h={mf:.3f} medie{slow}h={ms:.3f} diff={diff*100:+.2f}%"}
+            "detail": f"avg{fast}h={mf:.3f} avg{slow}h={ms:.3f} diff={diff*100:+.2f}%"}
 
 
 def _file_signal(path: str) -> dict:
     if not path or isinstance(path, bool) or not str(path).strip() or not os.path.isfile(str(path)):
         return {**NEUTRAL, "source": "file(missing)"}
     try:
-        with open(str(path), "r", encoding="utf-8") as f:
-            d = json.load(f)
+        from state_io import read_recovering_previous
+        def _loader(cand: str):
+            with open(cand, "r", encoding="utf-8") as f:
+                return json.load(f)
+        d = read_recovering_previous(str(path), _loader)
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")
-        return {**NEUTRAL, "source": "file(corupt)"}
+        return {**NEUTRAL, "source": "file(corrupt)"}
     if not isinstance(d, dict):
         log("  ! an invalid signal file: top-level JSON must be an object")
-        return {**NEUTRAL, "source": "file(corupt)"}
+        return {**NEUTRAL, "source": "file(corrupt)"}
     ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60
     if ts is not None:
         ts_f = safe_pos_float(ts, 0.0)
         if ts_f <= 0:
-            return {**NEUTRAL, "source": "file(expirat)"}
+            return {**NEUTRAL, "source": "file(expired)"}
         if ts_f >= 100_000_000_000.0:
             ts_f /= 1000.0
         age = time.time() - ts_f
         if not math.isfinite(max_age) or max_age <= 0 or age > max_age or age < -60.0:
-            return {**NEUTRAL, "source": "file(expirat)"}
+            return {**NEUTRAL, "source": "file(expired)"}
     tr = _normalize_signal_trend(d.get("trend", "neutral"))
     conf = max(0.0, min(1.0, safe_float(d.get("confidence", 0), 0.0)))
     return {"trend": tr, "confidence": conf, "source": "file"}
