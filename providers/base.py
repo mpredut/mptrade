@@ -467,14 +467,15 @@ def aggregate_fills_by_order_id(
         ts_ms = norm["timestamp"]
         if cutoff_ms is not None:
             cutoff_f = safe_float(cutoff_ms, default=None)
-            if cutoff_f is None or ts_ms is None or float(ts_ms) < cutoff_f:
+            ts_f = safe_float(ts_ms, default=None)
+            if cutoff_f is None or ts_f is None or ts_f < cutoff_f:
                 continue
         if want and norm["side"] != want:
             continue
         if parent_oid:
             key = (parent_oid, norm["side"])
-            px = float(norm["price"] or 0.0)
-            qty = float(norm["qty"] or 0.0)
+            px = safe_nonneg_float(norm.get("price"), default=0.0) or 0.0
+            qty = safe_nonneg_float(norm.get("qty"), default=0.0) or 0.0
             priced_qty = qty if (px > 0.0 and qty > 0.0) else 0.0
             ts_val = ts_ms if ts_ms is not None else 0
             if key not in grouped:
