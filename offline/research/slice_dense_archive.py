@@ -9,14 +9,14 @@ rulata intreaga (14 iul->azi: ~1M puncte/simbol, ~8h/rulare la rata observata).
 Usage: slice_dense_archive.py <symbol> <days> [out_path]
 """
 import json
-import math
 import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from cachepaths import cache_path
+from botcore import safe_pos_float
+from cachepaths import cache_path, cache_symbol_variants
 
 
 def ts_of(r) -> float:
@@ -26,13 +26,7 @@ def ts_of(r) -> float:
     raw = i_val[0] if isinstance(i_val, (list, tuple)) and i_val else None
     if raw is None:
         raw = r.get("t")
-    if isinstance(raw, bool) or raw is None:
-        return 0.0
-    try:
-        val = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    return val if math.isfinite(val) and val > 0 else 0.0
+    return safe_pos_float(raw, 0.0)
 
 
 def main():
@@ -40,16 +34,20 @@ def main():
         print("Usage: slice_dense_archive.py <symbol> <days> [out_path]", file=sys.stderr)
         sys.exit(1)
     symbol = sys.argv[1]
-    try:
-        days = float(sys.argv[2])
-    except (TypeError, ValueError, OverflowError):
-        days = -1.0
-    if not (math.isfinite(days) and days > 0):
+    days = safe_pos_float(sys.argv[2], default=None)
+    if days is None:
         print(f"[slice] invalid days={sys.argv[2]!r}", file=sys.stderr)
         sys.exit(1)
     out = sys.argv[3] if len(sys.argv) > 3 else cache_path(
         f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
-    src = cache_path(f"cache_365_price_{symbol}.jsonl")
+    src = next(
+        (
+            p
+            for cand in cache_symbol_variants(symbol)
+            if os.path.isfile(p := cache_path(f"cache_365_price_{cand}.jsonl"))
+        ),
+        cache_path(f"cache_365_price_{symbol}.jsonl"),
+    )
     if not os.path.isfile(src):
         print(f"[slice] {src} missing", file=sys.stderr)
         sys.exit(1)

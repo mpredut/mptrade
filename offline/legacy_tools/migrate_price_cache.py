@@ -16,13 +16,13 @@ import os
 import sys
 import json
 import glob
-import math
 import time
 
 # offline/legacy_tools/ sits two levels below the repository root.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
 
 CACHE_DIR = get_cachedb_dir()
@@ -43,15 +43,8 @@ def _entry_ts(item):
         raw = item[0]
     elif isinstance(item, dict):
         raw = item.get("time") if item.get("time") is not None else item.get("timestamp")
-    if isinstance(raw, bool) or raw is None:
-        return 0
-    try:
-        val = float(raw)
-        if not math.isfinite(val) or val <= 0:
-            return 0
-        return int(val)
-    except (TypeError, ValueError):
-        return 0
+    val = safe_pos_float(raw, default=None)
+    return int(val) if val is not None else 0
 
 
 def _load_old_json(path):

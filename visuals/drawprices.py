@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
 from botcore import safe_float, safe_int, safe_pos_int
+from cachepaths import cache_symbol_variants
 import symbols as sym
 import cacheManager as cm
 
@@ -31,12 +32,12 @@ def _clean_finite_floats(seq) -> List[float]:
 def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
     if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
         return []
-    sym_key = str(symbol).strip().upper()
+    cands = cache_symbol_variants(symbol)
     mgr = getattr(cm, "price_cache_manager", None)
-    entry = (mgr.get(sym_key) or mgr.get(symbol)) if isinstance(mgr, dict) else None
+    entry = next((mgr[c] for c in cands if c in mgr and mgr[c] is not None), None) if isinstance(mgr, dict) else None
     raw = getattr(entry, "cache", None) if entry is not None else None
     if isinstance(raw, dict):
-        raw = raw.get(sym_key, raw.get(symbol, []))
+        raw = next((raw[c] for c in cands if c in raw and raw[c]), [])
     if not raw or not isinstance(raw, (list, tuple)):
         return []
     out: List[Tuple[int, float]] = []
@@ -121,21 +122,49 @@ def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
 # 3) HISTORICAL PLOT
 # ==========================
 
-def plot_history(symbol: str, dt, prices: np.ndarray, outdir="plots"):
+def _plot_series_and_forecast(
+    symbol: str,
+    dt,
+    prices: np.ndarray,
+    forecast: Optional[np.ndarray],
+    title: str,
+    fname_prefix: str,
+    forecast_label: Optional[str] = None,
+    outdir: str = "plots",
+) -> str:
     ensure_dir(outdir)
+    n = len(prices)
+    future_dt = []
+    if forecast is not None and len(forecast) > 0 and n >= 2:
+        step = dt[-1] - dt[-2]
+        if step.total_seconds() <= 0:
+            avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n - 1))
+            step = timedelta(seconds=avg_step if avg_step > 0 else 60.0)
+        future_dt = [dt[-1] + (i + 1) * step for i in range(len(forecast))]
     plt.figure(figsize=(10, 5))
-    plt.plot(dt, prices, marker="o", linestyle="-")
-    plt.title(f"Price evolution - {symbol}")
+    if forecast_label is not None:
+        plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
+        if future_dt:
+            plt.plot(future_dt, forecast, marker="o", linestyle="--", label=forecast_label)
+    else:
+        plt.plot(dt, prices, marker="o", linestyle="-")
+    plt.title(title)
     plt.xlabel("Timp")
     plt.ylabel("Price")
     plt.grid(True)
     plt.xticks(rotation=45)
+    if forecast_label is not None:
+        plt.legend()
     plt.tight_layout()
-    fname = os.path.join(outdir, f"history_{symbol}.png")
+    fname = os.path.join(outdir, f"{fname_prefix}_{symbol}.png")
     plt.savefig(fname, dpi=150)
-    plt.show()   # Display on screen.
+    plt.show()
     plt.close()
     return fname
+
+
+def plot_history(symbol: str, dt, prices: np.ndarray, outdir="plots"):
+    return _plot_series_and_forecast(symbol, dt, prices, None, f"Price evolution - {symbol}", "history", outdir=outdir)
 
 
 # ==========================
@@ -174,31 +203,11 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     return y_future
 
 def plot_with_linear(symbol: str, dt, prices: np.ndarray, lin_forecast: np.ndarray, outdir="plots"):
-    ensure_dir(outdir)
-    n = len(prices)
-    future_dt = []
-    if lin_forecast is not None and len(lin_forecast) > 0 and n >= 2:
-        step = dt[-1] - dt[-2]
-        if step.total_seconds() <= 0:
-            avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n - 1))
-            step = timedelta(seconds=avg_step if avg_step > 0 else 60.0)
-        future_dt = [dt[-1] + (i + 1) * step for i in range(len(lin_forecast))]
-    plt.figure(figsize=(10, 5))
-    plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
-    if future_dt:
-        plt.plot(future_dt, lin_forecast, marker="o", linestyle="--", label="Regresie (forecast)")
-    plt.title(f"Forecast (linear regression) - {symbol}")
-    plt.xlabel("Timp")
-    plt.ylabel("Price")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.tight_layout()
-    fname = os.path.join(outdir, f"forecast_linear_{symbol}.png")
-    plt.savefig(fname, dpi=150)
-    plt.show()   # Display on screen.
-    plt.close()
-    return fname
+    return _plot_series_and_forecast(
+        symbol, dt, prices, lin_forecast,
+        f"Forecast (linear regression) - {symbol}", "forecast_linear",
+        forecast_label="Regresie (forecast)", outdir=outdir,
+    )
 
 
 # ==========================
@@ -281,34 +290,11 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
     return preds, f"LSTM antrenat: window={window}, epochs={epochs}, batch={batch_size}"
     
 def plot_with_lstm(symbol: str, dt, prices: np.ndarray, lstm_forecast: Optional[np.ndarray], outdir="plots"):
-    ensure_dir(outdir)
-    n = len(prices)
-    future_dt = []
-
-    if lstm_forecast is not None and len(lstm_forecast) > 0 and n >= 2:
-        step = (dt[-1] - dt[-2])
-        if step.total_seconds() <= 0:
-            avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n - 1))
-            step = timedelta(seconds=avg_step if avg_step > 0 else 60.0)
-
-        future_dt = [dt[-1] + step*(i+1) for i in range(len(lstm_forecast))]
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
-    if lstm_forecast is not None and len(lstm_forecast) > 0 and future_dt:
-        plt.plot(future_dt, lstm_forecast, marker="o", linestyle="--", label="LSTM (forecast)")
-    plt.title(f"Forecast (LSTM) - {symbol}")
-    plt.xlabel("Timp")
-    plt.ylabel("Price")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.tight_layout()
-    fname = os.path.join(outdir, f"forecast_lstm_{symbol}.png")
-    plt.savefig(fname, dpi=150)
-    plt.show()   # Display on screen.
-    plt.close()
-    return fname
+    return _plot_series_and_forecast(
+        symbol, dt, prices, lstm_forecast,
+        f"Forecast (LSTM) - {symbol}", "forecast_lstm",
+        forecast_label="LSTM (forecast)", outdir=outdir,
+    )
 
 
 # ==========================

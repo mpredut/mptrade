@@ -163,22 +163,28 @@ class CompositeMarketIntelligence:
                     dec.guard_name, scale=effective_scale, reason=dec.reason, **dec.metadata
                 )
 
+        def _apply_guard_dec(dec: GuardDecision) -> Optional[GuardDecision]:
+            if not dec.allowed:
+                return dec
+            if dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(dec)
+            return None
+
         grad_finite = _opt_finite(gradient)
         eps_finite = _opt_finite(epsilon)
 
         # 1. Noise Floor Guard
         if grad_finite is not None and eps_finite is not None and not _is_bypassed(None, "noise_guard", "noisefloorguard"):
-            noise_dec = self.noise_guard.check(symbol, side, grad_finite, eps_finite)
-            if not noise_dec.allowed:
-                return noise_dec
+            if (veto := _apply_guard_dec(self.noise_guard.check(symbol, side, grad_finite, eps_finite))) is not None:
+                return veto
 
         # 2. Parabolic Surge Guard (Anti-FOMO)
         if not _is_bypassed("G_QLIMIT2", "parabolic_guard", "parabolicsurgeguard"):
             parabolic_dec = self.parabolic_guard.check(
                 symbol, side, price, price_history=price_history, volatility_1h_pct=volatility_1h_pct, now=now
             )
-            if not parabolic_dec.allowed:
-                return parabolic_dec
+            if (veto := _apply_guard_dec(parabolic_dec)) is not None:
+                return veto
 
         # 3. Weibull Trend Exhaustion Guard (G_QLIMIT2)
         dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
@@ -196,16 +202,13 @@ class CompositeMarketIntelligence:
                 gaussian_horizon_days=surv.get("gaussian_horizon_days") if qlimit1_active else None,
                 trend_direction=inferred_trend_dir,
             )
-            if not exh_dec.allowed:
-                return exh_dec
-            if exh_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(exh_dec)
+            if (veto := _apply_guard_dec(exh_dec)) is not None:
+                return veto
 
         # 4. External Liquidation Cascade Guard
         if liquidation_summary is not None and not _is_bypassed(None, "cascade_guard", "liquidationcascadeguard"):
-            cascade_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
-            if not cascade_dec.allowed:
-                return cascade_dec
+            if (veto := _apply_guard_dec(self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now))) is not None:
+                return veto
 
         # 5. External Funding Rate Crowding Guard (GI_FUNDING)
         if derivatives_telemetry is not None and not _is_bypassed("GI_FUNDING", "funding_guard", "fundingcrowdingguard"):
@@ -213,18 +216,13 @@ class CompositeMarketIntelligence:
                 fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry, now=now)
             except TypeError:
                 fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
-            if not fund_dec.allowed:
-                return fund_dec
-            if fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(fund_dec)
+            if (veto := _apply_guard_dec(fund_dec)) is not None:
+                return veto
 
         # 6. Sentiment Extreme Greed Guard (GLLM2)
         if fear_greed_snapshot is not None and not _is_bypassed("GLLM2", "greed_guard", "extremegreedguard"):
-            greed_dec = self.greed_guard.check(symbol, side, fear_greed_snapshot)
-            if not greed_dec.allowed:
-                return greed_dec
-            if greed_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(greed_dec)
+            if (veto := _apply_guard_dec(self.greed_guard.check(symbol, side, fear_greed_snapshot))) is not None:
+                return veto
 
         # 7. Sentiment Panic Washout Guard (GLLM2)
         if (market_breadth_snapshot is not None or fear_greed_snapshot is not None) and not _is_bypassed("GLLM2", "panic_guard", "panicwashoutguard"):
@@ -234,10 +232,8 @@ class CompositeMarketIntelligence:
                 fear_greed_snapshot=fear_greed_snapshot,
                 asset_24h_change_pct=asset_24h_change_pct,
             )
-            if not panic_dec.allowed:
-                return panic_dec
-            if panic_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(panic_dec)
+            if (veto := _apply_guard_dec(panic_dec)) is not None:
+                return veto
 
         # 8. Google Gemini High-Stake Guard (GLLM1)
         computed_notional = _opt_pos_finite(notional_eur)
@@ -270,18 +266,13 @@ class CompositeMarketIntelligence:
                     notional_eur=computed_notional,
                     telemetry=telemetry_ctx,
                 )
-            if not gemini_dec.allowed:
-                return gemini_dec
-            if gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(gemini_dec)
+            if (veto := _apply_guard_dec(gemini_dec)) is not None:
+                return veto
 
         # 9. Geopolitical & Energy Shock Guard (GLLM3)
         if geopolitical_assessment is not None and not _is_bypassed("GLLM3", "geopolitical_guard", "geopoliticalshockguard"):
-            geo_dec = self.geopolitical_guard.check(symbol, side, geopolitical_assessment)
-            if not geo_dec.allowed:
-                return geo_dec
-            if geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                _record_downscale(geo_dec)
+            if (veto := _apply_guard_dec(self.geopolitical_guard.check(symbol, side, geopolitical_assessment))) is not None:
+                return veto
 
         return downscale_dec if downscale_dec is not None else GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 

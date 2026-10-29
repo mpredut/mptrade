@@ -10,7 +10,6 @@ monitortrades instruments (BTCUSDC, TAOUSDC, ARBUSDC, HYPEUSD) on:
 """
 from __future__ import annotations
 
-import math
 import os
 import sys
 import time
@@ -22,6 +21,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from botcore import safe_pos_float
 import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
@@ -40,8 +40,8 @@ def compute_window_bounds(ts: np.ndarray, win_sec: float = rrb.DEFAULT_WINDOW_SE
     for i in range(N):
         t = float(ts[i])
         if prev_ts is not None and t > prev_ts:
-            rate = t - prev_ts
-            if rate > 0.0 and math.isfinite(rate):
+            rate = safe_pos_float(t - prev_ts, default=None)
+            if rate is not None:
                 sample_rate = rate
                 new_size = min(100000, max(10, int(win_sec / rate)))
                 if new_size != win_size:

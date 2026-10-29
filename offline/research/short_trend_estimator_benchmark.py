@@ -24,7 +24,6 @@ usage: short_trend_estimator_benchmark.py [--data-dir DIR] [SYMBOL ...]
 """
 import argparse
 import json
-import math
 import os
 import sys
 from multiprocessing import Pool
@@ -37,8 +36,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import int_env
-from cachepaths import get_cachedb_dir, resolve_cachedb_filepath
+from botcore import int_env, safe_float, safe_pos_float
+from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 
 D = get_cachedb_dir()
 N_WIN = 222
@@ -58,11 +57,19 @@ def load_series(sym):
         z = np.load(npz)
         return z["ts"], z["px"]
     ts, px = [], []
-    jsonl_path = str(resolve_cachedb_filepath(os.path.join(D, f"cache_365_price_{sym}.jsonl")))
-    if not os.path.exists(jsonl_path):
-        jsonl_path = str(resolve_cachedb_filepath(os.path.join(D, f"cache_sparse_price_{sym}.jsonl")))
-    if not os.path.exists(jsonl_path):
+    sym_cands = cache_symbol_variants(sym)
+    jsonl_path = next(
+        (
+            p
+            for cand in sym_cands
+            for prefix in ("cache_365_price_", "cache_sparse_price_")
+            if os.path.exists(p := str(resolve_cachedb_filepath(os.path.join(D, f"{prefix}{cand}.jsonl"))))
+        ),
+        None,
+    )
+    if not jsonl_path:
         return np.empty(0), np.empty(0)
+    valid_syms = set(sym_cands) | {sym}
     with open(jsonl_path, encoding="utf-8") as f:
         try:
             import orjson as _json_mod
@@ -72,11 +79,12 @@ def load_series(sym):
         for line in f:
             try:
                 r = _loads(line)
-                if r.get("s") != sym:
+                if r.get("s") not in valid_syms:
                     continue
-                t, p = float(r["i"][0]) / 1000.0, float(r["i"][1])
-                if p > 0 and math.isfinite(p) and math.isfinite(t):
-                    ts.append(t); px.append(p)
+                t = safe_float(r["i"][0], default=None)
+                p = safe_pos_float(r["i"][1], default=None)
+                if t is not None and p is not None:
+                    ts.append(t / 1000.0); px.append(p)
             except (ValueError, TypeError, KeyError, IndexError):
                 continue
     ts, px = np.asarray(ts), np.asarray(px)

@@ -19,13 +19,13 @@ Idempotent.
 import os
 import sys
 import json
-import math
 import time
 
 # offline/legacy_tools/ sits two levels below the repository root.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
 
 CACHE_DIR = get_cachedb_dir()
@@ -38,15 +38,7 @@ def is_garbage(order):
     if not isinstance(order, dict):
         return True
     status = str(order.get("status") or "").upper()
-    raw_price = order.get("price")
-    if isinstance(raw_price, bool) or raw_price is None:
-        price = 0.0
-    else:
-        try:
-            price = float(raw_price)
-        except (TypeError, ValueError):
-            price = 0.0
-    return status in BAD_STATUS or not (math.isfinite(price) and price > 0)
+    return status in BAD_STATUS or safe_pos_float(order.get("price"), default=None) is None
 
 
 def main():

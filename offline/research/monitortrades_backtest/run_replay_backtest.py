@@ -35,7 +35,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float
+from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 _safe_nonneg_f = safe_nonneg_float
 from cachepaths import cache_path
@@ -88,16 +88,7 @@ _TREND_TAPE_CACHE: dict[tuple, tuple[bool, ...]] = {}
 
 
 def _norm_trend_window_sec(trend_window_seconds: float | None) -> float:
-    import math
-    win_sec = DEFAULT_WINDOW_SECONDS
-    if trend_window_seconds is not None and not isinstance(trend_window_seconds, bool):
-        try:
-            cand_w = float(trend_window_seconds)
-            if math.isfinite(cand_w) and cand_w > 0:
-                win_sec = cand_w
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return win_sec
+    return safe_pos_float(trend_window_seconds, DEFAULT_WINDOW_SECONDS)
 
 
 def _resolve_upward_eps_k() -> float:
@@ -157,8 +148,8 @@ def prewarm_trend_series(
     tape: list[bool] = []
     for ts, px in series:
         if prev_ts is not None and ts > prev_ts:
-            rate = ts - prev_ts
-            if rate > 0 and math.isfinite(rate):
+            rate = safe_pos_float(ts - prev_ts, default=None)
+            if rate is not None:
                 sample_rate = rate
                 new_size = min(100000, max(10, int(eff_win_sec / rate)))
                 if new_size != win_size:
