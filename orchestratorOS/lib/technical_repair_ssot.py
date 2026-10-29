@@ -852,6 +852,14 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                         for idx, line in enumerate(lines):
                             if supervisor_summary_pattern.search(line):
                                 continue
+                            if (
+                                ("Exception ignored in:" in line or "Traceback (most recent call last):" in line)
+                                and any(
+                                    "BaseSubprocessTransport.__del__" in lines[j]
+                                    for j in range(max(0, idx - 1), min(total_lines, idx + 3))
+                                )
+                            ):
+                                continue
                             if err_pattern.search(line) and not (
                                 benign_warn_pattern.search(line)
                                 and not re.search(
