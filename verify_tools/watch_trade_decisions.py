@@ -22,6 +22,7 @@ from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
 from botcore import safe_float, safe_pos_float  # noqa: E402
+_f = safe_float
 from instrument_registry import load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402
 
