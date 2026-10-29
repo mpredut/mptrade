@@ -1,6 +1,5 @@
 from __future__ import annotations
 import builtins
-import math
 import os
 import sys
 import re
@@ -11,7 +10,13 @@ import shutil
 import threading
 from time import monotonic as _monotonic
 
-from botcore import load_dotenv, required_float_env, required_int_env
+from botcore import (
+    load_dotenv,
+    required_float_env,
+    required_int_env,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 
 # ── Versioned policy (overridable via configure()) ───────────────────────────
@@ -130,29 +135,20 @@ def configure(
             os.makedirs(resolved, exist_ok=True)
             _log_folder = resolved
         if max_size is not None:
-            if (
-                isinstance(max_size, bool)
-                or not isinstance(max_size, (int, float))
-                or not math.isfinite(max_size)
-                or (isinstance(max_size, float) and not max_size.is_integer())
-                or int(max_size) <= 0
-            ):
+            ms = safe_pos_float(max_size, default=None)
+            if ms is None or not ms.is_integer():
                 raise ValueError("max_size must be > 0")
-            _max_size = int(max_size)
+            _max_size = int(ms)
         if check_every is not None:
-            if (
-                isinstance(check_every, bool)
-                or not isinstance(check_every, (int, float))
-                or not math.isfinite(check_every)
-                or (isinstance(check_every, float) and not check_every.is_integer())
-                or int(check_every) <= 0
-            ):
+            ce = safe_pos_float(check_every, default=None)
+            if ce is None or not ce.is_integer():
                 raise ValueError("check_every must be > 0")
-            _check_every = int(check_every)
+            _check_every = int(ce)
         if min_free_percent is not None:
-            if isinstance(min_free_percent, bool) or not isinstance(min_free_percent, (int, float)) or not math.isfinite(min_free_percent) or not (0.0 <= float(min_free_percent) <= 100.0):
+            mf = safe_nonneg_float(min_free_percent, default=None)
+            if mf is None or mf > 100.0:
                 raise ValueError("min_free_percent must be between 0 and 100")
-            _min_free_percent = float(min_free_percent)
+            _min_free_percent = mf
 
 
 # ── Background cleanup thread ─────────────────────────────────────────────────
