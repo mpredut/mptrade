@@ -15,7 +15,7 @@ deadlocks under the lock. State persists; the lock does not.
 """
 import os
 import json
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import read_recovering_previous, save_json_state
 import time
 import socket
 import threading
