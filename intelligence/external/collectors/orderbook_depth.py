@@ -15,7 +15,10 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
-from intelligence.macro_sentiment_ssot import resolve_now_ts as _effective_now_ts
+from intelligence.macro_sentiment_ssot import (
+    fetch_public_json,
+    resolve_now_ts as _effective_now_ts,
+)
 from cachepaths import (
     cache_symbol_variants,
     normalize_cache_base_asset,
@@ -168,6 +171,34 @@ class _DiskBackedSymbolCollector:
         self._save_to_disk(snapshot)
         return snapshot
 
+    @staticmethod
+    def _fetch_json_dict(
+        url: str,
+        label: str,
+        lookup_sym: str,
+        *,
+        timeout: float = 5.0,
+        user_agent: str = "mptrade-intelligence/1.0",
+    ) -> Dict[str, Any]:
+        raw_data = fetch_public_json(url, timeout=timeout, user_agent=user_agent)
+        if not isinstance(raw_data, dict):
+            raise ValueError(f"Unexpected {label} payload for {lookup_sym}: {type(raw_data).__name__}")
+        return raw_data
+
+    @staticmethod
+    def _fetch_latest_json_row(
+        url: str,
+        label: str,
+        lookup_sym: str,
+        *,
+        timeout: float = 5.0,
+        user_agent: str = "mptrade-whale/1.0",
+    ) -> Tuple[Dict[str, Any], List[Any]]:
+        rows = fetch_public_json(url, timeout=timeout, user_agent=user_agent)
+        if not isinstance(rows, list) or not rows or not isinstance(rows[-1], dict):
+            raise ValueError(f"Empty {label} response for {lookup_sym}")
+        return rows[-1], rows
+
 
 @dataclass(frozen=True)
 class OrderbookSnapshot:
@@ -248,11 +279,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             )
             for url in urls:
                 try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "mptrade-orderbook/1.0"})
-                    with urllib.request.urlopen(req, timeout=4) as resp:
-                        raw_data = json.loads(resp.read().decode("utf-8"))
-                    if not isinstance(raw_data, dict):
-                        raise ValueError(f"Unexpected depth payload for {lookup_sym}: {type(raw_data).__name__}")
+                    raw_data = self._fetch_json_dict(
+                        url, "depth", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
+                    )
                     if "bids" not in raw_data and isinstance(raw_data.get("result"), dict):
                         krk_book = next(
                             (v for v in raw_data["result"].values() if isinstance(v, dict) and "bids" in v),

@@ -45,23 +45,17 @@ def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optiona
 def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Read cached (p90_days, median_days, gaussian_horizon_days=T*(1+exceed_percent)) in 0 ms without network I/O."""
     try:
-        from intelligence.internal.state.survival import (
-            _effective_t_cache_file,
-            _lookup_t_cache_entry,
-            _read_t_cache_dict,
-        )
-        data = _read_t_cache_dict(_effective_t_cache_file())
-        if isinstance(data, dict):
-            ent = _lookup_t_cache_entry(data, symbol)
-            if isinstance(ent, dict):
-                p90_d = safe_pos_float(ent.get("p90_d"), 0.0) or None
-                med_d = safe_pos_float(ent.get("median_d"), 0.0) or None
-                t_val = safe_pos_float(ent.get("T"), 0.0) or None
-                ex_pct = safe_nonneg_float(exceed_percent, default=0.4)
-                if ex_pct is None:
-                    ex_pct = 0.4
-                gauss_h = round(t_val * (1.0 + ex_pct), 4) if t_val is not None else None
-                return p90_d, med_d, gauss_h
+        from intelligence.internal.state.survival import get_cached_t_entry
+        ent = get_cached_t_entry(symbol)
+        if isinstance(ent, dict):
+            p90_d = safe_pos_float(ent.get("p90_d"), 0.0) or None
+            med_d = safe_pos_float(ent.get("median_d"), 0.0) or None
+            t_val = safe_pos_float(ent.get("T"), 0.0) or None
+            ex_pct = safe_nonneg_float(exceed_percent, default=0.4)
+            if ex_pct is None:
+                ex_pct = 0.4
+            gauss_h = round(t_val * (1.0 + ex_pct), 4) if t_val is not None else None
+            return p90_d, med_d, gauss_h
     except Exception:
         pass
     return None, None, None

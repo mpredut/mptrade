@@ -233,36 +233,21 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         try:
             # 1. Top Trader Long/Short Position Ratio
             url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=1h&limit=2"
-            req_top = urllib.request.Request(url_top, headers={"User-Agent": "mptrade-whale/1.0"})
-            with urllib.request.urlopen(req_top, timeout=5) as resp:
-                data_top = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_top, list) or not data_top or not isinstance(data_top[-1], dict):
-                raise ValueError(f"Empty topLongShortPositionRatio response for {lookup_sym}")
-
-            top_ratio = _clean_dict_float(data_top[-1], "longShortRatio", 1.0)
-            top_long_pct = _clean_dict_float(data_top[-1], "longAccount", 0.5)
+            latest_top, _ = self._fetch_latest_json_row(url_top, "topLongShortPositionRatio", lookup_sym)
+            top_ratio = _clean_dict_float(latest_top, "longShortRatio", 1.0)
+            top_long_pct = _clean_dict_float(latest_top, "longAccount", 0.5)
 
             # 2. Taker Buy/Sell Volume Ratio
             url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=1h&limit=2"
-            req_taker = urllib.request.Request(url_taker, headers={"User-Agent": "mptrade-whale/1.0"})
-            with urllib.request.urlopen(req_taker, timeout=5) as resp:
-                data_taker = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_taker, list) or not data_taker or not isinstance(data_taker[-1], dict):
-                raise ValueError(f"Empty takerlongshortRatio response for {lookup_sym}")
-
-            taker_ratio = _clean_dict_float(data_taker[-1], "buySellRatio", 1.0)
-            taker_buy = max(0.0, _clean_dict_float(data_taker[-1], "buyVol", 0.0))
-            taker_sell = max(0.0, _clean_dict_float(data_taker[-1], "sellVol", 0.0))
+            latest_taker, _ = self._fetch_latest_json_row(url_taker, "takerlongshortRatio", lookup_sym)
+            taker_ratio = _clean_dict_float(latest_taker, "buySellRatio", 1.0)
+            taker_buy = max(0.0, _clean_dict_float(latest_taker, "buyVol", 0.0))
+            taker_sell = max(0.0, _clean_dict_float(latest_taker, "sellVol", 0.0))
 
             # 3. Open Interest History (compute 1h change)
             url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=1h&limit=3"
-            req_oi = urllib.request.Request(url_oi, headers={"User-Agent": "mptrade-whale/1.0"})
-            with urllib.request.urlopen(req_oi, timeout=5) as resp:
-                data_oi = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_oi, list) or not data_oi or not isinstance(data_oi[-1], dict):
-                raise ValueError(f"Empty openInterestHist response for {lookup_sym}")
-
-            latest_oi_usd = max(0.0, _clean_dict_float(data_oi[-1], "sumOpenInterestValue", 0.0))
+            latest_oi, data_oi = self._fetch_latest_json_row(url_oi, "openInterestHist", lookup_sym)
+            latest_oi_usd = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterestValue", 0.0))
             prev_oi_usd = (
                 max(0.0, _clean_dict_float(data_oi[-2], "sumOpenInterestValue", latest_oi_usd))
                 if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict))

@@ -38,6 +38,7 @@ from cachepaths import cache_path
 from intelligence.internal.guards.guard_decision import (
     clean_guard_symbol_key,
     normalize_guard_mode,
+    resolve_hierarchical_guard_mode,
     snap_attr as _obj_attr,
 )
 from intelligence.macro_sentiment_ssot import check_cooldown_gate
@@ -588,14 +589,7 @@ def evaluate_smart_stop_loss(
     if not isinstance(m, dict):
         m = {}
 
-    raw_mode = m.get("smart_sl_mode", "enforce")
-    mode = SmartStopLossGuard._normalize_mode(raw_mode, default="enforce")
-    intel_master = SmartStopLossGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
-    ext_master = SmartStopLossGuard._normalize_mode(m.get("external_guard_mode", "enforce"), default="enforce")
-    if intel_master == "off" or ext_master == "off":
-        mode = "off"
-    elif ext_master == "shadow" and mode == "enforce":
-        mode = "shadow"
+    mode = resolve_hierarchical_guard_mode(m, "smart_sl_mode", "external_guard_mode", default="enforce")
     max_thresh = safe_pos_float(m.get("smart_sl_max_threshold_pct"), 6.0)
     grace_sec = safe_nonneg_float(m.get("smart_sl_grace_seconds"), 120.0)
     default_disaster_buf = safe_nonneg_float(m.get("smart_sl_disaster_buffer_pct"), 0.85)

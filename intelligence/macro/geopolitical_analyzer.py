@@ -78,6 +78,41 @@ class GeopoliticalThreatAnalyzer:
             return cache_path(_GEO_FILENAMES[0] if _GEO_FILENAMES else "geopolitical_eval.json")
         return self.state_file
 
+    def _build_assessment(
+        self,
+        data: Dict[str, Any],
+        *,
+        default_risk_score: float = 0.5,
+        headlines_analyzed: Optional[int] = None,
+        ts: Optional[float] = None,
+        is_fallback: Optional[bool] = None,
+    ) -> GeopoliticalThreatAssessment:
+        raw_summary = data.get("summary")
+        summary_str = raw_summary.strip() if isinstance(raw_summary, str) else ""
+        tl_norm = normalize_threat_level(data.get("threat_level"), default="NORMAL")
+        rb_norm = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl_norm)
+        raw_fb = data.get("is_fallback")
+        fb_flag = (
+            is_fallback
+            if is_fallback is not None
+            else (("LLM fallback" in summary_str) if raw_fb is None else self._as_bool_flag(raw_fb))
+        )
+        hl_count = (
+            headlines_analyzed
+            if headlines_analyzed is not None
+            else max(0, safe_int(data.get("headlines_analyzed"), 0))
+        )
+        ts_val = ts if ts is not None else safe_nonneg_ts(data.get("ts", 0.0), 0.0)
+        return GeopoliticalThreatAssessment(
+            threat_level=tl_norm,
+            risk_score=clean_scale(data.get("risk_score", default_risk_score), default=default_risk_score),
+            summary=summary_str,
+            recommended_brake=rb_norm,
+            headlines_analyzed=hl_count,
+            ts=ts_val,
+            is_fallback=fb_flag,
+        )
+
     def _load_from_disk(self) -> None:
         from state_io import read_recovering_previous
         state_file = self._effective_state_file()
@@ -85,21 +120,7 @@ class GeopoliticalThreatAnalyzer:
             data = read_recovering_previous(state_file, json.loads, default=None)
             if not isinstance(data, dict):
                 return
-            raw_summary = data.get("summary")
-            summary_str = raw_summary.strip() if isinstance(raw_summary, str) else ""
-            raw_fb = data.get("is_fallback")
-            is_fb = ("LLM fallback" in summary_str) if raw_fb is None else self._as_bool_flag(raw_fb)
-            tl_norm = normalize_threat_level(data.get("threat_level"), default="NORMAL")
-            rb_norm = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl_norm)
-            self._cached_assessment = GeopoliticalThreatAssessment(
-                threat_level=tl_norm,
-                risk_score=clean_scale(data.get("risk_score", 0.1), default=0.1),
-                summary=summary_str,
-                recommended_brake=rb_norm,
-                headlines_analyzed=max(0, safe_int(data.get("headlines_analyzed"), 0)),
-                ts=safe_nonneg_ts(data.get("ts", 0.0), 0.0),
-                is_fallback=is_fb,
-            )
+            self._cached_assessment = self._build_assessment(data, default_risk_score=0.1)
             self._last_eval_ts = self._cached_assessment.ts
             raw_digest = data.get("headlines_digest")
             self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
@@ -267,34 +288,23 @@ class GeopoliticalThreatAnalyzer:
                 headline_digest,
             )
 
-        threat_level = normalize_threat_level(resp.get("threat_level"), default="NORMAL")
-        risk_score = clean_scale(resp.get("risk_score"), default=0.5)
-        raw_sum = resp.get("summary")
-        summary = raw_sum.strip() if isinstance(raw_sum, str) else ""
-        recommended_brake = normalize_recommended_brake(resp.get("recommended_brake"), threat_level=threat_level)
-
-        if threat_level in ("ELEVATED", "CRITICAL_SHOCK") and summary:
+        built = self._build_assessment(
+            resp,
+            default_risk_score=0.5,
+            headlines_analyzed=len(high_sev),
+            ts=now,
+            is_fallback=False,
+        )
+        if built.threat_level in ("ELEVATED", "CRITICAL_SHOCK") and built.summary:
             raw_emerging = resp.get("emerging_crisis_terms") or resp.get("key_risks")
             extra_terms = [str(x).strip() for x in raw_emerging if isinstance(x, str) and str(x).strip()] if isinstance(raw_emerging, (list, tuple)) else []
             record_dynamic_crisis_terms_from_assessment(
-                summary,
+                built.summary,
                 extra_terms,
-                is_acute_shock=(threat_level == "CRITICAL_SHOCK"),
+                is_acute_shock=(built.threat_level == "CRITICAL_SHOCK"),
                 cache_dir=os.path.dirname(os.path.abspath(self._effective_state_file())),
                 now_ts=now,
             )
 
-        return self._commit_assessment(
-            GeopoliticalThreatAssessment(
-                threat_level=threat_level,
-                risk_score=risk_score,
-                summary=summary,
-                recommended_brake=recommended_brake,
-                headlines_analyzed=len(high_sev),
-                ts=now,
-                is_fallback=False,
-            ),
-            now,
-            headline_digest,
-        )
+        return self._commit_assessment(built, now, headline_digest)
 

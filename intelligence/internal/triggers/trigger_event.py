@@ -64,3 +64,34 @@ class TriggerEvent:
             side_norm in ("BUY", "SELL")
             and action_norm in ("ENTRY", "EXIT")
         )
+
+    @classmethod
+    def directional(
+        cls,
+        is_bull: bool,
+        *,
+        source: str,
+        symbol: str,
+        price: float,
+        strength: float,
+        ts: float,
+        reason_bull: str,
+        reason_bear: str,
+        velocity: Optional[float] = None,
+        confidence: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "TriggerEvent":
+        """Build a directional ENTRY/BUY (bull) or EXIT/SELL (bear) TriggerEvent."""
+        return cls(
+            action=TriggerAction.ENTRY if is_bull else TriggerAction.EXIT,
+            side=TriggerSide.BUY if is_bull else TriggerSide.SELL,
+            source=source,
+            symbol=symbol,
+            price=price,
+            strength=strength,
+            ts=ts,
+            velocity=velocity,
+            confidence=confidence,
+            reason=reason_bull if is_bull else reason_bear,
+            metadata=metadata if metadata is not None else {},
+        )

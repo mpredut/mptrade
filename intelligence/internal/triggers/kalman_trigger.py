@@ -161,10 +161,9 @@ class KalmanTrendTrigger:
                 if out["vel_std"] > 0
                 else 1.0
             )
-            if trend == 1:
-                trigger_event = TriggerEvent(
-                    action=TriggerAction.ENTRY,
-                    side=TriggerSide.BUY,
+            if trend in (1, -1):
+                trigger_event = TriggerEvent.directional(
+                    trend == 1,
                     source="kalman_trigger",
                     symbol=symbol,
                     price=price_f,
@@ -172,21 +171,8 @@ class KalmanTrendTrigger:
                     ts=ts_f,
                     velocity=out["vel"],
                     confidence=confidence,
-                    reason="kalman_transition_up",
-                    metadata=out,
-                )
-            elif trend == -1:
-                trigger_event = TriggerEvent(
-                    action=TriggerAction.EXIT,
-                    side=TriggerSide.SELL,
-                    source="kalman_trigger",
-                    symbol=symbol,
-                    price=price_f,
-                    strength=confidence,
-                    ts=ts_f,
-                    velocity=out["vel"],
-                    confidence=confidence,
-                    reason="kalman_transition_down",
+                    reason_bull="kalman_transition_up",
+                    reason_bear="kalman_transition_down",
                     metadata=out,
                 )
 

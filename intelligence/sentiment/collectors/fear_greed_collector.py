@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 import urllib.request
 
 from intelligence.macro_sentiment_ssot import (
+    fetch_public_json,
     get_fear_greed_endpoint_url,
     is_cache_fresh,
     resolve_now_ts,
@@ -98,10 +99,7 @@ class FearGreedCollector:
             return self._cached_snapshot
 
         try:
-            req = urllib.request.Request(self.endpoint_url, headers={"User-Agent": "mptrade-sentiment/1.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-
+            data = fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0")
             snapshot = self.parse_payload(data)
             if snapshot:
                 self._cached_snapshot = snapshot

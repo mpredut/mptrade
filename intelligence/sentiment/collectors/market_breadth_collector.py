@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 
 from intelligence.macro_sentiment_ssot import (
+    fetch_public_json,
     get_breadth_excluded_bases,
     get_breadth_quote_suffixes,
     get_market_breadth_endpoint_url,
@@ -136,10 +137,7 @@ class MarketBreadthCollector:
             return self._cached_snapshot
 
         try:
-            req = urllib.request.Request(self.endpoint_url, headers={"User-Agent": "mptrade-sentiment/1.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-
+            data = fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0")
             if isinstance(data, list):
                 snapshot = self.parse_tickers(data, min_volume_usd=self.min_volume_usd, now_ts=now)
                 if snapshot:

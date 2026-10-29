@@ -41,6 +41,25 @@ def normalize_guard_mode(val: Any, default: str = "enforce") -> str:
     return raw_m
 
 
+def resolve_hierarchical_guard_mode(
+    margins: Any,
+    guard_key: str,
+    pillar_master_key: str,
+    *,
+    default: str = "enforce",
+) -> str:
+    """Resolve effective guard mode cascading from ``intelligence_guards_mode`` -> ``pillar_master_key`` -> ``guard_key``."""
+    m = margins if isinstance(margins, dict) else {}
+    mode = normalize_guard_mode(m.get(guard_key, default), default=default)
+    intel_master = normalize_guard_mode(m.get("intelligence_guards_mode", default), default=default)
+    pillar_master = normalize_guard_mode(m.get(pillar_master_key, default), default=default)
+    if intel_master == "off" or pillar_master == "off":
+        return "off"
+    if pillar_master == "shadow" and mode == "enforce":
+        return "shadow"
+    return mode
+
+
 def clean_guard_symbol_key(symbol: Any) -> str:
     """Return uppercase symbol stripped of '/', '-', '_'."""
     if not isinstance(symbol, str):

@@ -16960,3 +16960,78 @@ def test_iteration182_ssot_interval_notional_headline_digest_and_smart_sl_helper
     assert _is_buy_price_changed(100.0, 100.0) is False
     assert _is_buy_price_changed(100.0, 101.0) is True
 
+
+def test_iteration183_collector_json_fetch_hierarchical_mode_and_directional_triggers(monkeypatch):
+    from types import SimpleNamespace
+    from intelligence.internal.guards.guard_decision import resolve_hierarchical_guard_mode
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
+    from intelligence.external.collectors.orderbook_depth import _DiskBackedSymbolCollector
+    import intelligence.macro_sentiment_ssot as ssot
+
+    # 1. resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key
+    assert resolve_hierarchical_guard_mode({}, "smart_sl_mode", "external_guard_mode") == "enforce"
+    assert (
+        resolve_hierarchical_guard_mode(
+            {"intelligence_guards_mode": "off", "external_guard_mode": "enforce", "smart_sl_mode": "enforce"},
+            "smart_sl_mode",
+            "external_guard_mode",
+        )
+        == "off"
+    )
+    assert (
+        resolve_hierarchical_guard_mode(
+            {"intelligence_guards_mode": "enforce", "external_guard_mode": "shadow", "smart_sl_mode": "enforce"},
+            "smart_sl_mode",
+            "external_guard_mode",
+        )
+        == "shadow"
+    )
+
+    # 2. TriggerEvent.directional builds ENTRY/BUY for bull and EXIT/SELL for bear
+    bull_ev = TriggerEvent.directional(
+        True,
+        source="test_trigger",
+        symbol="BTCUSDC",
+        price=70000.0,
+        strength=2.5,
+        ts=1000.0,
+        reason_bull="up_break",
+        reason_bear="down_break",
+    )
+    bear_ev = TriggerEvent.directional(
+        False,
+        source="test_trigger",
+        symbol="BTCUSDC",
+        price=69000.0,
+        strength=2.5,
+        ts=1001.0,
+        reason_bull="up_break",
+        reason_bear="down_break",
+    )
+    assert bull_ev.action == TriggerAction.ENTRY and bull_ev.side == TriggerSide.BUY and bull_ev.reason == "up_break"
+    assert bear_ev.action == TriggerAction.EXIT and bear_ev.side == TriggerSide.SELL and bear_ev.reason == "down_break"
+
+    # 3. resolve_llm_guard_cache_ttl respects explicit TTL, custom client, and custom runner
+    assert resolve_llm_guard_cache_ttl(120.0, True, SimpleNamespace(_custom_runner=True), 600.0) == pytest.approx(120.0)
+    assert resolve_llm_guard_cache_ttl(None, False, SimpleNamespace(_custom_runner=None), 600.0) == pytest.approx(600.0)
+    assert resolve_llm_guard_cache_ttl(None, True, SimpleNamespace(_custom_runner=None), 600.0) == pytest.approx(0.0)
+    assert resolve_llm_guard_cache_ttl(None, False, SimpleNamespace(_custom_runner=lambda p: {}), 600.0) == pytest.approx(0.0)
+
+    # 4. _DiskBackedSymbolCollector._fetch_json_dict and _fetch_latest_json_row validate payload types
+    import io
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=5: io.BytesIO(b'{"markPrice": "70000"}'))
+    assert _DiskBackedSymbolCollector._fetch_json_dict("https://example.com", "premiumIndex", "BTCUSDT") == {"markPrice": "70000"}
+    with pytest.raises(ValueError, match="Empty topLongShortPositionRatio"):
+        _DiskBackedSymbolCollector._fetch_latest_json_row("https://example.com", "topLongShortPositionRatio", "BTCUSDT")
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda req, timeout=5: io.BytesIO(b'[{"longShortRatio": "1.2"}, {"longShortRatio": "1.5"}]'),
+    )
+    latest, rows = _DiskBackedSymbolCollector._fetch_latest_json_row("https://example.com", "topLongShortPositionRatio", "BTCUSDT")
+    assert latest == {"longShortRatio": "1.5"} and len(rows) == 2
+
+

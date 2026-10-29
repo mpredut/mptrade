@@ -21,6 +21,7 @@ from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
     normalize_guard_mode,
+    resolve_hierarchical_guard_mode,
 )
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
@@ -28,6 +29,7 @@ from intelligence.macro_sentiment_ssot import (
     clean_symbol_key,
     is_cache_fresh,
     resolve_now_ts,
+    resolve_order_notional,
     safe_float,
     safe_nonneg_ts,
     safe_pos_float,
@@ -37,6 +39,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     collect_pretrade_telemetry,
     evaluate_llm_guard_response,
     is_llm_guard_exempt,
+    resolve_llm_guard_cache_ttl,
 )
 from orchestratorOS.agy.topics import topic_spec
 
@@ -77,12 +80,9 @@ class PostStopReentryGuard:
         self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
         self.mode = self._normalize_mode(mode, default="enforce")
         self.notify_enabled = self._as_bool_flag(notify_enabled)
-        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 0.0)
-        elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
-            self.cache_ttl_sec = DEFAULT_POST_STOP_CACHE_TTL_SEC
-        else:
-            self.cache_ttl_sec = 0.0
+        self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
+            cache_ttl_sec, self._explicit_client, self.gemini_client, DEFAULT_POST_STOP_CACHE_TTL_SEC
+        )
 
     def check(
         self,
@@ -124,8 +124,7 @@ class PostStopReentryGuard:
             else 0.0
         )
         bounce_from_trough_pct = float(safe_bounce * 100.0)
-        notional_in = safe_pos_float(notional_eur, 0.0)
-        notional = notional_in if notional_in > 0.0 else float(safe_curr_px * safe_qty)
+        notional = float(resolve_order_notional(notional_eur, safe_curr_px, safe_qty, default=0.0) or 0.0)
 
         effective_telemetry = (
             telemetry
@@ -275,13 +274,7 @@ def get_post_stop_reentry_guard(
         m = margins
     if not isinstance(m, dict) or not m:
         raise KeyError("post_stop_reentry_mode")
-    mode = PostStopReentryGuard._normalize_mode(m.get("post_stop_reentry_mode", "enforce"), default="enforce")
-    intel_master = PostStopReentryGuard._normalize_mode(m.get("intelligence_guards_mode", "enforce"), default="enforce")
-    llm_master = PostStopReentryGuard._normalize_mode(m.get("llm_guard_mode", "enforce"), default="enforce")
-    if intel_master == "off" or llm_master == "off":
-        mode = "off"
-    elif llm_master == "shadow" and mode == "enforce":
-        mode = "shadow"
+    mode = resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce")
 
     timeout = safe_pos_float(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
     raw_fb = m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)

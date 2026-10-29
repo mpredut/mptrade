@@ -1097,6 +1097,738 @@ def build_cross_market_context(
     return ctx
 
 
+def load_venue_trailing_maps(
+    cache_dir: str,
+    workspace_dir: str,
+    read_json_fn: Any = None,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
+    """Load trailing peak maps from cachedb/trailing_state.json and kraken/trailing_state.json."""
+    _rj = read_json_fn or read_json_cached
+    trailing_map: Dict[str, Dict[str, Any]] = {}
+    trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
+    for trail_venue, raw_trail, default_quote in (
+        ("binance", _rj(os.path.join(cache_dir, "trailing_state.json")), ""),
+        ("kraken", _rj(os.path.join(workspace_dir, "kraken", "trailing_state.json")), "USD"),
+    ):
+        if not isinstance(raw_trail, dict):
+            continue
+        for k_asset, k_st in raw_trail.items():
+            k_up = str(k_asset).strip().upper()
+            if not k_up:
+                continue
+            k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
+            norm_st: Optional[Dict[str, Any]] = None
+            if isinstance(k_st, dict) and k_st.get("peak") is not None:
+                norm_st = k_st
+            else:
+                k_pk = safe_pos_float(k_st, default=0.0) or 0.0
+                if k_pk > 0:
+                    norm_st = {"peak": k_pk}
+            if norm_st is not None:
+                trailing_map.setdefault(k_key, norm_st)
+                trailing_by_venue[trail_venue].setdefault(k_key, norm_st)
+    return trailing_map, trailing_by_venue
+
+
+def harvest_tradable_positions_and_orders(
+    inst_map: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    trailing_map: Dict[str, Dict[str, Any]],
+    trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
+    from providers.base import normalize_open_order
+
+    tradable_positions: List[Dict[str, Any]] = []
+    open_orders_list: List[Dict[str, Any]] = []
+    venue_quote_cash: Dict[str, Dict[str, Any]] = {}
+    inst_by_sym: Dict[str, Any] = {}
+    balance_memo: Dict[tuple[str, str], Optional[float]] = {}
+
+    def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
+        if not asset:
+            return None
+        v_name = str(getattr(inst_obj, "provider_name", "")).lower()
+        key = (v_name, asset.upper())
+        if key in balance_memo:
+            return balance_memo[key]
+        prov = getattr(inst_obj, "_provider", None)
+        free_fn = getattr(prov, "free_balance", None)
+        val_f: Optional[float] = None
+        if callable(free_fn):
+            try:
+                raw = free_fn(asset)
+                if isinstance(raw, (int, float)):
+                    val_f = safe_float(raw, default=None)
+            except Exception:
+                val_f = None
+        balance_memo[key] = val_f
+        return val_f
+
+    if isinstance(inst_map, dict):
+        for inst in inst_map.values():
+            sym = str(getattr(inst, "symbol", "")).upper()
+            venue = str(getattr(inst, "provider_name", "")).lower()
+            base = str(getattr(inst, "base", "")).upper()
+            quote = str(getattr(inst, "quote", "")).upper()
+            if not sym or not venue:
+                continue
+            inst_by_sym[sym] = inst
+
+            px = prices_and_trends.get(sym, {}).get("price")
+            px_f = safe_pos_float(px, default=0.0) or 0.0
+            if px_f <= 0:
+                try:
+                    get_px_fn = getattr(inst._provider, "get_current_price", None)
+                    if callable(get_px_fn):
+                        live_px = safe_pos_float(get_px_fn(sym), default=0.0) or 0.0
+                        if live_px > 0:
+                            px = live_px
+                            px_f = live_px
+                except Exception:
+                    px = None
+                    px_f = 0.0
+            if px_f <= 0:
+                px_f = resolve_symbol_price(sym, prices_and_trends)
+                if px_f > 0:
+                    px = px_f
+            sym_entry = prices_and_trends.setdefault(
+                sym, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0}
+            )
+            if px_f > 0 and (safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0:
+                sym_entry["price"] = px
+
+            base_free = _query_free_bal(inst, base)
+            quote_free = _query_free_bal(inst, quote)
+            quote_breakdown: Optional[Dict[str, float]] = None
+            if quote.upper() == "USD":
+                bd_fn = getattr(inst._provider, "usd_cash_breakdown", None)
+                if callable(bd_fn):
+                    try:
+                        raw_bd = bd_fn()
+                        if isinstance(raw_bd, dict) and raw_bd:
+                            quote_breakdown = {
+                                str(k): round(float(v), 2)
+                                for k, v in raw_bd.items()
+                                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                            } or None
+                    except Exception:
+                        quote_breakdown = None
+            if quote_free is not None:
+                cash_entry: Dict[str, Any] = {
+                    "venue": venue,
+                    "asset": quote,
+                    "free": round(quote_free, 2),
+                }
+                if quote_breakdown:
+                    cash_entry["breakdown"] = quote_breakdown
+                venue_quote_cash[f"{venue}:{quote}"] = cash_entry
+
+            pos_val_usd = (
+                round(base_free * px_f, 2)
+                if base_free is not None and px_f > 0
+                else None
+            )
+            params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
+            v_norm = normalize_venue_name(venue)
+            v_trail_map = trailing_by_venue.get(v_norm, {})
+            t_state = next(
+                (
+                    v_trail_map[c]
+                    for c in cache_symbol_variants(sym, include_original=True, include_base=True)
+                    if isinstance(v_trail_map.get(c), dict)
+                ),
+                {},
+            )
+            if not t_state and v_norm == "binance" and isinstance(trailing_map.get(sym), dict):
+                t_state = trailing_map[sym]
+            peak = t_state.get("peak")
+            peak_f = safe_float(peak, 0.0)
+            if peak_f > 0 and px_f > 0 and peak_f < px_f:
+                peak_f = px_f
+            dd_from_peak_pct = (
+                round(((px_f - peak_f) / peak_f) * 100.0, 2)
+                if px_f > 0 and peak_f > 0
+                else None
+            )
+            pos_entry: Dict[str, Any] = {
+                "venue": venue,
+                "symbol": sym,
+                "base": base,
+                "quote": quote,
+                "price": round_opt_px(px, 6) if px is not None else None,
+                "free_base": round(base_free, 6) if base_free is not None else None,
+                "value_usd": pos_val_usd,
+                "free_quote": round(quote_free, 2) if quote_free is not None else None,
+            }
+            if quote_breakdown:
+                pos_entry["free_quote_breakdown"] = quote_breakdown
+            if peak is not None and peak_f > 0:
+                pos_entry["trailing_peak"] = round(peak_f, 6)
+                pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
+            if params.get("trailing.pct"):
+                pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
+            if params.get("mt.gain") or params.get("mt.lost"):
+                pos_entry["mt_gain_pct"] = params.get("mt.gain")
+                pos_entry["mt_lost_pct"] = params.get("mt.lost")
+            tradable_positions.append(pos_entry)
+
+            open_fn = getattr(inst, "open_orders", None)
+            if callable(open_fn):
+                try:
+                    raw_open = open_fn()
+                    if isinstance(raw_open, list):
+                        for oo in raw_open:
+                            if isinstance(oo, dict):
+                                open_orders_list.append(
+                                    normalize_open_order(oo, venue=venue, symbol=sym)
+                                )
+                except Exception:
+                    pass
+
+    return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym
+
+
+def enrich_cross_venue_trends(
+    prices_and_trends: Dict[str, Any],
+    trends_data: Any,
+    kalman_data: Any,
+    long_items: Any,
+    priceanalysis_data: Any,
+    t_trend_map: Any,
+    watcher_price_items: Any,
+) -> None:
+    """Enrich every symbol with cross-venue short slopes, Kalman velocity, long trend, Weibull, and 7d range."""
+    trends_items_map = (
+        trends_data.get("items")
+        if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict)
+        else (trends_data if isinstance(trends_data, dict) else {})
+    )
+    for sym, entry in list(prices_and_trends.items()):
+        cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
+
+        has_slopes = any(
+            entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")
+        )
+        if not has_slopes and isinstance(trends_items_map, dict):
+            for ck in cand_keys[1:]:
+                tinfo = trends_items_map.get(ck)
+                if isinstance(tinfo, dict) and apply_short_trend_item(entry, tinfo, require_any_slope=True):
+                    has_slopes = True
+                    break
+        if not has_slopes:
+            for ck in cand_keys[1:]:
+                sib = prices_and_trends.get(ck)
+                if isinstance(sib, dict) and any(
+                    sib.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")
+                ):
+                    for k_inh in (
+                        "slope_90s", "trend_90s", "growth_90s",
+                        "slope_3_7m", "trend_3_7m", "growth_3_7m",
+                        "slope_15m", "trend_15m", "growth_15m",
+                        "slope_2_5h", "trend_2_5h", "growth_2_5h",
+                        "gradient_recent_fast", "epsilon", "vol_1h_pct",
+                    ):
+                        if k_inh in sib and sib.get(k_inh) is not None and not entry.get(k_inh):
+                            entry[k_inh] = sib[k_inh]
+                    break
+
+        if isinstance(kalman_data, dict):
+            k_sym = next((kalman_data[ck] for ck in cand_keys if isinstance(kalman_data.get(ck), dict)), None)
+            if isinstance(k_sym, dict):
+                entry["kalman_vel"] = k_sym.get("kalman_vel")
+                entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
+                entry["kalman_trend"] = k_sym.get("kalman_trend")
+                if entry.get("vol_1h_pct") is None and k_sym.get("vol_1h_pct") is not None:
+                    entry["vol_1h_pct"] = k_sym.get("vol_1h_pct")
+                if k_sym.get("adapt_reentry_pct") is not None:
+                    entry["adapt_reentry_pct"] = k_sym.get("adapt_reentry_pct")
+                if k_sym.get("adapt_dca_pct") is not None:
+                    entry["adapt_dca_pct"] = k_sym.get("adapt_dca_pct")
+        lt_obj: Optional[Dict[str, Any]] = None
+        if isinstance(long_items, dict):
+            for ck in cand_keys:
+                raw_lt = long_items.get(ck)
+                if isinstance(raw_lt, list):
+                    valid_lts = [x for x in raw_lt if isinstance(x, dict) and x.get("direction")]
+                    if valid_lts:
+                        lt_obj = valid_lts[-1]
+                        break
+                elif isinstance(raw_lt, dict) and raw_lt.get("direction"):
+                    lt_obj = raw_lt
+                    break
+        if lt_obj is None and isinstance(priceanalysis_data, dict):
+            pa_map = (
+                priceanalysis_data.get("items")
+                if isinstance(priceanalysis_data.get("items"), dict)
+                else priceanalysis_data
+            )
+            if isinstance(pa_map, dict):
+                lt_obj = next(
+                    (
+                        pa_map[ck]
+                        for ck in cand_keys
+                        if isinstance(pa_map.get(ck), dict) and pa_map[ck].get("direction")
+                    ),
+                    None,
+                )
+        if isinstance(lt_obj, dict):
+            entry["long_trend_dir"] = lt_obj.get("direction")
+            dur_s = safe_float(lt_obj.get("duration_seconds"), 0.0)
+            entry["long_trend_hours"] = round(dur_s / 3600.0, 1)
+            est_rem = safe_float(lt_obj.get("estimated_future_hours"), -1.0)
+            if est_rem >= 0.0:
+                entry["long_trend_est_rem_hours"] = round(est_rem, 1)
+        if isinstance(t_trend_map, dict):
+            tt = next((t_trend_map[ck] for ck in cand_keys if isinstance(t_trend_map.get(ck), dict)), None)
+            if isinstance(tt, dict):
+                entry["weibull_median_d"] = tt.get("median_d")
+                entry["weibull_p90_d"] = tt.get("p90_d")
+        if isinstance(watcher_price_items, dict):
+            sym_px_cur = safe_float(entry.get("price"), 0.0)
+            m_series = None
+            for ck in cand_keys:
+                cand_ser = watcher_price_items.get(ck)
+                if not isinstance(cand_ser, list) or len(cand_ser) < 2:
+                    continue
+                last_m_px = (
+                    safe_float(cand_ser[-1][1], 0.0)
+                    if isinstance(cand_ser[-1], (list, tuple)) and len(cand_ser[-1]) > 1
+                    else 0.0
+                )
+                if (
+                    ck != sym
+                    and sym_px_cur > 0
+                    and last_m_px > 0
+                    and abs(sym_px_cur - last_m_px) / last_m_px > 0.10
+                ):
+                    continue
+                m_series = cand_ser
+                break
+            if isinstance(m_series, list) and len(m_series) >= 2:
+                vals = [
+                    safe_float(pt[1], 0.0)
+                    for pt in m_series
+                    if isinstance(pt, list) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0
+                ]
+                entry.update(compute_7d_range_metrics(vals))
+
+
+def enrich_24h_and_microstructure(
+    cache_dir: str,
+    workspace_dir: str,
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    cur_p_items: Dict[str, Any],
+    inst_by_sym: Dict[str, Any],
+    now_ts: float,
+    read_json_fn: Any = None,
+) -> None:
+    """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
+    import glob as _glob
+    import sys as _sys
+
+    _rj = read_json_fn or read_json_cached
+    btc_series_24h, _ = load_symbol_price_series(
+        cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
+    )
+    for sym in list(prices_and_trends.keys()):
+        sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
+        matched_series_24h, arch_vals_7d = load_symbol_price_series(
+            cache_dir, sym, current_price_items=cur_p_items
+        )
+        if sym_px_cur > 0 and matched_series_24h:
+            last_24_px = safe_float(matched_series_24h[-1][1], 0.0)
+            if last_24_px > 0 and abs(sym_px_cur - last_24_px) / last_24_px > 0.10:
+                matched_series_24h = []
+        if sym_px_cur > 0 and arch_vals_7d:
+            last_7d_px = safe_float(arch_vals_7d[-1], 0.0)
+            if last_7d_px > 0 and abs(sym_px_cur - last_7d_px) / last_7d_px > 0.10:
+                arch_vals_7d = []
+        if safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0 and matched_series_24h:
+            prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
+        elif safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0 and arch_vals_7d:
+            prices_and_trends[sym]["price"] = arch_vals_7d[-1]
+        m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
+        if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
+            prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d))
+        if not m24 and sym in inst_by_sym:
+            prov = getattr(inst_by_sym[sym], "_provider", None)
+            ohlc_fn = getattr(prov, "ohlc_series", None)
+            if callable(ohlc_fn):
+                try:
+                    s5 = ohlc_fn(sym, 5)
+                    cutoff_24h = now_ts - 86400.0
+                    pts_24h = [
+                        [int(ts * 1000), float(px)]
+                        for ts, px in zip(getattr(s5, "timestamps", ()), getattr(s5, "closes", ()))
+                        if ts >= cutoff_24h and float(px) > 0
+                    ]
+                    m24 = compute_24h_price_metrics(pts_24h) or {}
+                    if m24:
+                        matched_series_24h = pts_24h
+                    if "chg_7d_pct" not in prices_and_trends[sym]:
+                        s60 = ohlc_fn(sym, 60)
+                        cutoff_7d = now_ts - 7 * 86400.0
+                        vals_7d = [
+                            float(px)
+                            for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ()))
+                            if ts >= cutoff_7d and float(px) > 0
+                        ]
+                        prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
+                except Exception:
+                    pass
+            if not m24 and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212":
+                try:
+                    t212_dir = os.path.join(workspace_dir, "212trading")
+                    if t212_dir not in _sys.path:
+                        _sys.path.insert(0, t212_dir)
+                    from market_data import _chart
+                    yahoo_sym = sym.split("_", 1)[0]
+                    chart_res = _chart(yahoo_sym, rng="5d", interval="5m")
+                    pts_5d: List[List[Any]] = []
+                    if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
+                        pts_5d = [
+                            [int(ts_f * 1000), round(px_f, 4)]
+                            for bar in chart_res[1]
+                            if isinstance(bar, (list, tuple))
+                            and len(bar) >= 2
+                            and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                            and (px_f := safe_pos_float(bar[1], default=None)) is not None
+                        ]
+                    elif isinstance(chart_res, dict):
+                        ts_list = chart_res.get("timestamp") or []
+                        closes = (((chart_res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
+                        pts_5d = [
+                            [int(ts_f * 1000), round(c_f, 4)]
+                            for ts, c in zip(ts_list, closes)
+                            if (ts_f := safe_pos_float(ts, default=None)) is not None
+                            and (c_f := safe_pos_float(c, default=None)) is not None
+                        ]
+                    if pts_5d:
+                        cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
+                        pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+                        if len(pts_24h) < 10:
+                            pts_24h = pts_5d[-78:]
+                        m24 = compute_24h_price_metrics(pts_24h) or {}
+                        if m24:
+                            matched_series_24h = pts_24h
+                        vals_5d = [pt[1] for pt in pts_5d]
+                        if len(vals_5d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
+                            prices_and_trends[sym].update(
+                                compute_7d_range_metrics(vals_5d, decimals=4)
+                            )
+                except Exception:
+                    pass
+        if m24:
+            prices_and_trends[sym].update(m24)
+            if matched_series_24h and safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0:
+                prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
+            if prices_and_trends[sym].get("trend", 0) == 0 and "chg_1h_pct" in m24:
+                c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
+                if c1h >= 0.25:
+                    prices_and_trends[sym]["trend"] = 1
+                elif c1h <= -0.25:
+                    prices_and_trends[sym]["trend"] = -1
+            if (
+                matched_series_24h
+                and btc_series_24h
+                and not sym.endswith(("_EQ", "_US_EQ"))
+                and canonical_base_asset(sym) != "BTC"
+            ):
+                cross_btc = compute_cross_btc_metrics(matched_series_24h, btc_series_24h)
+                for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct"):
+                    if cross_btc.get(ck) is not None:
+                        prices_and_trends[sym][ck] = cross_btc[ck]
+
+        m_info = load_symbol_microstructure(cache_dir, sym, _rj)
+        if m_info:
+            microstructure[sym] = m_info
+
+    if os.path.isdir(cache_dir):
+        covered_micro_bases = {canonical_base_asset(k) for k in microstructure}
+        ref_micro_syms: List[str] = []
+        for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
+            for search_dir in (cache_dir, os.path.join(cache_dir, "telemetry")):
+                for mpath in sorted(_glob.glob(os.path.join(search_dir, f"{pfx}*.json"))):
+                    mfname = os.path.basename(mpath)
+                    msym = mfname[len(pfx) : -len(".json")].upper()
+                    if not msym or not msym.isalnum() or msym in microstructure or msym in ref_micro_syms:
+                        continue
+                    mbase = canonical_base_asset(msym)
+                    if mbase not in covered_micro_bases:
+                        ref_micro_syms.append(msym)
+                        covered_micro_bases.add(mbase)
+        for msym in ref_micro_syms:
+            m_info_ref = load_symbol_microstructure(cache_dir, msym, _rj)
+            if m_info_ref:
+                microstructure[msym] = m_info_ref
+
+
+def sync_sibling_symbol_telemetry(
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+) -> None:
+    """Symmetric cross-venue & sibling symbol synchronization across Binance, Kraken, Hyperliquid, and T212/xStocks."""
+    range_bound_keys = {
+        "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct",
+        "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
+        "swing_low_px", "swing_high_px", "major_swing_low_px",
+        "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
+    }
+    for sym, pinfo in list(prices_and_trends.items()):
+        if not isinstance(pinfo, dict):
+            continue
+        sym_variants = cache_symbol_variants(sym, include_original=True, include_base=True)
+        for cand in sym_variants:
+            if cand == sym:
+                continue
+            sib_pinfo = prices_and_trends.get(cand)
+            if isinstance(sib_pinfo, dict):
+                p_px = safe_float(pinfo.get("price"), 0.0)
+                s_px = safe_float(sib_pinfo.get("price"), 0.0)
+                if p_px <= 0.0 and s_px > 0.0:
+                    pinfo["price"] = sib_pinfo["price"]
+                    p_px = s_px
+                px_diverged = p_px > 0.0 and s_px > 0.0 and abs(p_px - s_px) / s_px > 0.10
+                for k, v in sib_pinfo.items():
+                    if v is None:
+                        continue
+                    if px_diverged and k in range_bound_keys:
+                        continue
+                    if k not in pinfo or pinfo.get(k) is None:
+                        pinfo[k] = v
+                    elif k in ("trend", "growth_coefficient") and pinfo.get(k) in (0, 0.0) and v not in (0, 0.0):
+                        pinfo[k] = v
+            sib_micro = microstructure.get(cand)
+            if isinstance(sib_micro, dict) and sib_micro:
+                if sym not in microstructure:
+                    microstructure[sym] = dict(sib_micro)
+                else:
+                    for mk, mv in sib_micro.items():
+                        if microstructure[sym].get(mk) is None and mv is not None:
+                            microstructure[sym][mk] = mv
+
+
+def harvest_recent_orders_and_enrich_positions(
+    cache_dir: str,
+    inst_by_sym: Dict[str, Any],
+    tradable_positions: List[Dict[str, Any]],
+    prices_and_trends: Dict[str, Any],
+    kraken_cycles: Dict[str, Dict[str, Any]],
+    hyperliquid_cycles: Dict[str, Dict[str, Any]],
+    t212_cycles: Dict[str, Dict[str, Any]],
+    read_json_fn: Any = None,
+) -> Dict[str, Any]:
+    """Load recent fills across Binance, Kraken, and Hyperliquid and enrich tradable_positions with cost-basis anchors."""
+    _rj = read_json_fn or read_json_cached
+    recent_orders: Dict[str, Any] = {}
+    venue_recent_orders: Dict[str, Dict[str, Any]] = {
+        "binance": {},
+        "kraken": {},
+        "hyperliquid": {},
+        "t212": {},
+    }
+    for order_cache_name, cache_venue in (
+        ("cache_order.json", "binance"),
+        ("cache_trade_kraken.json", "kraken"),
+    ):
+        orders_data = _rj(os.path.join(cache_dir, order_cache_name))
+        if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
+            for sym, o_list in orders_data["items"].items():
+                fills = extract_symbol_recent_fills(o_list)
+                if fills:
+                    venue_recent_orders[cache_venue][sym] = fills
+                    recent_orders.setdefault(sym, fills)
+    for sym, inst in inst_by_sym.items():
+        v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
+        if v_inst != "hyperliquid" or sym in venue_recent_orders["hyperliquid"]:
+            continue
+        try:
+            prov = getattr(inst, "_provider", None)
+            if prov is not None and hasattr(prov, "get_orders"):
+                hl_orders = prov.get_orders(sym, None, 90 * 86400.0)
+                fills = extract_symbol_recent_fills(hl_orders)
+                if fills:
+                    venue_recent_orders["hyperliquid"][sym] = fills
+                    recent_orders[sym] = fills
+        except Exception:
+            pass
+    for pos in tradable_positions:
+        if not isinstance(pos, dict):
+            continue
+        p_sym = str(pos.get("symbol") or "").upper()
+        p_venue = normalize_venue_name(pos.get("venue"))
+        p_variants = cache_symbol_variants(p_sym)
+        pos_px_f = safe_float(pos.get("price"), 0.0)
+        if pos_px_f <= 0:
+            cand_px = resolve_symbol_price(p_sym, prices_and_trends)
+            if cand_px > 0:
+                pos_px_f = cand_px
+                pos["price"] = round(cand_px, 6)
+                fb_val = safe_float(pos.get("free_base"), -1.0)
+                if fb_val >= 0:
+                    pos["value_usd"] = round(fb_val * cand_px, 2)
+                pk_val = safe_float(pos.get("trailing_peak"), 0.0)
+                if pk_val > 0:
+                    if pk_val < cand_px:
+                        pk_val = cand_px
+                        pos["trailing_peak"] = round(pk_val, 6)
+                    pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
+        v_ro_map = venue_recent_orders.get(p_venue, {})
+        ro = next(
+            (v_ro_map[c] for c in p_variants if isinstance(v_ro_map.get(c), dict)),
+            None,
+        )
+        if isinstance(ro, dict):
+            lb = ro.get("last_buy")
+            ls = ro.get("last_sell")
+            if ro.get("last_action_side"):
+                pos["last_action_side"] = str(ro.get("last_action_side")).upper()
+            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
+            set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
+            set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
+            r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
+            low_buy_px = min(
+                (
+                    safe_float(b.get("price"), 0.0)
+                    for b in r_buys
+                    if isinstance(b, dict) and safe_float(b.get("price"), 0.0) > 0
+                ),
+                default=0.0,
+            )
+            if low_buy_px > 0:
+                set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
+        venue_cyc_maps = (
+            (hyperliquid_cycles,)
+            if p_venue == "hyperliquid"
+            else (t212_cycles,)
+            if p_venue == "t212"
+            else (kraken_cycles,)
+            if p_venue == "kraken"
+            else ()
+        )
+        for cyc_map in venue_cyc_maps:
+            cyc = cyc_map.get(p_sym)
+            if not isinstance(cyc, dict):
+                cyc = next((cyc_map[c] for c in p_variants if isinstance(cyc_map.get(c), dict)), None)
+            if not isinstance(cyc, dict):
+                continue
+            if pos.get("free_base") is None and cyc.get("qty") is not None:
+                cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
+                if cyc_qty is not None:
+                    pos["free_base"] = round(cyc_qty, 6)
+                    if pos_px_f > 0:
+                        pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
+            cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
+            set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
+            set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+            set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
+            set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
+            set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
+    return recent_orders
+
+
+def harvest_bot_runtime_states(
+    cache_dir: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+) -> Dict[str, Any]:
+    """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
+    from state_io import read_tail_jsonl_dicts
+
+    _rj = read_json_fn or read_json_cached
+    out: Dict[str, Any] = {}
+    retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
+    if os.path.exists(retry_q_path):
+        active_retries: List[Dict[str, Any]] = []
+        for rec in read_tail_jsonl_dicts(retry_q_path, limit=50):
+            lifecycle = str(rec.get("lifecycle") or "").lower()
+            exp_ts = safe_float(rec.get("expires_at_ts"), 0.0)
+            if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
+                active_retries.append({
+                    "venue": str(rec.get("provider_name") or "").lower(),
+                    "symbol": rec.get("symbol"),
+                    "side": rec.get("side"),
+                    "qty": rec.get("qty"),
+                    "requested_price": rec.get("requested_price"),
+                    "kind": rec.get("kind"),
+                    "attempts": rec.get("attempts"),
+                    "last_failure_reason": rec.get("last_failure_reason"),
+                })
+        if active_retries:
+            out["active_retry_queue"] = active_retries
+
+    mt_state = _rj(os.path.join(cache_dir, "mt_state.json"))
+    if isinstance(mt_state, dict):
+        active_mt = {
+            k: v
+            for k in ("tp_ride_state", "sl_bounce_state", "sl_episode_state", "reentry_state", "pending_stop_exit")
+            for v in (mt_state.get(k),)
+            if isinstance(v, dict) and v
+        }
+        if active_mt:
+            out["monitortrades_active_state"] = active_mt
+
+    ag_state = _rj(os.path.join(cache_dir, "assetguardian_state.json"))
+    if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
+        out["assetguardian_state"] = ag_state["symbols"]
+
+    ssl_state = _rj(os.path.join(cache_dir, "smart_stop_loss_state.json"))
+    if isinstance(ssl_state, dict) and ssl_state:
+        out["smart_stop_loss_state"] = ssl_state
+    return out
+
+
+def apply_asset_scope_filter(
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    portfolio_summary: Dict[str, Any],
+    scope: str,
+    inst_by_sym: Dict[str, Any],
+    t212_cycles: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Filter prices_and_trends, microstructure, and portfolio_summary by asset_scope ('equities' | 'crypto')."""
+    if scope not in ("equities", "crypto"):
+        return prices_and_trends, microstructure
+    want_t212 = scope == "equities"
+    if want_t212:
+        eq_syms = set(inst_by_sym.keys()) | set(t212_cycles.keys())
+        prices_and_trends = {
+            k: v for k, v in prices_and_trends.items() if k in eq_syms
+        }
+        microstructure = {}
+        for crypto_key in (
+            "total_value_usdc",
+            "kraken_cycles",
+            "hyperliquid_cycles",
+            "hyperliquid_signal",
+            "hyperliquid_readonly",
+            "recent_orders",
+            "monitortrades_active_state",
+            "trailing_peaks",
+        ):
+            portfolio_summary.pop(crypto_key, None)
+    else:
+        prices_and_trends = {
+            k: v for k, v in prices_and_trends.items()
+            if not str(k).upper().endswith(("_EQ", "_US_EQ"))
+        }
+        portfolio_summary.pop("t212_cycles", None)
+    for list_key in ("recent_ai_intents", "active_retry_queue"):
+        if list_key in portfolio_summary:
+            filtered_items = [
+                item for item in portfolio_summary[list_key]
+                if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
+            ]
+            if filtered_items:
+                portfolio_summary[list_key] = filtered_items
+            else:
+                portfolio_summary.pop(list_key, None)
+    return prices_and_trends, microstructure
+
+
+
 
 
 def collect_pretrade_telemetry(
@@ -1407,6 +2139,20 @@ def evaluate_llm_guard_response(
     )
 
 
+def resolve_llm_guard_cache_ttl(
+    cache_ttl_sec: Any,
+    explicit_client: bool,
+    gemini_client: Any,
+    default_ttl_sec: float,
+) -> float:
+    """Resolve effective LLM guard decision cache TTL (0.0 when custom client/runner is injected)."""
+    if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+        return safe_nonneg_ts(cache_ttl_sec, 0.0)
+    if not explicit_client and getattr(gemini_client, "_custom_runner", None) is None:
+        return default_ttl_sec
+    return 0.0
+
+
 class HighStakeGuard:
     """Invokes LLM reasoning before executing large BUY purchases (>= 1000 EUR).
 
@@ -1432,12 +2178,9 @@ class HighStakeGuard:
         self.min_notional_eur = resolved_min
         self.timeout_sec = safe_pos_float(timeout_sec, 25.0)
         self.fallback_action = str(fallback_action or "allow").strip().lower()
-        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
-            self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, 0.0)
-        elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
-            self.cache_ttl_sec = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
-        else:
-            self.cache_ttl_sec = 0.0
+        self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
+            cache_ttl_sec, self._explicit_client, self.gemini_client, DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
+        )
 
     def check(
         self,

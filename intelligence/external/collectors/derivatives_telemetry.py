@@ -81,22 +81,14 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         try:
             # 1. Premium index endpoint (funding rate)
             url_fund = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={lookup_sym}"
-            req = urllib.request.Request(url_fund, headers={"User-Agent": "mptrade-intelligence/1.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data_fund = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_fund, dict):
-                raise ValueError(f"Unexpected premiumIndex payload for {lookup_sym}: {type(data_fund).__name__}")
+            data_fund = self._fetch_json_dict(url_fund, "premiumIndex", lookup_sym)
 
             funding_rate = _clean_dict_float(data_fund, "lastFundingRate", 0.0)
             next_funding = _clean_dict_float(data_fund, "nextFundingRate", funding_rate)
 
             # 2. Open interest endpoint
             url_oi = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={lookup_sym}"
-            req_oi = urllib.request.Request(url_oi, headers={"User-Agent": "mptrade-intelligence/1.0"})
-            with urllib.request.urlopen(req_oi, timeout=5) as resp:
-                data_oi = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_oi, dict):
-                raise ValueError(f"Unexpected openInterest payload for {lookup_sym}: {type(data_oi).__name__}")
+            data_oi = self._fetch_json_dict(url_oi, "openInterest", lookup_sym)
 
             oi = max(0.0, _clean_dict_float(data_oi, "openInterest", 0.0))
             mark_price = max(0.0, _clean_dict_float(data_fund, "markPrice", 0.0))

@@ -355,6 +355,19 @@ def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
     return None
 
 
+def get_cached_t_entry(symbol: str) -> Optional[dict]:
+    """Read and look up the cached T entry for ``symbol`` from disk in 0 ms."""
+    try:
+        data = _read_t_cache_dict(_effective_t_cache_file())
+        if isinstance(data, dict):
+            ent = _lookup_t_cache_entry(data, symbol)
+            if isinstance(ent, dict):
+                return ent
+    except Exception:
+        pass
+    return None
+
+
 def estimate_T(
     symbol: str,
     days: int = 540,
@@ -453,14 +466,7 @@ def get_trend_survival_metrics(
     T_val = 8.0
     cached_t: Optional[float] = None
 
-    cached_entry: Optional[dict] = None
-    try:
-        data = _read_t_cache_dict(_effective_t_cache_file())
-        if isinstance(data, dict):
-            cached_entry = _lookup_t_cache_entry(data, symbol)
-    except Exception:
-        cached_entry = None
-
+    cached_entry = get_cached_t_entry(symbol)
     allow_net = _parse_bool_flag(allow_network, False)
     if cached_entry:
         median_d = safe_pos_float(cached_entry.get("median_d"), default=median_d)
