@@ -146,9 +146,8 @@ status_data = {
     "commit": os.environ.get("REG_COMMIT_HASH", ""), "commit_short": os.environ.get("REG_COMMIT_SHORT", ""), "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
     **counts, "duration_sec": duration, "started_at": os.environ.get("REG_START_ISO", ""), "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": int(time.time()),
 }
-with open(f"{status_json_path}.tmp", "w", encoding="utf-8") as f:
-    json.dump(status_data, f, indent=2)
-os.replace(f"{status_json_path}.tmp", status_json_path)
+from state_io import atomic_write_json
+atomic_write_json(status_json_path, status_data, indent=2)
 print(f"[dev_regression] Status: {status} | Passed: {counts['passed']} | Failed: {counts['failed']} | Duration: {duration}s")
 EOF
 
