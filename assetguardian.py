@@ -6,6 +6,7 @@ import time
 
 from binance_api import bapi as api
 from providers.base import (
+    extract_order_id,
     extract_order_price,
     extract_order_side,
     extract_timestamp_s,
@@ -14,7 +15,6 @@ from providers.market_api import api as mkt   # Single guarded proxy (Instrument
 from providers.execution_audit import ExecutionAudit
 from order_retry import propagate_submission_refusal
 from providers.quantity import resolve_assets
-from providers.strategy_executor import extract_order_id
 from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import order_guard as _og
@@ -33,6 +33,7 @@ from botcore import (
     required_float_env,
     required_int_env,
     safe_float,
+    safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
 )
@@ -964,17 +965,17 @@ def _record_terminal_buy(symbol, state, status):
     key = _tier_key(threshold)
     raw_spent_by_tier = state.get("spent_quote_by_tier")
     spent_by_tier = dict(raw_spent_by_tier) if isinstance(raw_spent_by_tier, dict) else {}
-    prior_spent = max(0.0, _finite_float(spent_by_tier.get(key)) or 0.0)
-    filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
-    cost_val = max(0.0, _finite_float(status.cost) or 0.0)
-    fee_val = max(0.0, _finite_float(status.fee) or 0.0)
+    prior_spent = safe_nonneg_float(spent_by_tier.get(key), default=0.0)
+    filled_qty = safe_nonneg_float(status.filled_qty, default=0.0)
+    cost_val = safe_nonneg_float(status.cost, default=0.0)
+    fee_val = safe_nonneg_float(status.fee, default=0.0)
     executed_quote = max(0.0, cost_val + fee_val)
     spent_by_tier[key] = prior_spent + executed_quote
 
     state = dict(state)
     state["spent_quote_by_tier"] = spent_by_tier
     state["total_spent_quote"] = (
-        max(0.0, _finite_float(state.get("total_spent_quote")) or 0.0)
+        safe_nonneg_float(state.get("total_spent_quote"), default=0.0)
         + executed_quote)
     allocation = _finite_float(pending.get("allocation"), positive=True)
     initial_cash = _finite_float(state.get("initial_cash"), positive=True)
@@ -1008,14 +1009,14 @@ def _record_terminal_sell(symbol, state, status):
     key = _tier_key(threshold)
     raw_filled_by_tier = state.get("filled_qty_by_tier")
     filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
-    prior_filled = max(0.0, _finite_float(filled_by_tier.get(key)) or 0.0)
-    filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
+    prior_filled = safe_nonneg_float(filled_by_tier.get(key), default=0.0)
+    filled_qty = safe_nonneg_float(status.filled_qty, default=0.0)
     filled_by_tier[key] = prior_filled + filled_qty
 
     state = dict(state)
     state["filled_qty_by_tier"] = filled_by_tier
     state["total_filled_qty"] = (
-        max(0.0, _finite_float(state.get("total_filled_qty")) or 0.0)
+        safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
         + filled_qty)
     allocation = _finite_float(pending.get("allocation"), positive=True)
     if allocation is None:
@@ -1044,8 +1045,8 @@ def _record_terminal_sell(symbol, state, status):
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
 
-    cost_val = max(0.0, _finite_float(status.cost) or 0.0)
-    fee_val = max(0.0, _finite_float(status.fee) or 0.0)
+    cost_val = safe_nonneg_float(status.cost, default=0.0)
+    fee_val = safe_nonneg_float(status.fee, default=0.0)
     return _finalize_terminal_campaign_state(
         symbol, "sell", state, pending, threshold, status, filled_qty, cost_val, fee_val)
 
@@ -1290,7 +1291,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             return None, {}, growth
         expected_remaining = max(
             0.0,
-            initial_qty - max(0.0, _finite_float(state.get("total_filled_qty")) or 0.0),
+            initial_qty - safe_nonneg_float(state.get("total_filled_qty"), default=0.0),
         )
         balance_tolerance = max(1e-12, initial_qty * 1e-6)
         if free_qty > expected_remaining + balance_tolerance:
@@ -1344,8 +1345,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         if growth < trigger_thr or threshold in completed:
             continue
         tier_target_qty = initial_qty * allocation
-        already_filled = max(0.0, _finite_float(
-            filled_by_tier.get(_tier_key(threshold))) or 0.0)
+        already_filled = safe_nonneg_float(
+            filled_by_tier.get(_tier_key(threshold)), default=0.0)
         unfilled_tier_qty = max(0.0, tier_target_qty - already_filled)
         remaining_qty = min(free_qty, unfilled_tier_qty)
         if remaining_qty <= max(1e-12, tier_target_qty * 0.02):

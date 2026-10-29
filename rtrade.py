@@ -28,6 +28,7 @@ from order_retry import (
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
     propagate_submission_refusal,
+    resolve_accepted_order,
 )
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 from botcore import (
@@ -1065,8 +1066,7 @@ def _cancel_order_confirmed(symbol, order_id):
         print(f"[{symbol}] order {order_id} remains active{detail}; replacement deferred")
         return None
     try:
-        import order_retry
-        order_retry.resolve_accepted_order(symbol, order_id)
+        resolve_accepted_order(symbol, order_id)
     except Exception:
         pass
     return status

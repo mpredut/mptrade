@@ -7,7 +7,7 @@ import threading
 import alertnotifiers as alert
 import utils as u
 import symbols as sym
-from instrument_registry import select_instruments, symbols_for
+from instrument_registry import casefold_get, select_instruments, symbols_for
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
 import order_outcomes_log
@@ -203,7 +203,7 @@ def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
     action = normalize_side(action) or str(action or "").upper()
     symbol = _resolve_tradeall_symbol(symbol, KALMAN_MODES, preserve_raw=True)
-    mode = KALMAN_MODES[symbol]
+    mode = KALMAN_MODES.get(symbol) or casefold_get(KALMAN_MODES, symbol, "off") or "off"
     if mode == "off" or _kalman_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
     if action == "SELL" and reason in KALMAN_BYPASS_SELL_REASONS:

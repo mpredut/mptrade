@@ -375,14 +375,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     f"{price}; skipping redundant cancel/replace."
                 )
                 continue
-            original_quantity = safe_pos_float(
-                order.get("quantity", order.get("origQty", order.get("qty"))), default=None
-            )
-            quantity = (
-                safe_pos_float(order.get("remainingQty"), default=None)
-                if "remainingQty" in order
-                else safe_pos_float(extract_remaining_qty(order, default=original_quantity), default=None)
-            )
+            original_quantity = extract_order_qty(order, default=None)
+            quantity = extract_remaining_qty(order, default=original_quantity)
             if not original_quantity or not quantity:
                 print(
                     f"Order {order_id} has an invalid or unfilled remaining quantity; "

@@ -289,3 +289,12 @@ def test_write_html_generates_summary_bar(tmp_path, monkeypatch):
     assert "Day" in content
     assert "Week" in content
 
+
+def test_kalman_gate_blocks_handles_unmapped_symbols():
+    import tradeall
+    blocked, mode, trend = tradeall._kalman_gate_blocks("NON_EXISTENT_COIN", "BUY")
+    assert blocked is False
+    assert mode == "off"
+    assert trend is None
+
+
