@@ -261,10 +261,8 @@ def _load_margins():
     m: Dict[str, Any] = {}
     for k, v in raw.items():
         k_clean = k.strip().lower()
-        try:
-            m[k_clean] = float(v)
-        except (TypeError, ValueError):
-            m[k_clean] = v
+        fv = safe_float(v, default=None)
+        m[k_clean] = fv if fv is not None else v
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         if _MARGINS is not None and _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
@@ -492,9 +490,10 @@ def symbol_regime(
             snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
             if isinstance(snap, dict):
                 fast_w = _pw.fast_trend_window_for_symbol(symbol)
+                fw = safe_pos_float(fast_w, default=None)
                 dyn = snap.get("dynamic")
-                if fast_w is not None and isinstance(dyn, dict):
-                    w_snap = dyn.get(f"{float(fast_w):g}")
+                if fw is not None and isinstance(dyn, dict):
+                    w_snap = dyn.get(f"{fw:g}")
                     if isinstance(w_snap, dict):
                         snap = w_snap
         except Exception:
@@ -920,14 +919,14 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
         try:
             import priceAnalysis as pa
             val = pa.get_weight_for_cash_permission_at_quant_time(sym, order_type)
-            if val is not None:
-                fval = float(val)
-                if not math.isfinite(fval) or not 0 < fval <= 1:
-                    if raise_on_error and sym == symbol:
-                        from providers.strategy_executor import SubmissionRefused
-                        raise SubmissionRefused("invalid_weight_policy_weight")
-                    return None
+            fval = safe_pos_float(val, default=None)
+            if fval is not None and fval <= 1.0:
                 return fval
+            if val is not None:
+                if raise_on_error and sym == symbol:
+                    from providers.strategy_executor import SubmissionRefused
+                    raise SubmissionRefused("invalid_weight_policy_weight")
+                return None
             return None
         except Exception as e:
             if raise_on_error and sym == symbol:
@@ -953,7 +952,7 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
         weight = default_weight
         print(f"[WEIGHT] {symbol}: no trend or proxy -> fallback weight={weight}")
 
-    return float(weight)
+    return safe_pos_float(weight, default=0.0) or 0.0
 
 
 def _clean_required_qty_or_inf(required_qty) -> float:
@@ -2024,20 +2023,21 @@ def profit_guard(
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
         return False
 
-    if regime_context is not None and suggested_scale < 1.0:
+    s_scale = safe_pos_float(suggested_scale, default=1.0)
+    if regime_context is not None and s_scale < 1.0:
         try:
             side_norm = _normalize_side_token(order_type)
             scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
             if not isinstance(scales_by_side, dict):
                 scales_by_side = {}
             curr_side = scales_by_side.get(side_norm)
-            if curr_side is None or suggested_scale < curr_side:
-                scales_by_side[side_norm] = float(suggested_scale)
+            if curr_side is None or s_scale < curr_side:
+                scales_by_side[side_norm] = s_scale
             object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
             if side_norm == "BUY":
                 curr = getattr(regime_context, "suggested_scale", None)
-                if curr is None or suggested_scale < curr:
-                    object.__setattr__(regime_context, "suggested_scale", float(suggested_scale))
+                if curr is None or s_scale < curr:
+                    object.__setattr__(regime_context, "suggested_scale", s_scale)
                     object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
         except Exception:
             pass
