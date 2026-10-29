@@ -140,14 +140,12 @@ def main() -> int:
     report["source_files"] = [str(path) for path in paths]
     output = args.output.expanduser().resolve() if args.output else None
     markdown = args.markdown.expanduser().resolve() if args.markdown else None
-    if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("w", encoding="utf-8") as handle:
-            json.dump(report, handle, indent=2, ensure_ascii=False)
-    if markdown:
-        markdown.parent.mkdir(parents=True, exist_ok=True)
-        with markdown.open("w", encoding="utf-8") as handle:
-            handle.write(markdown_report(report, paths))
+    if output or markdown:
+        from state_io import atomic_write_json, atomic_write_text
+        if output:
+            atomic_write_json(output, report, indent=2, ensure_ascii=False)
+        if markdown:
+            atomic_write_text(markdown, markdown_report(report, paths))
     print(markdown_report(report, paths))
     return 0
 
