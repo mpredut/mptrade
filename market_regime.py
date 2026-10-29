@@ -469,10 +469,8 @@ class MarketRegimeEvaluator:
                     return self.unknown("invalid_sample_metadata")
                 samples = parsed_samples
             if window is not None:
-                if isinstance(window, bool):
-                    return self.unknown("invalid_window_metadata")
-                window = float(window)
-                if not math.isfinite(window) or window <= 0:
+                window = safe_pos_float(window, default=None)
+                if window is None:
                     return self.unknown("invalid_window_metadata")
         except (TypeError, ValueError, OverflowError):
             return self.unknown("invalid_signal_metadata")
@@ -647,10 +645,8 @@ class MarketRegimeService:
         correlation_key=None,
     ):
         if max_age_seconds is not None:
-            if isinstance(max_age_seconds, bool):
-                raise ValueError("max_age_seconds must be finite and positive")
-            max_age_seconds = float(max_age_seconds)
-            if not math.isfinite(max_age_seconds) or max_age_seconds <= 0:
+            max_age_seconds = safe_pos_float(max_age_seconds, default=None)
+            if max_age_seconds is None:
                 raise ValueError("max_age_seconds must be finite and positive")
         role_str = role.strip() if isinstance(role, str) and role.strip() else "asset_short"
         fam_str = family.strip() if isinstance(family, str) and family.strip() else "price_trend"
@@ -722,10 +718,8 @@ class MarketRegimeService:
         allow_fallback = _parse_bool_flag(allow_fallback, True)
         include_alternates = _parse_bool_flag(include_alternates, False)
         role = role.strip() if isinstance(role, str) and role.strip() else f"asset_{parsed.value}"
-        if isinstance(now, bool):
-            raise ValueError("now must be a positive finite Unix timestamp")
-        evaluated_at = time.time() if now is None else float(now)
-        if not math.isfinite(evaluated_at) or evaluated_at <= 0:
+        evaluated_at = time.time() if now is None else safe_pos_float(now, default=None)
+        if evaluated_at is None:
             raise ValueError("now must be a positive finite Unix timestamp")
 
         evidence = []
@@ -1080,14 +1074,12 @@ class MarketRegimeService:
 
     @staticmethod
     def _timestamp_seconds(value) -> float:
-        if isinstance(value, bool):
+        val_f = safe_pos_float(value, default=None)
+        if val_f is None:
             raise ValueError("invalid closed-candle timestamp")
-        value = float(value)
-        if value > 100_000_000_000:
-            value /= 1000.0
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError("invalid closed-candle timestamp")
-        return value
+        if val_f > 100_000_000_000:
+            val_f /= 1000.0
+        return val_f
 
     @classmethod
     def _series_timing(cls, series: ClosedPriceSeries):
