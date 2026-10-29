@@ -1719,5 +1719,98 @@ def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypat
     assert rows["current"]["net_pct"] == 2.5
 
 
+def test_batch56_intelligence_backtest_full_composite_and_research_hardening(monkeypatch):
+    from types import SimpleNamespace
+    import numpy as np
+    import offline.research.intelligence_backtest as ib_mod
+    from offline.research.chop_weight_backtest import _downsample_price_series
+    from offline.research.ml_forecast.vol_chronos import realized_vol_series
+
+    # 1. _downsample_price_series ignores NaN timestamp without poisoning subsequent bars
+    ds = _downsample_price_series(
+        [(float("nan"), 100.0), (1000.0, -5.0), (1000.0, 100.0), (1300.0, 102.0)],
+        step_seconds=300,
+    )
+    assert ds == [(1000.0, 100.0), (1300.0, 102.0)]
+
+    # 2. realized_vol_series handles empty and 1-element arrays without ValueError
+    assert len(realized_vol_series(np.empty(0), 24)) == 0
+    rv1 = realized_vol_series(np.array([100.0]), 24)
+    assert len(rv1) == 1 and np.isnan(rv1[0])
+
+    # 3. run_intelligence_backtest FULL_COMPOSITE exercises GeopoliticalThreatAssessment & FearGreedSnapshot constructors cleanly
+    fake_entry = SimpleNamespace(
+        action=SimpleNamespace(value="ENTRY"),
+        side=SimpleNamespace(value="BUY"),
+    )
+    fake_exit = SimpleNamespace(
+        action=SimpleNamespace(value="EXIT"),
+        side=SimpleNamespace(value="SELL"),
+    )
+    fake_tape = [
+        # Bar 0: drop_30m >= 3.5 triggers GeopoliticalThreatAssessment veto in FULL_COMPOSITE
+        {
+            "t": 1000.0,
+            "p": 100.0,
+            "n_roll": 30,
+            "k_out": {"vel": 1.0, "vel_std": 0.1},
+            "k_event": None,
+            "mr_event": fake_entry,
+            "p_dec": None,
+            "current_trend": "BEAR",
+            "trend_duration_sec": 600.0,
+            "recent_high_20": 105.0,
+            "local_high_48": 105.0,
+            "drop_15m": 1.0,
+            "drop_30m": 4.0,
+            "p_1h_pct": -4.0,
+            "p_4h_pct": -5.0,
+        },
+        # Bar 1: n_roll >= 48, p >= local_high_48 * 0.998, p_1h_pct >= 1.5 triggers FearGreedSnapshot downscale in FULL_COMPOSITE
+        {
+            "t": 1300.0,
+            "p": 110.0,
+            "n_roll": 50,
+            "k_out": {"vel": 1.0, "vel_std": 0.1},
+            "k_event": fake_entry,
+            "mr_event": None,
+            "p_dec": None,
+            "current_trend": "BULL",
+            "trend_duration_sec": 600.0,
+            "recent_high_20": 110.0,
+            "local_high_48": 110.0,
+            "drop_15m": 0.0,
+            "drop_30m": 0.0,
+            "p_1h_pct": 1.8,
+            "p_4h_pct": 2.0,
+        },
+        # Bar 2: exit
+        {
+            "t": 1600.0,
+            "p": 112.0,
+            "n_roll": 51,
+            "k_out": {"vel": 0.0, "vel_std": 0.1},
+            "k_event": fake_exit,
+            "mr_event": None,
+            "p_dec": None,
+            "current_trend": "FLAT",
+            "trend_duration_sec": 0.0,
+            "recent_high_20": 112.0,
+            "local_high_48": 112.0,
+            "drop_15m": 0.0,
+            "drop_30m": 0.0,
+            "p_1h_pct": 0.5,
+            "p_4h_pct": 2.5,
+        },
+    ]
+    monkeypatch.setattr(ib_mod, "load_price_series", lambda path, sym: [(1000.0, 100.0), (1300.0, 110.0), (1600.0, 112.0)])
+    monkeypatch.setattr(ib_mod, "_precompute_intelligence_tape", lambda sym, sampled, step_sec, surge_pct: fake_tape)
+    res_ib = ib_mod.run_intelligence_backtest("BTCUSDC", cache_path="/dummy/path", step_seconds=300)
+    full_stats = res_ib["FULL_COMPOSITE"]
+    assert full_stats.geopolitical_vetoes == 1
+    assert full_stats.sentiment_downscales == 1
+
+
+
 
 

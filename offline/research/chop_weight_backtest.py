@@ -61,7 +61,13 @@ def _downsample_price_series(
 ) -> List[Tuple[float, float]]:
     sampled: List[Tuple[float, float]] = []
     last_t: Optional[float] = None
-    for t, p in raw_series:
+    for item in raw_series or ():
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        t = safe_float(item[0], default=None)
+        p = safe_pos_float(item[1], default=None)
+        if t is None or p is None:
+            continue
         if last_t is None or (t - last_t) >= step_seconds:
             sampled.append((t, p))
             last_t = t

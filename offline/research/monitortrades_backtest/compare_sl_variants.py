@@ -8,7 +8,7 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 import monitortrades as mt
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 from offline.research.monitortrades_backtest.run_replay_backtest import SYMBOLS, run_symbol
 from offline.research.monitortrades_backtest.sweep_mt_models import load_archive_series
 
@@ -36,7 +36,8 @@ def main():
                 res = run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series_map.get(sym))
                 results[label][sym] = res
                 if res:
-                    print(f"[{sym}] Net PnL: {(res.get('net') or 0.0):.2f} USD | Sells: {res.get('sells') or 0} | Buys: {res.get('buys') or 0}")
+                    net_val = safe_float(res.get("net"), 0.0)
+                    print(f"[{sym}] Net PnL: {net_val:.2f} USD | Sells: {res.get('sells') or 0} | Buys: {res.get('buys') or 0}")
                 else:
                     print(f"[{sym}] No results or no data.")
     finally:
@@ -48,8 +49,8 @@ def main():
     for sym in SYMBOLS._SECTIONS:
         prop = results[variants[0][0]].get(sym) or {}
         base = results[variants[1][0]].get(sym) or {}
-        prop_net = prop.get("net")
-        base_net = base.get("net")
+        prop_net = safe_float(prop.get("net"), default=None) if isinstance(prop, dict) else None
+        base_net = safe_float(base.get("net"), default=None) if isinstance(base, dict) else None
         if prop_net is not None and base_net is not None:
             diff = prop_net - base_net
             print(f"\n{sym}:")

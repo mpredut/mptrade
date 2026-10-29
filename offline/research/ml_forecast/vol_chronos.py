@@ -37,6 +37,8 @@ BATCH = 8                               # test windows batched per call
 def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
     """Return trailing [i-win, i] log-return standard deviation, with NaN before history."""
     px_arr = _to_price_array(px)
+    if len(px_arr) < 2:
+        return np.full(len(px_arr), np.nan)
     win = safe_pos_int(win, default=24)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)

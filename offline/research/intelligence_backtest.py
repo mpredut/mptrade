@@ -340,6 +340,40 @@ def run_intelligence_backtest(
                             weibull_downscales += 1
                             scale *= e_dec.suggested_scale
 
+                if use_full:
+                    # 8. Geopolitical Shock Guard (Black Swan flash dump veto)
+                    if bar["drop_30m"] >= 3.5:
+                        geo_assessment = GeopoliticalThreatAssessment(
+                            threat_level="CRITICAL_SHOCK",
+                            risk_score=0.92,
+                            summary="Emergency macro geopolitical escalation and energy market shock",
+                            recommended_brake="HARD_VETO_NEW_BUYS",
+                            headlines_analyzed=10,
+                            ts=t,
+                        )
+                        g_dec = geopolitical_guard.check(symbol, "BUY", assessment=geo_assessment)
+                        if not g_dec.allowed:
+                            geopolitical_vetoes += 1
+                            continue
+
+                    # 9. Extreme Greed Guard (Retail euphoria top downscale)
+                    if n_roll >= 48 and p >= bar["local_high_48"] * 0.998 and bar["p_1h_pct"] >= 1.5:
+                        fg_snap = FearGreedSnapshot(
+                            value=88,
+                            classification="Extreme Greed",
+                            timestamp=t,
+                            historical_values=(88,),
+                            trend_7d_change=10,
+                            is_extreme_fear=False,
+                            is_extreme_greed=True,
+                        )
+                        s_dec = extreme_greed_guard.check(symbol, "BUY", snapshot=fg_snap)
+                        if not s_dec.allowed:
+                            continue
+                        if s_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                            sentiment_downscales += 1
+                            scale *= s_dec.suggested_scale
+
                 if use_p2:
                     drop_15m = bar["drop_15m"]
                     drop_30m = bar["drop_30m"]
@@ -421,37 +455,6 @@ def run_intelligence_backtest(
                             funding_downscales += 1
                             scale *= f_dec.suggested_scale
 
-                if use_full:
-                    # 8. Geopolitical Shock Guard (Black Swan flash dump veto)
-                    if bar["drop_30m"] >= 3.5:
-                        geo_assessment = GeopoliticalThreatAssessment(
-                            threat_level="CRITICAL_SHOCK",
-                            risk_score=92.0,
-                            recommended_brake="HARD_VETO_NEW_BUYS",
-                            summary="Emergency macro geopolitical escalation and energy market shock",
-                            key_escalations=["Middle East missile barrage reported", "Strait transit closure warning"],
-                            active_crises=["Regional war breakout"],
-                            ts=t,
-                        )
-                        g_dec = geopolitical_guard.check(symbol, "BUY", assessment=geo_assessment)
-                        if not g_dec.allowed:
-                            geopolitical_vetoes += 1
-                            continue
-
-                    # 9. Extreme Greed Guard (Retail euphoria top downscale)
-                    if n_roll >= 48 and p >= bar["local_high_48"] * 0.998 and bar["p_1h_pct"] >= 1.5:
-                        fg_snap = FearGreedSnapshot(
-                            value=88,
-                            classification="Extreme Greed",
-                            ts=t,
-                        )
-                        s_dec = extreme_greed_guard.check(symbol, "BUY", snapshot=fg_snap)
-                        if not s_dec.allowed:
-                            continue
-                        if s_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                            sentiment_downscales += 1
-                            scale *= s_dec.suggested_scale
-
                 # Execute Buy with allocated scale
                 alloc_usd = min(usd, usd * scale * 0.95)
                 if alloc_usd >= 50.0:
@@ -462,7 +465,7 @@ def run_intelligence_backtest(
                     entry_cost += alloc_usd
 
         # Final liquidation at end
-        final_price = float(tape[-1]["p"]) if tape else float(sampled[-1][1])
+        final_price = float(tape[-1]["p"]) if tape else (safe_pos_float(sampled[-1][1], default=0.0) if sampled else 0.0)
         if asset_qty > 0:
             final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - entry_cost
             trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})
