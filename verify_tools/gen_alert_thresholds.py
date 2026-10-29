@@ -100,13 +100,13 @@ def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
 
 
 def suggest(symbol, days=DAYS):
-    days_i = safe_pos_int(days, default=None) if isinstance(days, (int, float)) else None
+    days_i = safe_pos_int(days, default=None)
     if days_i is None:
         return None
     cid, sym, name = resolve_id(symbol)
     if not cid:
         return None
-    data = _get(f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart?vs_currency=usd&days={int(days)}")
+    data = _get(f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart?vs_currency=usd&days={days_i}")
     raw_prices = data.get("prices", []) if isinstance(data, dict) else []
     prices = [
         p[1] for p in raw_prices
@@ -129,9 +129,11 @@ def main() -> int:
         try:
             r = suggest(s)
         except Exception as e:  # noqa: BLE001
-            print(f"# {s}: error ({e})"); continue
+            print(f"# {s}: error ({e})")
+            continue
         if not r:
-            print(f"# {s}: insufficient data / not found on CoinGecko"); continue
+            print(f"# {s}: insufficient data / not found on CoinGecko")
+            continue
         print(f"{r['symbol']:<8} = {r['up']} / {r['down']}    "
               f"# {r['name']} | tipic zilnic +{r['up_median']}/-{r['down_median']}% ({r['points']} puncte)")
     return 0
