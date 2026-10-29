@@ -82,8 +82,8 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
     return ts, prices, dt
 
 def ensure_dir(path: str):
-    if path and not os.path.exists(path):
-        os.makedirs(path)
+    if path:
+        os.makedirs(path, exist_ok=True)
 
 def min_max_scale(arr: np.ndarray):
     """Scale to [0, 1] without sklearn and return (scaled, minimum, maximum)."""
