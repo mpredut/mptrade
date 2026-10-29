@@ -153,6 +153,60 @@ class Instrument:
             except Exception:
                 pass
 
+    def _round_provider_qty(self, qty: float) -> float:
+        round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
+        if callable(round_fn) and qty > 0:
+            try:
+                res_f = safe_float(round_fn(self.symbol, qty), default=None)
+                if res_f is not None:
+                    return res_f
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return qty
+
+    def _resolve_regime_context(self):
+        try:
+            resolve_context = getattr(self._api, "market_regime_context", None)
+            if callable(resolve_context):
+                return resolve_context(self.symbol, provider_name=self.provider_name)
+            return order_guard.symbol_regime_context(self.symbol, provider=self._provider)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _build_profit_guard_kwargs(
+        profit_window_ref, regime_context, qty, bypassed_guards,
+        profit_reference_mode, caller_module
+    ) -> dict:
+        pg_kwargs = dict(
+            window_ref=profit_window_ref,
+            regime_context=regime_context,
+            qty=qty,
+        )
+        if bypassed_guards:
+            pg_kwargs["bypass_guards"] = bypassed_guards
+        if profit_reference_mode is not None:
+            pg_kwargs["reference_mode"] = profit_reference_mode
+        if caller_module is not None:
+            pg_kwargs["module"] = caller_module
+        return pg_kwargs
+
+    @staticmethod
+    def _sync_claimed_qty(prequeued_claim, qty, applied_scale):
+        try:
+            import order_retry
+            if order_retry.RETRY_ENABLED:
+                synced_claim = order_retry.update_claimed_qty(
+                    prequeued_claim, qty, applied_scale=applied_scale)
+                if synced_claim is None:
+                    raise SubmissionRefused("durable_qty_sync_failed")
+                return synced_claim
+            return prequeued_claim
+        except SubmissionRefused:
+            raise
+        except Exception as exc:
+            raise SubmissionRefused("durable_qty_sync_failed") from exc
+
     def _apply_late_intelligence_scale(
         self, qty: float, price: float, is_market: bool,
         enforce_business_minimum: bool, regime_context,
@@ -171,13 +225,7 @@ class Instrument:
             return qty, applied_scale, None
         if 0.0 < scale_f < app_f:
             ratio = scale_f / app_f
-            scaled_qty = qty_f * ratio
-            round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
-            if callable(round_fn):
-                res = round_fn(self.symbol, scaled_qty)
-                res_f = safe_float(res, default=None)
-                if res_f is not None:
-                    scaled_qty = res_f
+            scaled_qty = self._round_provider_qty(qty_f * ratio)
             filter_check = getattr(self._provider, "order_filter_refusal", None)
             refusal = (
                 filter_check(
@@ -574,19 +622,7 @@ class Instrument:
                 except Exception:
                     eff_ref_mode = None
                 if regime_context is None:
-                    try:
-                        resolve_context = getattr(
-                            self._api, "market_regime_context", None)
-                        if callable(resolve_context):
-                            regime_context = resolve_context(
-                                self.symbol,
-                                provider_name=self.provider_name,
-                            )
-                        else:
-                            regime_context = order_guard.symbol_regime_context(
-                                self.symbol, provider=self._provider)
-                    except Exception:
-                        regime_context = None
+                    regime_context = self._resolve_regime_context()
 
                 if profit_margin is None:
                     profit_margin = order_guard.get_margin_cfg(self._provider.name)
@@ -718,19 +754,7 @@ class Instrument:
                 and gt2_context is None
                 and medium_trend_action in {"defer", "scale"}
             ):
-                try:
-                    resolve_context = getattr(
-                        self._api, "market_regime_context", None)
-                    if callable(resolve_context):
-                        gt2_context = resolve_context(
-                            self.symbol,
-                            provider_name=self.provider_name,
-                        )
-                    else:
-                        gt2_context = order_guard.symbol_regime_context(
-                            self.symbol, provider=self._provider)
-                except Exception:
-                    gt2_context = None
+                gt2_context = self._resolve_regime_context()
                 if gt2_context is not None and regime_context is None:
                     regime_context = gt2_context
             if check_medium_trend and gt2_context is not None:
@@ -755,17 +779,7 @@ class Instrument:
                         return None
                     if scale_factor < float(applied_scale):
                         ratio = scale_factor / float(applied_scale)
-                        qty = max(0.0, qty * ratio)
-                        round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
-                        if callable(round_fn) and qty > 0:
-                            try:
-                                raw_res = round_fn(self.symbol, qty)
-                                if not isinstance(raw_res, bool):
-                                    res_f = float(raw_res)
-                                    if math.isfinite(res_f):
-                                        qty = res_f
-                            except (TypeError, ValueError, OverflowError):
-                                pass
+                        qty = self._round_provider_qty(max(0.0, qty * ratio))
                         print(f"[{self.symbol}] {side_u} scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
                         if qty <= 0:
                             reason = "medium_trend_qty_zero"
@@ -786,17 +800,10 @@ class Instrument:
             # Evaluated with the non-zero finalized quantity and exact notional size.
             if not bypass_profit_guard and qty > 0:
                 guard_price = quantity_price if is_market else price
-                pg_kwargs = dict(
-                    window_ref=profit_window_ref,
-                    regime_context=regime_context,
-                    qty=qty,
+                pg_kwargs = self._build_profit_guard_kwargs(
+                    profit_window_ref, regime_context, qty, bypassed_guards,
+                    profit_reference_mode, caller_module,
                 )
-                if bypassed_guards:
-                    pg_kwargs["bypass_guards"] = bypassed_guards
-                if profit_reference_mode is not None:
-                    pg_kwargs["reference_mode"] = profit_reference_mode
-                if caller_module is not None:
-                    pg_kwargs["module"] = caller_module
                 ok = order_guard.profit_guard(
                     self._provider, self.symbol, side_u, guard_price, profit_margin,
                     **pg_kwargs,
@@ -921,17 +928,10 @@ class Instrument:
                         reason = "retry_price_unfavorable"
                         return None
                 if final_profit_check:
-                    pg_kwargs = dict(
-                        window_ref=profit_window_ref,
-                        regime_context=regime_context,
-                        qty=qty,
+                    pg_kwargs = self._build_profit_guard_kwargs(
+                        profit_window_ref, regime_context, qty, bypassed_guards,
+                        profit_reference_mode, caller_module,
                     )
-                    if bypassed_guards:
-                        pg_kwargs["bypass_guards"] = bypassed_guards
-                    if profit_reference_mode is not None:
-                        pg_kwargs["reference_mode"] = profit_reference_mode
-                    if caller_module is not None:
-                        pg_kwargs["module"] = caller_module
                     if not order_guard.profit_guard(
                         self._provider, self.symbol, side_u,
                         final_market_price, profit_margin,
@@ -945,18 +945,9 @@ class Instrument:
                         reason = refusal
                         return None
                     if prequeued_claim is not None:
-                        try:
-                            import order_retry
-                            if order_retry.RETRY_ENABLED:
-                                synced_claim = order_retry.update_claimed_qty(
-                                    prequeued_claim, qty, applied_scale=applied_scale)
-                                if synced_claim is None:
-                                    raise SubmissionRefused("durable_qty_sync_failed")
-                                prequeued_claim = synced_claim
-                        except SubmissionRefused:
-                            raise
-                        except Exception as exc:
-                            raise SubmissionRefused("durable_qty_sync_failed") from exc
+                        prequeued_claim = self._sync_claimed_qty(
+                            prequeued_claim, qty, applied_scale
+                        )
                         if prequeued_intent_id and applied_scale < 1.0:
                             _EXECUTION_AUDIT.record(
                                 "submit_scaled", intent_id=prequeued_intent_id,
@@ -983,18 +974,9 @@ class Instrument:
                         raise SubmissionRefused("producer_claim_lost")
                     prequeued_claim = refreshed_claim
                 else:
-                    try:
-                        import order_retry
-                        if order_retry.RETRY_ENABLED:
-                            synced_claim = order_retry.update_claimed_qty(
-                                prequeued_claim, qty, applied_scale=applied_scale)
-                            if synced_claim is None:
-                                raise SubmissionRefused("durable_qty_sync_failed")
-                            prequeued_claim = synced_claim
-                    except SubmissionRefused:
-                        raise
-                    except Exception as exc:
-                        raise SubmissionRefused("durable_qty_sync_failed") from exc
+                    prequeued_claim = self._sync_claimed_qty(
+                        prequeued_claim, qty, applied_scale
+                    )
             reason = "submit_ambiguous"
             submit_attempted = True
             provider_kwargs = dict(kwargs)

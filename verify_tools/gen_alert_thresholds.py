@@ -15,11 +15,18 @@
 from __future__ import annotations
 
 import json
-import math
+from pathlib import Path
 import statistics
 import sys
 import urllib.parse
 import urllib.request
+
+_ROOT = str(Path(__file__).resolve().parents[1])
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from botcore import safe_pos_float, safe_pos_int
+from cachepaths import canonical_base_asset
 
 WINDOW = 24       # Approximate hourly observations in a 24-hour window (CoinGecko hourly granularity).
 PERCENTILE = 85   # Movement at or above this percentile is considered notable.
@@ -40,13 +47,16 @@ def resolve_id(symbol):
     sym_clean = str(symbol).strip().upper()
     if not sym_clean:
         return None, None, None
-    q = urllib.parse.quote(sym_clean)
+    base_coin = canonical_base_asset(sym_clean) or sym_clean
+    candidates = [sym_clean] if base_coin == sym_clean else [sym_clean, base_coin]
+    q = urllib.parse.quote(base_coin)
     resp = _get(f"https://api.coingecko.com/api/v3/search?query={q}")
     coins = resp.get("coins", []) if isinstance(resp, dict) else []
     coins = [c for c in coins if isinstance(c, dict) and c.get("id") and c.get("symbol")]
-    for c in coins:
-        if str(c["symbol"]).strip().upper() == sym_clean:
-            return str(c["id"]), str(c["symbol"]).strip().upper(), str(c.get("name") or "")
+    for target in candidates:
+        for c in coins:
+            if str(c["symbol"]).strip().upper() == target:
+                return str(c["id"]), str(c["symbol"]).strip().upper(), str(c.get("name") or "")
     if coins:
         c = coins[0]
         return str(c["id"]), str(c["symbol"]).strip().upper(), str(c.get("name") or "")
@@ -63,32 +73,14 @@ def _perc(xs, pct):
 
 def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
     """PURE (testable): from the price series -> (up, down, up_median, down_median)."""
-    if (
-        not prices
-        or isinstance(window, bool)
-        or isinstance(pct, bool)
-    ):
+    win_i = safe_pos_int(window, default=None)
+    pct_f = safe_pos_float(pct, default=None)
+    if not prices or win_i is None or pct_f is None or pct_f > 100.0:
         return None
-    try:
-        win_f = float(window)
-        pct_f = float(pct)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(win_f) or win_f <= 0 or not math.isfinite(pct_f) or not (0.0 < pct_f <= 100.0):
-        return None
-    win_i = int(win_f)
-    if win_i <= 0:
-        return None
-    clean_prices = []
-    for p in prices:
-        if p is None or isinstance(p, bool):
-            continue
-        try:
-            pf = float(p)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(pf) and pf > 0:
-            clean_prices.append(pf)
+    clean_prices = [
+        pf for p in prices
+        if (pf := safe_pos_float(p, default=None)) is not None
+    ]
     ups, downs = [], []
     for i in range(win_i, len(clean_prices)):
         win = clean_prices[i - win_i:i + 1]
@@ -108,7 +100,8 @@ def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
 
 
 def suggest(symbol, days=DAYS):
-    if isinstance(days, bool) or not isinstance(days, (int, float)) or not math.isfinite(float(days)) or int(days) <= 0:
+    days_i = safe_pos_int(days, default=None) if isinstance(days, (int, float)) else None
+    if days_i is None:
         return None
     cid, sym, name = resolve_id(symbol)
     if not cid:

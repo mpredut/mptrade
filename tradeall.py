@@ -190,15 +190,20 @@ KALMAN_PRIMARY_SYMBOLS = set(symbols_for("binance", "kalman_primary"))
 KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plunge_down"})
 
 
+def _resolve_tradeall_symbol(symbol, allowed_set=TRADEALL_FIRE_SYMBOLS, *, preserve_raw=False):
+    sym_u = str(symbol or "").strip().upper()
+    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    if sym_u in allowed_set:
+        return sym_u
+    if sym_clean in allowed_set:
+        return sym_clean
+    return symbol if preserve_raw else sym_u
+
+
 def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
     action = normalize_side(action) or str(action or "").upper()
-    sym_norm = str(symbol or "").strip().upper()
-    sym_clean = sym_norm.replace("/", "").replace("-", "").replace("_", "")
-    if sym_norm in KALMAN_MODES:
-        symbol = sym_norm
-    elif sym_clean in KALMAN_MODES:
-        symbol = sym_clean
+    symbol = _resolve_tradeall_symbol(symbol, KALMAN_MODES, preserve_raw=True)
     mode = KALMAN_MODES[symbol]
     if mode == "off" or _kalman_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
@@ -231,9 +236,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     to the real balance.
     """
     action = normalize_side(action) or str(action or "").upper()
-    sym_u = str(symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
-    symbol = sym_clean if (sym_u not in TRADEALL_FIRE_SYMBOLS and sym_clean in TRADEALL_FIRE_SYMBOLS) else sym_u
+    symbol = _resolve_tradeall_symbol(symbol)
     price_f = safe_pos_float(price, default=None)
     if price_f is None:
         print(f"[TRADEALL] order refused: price invalid {price!r}")
@@ -278,9 +281,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     and records newly placed order IDs.
     """
     action = normalize_side(action) or str(action or "").upper()
-    sym_u = str(symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
-    symbol = sym_clean if (sym_u not in TRADEALL_FIRE_SYMBOLS and sym_clean in TRADEALL_FIRE_SYMBOLS) else sym_u
+    symbol = _resolve_tradeall_symbol(symbol)
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
     if order_ids is None:
@@ -586,42 +587,33 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
         _fire_trend_order(enable, symbol, trend_state, "DOWN", "SELL", current_price,
                           "small_window_plunge_down", regime_ctx=regime_ctx)
 
-    elif ACCEL_ENABLED and price_window is not None and gradient > 0 and slope >= PRICE_CHANGE_THRESHOLD_EUR:
+    elif ACCEL_ENABLED and price_window is not None and (
+        (gradient > 0 and slope >= PRICE_CHANGE_THRESHOLD_EUR)
+        or (gradient < 0 and slope <= -PRICE_CHANGE_THRESHOLD_EUR)
+    ):
+        is_up = gradient > 0
+        sign = 1.0 if is_up else -1.0
         try:
             vel_short, acc_short = price_window.calculate_acceleration(window_sec=ACCEL_WINDOW_SEC)
             vel_med, _ = price_window.calculate_acceleration(window_sec=max(ACCEL_WINDOW_SEC * 2.0, 180.0))
             if (
-                vel_short >= ACCEL_MIN_VEL_SHORT
-                and acc_short >= ACCEL_MIN_ACC_SHORT
-                and vel_med >= ACCEL_MIN_VEL_MED
+                sign * vel_short >= ACCEL_MIN_VEL_SHORT
+                and sign * acc_short >= ACCEL_MIN_ACC_SHORT
+                and sign * vel_med >= ACCEL_MIN_VEL_MED
             ):
+                label = "BUY surge" if is_up else "SELL plunge"
+                direction, action, reason = (
+                    ("UP", "BUY", "accel_surge_up")
+                    if is_up
+                    else ("DOWN", "SELL", "accel_plunge_down")
+                )
                 print(
-                    f"[SMALL-WINDOW] Acceleration BUY surge: gradient={gradient}, slope={slope:.3f}, "
+                    f"[SMALL-WINDOW] Acceleration {label}: gradient={gradient}, slope={slope:.3f}, "
                     f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
                 )
                 _fire_trend_order(
-                    enable, symbol, trend_state, "UP", "BUY", current_price,
-                    "accel_surge_up", regime_ctx=regime_ctx,
-                )
-        except Exception as e:
-            print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")
-
-    elif ACCEL_ENABLED and price_window is not None and gradient < 0 and slope <= -PRICE_CHANGE_THRESHOLD_EUR:
-        try:
-            vel_short, acc_short = price_window.calculate_acceleration(window_sec=ACCEL_WINDOW_SEC)
-            vel_med, _ = price_window.calculate_acceleration(window_sec=max(ACCEL_WINDOW_SEC * 2.0, 180.0))
-            if (
-                vel_short <= -ACCEL_MIN_VEL_SHORT
-                and acc_short <= -ACCEL_MIN_ACC_SHORT
-                and vel_med <= -ACCEL_MIN_VEL_MED
-            ):
-                print(
-                    f"[SMALL-WINDOW] Acceleration SELL plunge: gradient={gradient}, slope={slope:.3f}, "
-                    f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
-                )
-                _fire_trend_order(
-                    enable, symbol, trend_state, "DOWN", "SELL", current_price,
-                    "accel_plunge_down", regime_ctx=regime_ctx,
+                    enable, symbol, trend_state, direction, action, current_price,
+                    reason, regime_ctx=regime_ctx,
                 )
         except Exception as e:
             print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")
@@ -852,11 +844,8 @@ class TrendCoordinator:
                 return None
         else:
             current_price = self.current_price_mgr.get_price_value(symbol)
-        try:
-            current_price = float(current_price)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(current_price) or current_price <= 0:
+        current_price = safe_pos_float(current_price, default=None)
+        if current_price is None:
             return None
         regime_ctx = None
         try:
@@ -915,21 +904,19 @@ class TrendCoordinator:
                 # Primary Kalman starts an order on a trend transition for enabled
                 # symbols when handle_symbol did not already place one on this tick.
                 if (symbol in KALMAN_PRIMARY_SYMBOLS and prev_ktrend is not None
-                        and new_ktrend != prev_ktrend and not handle_placed_order):
-                    if new_ktrend == 1:
-                        print(f"[KALMAN-PRIMARY] {symbol} ->UP: initiating BUY")
-                        track_and_place_order(
-                            "BUY", symbol, 1, current_price, current_price,
-                            reason="kalman_primary_up",
-                            safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                            cancelorders=True, hours=0.3, regime_context=regime_ctx)
-                    elif new_ktrend == -1:
-                        print(f"[KALMAN-PRIMARY] {symbol} ->DOWN: initiating SELL")
-                        track_and_place_order(
-                            "SELL", symbol, 1, current_price, current_price,
-                            reason="kalman_primary_down",
-                            safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                            cancelorders=True, hours=0.3, regime_context=regime_ctx)
+                        and new_ktrend != prev_ktrend and not handle_placed_order
+                        and new_ktrend in (1, -1)):
+                    kp_dir, kp_side, kp_reason = (
+                        ("UP", "BUY", "kalman_primary_up")
+                        if new_ktrend == 1
+                        else ("DOWN", "SELL", "kalman_primary_down")
+                    )
+                    print(f"[KALMAN-PRIMARY] {symbol} ->{kp_dir}: initiating {kp_side}")
+                    track_and_place_order(
+                        kp_side, symbol, 1, current_price, current_price,
+                        reason=kp_reason,
+                        safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+                        cancelorders=True, hours=0.3, regime_context=regime_ctx)
             except Exception as _e:  # noqa: BLE001
                 print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
         self.instant_mgr.update_snapshot(symbol, **fields)

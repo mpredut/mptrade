@@ -21,14 +21,18 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import normalize_venue_name
+from cachepaths import canonical_symbol_key as _clean_regime_symbol_key, normalize_venue_name
 from providers.base import normalize_side
 
 
-def _clean_regime_symbol_key(symbol) -> str:
-    if isinstance(symbol, bool) or symbol is None:
-        return ""
-    return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+def _resolve_provider_name(provider) -> Optional[str]:
+    if provider is None or isinstance(provider, bool):
+        return None
+    p_raw = getattr(provider, "name", None)
+    p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else None)
+    if isinstance(p_str, str) and p_str.strip():
+        return normalize_venue_name(p_str)
+    return None
 
 
 def normalize_market_regime_snapshot(
@@ -182,12 +186,10 @@ class MarketRegimeContext:
         if provider is not None:
             if isinstance(provider, bool):
                 return False
-            p_raw = getattr(provider, "name", None)
-            p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else None)
-            if isinstance(p_str, str) and p_str.strip():
-                target_prov = normalize_venue_name(p_str)
+            target_prov = _resolve_provider_name(provider)
+            if target_prov is not None:
                 if self.provider is not None:
-                    if not isinstance(self.provider, str) or normalize_venue_name(self.provider) != target_prov:
+                    if _resolve_provider_name(self.provider) != target_prov:
                         return False
                 elif require_identity:
                     return False
@@ -195,6 +197,24 @@ class MarketRegimeContext:
                 return False
 
         return True
+
+    @staticmethod
+    def _coerce_decision(val):
+        if isinstance(val, Mapping):
+            return MarketRegimeDecision(
+                regime=str(val.get("regime", "unknown") or "unknown").strip().lower(),
+                gradient=val.get("gradient"),
+                epsilon=val.get("epsilon"),
+                strength=val.get("strength"),
+                fresh=_parse_bool_flag(val.get("fresh"), False),
+                reason=str(val.get("reason", "dict_decision") or "dict_decision"),
+                n_samples=val.get("n_samples"),
+                window_seconds=val.get("window_seconds"),
+                horizon=str(val.get("horizon", "unspecified") or "unspecified"),
+                source=str(val.get("source", "unknown") or "unknown"),
+                fallback_used=_parse_bool_flag(val.get("fallback_used"), False),
+            )
+        return val
 
     @classmethod
     def from_decision(
@@ -207,48 +227,25 @@ class MarketRegimeContext:
         benchmark_symbol: Optional[str] = None,
         benchmark_decision: Optional[MarketRegimeDecision] = None,
     ) -> "MarketRegimeContext":
-        if isinstance(decision, Mapping):
-            decision = MarketRegimeDecision(
-                regime=str(decision.get("regime", "unknown") or "unknown").strip().lower(),
-                gradient=decision.get("gradient"),
-                epsilon=decision.get("epsilon"),
-                strength=decision.get("strength"),
-                fresh=_parse_bool_flag(decision.get("fresh"), False),
-                reason=str(decision.get("reason", "dict_decision") or "dict_decision"),
-                n_samples=decision.get("n_samples"),
-                window_seconds=decision.get("window_seconds"),
-                horizon=str(decision.get("horizon", "unspecified") or "unspecified"),
-                source=str(decision.get("source", "unknown") or "unknown"),
-                fallback_used=_parse_bool_flag(decision.get("fallback_used"), False),
-            )
-        if isinstance(benchmark_decision, Mapping):
-            benchmark_decision = MarketRegimeDecision(
-                regime=str(benchmark_decision.get("regime", "unknown") or "unknown").strip().lower(),
-                gradient=benchmark_decision.get("gradient"),
-                epsilon=benchmark_decision.get("epsilon"),
-                strength=benchmark_decision.get("strength"),
-                fresh=_parse_bool_flag(benchmark_decision.get("fresh"), False),
-                reason=str(benchmark_decision.get("reason", "dict_decision") or "dict_decision"),
-                n_samples=benchmark_decision.get("n_samples"),
-                window_seconds=benchmark_decision.get("window_seconds"),
-                horizon=str(benchmark_decision.get("horizon", "unspecified") or "unspecified"),
-                source=str(benchmark_decision.get("source", "unknown") or "unknown"),
-                fallback_used=_parse_bool_flag(benchmark_decision.get("fallback_used"), False),
-            )
+        decision = cls._coerce_decision(decision)
+        benchmark_decision = cls._coerce_decision(benchmark_decision)
         trend = "flat" if decision.regime == "sideways" else decision.regime
-        eval_ts = time.time() if (evaluated_at is None or isinstance(evaluated_at, bool)) else (safe_float(evaluated_at, default=0.0) if safe_float(evaluated_at, default=0.0) is not None else 0.0)
-        dur_s = 0.0 if (trend_duration_seconds is None or isinstance(trend_duration_seconds, bool)) else (safe_float(trend_duration_seconds, default=-1.0) if safe_float(trend_duration_seconds, default=-1.0) is not None else -1.0)
+        eval_ts = (
+            time.time()
+            if (evaluated_at is None or isinstance(evaluated_at, bool))
+            else safe_float(evaluated_at, default=0.0)
+        )
+        dur_s = (
+            0.0
+            if (trend_duration_seconds is None or isinstance(trend_duration_seconds, bool))
+            else safe_float(trend_duration_seconds, default=-1.0)
+        )
         sym_norm = (
             symbol.strip().upper()
             if isinstance(symbol, str) and symbol.strip()
             else None
         )
-        p_raw = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
-        prov_norm = (
-            normalize_venue_name(p_raw)
-            if isinstance(p_raw, str) and p_raw.strip()
-            else None
-        )
+        prov_norm = _resolve_provider_name(provider)
         bench_norm = (
             benchmark_symbol.strip().upper()
             if isinstance(benchmark_symbol, str) and benchmark_symbol.strip()
@@ -606,14 +603,8 @@ class MarketRegimeService:
         if not snapshot or not isinstance(snapshot, Mapping):
             return None
         for field in ("observed_at", "ts"):
-            raw = snapshot.get(field)
-            if isinstance(raw, bool):
-                continue
-            try:
-                value = float(raw)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(value) and value > 0:
+            value = safe_pos_float(snapshot.get(field), default=None)
+            if value is not None:
                 return value / 1000.0 if value > 100_000_000_000 else value
         return None
 
@@ -1216,8 +1207,7 @@ class MarketRegimeService:
         return decision
 
     @staticmethod
-    def horizon_sample_capacity(horizon="short", interval_min=None) -> int:
-        """Return the maximum samples in the canonical horizon window."""
+    def _resolve_horizon_window(horizon="short", interval_min=None):
         if isinstance(interval_min, bool):
             raise ValueError("the regime interval must be positive")
         parsed = MarketRegimeHorizon.parse(horizon)
@@ -1229,6 +1219,14 @@ class MarketRegimeService:
             if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
                 raise ValueError("the regime interval must be positive")
             interval = im_i
+        return parsed, interval, window_seconds
+
+    @classmethod
+    def horizon_sample_capacity(cls, horizon="short", interval_min=None) -> int:
+        """Return the maximum samples in the canonical horizon window."""
+        _parsed, interval, window_seconds = cls._resolve_horizon_window(
+            horizon, interval_min=interval_min
+        )
         return max(3, int(math.ceil(window_seconds / (interval * 60))))
 
     _EVAL_CLOSES_CACHE: dict = {}
@@ -1237,17 +1235,9 @@ class MarketRegimeService:
     def evaluate_closes_for_horizon(self, closes, *, horizon="short",
                                     interval_min=None) -> MarketRegimeDecision:
         """Classify supplied closes with the canonical window for one horizon."""
-        if isinstance(interval_min, bool):
-            raise ValueError("the regime interval must be positive")
-        parsed = MarketRegimeHorizon.parse(horizon)
-        configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
-        if interval_min is None:
-            interval = configured_interval
-        else:
-            im_i = safe_pos_int(interval_min, default=None)
-            if im_i is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
-                raise ValueError("the regime interval must be positive")
-            interval = im_i
+        parsed, interval, window_seconds = self._resolve_horizon_window(
+            horizon, interval_min=interval_min
+        )
         return self._annotate(
             self.evaluate_closes(
                 closes, interval_min=interval, window_seconds=window_seconds,

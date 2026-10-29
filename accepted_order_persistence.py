@@ -96,12 +96,12 @@ def complete_accepted_claim(
     client_order_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
     qty = claim_dict.get("qty")
     px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
-    if isinstance(qty, bool) or (isinstance(qty, float) and not math.isfinite(qty)):
-        qty = None
-    if isinstance(px, bool) or (isinstance(px, float) and not math.isfinite(px)):
-        px = None
     qty_f = safe_float(qty, default=None)
     px_f = safe_float(px, default=None)
+    if isinstance(qty, (bool, float)) and qty_f is None:
+        qty = None
+    if isinstance(px, (bool, float)) and px_f is None:
+        px = None
     val_f = (qty_f * px_f) if (qty_f is not None and px_f is not None) else None
     val_str = f"~${val_f:.2f}" if (val_f is not None and math.isfinite(val_f)) else "N/A"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

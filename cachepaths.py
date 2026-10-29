@@ -676,6 +676,25 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     return None
 
 
+def canonical_symbol_key(symbol: object) -> str:
+    """Return a delimiter-stripped uppercase symbol key with canonical base asset aliases
+    (e.g. ``XBT/USDC`` -> ``BTCUSDC``, ``XXBTZUSD`` -> ``BTCUSD``, ``XDG-USD`` -> ``DOGEUSD``,
+    ``SPCX_US_EQ`` -> ``SPCXUSD``, ``XBT`` -> ``BTC``) while preserving quote currency."""
+    if isinstance(symbol, bool) or symbol is None:
+        return ""
+    raw_str = str(symbol).strip()
+    cleaned = raw_str.upper().replace("/", "").replace("-", "").replace("_", "")
+    if not cleaned:
+        return ""
+    if cleaned == "USDCUSDT":
+        return "USDCUSDT"
+    parts = split_symbol_assets(raw_str)
+    if parts is not None:
+        base, quote = parts
+        return f"{_CANONICAL_BASE_ALIASES.get(base, base)}{quote}"
+    return canonical_base_asset(raw_str) or cleaned
+
+
 def resolve_binance_lookup_symbol(symbol: object) -> str:
     """Resolve a cross-venue symbol to its canonical Binance ``<BASE>USDT`` lookup symbol."""
     if not isinstance(symbol, str):

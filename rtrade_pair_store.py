@@ -8,7 +8,8 @@ import os
 import threading
 import time
 
-from botcore import _parse_bool_flag, safe_pos_float
+from botcore import _parse_bool_flag, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+from cachepaths import canonical_symbol_key
 from providers.base import _clean_single_order_id, normalize_side
 from lock import FileLock
 from state_io import atomic_write_json
@@ -32,14 +33,9 @@ class RTradePairStore:
         self._mem_lock = threading.Lock()
         self._mem_data = {"version": 1, "pairs": {}}
         if isinstance(terminal_retention, (bool, dict, list, tuple, set)) or terminal_retention is None:
-            ret_i = 200
+            self.terminal_retention = 200
         else:
-            try:
-                ret_f = float(terminal_retention)
-                ret_i = max(0, int(ret_f)) if math.isfinite(ret_f) else 200
-            except (TypeError, ValueError, OverflowError):
-                ret_i = 200
-        self.terminal_retention = ret_i
+            self.terminal_retention = safe_nonneg_int(terminal_retention, default=200)
 
     @staticmethod
     def _clean_store_id(value) -> str:
@@ -208,18 +204,7 @@ class RTradePairStore:
                             f"invalid rtrade checkpoint snapshot "
                             f"for {pair_id!r}")
                     for field in ("filled_qty", "cost", "fee"):
-                        raw_val = snapshot.get(field, 0.0)
-                        if isinstance(raw_val, bool):
-                            raise ValueError(
-                                f"invalid rtrade checkpoint {field} "
-                                f"for {pair_id!r}")
-                        try:
-                            value = float(raw_val)
-                        except (TypeError, ValueError, OverflowError) as exc:
-                            raise ValueError(
-                                f"invalid rtrade checkpoint {field} "
-                                f"for {pair_id!r}") from exc
-                        if not math.isfinite(value) or value < 0:
+                        if safe_nonneg_float(snapshot.get(field, 0.0), default=None) is None:
                             raise ValueError(
                                 f"invalid rtrade checkpoint {field} "
                                 f"for {pair_id!r}")
@@ -391,17 +376,7 @@ class RTradePairStore:
         self.mutate(op)
 
     def checkpoint(self, pair_id, state, terminal=False):
-        if not isinstance(state, dict):
-            raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
-        term_flag = self._parse_bool_flag(terminal, False)
-        pid_clean = str(pair_id).strip() if isinstance(pair_id, str) else pair_id
-        def op(pairs):
-            rec = pairs[pid_clean]
-            rec["state"] = state
-            rec["phase"] = state.get("phase")
-            rec["terminal"] = term_flag
-            rec["updated_ts"] = time.time()
-        self.mutate(op)
+        self.checkpoint_many([(pair_id, state, terminal)])
 
     def checkpoint_many(self, checkpoints):
         """Use one lock and fsync for every round processed during the tick."""
@@ -426,12 +401,12 @@ class RTradePairStore:
     def active(self, symbol):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return []
-        sym_norm = symbol.strip().upper()
+        sym_key = canonical_symbol_key(symbol)
         lock_ctx = FileLock(self.lock_path) if self.lock_path else self._mem_lock
         with lock_ctx:
             pairs = self._read().get("pairs", {})
         return [
             rec for rec in pairs.values()
-            if str(rec.get("symbol") or "").strip().upper() == sym_norm
+            if canonical_symbol_key(rec.get("symbol")) == sym_key
             and not rec.get("terminal")
         ]
