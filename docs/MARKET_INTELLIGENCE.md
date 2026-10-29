@@ -108,14 +108,14 @@ Market microstructure monitoring that tracks institutional and leveraged market 
 
 Blends retail sentiment indices with quantitative LLM reasoning:
 - **Fear & Greed Index (`FearGreedCollector`)**:
-  - Cached to `cachedb/fear_greed_cache.json` with a 1-hour TTL.
+  - Cached to `cachedb/fear_greed_collect.json` with a 1-hour TTL.
   - Triggers contrarian dip-buys on Extreme Fear ($\le 22$) and trims on Extreme Greed ($\ge 85$).
   - `ExtremeGreedGuard`: Scales down BUY orders at Greed $\ge 80$ and issues a hard veto at $\ge 90$ to avoid retail blow-off tops.
 - **Market Breadth Collector (`MarketBreadthCollector`)**:
   - Calculates Binance 24h advance/decline ratios across active pairs to detect market-wide exhaustion or panic washouts.
 - **Google Gemini Integration via `agy` CLI (`gemini_client.py`)**:
   - Runs `/home/predut/.local/bin/agy --model gemini-3.8-flash-low -p ...` directly leveraging the active Google paid subscription with zero API keys or external credentials required, with standard REST fallback.
-  - `SentimentAdvisor`: Runs a periodic 3-hour macro market assessment stored in `cachedb/sentiment_advisor_eval.json`. Gemini's analytical prompt correlates $\Delta P$, $\Delta OI$, Taker Buy/Sell ratio, and funding rates to explicitly evaluate short squeeze probability and differentiate forced liquidations from orderly de-risking.
+  - `SentimentAdvisor`: Runs a periodic 3-hour macro market assessment stored in `cachedb/sentiment_eval.json`. Gemini's analytical prompt correlates $\Delta P$, $\Delta OI$, Taker Buy/Sell ratio, and funding rates to explicitly evaluate short squeeze probability and differentiate forced liquidations from orderly de-risking.
   - `HighStakeGuard`: A specialized risk veto triggered **for orders $\ge 400$ EUR** (`llm_min_notional_eur = 400.0`). Evaluates proposed order rationale, risk/reward, and market context before capital commitment. Sub-400 EUR orders pass immediately with 0 ms overhead.
 
 ---
@@ -124,7 +124,7 @@ Blends retail sentiment indices with quantitative LLM reasoning:
 
 Protects the portfolio from macroeconomic black swan events:
 - **Collector (`NewsFeedCollector`)**:
-  - Continuously polls Google News RSS feeds every 120 seconds, maintaining a 4-hour rolling deduplicated pool in `cachedb/news_feed_history.json`.
+  - Continuously polls Google News RSS feeds every 120 seconds, maintaining a 4-hour rolling deduplicated pool in `cachedb/news_feed_collect.json`.
 - **Analyzer (`GeopoliticalThreatAnalyzer`)**:
   - Three-stage pipeline: Stage 1 keyword screening, Stage 2 digest check, and Stage 3 Google Gemini LLM reasoning running every **4.5 hours (16200s)**.
 - **Guard (`GeopoliticalShockGuard`)**:
@@ -220,7 +220,7 @@ The framework was tested using `offline/research/intelligence_backtest.py` acros
 All persistent intelligence state is isolated to `cachedb/`:
 - `cachedb/cache_T_trend.json`: Empirically calibrated Weibull trend survival parameters per symbol.
 - `cachedb/gemini_macro_advisor.json`: 30-minute periodic LLM macro market synthesis.
-- `cachedb/fear_greed_cache.json`: Alternative.me Fear & Greed index cache.
+- `cachedb/fear_greed_collect.json`: Alternative.me Fear & Greed index cache.
 - `cachedb/geopolitical_threat_state.json`: Macro news shock scores and Gemini risk grade.
 - `offline/research/intelligence_backtest_results.json`: Detailed historical backtest outcome records.
 - `offline/research/verify_optimizations_parity.py`: Exhaustive numerical parity verification suite (30,000+ randomized trials).

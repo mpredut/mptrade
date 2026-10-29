@@ -86,7 +86,7 @@ LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem 
 
 ### A. Consilierul Periodic de Piață (`SentimentAdvisor`) — Pilonul 3
 - **Fișier sursă**: `intelligence/sentiment/sentiment_advisor.py`
-- **Output**: `cachedb/sentiment_advisor_eval.json`
+- **Output**: `cachedb/sentiment_eval.json`
 - **Ce evaluează**:
   - Fear & Greed Index (valoare, etichetă, variație pe 7 zile).
   - 24h Market Breadth (% monede pe plus, schimbare mediană, regim).
@@ -118,7 +118,7 @@ LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem 
 - **Fișier sursă**: `intelligence/macro/geopolitical_analyzer.py`
 - **Output**: `cachedb/geopolitical_threat_state.json`
 - **Pipeline pe 3 Etape**:
-  1. *Stage 1 (Regex Screening)*: Filtrare locală rapidă pe cuvinte cheie în feed-urile RSS Google News colectate la fiecare **120 secunde** într-un pool rulant de 4 ore (`cachedb/news_feed_history.json`).
+  1. *Stage 1 (Regex Screening)*: Filtrare locală rapidă pe cuvinte cheie în feed-urile RSS Google News colectate la fiecare **120 secunde** într-un pool rulant de 4 ore (`cachedb/news_feed_collect.json`).
   2. *Stage 2 (Digest Check)*: Verificare frecvență și densitate amenințări.
   3. *Stage 3 (LLM Reasoning)*: Invocare Gemini Flash pentru analiza geopolitică detaliată a întregului pool agregat.
 - **Frecvență și Trigger**:

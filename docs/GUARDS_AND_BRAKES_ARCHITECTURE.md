@@ -104,7 +104,7 @@ To ensure absolute transparency between microsecond execution and qualitative re
 * **Guards & Sub-Components:**
   1. `GeopoliticalThreatShield` (`[P3A · GEO-SHIELD]`):
      - *Async Background Cycle:* Evaluated every 4.5 hours (`macro_llm_interval_h = 4.5`) via LLM reasoning on international news feeds (`cachedb/news_feed_collect.json`).
-     - *Output File:* `cachedb/geopolitical_threat_eval.json`.
+     - *Output File:* `cachedb/geopolitical_eval.json`.
      - *Pre-Trade Check:* $< 1\text{ ms}$ local disk cache read on every BUY order.
      - *Threat Levels:*
        - `NORMAL` ($\text{risk} < 0.35$): `ALLOW`.
@@ -114,7 +114,7 @@ To ensure absolute transparency between microsecond execution and qualitative re
   2. `SentimentAdvisor` (`[P3B · SENTIMENT]`):
      - *Async Trigger:* Periodic background cadence every 3.0 hours (`sentiment_advisor_interval_h = 3.0`).
      - *Telemetry:* `cachedb/fear_greed_collect.json`, 24h market breadth (advancers/decliners), top trader long/short exposure.
-     - *Output File:* `cachedb/sentiment_advisor_eval.json`.
+     - *Output File:* `cachedb/sentiment_eval.json`.
      - *Regimes:*
        - **Market Bias:** `BULLISH` | `NEUTRAL` | `CAUTION` | `BEARISH`
        - **Recommended Action:** `ALLOW` | `TRIM_PROFITS` | `DEFENSIVE` | `HALT_NEW_BUYS`
@@ -168,8 +168,8 @@ cachedb/
 ├── whale_oi_collect.json            # P2: Open interest & whale net position telemetry
 ├── fear_greed_collect.json          # P3: Fear & Greed index (0-100)
 ├── news_feed_collect.json           # P3: Raw multi-source international news headlines
-├── sentiment_advisor_eval.json      # P3: Sentiment Advisor evaluation (3.0h LLM cycle)
-└── geopolitical_threat_eval.json    # P3: Geopolitical threat assessment (4.5h LLM cycle)
+├── sentiment_eval.json      # P3: Sentiment Advisor evaluation (3.0h LLM cycle)
+└── geopolitical_eval.json    # P3: Geopolitical threat assessment (4.5h LLM cycle)
 ```
 
 ---

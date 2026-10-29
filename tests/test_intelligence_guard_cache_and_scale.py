@@ -2659,8 +2659,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert ob_col.fetch("BTCUSDC", allow_network=False) is None
 
         # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous file when primary is corrupt
-        sa_file = tmp_path / "sentiment_advisor_eval.json"
-        sa_prev = tmp_path / "sentiment_advisor_eval.json.previous"
+        sa_file = tmp_path / "sentiment_eval.json"
+        sa_prev = tmp_path / "sentiment_eval.json.previous"
         sa_file.write_text("{corrupt", encoding="utf-8")
         sa_prev.write_text(
             json.dumps({"market_bias": "BEARISH", "risk_level": "HIGH", "confidence": 0.9, "summary": "ok", "key_risks": [], "recommended_action": "DEFENSIVE", "ts": 1234.0}),
@@ -2670,8 +2670,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert sa._cached_assessment is not None
         assert sa._cached_assessment.market_bias == "BEARISH"
 
-        geo_file = tmp_path / "geopolitical_threat_eval.json"
-        geo_prev = tmp_path / "geopolitical_threat_eval.json.previous"
+        geo_file = tmp_path / "geopolitical_eval.json"
+        geo_prev = tmp_path / "geopolitical_eval.json.previous"
         geo_file.write_text("{corrupt", encoding="utf-8")
         geo_prev.write_text(
             json.dumps({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered", "recommended_brake": "DOWNSCALE_50", "headlines_analyzed": 5, "ts": 5678.0}),
@@ -3191,8 +3191,8 @@ def test_iteration13_assetguardian_p3b_recovery_and_gllm2_bypass_survival_usdcus
 
     # 1. AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,
     #    and _p3b_threshold_multipliers honors GLLM2 bypass.
-    p3b_file = tmp_path / "sentiment_advisor_eval.json"
-    p3b_prev = tmp_path / "sentiment_advisor_eval.json.previous"
+    p3b_file = tmp_path / "sentiment_eval.json"
+    p3b_prev = tmp_path / "sentiment_eval.json.previous"
     p3b_file.write_text("{corrupted_json", encoding="utf-8")
     p3b_prev.write_text(
         json.dumps(
@@ -3932,8 +3932,8 @@ def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_
     assert h_val is not None and math.isfinite(h_val)
 
     # 5. GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous
-    geo_path = tmp_path / "geopolitical_threat_eval.json"
-    geo_prev = tmp_path / "geopolitical_threat_eval.json.previous"
+    geo_path = tmp_path / "geopolitical_eval.json"
+    geo_prev = tmp_path / "geopolitical_eval.json.previous"
     geo_path.write_text("{corrupt", encoding="utf-8")
     geo_prev.write_text(
         json.dumps(
@@ -3954,8 +3954,8 @@ def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_
     assert geo_analyzer._cached_assessment.risk_score == pytest.approx(0.1)
     assert geo_analyzer._cached_assessment.ts == pytest.approx(0.0)
 
-    sent_path = tmp_path / "sentiment_advisor_eval.json"
-    sent_prev = tmp_path / "sentiment_advisor_eval.json.previous"
+    sent_path = tmp_path / "sentiment_eval.json"
+    sent_prev = tmp_path / "sentiment_eval.json.previous"
     sent_path.write_text("{corrupt", encoding="utf-8")
     sent_prev.write_text(
         json.dumps(
@@ -4872,7 +4872,7 @@ def test_iteration22_guard_bypass_union_mt_state_clock_skew_kraken_cache_and_tel
         json.dumps({"items": {"TAOUSDC": {"dynamic": {"222": {"slope_full": None}, "900": {"slope_full": "bad"}}}}}),
         encoding="utf-8",
     )
-    (tmp_path / "sentiment_advisor_eval.json").write_text(json.dumps({}), encoding="utf-8")
+    (tmp_path / "sentiment_eval.json").write_text(json.dumps({}), encoding="utf-8")
     telem = collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(tmp_path))
     assert telem.get("Dynamic Multi-Window Slopes") == "3.7m=+0.00000, 15m=+0.00000, 2.5h=+0.00000"
     assert "Macro Sentiment Bias" not in telem
@@ -5293,7 +5293,7 @@ def test_iteration25_smart_sl_clock_skew_post_stop_nan_internal_sentiment_guards
     ).allowed is True
 
     # 4. GeopoliticalThreatAnalyzer & SentimentAdvisor _load_from_disk tolerate null JSON fields
-    geo_file = tmp_path / "geopolitical_threat_eval.json"
+    geo_file = tmp_path / "geopolitical_eval.json"
     geo_file.write_text(
         json.dumps({
             "threat_level": None,
@@ -5311,7 +5311,7 @@ def test_iteration25_smart_sl_clock_skew_post_stop_nan_internal_sentiment_guards
     assert geo_analyzer._cached_assessment.recommended_brake == "NONE"
     assert geo_analyzer._cached_assessment.headlines_analyzed == 0
 
-    adv_file = tmp_path / "sentiment_advisor_eval.json"
+    adv_file = tmp_path / "sentiment_eval.json"
     adv_file.write_text(
         json.dumps({
             "market_bias": None,
@@ -8169,7 +8169,7 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
     # 3. AutonomousOvernightMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
     cachedb = tmp_path / "cachedb"
     cachedb.mkdir(parents=True, exist_ok=True)
-    (cachedb / "geopolitical_threat_eval.json").write_text("[]", encoding="utf-8")
+    (cachedb / "geopolitical_eval.json").write_text("[]", encoding="utf-8")
     (cachedb / "auto_cryptotrade_executor_eval.json").write_text(
         json.dumps({"mode": "enforce", "market_trading_decision": None}),
         encoding="utf-8",
@@ -12847,7 +12847,7 @@ def test_iteration123_bybit_liq_news_fear_greed_advisor_and_gemini_cid_safety(tm
     assert fg_snap is not None and fg_snap.timestamp == 1760000000.0
 
     # 4. SentimentAdvisor filters boolean/blank key_risks and boolean summary from disk
-    adv_path = tmp_path / "sentiment_advisor_eval.json"
+    adv_path = tmp_path / "sentiment_eval.json"
     adv_path.write_text(
         json.dumps({
             "market_bias": "BULLISH",

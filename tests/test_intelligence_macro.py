@@ -751,7 +751,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert "binance.com" in get_market_breadth_endpoint_url()
         assert "USDC" in get_breadth_excluded_bases()
         assert "USDT" in get_breadth_quote_suffixes()
-        assert "sentiment_advisor_eval.json" in get_cache_filenames("sentiment_advisor_files")
+        assert "sentiment_eval.json" in get_cache_filenames("sentiment_advisor_files")
 
         urls = get_specialized_rss_urls(cache_dir=str(tmp_path))
         assert len(urls) >= 5

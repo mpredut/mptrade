@@ -6,7 +6,7 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 2. Providing shared coercion, cache-freshness, object/dict attribute extraction, symbol detection, bounded thread
    execution, and heartbeat inspection primitives.
 3. Fetching from curated specialized editorial RSS feeds + dynamically discovering emerging crisis terms in
-   ``cachedb/macro_dynamic_lexicon.json``.
+   ``cachedb/macro_lexicon_collect.json``.
 4. Resolving global trading sessions (Europe / US / Asia) and context-adaptive dynamic evaluation intervals.
 5. Providing unified cached telemetry & assessment loaders across all consumers.
 """
@@ -749,7 +749,7 @@ def update_dynamic_lexicon(
     source: str = "feed_discovery",
     now_ts: Optional[float] = None,
 ) -> Dict[str, Tuple[str, ...]]:
-    """Persist newly discovered crisis terms into ``cachedb/macro_dynamic_lexicon.json``."""
+    """Persist newly discovered crisis terms into ``cachedb/macro_lexicon_collect.json``."""
     from state_io import read_recovering_previous, save_json_state
 
     now = resolve_now_ts(now_ts)
@@ -1369,7 +1369,7 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
     from state_io import read_recovering_previous
 
-    fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_threat_eval.json")
+    fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_eval.json")
     cand_path = os.path.join(cache_dir, fname)
     try:
         data = read_recovering_previous(cand_path, json.loads, default=None)

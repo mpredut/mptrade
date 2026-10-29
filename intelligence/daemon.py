@@ -82,7 +82,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         )
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
-            state_file=os.path.join(self.cache_dir, "geopolitical_threat_eval.json"),
+            state_file=os.path.join(self.cache_dir, "geopolitical_eval.json"),
         )
 
         self._last_orderbook_ts: Dict[str, float] = {}

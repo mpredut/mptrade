@@ -95,8 +95,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def _save_dual_cache(self, prefix: str, payload: Dict[str, Any]) -> None:
         from state_io import save_json_state
-        for suffix in ("collect.json", "cache.json"):
-            save_json_state(os.path.join(self.cache_dir, f"{prefix}_{suffix}"), payload, indent=2)
+        save_json_state(os.path.join(self.cache_dir, f"{prefix}_collect.json"), payload, indent=2)
 
     def update_news(self, force: bool = False) -> bool:
         """Fetch breaking macro RSS headlines and update local rolling pool (zero LLM)."""

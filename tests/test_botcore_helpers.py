@@ -282,8 +282,8 @@ class TestCachepaths(unittest.TestCase):
             "market_breadth_metrics.json": "macro",
             "news_feed_snapshot.json": "macro",
             "macro_lexicon_collect.json": "macro",
-            "sentiment_advisor_eval.json": "macro",
-            "geopolitical_threat_eval.json": "macro",
+            "sentiment_eval.json": "macro",
+            "geopolitical_eval.json": "macro",
             "cache_order.json": "orders",
             "cache_orders_kraken.json": "orders",
             "cache_trades_hyperliquid.json": "orders",
@@ -304,7 +304,6 @@ class TestCachepaths(unittest.TestCase):
             "dev_regression_status.json": "system",
             "llm_topic_threads.json": "system",
             "notification_queue.jsonl": "system",
-            "procs.conf.reload": "system",
         }
         for filename, expected_domain in cases.items():
             self.assertEqual(

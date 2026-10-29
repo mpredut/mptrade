@@ -388,7 +388,7 @@ def mock_workspace(tmp_path):
     (logs / "bot1.log").write_text("heartbeat")
     (cachedb / "fleet1.heartbeat").write_text("heartbeat")
 
-    (cachedb / "geopolitical_threat_eval.json").write_text(json.dumps({
+    (cachedb / "geopolitical_eval.json").write_text(json.dumps({
         "threat_level": "ELEVATED",
         "risk_score": 0.65,
         "summary": "Active conflict attrition",
@@ -763,7 +763,7 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
 def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env):
     workspace, cache_dir, _ = temp_env
 
-    with open(os.path.join(cache_dir, "sentiment_advisor_eval.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "sentiment_eval.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "market_bias": "BEARISH",
@@ -775,7 +775,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
             },
             f,
         )
-    with open(os.path.join(cache_dir, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "geopolitical_eval.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "threat_level": "ELEVATED",
@@ -1452,7 +1452,7 @@ def test_reconciler_monitor_and_verify_tools_nan_bool_and_quote_hardening(temp_e
     assert persisted["market_trading_decision"]["confidence"] is None
 
     # 4. AutonomousOvernightMonitor sanitizes sensor floats, strips quotes in order_guard.conf, and parses latest_overnight.log
-    with open(os.path.join(cache_dir, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(cache_dir, "geopolitical_eval.json"), "w", encoding="utf-8") as f:
         json.dump({"threat_level": None, "risk_score": True, "summary": None}, f)
     with open(os.path.join(cache_dir, "fear_greed_collect.json"), "w", encoding="utf-8") as f:
         json.dump({"value": "bad_val"}, f)

@@ -32,7 +32,7 @@ from cachepaths import cache_path
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
 _SENTIMENT_FILENAMES = get_cache_filenames("sentiment_advisor_files")
-DEFAULT_CACHE_FILE = cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_advisor_eval.json")
+DEFAULT_CACHE_FILE = cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_eval.json")
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,7 @@ class SentimentAdvisor:
 
     def _effective_cache_file(self) -> str:
         if self.cache_file == DEFAULT_CACHE_FILE:
-            return cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_advisor_eval.json")
+            return cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_eval.json")
         return self.cache_file
 
     @staticmethod

@@ -157,7 +157,16 @@ class CacheLongTrendManager(CacheManagerInterface):
             "_CONFIG_ROOT",
             os.path.dirname(os.path.abspath(__file__)),
         )
-        trend_filename = os.path.join(config_root, "priceanalysis.json")
+        default_root = os.path.dirname(os.path.abspath(__file__))
+        if os.path.abspath(config_root) == os.path.abspath(default_root):
+            from cachepaths import cache_path
+            trend_filename = cache_path("priceanalysis.json")
+            if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
+                legacy_root_pa = os.path.join(config_root, "priceanalysis.json")
+                if os.path.exists(legacy_root_pa) or os.path.exists(previous_generation_path(legacy_root_pa)):
+                    trend_filename = legacy_root_pa
+        else:
+            trend_filename = os.path.join(config_root, "priceanalysis.json")
         backup_path = previous_generation_path(trend_filename)
         if not os.path.exists(trend_filename) and not os.path.exists(backup_path):
             print(f"[{self.cls_name}] File {trend_filename} does not exist.")

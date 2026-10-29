@@ -2293,7 +2293,7 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
     )
     assert gtcd.skip_news is False and gtcd.skip_external is False
 
-    geo_state = tmp_path / "geopolitical_threat_eval.json"
+    geo_state = tmp_path / "geopolitical_eval.json"
     geo_state.write_text(
         json.dumps(
             {
@@ -2314,7 +2314,7 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
     assert gta._cached_assessment.recommended_brake == "DOWNSCALE_50"
     assert gta._cached_assessment.is_fallback is False
 
-    sa_state = tmp_path / "sentiment_advisor_eval.json"
+    sa_state = tmp_path / "sentiment_eval.json"
     sa_state.write_text(
         json.dumps(
             {

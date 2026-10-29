@@ -36,7 +36,6 @@ cachedb/
 # State files (*.json in root and subdirectories are runtime states, except tracked schema/config)
 */**/*.json
 .*_state.json
-priceanalysis.json
 kraken_trades_full.json
 last_watch_config.json
 backtest_proposals.json

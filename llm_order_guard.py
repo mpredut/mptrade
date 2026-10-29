@@ -5,10 +5,10 @@ Single symmetric coordinator for all LLM-powered trading guards:
     Real-time pre-trade LLM validation (HighStakeGuard >= 700 USD & PostStopReentryGuard).
     Sub-700 USD orders pass with 0 ms latency (zero overhead).
 - GLLM2 (LLMSentimentGuardSpec / llm_sentiment):
-    3h periodic LLM Macro Sentiment Advisor evaluation (sentiment_advisor_eval.json:
+    3h periodic LLM Macro Sentiment Advisor evaluation (sentiment_eval.json:
     Fear & Greed, Market Breadth, Crypto News).
 - GLLM3 (LLMGeopoliticalGuardSpec / llm_geopolitical):
-    4.5h periodic LLM Geopolitical & Energy Black Swan shock shield (geopolitical_threat_eval.json:
+    4.5h periodic LLM Geopolitical & Energy Black Swan shock shield (geopolitical_eval.json:
     CRITICAL_SHOCK -> BUY veto, ELEVATED -> 50% BUY downscale, NORMAL -> 0 ms pass).
 """
 

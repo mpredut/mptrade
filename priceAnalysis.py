@@ -24,7 +24,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_symbol_key
+from cachepaths import cache_path, canonical_symbol_key
 from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
@@ -755,7 +755,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
 # Persist all trend results with human-readable output.
 def write_all_trends(all_trends, filename=None):
     """Atomically write trend results and display a human-readable summary."""
-    filename = filename or os.path.join(_CONFIG_ROOT, "priceanalysis.json")
+    filename = filename or cache_path("priceanalysis.json")
     if not isinstance(all_trends, dict):
         all_trends = {}
 

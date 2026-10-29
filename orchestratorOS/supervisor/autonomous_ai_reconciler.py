@@ -812,13 +812,13 @@ class AutonomousAIReconciler:
             snapshot.market_breadth = _with_age_min(data, mb_path)
 
         # 3. Macro Sentiment Advisor sensor
-        sa_path = os.path.join(self.cache_dir, "sentiment_advisor_eval.json")
+        sa_path = os.path.join(self.cache_dir, "sentiment_eval.json")
         data = _read_json(sa_path)
         if isinstance(data, dict) and data:
             snapshot.sentiment_advisor = _with_age_min(data, sa_path)
 
         # 4. Geopolitical Threat Shield sensor + live 1-minute Breaking News RSS feed
-        gt_path = os.path.join(self.cache_dir, "geopolitical_threat_eval.json")
+        gt_path = os.path.join(self.cache_dir, "geopolitical_eval.json")
         data = _read_json(gt_path)
         if isinstance(data, dict) and data:
             snapshot.geopolitical_threat = _with_age_min(data, gt_path)

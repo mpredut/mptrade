@@ -655,7 +655,7 @@ def collect_pretrade_telemetry(
 
     # 5. Macro Sentiment Bias & Fear/Greed Index (Pillar 3)
     try:
-        m_data = read_recovering_previous(os.path.join(cachedb_dir, "sentiment_advisor_eval.json"), json.loads, default=None)
+        m_data = read_recovering_previous(os.path.join(cachedb_dir, "sentiment_eval.json"), json.loads, default=None)
         if isinstance(m_data, dict):
             bias = str(m_data.get("market_bias") or "").strip()
             risk = str(m_data.get("risk_level") or "").strip()
@@ -678,7 +678,7 @@ def collect_pretrade_telemetry(
 
     # 6. Geopolitical Threat Shield (Pillar 4)
     try:
-        g_data = read_recovering_previous(os.path.join(cachedb_dir, "geopolitical_threat_eval.json"), json.loads, default=None)
+        g_data = read_recovering_previous(os.path.join(cachedb_dir, "geopolitical_eval.json"), json.loads, default=None)
         if isinstance(g_data, dict):
             level = g_data.get("threat_level", "")
             if level is not None and not isinstance(level, bool) and str(level).strip() != "":

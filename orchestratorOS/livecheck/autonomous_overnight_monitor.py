@@ -171,7 +171,7 @@ class AutonomousOvernightMonitor:
             return data if isinstance(data, dict) else None
 
         # 1. Geopolitical Threat Sensor
-        geo = _read("geopolitical_threat_eval.json")
+        geo = _read("geopolitical_eval.json")
         if geo:
             sensors["geopolitical_threat"] = {
                 "threat_level": str(geo.get("threat_level") or "NORMAL"),
@@ -180,7 +180,7 @@ class AutonomousOvernightMonitor:
             }
 
         # 2. Macro Sentiment Advisor
-        macro = _read("sentiment_advisor_eval.json")
+        macro = _read("sentiment_eval.json")
         if macro:
             sensors["sentiment_advisor"] = {
                 "market_bias": str(macro.get("market_bias") or "NEUTRAL"),

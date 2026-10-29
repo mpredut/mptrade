@@ -706,9 +706,9 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         # 3. AutonomousOvernightMonitor.gather_sensor_status: recovers from .previous when primary is missing or corrupt
         cachedb = os.path.join(self._temp_dir.name, "cachedb")
         os.makedirs(cachedb, exist_ok=True)
-        with open(os.path.join(cachedb, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(cachedb, "geopolitical_eval.json"), "w", encoding="utf-8") as f:
             f.write("{corrupt")
-        with open(os.path.join(cachedb, "geopolitical_threat_eval.json.previous"), "w", encoding="utf-8") as f:
+        with open(os.path.join(cachedb, "geopolitical_eval.json.previous"), "w", encoding="utf-8") as f:
             json.dump({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered"}, f)
         mon = AutonomousOvernightMonitor(workspace_dir=self._temp_dir.name)
         sensors = mon.gather_sensor_status()
