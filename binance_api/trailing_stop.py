@@ -53,13 +53,14 @@ from order_retry import (
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     TrailingCore,
     build_trailing_order_intent,
+    extract_short_trend_slope,
     reconcile_trailing_pending_order,
     should_sell,
     sync_trailing_retry_count,
 )
 from botcore import (_parse_bool_flag, load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)  # noqa: E402
-from cachepaths import cache_path  # noqa: E402
+from cachepaths import cache_path, canonical_symbol_key  # noqa: E402
 
 DEFAULT_STATE = cache_path("trailing_state.json")
 
@@ -118,14 +119,9 @@ if not 1 <= REBUY_TREND_DAYS < 1000:
 
 def _finite(value, *, name: str, minimum=None, maximum=None) -> float:
     """Normalize one financial/runtime input or fail before the live loop starts."""
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be numeric")
-    try:
-        result = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be numeric") from exc
-    if not math.isfinite(result):
-        raise ValueError(f"{name} must be finite")
+    result = safe_float(value, default=None)
+    if result is None:
+        raise ValueError(f"{name} must be a finite numeric value")
     if minimum is not None and result < minimum:
         raise ValueError(f"{name} must be >= {minimum}")
     if maximum is not None and result > maximum:
@@ -177,13 +173,22 @@ class TrailingStop:
     def _save(self, state: dict):
         self.core.save(state)
 
+    @staticmethod
+    def _lookup_symbol_entry(mapping: dict, symbol: str):
+        sym_norm = str(symbol).strip().upper()
+        canon = canonical_symbol_key(sym_norm)
+        for cand in (sym_norm, canon, symbol):
+            if cand and cand in mapping:
+                return mapping[cand]
+        return None
+
     def trail_pct_for(self, symbol: str) -> float:
         if isinstance(symbol, bool) or symbol is None:
             raise KeyError(symbol)
-        sym_norm = str(symbol).strip().upper()
-        if sym_norm in TRAIL_PCT:
-            return TRAIL_PCT[sym_norm]
-        return TRAIL_PCT[symbol]
+        val = self._lookup_symbol_entry(TRAIL_PCT, symbol)
+        if val is not None:
+            return val
+        raise KeyError(symbol)
 
     def rebuy_enabled_for(self, symbol: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy): on/off, or 'auto' to follow
@@ -192,23 +197,23 @@ class TrailingStop:
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         sym_norm = symbol.strip().upper()
-        mode = REBUY_MODE_BY_SYMBOL.get(sym_norm)
-        if mode is None and symbol in REBUY_MODE_BY_SYMBOL:
-            mode = REBUY_MODE_BY_SYMBOL.get(symbol)
+        canon = canonical_symbol_key(sym_norm)
+        mode = self._lookup_symbol_entry(REBUY_MODE_BY_SYMBOL, symbol)
         if mode is None:
             return REBUY_ENABLED
         if mode == "on":
             return True
         if mode == "off":
             return False
-        return self._long_trend_up(sym_norm or symbol)                    # auto
+        resolved_sym = canon if canon in REBUY_MODE_BY_SYMBOL else (sym_norm or symbol)
+        return self._long_trend_up(resolved_sym)                    # auto
 
     def rebuy_configured_for(self, symbol: str) -> bool:
         """Auto keeps a sold-position recovery intent even while its trend is down."""
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         sym_norm = symbol.strip().upper()
-        mode = REBUY_MODE_BY_SYMBOL.get(sym_norm, REBUY_MODE_BY_SYMBOL.get(symbol))
+        mode = self._lookup_symbol_entry(REBUY_MODE_BY_SYMBOL, symbol)
         if mode == "auto":
             return True
         return self.rebuy_enabled_for(sym_norm or symbol)
@@ -268,7 +273,7 @@ class TrailingStop:
         """
         try:
             pair_norm = str(pair or "").strip().upper()
-            spec = TRAILING_INSTRUMENTS.get(pair_norm) or TRAILING_INSTRUMENTS[pair]
+            spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair) or TRAILING_INSTRUMENTS[pair]
             asset = spec.base
             balances = [row for row in self._balances if isinstance(row, dict) and row.get("asset") == asset]
             if len(balances) != 1:
@@ -296,20 +301,9 @@ class TrailingStop:
         Errors return 0: optional filters do not block, but this is not a safety guarantee."""
         try:
             import cacheManager as cm
-            import pricewindow as pw
             snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
             if snap:
-                target = snap
-                fast_w = pw.fast_trend_window_for_symbol(symbol)
-                dyn = snap.get("dynamic") if isinstance(snap, dict) else None
-                if fast_w is not None and isinstance(dyn, dict):
-                    w_snap = dyn.get(f"{float(fast_w):g}")
-                    if isinstance(w_snap, dict):
-                        target = w_snap
-                raw_val = target.get('growth_coefficient')
-                if raw_val is None or isinstance(raw_val, bool):
-                    raw_val = target.get('gradient_recent', target.get('slope_small', 0.0))
-                return safe_float(raw_val, 0.0)
+                return extract_short_trend_slope(snap, symbol)
         except Exception:
             pass
         return 0.0

@@ -50,6 +50,7 @@ except ImportError:
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     TrailingCore,
     build_trailing_order_intent,
+    extract_short_trend_slope,
     reconcile_trailing_pending_order,
     should_sell,
     sync_trailing_retry_count,
@@ -198,15 +199,12 @@ class KrakenTrailing:
             return 0.0
         raw_bal = bx.get("balance", 0)
         raw_hold = bx.get("hold_trade", 0)
-        if isinstance(raw_bal, bool) or isinstance(raw_hold, bool):
+        bal_f = 0.0 if raw_bal is None else safe_float(raw_bal, default=None)
+        hold_f = 0.0 if raw_hold is None else safe_float(raw_hold, default=None)
+        if bal_f is None or hold_f is None:
             return 0.0
-        try:
-            bal_f = 0.0 if raw_bal is None else float(raw_bal)
-            hold_f = 0.0 if raw_hold is None else float(raw_hold)
-            free = bal_f - hold_f
-            return max(0.0, free) if (math.isfinite(bal_f) and math.isfinite(hold_f) and math.isfinite(free)) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
+        free = bal_f - hold_f
+        return max(0.0, free) if math.isfinite(free) else 0.0
 
     # -- HYPE short trend from cache_short_trend.json for optional filters --
     def _trend_value(self, pair: str) -> float:
@@ -230,18 +228,7 @@ class KrakenTrailing:
                     return 0.0
                 age = time.time() - raw_ts
                 if -5.0 <= age <= 15.0:
-                    import pricewindow as pw
-                    target = snap
-                    fast_w = pw.fast_trend_window_for_symbol(pair)
-                    dyn = snap.get("dynamic")
-                    if fast_w is not None and isinstance(dyn, dict):
-                        w_snap = dyn.get(f"{float(fast_w):g}")
-                        if isinstance(w_snap, dict):
-                            target = w_snap
-                    raw_grad = target.get("growth_coefficient")
-                    if raw_grad is None or isinstance(raw_grad, bool):
-                        raw_grad = target.get("gradient_recent", target.get("slope_small", 0.0))
-                    return self._safe_float(raw_grad, 0.0)
+                    return extract_short_trend_slope(snap, pair)
         except Exception:
             pass
         return 0.0
@@ -270,14 +257,7 @@ class KrakenTrailing:
         bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
-        raw_bal = bx.get("balance", 0)
-        if raw_bal is None or isinstance(raw_bal, bool):
-            return 0.0
-        try:
-            val = float(raw_bal)
-            return val if math.isfinite(val) and val >= 0 else 0.0
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
+        return safe_nonneg_float(bx.get("balance", 0), default=0.0)
 
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""
@@ -370,30 +350,20 @@ class KrakenTrailing:
                 persist(None)
                 from order_retry import TrackedOrderResult
                 return TrackedOrderResult(outcome="refused", intent=intent, status=None)
-            if (
-                side.upper() == "BUY"
-                and suggested_scale is not None
-                and not isinstance(suggested_scale, bool)
-                and math.isfinite(float(suggested_scale))
-                and 0.0 < float(suggested_scale) < 1.0
-            ):
-                scaled_qty = float(qty) * float(suggested_scale)
+            scale_f = safe_pos_float(suggested_scale, default=None)
+            if side.upper() == "BUY" and scale_f is not None and scale_f < 1.0:
+                scaled_qty = float(qty) * scale_f
                 round_fn = getattr(self.executor._executor, "round_quantity", None)
                 if callable(round_fn):
                     try:
-                        rq = round_fn(pair, scaled_qty)
-                        if rq is not None and not isinstance(rq, bool) and math.isfinite(float(rq)):
-                            scaled_qty = float(rq)
+                        rq = safe_float(round_fn(pair, scaled_qty), default=None)
+                        if rq is not None:
+                            scaled_qty = rq
                     except Exception:
                         pass
                 min_qty_fn = getattr(self.executor._executor, "min_order_qty", None)
                 raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
-                try:
-                    min_q = 0.0 if raw_min_q is None or isinstance(raw_min_q, bool) else float(raw_min_q)
-                except (TypeError, ValueError, OverflowError):
-                    min_q = 0.0
-                if not math.isfinite(min_q) or min_q < 0.0:
-                    min_q = 0.0
+                min_q = safe_nonneg_float(raw_min_q, default=0.0)
                 if not math.isfinite(scaled_qty) or scaled_qty <= 0 or (min_q > 0 and scaled_qty < min_q):
                     intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
                     persist(None)
@@ -440,17 +410,9 @@ class KrakenTrailing:
         limit = price * 1.005
         self._sync_retry_count_from_state(pair, "REBUY", persist)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        try:
-            low_f = float(raw_low) if raw_low is not None and not isinstance(raw_low, bool) else float(price)
-            anchor_val = low_f if math.isfinite(low_f) and low_f > 0 else float(price)
-        except (TypeError, ValueError, OverflowError):
-            anchor_val = float(price)
+        anchor_val = safe_pos_float(raw_low, default=float(price))
         raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
-        try:
-            sp_f = float(raw_sp) if raw_sp is not None and not isinstance(raw_sp, bool) else 0.0
-            sell_price_val = sp_f if math.isfinite(sp_f) and sp_f >= 0 else 0.0
-        except (TypeError, ValueError, OverflowError):
-            sell_price_val = 0.0
+        sell_price_val = safe_nonneg_float(raw_sp, default=0.0)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, limit,
             anchor=anchor_val,

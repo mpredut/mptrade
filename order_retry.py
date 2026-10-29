@@ -45,7 +45,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import normalize_venue_name
+from cachepaths import canonical_symbol_key, normalize_venue_name
 
 from lock import FileLock
 from providers.base import (
@@ -387,8 +387,8 @@ def _same_deferred_stream(left, right):
     right_provider = normalize_venue_name(right.get("provider_name"))
     provider_matches = (
         not left_provider or not right_provider or left_provider == right_provider)
-    left_sym = str(left.get("symbol") or "").strip().upper()
-    right_sym = str(right.get("symbol") or "").strip().upper()
+    left_sym = canonical_symbol_key(left.get("symbol")) or str(left.get("symbol") or "").strip().upper()
+    right_sym = canonical_symbol_key(right.get("symbol")) or str(right.get("symbol") or "").strip().upper()
     left_kind = str(left.get("kind") or "").strip() or None
     right_kind = str(right.get("kind") or "").strip() or None
     return bool(
@@ -1269,16 +1269,12 @@ def claim(ids, now=None, lease_sec=None):
     ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
-    if isinstance(lease_sec, bool):
-        raise ValueError("claim lease must be finite and positive")
     _ensure_dir()
     now = _clean_now_sec(now)
-    try:
-        lease_sec = float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("claim lease must be finite and positive") from exc
-    if not math.isfinite(lease_sec) or lease_sec <= 0:
+    lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
+    if lease_f is None:
         raise ValueError("claim lease must be finite and positive")
+    lease_sec = lease_f
     claimed = []
     token = uuid.uuid4().hex
     with FileLock(LOCK_FILE):
@@ -1470,14 +1466,11 @@ def activate_claimed_replacement(claimed, qty, now=None):
     concurrently; the generic worker may claim the intent only after the lease
     expires, when the replaced venue order is already confirmed canceled.
     """
-    if not isinstance(claimed, dict) or isinstance(qty, bool) or isinstance(now, bool):
+    if not isinstance(claimed, dict):
         return None
-    try:
-        now = float(time.time() if now is None else now)
-        qty = float(qty)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(now) or now <= 0 or not math.isfinite(qty) or qty < 0:
+    now = safe_pos_float(time.time() if now is None else now, default=None)
+    qty = safe_nonneg_float(qty, default=None)
+    if now is None or qty is None:
         return None
     result = None
     replaced_order_id = None
@@ -1636,13 +1629,10 @@ def discard_expired(snapshots, now=None):
     deleting an intent that another producer refreshed or another worker claimed
     after the initial snapshot.
     """
-    if not snapshots or isinstance(now, bool):
+    if not snapshots:
         return []
-    try:
-        now = float(time.time() if now is None else now)
-    except (TypeError, ValueError, OverflowError):
-        return []
-    if not math.isfinite(now):
+    now = safe_float(time.time() if now is None else now, default=None)
+    if now is None:
         return []
     exact = set()
     for snapshot in snapshots:
@@ -1791,25 +1781,24 @@ def is_expired(rec, now=None):
 
 def is_due(rec, now=None):
     """Return true once the retry interval has elapsed since creation or last attempt."""
-    if isinstance(now, bool):
+    now_f = safe_float(time.time() if now is None else now, default=None)
+    claim_until = safe_float(rec.get("claim_until", 0) or 0, default=None)
+    created = safe_float(rec.get("created_ts", 0) or 0, default=None)
+    if now_f is None or claim_until is None or created is None:
         return False
-    try:
-        now = float(time.time() if now is None else now)
-        claim_until = float(rec.get("claim_until", 0) or 0)
-        lifecycle = str(
-            rec.get("lifecycle") or "submit_pending").lower()
-        if lifecycle in {"accepted", "awaiting_cancel"}:
-            base = max(float(rec.get("last_status_ts", 0) or 0),
-                       float(rec.get("accepted_ts", 0) or 0),
-                       float(rec.get("created_ts", 0) or 0))
-        else:
-            base = max(float(rec.get("last_attempt_ts", 0) or 0),
-                       float(rec.get("created_ts", 0) or 0))
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if not all(math.isfinite(v) for v in (now, claim_until, base)):
-        return False
-    return claim_until <= now and (now - base) >= RETRY_INTERVAL_SEC
+    lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
+    if lifecycle in {"accepted", "awaiting_cancel"}:
+        last_st = safe_float(rec.get("last_status_ts", 0) or 0, default=None)
+        acc_ts = safe_float(rec.get("accepted_ts", 0) or 0, default=None)
+        if last_st is None or acc_ts is None:
+            return False
+        base = max(last_st, acc_ts, created)
+    else:
+        last_att = safe_float(rec.get("last_attempt_ts", 0) or 0, default=None)
+        if last_att is None:
+            return False
+        base = max(last_att, created)
+    return claim_until <= now_f and (now_f - base) >= RETRY_INTERVAL_SEC
 
 
 def price_gate_ok(rec, current_price, tol=None):
@@ -1818,22 +1807,12 @@ def price_gate_ok(rec, current_price, tol=None):
     SELL requires ``current >= requested*(1-tol)`` and BUY requires
     ``current <= requested*(1+tol)``. Missing or invalid prices fail closed.
     """
-    if current_price is None or isinstance(current_price, bool):
-        return False
     if not isinstance(rec, dict):
         return False
-    req = rec.get("requested_price")
-    if req is None or isinstance(req, bool) or isinstance(tol, bool):
-        return False
-    try:
-        current_price = float(current_price)
-        req = float(req)
-        tol = float(RETRY_PRICE_TOL if tol is None else tol)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    if (not math.isfinite(current_price) or current_price <= 0 or
-            not math.isfinite(req) or req <= 0 or
-            not math.isfinite(tol) or tol < 0):
+    current_price = safe_pos_float(current_price, default=None)
+    req = safe_pos_float(rec.get("requested_price"), default=None)
+    tol = safe_nonneg_float(RETRY_PRICE_TOL if tol is None else tol, default=None)
+    if current_price is None or req is None or tol is None:
         return False
     side = normalize_side(rec.get("side"))
     if side == "SELL":
@@ -1991,15 +1970,10 @@ class TrackedOrderLifecycle:
             raise ValueError("provider_name is required")
         if venue is not None and (isinstance(venue, bool) or not isinstance(venue, str) or not venue.strip()):
             raise ValueError("venue must be a non-empty string")
-        if isinstance(missing_confirmations, bool):
+        mc_f = safe_pos_float(missing_confirmations, default=None)
+        if mc_f is None or not mc_f.is_integer():
             raise ValueError("missing_confirmations must be positive")
-        try:
-            mc_f = float(missing_confirmations)
-            if not math.isfinite(mc_f) or not mc_f.is_integer() or int(mc_f) <= 0:
-                raise ValueError("missing_confirmations must be positive")
-            mc_int = int(mc_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("missing_confirmations must be positive") from exc
+        mc_int = int(mc_f)
         if max_age_seconds is not None:
             parsed_age = _lifecycle_finite(max_age_seconds, positive=True)
             if parsed_age is None:

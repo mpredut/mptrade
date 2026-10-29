@@ -55,28 +55,22 @@ def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
     if isinstance(value, bool) or isinstance(count, bool) or count < 0:
         raise ValueError("fx_to_usd and count must be valid non-bool values")
     if isinstance(value, (int, float, str)):
-        try:
-            scalar = float(value)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid scalar fx_to_usd: {value!r}") from exc
-        rates = [scalar] * count
-    else:
-        rates = []
-        try:
-            iterator = iter(value)
-        except TypeError as exc:
-            raise ValueError(f"invalid fx_to_usd sequence: {value!r}") from exc
-        for rate in iterator:
-            if isinstance(rate, bool):
-                raise ValueError("fx_to_usd values cannot be bool")
-            try:
-                rates.append(float(rate))
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid fx_to_usd element: {rate!r}") from exc
-        if len(rates) != count:
-            raise ValueError(f"the FX series has {len(rates)} values for {count} bars")
-    if any(not math.isfinite(rate) or rate <= 0 for rate in rates):
-        raise ValueError("all fx_to_usd values must be finite and positive")
+        scalar = safe_pos_float(value, default=None)
+        if scalar is None:
+            raise ValueError(f"invalid scalar fx_to_usd: {value!r}")
+        return [scalar] * count
+    rates = []
+    try:
+        iterator = iter(value)
+    except TypeError as exc:
+        raise ValueError(f"invalid fx_to_usd sequence: {value!r}") from exc
+    for rate in iterator:
+        rate_f = safe_pos_float(rate, default=None)
+        if rate_f is None:
+            raise ValueError(f"invalid fx_to_usd element: {rate!r}")
+        rates.append(rate_f)
+    if len(rates) != count:
+        raise ValueError(f"the FX series has {len(rates)} values for {count} bars")
     return rates
 
 
@@ -111,14 +105,15 @@ def run_replay(
     for idx, row in enumerate(ohlc):
         if not isinstance(row, (list, tuple)) or len(row) != 4:
             raise ValueError(f"invalid OHLC bar at index {idx}")
-        if any(isinstance(v, bool) for v in row):
-            raise ValueError(f"OHLC bar at index {idx} contains bool")
-        try:
-            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
+        o_f = safe_pos_float(row[0], default=None)
+        h_f = safe_pos_float(row[1], default=None)
+        l_f = safe_pos_float(row[2], default=None)
+        c_f = safe_pos_float(row[3], default=None)
         if (
-            not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f))
+            o_f is None
+            or h_f is None
+            or l_f is None
+            or c_f is None
             or h_f < l_f
             or h_f < max(o_f, c_f)
             or l_f > min(o_f, c_f)
@@ -132,13 +127,7 @@ def run_replay(
         if len(timestamps) != len(ohlc):
             raise ValueError("timestamps must have the same length as ohlc")
         for idx, ts_val in enumerate(timestamps):
-            if isinstance(ts_val, bool):
-                raise ValueError(f"timestamp at index {idx} cannot be bool")
-            try:
-                ts_f = float(ts_val)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"timestamp at index {idx} is not numeric") from exc
-            if not math.isfinite(ts_f):
+            if safe_float(ts_val, default=None) is None:
                 raise ValueError(f"timestamp at index {idx} must be finite")
     rates = _fx_rates(fx_to_usd, len(ohlc))
     model = execution or ExecutionModel()

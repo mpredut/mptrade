@@ -19,6 +19,7 @@ from typing import Callable, Optional
 from botcore import (
     load_dotenv,
     required_float_env,
+    safe_float,
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
@@ -246,11 +247,8 @@ def _exact_int(value: Any) -> Optional[int]:
         return None
     if isinstance(value, int):
         return value
-    try:
-        f = float(value)
-        return int(f) if math.isfinite(f) and f.is_integer() else None
-    except (TypeError, ValueError, OverflowError):
-        return None
+    f = safe_float(value, default=None)
+    return int(f) if (f is not None and f.is_integer()) else None
 
 
 def _positive_int(value, field: str) -> int:

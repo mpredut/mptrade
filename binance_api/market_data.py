@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 from typing import Mapping
 
-from botcore import _parse_bool_flag, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 
 API_URL = "https://api.binance.com/api/v3/klines"
 
@@ -125,53 +125,35 @@ def fetch_ohlc_candles(
     interval_ms = interval_min * 60 * 1000
 
     now_ms = int(time.time() * 1000)
-    if (
-        isinstance(end_ms, bool)
-        or isinstance(start_ms, bool)
-        or isinstance(lookback_days, bool)
-        or isinstance(limit_per_batch, bool)
-        or isinstance(timeout, bool)
-    ):
-        raise ValueError("OHLC time window parameters must not be boolean")
-    try:
-        timeout_f = float(timeout)
-        if not math.isfinite(timeout_f) or timeout_f <= 0:
-            raise ValueError(f"timeout must be finite and positive: {timeout}")
-        if end_ms is not None:
-            end_f = float(end_ms)
-            if not math.isfinite(end_f):
-                raise ValueError(f"end_ms must be finite: {end_ms}")
-            final_end = int(end_f)
-        else:
-            final_end = now_ms
-        if final_end <= 0:
-            raise ValueError(f"end_ms must be positive: {end_ms}")
-        if start_ms is not None:
-            start_f = float(start_ms)
-            if not math.isfinite(start_f):
-                raise ValueError(f"start_ms must be finite: {start_ms}")
-            final_start = int(start_f)
-            if final_start < 0:
-                raise ValueError(f"start_ms must be non-negative: {start_ms}")
-        elif lookback_days is not None:
-            lb_f = float(lookback_days)
-            if not math.isfinite(lb_f):
-                raise ValueError(f"lookback_days must be finite: {lookback_days}")
-            lb_days = int(lb_f)
-            if lb_days <= 0:
-                raise ValueError(f"lookback_days must be positive: {lookback_days}")
-            final_start = final_end - lb_days * 86400 * 1000
-        else:
-            # Default to ~30 days of history
-            final_start = final_end - 30 * 86400 * 1000
-        batch_f = float(limit_per_batch)
-        if not math.isfinite(batch_f):
-            raise ValueError(f"limit_per_batch must be finite: {limit_per_batch}")
-        batch_limit_raw = int(batch_f)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"invalid OHLC window parameters: {exc}") from exc
-    if batch_limit_raw <= 0:
+    timeout_f = safe_pos_float(timeout, default=None)
+    if timeout_f is None:
+        raise ValueError(f"invalid OHLC window parameters: timeout must be finite and positive: {timeout}")
+    if end_ms is not None:
+        end_f = safe_pos_float(end_ms, default=None)
+        if end_f is None:
+            raise ValueError(f"invalid OHLC window parameters: end_ms must be finite and positive: {end_ms}")
+        final_end = int(end_f)
+    else:
+        final_end = now_ms
+    if final_end <= 0:
+        raise ValueError(f"end_ms must be positive: {end_ms}")
+    if start_ms is not None:
+        start_f = safe_float(start_ms, default=None)
+        if start_f is None or start_f < 0:
+            raise ValueError(f"invalid OHLC window parameters: start_ms must be finite and non-negative: {start_ms}")
+        final_start = int(start_f)
+    elif lookback_days is not None:
+        lb_f = safe_pos_float(lookback_days, default=None)
+        if lb_f is None or int(lb_f) <= 0:
+            raise ValueError(f"invalid OHLC window parameters: lookback_days must be finite and positive: {lookback_days}")
+        final_start = final_end - int(lb_f) * 86400 * 1000
+    else:
+        # Default to ~30 days of history
+        final_start = final_end - 30 * 86400 * 1000
+    batch_f = safe_pos_float(limit_per_batch, default=None)
+    if batch_f is None or int(batch_f) <= 0:
         raise ValueError(f"limit_per_batch must be positive: {limit_per_batch}")
+    batch_limit_raw = int(batch_f)
 
     if final_start >= final_end:
         raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")

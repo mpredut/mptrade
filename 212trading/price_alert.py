@@ -25,7 +25,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
-from ipo_common import load_t212_environment, log  # noqa: E402
+from ipo_common import _parse_bool_flag, load_t212_environment, log, safe_pos_float  # noqa: E402
 try:
     from .market_data import get_price_usd  # noqa: E402
 except ImportError:
@@ -44,17 +44,9 @@ from state_io import atomic_write_json  # noqa: E402
 
 
 def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
-    if isinstance(raw_armed, bool):
-        return raw_armed
-    if isinstance(raw_armed, (int, float)):
-        return bool(raw_armed) if math.isfinite(raw_armed) else default
-    if isinstance(raw_armed, str):
-        s = raw_armed.strip().lower()
-        if s in {"1", "1.0", "true", "yes", "on", "y", "t"}:
-            return True
-        if s in {"0", "0.0", "false", "no", "off", "n", "f", "", "none", "null", "nan"}:
-            return False
-    return default
+    if isinstance(raw_armed, str) and raw_armed.strip().lower() in {"", "none", "null", "nan"}:
+        return False
+    return bool(_parse_bool_flag(raw_armed, default))
 
 
 def push(topic: str, title: str, body: str) -> bool:
@@ -89,19 +81,13 @@ def main() -> int:
         log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"); return 1
     if args.below is None and args.above is None:
         log("! give at least --below or --above"); return 1
-    if args.below is not None and (not math.isfinite(args.below) or args.below <= 0):
+    if args.below is not None and safe_pos_float(args.below, default=None) is None:
         log("! --below must be a finite positive price"); return 1
-    if args.above is not None and (not math.isfinite(args.above) or args.above <= 0):
+    if args.above is not None and safe_pos_float(args.above, default=None) is None:
         log("! --above must be a finite positive price"); return 1
 
-    raw_price = get_price_usd(args.symbol)
-    if raw_price is None or isinstance(raw_price, bool):
-        log(f"  [{args.symbol}] price unavailable — skipping"); return 0
-    try:
-        price = float(raw_price)
-    except (TypeError, ValueError, OverflowError):
-        log(f"  [{args.symbol}] price unavailable — skipping"); return 0
-    if not math.isfinite(price) or price <= 0:
+    price = safe_pos_float(get_price_usd(args.symbol), default=None)
+    if price is None:
         log(f"  [{args.symbol}] price unavailable — skipping"); return 0
 
     safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"

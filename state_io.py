@@ -18,10 +18,15 @@ import tempfile
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 from cachepaths import resolve_cachedb_filepath
 
 T = TypeVar("T")
+
+
+def _exact_nonneg_int(val: Any) -> int | None:
+    f = safe_float(val, default=None)
+    return int(f) if (f is not None and f.is_integer() and int(f) >= 0) else None
 
 
 class StateReadError(RuntimeError):
@@ -178,14 +183,7 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
     """Serialize JSON through ``atomic_text_writer``."""
     sort_keys = _parse_bool_flag(sort_keys, False)
     ensure_ascii = _parse_bool_flag(ensure_ascii, True)
-    clean_indent: int | None = None
-    if indent is not None and not isinstance(indent, bool):
-        try:
-            ind_f = float(indent)
-            if math.isfinite(ind_f) and ind_f.is_integer() and int(ind_f) >= 0:
-                clean_indent = int(ind_f)
-        except (TypeError, ValueError, OverflowError):
-            clean_indent = None
+    clean_indent = _exact_nonneg_int(indent)
     with atomic_text_writer(path) as handle:
         json.dump(
             value, handle, indent=clean_indent, sort_keys=sort_keys,
@@ -285,16 +283,8 @@ def atomic_file_path(
 
 
 def _positive_chunk_size(chunk_size: Any, default: int) -> int:
-    if chunk_size is None or isinstance(chunk_size, bool):
-        return default
-    try:
-        cf = float(chunk_size)
-        if not (cf == int(cf)):
-            return default
-        val = int(cf)
-        return val if val > 0 else default
-    except (TypeError, ValueError, OverflowError):
-        return default
+    val = _exact_nonneg_int(chunk_size)
+    return val if (val is not None and val > 0) else default
 
 
 def atomic_gzip_file(
@@ -328,17 +318,10 @@ def read_tail_lines(
     """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
     if not path or isinstance(path, (bool, int)):
         return []
-    if limit is None or isinstance(limit, bool):
+    limit_i = _exact_nonneg_int(limit)
+    if limit_i is None or limit_i <= 0 or not os.path.isfile(path):
         return []
-    try:
-        lf = float(limit)
-        if not (lf == int(lf)):
-            return []
-        limit = int(lf)
-    except (TypeError, ValueError, OverflowError):
-        return []
-    if limit <= 0 or not os.path.isfile(path):
-        return []
+    limit = limit_i
     eff_chunk = _positive_chunk_size(chunk_size, 65536)
     chunks: list[bytes] = []
     newline_count = 0
@@ -367,15 +350,9 @@ def read_tail_lines(
 
 def truncate_file_bytes(path: str, size: int) -> None:
     """Durably truncate ``path`` back to ``size`` bytes."""
-    if isinstance(size, bool):
+    size_i = _exact_nonneg_int(size)
+    if size_i is None:
         raise ValueError("size must be a non-negative integer")
-    try:
-        size_f = float(size)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("size must be a non-negative integer") from exc
-    if not (math.isfinite(size_f) and size_f.is_integer() and int(size_f) >= 0):
-        raise ValueError("size must be a non-negative integer")
-    size_i = int(size_f)
     with open(path, "r+b") as handle:
         handle.truncate(size_i)
         handle.flush()
@@ -404,14 +381,7 @@ def prune_rotated_archives(
             continue
     candidates.sort(key=lambda item: item[0], reverse=True)
     archives = [path for _, path in candidates]
-    if keep_count is None or isinstance(keep_count, bool):
-        keep = 0
-    else:
-        try:
-            kf = float(keep_count)
-            keep = max(0, int(kf)) if (kf == int(kf)) else 0
-        except (TypeError, ValueError, OverflowError):
-            keep = 0
+    keep = _exact_nonneg_int(keep_count) or 0
     for old_archive in archives[keep:]:
         discard_generation_file(old_archive)
     return archives[:keep]

@@ -25,6 +25,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from cachepaths import canonical_symbol_key
 from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
@@ -165,13 +166,8 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
         return np.array([], dtype=float)
     p = np.asarray(prices, dtype=float)
     n = len(p)
-    if n == 0 or window is None or isinstance(window, bool):
-        return np.zeros_like(p, dtype=float)
-    try:
-        win_i = int(float(window))
-    except (TypeError, ValueError, OverflowError):
-        return np.zeros_like(p, dtype=float)
-    if win_i <= 0:
+    win_i = safe_pos_int(window, default=None)
+    if n == 0 or win_i is None:
         return np.zeros_like(p, dtype=float)
     w = min(win_i, n)
     wma = np.zeros(n, dtype=float)
@@ -511,25 +507,20 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     if mk_alpha is False or (isinstance(mk_alpha, str) and mk_alpha.strip().lower() in {"", "none", "false", "0", "off", "no"}):
         mk_alpha = None
     elif mk_alpha is not None:
-        try:
-            mk_f = float(mk_alpha)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(mk_f) or mk_f < 0.0 or mk_f > 1.0:
+        mk_f = safe_nonneg_float(mk_alpha, default=None)
+        if mk_f is None or mk_f > 1.0:
             return None
         mk_alpha = None if mk_f == 0.0 else mk_f
     try:
-        wh_f = float(window_hours)
-        sh_f = float(step_hours)
+        wh_f = safe_pos_float(window_hours, default=None)
+        sh_f = safe_pos_float(step_hours, default=None)
         mcb_i = _parse_strict_int(min_consecutive_blocks)
         nt_i = _parse_strict_int(noise_tolerance)
         mpw_i = _parse_strict_int(min_points_per_window)
-        lag_f = float(detection_lag_hours)
+        lag_f = safe_nonneg_float(detection_lag_hours, default=None)
     except (TypeError, ValueError, OverflowError):
         return None
-    if not (math.isfinite(wh_f) and wh_f > 0.0 and math.isfinite(sh_f) and sh_f > 0.0 and math.isfinite(lag_f) and lag_f >= 0.0):
-        return None
-    if mcb_i < 1 or nt_i < 0 or mpw_i < 2:
+    if wh_f is None or sh_f is None or lag_f is None or mcb_i < 1 or nt_i < 0 or mpw_i < 2:
         return None
     window_hours = wh_f
     step_hours = sh_f
@@ -560,14 +551,9 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         clean_ts: list[float] = []
         clean_px: list[float] = []
         for t_item, p_item in zip(raw_ts, raw_px):
-            if isinstance(t_item, bool) or isinstance(p_item, bool):
-                continue
-            try:
-                tf = float(t_item)
-                pf = float(p_item)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+            tf = safe_pos_float(t_item, default=None)
+            pf = safe_pos_float(p_item, default=None)
+            if tf is not None and pf is not None:
                 clean_ts.append(tf)
                 clean_px.append(pf)
         timestamps = np.asarray(clean_ts, dtype=float)
@@ -863,10 +849,12 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     all_trend_data = cm.get_cache_manager("LongTrend").cache
     sym_u = (symbol or "").strip().upper()
     sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    sym_canon = canonical_symbol_key(sym_u)
     items = (
         all_trend_data.get(symbol)
         or all_trend_data.get(sym_u)
         or all_trend_data.get(sym_clean)
+        or (all_trend_data.get(sym_canon) if sym_canon else None)
     )
     if not items:
         # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)

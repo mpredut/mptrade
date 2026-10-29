@@ -107,22 +107,17 @@ def fetch_yahoo_candles(
     series_len = min(len(opens), len(highs), len(lows), len(closes))
     records = []
     for index, timestamp in enumerate(timestamps):
-        if timestamp is None or isinstance(timestamp, bool) or index >= series_len:
+        if index >= series_len:
             continue
-        values = (opens[index], highs[index], lows[index], closes[index])
-        if None in values or any(isinstance(v, bool) for v in values):
-            continue
-        try:
-            ts_f = float(timestamp)
-            o_f, h_f, l_f, c_f = float(values[0]), float(values[1]), float(values[2]), float(values[3])
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not math.isfinite(ts_f):
+        ts_f = safe_pos_float(timestamp, default=None)
+        o_f = safe_pos_float(opens[index], default=None)
+        h_f = safe_pos_float(highs[index], default=None)
+        l_f = safe_pos_float(lows[index], default=None)
+        c_f = safe_pos_float(closes[index], default=None)
+        if ts_f is None or o_f is None or h_f is None or l_f is None or c_f is None:
             continue
         ts_i = int(ts_f)
-        if ts_i <= 0 or not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)):
-            continue
-        if h_f < l_f or h_f < max(o_f, c_f) or l_f > min(o_f, c_f):
+        if ts_i <= 0 or h_f < l_f or h_f < max(o_f, c_f) or l_f > min(o_f, c_f):
             continue
         records.append({
             "timestamp": ts_i,
@@ -243,8 +238,8 @@ def trend_slope_pct(sym: str, bars: int = 12) -> float | None:
 
 def get_usd_ron() -> float:
     """Return current USD/RON, falling back to 4.65 when the feed is unavailable."""
-    rate = get_price_usd("USDRON=X")
-    if rate is not None and not isinstance(rate, bool) and math.isfinite(rate) and rate > 1:
+    rate = safe_pos_float(get_price_usd("USDRON=X"), default=None)
+    if rate is not None and rate > 1:
         return rate
     log("  ! curs USD/RON indisponibil, folosesc fallback 4.65")
     return 4.65
@@ -252,8 +247,8 @@ def get_usd_ron() -> float:
 
 def get_eur_usd() -> float:
     """Return current EUR->USD (USD per EUR), falling back to 1.08."""
-    rate = get_price_usd("EURUSD=X")
-    if rate is not None and not isinstance(rate, bool) and math.isfinite(rate) and rate > 0.5:
+    rate = safe_pos_float(get_price_usd("EURUSD=X"), default=None)
+    if rate is not None and rate > 0.5:
         return rate
     log("  ! curs EUR/USD indisponibil, folosesc fallback 1.08")
     return 1.08

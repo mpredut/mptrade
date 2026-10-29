@@ -152,6 +152,25 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
     return result
 
 
+def extract_short_trend_slope(snap: dict, symbol: str) -> float:
+    """Extract the short-trend slope from a trend snapshot, preferring the symbol's dynamic window."""
+    if not isinstance(snap, dict):
+        return 0.0
+    import pricewindow as pw
+
+    target = snap
+    fast_w = pw.fast_trend_window_for_symbol(symbol)
+    dyn = snap.get("dynamic")
+    if fast_w is not None and isinstance(dyn, dict):
+        w_snap = dyn.get(f"{float(fast_w):g}")
+        if isinstance(w_snap, dict):
+            target = w_snap
+    raw_val = target.get("growth_coefficient")
+    if raw_val is None or isinstance(raw_val, bool):
+        raw_val = target.get("gradient_recent", target.get("slope_small", 0.0))
+    return safe_float(raw_val, default=0.0)
+
+
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
     if isinstance(current, bool) or isinstance(peak, bool) or isinstance(trail_pct, bool):

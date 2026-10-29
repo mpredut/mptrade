@@ -21,7 +21,7 @@ from alertnotifiers import bind_notify
 from botcore import (
     _parse_bool_flag, are_close, log, defined_env, required_env,
     required_float_env, required_int_env, required_bool_env,
-    safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
+    safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import _clean_single_order_id, normalize_side
@@ -198,13 +198,8 @@ class StratParams:
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
-            if isinstance(value, bool):
-                raise ValueError(f"{name} must be finite")
-            try:
-                parsed = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{name} must be finite") from exc
-            if not math.isfinite(parsed):
+            parsed = safe_float(value, default=None)
+            if parsed is None:
                 raise ValueError(f"{name} must be finite")
             return parsed
 
@@ -882,20 +877,12 @@ class Strategy:
         record = records.get(key)
         if not isinstance(record, dict):
             return 0.0
-        raw_until = record.get("until")
-        if raw_until is None or isinstance(raw_until, bool):
+        until_f = safe_float(record.get("until"), default=None)
+        now_f = safe_float(self._now(), default=None)
+        if until_f is None or now_f is None:
             return 0.0
-        try:
-            until_f = float(raw_until)
-            now_f = float(self._now())
-            if not (math.isfinite(until_f) and math.isfinite(now_f)):
-                return 0.0
-            rem = max(0.0, until_f - now_f)
-            return min(_PLACEMENT_BACKOFF_CAP_SEC, rem)
-        except (TypeError, ValueError, OverflowError):
-            # Corrupt observational cooldown state must fail open; order lifecycle
-            # and venue preflight remain the financial safety boundaries.
-            return 0.0
+        rem = max(0.0, until_f - now_f)
+        return min(_PLACEMENT_BACKOFF_CAP_SEC, rem)
 
     def _record_placement_backoff(self, side: str, kind: str, error) -> None:
         key = self._placement_backoff_key(side, kind)
@@ -906,16 +893,7 @@ class Strategy:
         previous = records.get(key)
         if not isinstance(previous, dict):
             previous = {}
-        raw_attempts = previous.get("attempts")
-        try:
-            prev_attempts = (
-                0
-                if raw_attempts is None or isinstance(raw_attempts, bool)
-                else max(0, int(float(raw_attempts)))
-            )
-            attempts = prev_attempts + 1
-        except (TypeError, ValueError, OverflowError):
-            attempts = 1
+        attempts = safe_nonneg_int(previous.get("attempts"), default=0) + 1
         base = max(60.0, float(self.p.check_minutes) * 60.0)
         delay = min(_PLACEMENT_BACKOFF_CAP_SEC, base * (2 ** min(attempts - 1, 10)))
         records[key] = {
@@ -945,25 +923,16 @@ class Strategy:
             side = s_norm.lower()
         # A market trailing/stop exit executes immediately instead of risking a missed
         # sharp drop with a limit order. Backtests fill it at the next bar's open.
-        if (
-            isinstance(vol, bool)
-            or isinstance(price, bool)
-            or not isinstance(vol, (int, float, str, Decimal))
-            or not isinstance(price, (int, float, str, Decimal))
-        ):
+        if not isinstance(vol, (int, float, str, Decimal)) or not isinstance(price, (int, float, str, Decimal)):
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
             return False
-        try:
-            vol = float(vol)
-            price = float(price)
-        except (TypeError, ValueError, OverflowError):
+        vol_f = safe_float(vol, default=None)
+        price_f = safe_float(price, default=None)
+        if vol_f is None or price_f is None:
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
             return False
-        if not (math.isfinite(vol) and math.isfinite(price)):
-            log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
-            return False
-        vol = round(vol, self.vol_dec)
-        price = round(price, self.price_dec)
+        vol = round(vol_f, self.vol_dec)
+        price = round(price_f, self.price_dec)
         if price <= 0:
             log(f"  ! [STRAT] price {price} <= 0 — skipping")
             return False
@@ -1194,15 +1163,13 @@ class Strategy:
         reference = round(price * factor, self.price_dec)
         if "min_profit_pct" in pending and kind != "STOP":
             # Recompute against reconciled cost basis, including late BUY fills.
-            try:
-                min_profit_pct = float(pending["min_profit_pct"])
-                avg = float(self._avg() or 0.0)
-                floor = sr.tp_price(avg, min_profit_pct)
-            except (TypeError, ValueError, OverflowError):
+            min_profit_pct = safe_nonneg_float(pending["min_profit_pct"], default=None)
+            avg = safe_pos_float(self._avg(), default=None)
+            if min_profit_pct is None or avg is None:
                 log("  [STRAT] profit exit pending: invalid stored floor or cost basis")
                 return False
-            if (not all(math.isfinite(v) for v in (min_profit_pct, avg, floor, reference))
-                    or min_profit_pct < 0 or avg <= 0 or reference < floor):
+            floor = safe_float(sr.tp_price(avg, min_profit_pct), default=None)
+            if floor is None or not math.isfinite(reference) or reference < floor:
                 log("  [STRAT] profit exit pending: current reference does not satisfy the stored floor")
                 return False
         if _parse_bool_flag(pending.get("soft_floor"), False) and kind != "STOP":
@@ -1274,23 +1241,18 @@ class Strategy:
                     continue
                 st = status.status
                 terminal = st in ("closed", "canceled", "expired")
-                if any(isinstance(v, bool) for v in (status.filled_qty, status.cost, status.fee)):
+                total_vol = safe_nonneg_float(status.filled_qty or 0.0, default=None)
+                total_fee = safe_float(status.fee or 0.0, default=None)
+                ord_px = safe_pos_float(o.get("price"), default=None)
+                if total_vol is None or total_fee is None or ord_px is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
-                try:
-                    total_vol = float(status.filled_qty or 0.0)
-                    total_cost = float(status.cost or total_vol * o["price"])
-                    total_fee = float(status.fee or 0.0)
-                    reported_price = total_cost / total_vol if total_vol > 0 else float(o["price"])
-                except (TypeError, ValueError, OverflowError):
+                total_cost = safe_nonneg_float(status.cost or total_vol * ord_px, default=None)
+                if total_cost is None:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
-                if (
-                    not (math.isfinite(total_vol) and total_vol >= 0.0)
-                    or not (math.isfinite(total_cost) and total_cost >= 0.0)
-                    or not math.isfinite(total_fee)
-                    or not (math.isfinite(reported_price) and reported_price > 0.0)
-                ):
+                reported_price = total_cost / total_vol if total_vol > 0 else ord_px
+                if not math.isfinite(reported_price) or reported_price <= 0.0:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
 
@@ -1959,24 +1921,13 @@ class Strategy:
         closes: list[float], interval_minutes: float,
     ) -> float | None:
         """Return log-return deviation normalized to one hour for a fixed cadence."""
-        if not closes or isinstance(interval_minutes, bool):
+        itv_f = safe_pos_float(interval_minutes, default=None)
+        if not closes or itv_f is None:
             return None
-        try:
-            itv_f = float(interval_minutes)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(itv_f) or itv_f <= 0:
-            return None
-        clean_closes = []
-        for c in closes[-90:]:
-            if c is None or isinstance(c, bool):
-                continue
-            try:
-                cf = float(c)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(cf) and cf > 0:
-                clean_closes.append(cf)
+        clean_closes = [
+            cf for c in closes[-90:]
+            if (cf := safe_pos_float(c, default=None)) is not None
+        ]
         closes_slice = tuple(clean_closes)
         if len(closes_slice) < 20:
             return None
