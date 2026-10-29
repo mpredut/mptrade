@@ -24,7 +24,7 @@ import argparse
 import ctypes
 import gc
 import json
-import math
+from math import ceil
 import os
 import tempfile
 import time
@@ -307,8 +307,10 @@ def load_price_series_live(symbol, days_back, include_history=True):
         _ingest_cachedb_points(points, _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol))
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
-        if math.isfinite(t) and math.isfinite(p) and p > 0:
-            points[int(t)] = p
+        t_val = safe_pos_float(t, default=None)
+        p_val = safe_pos_float(p, default=None)
+        if t_val is not None and p_val is not None:
+            points[int(t_val)] = p_val
     _ingest_cachedb_points(points, _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol))
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
@@ -919,7 +921,7 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
     ch_f = safe_pos_float(chunk_hours, default=24.0)
     chunk_sec = ch_f * 3600
     range_start, range_end = min(all_ts), max(all_ts)
-    n_chunks = max(1, int(math.ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1
+    n_chunks = max(1, int(ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1
 
     paths = []
     for i in range(n_chunks):
