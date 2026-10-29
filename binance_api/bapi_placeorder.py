@@ -16,6 +16,10 @@ from . import order_id_context as rc   # client_order_id and tag context moved i
 
 from . import bapi as api
 from .bapi_client import client
+import importlib
+import providers.base as _providers_base
+if not hasattr(_providers_base, "resolve_market_flag"):
+    importlib.reload(_providers_base)
 from providers.base import (
     extract_order_id,
     extract_order_price,
