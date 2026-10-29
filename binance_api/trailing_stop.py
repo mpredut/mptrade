@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import statistics
 import sys
 import time
 
@@ -238,7 +239,7 @@ class TrailingStop:
                     k for k in klines
                     if isinstance(k, (list, tuple)) and len(k) >= 7
                     and not any(isinstance(k[i], bool) for i in (0, 4, 6))
-                    and safe_float(k[6], default=None) is not None and float(k[6]) < day * 86400000
+                    and (safe_float(k[6], default=None) is not None and safe_float(k[6], default=0.0) < day * 86400000)
                 ]
                 window = closed[-REBUY_TREND_DAYS:]
                 if len(window) != REBUY_TREND_DAYS:
@@ -247,12 +248,14 @@ class TrailingStop:
                 for index, kline in enumerate(window):
                     expected_open = (day - REBUY_TREND_DAYS + index) * 86400000
                     close = safe_pos_float(kline[4], default=None)
-                    if (float(kline[0]) != expected_open
-                            or float(kline[6]) != expected_open + 86400000 - 1
+                    open_t = safe_float(kline[0], default=None)
+                    close_t = safe_float(kline[6], default=None)
+                    if (open_t != expected_open
+                            or close_t != expected_open + 86400000 - 1
                             or close is None):
                         raise ValueError("stale, discontinuous or invalid daily history")
                     closes.append(close)
-                sma = safe_pos_float(sum(closes) / len(closes), default=None)
+                sma = safe_pos_float(statistics.fmean(closes), default=None)
                 if sma is None:
                     raise ValueError("invalid daily average")
                 self._long_trend_cache[symbol] = (sma, day)
