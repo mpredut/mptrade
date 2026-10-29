@@ -123,7 +123,7 @@ def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
     timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         _writer_path = os.fspath(path)
-        writer_pid = safe_pos_int(pid, default=None) or os.getpid()
+        writer_pid = _exact_int(pid) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
             _writer_enabled = False
@@ -240,23 +240,33 @@ def record_persisted_version(cache_name: str, data_version: str, *,
     return True
 
 
+def _exact_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        f = float(value)
+        return int(f) if math.isfinite(f) and f.is_integer() else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _positive_int(value, field: str) -> int:
-    parsed = safe_pos_int(value, default=None)
-    if parsed is None:
+    val = _exact_int(value)
+    if val is None or val <= 0:
         raise ValueError(f"invalid {field}")
-    return parsed
+    return val
 
 
 def _nonnegative_int(value, field: str) -> int:
-    parsed = safe_int(value, default=None)
-    if parsed is None or parsed < 0:
+    val = _exact_int(value)
+    if val is None or val < 0:
         raise ValueError(f"invalid {field}")
-    return parsed
+    return val
 
 
 def _pid_is_alive(pid: int) -> bool:
-    pid_val = safe_pos_int(pid, default=None)
-    if pid_val is None:
+    pid_val = _exact_int(pid)
+    if pid_val is None or pid_val <= 0:
         return False
     try:
         os.kill(pid_val, 0)
