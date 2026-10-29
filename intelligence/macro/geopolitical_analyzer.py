@@ -114,10 +114,10 @@ class GeopoliticalThreatAnalyzer:
         )
 
     def _load_from_disk(self) -> None:
-        from state_io import read_recovering_previous
+        from state_io import read_json_dict
         state_file = self._effective_state_file()
         try:
-            data = read_recovering_previous(state_file, json.loads, default=None)
+            data = read_json_dict(state_file, default=None, recover_previous=True)
             if not isinstance(data, dict):
                 return
             self._cached_assessment = self._build_assessment(data, default_risk_score=0.1)

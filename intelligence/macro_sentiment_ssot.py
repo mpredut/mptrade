@@ -338,19 +338,16 @@ def inspect_daemon_heartbeat(
     include_symbols: bool = False,
 ) -> Dict[str, Any]:
     """Inspect a background daemon's heartbeat file(s) and check PID liveness."""
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     data = None
     for fname in filenames:
         cand = str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
         if os.path.exists(cand) or os.path.exists(f"{cand}.previous"):
-            try:
-                cand_data = read_recovering_previous(cand, json.loads, default=None)
-                if isinstance(cand_data, dict):
-                    data = cand_data
-                    break
-            except Exception:
-                continue
+            cand_data = read_json_dict(cand, default=None, recover_previous=True)
+            if isinstance(cand_data, dict):
+                data = cand_data
+                break
     if data is None:
         return {"running": False, "reason": "no_heartbeat_file"}
 
@@ -767,7 +764,7 @@ def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
 
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:
     """Load unexpired dynamically discovered high-severity and acute-shock terms from cachedb."""
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     now = resolve_now_ts(now_ts)
     ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
@@ -797,7 +794,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         if cached_raw is not None and cached_raw[0] == stat_sig[0] and cached_raw[1] == stat_sig[1]:
             data = cached_raw[2]
         else:
-            data = read_recovering_previous(path, json.loads, default=None)
+            data = read_json_dict(path, default=None, recover_previous=True)
             _LEXICON_FILE_CACHE[path] = (stat_sig[0], stat_sig[1], data)
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
@@ -839,7 +836,7 @@ def update_dynamic_lexicon(
     now_ts: Optional[float] = None,
 ) -> Dict[str, Tuple[str, ...]]:
     """Persist newly discovered crisis terms into ``cachedb/macro_lexicon_collect.json``."""
-    from state_io import read_recovering_previous, save_json_state
+    from state_io import read_json_dict, save_json_state
 
     now = resolve_now_ts(now_ts)
     ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
@@ -847,16 +844,13 @@ def update_dynamic_lexicon(
 
     existing_entries: Dict[str, Dict[str, Any]] = {}
     if os.path.exists(path) or os.path.exists(f"{path}.previous"):
-        try:
-            raw = read_recovering_previous(path, json.loads, default=None)
-            if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-                for k, v in raw["entries"].items():
-                    if isinstance(k, str) and isinstance(v, dict):
-                        ts = safe_float(v.get("ts"), 0.0)
-                        if ts > 0.0 and (now - ts) <= ttl:
-                            existing_entries[k.strip().lower()] = dict(v)
-        except Exception:
-            pass
+        raw = read_json_dict(path, default=None, recover_previous=True)
+        if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
+            for k, v in raw["entries"].items():
+                if isinstance(k, str) and isinstance(v, dict):
+                    ts = safe_float(v.get("ts"), 0.0)
+                    if ts > 0.0 and (now - ts) <= ttl:
+                        existing_entries[k.strip().lower()] = dict(v)
 
     stopwords = set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
     changed = False
@@ -1325,13 +1319,13 @@ def load_cached_fear_greed_snapshot(
 ) -> Optional[FearGreedSnapshot]:
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     eval_now = resolve_now_ts(now_ts)
     for fg_fname in get_cache_filenames("fear_greed_files"):
         fg_path = os.path.join(cache_dir, fg_fname)
         try:
-            fg_data = read_recovering_previous(fg_path, json.loads, default=None)
+            fg_data = read_json_dict(fg_path, default=None, recover_previous=True)
             if not isinstance(fg_data, dict):
                 continue
             fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
@@ -1368,13 +1362,13 @@ def load_cached_market_breadth_snapshot(
 ) -> Optional[MarketBreadthSnapshot]:
     """Load cached Market Breadth snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     eval_now = resolve_now_ts(now_ts)
     for mb_fname in get_cache_filenames("market_breadth_files"):
         mb_path = os.path.join(cache_dir, mb_fname)
         try:
-            mb_data = read_recovering_previous(mb_path, json.loads, default=None)
+            mb_data = read_json_dict(mb_path, default=None, recover_previous=True)
             if not isinstance(mb_data, dict):
                 continue
             raw_gainers = mb_data.get("top_gainers") or ()
@@ -1417,7 +1411,7 @@ def load_cached_whale_telemetry(
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
     from intelligence.external.collectors.orderbook_depth import _symbol_variants
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (list(symbols) if symbols else ["BTCUSDC"]):
@@ -1426,48 +1420,39 @@ def load_cached_whale_telemetry(
             if not safe_sym:
                 continue
             w_path = os.path.join(cache_dir, f"{prefix}{safe_sym}.json")
-            try:
-                cand_w = read_recovering_previous(w_path, json.loads, default=None)
-                if isinstance(cand_w, dict):
-                    return cand_w
-            except Exception as w_err:
-                logger.debug("Failed loading whale telemetry from %s: %s", w_path, w_err)
+            cand_w = read_json_dict(w_path, default=None, recover_previous=True)
+            if isinstance(cand_w, dict):
+                return cand_w
     return None
 
 
 def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     for fname in get_cache_filenames("sentiment_eval_files"):
         cand_path = os.path.join(cache_dir, fname)
-        try:
-            data = read_recovering_previous(cand_path, json.loads, default=None)
-            if isinstance(data, dict) and data:
-                norm = dict(data)
-                norm["market_bias"] = normalize_market_bias(data.get("market_bias"))
-                norm["risk_level"] = normalize_risk_level(data.get("risk_level"))
-                norm["recommended_action"] = normalize_recommended_action(data.get("recommended_action"))
-                return norm
-        except Exception:
-            continue
+        data = read_json_dict(cand_path, default=None, recover_previous=True)
+        if isinstance(data, dict) and data:
+            norm = dict(data)
+            norm["market_bias"] = normalize_market_bias(data.get("market_bias"))
+            norm["risk_level"] = normalize_risk_level(data.get("risk_level"))
+            norm["recommended_action"] = normalize_recommended_action(data.get("recommended_action"))
+            return norm
     return None
 
 
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
-    from state_io import read_recovering_previous
+    from state_io import read_json_dict
 
     fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_eval.json")
     cand_path = os.path.join(cache_dir, fname)
-    try:
-        data = read_recovering_previous(cand_path, json.loads, default=None)
-        if isinstance(data, dict) and data:
-            norm = dict(data)
-            tl = normalize_threat_level(data.get("threat_level"))
-            norm["threat_level"] = tl
-            norm["recommended_brake"] = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl)
-            return norm
-    except Exception:
-        pass
+    data = read_json_dict(cand_path, default=None, recover_previous=True)
+    if isinstance(data, dict) and data:
+        norm = dict(data)
+        tl = normalize_threat_level(data.get("threat_level"))
+        norm["threat_level"] = tl
+        norm["recommended_brake"] = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl)
+        return norm
     return None

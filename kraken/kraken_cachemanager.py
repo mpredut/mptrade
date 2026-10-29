@@ -41,7 +41,7 @@ from kraken_common import (
     safe_pos_int, single_instance,
 )
 from kraken_client import KrakenClient
-from state_io import read_recovering_previous, save_json_state
+from state_io import read_json_dict, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
 from cachepaths import cache_path
 from instrument_registry import symbols_for
@@ -154,7 +154,7 @@ def _atomic_write(path, obj):
 
 def _load_initial_cache(path):
     """Load existing Kraken trade cache (or recover from .previous) so transient startup errors do not wipe history."""
-    loaded = read_recovering_previous(path, json.loads, default=None)
+    loaded = read_json_dict(path, default=None, recover_previous=True)
     if (
         isinstance(loaded, dict)
         and isinstance(loaded.get("items"), dict)

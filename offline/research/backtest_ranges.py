@@ -46,33 +46,33 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
     if not path or isinstance(path, (bool, int, float)) or not os.path.isfile(path):
         return out
+    from state_io import read_text_lines
+
     section: Optional[str] = None
     pending: Optional[List[str]] = None
-    with open(path, encoding="utf-8") as f:
-        for raw in f:
-            line = raw.rstrip("\r\n")
-            sm = _SECTION_RE.match(line)
-            if sm:
-                section = sm.group(1).strip() or None
-                pending = None
-                continue
-            m = _BACKTEST_RE.match(line)
-            if m:
-                raw_vals = m.group(1).split("#", 1)[0].split(";", 1)[0]
-                vals = [v.strip() for v in raw_vals.split(",") if v.strip()]
-                pending = vals if vals else None
-                continue
-            m2 = _KEY_RE.match(line)
-            if m2 and pending:
-                key = m2.group(1)
-                full_key = f"{section}.{key}" if section else key
-                out[full_key] = pending
-                pending = None
-            else:
-                # any other line (blank, another comment, another key without
-                # an annotation) breaks the link -- the comment must be RIGHT
-                # above, not "somewhere further up".
-                pending = None
+    for line in read_text_lines(path):
+        sm = _SECTION_RE.match(line)
+        if sm:
+            section = sm.group(1).strip() or None
+            pending = None
+            continue
+        m = _BACKTEST_RE.match(line)
+        if m:
+            raw_vals = m.group(1).split("#", 1)[0].split(";", 1)[0]
+            vals = [v.strip() for v in raw_vals.split(",") if v.strip()]
+            pending = vals if vals else None
+            continue
+        m2 = _KEY_RE.match(line)
+        if m2 and pending:
+            key = m2.group(1)
+            full_key = f"{section}.{key}" if section else key
+            out[full_key] = pending
+            pending = None
+        else:
+            # any other line (blank, another comment, another key without
+            # an annotation) breaks the link -- the comment must be RIGHT
+            # above, not "somewhere further up".
+            pending = None
     return out
 
 

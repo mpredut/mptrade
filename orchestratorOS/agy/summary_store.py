@@ -145,17 +145,21 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
 
 def read_annotation_title(cli_base: str, cid: str) -> str:
     """Read ``title`` from annotations/<cid>.pbtxt, or '' if absent."""
-    try:
-        with open(os.path.join(cli_base, "annotations", f"{cid}.pbtxt"), encoding="utf-8", errors="ignore") as f:
-            txt = f.read()
-    except OSError:
-        return ""
+    from state_io import read_text_file
+
+    txt = read_text_file(
+        os.path.join(cli_base, "annotations", f"{cid}.pbtxt"),
+        default="",
+        errors="ignore",
+    )
     m = re.search(r'title:\s*"((?:[^"\\]|\\.)*)"', txt)
     return m.group(1).replace('\\"', '"').replace("\\\\", "\\").strip() if m else ""
 
 
 def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     """Set ``title`` in annotations/<cid>.pbtxt, preserving the other annotation lines."""
+    from state_io import read_text_lines
+
     clean_cids = _clean_cid_set([cid])
     if not clean_cids:
         return
@@ -164,10 +168,11 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     annot_dir = os.path.join(cli_base, "annotations")
     os.makedirs(annot_dir, exist_ok=True)
     path = os.path.join(annot_dir, f"{clean_cid}.pbtxt")
-    preserved = []
-    if os.path.exists(path):
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            preserved = [ln.rstrip("\n") for ln in f if ln.strip() and not ln.lstrip().startswith("title:")]
+    preserved = [
+        ln
+        for ln in read_text_lines(path, skip_empty=True, errors="ignore")
+        if not ln.lstrip().startswith("title:")
+    ]
     esc = title_str.replace("\\", "\\\\").replace('"', '\\"')
     content = ("\n".join([f'title:"{esc}"'] + preserved) + "\n").encode("utf-8")
     atomic_write_bytes(path, content)
@@ -207,11 +212,12 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     upsert_summary_row_dict(cli_base, row)
     raw_sum = row.get("raw_summary")
     if raw_sum:
+        from state_io import read_bytes_file
+
         for name in SUMMARIES_PB_FILES:
             pb_path = os.path.join(cli_base, name)
             if os.path.exists(pb_path):
-                with open(pb_path, "rb") as f:
-                    buf, updated = replace_summary_entry(f.read(), clean_cid, raw_sum)
+                buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_sum)
                 if updated:
                     atomic_write_bytes(pb_path, buf)
     write_annotation_title(cli_base, clean_cid, title_str)

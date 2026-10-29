@@ -634,7 +634,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
     def _load_symbol_metadata(self):
         if os.path.exists(self.filename) or os.path.exists(self._previous_generation_path()):
             try:
-                data = read_recovering_previous(self.filename, read_json_dict)
+                data = read_json_dict(self.filename, recover_previous=True)
                 sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
                 if isinstance(sym_meta, dict):
                     raw_added = sym_meta.get("added_time")

@@ -423,10 +423,9 @@ def _apply_config_change(section, key, old_value, new_value):
     """Replace ONLY the numeric value on the `key = ...` line in
     sectiunea `section`, pastrand tot restul fisierului (comentarii,
     formatare, alte sectiuni) neatins."""
-    from state_io import atomic_write_text
+    from state_io import atomic_write_text, read_text_lines
 
-    with open(INSTRUMENTS_CONF, encoding="utf-8") as f:
-        lines = f.readlines()
+    lines = read_text_lines(INSTRUMENTS_CONF, keepends=True)
     in_section = False
     key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')
     for i, line in enumerate(lines):

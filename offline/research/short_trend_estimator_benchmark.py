@@ -69,24 +69,20 @@ def load_series(sym):
     )
     if not jsonl_path:
         return np.empty(0), np.empty(0)
+    from state_io import read_jsonl_dicts
+
     valid_syms = set(sym_cands) | {sym}
-    with open(jsonl_path, encoding="utf-8") as f:
-        try:
-            import orjson as _json_mod
-            _loads = _json_mod.loads
-        except ImportError:
-            _loads = json.loads
-        for line in f:
-            try:
-                r = _loads(line)
-                if r.get("s") not in valid_syms:
-                    continue
-                t = safe_float(r["i"][0], default=None)
-                p = safe_pos_float(r["i"][1], default=None)
-                if t is not None and p is not None:
-                    ts.append(t / 1000.0); px.append(p)
-            except (ValueError, TypeError, KeyError, IndexError):
-                continue
+    for r in read_jsonl_dicts(jsonl_path):
+        if r.get("s") not in valid_syms:
+            continue
+        item = r.get("i")
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        t = safe_float(item[0], default=None)
+        p = safe_pos_float(item[1], default=None)
+        if t is not None and p is not None:
+            ts.append(t / 1000.0)
+            px.append(p)
     ts, px = np.asarray(ts), np.asarray(px)
     o = np.argsort(ts, kind="stable")
     ts, px = ts[o], px[o]

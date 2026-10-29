@@ -30,7 +30,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
     if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
         sys.modules.pop(_mod_name, None)
 
-from state_io import atomic_write_json, previous_generation_path, read_json_dict, read_recovering_previous
+from state_io import atomic_write_json, previous_generation_path, read_json_dict
 from providers.base import extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
@@ -113,7 +113,7 @@ def _read_marker(path: str) -> dict | None:
     if not os.path.exists(target) and not os.path.exists(backup):
         return None
     try:
-        return read_recovering_previous(target, read_json_dict, backup_path=backup)
+        return read_json_dict(target, backup_path=backup, recover_previous=True)
     except FileNotFoundError:
         return None
     except (OSError, TypeError, ValueError) as exc:

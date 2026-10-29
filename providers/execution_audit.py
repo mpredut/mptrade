@@ -439,49 +439,38 @@ def reconcile_intents_from_execution_audit(
     if not failed_by_id or not os.path.isdir(audit_dir):
         return False
 
+    from state_io import read_jsonl_dicts
+
     matched_records: dict[str, dict[str, Any]] = {}
     for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
-        try:
-            with open(audit_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(rec, dict):
-                        continue
-                    raw_iid = rec.get("intent_id") if rec.get("intent_id") is not None else rec.get("id")
-                    if raw_iid is None or isinstance(raw_iid, bool):
-                        continue
-                    iid = str(raw_iid).strip()
-                    if iid not in failed_by_id:
-                        continue
-                    ev = str(rec.get("event") or "")
-                    if ev == "submit_accepted":
-                        matched_records.setdefault(iid, rec)
-                    elif ev in ("order_terminal", "order_terminal_retry"):
-                        v_stat = str(rec.get("venue_status") or "").upper()
-                        l_stat = str(rec.get("status") or "").lower()
-                        f_qty = safe_pos_float(
-                            rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
-                            0.0,
-                        )
-                        if (
-                            v_stat in ("FILLED", "PARTIALLY_FILLED")
-                            or l_stat in ("closed", "filled", "partially_filled")
-                            or f_qty > 0.0
-                        ):
-                            matched_records[iid] = rec
-                        elif matched_records.get(iid, {}).get("event") == "submit_accepted":
-                            prev_oid = matched_records[iid].get("order_id")
-                            cur_oid = rec.get("order_id")
-                            if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
-                                matched_records.pop(iid, None)
-        except OSError:
-            continue
+        for rec in read_jsonl_dicts(audit_path):
+            raw_iid = rec.get("intent_id") if rec.get("intent_id") is not None else rec.get("id")
+            if raw_iid is None or isinstance(raw_iid, bool):
+                continue
+            iid = str(raw_iid).strip()
+            if iid not in failed_by_id:
+                continue
+            ev = str(rec.get("event") or "")
+            if ev == "submit_accepted":
+                matched_records.setdefault(iid, rec)
+            elif ev in ("order_terminal", "order_terminal_retry"):
+                v_stat = str(rec.get("venue_status") or "").upper()
+                l_stat = str(rec.get("status") or "").lower()
+                f_qty = safe_pos_float(
+                    rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
+                    0.0,
+                )
+                if (
+                    v_stat in ("FILLED", "PARTIALLY_FILLED")
+                    or l_stat in ("closed", "filled", "partially_filled")
+                    or f_qty > 0.0
+                ):
+                    matched_records[iid] = rec
+                elif matched_records.get(iid, {}).get("event") == "submit_accepted":
+                    prev_oid = matched_records[iid].get("order_id")
+                    cur_oid = rec.get("order_id")
+                    if not prev_oid or not cur_oid or str(prev_oid) == str(cur_oid):
+                        matched_records.pop(iid, None)
 
     if not matched_records:
         return False

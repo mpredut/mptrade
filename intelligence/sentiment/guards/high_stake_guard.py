@@ -6,9 +6,15 @@ import logging
 import math
 import os
 import statistics
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, extract_current_price_item, load_key_value_conf
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    normalize_venue_name,
+    split_symbol_assets,
+)
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -25,7 +31,12 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
-from state_io import read_recovering_previous
+from state_io import (
+    read_json_dict as read_json_cached,
+    read_json_dict,
+    read_tail_jsonl_records,
+    resolve_cachedb_filepath,
+)
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
@@ -161,7 +172,7 @@ def load_symbol_price_series(
         for p24_path in (primary_24, *legacy_filenames_for(primary_24)):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            ser = _extract_cached_items_series(read_recovering_previous(p24_path, json.loads, default=None), cands)
+            ser = _extract_cached_items_series(read_json_dict(p24_path, default=None, recover_previous=True), cands)
             if len(ser) >= 2:
                 series_24h = list(ser)
                 break
@@ -195,29 +206,13 @@ def load_symbol_price_series(
                 continue
             try:
                 if arch_path.endswith(".json"):
-                    aser = _extract_cached_items_series(read_recovering_previous(arch_path, json.loads, default=None), cands)
+                    aser = _extract_cached_items_series(read_json_dict(arch_path, default=None, recover_previous=True), cands)
                     if len(aser) >= 2:
                         archive_pts = list(aser)
                         break
                 else:
-                    with open(arch_path, "rb") as af:
-                        af.seek(0, os.SEEK_END)
-                        fsize = af.tell()
-                        read_bytes = min(fsize, 1024 * 1024)
-                        af.seek(max(0, fsize - read_bytes))
-                        raw_chunk = af.read().decode("utf-8", errors="replace")
-                    lines = raw_chunk.splitlines()
-                    if fsize > read_bytes and len(lines) > 1:
-                        lines = lines[1:]
                     parsed_rows = []
-                    for ln in lines:
-                        ln = ln.strip()
-                        if not ln:
-                            continue
-                        try:
-                            rec = json.loads(ln)
-                        except ValueError:
-                            continue
+                    for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=1024 * 1024):
                         if isinstance(rec, dict):
                             rec_s = rec.get("s")
                             if (
@@ -1917,7 +1912,7 @@ def collect_pretrade_telemetry(
     from cachepaths import cache_symbol_variants, canonical_base_asset
     sym_variants = cache_symbol_variants(symbol)
     try:
-        cur_p_data = read_recovering_previous(os.path.join(cachedb_dir, "cache_current_price.json"), json.loads, default=None)
+        cur_p_data = read_json_dict(os.path.join(cachedb_dir, "cache_current_price.json"), default=None, recover_previous=True)
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
         alt_series_24h, _ = load_symbol_price_series(
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=False
@@ -1990,7 +1985,7 @@ def collect_pretrade_telemetry(
 
     try:
         st_path = os.path.join(cachedb_dir, "cache_short_trend.json")
-        st_data = read_recovering_previous(st_path, json.loads, default=None)
+        st_data = read_json_dict(st_path, default=None, recover_previous=True)
         if isinstance(st_data, dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
             tinfo = next((st_items.get(cand) for cand in sym_variants if isinstance(st_items.get(cand), dict)), None)
@@ -2010,7 +2005,7 @@ def collect_pretrade_telemetry(
         fills = {}
         for ord_file in ("cache_order.json", "cache_trade_kraken.json", "cache_trade_hyperliquid.json", "cache_trade_t212.json"):
             ord_path = os.path.join(cachedb_dir, ord_file)
-            ord_data = read_recovering_previous(ord_path, json.loads, default=None)
+            ord_data = read_json_dict(ord_path, default=None, recover_previous=True)
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
             if not isinstance(o_items, dict):
                 continue
@@ -2033,7 +2028,7 @@ def collect_pretrade_telemetry(
 
     def _read_first_cached_dict(group_key: str, default_file: str) -> Optional[Dict[str, Any]]:
         for fname in (get_cache_filenames(group_key) or (default_file,)):
-            data = read_recovering_previous(os.path.join(cachedb_dir, fname), json.loads, default=None)
+            data = read_json_dict(os.path.join(cachedb_dir, fname), default=None, recover_previous=True)
             if isinstance(data, dict):
                 return data
         return None

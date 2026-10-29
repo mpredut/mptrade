@@ -87,7 +87,9 @@ def scan_direct_calls(root: Path = ROOT) -> set[DirectCall]:
             continue
         visitor = _Visitor(relative_path.as_posix())
         try:
-            visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+            from state_io import read_text_file
+
+            visitor.visit(ast.parse(read_text_file(path)))
         except (OSError, SyntaxError, UnicodeError):
             continue
         result.update(visitor.calls)

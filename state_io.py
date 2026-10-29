@@ -8,6 +8,7 @@ and observational state intentionally have different concurrency semantics.
 from __future__ import annotations
 
 import contextlib
+import csv
 import glob
 import gzip
 import json
@@ -323,31 +324,56 @@ def atomic_gzip_file(
 
 def read_tail_lines(
     path: str,
-    limit: int,
+    limit: int | None = None,
     *,
     chunk_size: int = 65536,
+    max_bytes: int | None = None,
 ) -> list[bytes]:
-    """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
+    """Read up to the last ``limit`` lines and/or ``max_bytes`` from ``path`` with bounded memory."""
     if not path or isinstance(path, (bool, int)):
         return []
-    limit_i = _exact_nonneg_int(limit)
-    if limit_i is None or limit_i <= 0 or not os.path.isfile(path):
+    try:
+        resolved = str(resolve_cachedb_filepath(os.fspath(path)))
+    except TypeError:
+        return []
+    if not os.path.isfile(resolved):
+        return []
+    limit_i = _exact_nonneg_int(limit) if limit is not None else None
+    if limit is not None and (limit_i is None or limit_i <= 0):
+        return []
+    max_b = _exact_nonneg_int(max_bytes) if max_bytes is not None else None
+    if max_bytes is not None and (max_b is None or max_b <= 0):
+        return []
+    if max_b is not None and limit_i is None:
+        try:
+            with open(resolved, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - max_b))
+                chunk = handle.read(min(size, max_b))
+        except OSError:
+            return []
+        if size > max_b and b"\n" in chunk:
+            chunk = chunk.split(b"\n", 1)[1]
+        return [line for line in chunk.splitlines() if line.strip()]
+    if limit_i is None:
         return []
     limit = limit_i
     eff_chunk = _positive_chunk_size(chunk_size, 65536)
     chunks: list[bytes] = []
     newline_count = 0
-    with open(path, "rb") as handle:
+    with open(resolved, "rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
-        while position > 0:
-            step = min(eff_chunk, position)
+        min_pos = max(0, position - max_b) if max_b is not None else 0
+        while position > min_pos:
+            step = min(eff_chunk, position - min_pos)
             position -= step
             handle.seek(position)
             chunk = handle.read(step)
             chunks.append(chunk)
             newline_count += chunk.count(b"\n")
-            if newline_count > limit and position > 0:
+            if newline_count > limit and position > min_pos:
                 joined = b"".join(reversed(chunks))
                 complete = joined.split(b"\n", 1)[1] if b"\n" in joined else b""
                 non_empty = [line for line in complete.splitlines() if line.strip()]
@@ -360,28 +386,40 @@ def read_tail_lines(
     return [line for line in joined.splitlines() if line.strip()][-limit:]
 
 
-def read_tail_jsonl_dicts(
+def read_tail_jsonl_records(
     path: str,
-    limit: int = 50,
+    limit: int | None = 50,
     *,
     chunk_size: int = 65536,
-) -> list[dict[str, Any]]:
-    """Read and parse up to the last ``limit`` JSON object lines from a JSONL file."""
-    if not path or isinstance(path, (bool, int)):
-        return []
-    try:
-        resolved = str(resolve_cachedb_filepath(os.fspath(path)))
-    except TypeError:
-        return []
-    out: list[dict[str, Any]] = []
-    for raw_bytes in read_tail_lines(resolved, limit, chunk_size=chunk_size):
+    max_bytes: int | None = None,
+) -> list[Any]:
+    """Read and parse JSON lines from the tail of a JSONL file."""
+    out: list[Any] = []
+    for raw_bytes in read_tail_lines(
+        path, limit, chunk_size=chunk_size, max_bytes=max_bytes
+    ):
         try:
-            parsed = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+            out.append(json.loads(raw_bytes.decode("utf-8", errors="replace")))
         except ValueError:
             continue
-        if isinstance(parsed, dict):
-            out.append(parsed)
     return out
+
+
+def read_tail_jsonl_dicts(
+    path: str,
+    limit: int | None = 50,
+    *,
+    chunk_size: int = 65536,
+    max_bytes: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read and parse up to the last ``limit`` JSON object lines from a JSONL file."""
+    return [
+        rec
+        for rec in read_tail_jsonl_records(
+            path, limit=limit, chunk_size=chunk_size, max_bytes=max_bytes
+        )
+        if isinstance(rec, dict)
+    ]
 
 
 def read_last_jsonl_dict(
@@ -626,6 +664,111 @@ def read_jsonl_dicts(path: str, *, strict: bool = False) -> list[dict[str, Any]]
         elif strict:
             raise ValueError("JSONL line must be a dict")
     return out
+
+
+def read_text_file(
+    path: str,
+    *,
+    default: Any = _MISSING,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+    newline: str | None = None,
+    backup_path: str | None = None,
+    recover_previous: bool = False,
+) -> str | Any:
+    """Read text from ``path`` (symmetric to ``atomic_write_text``), with optional fallback ``default``."""
+    def _read_strict(candidate_path: str) -> str:
+        target = str(resolve_cachedb_filepath(os.fspath(candidate_path)))
+        with open(target, "r", encoding=encoding, errors=errors, newline=newline) as handle:
+            return handle.read()
+
+    if recover_previous:
+        return read_recovering_previous(
+            path, _read_strict, backup_path=backup_path, default=default
+        )
+    try:
+        if path is None or isinstance(path, (bool, int, float)):
+            raise TypeError("path must be a valid filesystem path")
+        return _read_strict(path)
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
+
+
+def read_text_lines(
+    path: str,
+    *,
+    strip: bool = False,
+    skip_empty: bool = False,
+    keepends: bool = False,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+) -> list[str]:
+    """Read lines from a text file, returning ``[]`` when missing or unreadable."""
+    if not path or isinstance(path, (bool, int, float)):
+        return []
+    try:
+        target = str(resolve_cachedb_filepath(os.fspath(path)))
+        with open(target, "r", encoding=encoding, errors=errors) as handle:
+            out: list[str] = []
+            for raw in handle:
+                if skip_empty and not raw.strip():
+                    continue
+                if strip:
+                    out.append(raw.strip())
+                elif keepends:
+                    out.append(raw)
+                else:
+                    out.append(raw.rstrip("\r\n"))
+            return out
+    except OSError:
+        return []
+
+
+def read_bytes_file(
+    path: str,
+    *,
+    default: Any = _MISSING,
+    backup_path: str | None = None,
+    recover_previous: bool = False,
+) -> bytes | Any:
+    """Read binary bytes from ``path`` (symmetric to ``atomic_write_bytes``), with optional fallback ``default``."""
+    def _read_strict(candidate_path: str) -> bytes:
+        target = str(resolve_cachedb_filepath(os.fspath(candidate_path)))
+        with open(target, "rb") as handle:
+            return handle.read()
+
+    if recover_previous:
+        return read_recovering_previous(
+            path, _read_strict, backup_path=backup_path, default=default
+        )
+    try:
+        if path is None or isinstance(path, (bool, int, float)):
+            raise TypeError("path must be a valid filesystem path")
+        return _read_strict(path)
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
+
+
+def read_csv_dicts(
+    path: str,
+    *,
+    encoding: str = "utf-8",
+) -> list[dict[str, Any]]:
+    """Read rows from a CSV file via ``csv.DictReader``, returning ``[]`` when missing or unreadable."""
+    if not path or isinstance(path, (bool, int, float)):
+        return []
+    try:
+        target = str(resolve_cachedb_filepath(os.fspath(path)))
+        if not os.path.isfile(target):
+            return []
+        with open(target, "r", encoding=encoding, newline="") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    except OSError:
+        return []
 
 
 def read_recovering_previous(

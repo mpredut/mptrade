@@ -90,13 +90,10 @@ def _file_signal(path: str) -> dict:
     if not path or isinstance(path, bool) or not str(path).strip() or not os.path.isfile(str(path)):
         return {**NEUTRAL, "source": "file(missing)"}
     try:
-        from state_io import read_recovering_previous
-        d = read_recovering_previous(str(path), json.loads)
+        from state_io import read_json_dict
+        d = read_json_dict(str(path), recover_previous=True)
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")
-        return {**NEUTRAL, "source": "file(corrupt)"}
-    if not isinstance(d, dict):
-        log("  ! an invalid signal file: top-level JSON must be an object")
         return {**NEUTRAL, "source": "file(corrupt)"}
     ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60

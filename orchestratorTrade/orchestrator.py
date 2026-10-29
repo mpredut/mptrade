@@ -286,15 +286,10 @@ class BotManager:
 
     def _hash_file(self, filepath: str) -> str:
         import hashlib
-        if not os.path.exists(filepath):
-            return ""
-        hasher = hashlib.md5()
-        try:
-            with open(filepath, "rb") as f:
-                hasher.update(f.read())
-            return hasher.hexdigest()
-        except Exception:
-            return ""
+        from state_io import read_bytes_file
+
+        data = read_bytes_file(filepath, default=None)
+        return hashlib.md5(data).hexdigest() if data is not None else ""
 
     async def _hot_reload_loop(self):
         """Watches config.env, procs.conf, and instruments.conf for changes to trigger restarts."""

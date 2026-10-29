@@ -223,11 +223,11 @@ class RTradePairStore:
         if not self.path:
             return self._validate(json.loads(json.dumps(self._mem_data)))
         from cachepaths import resolve_cachedb_filepath
-        from state_io import read_recovering_previous
+        from state_io import read_json_file
         eff_path = str(resolve_cachedb_filepath(self.path))
 
         try:
-            data = read_recovering_previous(eff_path, json.loads)
+            data = read_json_file(eff_path, recover_previous=True)
             return self._validate(data)
         except FileNotFoundError:
             return {"version": 1, "pairs": {}}

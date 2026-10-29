@@ -110,7 +110,7 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
-    from state_io import previous_generation_path, read_recovering_previous
+    from state_io import previous_generation_path, read_json_dict
     prev_file = previous_generation_path(state_file)
     mtime = None
     for cand in (state_file, prev_file):
@@ -125,7 +125,7 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
     try:
-        data = read_recovering_previous(state_file, json.loads, default=None)
+        data = read_json_dict(state_file, default=None, recover_previous=True)
         if isinstance(data, dict):
             # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
             now_curr = time.time()

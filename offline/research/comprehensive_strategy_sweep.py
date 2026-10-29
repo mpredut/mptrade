@@ -335,7 +335,7 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         print(f"Shadow OHLC not found at {SHADOW_OHLC_JSON}")
         return {}
 
-    from state_io import read_json_file
+    from state_io import read_json_file, read_text_file
     full_bars = read_json_file(SHADOW_OHLC_JSON, default=[])
 
     if not isinstance(full_bars, list) or len(full_bars) < 2:
@@ -344,13 +344,7 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
 
     # Load anchor ts
     anchor_path = SHADOW_OHLC_JSON.parent / "HYPEUSD_240m.anchor"
-    anchor_ts = 0
-    if anchor_path.exists():
-        try:
-            with open(anchor_path, encoding="utf-8") as f:
-                anchor_ts = safe_nonneg_int(f.read().strip(), default=0)
-        except OSError:
-            anchor_ts = 0
+    anchor_ts = safe_nonneg_int(read_text_file(anchor_path, default="").strip(), default=0) if anchor_path.exists() else 0
 
     valid_bars = []
     for b in full_bars:

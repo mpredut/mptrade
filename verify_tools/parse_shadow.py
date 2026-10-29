@@ -49,13 +49,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    from state_io import read_text_lines
+
     if not args.file.exists():
         print(f"Shadow log not found: {args.file}")
         return
 
-    with open(args.file, encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-
+    lines = read_text_lines(args.file, strip=True, skip_empty=True)
     if not lines:
         print(f"Shadow log is empty: {args.file}")
         return
@@ -75,8 +75,7 @@ def main() -> None:
     path_60m = ROOT / "logs" / "shadow_live" / "HYPEUSD_60m.jsonl"
     if path_60m.exists():
         try:
-            with open(path_60m, encoding="utf-8") as f:
-                lines60 = [line.strip() for line in f if line.strip()]
+            lines60 = read_text_lines(path_60m, strip=True, skip_empty=True)
             last60 = _last_valid_record(lines60)
             if last60 is not None:
                 print("\n" + "=" * 65 + "\n")

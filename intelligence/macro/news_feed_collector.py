@@ -127,12 +127,12 @@ class NewsFeedCollector:
         return item if isinstance(getattr(item, "title", None), str) else None
 
     def _load_history(self) -> None:
-        from state_io import read_recovering_previous
+        from state_io import read_json_file
         hist_file = self._effective_history_file()
         now = time.time()
         for load_path in (hist_file,):
             try:
-                data = read_recovering_previous(load_path, json.loads, default=None)
+                data = read_json_file(load_path, default=None, recover_previous=True)
                 if not isinstance(data, list):
                     continue
                 for item in data:

@@ -402,3 +402,45 @@ def test_read_json_dict(tmp_path):
     with pytest.raises(ValueError):
         read_jsonl_dicts(str(p_jsonl), strict=True)
 
+
+def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
+    from state_io import (
+        atomic_write_bytes,
+        atomic_write_text,
+        read_bytes_file,
+        read_csv_dicts,
+        read_tail_jsonl_dicts,
+        read_tail_jsonl_records,
+        read_text_file,
+        read_text_lines,
+    )
+
+    p_txt = tmp_path / "sample.txt"
+    atomic_write_text(str(p_txt), " first \n\nsecond\n")
+    assert read_text_file(str(p_txt)) == " first \n\nsecond\n"
+    assert read_text_file(str(tmp_path / "missing.txt"), default="fallback") == "fallback"
+    assert read_text_lines(str(p_txt)) == [" first ", "", "second"]
+    assert read_text_lines(str(p_txt), strip=True, skip_empty=True) == ["first", "second"]
+    assert read_text_lines(str(p_txt), keepends=True) == [" first \n", "\n", "second\n"]
+    assert read_text_lines(str(tmp_path / "missing.txt")) == []
+
+    p_bin = tmp_path / "sample.bin"
+    atomic_write_bytes(str(p_bin), b"\x00\x01\x02")
+    assert read_bytes_file(str(p_bin)) == b"\x00\x01\x02"
+    assert read_bytes_file(str(tmp_path / "missing.bin"), default=None) is None
+
+    p_csv = tmp_path / "ohlc.csv"
+    atomic_write_text(str(p_csv), "timestamp,open,close\n100,1.0,2.0\n")
+    assert read_csv_dicts(str(p_csv)) == [{"timestamp": "100", "open": "1.0", "close": "2.0"}]
+    assert read_csv_dicts(str(tmp_path / "missing.csv")) == []
+
+    p_tail = tmp_path / "tail.jsonl"
+    lines = [json.dumps({"idx": i, "pad": "x" * 20}) for i in range(10)]
+    atomic_write_text(str(p_tail), "\n".join(lines) + "\n")
+    tail_dicts = read_tail_jsonl_dicts(str(p_tail), limit=None, max_bytes=120)
+    assert len(tail_dicts) >= 2
+    assert tail_dicts[-1]["idx"] == 9
+    tail_recs = read_tail_jsonl_records(str(p_tail), limit=3, max_bytes=300)
+    assert [r["idx"] for r in tail_recs] == [7, 8, 9]
+
+

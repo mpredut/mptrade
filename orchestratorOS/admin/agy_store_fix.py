@@ -132,11 +132,11 @@ def disable_webrtc_mesh(stamp: str) -> str:
     whose hardcoded 1228-byte SCTP MTU exceeds the wgpia0 WireGuard MTU (1200) and freezes streams."""
     if not os.path.isfile(AGY_BIN):
         return "missing"
-    try:
-        with open(AGY_BIN, "rb") as f:
-            data = f.read()
-    except OSError as e:
-        log.warning("cannot read %s: %s", AGY_BIN, e)
+    from state_io import read_bytes_file
+
+    data = read_bytes_file(AGY_BIN, default=None)
+    if data is None:
+        log.warning("cannot read %s", AGY_BIN)
         return "error"
     if WEBRTC_FLAG_ORIG not in data:
         return "already_disabled" if WEBRTC_FLAG_PATCHED in data else "flag_not_found"
@@ -160,10 +160,10 @@ def disable_webrtc_mesh(stamp: str) -> str:
 def webrtc_mesh_status() -> str:
     if not os.path.isfile(AGY_BIN):
         return "missing"
-    try:
-        with open(AGY_BIN, "rb") as f:
-            data = f.read()
-    except OSError:
+    from state_io import read_bytes_file
+
+    data = read_bytes_file(AGY_BIN, default=None)
+    if data is None:
         return "unreadable"
     if WEBRTC_FLAG_ORIG in data:
         return "ENABLED (unpatched)"
@@ -325,14 +325,12 @@ def repair_summaries(mt: dict) -> int:
             out += enc_fields([(1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, raw)]))])
     for cid, sec in mt.items():
         out += enc_fields([(2, 2, enc_fields([(1, 2, cid.encode()), (2, 0, sec)]))])
+    from state_io import atomic_write_bytes
+
     for pb_path in (PB, os.path.join(CLI, "jetbox_summaries_proto.pb")):
         if pb_path != PB and not os.path.exists(pb_path):
             continue
-        os.makedirs(os.path.dirname(os.path.abspath(pb_path)) or ".", exist_ok=True)
-        tmp = pb_path + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(bytes(out))
-        os.replace(tmp, pb_path)
+        atomic_write_bytes(pb_path, bytes(out))
     return fixed
 
 
@@ -360,13 +358,13 @@ def main_pid() -> str:
 def newest_daemon_log_ready(since: float, pid: str = "") -> bool:
     """True once THIS daemon instance (matched by PID, else by log-file start time >= since) logged the end of
     its startup reconciliation. Never matches the log of a previous instance."""
+    from state_io import read_text_file
+
     for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")):
         if not pid and log_started_at(lf) < since:
             continue
-        try:
-            with open(lf, errors="ignore") as f:
-                txt = f.read()
-        except OSError:
+        txt = read_text_file(lf, default=None, errors="ignore")
+        if txt is None:
             continue
         if pid and f"language server process with pid {pid}" not in txt:
             continue
@@ -441,11 +439,10 @@ UI_SYNC_READY, UI_SYNC_NOTHING, UI_SYNC_BUSY, UI_SYNC_STUCK = 0, 10, 11, 12
 
 def daemon_known_cids() -> set[str]:
     """Conversation IDs the running daemon holds in memory (as persisted in agyhub_summaries_proto.pb)."""
-    try:
-        with open(PB, "rb") as f:
-            return list_entry_cids(f.read())
-    except OSError:
-        return set()
+    from state_io import read_bytes_file
+
+    data = read_bytes_file(PB, default=None)
+    return list_entry_cids(data) if data is not None else set()
 
 
 def summary_row_cids() -> set[str]:
@@ -561,9 +558,10 @@ def last_store_activity() -> float:
         try:
             cli_logs = sorted(glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")), key=os.path.getmtime, reverse=True)
             if cli_logs:
+                from state_io import read_text_file
+
                 latest_log = cli_logs[0]
-                with open(latest_log, errors="ignore") as f:
-                    txt = f.read()
+                txt = read_text_file(latest_log, default="", errors="ignore")
                 conn_idx = txt.rfind("Connection status: Connected")
                 if conn_idx >= 0:
                     tail = txt[conn_idx:]
@@ -599,7 +597,7 @@ def mode_ui_sync_check(idle_sec: int) -> int:
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
         return UI_SYNC_NOTHING
-    from state_io import previous_generation_path, read_recovering_previous, save_json_state
+    from state_io import previous_generation_path, read_json_dict, save_json_state
     entries = pending_ui_sync()
     if not entries:
         for st_path in (UI_SYNC_STATE, previous_generation_path(UI_SYNC_STATE)):
@@ -614,12 +612,7 @@ def mode_ui_sync_check(idle_sec: int) -> int:
         log.info("ui-sync-check: %d pending, store active %.0fs ago (< %ds); waiting", len(entries), idle_for, idle_sec)
         return UI_SYNC_BUSY
     fingerprint = hashlib.sha1("\n".join(entries).encode()).hexdigest()
-    state = {}
-    try:
-        loaded = read_recovering_previous(UI_SYNC_STATE, json.loads, default=None)
-        state = loaded if isinstance(loaded, dict) else {}
-    except (OSError, ValueError, TypeError):
-        state = {}
+    state = read_json_dict(UI_SYNC_STATE, default={}, recover_previous=True)
     if state.get("fingerprint") == fingerprint:
         log.warning("ui-sync-check: same %d pending entries persisted after the last restart; not restarting again: %s",
                     len(entries), entries[:5])

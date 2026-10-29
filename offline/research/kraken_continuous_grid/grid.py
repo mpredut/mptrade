@@ -134,25 +134,25 @@ def load(path):
     cached = _LOAD_CACHE.get(path)
     if cached is not None:
         return cached
+    from state_io import read_csv_dicts
     rows = []
-    with open(path, encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            ts_f = safe_pos_float(r.get("timestamp"), default=None)
-            o = safe_pos_float(r.get("open"), default=None)
-            h = safe_pos_float(r.get("high"), default=None)
-            l = safe_pos_float(r.get("low"), default=None)
-            c = safe_pos_float(r.get("close"), default=None)
-            if (
-                ts_f is not None
-                and int(ts_f) > 0
-                and o is not None
-                and h is not None
-                and l is not None
-                and c is not None
-                and h >= max(o, l, c)
-                and l <= min(o, h, c)
-            ):
-                rows.append((int(ts_f), o, h, l, c))
+    for r in read_csv_dicts(path):
+        ts_f = safe_pos_float(r.get("timestamp"), default=None)
+        o = safe_pos_float(r.get("open"), default=None)
+        h = safe_pos_float(r.get("high"), default=None)
+        l = safe_pos_float(r.get("low"), default=None)
+        c = safe_pos_float(r.get("close"), default=None)
+        if (
+            ts_f is not None
+            and int(ts_f) > 0
+            and o is not None
+            and h is not None
+            and l is not None
+            and c is not None
+            and h >= max(o, l, c)
+            and l <= min(o, h, c)
+        ):
+            rows.append((int(ts_f), o, h, l, c))
     _LOAD_CACHE[path] = rows
     return rows
 

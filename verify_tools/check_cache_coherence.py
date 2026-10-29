@@ -12,7 +12,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import extract_current_price_item, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants, resolve_cachedb_filepath  # noqa: E402
-from state_io import previous_generation_path, read_json_dict, read_recovering_previous  # noqa: E402
+from state_io import previous_generation_path, read_json_dict  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
 STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant trend refreshes every few seconds / 20s).
@@ -23,7 +23,7 @@ def load(name):
     if not os.path.exists(p) and not os.path.exists(previous_generation_path(p)):
         return None
     try:
-        return read_recovering_previous(p, read_json_dict)
+        return read_json_dict(p, recover_previous=True)
     except Exception as e:  # noqa: BLE001
         print(f"  [ERR] {name}: {e}")
         return None

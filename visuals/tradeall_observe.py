@@ -41,7 +41,7 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
-from state_io import atomic_write_text, read_json_dict, read_recovering_previous
+from state_io import atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
 try:
     from intelligence.internal.state.volatility import get_kalman_state_path
@@ -165,7 +165,7 @@ def sample_current_prices(symbols):
     if not os.path.exists(CACHE_TREND_PATH):
         return
     try:
-        snapshot = read_recovering_previous(CACHE_TREND_PATH, read_json_dict)
+        snapshot = read_json_dict(CACHE_TREND_PATH, recover_previous=True)
     except (OSError, json.JSONDecodeError, ValueError) as e:
         print(f"[tradeall_observe] error reading cache_short_trend.json: {e}")
         return
@@ -240,28 +240,13 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     if not os.path.exists(path):
         return []
     if filename.endswith(".jsonl"):
-        entries = []
-        try:
-            with open(path, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                f.seek(max(0, size - max_bytes))
-                data = f.read().decode("utf-8", errors="replace")
-            lines = data.split("\n")[1:] if size > max_bytes else data.split("\n")
-            for line in lines:
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                    if isinstance(rec, dict) and rec.get("s") == symbol and "i" in rec:
-                        entries.append(rec["i"])
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    continue
-        except OSError:
-            return []
-        return entries
+        return [
+            rec["i"]
+            for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=max_bytes)
+            if rec.get("s") == symbol and "i" in rec
+        ]
     try:
-        data = read_recovering_previous(path, read_json_dict)
+        data = read_json_dict(path, recover_previous=True)
         items = data.get("items")
         return items.get(symbol, []) if isinstance(items, dict) else []
     except (OSError, json.JSONDecodeError, ValueError):
@@ -730,7 +715,7 @@ def build_analysis_state_text(symbol, active_summary=None):
     trend cache file.
     """
     try:
-        raw_trend = read_recovering_previous(CACHE_TREND_PATH, read_json_dict)
+        raw_trend = read_json_dict(CACHE_TREND_PATH, recover_previous=True)
         trend_map = raw_trend.get("items") if isinstance(raw_trend.get("items"), dict) else raw_trend
         entry = _lookup_symbol_dict(trend_map, symbol)
     except (OSError, json.JSONDecodeError, ValueError):
@@ -738,7 +723,7 @@ def build_analysis_state_text(symbol, active_summary=None):
     if not isinstance(entry, dict) or not entry:
         return None
     try:
-        raw_sh = read_recovering_previous(get_kalman_state_path(), read_json_dict)
+        raw_sh = read_json_dict(get_kalman_state_path(), recover_previous=True)
         sh_map = raw_sh.get("items") if isinstance(raw_sh.get("items"), dict) else raw_sh
         sh = _lookup_symbol_dict(sh_map, symbol)
         if isinstance(sh, dict) and sh:
@@ -783,7 +768,7 @@ def build_backtest_state_text(directory, symbol):
     """Load simulated analysis state written by offline/backtests/tradeall.py."""
     path = os.path.join(directory, "analysis_state.json")
     try:
-        raw_state = read_recovering_previous(path, read_json_dict)
+        raw_state = read_json_dict(path, recover_previous=True)
         entry = _lookup_symbol_dict(raw_state, symbol)
     except (OSError, json.JSONDecodeError, ValueError):
         entry = None

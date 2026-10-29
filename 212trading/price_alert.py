@@ -91,12 +91,9 @@ def main() -> int:
 
     safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
-    from state_io import read_json_dict, read_recovering_previous
+    from state_io import read_json_dict
 
-    try:
-        st = read_recovering_previous(state_path, read_json_dict, default={})
-    except (OSError, ValueError):
-        st = {}
+    st = read_json_dict(state_path, default={}, recover_previous=True)
     armed = _parse_armed_flag(st.get("armed", True), default=True)
 
     hit_below = args.below is not None and price <= args.below

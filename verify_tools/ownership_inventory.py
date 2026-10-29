@@ -128,11 +128,13 @@ def _split_symbol(symbol: str, base: str = "", quote: str = "") -> tuple[str, st
 
 def _python_symbols(root: Path) -> tuple[list[str], str]:
     """Read constants without importing `symbols.py` or triggering its API side effects."""
+    from state_io import read_text_file
+
     path = root / "symbols.py"
     if not path.exists():
         return [], ""
     values = {}
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(read_text_file(path))
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue

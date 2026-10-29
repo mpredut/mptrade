@@ -234,8 +234,9 @@ gaussian_weights = gaussian_weights_from_idx
 # ── Ed25519 signing ──
 def _load_ed25519_signing_key():
     try:
-        with open("keys/ed25519_private.pem", "r") as f:
-            pem_data = f.read()
+        from state_io import read_text_file
+
+        pem_data = read_text_file("keys/ed25519_private.pem")
         b64match = _re.search(
             r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----",
             pem_data,

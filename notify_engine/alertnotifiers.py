@@ -10,7 +10,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from state_io import read_json_dict, read_recovering_previous, save_json_state
+from state_io import read_json_dict, save_json_state
 from typing import Any, Optional
 
 # Import your modules
@@ -106,7 +106,7 @@ def _delivery_state_path() -> Path:
 
 
 def _load_delivery_state(path: Path, today: str) -> dict:
-    state = read_recovering_previous(path, read_json_dict, default={})
+    state = read_json_dict(path, default={}, recover_previous=True)
     if not isinstance(state, dict) or state.get("date_utc") != today:
         state = {"schema_version": 1, "date_utc": today, "channels": {}}
     if not isinstance(state.get("channels"), dict):

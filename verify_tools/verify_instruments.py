@@ -39,25 +39,23 @@ def check_available(cond, available, label, detail=""):
 
 def parse_monitortrades_conf(path=None):
     """Parser simplu pt formatul existent (key=val; SYMBOL = g / l / maxage)."""
+    from state_io import read_text_lines
+
     if path is None:
         path = os.path.join(_ROOT, "monitortrades.conf")
     g = {}
     per = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            for raw in f:
-                line = raw.split("#", 1)[0].split(";", 1)[0].strip()
-                if "=" not in line:
-                    continue
-                k, v = (x.strip() for x in line.split("=", 1))
-                if "/" in v:                      # SYMBOL = gain / lost / maxage
-                    parts = [p.strip() for p in v.split("/")]
-                    if len(parts) == 3:
-                        per[k] = parts
-                else:
-                    g[k] = v
-    except FileNotFoundError:
-        pass
+    for raw in read_text_lines(path):
+        line = raw.split("#", 1)[0].split(";", 1)[0].strip()
+        if "=" not in line:
+            continue
+        k, v = (x.strip() for x in line.split("=", 1))
+        if "/" in v:                      # SYMBOL = gain / lost / maxage
+            parts = [p.strip() for p in v.split("/")]
+            if len(parts) == 3:
+                per[k] = parts
+        else:
+            g[k] = v
     return g, per
 
 

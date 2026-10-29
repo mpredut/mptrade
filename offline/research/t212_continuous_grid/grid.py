@@ -106,24 +106,24 @@ def load(asset, itv):
         _LOAD_CACHE[key] = None
         _SPLIT_CACHE[key] = (None, None)
         return None
+    from state_io import read_csv_dicts
     rows = []
-    with open(path, encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            ts_val = safe_pos_int(r.get("timestamp"), default=None)
-            o = safe_pos_float(r.get("open"), default=None)
-            h = safe_pos_float(r.get("high"), default=None)
-            l = safe_pos_float(r.get("low"), default=None)
-            c = safe_pos_float(r.get("close"), default=None)
-            if (
-                ts_val is not None
-                and o is not None
-                and h is not None
-                and l is not None
-                and c is not None
-                and h >= max(o, l, c)
-                and l <= min(o, h, c)
-            ):
-                rows.append((ts_val, o, h, l, c))
+    for r in read_csv_dicts(path):
+        ts_val = safe_pos_int(r.get("timestamp"), default=None)
+        o = safe_pos_float(r.get("open"), default=None)
+        h = safe_pos_float(r.get("high"), default=None)
+        l = safe_pos_float(r.get("low"), default=None)
+        c = safe_pos_float(r.get("close"), default=None)
+        if (
+            ts_val is not None
+            and o is not None
+            and h is not None
+            and l is not None
+            and c is not None
+            and h >= max(o, l, c)
+            and l <= min(o, h, c)
+        ):
+            rows.append((ts_val, o, h, l, c))
     res = rows if len(rows) > WARM + 20 else None
     _LOAD_CACHE[key] = res
     if res is not None:

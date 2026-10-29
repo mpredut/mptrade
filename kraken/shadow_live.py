@@ -157,15 +157,13 @@ def _history_path(pair: str, interval: int) -> str:
 def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     """On first run, anchor at the latest closed bar to begin forward testing now.
     Subsequent runs reuse it, so the window grows instead of sliding."""
+    from state_io import read_text_file
+
     path = _anchor_path(pair, interval)
     if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                vf = safe_pos_float(fh.read().strip(), default=None)
-            if vf is not None and vf.is_integer():
-                return int(vf)
-        except OSError:
-            pass
+        vf = safe_pos_float(read_text_file(path, default="").strip(), default=None)
+        if vf is not None and vf.is_integer():
+            return int(vf)
     def_f = safe_pos_float(default_ts, default=0.0)
     anchor_val = int(def_f)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -178,11 +176,8 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     path = _history_path(pair, interval)
     if not os.path.exists(path):
         return []
-    from state_io import read_recovering_previous
-    try:
-        rows = read_recovering_previous(path, json.loads, default=[])
-    except Exception:
-        rows = []
+    from state_io import read_json_file
+    rows = read_json_file(path, default=[], recover_previous=True)
     if not isinstance(rows, list):
         return []
     out: list[tuple[int, float, float, float, float]] = []

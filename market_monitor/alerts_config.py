@@ -53,50 +53,51 @@ def load_config(path: str) -> dict:
         or not os.path.exists(path)
     ):
         raise ValueError(f"Required alert configuration file is missing: {path}")
+    from state_io import read_text_lines
+
     cfg: dict = {"alert_config": {"per_coin": {}}}
     ac = cfg["alert_config"]
-    with open(path, encoding="utf-8") as f:
-        for raw in f:
-            line = raw.split("#", 1)[0].strip()
-            if not line:
-                continue
-            if "=" not in line:
-                raise ValueError(f"Malformed alert configuration line: {raw.rstrip()!r}")
-            key, _, val = line.partition("=")
-            key, val = key.strip(), val.strip()
-            key_low = key.lower()
-            try:
-                if key_low == "discover_new_coins":
-                    bval = _parse_bool_flag(val, default=None)
-                    if bval is None:
-                        raise ValueError("expected an explicit boolean")
-                    cfg["discover_new_coins"] = bval
-                elif key_low in _LIST_KEYS:
-                    norm = _LIST_KEYS[key_low]
-                    cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]
-                elif key_low in _SETTING_KEYS:
-                    typ, where = _SETTING_KEYS[key_low]
-                    fval = safe_float(val, default=None)
-                    if fval is None:
-                        raise ValueError("setting must be finite")
-                    if typ is int and not fval.is_integer():
-                        raise ValueError("integer setting must not have fractional part")
-                    v = typ(fval)
-                    min_allowed = 0 if key_low == "cooldown_minutes" else 1
-                    if v < min_allowed:
-                        raise ValueError(f"setting must be >= {min_allowed}")
-                    (ac if where == "ac" else cfg)[key_low] = v
-                elif "/" in val:                          # An UP/DOWN threshold.
-                    pair = _pair(val)
-                    if key_low in _BUCKET_ALIAS:
-                        ac[_BUCKET_ALIAS[key_low]] = pair
-                    else:                                 # Every other name is a per-coin key.
-                        ac["per_coin"][key.upper()] = pair
-                else:
-                    raise ValueError(f"Unknown alert configuration key: {key}")
-            except (ValueError, OverflowError) as exc:
-                raise ValueError(
-                    f"Invalid alert configuration for {key}: {val!r}") from exc
+    for raw in read_text_lines(path, keepends=True):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise ValueError(f"Malformed alert configuration line: {raw.rstrip()!r}")
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip()
+        key_low = key.lower()
+        try:
+            if key_low == "discover_new_coins":
+                bval = _parse_bool_flag(val, default=None)
+                if bval is None:
+                    raise ValueError("expected an explicit boolean")
+                cfg["discover_new_coins"] = bval
+            elif key_low in _LIST_KEYS:
+                norm = _LIST_KEYS[key_low]
+                cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]
+            elif key_low in _SETTING_KEYS:
+                typ, where = _SETTING_KEYS[key_low]
+                fval = safe_float(val, default=None)
+                if fval is None:
+                    raise ValueError("setting must be finite")
+                if typ is int and not fval.is_integer():
+                    raise ValueError("integer setting must not have fractional part")
+                v = typ(fval)
+                min_allowed = 0 if key_low == "cooldown_minutes" else 1
+                if v < min_allowed:
+                    raise ValueError(f"setting must be >= {min_allowed}")
+                (ac if where == "ac" else cfg)[key_low] = v
+            elif "/" in val:                          # An UP/DOWN threshold.
+                pair = _pair(val)
+                if key_low in _BUCKET_ALIAS:
+                    ac[_BUCKET_ALIAS[key_low]] = pair
+                else:                                 # Every other name is a per-coin key.
+                    ac["per_coin"][key.upper()] = pair
+            else:
+                raise ValueError(f"Unknown alert configuration key: {key}")
+        except (ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"Invalid alert configuration for {key}: {val!r}") from exc
 
     required_top = {
         "watch", "sources", "discover_new_coins", "max_monitored",
