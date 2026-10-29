@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from botcore import safe_float, safe_pos_float
+from state_io import atomic_write_bytes
 
 
 REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
@@ -72,8 +73,7 @@ def dataset_sha256(records: Iterable[Mapping]) -> str:
 
 
 def save_dataset(records: Iterable[Mapping], destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(canonical_bytes(records))
+    atomic_write_bytes(destination, canonical_bytes(records))
 
 
 def load_dataset(source: Path) -> list[dict]:
