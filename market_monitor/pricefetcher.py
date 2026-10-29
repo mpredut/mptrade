@@ -7,7 +7,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 import time
 import requests
-from state_io import atomic_write_json, read_json_dict, read_recovering_previous, save_json_state
+from state_io import atomic_write_json, read_json_dict, save_json_state
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 from urllib.parse import quote
@@ -322,13 +322,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             if max_age_s is not None and (time.time() - mtime) > max_age_s:
                 return False
 
-            def _read_cache(path: str):
-                payload = read_json_dict(path)
-                if not payload:
-                    raise ValueError("CMC cache must be a non-empty dict")
-                return payload
-
-            cached = read_recovering_previous(self._cache_file, _read_cache)
+            cached = read_json_dict(self._cache_file, default=None, recover_previous=True)
             if not isinstance(cached, dict) or not cached:
                 return False
             cleaned = {

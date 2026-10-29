@@ -16,6 +16,7 @@ from typing import Iterable
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import normalize_venue_name
 from providers.base import _clean_single_order_id, normalize_side
+from state_io import read_json_file, read_jsonl_records, read_recovering_previous
 
 
 @dataclass(frozen=True)
@@ -154,8 +155,6 @@ def _walk(value, *, owner: str, source: str, location: str = "$",
 
 
 def _read(path: str, *, json_lines: bool):
-    from state_io import read_json_file, read_jsonl_records, read_recovering_previous
-
     if json_lines:
         return read_recovering_previous(path, lambda p: read_jsonl_records(p, strict=True))
     return read_json_file(path, recover_previous=True)

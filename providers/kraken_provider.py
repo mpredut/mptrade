@@ -12,7 +12,6 @@ The legacy ``place_order`` path submits validation-only requests unless
 strict and always sends a real request; its caller's dry-run policy is the controlling
 gate. Importing this module does not eagerly initialize the Kraken client.
 """
-import json
 import os
 import re
 import sys
@@ -47,7 +46,7 @@ from .strategy_executor import (
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from market_regime import ClosedPriceSeries
-from state_io import read_recovering_previous
+from state_io import read_json_dict_recovering
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
@@ -487,7 +486,7 @@ class KrakenProvider(MarketDataProvider):
         """Read symbol fills from the shared cache, or return None for API fallback."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return None
-        data = read_recovering_previous(_KRAKEN_CACHE_FILE, json.loads, default=None)
+        data = read_json_dict_recovering(_KRAKEN_CACHE_FILE, default=None)
         if not isinstance(data, dict):
             return None
         items = data.get("items")
