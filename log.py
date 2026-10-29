@@ -11,6 +11,8 @@ import threading
 from time import monotonic as _monotonic
 
 from botcore import (
+    _parse_bool_flag,
+    exact_pos_int,
     load_dotenv,
     required_float_env,
     required_int_env,
@@ -135,15 +137,15 @@ def configure(
             os.makedirs(resolved, exist_ok=True)
             _log_folder = resolved
         if max_size is not None:
-            ms = safe_pos_float(max_size, default=None)
-            if ms is None or not ms.is_integer():
+            ms = exact_pos_int(max_size, default=None)
+            if ms is None:
                 raise ValueError("max_size must be > 0")
-            _max_size = int(ms)
+            _max_size = ms
         if check_every is not None:
-            ce = safe_pos_float(check_every, default=None)
-            if ce is None or not ce.is_integer():
+            ce = exact_pos_int(check_every, default=None)
+            if ce is None:
                 raise ValueError("check_every must be > 0")
-            _check_every = int(ce)
+            _check_every = ce
         if min_free_percent is not None:
             mf = safe_nonneg_float(min_free_percent, default=None)
             if mf is None or mf > 100.0:
@@ -430,8 +432,7 @@ def _patched_print(*args, **kwargs) -> None:
     Per-thread suppression : set PRINT_CONTEXT.enable_print = False
     Global suppression     : call disable_print()
     """
-    _en = getattr(PRINT_CONTEXT, "enable_print", True)
-    if _en is False or _en == 0 or (isinstance(_en, str) and _en.strip().lower() in {"0", "false", "no", "off"}):
+    if not _parse_bool_flag(getattr(PRINT_CONTEXT, "enable_print", True), True):
         return
 
     if _bump_counter():

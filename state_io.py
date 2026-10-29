@@ -18,7 +18,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
-from botcore import _parse_bool_flag, exact_nonneg_int, fetch_public_json, safe_float
+from botcore import _parse_bool_flag, exact_nonneg_int, exact_pos_int, fetch_public_json, safe_float
 from cachepaths import resolve_cachedb_filepath
 
 T = TypeVar("T")
@@ -289,8 +289,7 @@ def atomic_file_path(
 
 
 def _positive_chunk_size(chunk_size: Any, default: int) -> int:
-    val = _exact_nonneg_int(chunk_size)
-    return val if (val is not None and val > 0) else default
+    return exact_pos_int(chunk_size, default=default)
 
 
 def atomic_gzip_file(
@@ -331,11 +330,11 @@ def read_tail_lines(
         return []
     if not os.path.isfile(resolved):
         return []
-    limit_i = _exact_nonneg_int(limit) if limit is not None else None
-    if limit is not None and (limit_i is None or limit_i <= 0):
+    limit_i = exact_pos_int(limit, default=None) if limit is not None else None
+    if limit is not None and limit_i is None:
         return []
-    max_b = _exact_nonneg_int(max_bytes) if max_bytes is not None else None
-    if max_bytes is not None and (max_b is None or max_b <= 0):
+    max_b = exact_pos_int(max_bytes, default=None) if max_bytes is not None else None
+    if max_bytes is not None and max_b is None:
         return []
     if limit_i is None and max_b is None:
         return []

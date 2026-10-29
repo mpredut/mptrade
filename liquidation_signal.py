@@ -70,6 +70,12 @@ _safe_pos_float = safe_pos_float
 _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
 
 
+def _clean_liq_symbol(raw_sym: object) -> str:
+    if raw_sym is None or isinstance(raw_sym, bool):
+        return ""
+    return str(raw_sym).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+
+
 class LiquidationSignal:
     """Background thread holding a rolling window of Bybit liquidations and
     exposing an aggregated per-symbol signal. Thread-safe."""
@@ -83,9 +89,8 @@ class LiquidationSignal:
         else:
             raw_syms = list(DEFAULT_SYMBOLS)
         self._symbols = [
-            str(s).strip().upper()
-            for s in raw_syms
-            if s is not None and not isinstance(s, bool) and str(s).strip()
+            sym for s in raw_syms
+            if (sym := _clean_liq_symbol(s))
         ]
         if not self._symbols:
             self._symbols = list(DEFAULT_SYMBOLS)
@@ -199,7 +204,7 @@ class LiquidationSignal:
             raw_sym = item.get("s")
             if isinstance(raw_sym, bool) or not isinstance(raw_sym, str):
                 continue
-            symbol = raw_sym.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+            symbol = _clean_liq_symbol(raw_sym)
             # Bybit: "Buy" = long liquidated, "Sell" = short liquidated.
             norm_side = normalize_side(item.get("S"))
             side = _LONG if norm_side == "BUY" else (_SHORT if norm_side == "SELL" else None)
@@ -225,7 +230,7 @@ class LiquidationSignal:
         net_usd       = short_liq_usd - long_liq_usd  (>0 squeeze up, <0 capitulation)
         """
         symbol = str(symbol or "").strip().upper()
-        sym_clean = symbol.replace("/", "").replace("-", "").replace("_", "")
+        sym_clean = _clean_liq_symbol(symbol)
         eff_win = safe_pos_float(window_sec, 300.0)
         now = time.time()
         cutoff = now - eff_win

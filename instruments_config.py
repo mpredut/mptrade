@@ -233,6 +233,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     import os
     from botcore import extract_current_price_item, safe_pos_float
     from cachepaths import cache_symbol_variants, canonical_base_asset, split_symbol_assets
+    from instrument_registry import casefold_get
 
     try:
         if hasattr(inst._provider, "get_current_price"):
@@ -259,7 +260,8 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
                         candidates.append(cand)
 
             for cand in candidates:
-                px_f = extract_current_price_item(items.get(cand))
+                raw_entry = items.get(cand) if cand in items else casefold_get(items, cand)
+                px_f = extract_current_price_item(raw_entry)
                 if px_f is not None:
                     return px_f
             if inst_base:

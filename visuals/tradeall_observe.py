@@ -48,6 +48,7 @@ try:
 except ImportError:
     from intelligence import get_kalman_state_path
 from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
+from instrument_registry import casefold_get
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = cache_path("cache_short_trend.json")
 
@@ -173,7 +174,7 @@ def sample_current_prices(symbols):
 
     pending = []
     for symbol in symbols:
-        entry = items_map.get(symbol)
+        entry = _lookup_symbol_dict(items_map, symbol)
         if not isinstance(entry, dict) or "current_price" not in entry:
             continue
         raw_ts = entry.get("ts", time.time())
@@ -700,7 +701,7 @@ def _lookup_symbol_dict(mapping, symbol):
     if symbol not in mapping and isinstance(mapping.get("items"), dict):
         mapping = mapping["items"]
     for cand in (symbol, *cache_symbol_variants(symbol)):
-        val = mapping.get(cand)
+        val = mapping.get(cand) if cand in mapping else casefold_get(mapping, cand)
         if isinstance(val, dict):
             return val
     return None

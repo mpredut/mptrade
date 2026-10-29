@@ -11,6 +11,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import extract_current_price_item, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants  # noqa: E402
+from instrument_registry import casefold_get  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
@@ -49,7 +50,7 @@ def main() -> int:
     for s in exp:
         e = None
         for cand in cache_symbol_variants(s, include_original=True, include_base=True):
-            cand_entry = it.get(cand)
+            cand_entry = it.get(cand) if cand in it else casefold_get(it, cand)
             if isinstance(cand_entry, dict) and cand_entry:
                 e = cand_entry
                 break
@@ -81,8 +82,9 @@ def main() -> int:
         entries = None
         matched_key = s
         for cand in cache_symbol_variants(s, include_original=True, include_base=True):
-            if cand in items and items.get(cand) is not None:
-                entries = items.get(cand)
+            cand_val = items.get(cand) if cand in items else casefold_get(items, cand)
+            if cand_val is not None:
+                entries = cand_val
                 matched_key = cand
                 break
         if entries is None or (isinstance(entries, (list, dict, str)) and not entries):
@@ -92,6 +94,8 @@ def main() -> int:
 
         px_val = extract_current_price_item(entries) or 0.0
         ts_raw = None
+        ft_matched = fetchtime_map.get(matched_key) if matched_key in fetchtime_map else casefold_get(fetchtime_map, matched_key)
+        ft_sym = fetchtime_map.get(s) if s in fetchtime_map else casefold_get(fetchtime_map, s)
         if isinstance(entries, list):
             last_entry = entries[-1] if entries else None
             if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
@@ -104,11 +108,11 @@ def main() -> int:
                 entries.get("ts")
                 or entries.get("timestamp")
                 or entries.get("time")
-                or fetchtime_map.get(matched_key)
-                or fetchtime_map.get(s)
+                or ft_matched
+                or ft_sym
             )
         else:
-            ts_raw = fetchtime_map.get(matched_key) or fetchtime_map.get(s)
+            ts_raw = ft_matched or ft_sym
 
         if px_val <= 0:
             problems.append(f"currentprice INVALID {s}")

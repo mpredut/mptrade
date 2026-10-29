@@ -23,6 +23,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from providers.base import (                         # noqa: E402
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from providers.market_api import api as mkt          # noqa: E402  (facada singleton)
 import symbols as sym                        # noqa: E402
 
@@ -31,7 +37,7 @@ MAXAGE = 17 * 24 * 3600
 failures = []
 
 
-from botcore import safe_float
+from botcore import safe_float, safe_pos_float
 
 _f = safe_float
 
@@ -107,15 +113,17 @@ def main():
     print("\n==== POZITIE (logica get_position_stats) ====")
     valid_buys = [
         o for o in buys
-        if isinstance(o, dict) and _f(o.get("qty"), 0.0) > 0.0 and _f(o.get("price"), 0.0) > 0.0
+        if isinstance(o, dict)
+        and (safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
+        and (safe_pos_float(extract_order_price(o), default=0.0) or 0.0) > 0.0
     ]
     valid_sells = [
         o for o in sells
-        if isinstance(o, dict) and _f(o.get("qty"), 0.0) > 0.0
+        if isinstance(o, dict) and (safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
     ]
-    tbq = sum(_f(o.get("qty"), 0.0) for o in valid_buys)
-    tbv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in valid_buys)
-    tsq = sum(_f(o.get("qty"), 0.0) for o in valid_sells)
+    tbq = sum(_f(extract_order_qty(o), 0.0) for o in valid_buys)
+    tbv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in valid_buys)
+    tsq = sum(_f(extract_order_qty(o), 0.0) for o in valid_sells)
     avg_buy = tbv / tbq if tbq else 0.0
     net = tbq - tsq
     print(f"  buy_qty={tbq:.6f} sell_qty={tsq:.6f} net_qty={net:.6f} avg_buy={avg_buy:.4f}")
@@ -125,7 +133,10 @@ def main():
 
     print("\n==== A simulated DECISION (like monitor_price_and_trade, WITHOUT placing) ====")
     if valid_buys and price_f > 0.0:
-        last_buy = _f(sorted(valid_buys, key=lambda x: _f(x.get("timestamp"), 0.0), reverse=True)[0].get("price"), 0.0)
+        last_buy = _f(
+            extract_order_price(sorted(valid_buys, key=lambda x: _f(extract_timestamp_ms(x, default=0), 0.0), reverse=True)[0]),
+            0.0,
+        )
         if last_buy > 0:
             inc = (price_f - last_buy) / last_buy
             print(f"  last buy={last_buy}  price={price}  change={inc*100:+.2f}%")

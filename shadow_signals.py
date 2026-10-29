@@ -146,8 +146,9 @@ class KalmanStateTracker:
         st = self._state.get(symbol)
         if not isinstance(st, dict) and isinstance(symbol, str):
             from cachepaths import cache_symbol_variants
+            from instrument_registry import casefold_get
             for cand in cache_symbol_variants(symbol):
-                st = self._state.get(cand)
+                st = self._state.get(cand) if cand in self._state else casefold_get(self._state, cand)
                 if isinstance(st, dict):
                     break
         if not isinstance(st, dict) or not st:

@@ -139,6 +139,30 @@ class Cooldown:
     def _write(self, state):
         save_json_state(self.state_path, _sanitize_json_payload(state), indent=2)
 
+    @staticmethod
+    def _clean_group_args(key, group_id, member):
+        return (
+            _clean_cooldown_key(key),
+            _clean_cooldown_key(group_id),
+            _clean_cooldown_key(member).upper(),
+        )
+
+    @staticmethod
+    def _build_reservation_entry(now, key, meta, **extra):
+        entry = {
+            "timestamp": now,
+            "key": key,
+            "pid": os.getpid(),
+            "thread_id": threading.get_ident(),
+            "process_name": multiprocessing.current_process().name,
+            "hostname": socket.gethostname(),
+            **extra,
+        }
+        for mk, mv in meta.items():
+            if mk not in _RESERVED_ENTRY_KEYS:
+                entry[mk] = mv
+        return entry
+
     # ── API ──────────────────────────────────────────────────────────────────
     def reserve(self, key, ttl, **meta):
         """Atomically check and reserve the right to operate on ``key``.
@@ -155,17 +179,7 @@ class Cooldown:
             now = time.time()
             if _is_active_entry(last, now, ttl):
                 return False, last
-            entry = {
-                "timestamp": now,
-                "key": key,
-                "pid": os.getpid(),
-                "thread_id": threading.get_ident(),
-                "process_name": multiprocessing.current_process().name,
-                "hostname": socket.gethostname(),
-            }
-            for mk, mv in meta.items():
-                if mk not in _RESERVED_ENTRY_KEYS:
-                    entry[mk] = mv
+            entry = self._build_reservation_entry(now, key, meta)
             state[key] = entry
             self._write(state)
             return True, entry
@@ -177,9 +191,7 @@ class Cooldown:
         Repeating a member or using another group is rejected. Legacy state remains
         compatible and exclusive, so a new group cannot bypass it.
         """
-        key = _clean_cooldown_key(key)
-        group_id = _clean_cooldown_key(group_id)
-        member = _clean_cooldown_key(member).upper()
+        key, group_id, member = self._clean_group_args(key, group_id, member)
         if not key or not group_id or not member:
             return False, {}
         with FileLock(self.lock_path):
@@ -202,31 +214,23 @@ class Cooldown:
                 self._write(state)
                 return True, last
 
-            entry = {
-                "timestamp": now,
-                "key": key,
-                "pid": os.getpid(),
-                "thread_id": threading.get_ident(),
-                "process_name": multiprocessing.current_process().name,
-                "hostname": socket.gethostname(),
-                "group_id": group_id,
-                "group_members": [member],
-                "group_pending": [member],
-                "group_committed": [],
-                "group_results": {},
-            }
-            for mk, mv in meta.items():
-                if mk not in _RESERVED_ENTRY_KEYS:
-                    entry[mk] = mv
+            entry = self._build_reservation_entry(
+                now,
+                key,
+                meta,
+                group_id=group_id,
+                group_members=[member],
+                group_pending=[member],
+                group_committed=[],
+                group_results={},
+            )
             state[key] = entry
             self._write(state)
             return True, entry
 
     def commit_group_member(self, key, group_id, member, **fields):
         """Confirm the reserved member and keep its result separately."""
-        key = _clean_cooldown_key(key)
-        group_id = _clean_cooldown_key(group_id)
-        member = _clean_cooldown_key(member).upper()
+        key, group_id, member = self._clean_group_args(key, group_id, member)
         if not key or not group_id or not member:
             return
         with FileLock(self.lock_path):
@@ -253,9 +257,7 @@ class Cooldown:
 
     def rollback_group_member(self, key, group_id, member):
         """Withdraw only the uncommitted member without removing the other leg."""
-        key = _clean_cooldown_key(key)
-        group_id = _clean_cooldown_key(group_id)
-        member = _clean_cooldown_key(member).upper()
+        key, group_id, member = self._clean_group_args(key, group_id, member)
         if not key or not group_id or not member:
             return
         with FileLock(self.lock_path):
@@ -282,9 +284,7 @@ class Cooldown:
         coordinator may replace the leg, but another process/group cannot exploit the
         short interval between cancellation and replacement.
         """
-        key = _clean_cooldown_key(key)
-        group_id = _clean_cooldown_key(group_id)
-        member = _clean_cooldown_key(member).upper()
+        key, group_id, member = self._clean_group_args(key, group_id, member)
         if not key or not group_id or not member:
             return False
         keep_group = _as_bool_flag(keep_group, True)

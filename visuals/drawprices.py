@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
 from botcore import safe_float, safe_pos_int
 from cachepaths import cache_symbol_variants
+from instrument_registry import casefold_get
 from state_io import atomic_write_json
 import symbols as sym
 import cacheManager as cm
@@ -35,10 +36,22 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
         return []
     cands = cache_symbol_variants(symbol)
     mgr = getattr(cm, "price_cache_manager", None)
-    entry = next((mgr[c] for c in cands if c in mgr and mgr[c] is not None), None) if isinstance(mgr, dict) else None
+    entry = None
+    if isinstance(mgr, dict):
+        for c in cands:
+            val = mgr[c] if c in mgr else casefold_get(mgr, c)
+            if val is not None:
+                entry = val
+                break
     raw = getattr(entry, "cache", None) if entry is not None else None
     if isinstance(raw, dict):
-        raw = next((raw[c] for c in cands if c in raw and raw[c]), [])
+        raw_seq = []
+        for c in cands:
+            val = raw[c] if c in raw else casefold_get(raw, c)
+            if val:
+                raw_seq = val
+                break
+        raw = raw_seq
     if not raw or not isinstance(raw, (list, tuple)):
         return []
     out: List[Tuple[int, float]] = []
