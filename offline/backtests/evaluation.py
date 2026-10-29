@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import dataclass
 import os
 from pathlib import Path
+from statistics import fmean
 from typing import Any
 
 from offline.backtests.execution import ExecutionModel
@@ -240,9 +241,7 @@ def evaluate_walk_forward(
             "worst_sortino": _optional_min(
                 [fold["test"]["metrics"].get("sortino") for fold in fold_results]
             ),
-            "mean_buy_hold_return_pct": (
-                sum(bh_values) / len(bh_values) if bh_values else None
-            ),
+            "mean_buy_hold_return_pct": fmean(bh_values) if bh_values else None,
             "total_cycles": summary["total_cycles"],
             "total_fills": summary["total_fills"],
             "total_ambiguous_bars": sum(
