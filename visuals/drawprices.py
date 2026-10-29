@@ -17,10 +17,15 @@ import cacheManager as cm
 
 
 def _clean_finite_floats(seq) -> List[float]:
-    return [
-        vf for x in (seq or ())
-        if (vf := safe_float(x, default=None)) is not None
-    ]
+    if seq is None or isinstance(seq, bool):
+        return []
+    try:
+        return [
+            vf for x in seq
+            if (vf := safe_float(x, default=None)) is not None
+        ]
+    except TypeError:
+        return []
 
 
 def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
