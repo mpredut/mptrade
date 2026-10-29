@@ -213,8 +213,8 @@ def main() -> int:
         print(f"  24h amplitude:  MAE model {rep['mae_move_pct']:.2f}%  vs baseline(0) {rep['mae_baseline_pct']:.2f}%")
         if args.forecast:
             out = live_forecast(px, X, y_dir, y_mag, rep, args.symbol)
-            with open(args.out, "w", encoding="utf-8") as f:
-                json.dump(out, f, indent=2)
+            from state_io import atomic_write_json
+            atomic_write_json(args.out, out, indent=2)
             print(f"  -> {args.out}: trend={out['trend']} conf={out['confidence']} "
                   f"estimated move {out['expected_move_pct']:+.2f}% / {HORIZON_H}h")
         loop_min = safe_pos_float(args.loop, default=None)
