@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Alert when any process sustains excessive CPU or resident memory usage."""
-import math
 import os
 import signal
 import time
@@ -29,7 +28,7 @@ RESTART_MAX = wc.required_int_env("RESOURCE_RESTART_MAX")
 RESTART_WINDOW_H = wc.required_float_env("RESOURCE_RESTART_WINDOW_HOURS")
 
 if not all(
-    math.isfinite(v) and v > 0
+    v > 0
     for v in (
         CPU_THRESHOLD, MEMORY_THRESHOLD_MB, CONSECUTIVE, RECOVERY_CHECKS,
         COOLDOWN_MIN, CHECK_INTERVAL_MIN, RESTART_COOLDOWN_MIN, RESTART_MAX,
@@ -80,7 +79,7 @@ def _restart_allowed(state, script, now):
         stamp for stamp in history
         if isinstance(stamp, (int, float))
         and not isinstance(stamp, bool)
-        and math.isfinite(stamp)
+        and safe_float(stamp, default=None) is not None
         and cutoff <= stamp <= now
     ]
     if history and now - history[-1] < RESTART_COOLDOWN_MIN * 60:

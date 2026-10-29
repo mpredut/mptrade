@@ -10,7 +10,6 @@ Centralizes:
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import shutil
@@ -182,8 +181,8 @@ as_bool_flag = _parse_bool_flag
 
 def clean_json_value(val: Any) -> Any:
     """Recursively sanitize non-finite floats (NaN/Inf -> None) and normalize dict keys to strings."""
-    if isinstance(val, float) and not math.isfinite(val):
-        return None
+    if isinstance(val, float):
+        return parse_finite_float(val, default=None)
     if isinstance(val, dict):
         return {str(k): clean_json_value(v) for k, v in val.items()}
     if isinstance(val, (list, tuple)):

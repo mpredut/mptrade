@@ -11,14 +11,13 @@ provider or runs the shared policy pipeline before provider mechanics.
 """
 import inspect
 import os
-import math
 import sys
 import time
 from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
 from providers.base import extract_order_id, normalize_side
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.strategy_executor import SubmissionRefused
@@ -1164,13 +1163,12 @@ class Instrument:
             return v
         if cast is bool:
             return _parse_bool_flag(v, default=bool(default))
-        if cast in (float, int) and isinstance(v, bool):
-            return default
+        if cast is float:
+            return safe_float(v, default=default)
+        if cast is int:
+            return safe_int(v, default=default)
         try:
-            res = cast(v)
-            if isinstance(res, float) and not math.isfinite(res):
-                return default
-            return res
+            return cast(v)
         except (ValueError, TypeError, OverflowError):
             return default
 

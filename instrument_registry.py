@@ -7,8 +7,9 @@ the file explicitly; long-running processes adopt configuration at restart.
 from dataclasses import dataclass
 from pathlib import Path
 import configparser
-import math
 import re
+
+from botcore import safe_float
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
@@ -67,13 +68,10 @@ class InstrumentSpec:
 
     def number(self, key):
         raw = self.setting(key)
-        try:
-            value = float(raw)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"instruments.conf [{self.name}]: invalid number {key}={raw!r}") from exc
-        if not math.isfinite(value):
-            raise ValueError(f"instruments.conf [{self.name}]: {key} must be finite")
-        return value
+        val = safe_float(raw, default=None)
+        if val is None:
+            raise ValueError(f"instruments.conf [{self.name}]: invalid number {key}={raw!r}")
+        return val
 
     def flag(self, key):
         return _boolean(self.setting(key), key, self.name)
@@ -162,7 +160,7 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
         only_enabled_b = True
     elif isinstance(only_enabled, str):
         only_enabled_b = _boolean(only_enabled, "only_enabled", "select_instruments")
-    elif isinstance(only_enabled, float) and not math.isfinite(only_enabled):
+    elif isinstance(only_enabled, float) and safe_float(only_enabled, default=None) is None:
         only_enabled_b = True
     else:
         only_enabled_b = bool(only_enabled)
