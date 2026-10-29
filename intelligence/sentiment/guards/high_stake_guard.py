@@ -899,10 +899,25 @@ def compute_7d_range_metrics(vals: list[float], decimals: Optional[int] = None) 
     return metrics
 
 
+def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any:
+    """Return the first dict entry in `mapping` matching any candidate key in `variants` (case-insensitive)."""
+    if not isinstance(mapping, dict):
+        return default
+    for cand in variants:
+        val = casefold_get(mapping, cand)
+        if isinstance(val, dict):
+            return val
+    return default
+
+
 def load_symbol_microstructure(
     cache_dir: str,
     sym: str,
     read_json_fn: Any = None,
+    *,
+    ob: Any = None,
+    deriv: Any = None,
+    whale: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
     if read_json_fn is None:
@@ -916,25 +931,28 @@ def load_symbol_microstructure(
                 return d
         return None
 
-    ob = _first_telemetry_dict("orderbook_depth_")
-    deriv = _first_telemetry_dict("derivatives_telemetry_")
-    whale = _first_telemetry_dict("whale_snapshot_")
+    if ob is None:
+        ob = _first_telemetry_dict("orderbook_depth_")
+    if deriv is None:
+        deriv = _first_telemetry_dict("derivatives_telemetry_")
+    if whale is None:
+        whale = _first_telemetry_dict("whale_snapshot_")
     if not (ob or deriv or whale):
         return None
     m_info: Dict[str, Any] = {}
-    if isinstance(ob, dict):
-        m_info["ob_imbalance"] = ob.get("imbalance_ratio")
-        ob_mid = safe_pos_float(ob.get("mid_price"), default=None)
+    if ob is not None:
+        m_info["ob_imbalance"] = obj_attr(ob, "imbalance_ratio")
+        ob_mid = safe_pos_float(obj_attr(ob, "mid_price"), default=None)
         if ob_mid is not None:
             m_info["ob_mid_price"] = ob_mid
-        best_bid = safe_pos_float(ob.get("best_bid"), default=None)
-        best_ask = safe_pos_float(ob.get("best_ask"), default=None)
+        best_bid = safe_pos_float(obj_attr(ob, "best_bid"), default=None)
+        best_ask = safe_pos_float(obj_attr(ob, "best_ask"), default=None)
         if best_bid is not None:
             m_info["best_bid"] = best_bid
         if best_ask is not None:
             m_info["best_ask"] = best_ask
         spread_bps = round_spread_bps(
-            ob.get("spread_bps"),
+            obj_attr(ob, "spread_bps"),
             best_bid=best_bid,
             best_ask=best_ask,
             mid_price=ob_mid,
@@ -949,7 +967,7 @@ def load_symbol_microstructure(
             ("largest_bid_wall_usd", "bid_wall_usd"),
             ("largest_ask_wall_usd", "ask_wall_usd"),
         ):
-            val = safe_nonneg_float(ob.get(k_src), default=None)
+            val = safe_nonneg_float(obj_attr(ob, k_src), default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
         if not m_info.get("depth_1pct_bid_usd") and (m_info.get("bid_depth_usd") or 0.0) > 0.0:
             m_info["depth_1pct_bid_usd"] = round(float(m_info["bid_depth_usd"]) * (1.0 / 1.5), 0)
@@ -961,20 +979,20 @@ def load_symbol_microstructure(
         if eff_d1 > 0.0:
             sp_half = (safe_nonneg_float(m_info.get("spread_bps"), default=2.0) or 2.0) * 0.5
             m_info["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
-        m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
-        m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
-    if isinstance(deriv, dict):
-        m_info["funding_rate"] = deriv.get("funding_rate")
-        m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
-        m_info["oi_usd"] = deriv.get("open_interest_usd")
-    if isinstance(whale, dict):
-        m_info["whale_long_pct"] = whale.get("top_traders_long_pct")
-        m_info["whale_long_ratio"] = whale.get("top_traders_long_ratio")
-        m_info["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
-        m_info["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
-        m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
-        m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
-        m_info["divergence_regime"] = whale.get("divergence_regime")
+        m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price")
+        m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price")
+    if deriv is not None:
+        m_info["funding_rate"] = obj_attr(deriv, "funding_rate")
+        m_info["pred_funding_rate"] = obj_attr(deriv, "predicted_funding_rate")
+        m_info["oi_usd"] = obj_attr(deriv, "open_interest_usd")
+    if whale is not None:
+        m_info["whale_long_pct"] = obj_attr(whale, "top_traders_long_pct")
+        m_info["whale_long_ratio"] = obj_attr(whale, "top_traders_long_ratio")
+        m_info["taker_buy_sell_ratio"] = obj_attr(whale, "taker_buy_sell_ratio")
+        m_info["taker_buy_vol_usd"] = obj_attr(whale, "taker_buy_vol_usd")
+        m_info["taker_sell_vol_usd"] = obj_attr(whale, "taker_sell_vol_usd")
+        m_info["oi_1h_chg_pct"] = obj_attr(whale, "open_interest_1h_change_pct")
+        m_info["divergence_regime"] = obj_attr(whale, "divergence_regime")
     enrich_microstructure_cvd(m_info)
     return m_info
 
@@ -1290,13 +1308,39 @@ def resolve_venue_fee_and_limits(
                     tick_size = round(10.0 ** (-int(pair_dec)), 8)
     elif v_norm == "hyperliquid" and prov is not None:
         client = getattr(prov, "_client", None)
+        base_tok = canonical_base_asset(symbol)
+        sz_dec = None
         meta_cache = getattr(prov, "_meta_cache", None) or getattr(client, "_meta_cache", None)
         if isinstance(meta_cache, dict):
-            base_tok = canonical_base_asset(symbol)
-            sz_dec = safe_nonneg_float((meta_cache.get(base_tok) or {}).get("szDecimals") if isinstance(meta_cache.get(base_tok), dict) else None, default=None)
-            if sz_dec is not None:
-                step_size = round(10.0 ** (-int(sz_dec)), 8)
-                min_qty = step_size
+            m_tok = meta_cache.get(base_tok)
+            if isinstance(m_tok, dict):
+                sz_dec = safe_nonneg_float(m_tok.get("szDecimals"), default=None)
+        if sz_dec is None:
+            info_obj = getattr(client, "info", None)
+            c2a = getattr(info_obj, "coin_to_asset", None)
+            a2sz = getattr(info_obj, "asset_to_sz_decimals", None)
+            n2c = getattr(info_obj, "name_to_coin", None)
+            if isinstance(c2a, dict) and isinstance(a2sz, dict):
+                spot_pair = getattr(prov, "_spot_pair", None) or (
+                    n2c.get(f"{base_tok}/USDC") if isinstance(n2c, dict) else None
+                )
+                for coin_k in (spot_pair, base_tok):
+                    if coin_k and coin_k in c2a:
+                        sz_dec = safe_nonneg_float(a2sz.get(c2a[coin_k]), default=None)
+                        if sz_dec is not None:
+                            break
+        if sz_dec is not None:
+            sz_i = int(sz_dec)
+            step_size = round(10.0 ** (-sz_i), 8)
+            min_qty = step_size
+            if safe_pos_float(params.get("tick_size"), default=None) is None:
+                max_px_dec = max(8 - sz_i, 0)
+                if px_f > 0.0:
+                    sig_dec = max(0, 4 - int(math.floor(math.log10(px_f))))
+                    eff_px_dec = min(max_px_dec, sig_dec)
+                else:
+                    eff_px_dec = min(max_px_dec, 4)
+                tick_size = round(10.0 ** (-eff_px_dec), 8)
 
     out: Dict[str, Any] = {
         "fee_tier": fee_tier,
@@ -1797,13 +1841,10 @@ def harvest_tradable_positions_and_orders(
             params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
             v_norm = normalize_venue_name(venue)
             v_trail_map = trailing_by_venue.get(v_norm, {})
-            t_state = next(
-                (
-                    val
-                    for c in cache_symbol_variants(sym, include_original=True, include_base=True)
-                    if isinstance((val := casefold_get(v_trail_map, c)), dict)
-                ),
-                {},
+            t_state = _first_variant_dict(
+                v_trail_map,
+                cache_symbol_variants(sym, include_original=True, include_base=True),
+                default={},
             )
             if not t_state and v_norm == "binance" and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
                 t_state = val_b
@@ -1918,7 +1959,7 @@ def enrich_cross_venue_trends(
                     break
 
         if isinstance(kalman_data, dict):
-            k_sym = next((val for ck in cand_keys if isinstance((val := casefold_get(kalman_data, ck)), dict)), None)
+            k_sym = _first_variant_dict(kalman_data, cand_keys)
             if isinstance(k_sym, dict):
                 entry["kalman_vel"] = k_sym.get("kalman_vel")
                 entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
@@ -1964,7 +2005,7 @@ def enrich_cross_venue_trends(
             if est_rem >= 0.0:
                 entry["long_trend_est_rem_hours"] = round(est_rem, 1)
         if isinstance(t_trend_map, dict):
-            tt = next((val for ck in cand_keys if isinstance((val := casefold_get(t_trend_map, ck)), dict)), None)
+            tt = _first_variant_dict(t_trend_map, cand_keys)
             if isinstance(tt, dict):
                 entry["weibull_median_d"] = tt.get("median_d")
                 entry["weibull_p90_d"] = tt.get("p90_d")
@@ -2175,13 +2216,9 @@ def enrich_24h_and_microstructure(
         for msym in ref_micro_syms:
             m_info_ref = load_symbol_microstructure(cache_dir, msym, _rj)
             if m_info_ref:
-                p_ref = next(
-                    (
-                        prices_and_trends[c]
-                        for c in cache_symbol_variants(msym, include_original=True, include_base=True)
-                        if isinstance(prices_and_trends.get(c), dict)
-                    ),
-                    None,
+                p_ref = _first_variant_dict(
+                    prices_and_trends,
+                    cache_symbol_variants(msym, include_original=True, include_base=True),
                 )
                 liq_ref = compute_liquidation_clusters(p_ref, m_info_ref)
                 if liq_ref:
@@ -2243,16 +2280,10 @@ def sync_sibling_symbol_telemetry(
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
             continue
-        p_match = casefold_get(prices_and_trends, msym)
-        if not isinstance(p_match, dict):
-            p_match = next(
-                (
-                    val
-                    for c in cache_symbol_variants(msym, include_original=True, include_base=True)
-                    if isinstance((val := casefold_get(prices_and_trends, c)), dict)
-                ),
-                None,
-            )
+        p_match = _first_variant_dict(
+            prices_and_trends,
+            cache_symbol_variants(msym, include_original=True, include_base=True),
+        )
         liq_clusters = compute_liquidation_clusters(p_match, minfo)
         if liq_clusters:
             minfo.update(liq_clusters)
@@ -2382,10 +2413,7 @@ def harvest_recent_orders_and_enrich_positions(
                         pos["trailing_peak"] = round(pk_val, 6)
                     pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
         v_ro_map = venue_recent_orders.get(p_venue, {})
-        ro = next(
-            (val for c in p_variants if isinstance((val := casefold_get(v_ro_map, c)), dict)),
-            None,
-        )
+        ro = _first_variant_dict(v_ro_map, p_variants)
         fb_cur = safe_float(pos.get("free_base"), -1.0)
         is_flat_balance = fb_cur >= 0.0 and (
             fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
@@ -2426,9 +2454,7 @@ def harvest_recent_orders_and_enrich_positions(
             else ()
         )
         for cyc_map in venue_cyc_maps:
-            cyc = casefold_get(cyc_map, p_sym)
-            if not isinstance(cyc, dict):
-                cyc = next((val for c in p_variants if isinstance((val := casefold_get(cyc_map, c)), dict)), None)
+            cyc = _first_variant_dict(cyc_map, (p_sym, *p_variants))
             if not isinstance(cyc, dict):
                 continue
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
@@ -3184,9 +3210,12 @@ def collect_pretrade_telemetry(
     cachedb_dir: str = "cachedb",
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) to provide deep context to the LLM."""
+    from cachepaths import get_cachedb_dir
+
+    default_cdir = get_cachedb_dir()
     if cachedb_dir == "cachedb":
-        from cachepaths import get_cachedb_dir
-        cachedb_dir = get_cachedb_dir()
+        cachedb_dir = default_cdir
+    is_custom_dir = os.path.abspath(cachedb_dir) != os.path.abspath(default_cdir)
     sym_variants = cache_symbol_variants(symbol)
 
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
@@ -3196,11 +3225,30 @@ def collect_pretrade_telemetry(
                 return d
         return None
 
+    def _fetch_pillar2(getter_fn: Callable[[], Any], prefix: str) -> Any:
+        if is_custom_dir:
+            d_hit = _disk_telem(prefix)
+            if d_hit is not None:
+                return d_hit
+        try:
+            col = getter_fn()
+            col_cdir = getattr(col, "_cache_dir", None)
+            if not is_custom_dir or not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
+                snap = col.fetch(symbol, allow_network=False)
+                if snap is not None:
+                    return snap
+        except Exception:
+            pass
+        return _disk_telem(prefix)
+
     telemetry: Dict[str, Any] = {}
+    ob_snap = None
+    f_snap = None
+    w_snap = None
     # 1. Spot Microstructure: Orderbook Depth & Walls (Pillar 2)
     try:
         from external_order_guard import get_orderbook_collector
-        ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False) or _disk_telem("orderbook_depth_")
+        ob_snap = _fetch_pillar2(get_orderbook_collector, "orderbook_depth_")
         if ob_snap is not None:
             imb_f = safe_float(obj_attr(ob_snap, "imbalance_ratio", None), default=None)
             if imb_f is not None:
@@ -3225,7 +3273,7 @@ def collect_pretrade_telemetry(
     # 2. Perpetual Derivatives: Funding Rate & Open Interest (Pillar 2)
     try:
         from external_order_guard import get_derivatives_collector
-        f_snap = get_derivatives_collector().fetch(symbol, allow_network=False) or _disk_telem("derivatives_telemetry_")
+        f_snap = _fetch_pillar2(get_derivatives_collector, "derivatives_telemetry_")
         if f_snap is not None:
             fr_f = safe_float(obj_attr(f_snap, "funding_rate", None), default=None)
             if fr_f is not None:
@@ -3239,7 +3287,7 @@ def collect_pretrade_telemetry(
     # 3. Whale Positioning: Top Traders & Aggressive Flow (Pillar 2)
     try:
         from external_order_guard import get_whale_collector
-        w_snap = get_whale_collector().fetch(symbol, allow_network=False) or _disk_telem("whale_snapshot_")
+        w_snap = _fetch_pillar2(get_whale_collector, "whale_snapshot_")
         if w_snap is not None:
             lp_f = safe_float(obj_attr(w_snap, "top_traders_long_pct", None), default=None)
             lr_f = safe_float(obj_attr(w_snap, "top_traders_long_ratio", None), default=None)
@@ -3346,7 +3394,9 @@ def collect_pretrade_telemetry(
                             rel_str = f"{rel_str} | {', '.join(cross_parts)}" if rel_str else ", ".join(cross_parts)
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
 
-        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol)
+        cur_m_info = load_symbol_microstructure(
+            cachedb_dir, symbol, ob=ob_snap, deriv=f_snap, whale=w_snap
+        )
         if cur_m_info:
             if cur_m_info.get("spread_bps") is not None:
                 telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
@@ -3403,7 +3453,7 @@ def collect_pretrade_telemetry(
         st_data = read_json_cached(st_path)
         if isinstance(st_data, dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
-            tinfo = next((val for cand in sym_variants if isinstance((val := casefold_get(st_items, cand)), dict)), None)
+            tinfo = _first_variant_dict(st_items, sym_variants)
             if isinstance(tinfo, dict):
                 t_entry: Dict[str, Any] = {}
                 apply_short_trend_item(t_entry, tinfo)

@@ -78,8 +78,11 @@ def state_path_for(ticker: str) -> str:
     return os.path.join(_HERE, f".state_{safe}.json")
 
 
-_clean_pos_float = lambda val: safe_pos_float(val, default=None)
-_clean_nonneg_float = lambda val, default=0.0: safe_nonneg_float(val, default=default)
+def _clean_pos_float(val: object) -> float | None:
+    return safe_pos_float(val, default=None)
+
+
+_clean_nonneg_float = safe_nonneg_float
 
 
 
