@@ -192,12 +192,9 @@ def main() -> int:
         args.markdown.expanduser().resolve() if args.markdown else
         output.with_suffix(".md")
     )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    markdown.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, ensure_ascii=False)
-    with markdown.open("w", encoding="utf-8") as handle:
-        handle.write(markdown_report(report))
+    from state_io import atomic_write_json, atomic_write_text
+    atomic_write_json(output, report, indent=2, ensure_ascii=False)
+    atomic_write_text(markdown, markdown_report(report))
 
     print(f"Financial comparison JSON: {output}")
     print(f"Financial comparison Markdown: {markdown}")
