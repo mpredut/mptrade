@@ -100,7 +100,7 @@ def conv_steps(series, w):
     """sig[t] = sum_k w_k * dy_{t-m+k}, k=1..m (w normalized), m = N_WIN-1."""
     dy = np.diff(series, prepend=series[0])
     w = w / w.sum()
-    full = fftconvolve(dy, w[::-1][::-1], mode="full")[: len(dy)]
+    full = fftconvolve(dy, w, mode="full")[: len(dy)]
     # fftconvolve(dy, w)[t] = sum_j w_j dy_{t-j}; we need newest step weighted w[-1]
     sig = np.zeros_like(series)
     sig[N_WIN - 1:] = full[N_WIN - 1:]
