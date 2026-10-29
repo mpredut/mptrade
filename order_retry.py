@@ -534,14 +534,14 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     ):
         return None
     symbol = symbol.strip()
-    now_f = safe_pos_float(now, default=time.time())
+    now_f = safe_pos_float(time.time() if now is None else now, default=None)
     side_u = normalize_side(side)
     qty_f = safe_pos_float(qty, default=None)
     if not symbol or side_u not in {"BUY", "SELL"} or qty_f is None or now_f is None:
         return None
     qty = qty_f
     now = now_f
-    cts = safe_pos_float(created_ts, default=now) if created_ts is not None else now
+    cts = safe_pos_float(now if created_ts is None else created_ts, default=None)
     attempts_i = _rev_int(attempts, default=-1)
     last_attempt_f = safe_float(last_attempt_ts, default=None)
     if cts is None or attempts_i < 0 or last_attempt_f is None:

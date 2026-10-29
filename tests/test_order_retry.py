@@ -1050,6 +1050,16 @@ class OrderRetryStoreTest(unittest.TestCase):
         with open(oq.QUEUE_FILE, "rb") as queue_file:
             self.assertEqual(queue_file.read(), committed_bytes)
 
+    def test_enqueue_rejects_invalid_explicit_timestamps(self):
+        for bad_ts in (0, -10.0, float("nan"), float("inf"), "invalid", True):
+            with self.subTest(now=bad_ts):
+                self.assertIsNone(oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=bad_ts))
+            with self.subTest(created_ts=bad_ts):
+                self.assertIsNone(
+                    oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000.0, created_ts=bad_ts)
+                )
+        self.assertEqual(oq.load_all(), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
