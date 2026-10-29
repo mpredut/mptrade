@@ -4,10 +4,10 @@ from __future__ import annotations
 import math
 from typing import Any, Optional, Tuple
 
+from botcore import safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     normalize_guard_side,
-    safe_pos_guard_float as _pos_finite,
 )
 
 
@@ -17,8 +17,8 @@ def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float
     Survival function: S(t) = exp(-(t / lambda)^k)
     Hazard function:   h(t) = (k / lambda) * (t / lambda)^(k - 1)
     """
-    med_in = _pos_finite(median_days, 3.0) or 3.0
-    p90_in = _pos_finite(p90_days, 7.0) or 7.0
+    med_in = safe_pos_float(median_days, default=3.0) or 3.0
+    p90_in = safe_pos_float(p90_days, default=7.0) or 7.0
     med = max(0.1, med_in)
     p90 = max(med * 1.05, p90_in)
     ln2 = math.log(2.0)
@@ -32,7 +32,7 @@ def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float
 
 def weibull_survival_and_hazard(duration_days: float, median_days: float, p90_days: float) -> Tuple[float, float, float, float]:
     """Return (survival_prob S(t), hazard_rate h(t), shape k, scale lambda) at duration_days."""
-    dur_d = _pos_finite(duration_days, 0.0) or 0.0
+    dur_d = safe_pos_float(duration_days, default=0.0) or 0.0
     if dur_d <= 0.0:
         k, lam = calibrate_weibull_params(median_days, p90_days)
         return 1.0, 0.0, k, lam
@@ -62,9 +62,9 @@ class WeibullExhaustionGuard:
         policy: str = "downscale",  # "downscale" | "veto" | "off"
         exhausted_scale: float = 0.25,
     ):
-        self.default_p90_days = _pos_finite(default_p90_days, 7.0) or 7.0
+        self.default_p90_days = safe_pos_float(default_p90_days, default=7.0) or 7.0
         self.policy = str(policy or "downscale").strip().lower() if not isinstance(policy, bool) else "downscale"
-        self.exhausted_scale = min(1.0, _pos_finite(exhausted_scale, 0.25) or 0.25)
+        self.exhausted_scale = min(1.0, safe_pos_float(exhausted_scale, default=0.25) or 0.25)
 
     def check(
         self,
@@ -99,17 +99,17 @@ class WeibullExhaustionGuard:
                         f"trend_direction_favorable ({dir_norm})",
                     )
 
-        dur_sec = _pos_finite(trend_duration_seconds, None)
+        dur_sec = safe_pos_float(trend_duration_seconds, default=None)
         if dur_sec is None:
             return GuardDecision.allow("WeibullExhaustionGuard", "no_duration_data")
 
         duration_days = dur_sec / 86400.0
-        base_p90 = _pos_finite(p90_days, self.default_p90_days) or self.default_p90_days
-        med_d = _pos_finite(median_days, None) or min(3.0, base_p90 * 0.5)
+        base_p90 = safe_pos_float(p90_days, default=self.default_p90_days) or self.default_p90_days
+        med_d = safe_pos_float(median_days, default=None) or min(3.0, base_p90 * 0.5)
 
         # Avoid overlapping with G_QLIMIT1's Gaussian Zone 1 & Zone 2 (0 .. 1.4*T) when provided:
         limit_p90 = base_p90
-        gauss_h = _pos_finite(gaussian_horizon_days, None)
+        gauss_h = safe_pos_float(gaussian_horizon_days, default=None)
         if gauss_h is not None:
             limit_p90 = max(limit_p90, gauss_h)
 

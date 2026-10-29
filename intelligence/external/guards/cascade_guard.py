@@ -10,12 +10,11 @@ import math
 import time
 from typing import Any, Optional
 
+from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
     normalize_guard_side,
-    safe_guard_float as _safe_float,
-    safe_pos_guard_float as _safe_pos_float,
     snap_attr,
 )
 from intelligence.external.collectors.bybit_liquidations import (
@@ -39,8 +38,8 @@ class LiquidationCascadeGuard:
             active_window_sec: Window for instantaneous cascade velocity (default 60s).
         """
         self.collector = collector
-        self.max_active_cascade_usd = _safe_pos_float(max_active_cascade_usd, 500_000.0)
-        self.active_window_sec = _safe_pos_float(active_window_sec, 60.0)
+        self.max_active_cascade_usd = safe_pos_float(max_active_cascade_usd, default=500_000.0) or 500_000.0
+        self.active_window_sec = safe_pos_float(active_window_sec, default=60.0) or 60.0
 
     def check(
         self,
@@ -73,8 +72,8 @@ class LiquidationCascadeGuard:
                 reason="no_liquidation_data",
             )
 
-        long_liq = _safe_float(snap_attr(summary, "long_liq_usd"), 0.0)
-        short_liq = _safe_float(snap_attr(summary, "short_liq_usd"), 0.0)
+        long_liq = safe_float(snap_attr(summary, "long_liq_usd"), default=0.0) or 0.0
+        short_liq = safe_float(snap_attr(summary, "short_liq_usd"), default=0.0) or 0.0
 
         # 1. BUY: If long liquidations in the short window exceed the cascade threshold, it's an active knife
         if side_norm == "BUY" and long_liq >= self.max_active_cascade_usd:

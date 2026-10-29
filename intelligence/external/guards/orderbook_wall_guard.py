@@ -9,12 +9,12 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
     fetch_guard_snapshot,
     normalize_guard_side,
-    safe_guard_float as _safe_float,
     snap_attr,
 )
 from intelligence.external.collectors.orderbook_depth import (
@@ -34,12 +34,11 @@ class OrderbookWallGuard:
         whale_wall_usd_limit: float = 1_000_000.0,
     ) -> None:
         self.collector = collector
-        min_buy = _safe_float(min_buy_imbalance, 0.25)
-        self.min_buy_imbalance = min_buy if 0.0 <= min_buy <= 1.0 else 0.25
-        max_sell = _safe_float(max_sell_imbalance, 0.75)
-        self.max_sell_imbalance = max_sell if 0.0 <= max_sell <= 1.0 else 0.75
-        wall_lim = _safe_float(whale_wall_usd_limit, 1_000_000.0)
-        self.whale_wall_usd_limit = wall_lim if wall_lim > 0.0 else 1_000_000.0
+        min_buy = safe_pos_float(min_buy_imbalance, default=0.25) or 0.25
+        self.min_buy_imbalance = min_buy if min_buy <= 1.0 else 0.25
+        max_sell = safe_pos_float(max_sell_imbalance, default=0.75) or 0.75
+        self.max_sell_imbalance = max_sell if max_sell <= 1.0 else 0.75
+        self.whale_wall_usd_limit = safe_pos_float(whale_wall_usd_limit, default=1_000_000.0) or 1_000_000.0
 
     def check(
         self,
@@ -64,11 +63,11 @@ class OrderbookWallGuard:
                 reason="no_orderbook_snapshot",
             )
 
-        imb = _safe_float(snap_attr(snapshot, "imbalance_ratio"), 0.5)
-        ask_wall_usd = _safe_float(snap_attr(snapshot, "largest_ask_wall_usd"), 0.0)
-        ask_wall_px = _safe_float(snap_attr(snapshot, "largest_ask_wall_price"), 0.0)
-        bid_wall_usd = _safe_float(snap_attr(snapshot, "largest_bid_wall_usd"), 0.0)
-        bid_wall_px = _safe_float(snap_attr(snapshot, "largest_bid_wall_price"), 0.0)
+        imb = safe_float(snap_attr(snapshot, "imbalance_ratio"), default=0.5) or 0.5
+        ask_wall_usd = safe_float(snap_attr(snapshot, "largest_ask_wall_usd"), default=0.0) or 0.0
+        ask_wall_px = safe_float(snap_attr(snapshot, "largest_ask_wall_price"), default=0.0) or 0.0
+        bid_wall_usd = safe_float(snap_attr(snapshot, "largest_bid_wall_usd"), default=0.0) or 0.0
+        bid_wall_px = safe_float(snap_attr(snapshot, "largest_bid_wall_price"), default=0.0) or 0.0
 
         # 1. Evaluate BUY side against ask walls and heavy ask imbalance
         if side_norm == "BUY":

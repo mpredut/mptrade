@@ -10,12 +10,12 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
     fetch_guard_snapshot,
     normalize_guard_side,
-    safe_guard_float as _safe_float,
     snap_attr,
 )
 from intelligence.external.collectors.derivatives_telemetry import (
@@ -36,14 +36,13 @@ class FundingCrowdingGuard:
         crowded_scale: float = 0.50,
     ) -> None:
         self.collector = collector
-        max_long = _safe_float(max_long_funding_rate, 0.0005)
-        self.max_long_funding_rate = max_long if max_long > 0.0 else 0.0005
-        min_short = _safe_float(min_short_funding_rate, -0.0005)
+        self.max_long_funding_rate = safe_pos_float(max_long_funding_rate, default=0.0005) or 0.0005
+        min_short = safe_float(min_short_funding_rate, default=-0.0005) or -0.0005
         self.min_short_funding_rate = min_short if min_short < 0.0 else -0.0005
         pol_norm = str(crowding_policy or "downscale").strip().lower() if not isinstance(crowding_policy, bool) else "downscale"
         self.crowding_policy = pol_norm if pol_norm in ("downscale", "defer") else "downscale"
-        scale_f = _safe_float(crowded_scale, 0.50)
-        self.crowded_scale = scale_f if 0.0 < scale_f <= 1.0 else 0.50
+        scale_f = safe_pos_float(crowded_scale, default=0.50) or 0.50
+        self.crowded_scale = scale_f if scale_f <= 1.0 else 0.50
 
     def check(
         self,
@@ -68,7 +67,7 @@ class FundingCrowdingGuard:
                 reason="no_telemetry_data",
             )
 
-        fr = _safe_float(snap_attr(telemetry, "funding_rate"), 0.0)
+        fr = safe_float(snap_attr(telemetry, "funding_rate"), default=0.0) or 0.0
 
         # 1. Entering BUY when market is hyper-crowded long
         if side_norm == "BUY" and fr >= self.max_long_funding_rate:

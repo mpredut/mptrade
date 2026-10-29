@@ -9,13 +9,12 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
     fetch_guard_snapshot,
     normalize_guard_side,
-    safe_guard_float as _safe_float,
     snap_attr,
 )
 from intelligence.external.collectors.whale_positioning import (
@@ -45,13 +44,11 @@ class WhaleDivergenceGuard:
         self.block_short_covering_fakeout = _safe_bool(block_short_covering_fakeout, True)
         self.block_aggressive_shorting = _safe_bool(block_aggressive_shorting, True)
         self.block_liquidation_cascade = _safe_bool(block_liquidation_cascade, True)
-        self.severe_cascade_oi_pct = _safe_float(severe_cascade_oi_pct, -5.0)
-        min_tr = _safe_float(min_taker_ratio, 0.75)
-        self.min_taker_ratio = min_tr if min_tr > 0.0 else 0.75
-        down_tr = _safe_float(taker_downscale_threshold, 0.90)
-        self.taker_downscale_threshold = down_tr if down_tr > 0.0 else 0.90
-        scale_f = _safe_float(taker_downscaled_scale, 0.50)
-        self.taker_downscaled_scale = scale_f if 0.0 < scale_f <= 1.0 else 0.50
+        self.severe_cascade_oi_pct = safe_float(severe_cascade_oi_pct, default=-5.0) or -5.0
+        self.min_taker_ratio = safe_pos_float(min_taker_ratio, default=0.75) or 0.75
+        self.taker_downscale_threshold = safe_pos_float(taker_downscale_threshold, default=0.90) or 0.90
+        scale_f = safe_pos_float(taker_downscaled_scale, default=0.50) or 0.50
+        self.taker_downscaled_scale = scale_f if scale_f <= 1.0 else 0.50
 
     def check(
         self,
@@ -77,9 +74,9 @@ class WhaleDivergenceGuard:
             )
 
         regime = str(snap_attr(snapshot, "divergence_regime") or "neutral").strip().lower()
-        oi_1h = _safe_float(snap_attr(snapshot, "open_interest_1h_change_pct"), 0.0)
-        taker_ratio = _safe_float(snap_attr(snapshot, "taker_buy_sell_ratio"), 1.0)
-        top_long_pct = _safe_float(snap_attr(snapshot, "top_traders_long_pct"), 0.5)
+        oi_1h = safe_float(snap_attr(snapshot, "open_interest_1h_change_pct"), default=0.0) or 0.0
+        taker_ratio = safe_float(snap_attr(snapshot, "taker_buy_sell_ratio"), default=1.0) or 1.0
+        top_long_pct = safe_float(snap_attr(snapshot, "top_traders_long_pct"), default=0.5) or 0.5
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":
