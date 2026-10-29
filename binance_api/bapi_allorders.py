@@ -80,33 +80,13 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         out.extend(batch)
         if len(batch) < limit:          # Final page.
             break
-        try:
-            tail = batch[-1]
-            if not isinstance(tail, dict):
-                raise ValueError("invalid tail trade")
-            raw_tid = tail.get("id")
-            if raw_tid is None or isinstance(raw_tid, bool):
-                raise ValueError("invalid tail trade id")
-            if isinstance(raw_tid, float):
-                if not math.isfinite(raw_tid) or not raw_tid.is_integer():
-                    raise ValueError("invalid tail trade id")
-                tid_int = int(raw_tid)
-            else:
-                tid_str = str(raw_tid).strip()
-                if tid_str.endswith(".0") and tid_str[:-2].lstrip("+").isdigit():
-                    tid_str = tid_str[:-2]
-                if tid_str.startswith("+") and tid_str[1:].isdigit():
-                    tid_str = tid_str[1:]
-                if not tid_str or not tid_str.isascii() or not tid_str.isdigit():
-                    raise ValueError("invalid tail trade id")
-                tid_int = int(tid_str)
-            if tid_int <= 0:
-                raise ValueError("invalid tail trade id")
-            next_from_id = tid_int + 1   # Continue from the next fill ID.
-        except (KeyError, TypeError, ValueError, OverflowError):
+        tail = batch[-1]
+        tid_int = safe_pos_int(tail.get("id") if isinstance(tail, dict) else None, default=None)
+        if tid_int is None:
             if strict:
                 raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")
             break
+        next_from_id = tid_int + 1   # Continue from the next fill ID.
         if from_id is not None and next_from_id <= from_id:
             break
         from_id = next_from_id

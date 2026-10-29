@@ -359,20 +359,16 @@ def _consume_account_cache_submit_permit(
         # Burn malformed or expired permits as well, preventing later reuse.
         object.__setattr__(permit, "_consumed", True)
         scope = permit._scope
-        if (
-            isinstance(qty, bool)
-            or (not market and (isinstance(actual_price, bool) or isinstance(requested_price, bool)))
-        ):
+        actual_qty = safe_pos_float(qty, default=None)
+        if actual_qty is None:
             raise SubmissionRefused("account_cache_not_fresh")
-        try:
-            actual_qty = float(qty)
-            if market:
-                submitted_price = scoped_price = None
-            else:
-                submitted_price = float(actual_price)
-                scoped_price = float(requested_price)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise SubmissionRefused("account_cache_not_fresh") from exc
+        if market:
+            submitted_price = scoped_price = None
+        else:
+            submitted_price = safe_pos_float(actual_price, default=None)
+            scoped_price = safe_pos_float(requested_price, default=None)
+            if submitted_price is None or scoped_price is None:
+                raise SubmissionRefused("account_cache_not_fresh")
         price_is_safe = scope.market or (
             math.isfinite(submitted_price)
             and submitted_price > 0
