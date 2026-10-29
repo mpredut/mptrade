@@ -276,6 +276,22 @@ def _confirm_fill_from_portfolio(
     return None
 
 
+def _classify_t212_venue_status(status: str, *, post_submit: bool = False) -> str:
+    """Map an upper-cased T212 venue order status to a marker lifecycle token."""
+    if status == "FILLED":
+        return "filled"
+    if status in {"CANCELLED", "CANCELED", "EXPIRED"}:
+        return "expired" if status == "EXPIRED" else "canceled"
+    if status == "REJECTED":
+        return "submit_pending"
+    if post_submit:
+        return "accepted"
+    if status in T212_ORDER_OPEN:
+        return "open"
+    # An undocumented status is not proof of either absence or terminality.
+    return "status_unknown"
+
+
 def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       *, now: float, retry_delay: float,
                       desktop: bool) -> str:
@@ -308,28 +324,21 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
             return "waiting"
         record["lookup_misses"] = 0
         status = str(info.get("status") or "").upper()
+        lifecycle = _classify_t212_venue_status(status, post_submit=False)
         record["venue_status"] = status
         record["last_observed_at"] = now
-        if status == "FILLED":
-            record["lifecycle"] = "filled"
-        elif status in {"CANCELLED", "CANCELED", "EXPIRED"}:
-            record["lifecycle"] = "expired" if status == "EXPIRED" else "canceled"
-        elif status == "REJECTED":
+        record["lifecycle"] = lifecycle
+        if status == "REJECTED":
             history = _append_venue_order_id(record, order_id)
             record.update({
-                "lifecycle": "submit_pending", "order_id": None,
+                "order_id": None,
                 "venue_order_ids": history,
                 "lookup_misses": 0, "next_retry_at": now + retry_delay,
             })
-        elif status in T212_ORDER_OPEN:
-            record["lifecycle"] = "open"
-        else:
-            # An undocumented status is not proof of either absence or terminality.
-            record["lifecycle"] = "status_unknown"
         _persist_marker(record, marker_path)
-        if record["lifecycle"] == "filled":
+        if lifecycle == "filled":
             return "complete"
-        if record["lifecycle"] in {"canceled", "expired"}:
+        if lifecycle in {"canceled", "expired"}:
             return "terminal_failed"
         return "waiting"
 
@@ -533,11 +542,7 @@ def place_order_with_retry(
     oid = T212Client._clean_order_id(extract_order_id(data)) if isinstance(data, dict) else None
     if status in (200, 201) and oid is not None:
         venue_status = str(data.get("status") or "").upper()
-        lifecycle = "filled" if venue_status == "FILLED" else "accepted"
-        if venue_status in {"CANCELLED", "CANCELED", "EXPIRED"}:
-            lifecycle = "expired" if venue_status == "EXPIRED" else "canceled"
-        elif venue_status == "REJECTED":
-            lifecycle = "submit_pending"
+        lifecycle = _classify_t212_venue_status(venue_status, post_submit=True)
         record.update({
             "order_id": None if venue_status == "REJECTED" else oid,
             "venue_status": venue_status,

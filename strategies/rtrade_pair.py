@@ -15,8 +15,8 @@ from typing import Callable, Optional, Protocol
 
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -36,10 +36,8 @@ def _parse_nonneg_int(
     max_val: Optional[int] = None,
     error_msg: str = "must be a non-negative integer",
 ) -> int:
-    iv = safe_int(val, default=None)
-    if iv is None or iv < 0 or (isinstance(val, float) and not val.is_integer()):
-        raise ValueError(error_msg)
-    if max_val is not None and iv > max_val:
+    iv = exact_nonneg_int(val, default=None)
+    if iv is None or (max_val is not None and iv > max_val):
         raise ValueError(error_msg)
     return iv
 

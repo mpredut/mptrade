@@ -27,27 +27,44 @@ def _default_cache_getter(name: str, symbols=None, *, start_sync: bool = True):
     return cm.get_cache_manager(name, start_sync=start_sync)
 
 
+def _persist_ws_execution_report(
+    event: dict[str, Any],
+    *,
+    cache_name: str,
+    parser: Callable[[dict[str, Any]], tuple[str, dict[str, Any]] | None],
+    label: str,
+    cache_getter: Callable[..., Any] | None = None,
+) -> bool:
+    parsed = parser(event)
+    if parsed is None:
+        return False
+    symbol, item = parsed
+    getter = cache_getter or _default_cache_getter
+    try:
+        cache = getter(cache_name)
+        if not cache._is_valid_item(item):
+            builtins.print(f"[cacheManager][WS] rejected malformed {label} report")
+            return False
+        cache._persist_items(symbol, [item])
+        return True
+    except Exception as exc:
+        builtins.print(f"[cacheManager][WS] {label.lower()} report persist failed: {exc}")
+        return False
+
+
 def upsert_order_from_execution_report(
     event: dict[str, Any],
     *,
     cache_getter: Callable[..., Any] | None = None,
 ) -> bool:
     """Normalize and persist an ``executionReport`` fill into the Order cache."""
-    parsed = parse_order_execution_report(event)
-    if parsed is None:
-        return False
-    symbol, order_item = parsed
-    getter = cache_getter or _default_cache_getter
-    try:
-        order_cache = getter("Order")
-        if not order_cache._is_valid_item(order_item):
-            builtins.print("[cacheManager][WS] rejected malformed order report")
-            return False
-        order_cache._persist_items(symbol, [order_item])
-        return True
-    except Exception as exc:
-        builtins.print(f"[cacheManager][WS] order report persist failed: {exc}")
-        return False
+    return _persist_ws_execution_report(
+        event,
+        cache_name="Order",
+        parser=parse_order_execution_report,
+        label="order",
+        cache_getter=cache_getter,
+    )
 
 
 def append_trade_from_execution_report(
@@ -56,21 +73,13 @@ def append_trade_from_execution_report(
     cache_getter: Callable[..., Any] | None = None,
 ) -> bool:
     """Normalize and persist an ``executionReport`` fill into the Trade cache."""
-    parsed = parse_trade_execution_report(event)
-    if parsed is None:
-        return False
-    symbol, trade_item = parsed
-    getter = cache_getter or _default_cache_getter
-    try:
-        trade_cache = getter("Trade")
-        if not trade_cache._is_valid_item(trade_item):
-            builtins.print("[cacheManager][WS] rejected malformed Trade report")
-            return False
-        trade_cache._persist_items(symbol, [trade_item])
-        return True
-    except Exception as exc:
-        builtins.print(f"[cacheManager][WS] trade report persist failed: {exc}")
-        return False
+    return _persist_ws_execution_report(
+        event,
+        cache_name="Trade",
+        parser=parse_trade_execution_report,
+        label="Trade",
+        cache_getter=cache_getter,
+    )
 
 
 def refresh_asset_value_from_ws_event(
