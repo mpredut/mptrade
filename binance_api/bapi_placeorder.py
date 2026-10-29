@@ -941,14 +941,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
                 qty = fee_cap
 
         current_price = api.get_current_price(symbol)
-        cp_val = None
-        if current_price is not None and not isinstance(current_price, bool):
-            try:
-                cand_cp = float(current_price)
-                if math.isfinite(cand_cp) and cand_cp > 0:
-                    cp_val = cand_cp
-            except (TypeError, ValueError, OverflowError):
-                cp_val = None
+        cp_val = safe_pos_float(current_price, default=None)
         ref_price = cp_val if cp_val is not None else price
         from providers.binance_filters import (
             BinanceFilterError,
