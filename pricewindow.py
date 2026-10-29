@@ -312,8 +312,7 @@ def _safe_recent_n(recent_sec: float, sample_rate_sec) -> int:
     rs = safe_float(recent_sec, default=None)
     if sr is None or rs is None:
         return 2
-    ratio = rs / sr
-    return max(2, int(ratio)) if math.isfinite(ratio) else 2
+    return max(2, safe_int(rs / sr, default=2))
 
 
 def instant_trend_from_prices(
@@ -801,8 +800,7 @@ class PriceWindow:
                 if timestamps_sec[i+1] > timestamps_sec[i]]
         if not gaps:
             return DEFAULT_SAMPLE_RATE_SEC
-        med = float(np.median(gaps))
-        return med if math.isfinite(med) and med > 0 else DEFAULT_SAMPLE_RATE_SEC
+        return safe_pos_float(np.median(gaps), default=DEFAULT_SAMPLE_RATE_SEC)
 
     @classmethod
     def from_cache24(cls, symbol: str, window_seconds: float, cache24) -> "PriceWindow":

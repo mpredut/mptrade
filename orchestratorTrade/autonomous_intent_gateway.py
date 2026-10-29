@@ -640,11 +640,9 @@ class AutonomousIntentGateway:
         """Fetches live market price from provider or cache."""
         try:
             if hasattr(inst._provider, "get_current_price"):
-                px = inst._provider.get_current_price(inst.symbol)
-                if px is not None and not isinstance(px, bool):
-                    px_f = float(px)
-                    if math.isfinite(px_f) and px_f > 0:
-                        return px_f
+                px_f = safe_pos_float(inst._provider.get_current_price(inst.symbol), default=None)
+                if px_f is not None:
+                    return px_f
         except Exception:
             pass
 
@@ -685,8 +683,8 @@ class AutonomousIntentGateway:
             from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
             ser_24h, _ = load_symbol_price_series(self.cache_dir, str(inst.symbol or ""), include_7d=False)
             if ser_24h:
-                px_f = float(ser_24h[-1][1])
-                if math.isfinite(px_f) and px_f > 0:
+                px_f = safe_pos_float(ser_24h[-1][1], default=None)
+                if px_f is not None:
                     return px_f
         except Exception:
             pass
@@ -849,8 +847,8 @@ class AutonomousIntentGateway:
         suggested_usd = _extract_intent_notional(intent, self.max_notional_usd)
         effective_usd = max(self.min_notional_usd, min(suggested_usd, self.max_notional_usd))
 
-        price = self._get_live_price(inst)
-        if not math.isfinite(price) or price <= 0:
+        price = safe_pos_float(self._get_live_price(inst), default=None)
+        if price is None:
             logger.warning("[INTENT GATEWAY] Intent %s rejected: invalid price for %s", intent_id, symbol)
             intent["status"] = "REJECTED_PRICE_UNAVAILABLE"
             _append_intent_history(intent, {

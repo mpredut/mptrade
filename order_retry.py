@@ -1183,8 +1183,8 @@ def _apply_accepted(rec, order, now, provider_name=None):
     order_id = extract_order_id(order)
     if order_id is None:
         return False
-    venue_qty = extract_orig_qty(order)
-    if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
+    venue_qty = safe_pos_float(extract_orig_qty(order), default=None)
+    if venue_qty is not None:
         rec["qty"] = venue_qty
         rec["requested_qty_total"] = venue_qty
     _set_safe_to_discard(rec, False)
@@ -1352,8 +1352,8 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 continue
             if outcome == "accepted" and same_revision:
                 _set_safe_to_discard(rec, False)
-                venue_qty = extract_orig_qty(order)
-                if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
+                venue_qty = safe_pos_float(extract_orig_qty(order), default=None)
+                if venue_qty is not None:
                     rec["qty"] = venue_qty
                     rec["requested_qty_total"] = venue_qty
                 else:
@@ -1603,9 +1603,9 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
         return OutboxStatusTransition("filled", status_changed=True)
 
     current_qty = float(claimed.get("qty") or 0.0)
-    status_orig = getattr(status, "orig_qty", None)
-    if status_orig is not None and math.isfinite(status_orig) and status_orig > 0:
-        current_qty = float(status_orig)
+    status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
+    if status_orig is not None:
+        current_qty = status_orig
     remaining_qty = max(0.0, current_qty - status.filled_qty)
     if _outbox_retryable_terminal(status):
         complete_claim(claimed, "retry_terminal", now, status=status)
