@@ -39,6 +39,7 @@ from cachepaths import (
 from state_io import (
     atomic_write_json,
     discard_generation_file,
+    meta_file_path,
     previous_generation_path,
     read_json_dict,
     read_recovering_previous,

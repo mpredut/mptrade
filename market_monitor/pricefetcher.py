@@ -634,62 +634,62 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
     def _load_symbol_metadata(self):
         data = read_json_dict(self.filename, default=None, recover_previous=True)
         sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
-        if isinstance(sym_meta, dict):
-            try:
-                if True:
-                    raw_added = sym_meta.get("added_time")
-                    self.symbol_added_time = (
-                        {
-                            str(k): vf
-                            for k, v in raw_added.items()
-                            if isinstance(k, str)
-                            and isinstance(v, (int, float))
-                            and (vf := safe_pos_float(v, default=None)) is not None
-                        }
-                        if isinstance(raw_added, dict)
-                        else {}
-                    )
-                    preferred = sym_meta.get("preferred_source")
-                    if isinstance(preferred, dict):
-                        self.symbol_preferred_source = {
-                            str(k): str(v)
-                            for k, v in preferred.items()
-                            if isinstance(k, str) and isinstance(v, str) and v.strip()
-                        }
-                    seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
-                    raw_active = sym_meta.get("active_symbols")
-                    active_symbols = (
-                        [s for s in raw_active if isinstance(s, str) and s.strip()]
-                        if isinstance(raw_active, list)
-                        else []
-                    )
-                    raw_items = data.get("items")
-                    items_map = raw_items if isinstance(raw_items, dict) else {}
-                    recovered_symbols = [
-                        symbol for symbol, added_time in self.symbol_added_time.items()
-                        if (
-                            symbol in items_map
-                            and (at_val := safe_pos_float(added_time, default=None)) is not None
-                            and time.time() - at_val <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
-                        )
-                    ]
-                    for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
-                        if len(self.active_symbols) >= self.max_monitored_symbols:
-                            print(f"[Pricefetcher] Limit reached while loading: maximum {self.max_monitored_symbols} monitored coins, the rest will be ignored")
-                            break
-                        base_symbol = get_base_symbol(symbol)
-                        if (
-                            symbol not in self.active_symbols
-                            and base_symbol not in seen_bases
-                            and is_valid_symbol_for_monitoring(symbol)
-                            and any(self.price_factory.check_symbol_support(symbol).values())
-                        ):
-                            seen_bases.add(base_symbol)
-                            self.active_symbols.add(symbol)
-                            self.symbols.append(symbol)
-                            self.original_symbols.append(symbol)
-            except (OSError, ValueError, TypeError, KeyError) as exc:
-                print(f"[Pricefetcher] Metadata cache ignored: {exc}")
+        if not isinstance(sym_meta, dict):
+            return
+        try:
+            raw_added = sym_meta.get("added_time")
+            self.symbol_added_time = (
+                {
+                    str(k): vf
+                    for k, v in raw_added.items()
+                    if isinstance(k, str)
+                    and isinstance(v, (int, float))
+                    and (vf := safe_pos_float(v, default=None)) is not None
+                }
+                if isinstance(raw_added, dict)
+                else {}
+            )
+            preferred = sym_meta.get("preferred_source")
+            if isinstance(preferred, dict):
+                self.symbol_preferred_source = {
+                    str(k): str(v)
+                    for k, v in preferred.items()
+                    if isinstance(k, str) and isinstance(v, str) and v.strip()
+                }
+            seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
+            raw_active = sym_meta.get("active_symbols")
+            active_symbols = (
+                [s for s in raw_active if isinstance(s, str) and s.strip()]
+                if isinstance(raw_active, list)
+                else []
+            )
+            raw_items = data.get("items")
+            items_map = raw_items if isinstance(raw_items, dict) else {}
+            recovered_symbols = [
+                symbol for symbol, added_time in self.symbol_added_time.items()
+                if (
+                    symbol in items_map
+                    and (at_val := safe_pos_float(added_time, default=None)) is not None
+                    and time.time() - at_val <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
+                )
+            ]
+            for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
+                if len(self.active_symbols) >= self.max_monitored_symbols:
+                    print(f"[Pricefetcher] Limit reached while loading: maximum {self.max_monitored_symbols} monitored coins, the rest will be ignored")
+                    break
+                base_symbol = get_base_symbol(symbol)
+                if (
+                    symbol not in self.active_symbols
+                    and base_symbol not in seen_bases
+                    and is_valid_symbol_for_monitoring(symbol)
+                    and any(self.price_factory.check_symbol_support(symbol).values())
+                ):
+                    seen_bases.add(base_symbol)
+                    self.active_symbols.add(symbol)
+                    self.symbols.append(symbol)
+                    self.original_symbols.append(symbol)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(f"[Pricefetcher] Metadata cache ignored: {exc}")
 
     def _reload_from_disk(self):
         super()._reload_from_disk()

@@ -102,7 +102,8 @@ def _is_buy_price_changed(saved_buy_raw: Any, curr_buy_raw: Any) -> bool:
     )
 
 
-_LOADED_STATE_FILE_KEY: Optional[Tuple[str, float]] = None
+_GRACE_FILE_MEMO: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
+_LOADED_STATE_FILE_KEY: Optional[Tuple[str, Any]] = None
 
 
 def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -110,44 +111,27 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
-    from state_io import previous_generation_path, read_json_dict
-    prev_file = previous_generation_path(state_file)
-    mtime = None
-    for cand in (state_file, prev_file):
-        try:
-            mtime = os.path.getmtime(cand)
-            break
-        except OSError:
-            continue
-    if mtime is None:
+    from state_io import read_json_dict_cached
+    data = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
+    if not isinstance(data, dict):
         return _GRACE_TRACKER
-    file_key = (state_file, mtime)
+    file_key = (state_file, id(data))
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
-    try:
-        data = read_json_dict(state_file, default=None, recover_previous=True)
-        if isinstance(data, dict):
-            # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
-            now_curr = time.time()
-            clean_data = {}
-            for k, v in data.items():
-                if isinstance(v, dict):
-                    sts = safe_float(v.get("start_ts"), None)
-                    if (
-                        sts is not None
-                        and sts > 1_000_000_000
-                        and -5.0 <= (now_curr - sts) < 3600.0
-                    ):
-                        norm_k = clean_guard_symbol_key(k)
-                        if norm_k:
-                            clean_data[norm_k] = v
-            _GRACE_TRACKER.clear()
-            _GRACE_TRACKER.update(clean_data)
-            _LOADED_STATE_FILE_KEY = file_key
-        else:
-            _GRACE_TRACKER.clear()
-    except Exception:
-        _GRACE_TRACKER.clear()
+    # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
+    now_curr = time.time()
+    clean_data = {
+        norm_k: v
+        for k, v in data.items()
+        if isinstance(v, dict)
+        and (sts := safe_float(v.get("start_ts"), None)) is not None
+        and sts > 1_000_000_000
+        and -5.0 <= (now_curr - sts) < 3600.0
+        and (norm_k := clean_guard_symbol_key(k))
+    }
+    _GRACE_TRACKER.clear()
+    _GRACE_TRACKER.update(clean_data)
+    _LOADED_STATE_FILE_KEY = file_key
     return _GRACE_TRACKER
 
 
@@ -157,10 +141,8 @@ def _save_grace_state() -> None:
     try:
         from state_io import save_json_state
         save_json_state(state_file, _GRACE_TRACKER, indent=2)
-        try:
-            _LOADED_STATE_FILE_KEY = (state_file, os.path.getmtime(state_file))
-        except OSError:
-            pass
+        _GRACE_FILE_MEMO.clear()
+        _LOADED_STATE_FILE_KEY = None
     except Exception as e:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 
