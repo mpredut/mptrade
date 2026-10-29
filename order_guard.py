@@ -27,7 +27,6 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-_clean_pos_float = safe_pos_float
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
@@ -381,17 +380,8 @@ def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None
-    clean_prices: List[float] = []
     try:
-        for p in prices:
-            if p is None or isinstance(p, bool):
-                continue
-            try:
-                pf = float(p)
-                if math.isfinite(pf) and pf > 0.0:
-                    clean_prices.append(pf)
-            except (TypeError, ValueError, OverflowError):
-                continue
+        clean_prices = [pf for p in prices if (pf := safe_pos_float(p, default=None)) is not None]
     except TypeError:
         return None
     if not clean_prices:
@@ -564,7 +554,7 @@ def symbol_regime_context(
         provider_resolver=provider_resolver,
     )
     provider_name = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
-    dur_sec = _clean_pos_float(trend_duration_seconds, 0.0)
+    dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
     if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)
     return MarketRegimeContext.from_decision(
@@ -758,10 +748,10 @@ def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
             q_raw, px_raw = item
         except (TypeError, ValueError):
             continue
-        px_f = _clean_pos_float(px_raw, 0.0)
+        px_f = safe_pos_float(px_raw, 0.0)
         if px_f > 0.0:
             active_prices.append(px_f)
-            q_f = _clean_pos_float(q_raw, 0.0)
+            q_f = safe_pos_float(q_raw, 0.0)
             if q_f > 0.0:
                 valid_weighted.append((q_f, px_f))
     if not active_prices:
@@ -782,13 +772,12 @@ def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
             ts_raw, _, px_raw = item
         except (TypeError, ValueError):
             continue
-        ts_f = _clean_pos_float(ts_raw, -1.0)
-        px_f = _clean_pos_float(px_raw, 0.0)
+        ts_f = safe_nonneg_float(ts_raw, -1.0)
+        px_f = safe_pos_float(px_raw, 0.0)
         if ts_f >= 0.0 and px_f > 0.0:
             finite_ts_opp.append((ts_f, px_f))
     if finite_ts_opp:
-        max_ts = max(ts for ts, _ in finite_ts_opp)
-        last_ref = [px for ts, px in finite_ts_opp if ts == max_ts][-1]
+        last_ref = max(finite_ts_opp, key=lambda x: x[0])[1]
     else:
         last_ref = active_prices[-1]
     if mode == "average":
@@ -982,13 +971,13 @@ def _clean_required_qty_or_inf(required_qty) -> float:
 
 def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded_24h_value):
     """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
-    w = min(1.0, _clean_pos_float(weight, 0.0))
-    px = _clean_pos_float(price, 0.0)
+    w = min(1.0, safe_pos_float(weight, 0.0))
+    px = safe_pos_float(price, 0.0)
     req = _clean_required_qty_or_inf(required_qty)
     if req <= 0.0 or w <= 0.0 or px <= 0.0:
         return 0.0
-    avail = _clean_pos_float(available_qty, 0.0)
-    traded = _clean_pos_float(traded_24h_value, 0.0)
+    avail = safe_pos_float(available_qty, 0.0)
+    traded = safe_pos_float(traded_24h_value, 0.0)
 
     total_ref = traded + avail * px
     max_trade_value = total_ref * w
@@ -1017,8 +1006,8 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
         for o in recent
         for _ts, qty, px in (_order_ts_qty_price(o),)
     )
-    available = _clean_pos_float(available_qty, 0.0)
-    px_clean = _clean_pos_float(price, 0.0)
+    available = safe_pos_float(available_qty, 0.0)
+    px_clean = safe_pos_float(price, 0.0)
     req_clean = _clean_required_qty_or_inf(required_qty)
     adjusted = compute_weight_capped_qty(weight, px_clean, req_clean, available, traded_value)
     total_ref = traded_value + available * px_clean
@@ -1083,7 +1072,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         if resolved_max_trades is not None
         else get_max_daily_trades_cfg(name)
     )
-    antispam_sec = _clean_pos_float(get_antispam_sec_cfg(name), 0.0)
+    antispam_sec = safe_pos_float(get_antispam_sec_cfg(name), 0.0)
     try:
         trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)
     except ProviderError as exc:
@@ -1327,15 +1316,8 @@ def _read_cached_price_history(
     su = symbol.strip().upper()
     if not su:
         return None
-    win_sec = _clean_pos_float(window_seconds, 7200.0)
-    now_ts = time.time()
-    if now is not None and not isinstance(now, bool):
-        try:
-            nf = float(now)
-            if math.isfinite(nf) and nf > 0.0:
-                now_ts = nf
-        except (TypeError, ValueError, OverflowError):
-            pass
+    win_sec = safe_pos_float(window_seconds, 7200.0)
+    now_ts = safe_pos_float(now, default=None) or time.time()
     cachedb_dir = _resolve_cachedb_dir()
     cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
@@ -1355,42 +1337,32 @@ def _read_cached_price_history(
             older_streak = 0
             for item in reversed(raw_items):
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    if isinstance(item[0], bool) or isinstance(item[1], bool):
+                    ts_raw = safe_pos_float(item[0], default=None)
+                    px = safe_pos_float(item[1], default=None)
+                    if ts_raw is None or px is None:
                         continue
-                    try:
-                        ts_raw = float(item[0])
-                        px = float(item[1])
-                        if not (math.isfinite(ts_raw) and math.isfinite(px)):
-                            continue
-                        ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                        if ts_sec < cutoff_ts:
-                            older_streak += 1
-                            if older_streak >= 64:
-                                break
-                            continue
-                        older_streak = 0
-                        if ts_sec <= (now_ts + 5.0) and px > 0:
-                            tail_buf.append((ts_sec, px))
-                    except (ValueError, TypeError, OverflowError):
+                    ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                    if ts_sec < cutoff_ts:
+                        older_streak += 1
+                        if older_streak >= 64:
+                            break
                         continue
+                    older_streak = 0
+                    if ts_sec <= (now_ts + 5.0):
+                        tail_buf.append((ts_sec, px))
             tail_buf.reverse()
             history.extend(tail_buf)
             return
 
         for item in raw_items or []:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
-                if isinstance(item[0], bool) or isinstance(item[1], bool):
+                ts_raw = safe_pos_float(item[0], default=None)
+                px = safe_pos_float(item[1], default=None)
+                if ts_raw is None or px is None:
                     continue
-                try:
-                    ts_raw = float(item[0])
-                    px = float(item[1])
-                    if not (math.isfinite(ts_raw) and math.isfinite(px)):
-                        continue
-                    ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                    if cutoff_ts <= ts_sec <= (now_ts + 5.0) and px > 0:
-                        history.append((ts_sec, px))
-                except (ValueError, TypeError, OverflowError):
-                    continue
+                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                if cutoff_ts <= ts_sec <= (now_ts + 5.0):
+                    history.append((ts_sec, px))
 
     p24_paths: List[str] = []
     for cand in cand_symbols:
@@ -1500,15 +1472,15 @@ def check_intelligence_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    px_clean = _clean_pos_float(price, 0.0)
-    qty_clean = _clean_pos_float(qty, 0.0)
-    notional_clean = _clean_pos_float(notional_eur, 0.0)
+    px_clean = safe_pos_float(price, 0.0)
+    qty_clean = safe_pos_float(qty, 0.0)
+    notional_clean = safe_pos_float(notional_eur, 0.0)
     computed_notional = (
         notional_clean
         if notional_clean > 0.0
         else ((px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else None)
     )
-    explicit_dur_sec = _clean_pos_float(trend_duration_seconds, 0.0)
+    explicit_dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
 
     # Check if expensive static analysis is already cached on regime_context for this (side, intel_bypass) key
     _raw_intel_codes = ("GT_L", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM2", "GLLM3")
@@ -1526,12 +1498,12 @@ def check_intelligence_guards(
         cached_res = cached_entry.get("decision")
         cached_price = cached_entry.get("price")
         cached_notional = cached_entry.get("notional")
-        cached_dur = _clean_pos_float(cached_entry.get("trend_duration_seconds"), 0.0)
+        cached_dur = safe_pos_float(cached_entry.get("trend_duration_seconds"), 0.0)
     elif valid_context and getattr(regime_context, "_intelligence_decision_key", cache_key) in (cache_key, legacy_cache_key):
         cached_res = getattr(regime_context, "_intelligence_decision", None)
         cached_price = getattr(regime_context, "_intelligence_price", None)
         cached_notional = getattr(regime_context, "_intelligence_notional", None)
-        cached_dur = _clean_pos_float(getattr(regime_context, "_intelligence_trend_duration_seconds", 0.0), 0.0)
+        cached_dur = safe_pos_float(getattr(regime_context, "_intelligence_trend_duration_seconds", 0.0), 0.0)
     else:
         cached_res = None
         cached_price = None
@@ -1636,7 +1608,7 @@ def check_intelligence_guards(
         if isinstance(regime_context, dict)
         else getattr(regime_context, "trend_duration_seconds", 0.0)
     ) if valid_context else 0.0
-    dur_sec = explicit_dur_sec or _clean_pos_float(raw_ctx_dur, 0.0)
+    dur_sec = explicit_dur_sec or safe_pos_float(raw_ctx_dur, 0.0)
     if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)
 
@@ -1707,7 +1679,7 @@ def check_intelligence_guards(
             if internal_mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
-                s_val = _clean_pos_float(getattr(e_dec, "suggested_scale", None), 0.0)
+                s_val = safe_pos_float(getattr(e_dec, "suggested_scale", None), 0.0)
                 if s_val <= 0.0:
                     return False, e_dec.reason, 0.0
                 s_val = min(1.0, s_val)
@@ -1770,9 +1742,9 @@ def _evaluate_intelligence_guards_raw(
     if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
         return True, "test_symbol_exempt", 1.0
 
-    px_clean = _clean_pos_float(price, 0.0)
-    qty_clean = _clean_pos_float(qty, 0.0)
-    notional_clean = _clean_pos_float(notional_eur, 0.0)
+    px_clean = safe_pos_float(price, 0.0)
+    qty_clean = safe_pos_float(qty, 0.0)
+    notional_clean = safe_pos_float(notional_eur, 0.0)
     computed_notional = (
         notional_clean
         if notional_clean > 0.0
@@ -2064,8 +2036,8 @@ def profit_guard(
         ):
             return False
 
-    has_valid_qty = _clean_pos_float(qty, 0.0) > 0.0
-    has_valid_notional = _clean_pos_float(notional_eur, 0.0) > 0.0
+    has_valid_qty = safe_pos_float(qty, 0.0) > 0.0
+    has_valid_notional = safe_pos_float(notional_eur, 0.0) > 0.0
     if not _parse_bool_flag(evaluate_intelligence, True) or (not has_valid_qty and not has_valid_notional):
         return True
 
