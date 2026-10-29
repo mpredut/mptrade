@@ -3611,8 +3611,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             samples = list(dq) if dq else []
         if len(samples) < 2:
             return fb
-        span = samples[-1] - samples[0]
-        if not math.isfinite(span) or span <= 0:
+        span = safe_pos_float(samples[-1] - samples[0], default=None)
+        if span is None:
             return fb
         return span / (len(samples) - 1)
 
@@ -3652,17 +3652,12 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             cached_price, last_ts = self._extract_price_and_ts(entries)
         if cached_price is None or last_ts is None:
             return None
-        observed_at = float(last_ts) / 1000.0
-        price = float(cached_price)
+        observed_at = safe_pos_float(float(last_ts) / 1000.0, default=None)
+        price = safe_pos_float(cached_price, default=None)
+        if observed_at is None or price is None:
+            return None
         age = time.time() - observed_at
-        if (
-            not math.isfinite(observed_at)
-            or observed_at <= 0
-            or not math.isfinite(price)
-            or price <= 0
-            or age < -5.0
-            or age > max_age
-        ):
+        if age < -5.0 or age > max_age:
             return None
         return observed_at, price
 
