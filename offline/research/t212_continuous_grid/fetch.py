@@ -45,7 +45,8 @@ if __name__ == "__main__":
             if not rows:
                 print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
                 continue
-            with open(csv_path, "w", newline="") as fh:
+            from state_io import atomic_text_writer
+            with atomic_text_writer(csv_path, newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(["timestamp", "open", "high", "low", "close"])
                 w.writerows(rows)

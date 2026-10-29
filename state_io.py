@@ -147,7 +147,8 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 
 
 @contextlib.contextmanager
-def atomic_text_writer(path: str, *, encoding: str = "utf-8") -> Iterator[Any]:
+def atomic_text_writer(path: str, *, encoding: str = "utf-8",
+                       newline: str | None = None) -> Iterator[Any]:
     """Yield a text handle and atomically publish it only after a successful write."""
     destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
@@ -155,7 +156,7 @@ def atomic_text_writer(path: str, *, encoding: str = "utf-8") -> Iterator[Any]:
     fd, temporary = tempfile.mkstemp(
         dir=directory, prefix=f".{os.path.basename(destination)}.", suffix=".tmp",
     )
-    handle = os.fdopen(fd, "w", encoding=encoding)
+    handle = os.fdopen(fd, "w", encoding=encoding, newline=newline)
     try:
         yield handle
         handle.flush()
@@ -172,9 +173,10 @@ def atomic_text_writer(path: str, *, encoding: str = "utf-8") -> Iterator[Any]:
         raise
 
 
-def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8") -> None:
+def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
+                      newline: str | None = None) -> None:
     """Write text ``content`` to ``path`` atomically through ``atomic_text_writer``."""
-    with atomic_text_writer(path, encoding=encoding) as handle:
+    with atomic_text_writer(path, encoding=encoding, newline=newline) as handle:
         handle.write(str(content))
 
 

@@ -33,7 +33,8 @@ def fetch(symbol: str, name: str, force: bool = False) -> None:
     if not candles:
         print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
         return
-    with open(out_path, "w", newline="") as fh:
+    from state_io import atomic_text_writer
+    with atomic_text_writer(out_path, newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["timestamp", "open", "high", "low", "close"])
         for c in candles:

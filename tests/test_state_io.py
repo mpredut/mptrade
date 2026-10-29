@@ -348,6 +348,18 @@ def test_atomic_write_json_allow_nan(tmp_path):
     assert p.exists()
 
 
+def test_atomic_text_writer_newline(tmp_path):
+    import csv
+    p = tmp_path / "test.csv"
+    with atomic_text_writer(p, newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["a", "b"])
+        writer.writerow(["1", "2"])
+    content = p.read_bytes()
+    assert b"\r\r\n" not in content
+    assert b"a,b" in content
+
+
 
 
 
