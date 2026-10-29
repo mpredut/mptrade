@@ -11,7 +11,6 @@ import datetime as dt
 import json
 from pathlib import Path
 import sys
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 HL_DIR = ROOT / "hyperliquid"

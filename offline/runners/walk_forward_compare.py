@@ -28,7 +28,6 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
-    safe_pos_int,
 )
 from cachepaths import normalize_venue_name
 from offline.backtests.comparison import (
