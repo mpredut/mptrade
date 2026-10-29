@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from dotenv import dotenv_values
 from botcore import safe_pos_float
+from state_io import atomic_write_json
 from strategies import spot_engine as _strat
 from strategies.spot_replay import run_replay
 from strategies.spot_engine import StratParams
@@ -125,8 +126,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = review(args.baseline, args.candidate, args.cash)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(args.output, result, indent=2)
     for name, profile in result["profiles"].items():
         for scenario, values in profile["scenarios"].items():
             agg, continuous = values["aggregate"], values["continuous"]
