@@ -96,11 +96,7 @@ def are_close_random(value1, value2, target_tolerance_percent=1.0):
    
 
 # Values are approximately equal within the specified percentage.
-def are_close(value1, value2, target_tolerance_percent=1.0):
-    """Deterministically delegate to the shared fleet/bot botcore.are_close.
-    The pre-July-16 implementation used random.randint and could return either result
-    for identical input in [tol*1.01, tol*1.5], which is unacceptable for trading."""
-    return botcore.are_close(value1, value2, target_tolerance_percent)
+are_close = botcore.are_close
 
 
 def timestampToTime(timestamp_ms):
