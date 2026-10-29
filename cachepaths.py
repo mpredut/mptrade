@@ -155,6 +155,13 @@ _SIDECAR_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _clean_path_str(p: object) -> str:
+    """Return stripped string representation of path, rejecting booleans, None, and non-path types."""
+    if p is None or isinstance(p, bool) or not isinstance(p, (str, os.PathLike)):
+        return ""
+    return str(os.fspath(p)).strip()
+
+
 def _strip_sidecar_filename(name: str) -> str:
     """Normalize a cache filename by stripping leading staging dots and trailing sidecar suffixes."""
     s = name.strip().replace("\\", "/")
@@ -183,9 +190,9 @@ def _strip_sidecar_filename(name: str) -> str:
 
 def resolve_cache_subdomain(name: object) -> str | None:
     """Return the canonical thematic cachedb subdomain for ``name``, or ``None`` if unclassified."""
-    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
+    raw = _clean_path_str(name).replace("\\", "/")
+    if not raw:
         return None
-    raw = str(os.fspath(name)).strip().replace("\\", "/")
     while raw.startswith("./"):
         raw = raw[2:]
     if raw.startswith("cachedb/"):
@@ -218,10 +225,8 @@ def resolve_cache_subdomain(name: object) -> str | None:
 
 def resolve_cachedb_filepath(path: object) -> object:
     """Resolve ``path`` to its thematic ``cachedb/<subdomain>/`` location when active on disk."""
-    if not path or isinstance(path, bool) or not isinstance(path, (str, os.PathLike)):
-        return path
-    raw = str(os.fspath(path))
-    if not raw.strip():
+    raw = _clean_path_str(path)
+    if not raw:
         return path
     norm = raw.replace("\\", "/")
     parts = [p for p in norm.split("/") if p and p != "."]
@@ -398,9 +403,10 @@ def organize_cachedb_subdomains(
 
 def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
     """Return legacy pre-symmetry and pre-subdomain candidate paths for ``filepath``."""
-    if not filepath or isinstance(filepath, bool) or not isinstance(filepath, (str, os.PathLike)):
+    raw = _clean_path_str(filepath)
+    if not raw:
         return ()
-    dirname, basename = os.path.split(os.fspath(filepath))
+    dirname, basename = os.path.split(raw)
     candidates = EXACT_LEGACY_FILENAMES.get(basename)
     if candidates is None:
         for new_prefix, old_prefixes in PREFIX_LEGACY_FILENAMES:
@@ -435,11 +441,10 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
 
 def migrate_legacy_filename_if_needed(filepath: str) -> None:
     """Rename legacy pre-symmetry cache files in place when the new path is absent."""
-    if not filepath or isinstance(filepath, bool) or not isinstance(filepath, (str, os.PathLike)):
+    raw = _clean_path_str(filepath)
+    if not raw:
         return
-    filepath = str(os.fspath(filepath))
-    if not filepath.strip():
-        return
+    filepath = raw
     if os.path.exists(filepath) or os.path.exists(filepath + ".previous"):
         return
     for legacy_path in legacy_filenames_for(filepath):
@@ -489,14 +494,12 @@ def cache_path(name: str) -> str:
     Preserves name when it is already absolute or None/empty, while resolving
     thematic cachedb subdomains when active on disk.
     """
-    if not name or isinstance(name, bool) or not isinstance(name, (str, os.PathLike)):
+    raw = _clean_path_str(name)
+    if not raw:
         return name
-    name_str = str(os.fspath(name))
-    if not name_str.strip():
-        return name
-    if os.path.isabs(name_str):
-        return str(resolve_cachedb_filepath(name_str))
-    norm = name_str.replace("\\", "/")
+    if os.path.isabs(raw):
+        return str(resolve_cachedb_filepath(raw))
+    norm = raw.replace("\\", "/")
     while norm.startswith("./"):
         norm = norm[2:]
     if norm.startswith("cachedb/"):
@@ -715,9 +718,7 @@ def resolve_kraken_lookup_symbol(symbol: object) -> str:
 
 def resolve_cache_dir_path(cache_dir: object) -> str | None:
     """Resolve a collector ``cache_dir`` argument (e.g. ``'cachedb'``) to its effective directory path."""
-    if not cache_dir or isinstance(cache_dir, bool):
-        return None
-    raw = str(os.fspath(cache_dir)).strip() if isinstance(cache_dir, (str, os.PathLike)) else ""
+    raw = _clean_path_str(cache_dir)
     if not raw:
         return None
     if raw == "cachedb":
