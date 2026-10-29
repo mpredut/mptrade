@@ -8,7 +8,14 @@ import time
 from typing import Any, Dict, Optional, Tuple
 import urllib.request
 
-from botcore import _parse_bool_flag
+from intelligence.macro_sentiment_ssot import (
+    get_fear_greed_endpoint_url,
+    is_cache_fresh,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_ts,
+    safe_pos_float,
+)
 
 logger = logging.getLogger("intelligence.sentiment.fear_greed")
 
@@ -24,16 +31,6 @@ class FearGreedSnapshot:
     trend_7d_change: int                 # Net change over last 7 available days (positive = increasing greed)
     is_extreme_fear: bool                # True if value <= 25
     is_extreme_greed: bool               # True if value >= 75
-
-
-from intelligence.macro_sentiment_ssot import (
-    get_fear_greed_endpoint_url,
-    is_cache_fresh,
-    resolve_now_ts,
-    safe_float,
-    safe_nonneg_ts,
-    safe_pos_float,
-)
 
 
 class FearGreedCollector:

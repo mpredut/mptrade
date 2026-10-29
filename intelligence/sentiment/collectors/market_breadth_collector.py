@@ -5,11 +5,18 @@ from dataclasses import dataclass
 import json
 import logging
 import statistics
-import time
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 
-from botcore import _parse_bool_flag
+from intelligence.macro_sentiment_ssot import (
+    get_breadth_excluded_bases,
+    get_breadth_quote_suffixes,
+    get_market_breadth_endpoint_url,
+    is_cache_fresh,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_ts,
+)
 
 logger = logging.getLogger("intelligence.sentiment.market_breadth")
 
@@ -29,17 +36,6 @@ class MarketBreadthSnapshot:
     top_gainers: Tuple[Tuple[str, float], ...]    # (symbol, change_pct) top 3 gainers
     top_losers: Tuple[Tuple[str, float], ...]     # (symbol, change_pct) top 3 losers
     ts: float
-
-
-from intelligence.macro_sentiment_ssot import (
-    get_breadth_excluded_bases,
-    get_breadth_quote_suffixes,
-    get_market_breadth_endpoint_url,
-    is_cache_fresh,
-    resolve_now_ts,
-    safe_float,
-    safe_nonneg_ts,
-)
 
 
 class MarketBreadthCollector:

@@ -6,11 +6,10 @@ rather than genuine whale capital accumulation (rising OI).
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
-    BrakeAction,
     GuardDecision,
     fetch_guard_snapshot,
     normalize_guard_side,

@@ -15,9 +15,7 @@ from typing import Any, Dict, Optional
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
-    _effective_now_ts,
     _resolve_binance_lookup_symbol,
-    _symbol_variants,
 )
 
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")

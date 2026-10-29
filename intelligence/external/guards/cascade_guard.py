@@ -6,12 +6,10 @@ Defers execution until the cascade rate has decelerated.
 
 from __future__ import annotations
 
-import time
-from typing import Any, Optional
+from typing import Optional
 
 from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
-    BrakeAction,
     GuardDecision,
     normalize_guard_side,
     snap_attr,

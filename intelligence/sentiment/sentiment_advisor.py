@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass
 import json
 import logging
 import os
-import time
 from typing import Any, Dict, List, Optional
 
 from intelligence.macro_sentiment_ssot import (

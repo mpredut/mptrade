@@ -7,11 +7,10 @@ Extreme negative funding (< -0.05% / 8h) warns of crowded short squeeze risk.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
-    BrakeAction,
     GuardDecision,
     fetch_guard_snapshot,
     normalize_guard_side,
