@@ -341,8 +341,8 @@ class CacheManagerInterface(ABC):
         backup_path = self._previous_generation_path()
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
-                data = read_recovering_previous(
-                    self.filename, read_json_dict, backup_path=backup_path
+                data = read_json_dict(
+                    self.filename, backup_path=backup_path, recover_previous=True
                 )
                 with self.lock:
                     self.cache = data.get("items", {})
@@ -873,8 +873,8 @@ class CacheManagerInterface(ABC):
         backup_path = self._previous_generation_path()
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
-                data = read_recovering_previous(
-                    self.filename, read_json_dict, backup_path=backup_path
+                data = read_json_dict(
+                    self.filename, backup_path=backup_path, recover_previous=True
                 )
                 with self.lock:
                     items = data.get("items", {})

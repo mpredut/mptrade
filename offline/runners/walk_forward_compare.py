@@ -55,7 +55,11 @@ from offline.backtests.walk_forward import (
     walk_forward_splits,
 )
 from strategies.spot_engine import StratParams
-from strategies.spot_replay import align_spot_interval_params, run_replay
+from strategies.spot_replay import (
+    align_spot_interval_params,
+    make_spot_replay_adapter,
+    run_replay,
+)
 
 DEFAULT_FEE_STRESS = {
     "kraken": "0.16,0.26,0.35,0.50",
@@ -385,12 +389,10 @@ def _segment_result(
     execution: ExecutionModel | None = None,
 ) -> dict:
     interval_params = align_spot_interval_params(params, interval)
-    adapter = lambda data, warmup=(), _context=None: run_replay(
-        data,
+    adapter = make_spot_replay_adapter(
         interval_params,
         fee_pct=fee_pct,
         bar_minutes=interval,
-        warmup_ohlc=warmup,
         execution=execution,
     )
     return _evaluate_segment(

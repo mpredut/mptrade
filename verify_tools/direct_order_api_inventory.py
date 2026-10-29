@@ -9,11 +9,14 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 SENSITIVE_METHODS = {
     "create_order", "order_limit_buy", "order_limit_sell",
     "order_market_buy", "order_market_sell", "add_order", "spot_order",
@@ -39,7 +42,7 @@ APPROVED_BOUNDARIES = {
         "order_market_buy", "order_market_sell",
     },
     "monitororder.py": {"cancel_order"},
-    "orchestratorOS/supervisor/autonomous_ai_reconciler.py": {"cancel_order"},
+    "orchestratorOS/lib/technical_repair_ssot.py": {"cancel_order"},
     "providers/hyperliquid_provider.py": {"spot_order"},
     "providers/kraken_provider.py": {"add_order", "cancel_order"},
     "providers/market_api.py": {"cancel_order"},

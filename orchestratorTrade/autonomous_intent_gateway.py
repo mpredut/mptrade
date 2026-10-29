@@ -116,10 +116,14 @@ from instruments_config import (
 from intelligence.macro_sentiment_ssot import clean_scale, clean_symbol_key
 from providers.execution_audit import (
     append_intent_history as _append_intent_history,
+    execute_enforce_intent_order,
     extract_intent_notional as _extract_intent_notional,
     extract_intent_side as _extract_intent_side,
+    generate_unique_intent_id,
     parse_intent_confidence as _parse_intent_confidence,
     reconcile_intents_from_execution_audit,
+    record_shadow_intent_observation,
+    resolve_intent_topic_tag,
 )
 
 _norm_sym = clean_symbol_key
@@ -389,41 +393,26 @@ class AutonomousIntentGateway:
             if raw_thesis is None or isinstance(raw_thesis, bool) or not str(raw_thesis).strip()
             else str(raw_thesis).strip()
         )
-        from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
-        raw_src = intent.get("created_by")
-        src_topic = "" if raw_src is None or isinstance(raw_src, bool) else str(raw_src).strip()
-        if src_topic in TOPIC_SPECS or src_topic in TOPIC_ALIASES:
-            trade_tag = topic_spec(src_topic).bracket_tag
-        elif venue == "t212":
-            trade_tag = topic_spec("auto_sharetrade_executor").bracket_tag
-        else:
-            trade_tag = topic_spec("auto_cryptotrade_executor").bracket_tag
+        trade_tag = resolve_intent_topic_tag(intent, venue)
 
         # Execution or Observation Branch
         if mode == "shadow":
-            logger.info("[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=$%.2f) on %s. Thesis: %s",
-                        decision, inst.symbol, target_qty, price, effective_usd, inst.provider_name, thesis)
-
-            title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {decision} {inst.symbol} ${effective_usd:.0f}"
-            body = (
-                f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
-                f"Confidence: {confidence:.2f} · Notional: ${effective_usd:.2f}\n"
-                f"Operational Preflight: {'PASSED' if guard_allowed else guard_reason}\n"
-                f"Thesis: {thesis}"
+            return record_shadow_intent_observation(
+                inst,
+                intent,
+                decision=decision,
+                target_qty=target_qty,
+                price=price,
+                effective_usd=effective_usd,
+                confidence=confidence,
+                guard_allowed=guard_allowed,
+                guard_reason=guard_reason,
+                thesis=thesis,
+                trade_tag=trade_tag,
+                now_ts=now,
+                dispatch_notify_fn=self._dispatch_notify,
+                log=logger,
             )
-            self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
-
-            intent["status"] = "OBSERVED_SHADOW"
-            _append_intent_history(intent, {
-                "ts": now,
-                "action": "OBSERVED_SHADOW",
-                "guard_allowed": guard_allowed,
-                "guard_reason": guard_reason,
-                "price": price,
-                "qty": target_qty,
-                "notional_usd": effective_usd,
-            })
-            return intent
 
         # Gate: only "enforce" mode is permitted to execute live orders
         if mode != "enforce":
@@ -436,115 +425,23 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        # Mode == "enforce"
-        if not guard_allowed:
-            logger.warning("[LLM TRADER · ENFORCE] Operational guard blocked %s %s: %s",
-                           decision, inst.symbol, guard_reason)
-            title = f"🛡 {trade_tag} BLOCKED {decision} {inst.symbol}"
-            body = (
-                f"Venue: {inst.provider_name} · Price: ${price:,.2f} · Notional: ${effective_usd:.0f}\n"
-                f"Reason: {guard_reason}\n"
-                f"Thesis: {thesis}"
-            )
-            self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
-
-            intent["status"] = "BLOCKED_BY_GUARD"
-            _append_intent_history(intent, {
-                "ts": now,
-                "action": "BLOCKED_BY_GUARD",
-                "guard_reason": guard_reason,
-                "price": price,
-                "qty": target_qty,
-                "notional_usd": effective_usd,
-            })
-            return intent
-
-        logger.warning("[LLM TRADER · ENFORCE] Executing %s %s (qty=%g, notional=$%.2f) on %s...",
-                       decision, inst.symbol, target_qty, effective_usd, inst.provider_name)
-
-        try:
-            intent_cid = f"AI_{intent_id[:28]}" if intent_id else None
-            outcome_ctx: Dict[str, Any] = {}
-            order_res = None
-            for attempt in range(2):
-                outcome_ctx.clear()
-                order_res = inst.place(
-                    side=decision,
-                    qty=target_qty,
-                    price=price,
-                    market=True,
-                    enforce_business_minimum=False,
-                    wait_for_trend=False,
-                    intent_id=intent_id,
-                    client_order_id=intent_cid,
-                    regime_context=None,
-                    bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-                    _outcome_context=outcome_ctx,
-                )
-                if (
-                    order_res
-                    or attempt > 0
-                    or (
-                        outcome_ctx.get("state") != "refused"
-                        and outcome_ctx.get("category") != "refused_pre_submit"
-                    )
-                    or outcome_ctx.get("reason") not in ("account_cache_not_fresh", "account_cache_snapshot_changed")
-                ):
-                    break
-                time.sleep(0.25)
-            if order_res:
-                from providers.base import extract_order_id
-                logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
-                            decision, inst.symbol, order_res)
-                title = f"🚀 {trade_tag} EXECUTED {decision} {inst.symbol} ${effective_usd:.0f}"
-                order_id_str = extract_order_id(order_res, default="N/A")
-                body = (
-                    f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} (${effective_usd:,.0f})\n"
-                    f"Order ID: {order_id_str}\n"
-                    f"Thesis: {thesis}"
-                )
-                self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
-
-                intent["status"] = "EXECUTED"
-                intent["execution_payload"] = order_res
-                _append_intent_history(intent, {
-                    "ts": now,
-                    "action": "EXECUTED",
-                    "notional_usd": effective_usd,
-                    "payload": order_res,
-                })
-            else:
-                refusal_reason = str(outcome_ctx.get("reason") or "Instrument.place returned None")
-                refusal_cat = str(outcome_ctx.get("category") or "")
-                logger.warning("[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s: %s",
-                               decision, inst.symbol, refusal_reason)
-                title = f"⚠️ {trade_tag} REFUSED {decision} {inst.symbol}"
-                body = f"Venue {inst.provider_name} refused placement ({refusal_reason}).\nThesis: {thesis}"
-                self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
-
-                intent["status"] = "FAILED"
-                hist_entry: Dict[str, Any] = {
-                    "ts": now,
-                    "action": "FAILED",
-                    "reason": refusal_reason,
-                }
-                if refusal_cat:
-                    hist_entry["category"] = refusal_cat
-                _append_intent_history(intent, hist_entry)
-        except Exception as e:
-            logger.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
-            title = f"🚨 {trade_tag} ERROR {decision} {inst.symbol}"
-            body = f"Execution exception: {e}\nThesis: {thesis}"
-            self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
-
-            intent["status"] = "FAILED"
-            _append_intent_history(intent, {
-                "ts": now,
-                "action": "ERROR",
-                "error": str(e),
-            })
-
-        return intent
+        return execute_enforce_intent_order(
+            inst,
+            intent,
+            intent_id=intent_id,
+            decision=decision,
+            target_qty=target_qty,
+            price=price,
+            effective_usd=effective_usd,
+            guard_allowed=guard_allowed,
+            guard_reason=guard_reason,
+            thesis=thesis,
+            trade_tag=trade_tag,
+            now_ts=now,
+            bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+            dispatch_notify_fn=self._dispatch_notify,
+            log=logger,
+        )
 
     def submit(
         self,
@@ -584,13 +481,7 @@ class AutonomousIntentGateway:
 
         now = time.time()
         intents = self.load_all_intents()
-        base_id = f"intent_{int(now)}_{side.lower()}_{symbol.lower()}"
-        existing_ids = {str(i.get("intent_id") or i.get("id")) for i in intents if isinstance(i, dict)}
-        intent_id = base_id
-        suffix = len(intents) + 1
-        while intent_id in existing_ids:
-            intent_id = f"{base_id}_{suffix}"
-            suffix += 1
+        intent_id = generate_unique_intent_id(now, side, symbol, intents)
         raw_urg = decision.get("urgency", "NORMAL")
         urgency = (
             "NORMAL"

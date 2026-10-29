@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
-from state_io import atomic_text_writer, atomic_write_json  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file  # noqa: E402
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
@@ -157,27 +157,17 @@ def _history_path(pair: str, interval: int) -> str:
 def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     """On first run, anchor at the latest closed bar to begin forward testing now.
     Subsequent runs reuse it, so the window grows instead of sliding."""
-    from state_io import read_text_file
-
     path = _anchor_path(pair, interval)
-    if os.path.exists(path):
-        vf = safe_pos_float(read_text_file(path, default="").strip(), default=None)
-        if vf is not None and vf.is_integer():
-            return int(vf)
-    def_f = safe_pos_float(default_ts, default=0.0)
-    anchor_val = int(def_f)
-    os.makedirs(LOG_DIR, exist_ok=True)
-    with atomic_text_writer(path) as fh:
-        fh.write(f"{anchor_val}\n")
+    vf = safe_pos_float(read_text_file(path, default="").strip(), default=None)
+    if vf is not None and vf.is_integer():
+        return int(vf)
+    anchor_val = int(safe_pos_float(default_ts, default=0.0))
+    atomic_write_text(path, f"{anchor_val}\n")
     return anchor_val
 
 
 def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, float, float]]:
-    path = _history_path(pair, interval)
-    if not os.path.exists(path):
-        return []
-    from state_io import read_json_file
-    rows = read_json_file(path, default=[], recover_previous=True)
+    rows = read_json_file(_history_path(pair, interval), default=[], recover_previous=True)
     if not isinstance(rows, list):
         return []
     out: list[tuple[int, float, float, float, float]] = []
@@ -256,8 +246,11 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
+    variants = _variants(interval)
+    if hasattr(rp, "prewarm_trend_series"):
+        rp.prewarm_trend_series(ohlc4, warmup=0, params=variants.get("current"), bar_minutes=interval)
     rows = {}
-    for name, params in _variants(interval).items():
+    for name, params in variants.items():
         budget = safe_float(params.effective_max_budget(), 0.0)
         m = _run_one(
             ohlc4, params, interval, fee_pct,

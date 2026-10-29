@@ -39,12 +39,10 @@ from cachepaths import (
 from state_io import (
     atomic_write_json,
     discard_generation_file,
-    meta_file_path,
     previous_generation_path,
     read_json_dict,
     read_recovering_previous,
-    restore_previous_generation,
-    stage_previous_generation,
+    save_json_state,
 )
 from providers.base import (
     _parse_bool_flag,
@@ -91,28 +89,9 @@ def _cm_attr(name: str, default=None):
 
 
 def _write_json_atomic(path, data, **kwargs):
-    fn = _cm_attr("atomic_write_json", atomic_write_json)
-    backup_path = None
-    had_prior = os.path.exists(path)
-    if had_prior:
-        try:
-            backup_path = stage_previous_generation(path)
-        except Exception:
-            backup_path = None
-    try:
-        res = fn(path, data, **kwargs)
-        if backup_path is not None:
-            discard_generation_file(backup_path)
-        return res
-    except BaseException:
-        if backup_path is not None and os.path.exists(backup_path):
-            try:
-                restore_previous_generation(path, backup_path=backup_path)
-            except Exception:
-                pass
-        elif not had_prior:
-            discard_generation_file(path)
-        raise
+    return save_json_state(
+        path, data, write_fn=_cm_attr("atomic_write_json", atomic_write_json), **kwargs
+    )
 
 
 def _dynamic_window_key(window_seconds: float) -> str:
@@ -168,15 +147,12 @@ class CacheLongTrendManager(CacheManagerInterface):
                     trend_filename = legacy_root_pa
         else:
             trend_filename = os.path.join(config_root, "priceanalysis.json")
-        backup_path = previous_generation_path(trend_filename)
-        if not os.path.exists(trend_filename) and not os.path.exists(backup_path):
+        if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
             print(f"[{self.cls_name}] File {trend_filename} does not exist.")
             return []
 
         try:
-            data = read_recovering_previous(
-                trend_filename, read_json_dict, backup_path=backup_path
-            )
+            data = read_json_dict(trend_filename, recover_previous=True)
         except Exception as exc:
             print(f"[{self.cls_name}] Could not read {trend_filename}: {exc}")
             return []
@@ -969,10 +945,7 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     @staticmethod
     def _read_symbol_trend_dict(path: str, label: str) -> dict:
-        backup_path = previous_generation_path(path)
-        if not os.path.exists(path) and not os.path.exists(backup_path):
-            return {}
-        return read_json_dict(path, default={}, backup_path=backup_path, recover_previous=True)
+        return read_json_dict(path, default={}, recover_previous=True)
 
     def _read_live_symbol_file(self, symbol: str) -> dict:
         return self._read_symbol_trend_dict(self._live_trend_file(symbol), "live")
@@ -1509,12 +1482,9 @@ class CacheShortTrendManager(CacheManagerInterface):
             self._file_mtime = None
             self._file_cache = None
             try:
-                for path in (
-                    self.filename,
-                    meta_file_path(self.filename),
-                    self._previous_generation_path(),
-                ):
-                    discard_generation_file(path)
+                discard_generation_file(
+                    self.filename, include_previous=True, include_meta=True
+                )
                 if os.path.isdir(self.trend_dir):
                     for fn in os.listdir(self.trend_dir):
                         if fn.startswith(("live_", "hist_")) and fn.endswith(

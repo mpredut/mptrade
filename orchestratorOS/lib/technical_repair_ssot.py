@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from botcore import _parse_bool_flag, safe_float
@@ -953,3 +954,460 @@ def is_system_os_error_report(report: Any) -> bool:
 def is_error_report(report: Any) -> bool:
     """Return True if the audit report diagnoses any bot/order/code error or system/OS error."""
     return is_bot_or_code_error_report(report) or is_system_os_error_report(report)
+
+
+def apply_code_patch_safely(
+    target_file: str,
+    search_block: str,
+    replace_block: str,
+    rationale: str,
+    workspace_dir: str,
+    log: Optional[Any] = None,
+) -> bool:
+    """Apply code or configuration patch, run pytest test suite, commit on 100% green or roll back immediately."""
+    real_target, err_msg = resolve_patchable_target(target_file, workspace_dir)
+    if real_target is None:
+        if log:
+            log.warning("%s", err_msg)
+        return False
+
+    if not search_block or search_block == replace_block:
+        if log:
+            log.warning("Refusing empty or no-op autonomous patch on %s.", target_file)
+        return False
+
+    content: Optional[str] = None
+    try:
+        with open(real_target, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if search_block not in content:
+            if log:
+                log.warning("Search block not found in %s. Skipping patch.", target_file)
+            return False
+
+        from state_io import atomic_write_text
+
+        new_content = content.replace(search_block, replace_block, 1)
+        atomic_write_text(real_target, new_content)
+
+        pytest_bin = "pytest"
+        for cand in (".venv/bin/pytest", "myenv/bin/pytest"):
+            cand_abs = os.path.join(workspace_dir, cand)
+            if os.path.exists(cand_abs):
+                pytest_bin = cand_abs
+                break
+        test_cmd = [pytest_bin, "tests/"]
+        res = subprocess.run(test_cmd, cwd=workspace_dir, capture_output=True, text=True, timeout=240)
+
+        if res.returncode == 0:
+            if log:
+                log.info("Self-healing patch verified with 100%% green tests. Committing to git.")
+            subprocess.run(["git", "add", real_target], cwd=workspace_dir, check=False)
+            commit_msg = f"[AI-SUPERVISOR] Autonomous self-heal: {rationale}"
+            subprocess.run(["git", "commit", "-m", commit_msg], cwd=workspace_dir, check=False)
+            subprocess.run(["git", "push", "origin", "main"], cwd=workspace_dir, check=False)
+            return True
+        if log:
+            log.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
+        atomic_write_text(real_target, content)
+        subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+        return False
+    except Exception as e:
+        if log:
+            log.error("Error during safe code patching: %s. Performing rollback.", e)
+        if content is not None:
+            try:
+                from state_io import atomic_write_text
+                atomic_write_text(real_target, content)
+            except OSError:
+                pass
+        subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+        return False
+
+
+def execute_venue_or_fleet_repair_action(
+    act: Dict[str, Any],
+    workspace_dir: str,
+    resolve_instrument_fn: Optional[Any] = None,
+    log: Optional[Any] = None,
+) -> bool:
+    """Execute a single repair action (bot/module/fleet/VPN/DNS restart, system reboot, or order sync/cancel)."""
+    if not isinstance(act, dict):
+        return False
+    norm = normalize_repair_action(act, workspace_dir)
+    action_type = norm["action"]
+    venue = norm["venue"]
+    symbol = norm["symbol"]
+    order_id = norm["order_id"]
+    reason = norm["reason"]
+    matched = norm["matched_process"]
+
+    if action_type in BOT_MODULE_REPAIR_ACTIONS:
+        if not symbol:
+            if log:
+                log.warning("[ENFORCE] %s missing bot/module name in action: %s", action_type, act)
+            return False
+        try:
+            if matched is None:
+                if log:
+                    log.warning("[ENFORCE] Refusing %s for unknown process %r (not in procs.conf)", action_type, symbol)
+                return False
+            pattern = matched.get("clean_pattern") or matched["pattern"].rstrip("$")
+            if log:
+                log.warning("[ENFORCE EXECUTING] Restarting fleet bot/module %s (pattern=%s): %s", matched["name"], pattern, reason)
+            subprocess.run(["pkill", "-f", pattern], check=False)
+            return True
+        except Exception as e:
+            if log:
+                log.error("[ENFORCE] Failed restarting fleet bot/module %s: %s", symbol, e)
+            return False
+
+    if action_type in SYSTEM_ADMIN_ACTION_SPECS:
+        try:
+            built = build_system_admin_command(action_type)
+            if built is None:
+                return False
+            cmd, desc = built
+            if log:
+                log.warning("[ENFORCE EXECUTING] %s: %s", desc, reason)
+            res = subprocess.run(cmd, check=False)
+            return getattr(res, "returncode", 0) == 0
+        except Exception as e:
+            if log:
+                log.error("[ENFORCE] Failed %s: %s", action_type, e)
+            return False
+
+    if action_type in {"CANCEL_ORDER", "SYNC_POSITION"}:
+        is_cancel = action_type == "CANCEL_ORDER"
+        if not symbol or (is_cancel and not order_id) or not callable(resolve_instrument_fn):
+            if is_cancel and log:
+                log.warning("[ENFORCE] CANCEL_ORDER missing symbol or order_id: %s", act)
+            return False
+        try:
+            inst = resolve_instrument_fn(symbol.upper(), venue=venue)
+            if inst is None:
+                if is_cancel and log:
+                    log.warning("[ENFORCE] CANCEL_ORDER could not resolve instrument %s on %s", symbol, venue)
+                return False
+            api, prov = getattr(inst, "_api", None), getattr(inst, "_provider", None)
+            if is_cancel:
+                if log:
+                    log.warning("[ENFORCE EXECUTING] Canceling order %s for %s on %s: %s", order_id, inst.symbol, inst.provider_name, reason)
+                if api is not None and hasattr(api, "cancel_order"):
+                    api.cancel_order(inst.symbol, order_id, provider_name=inst.provider_name)
+                elif prov is not None and hasattr(prov, "cancel_order"):
+                    prov.cancel_order(inst.symbol, order_id)
+                else:
+                    if log:
+                        log.warning("[ENFORCE] Provider for %s does not expose cancel_order", inst.symbol)
+                    return False
+            else:
+                if log:
+                    log.info("[ENFORCE EXECUTING] Syncing open orders/state for %s on %s: %s", inst.symbol, inst.provider_name, reason)
+                if api is not None and hasattr(api, "open_orders"):
+                    api.open_orders(inst.symbol, provider_name=inst.provider_name)
+                elif prov is not None and hasattr(prov, "open_orders"):
+                    prov.open_orders(inst.symbol)
+            return True
+        except Exception as e:
+            if log:
+                if is_cancel:
+                    log.error("[ENFORCE] Failed CANCEL_ORDER %s on %s (%s): %s", order_id, symbol, venue, e)
+                else:
+                    log.error("[ENFORCE] Failed SYNC_POSITION for %s on %s: %s", symbol, venue, e)
+            return False
+
+    if log:
+        log.warning("[ENFORCE] Unsupported venue/fleet action %r: %s", action_type, act)
+    return False
+
+
+def harvest_heartbeats_and_state_files(
+    cache_dir: str,
+    workspace_dir: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Harvest active heartbeat JSON files and watchdog state file ages."""
+    _rj = read_json_fn or read_json_recovering
+    active_heartbeats: Dict[str, Any] = {}
+    for hb_name in (
+        "macro_analyzer.heartbeat",
+        "globaltelemetry_collector.heartbeat",
+        "rtrade.heartbeat",
+    ):
+        data = _rj(os.path.join(cache_dir, hb_name))
+        if isinstance(data, dict) and data:
+            active_heartbeats[hb_name] = data
+
+    state_files: Dict[str, Any] = {}
+    for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json"):
+        s_path = os.path.join(workspace_dir, s_file)
+        if os.path.exists(s_path):
+            try:
+                mtime = os.path.getmtime(s_path)
+                state_files[s_file] = {"age_hours": max(0.0, (now_ts - mtime) / 3600.0)}
+            except OSError:
+                pass
+    return active_heartbeats, state_files
+
+
+def format_supervisor_ntfy_notification(
+    report: Any,
+    topic_key: str,
+    ntfy_topic_error: str,
+    ntfy_topic_server: str,
+    ntfy_topic: str,
+    *,
+    is_bot_error: Optional[bool] = None,
+    is_sys_error: Optional[bool] = None,
+) -> Tuple[str, str, str, str, bool]:
+    """Build (title, body, priority, target_topic, is_any_error) for a SupervisorAuditReport ntfy push."""
+    from botcore import safe_nonneg_float
+    from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
+
+    issues_cnt = sum(
+        1 for i in (getattr(report, "diagnosed_issues", None) or [])
+        if isinstance(i, dict) and str(i.get("category") or "").strip().upper() != "HEALTHY"
+    )
+    actions_cnt = sum(
+        1 for a in (getattr(report, "venue_actions", None) or [])
+        if isinstance(a, dict) and str(a.get("action") or "NONE").strip().upper() != "NONE"
+    )
+    code_rem = getattr(report, "code_remediation", None)
+    has_fix = bool(
+        isinstance(code_rem, dict)
+        and _parse_bool_flag(code_rem.get("has_fix", False), False)
+    )
+    if has_fix:
+        actions_cnt += 1
+    mode_label = str(getattr(report, "mode", "shadow")).upper()
+    if is_bot_error is None:
+        is_bot_error = is_bot_or_code_error_report(report)
+    if is_sys_error is None:
+        is_sys_error = is_system_os_error_report(report)
+    is_any_error = bool(is_bot_error or is_sys_error)
+
+    spec = (
+        topic_spec(topic_key)
+        if (topic_key in TOPIC_SPECS or topic_key in TOPIC_ALIASES)
+        else topic_spec("auto_technical_repair")
+    )
+    if is_bot_error:
+        title = f"🚨 {spec.bracket_tag} ERROR Issues: {issues_cnt} | Actions: {actions_cnt}"
+        target_topic = ntfy_topic_error or ntfy_topic or "ntfy-error-1978"
+        priority = "high"
+    elif is_sys_error:
+        title = f"🚨 {spec.bracket_tag} SYSTEM Issues: {issues_cnt} | Actions: {actions_cnt}"
+        target_topic = ntfy_topic_server or ntfy_topic or "ntfy-server-1978"
+        priority = "high"
+    else:
+        title = f"{spec.ntfy_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}"
+        target_topic = ntfy_topic_server or ntfy_topic or "ntfy-server-1978"
+        priority = "default"
+
+    body_lines = [
+        f"Mode: {mode_label} · Status: {'Executed' if getattr(report, 'actions_executed', False) else 'Simulated/Observed'}",
+        f"{getattr(report, 'summary', '')}",
+    ]
+    diag_issues = getattr(report, "diagnosed_issues", None)
+    if diag_issues:
+        top_issue = diag_issues[0]
+        if isinstance(top_issue, dict):
+            body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
+
+    if has_fix and isinstance(code_rem, dict):
+        patch_file = code_rem.get("target_file", "unknown")
+        body_lines.append(f"Code Patch Proposed: {patch_file} (tests={getattr(report, 'tests_passed', None)})")
+
+    m_decs = getattr(report, "market_trading_decisions", None)
+    m_single = getattr(report, "market_trading_decision", None)
+    decisions_to_show = m_decs or ([m_single] if m_single else [])
+    for m_dec in decisions_to_show:
+        if not isinstance(m_dec, dict):
+            continue
+        m_decision = str(m_dec.get("decision", "HOLD")).upper()
+        if m_decision in ("BUY", "SELL"):
+            m_sym = m_dec.get("symbol", "")
+            m_venue = m_dec.get("venue", "")
+            m_conf = safe_nonneg_float(m_dec.get("confidence"), default=0.0) or 0.0
+            m_usd = safe_nonneg_float(m_dec.get("suggested_notional_usd"), default=0.0) or 0.0
+            venue_sfx = f" ({m_venue})" if m_venue else ""
+            body_lines.append(f"Trading Intent: {m_decision} {m_sym}{venue_sfx} ${m_usd:.0f} (conf={m_conf:.2f})")
+
+    return title, "\n".join(body_lines), priority, target_topic, is_any_error
+
+
+def persist_supervisor_audit_artifact(
+    report_dict: Dict[str, Any],
+    cache_dir: str,
+    state_file: str,
+    heartbeat_file: str,
+    log: Optional[Any] = None,
+) -> None:
+    """Persist full SupervisorAuditReport dict and heartbeat JSON to disk in cachedb/."""
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        from state_io import save_json_state
+
+        cleaned_report = clean_json_value(report_dict)
+        save_json_state(state_file, cleaned_report, indent=2)
+
+        hb = clean_json_value({
+            "status": "alive",
+            "ts": report_dict.get("ts"),
+            "mode": report_dict.get("mode"),
+            "summary": report_dict.get("summary"),
+            "diagnosed_issues_count": len(report_dict.get("diagnosed_issues") or []),
+            "venue_actions_count": len(report_dict.get("venue_actions") or []),
+            "market_trading_decision": report_dict.get("market_trading_decision") or {},
+            "market_trading_decisions": report_dict.get("market_trading_decisions") or [],
+        })
+        save_json_state(heartbeat_file, hb, indent=2)
+    except Exception as e:
+        if log:
+            log.warning("Could not persist audit artifact: %s", e)
+
+
+def apply_reconciliation_plan(
+    plan: Dict[str, Any],
+    workspace_dir: str,
+    *,
+    is_enforce: bool,
+    allow_code_remediation: bool = True,
+    execute_action_fn: Optional[Any] = None,
+    apply_patch_fn: Optional[Any] = None,
+    log: Optional[Any] = None,
+) -> Tuple[bool, Optional[bool]]:
+    """Apply or simulate venue/fleet repair actions and code remediation based on operational mode."""
+    if not isinstance(plan, dict):
+        return False, None
+    allow_remediation = _parse_bool_flag(allow_code_remediation, True)
+    raw_actions = plan.get("venue_actions")
+    venue_actions = raw_actions if isinstance(raw_actions, list) else []
+    raw_fix = plan.get("code_remediation") if allow_remediation else None
+    code_fix = raw_fix if isinstance(raw_fix, dict) else {}
+
+    venue_executed = False
+    for act in venue_actions:
+        if not isinstance(act, dict):
+            continue
+        norm = normalize_repair_action(act, workspace_dir)
+        action_type = norm["action"]
+        if action_type == "NONE":
+            continue
+        if not is_enforce or not allow_remediation:
+            if log:
+                log.info(
+                    "[SHADOW WOULD EXECUTE] Venue/fleet action %s for %s (%s): %s",
+                    action_type,
+                    norm["symbol"] or act.get("symbol"),
+                    norm["venue"],
+                    norm["reason"],
+                )
+        elif callable(execute_action_fn) and execute_action_fn(act):
+            venue_executed = True
+
+    tests_passed: Optional[bool] = None
+    has_fix = _parse_bool_flag(code_fix.get("has_fix"), False)
+    raw_target_file = code_fix.get("target_file")
+    raw_search_block = code_fix.get("search_block")
+    if (
+        has_fix
+        and isinstance(raw_target_file, str)
+        and raw_target_file.strip()
+        and isinstance(raw_search_block, str)
+        and raw_search_block
+    ):
+        target_file = os.path.join(workspace_dir, raw_target_file.strip())
+        raw_rationale = code_fix.get("rationale")
+        rationale = (
+            str(raw_rationale).strip()
+            if raw_rationale is not None and not isinstance(raw_rationale, bool) and str(raw_rationale).strip()
+            else "Autonomous self-heal patch"
+        )
+        raw_replace = code_fix.get("replace_block", "")
+        replace_block = raw_replace if isinstance(raw_replace, str) else ""
+        if not is_enforce:
+            if log:
+                log.info("[SHADOW WOULD APPLY] Code patch on %s: %s", target_file, rationale)
+        elif callable(apply_patch_fn):
+            if log:
+                log.info("[ENFORCE ATTEMPTING PATCH] Applying self-healing patch on %s: %s", target_file, rationale)
+            tests_passed = apply_patch_fn(
+                target_file=target_file,
+                search_block=raw_search_block,
+                replace_block=replace_block,
+                rationale=rationale,
+            )
+
+    executed = is_enforce and bool(venue_executed or (has_fix and tests_passed))
+    return executed, tests_passed
+
+
+def send_supervisor_ntfy_http(
+    title: str,
+    body: str,
+    priority: str,
+    target_topic: str,
+    is_any_error: bool,
+    *,
+    ntfy_url: str = "",
+    ntfy_token: str = "",
+    urlopen_fn: Optional[Any] = None,
+    log: Optional[Any] = None,
+) -> bool:
+    """Gate and send a supervisor ntfy push notification via HTTP POST."""
+    import urllib.request
+
+    try:
+        from notify_engine.alertnotifiers import pass_common_gate
+        allowed, reason, _, out_payload = pass_common_gate(
+            "ntfy",
+            title,
+            body,
+            priority,
+            target_topic,
+            [{"type": "bot_event", "name": title, "body": body, "source": "ai_supervisor", "symbol": "SYSTEM"}],
+            urgent=is_any_error,
+        )
+        if not allowed:
+            if log:
+                log.info("Supervisor ntfy gated by common policy (%s): %s", reason, title)
+            return reason == "buffered_for_bulk"
+        if out_payload:
+            title, body, priority, target_topic = out_payload
+    except Exception as e:
+        if log:
+            log.debug("Common gate fallback in reconciler: %s", e)
+
+    url = ntfy_url or f"https://ntfy.sh/{target_topic}"
+    headers = {
+        "Title": title.encode("utf-8").decode("latin-1", "ignore"),
+        "Priority": priority,
+        "Tags": "rotating_light,robot" if is_any_error else "shield,robot",
+    }
+    if ntfy_token:
+        headers["Authorization"] = f"Bearer {ntfy_token}"
+
+    _urlopen = urlopen_fn or urllib.request.urlopen
+    try:
+        req = urllib.request.Request(
+            url,
+            data=body.encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with _urlopen(req, timeout=10) as resp:
+            status = getattr(resp, "status", None) or getattr(resp, "code", None)
+            if status is None and hasattr(resp, "getcode") and callable(resp.getcode):
+                status = resp.getcode()
+            return status == 200
+    except Exception as exc:
+        if log:
+            log.error("Failed sending standalone ntfy notification: %s", exc)
+        return False
+
+
+

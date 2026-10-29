@@ -43,7 +43,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
@@ -51,7 +51,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env, safe_float
+from botcore import _parse_bool_flag, float_env, load_dotenv, safe_float
 from cachepaths import cache_path
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
@@ -136,6 +136,26 @@ def _last_change_for(full_key):
         if entry.get("full_key") == full_key and entry.get("action") == "applied":
             last = entry
     return last
+
+
+def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
+    """Return (True, last_ts_str) when full_key was applied within MIN_DAYS_BETWEEN_CHANGES days."""
+    last_change = _last_change_for(full_key)
+    if not last_change or not isinstance(last_change, dict) or not last_change.get("ts"):
+        return False, None
+    ts_str = str(last_change["ts"])
+    try:
+        last_ts = datetime.fromisoformat(ts_str)
+        elapsed = (
+            datetime.now(timezone.utc) - last_ts.astimezone(timezone.utc)
+            if last_ts.tzinfo is not None
+            else datetime.now() - last_ts
+        )
+        if elapsed < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
+            return True, ts_str
+    except (TypeError, ValueError):
+        pass
+    return False, None
 
 
 def _current_value(section, key):
@@ -287,11 +307,13 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     # compares the winner AGAINST it, and an INERT parameter (every value giving
     # identical results) would be falsely "applied" to the first element of the grid
     # (max() on a tie returns the first). Found 28 Jul at #15 hardtp.
-    test_values = list(grid_values)
-    if not any(abs(float(v) - current) < 1e-9 for v in test_values):
+    test_values = [v for v in grid_values if safe_float(v, default=None) is not None]
+    if not test_values:
+        return {"full_key": full_key, "action": "skipped", "reason": "no_grid_annotation"}
+    if not any(abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values):
         test_values.append(_num_str(current))
 
-    eval_order = sorted(test_values, key=float) if key == "mt.hardtp" else test_values
+    eval_order = sorted(test_values, key=lambda x: safe_float(x, 0.0)) if key == "mt.hardtp" else test_values
     invariant_r1 = None
     invariant_max_htp1 = -1.0
     invariant_r2 = None
@@ -301,7 +323,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         t0 = time.time()
         params = dict(base_params)
         params[key] = v
-        v_ratio = float(v) / 100.0 if key == "mt.hardtp" else 0.0
+        v_ratio = safe_float(v, 0.0) / 100.0 if key == "mt.hardtp" else 0.0
         if key == "mt.hardtp" and invariant_r1 is not None and v_ratio <= invariant_max_htp1:
             r1 = dict(invariant_r1)
             _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half1)] = r1
@@ -358,7 +380,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         return entry
 
     winner = winner_half1
-    winner_val = float(winner)
+    winner_val = safe_float(winner, current)
     if abs(winner_val - current) < 1e-9:
         entry["action"] = "no_change"
         entry["reason"] = "the winning value = the value already configured"
@@ -368,7 +390,7 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     # significant margin on BOTH windows. A margin of ~0 means the parameter is inert on this history
     # (e.g. a hard TP that never triggered), and the "winner" is merely a tie-break artefact.
     cur_key = next(
-        (v for v in results if math.isclose(float(v), current, rel_tol=1e-5, abs_tol=1e-6)),
+        (v for v in results if math.isclose(safe_float(v, float("nan")), current, rel_tol=1e-5, abs_tol=1e-6)),
         None,
     )
     if cur_key is None or cur_key not in results:
@@ -394,18 +416,12 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         entry["action"] = "proposed"
         return entry
 
-    last_change = _last_change_for(full_key)
-    if last_change:
-        try:
-            last_ts = datetime.fromisoformat(str(last_change["ts"]))
-            now_dt = datetime.now(last_ts.tzinfo) if last_ts.tzinfo is not None else datetime.now()
-            if now_dt - last_ts < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
-                entry["action"] = "rate_limited"
-                entry["reason"] = (f"last changed at {last_change['ts']}, "
-                                    f"waiting {MIN_DAYS_BETWEEN_CHANGES} days between changes")
-                return entry
-        except (KeyError, TypeError, ValueError):
-            pass
+    limited, last_ts_str = is_rate_limited(full_key)
+    if limited:
+        entry["action"] = "rate_limited"
+        entry["reason"] = (f"last changed at {last_ts_str}, "
+                            f"waiting {MIN_DAYS_BETWEEN_CHANGES} days between changes")
+        return entry
 
     new_value = round((current + winner_val) / 2, 4)
     entry["proposed_new_value"] = new_value
@@ -564,15 +580,17 @@ def main():
             _RUN_ONE_DIAG_CACHE[bck2] = dict(diag2)
             htp1 = diag1.get("hard_tp_touched", True)
             htp2 = diag2.get("hard_tp_touched", True)
-            base_htp = float(base_params.get("mt.hardtp") or 0.0)
-            base_cd_s = float(base_params.get("mt.hardtp_cooldown_h") or 6.0) * 3600.0
-            base_tr = float(base_params.get("trailing.pct") or 0.0)
+            base_htp = safe_float(base_params.get("mt.hardtp"), 0.0)
+            base_cd_s = safe_float(base_params.get("mt.hardtp_cooldown_h"), 6.0) * 3600.0
+            base_tr = safe_float(base_params.get("trailing.pct"), 0.0)
             base_tr_r = base_tr / 100.0
             for fk, (k_sym, _k_base, k_name) in keys.items():
                 if k_sym != sym:
                     continue
                 if k_name == "mt.hardtp_fraction":
                     for gv in all_ranges.get(fk, ()):
+                        if safe_float(gv, default=None) is None:
+                            continue
                         p = dict(base_params, **{k_name: gv})
                         if not htp1:
                             ck = _run_one_cache_key(sym, p, half1)
@@ -586,7 +604,10 @@ def main():
                     dts1 = diag1.get("hard_tp_cooldown_dts", ())
                     dts2 = diag2.get("hard_tp_cooldown_dts", ())
                     for gv in all_ranges.get(fk, ()):
-                        cand_cd_s = float(gv) * 3600.0
+                        gv_f = safe_float(gv, default=None)
+                        if gv_f is None:
+                            continue
+                        cand_cd_s = gv_f * 3600.0
                         p = dict(base_params, **{k_name: gv})
                         if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts1):
                             ck = _run_one_cache_key(sym, p, half1)
@@ -600,7 +621,9 @@ def main():
                     min_g1 = diag1.get("min_hard_tp_gain_ratio", 0.0)
                     min_g2 = diag2.get("min_hard_tp_gain_ratio", 0.0)
                     for gv in all_ranges.get(fk, ()):
-                        gv_f = float(gv)
+                        gv_f = safe_float(gv, default=None)
+                        if gv_f is None:
+                            continue
                         gv_r = gv_f / 100.0
                         if gv_f >= base_htp:
                             p = dict(base_params, **{k_name: gv})
@@ -618,7 +641,10 @@ def main():
                     min_tr2 = diag2.get("min_trail_trigger_ratio", 0.0)
                     max_untr2 = diag2.get("max_untriggered_trail_ratio", 1.0)
                     for gv in all_ranges.get(fk, ()):
-                        gv_r = float(gv) / 100.0
+                        gv_f = safe_float(gv, default=None)
+                        if gv_f is None:
+                            continue
+                        gv_r = gv_f / 100.0
                         p = dict(base_params, **{k_name: gv})
                         if (gv_r >= base_tr_r and gv_r <= min_tr1) or (gv_r <= base_tr_r and gv_r > max_untr1):
                             ck = _run_one_cache_key(sym, p, half1)
@@ -641,10 +667,15 @@ def main():
         if len(half1) < 100 or len(half2) < 100:
             continue
         section = fk.split(".", 1)[0]
-        current = _current_value(section, key)
+        try:
+            current = _current_value(section, key)
+        except (KeyError, ValueError):
+            continue
         base_params = dict(rb.SYMBOLS[sym]["params"])
-        test_values = list(grid_values)
-        if not any(abs(float(v) - current) < 1e-9 for v in test_values):
+        test_values = [v for v in grid_values if safe_float(v, default=None) is not None]
+        if not test_values:
+            continue
+        if not any(abs(safe_float(v, 0.0) - current) < 1e-9 for v in test_values):
             test_values.append(_num_str(current))
         for v in test_values:
             p = dict(base_params, **{key: v})
@@ -709,7 +740,6 @@ def main():
         if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):
             # notify user that new proposals are available to review and apply
             try:
-                from dotenv import load_dotenv
                 load_dotenv(os.path.join(ROOT, ".env"))
                 load_dotenv(os.path.join(ROOT, "config.env"))
                 import alertnotifiers as alert

@@ -2791,7 +2791,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     fake_md._chart = lambda sym, rng="5d", interval="5m": ({"regularMarketPrice": 214.0}, fake_bars)
     monkeypatch.setitem(os.sys.modules, "market_data", fake_md)
 
-    reconciler.run_cycle(topic_key="auto_sharetrade_executor")
+    reconciler.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
     eq_prompt = captured_prompts[-1]
     assert "free_NVDA_US_EQ=0.21 ($45.04 USD)" in eq_prompt
     assert "($None USD)" not in eq_prompt

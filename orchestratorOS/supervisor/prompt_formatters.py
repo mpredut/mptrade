@@ -566,3 +566,175 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
         if ps.get(st_key):
             lines.append(f"  * {st_label}: {ps[st_key]}")
     return lines
+
+
+def build_supervisor_prompt(
+    sensors: Any,
+    logs: Any,
+    spec: Any,
+    lookback_hours: float,
+    focus_symbols: Optional[List[str]] = None,
+    *,
+    min_usd: float = 10.0,
+    max_usd: float = 2000.0,
+    min_conf: float = 0.85,
+) -> str:
+    """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
+    from orchestratorOS.lib.technical_repair_ssot import (
+        ALL_DIAGNOSED_CATEGORIES,
+        ALL_REPAIR_ACTIONS,
+        AUDITED_CONFIG_FILES,
+        DIAGNOSED_SEVERITIES,
+    )
+
+    is_pure_sre = bool(spec.can_self_heal and not spec.can_trade)
+    context_items: List[str] = []
+    if not is_pure_sre:
+        context_items.extend(_format_macro_and_news_section(sensors))
+    if spec.can_self_heal:
+        context_items.extend(_format_sre_and_fleet_section(sensors, logs, lookback_hours))
+    if not is_pure_sre and sensors.prices_and_trends:
+        context_items.extend(_format_market_prices_section(sensors.prices_and_trends))
+    if not is_pure_sre and sensors.microstructure:
+        context_items.extend(_format_microstructure_section(sensors.microstructure, sensors.prices_and_trends))
+    if not is_pure_sre and sensors.portfolio_summary:
+        context_items.extend(
+            _format_portfolio_section(sensors.portfolio_summary, getattr(spec, "asset_scope", "all"))
+        )
+    if not is_pure_sre and focus_symbols:
+        raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
+        clean_syms = [s.strip().upper() for s in raw_focus if isinstance(s, str) and s.strip()]
+        if clean_syms:
+            context_items.append(
+                f"\n### 4. TACTICAL PRIORITY SYMBOLS: {', '.join(clean_syms)}\n"
+                "- Pay heightened attention to these symbols alongside all other live tradable coins above."
+            )
+
+    context_str = "\n".join(context_items)
+    tasks: List[str] = []
+    schema: List[str] = []
+    if spec.can_self_heal:
+        sev_union = " | ".join(f'"{s}"' for s in DIAGNOSED_SEVERITIES)
+        cat_union = " | ".join(f'"{c}"' for c in ALL_DIAGNOSED_CATEGORIES)
+        act_union = " | ".join(f'"{a}"' for a in ALL_REPAIR_ACTIONS)
+        cfg_list_str = ", ".join(AUDITED_CONFIG_FILES)
+        tasks.extend([
+            f"1. Audit functional system anomalies: fleet processes and modules (procs.conf), bot heartbeats, Linux OS resources (CPU load, RAM, disk), internet & VPN tunnel (wgpia0), configuration files ({cfg_list_str}), and persistent unresolved errors in logs: explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, OS/network/VPN issues, or configuration errors.",
+            "2. Determine whether hung/errored bots or modules require restart (RESTART_BOT / RESTART_MODULE), whether the entire fleet or VPN/DNS requires restart (RESTART_FLEET / RESTART_VPN / PIN_DNS), or whether a critical unrecoverable Linux OS / kernel / system-wide hang requires a full machine reboot (REBOOT_SYSTEM).",
+            "3. If a reproducible code bug or configuration error exists in the workspace, formulate an exact search_block and replace_block in `code_remediation` to fix the code or configuration file.",
+        ])
+        schema.extend([
+            '  "summary": "1-2 sentence executive technical assessment of functional system, Linux OS, internet/VPN, configurations, and fleet health"',
+            f'  "diagnosed_issues": [{{"severity": {sev_union}, '
+            f'"category": {cat_union}, '
+            '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
+            f'  "venue_actions": [{{"action": {act_union}, '
+            '"venue": "fleet" | "system" | "binance" | "kraken" | "hyperliquid" | "t212", "symbol": "bot_or_module_name or SYSTEM", '
+            '"order_id": "optional order id", "reason": "Why this technical repair or restart/reboot action is needed"}]',
+            '  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
+            '"search_block": "", "replace_block": ""}',
+        ])
+    else:
+        schema.append(
+            '  "summary": "1-2 sentence executive assessment of multi-coin market posture and trading decisions"'
+        )
+    if spec.can_trade:
+        is_equities = getattr(spec, "asset_scope", "all") == "equities"
+        target_desc = (
+            "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken read-only xStocks SPCXx.T exposure)"
+            if is_equities
+            else "ALL live tradable crypto spot coins (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD on 'kraken', while TAOUSD/ADAUSD on Kraken serve as cross-venue reference telemetry)"
+        )
+        venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
+        ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
+        tasks.append(
+            f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} by synthesizing the "
+            "entire MPTrade system telemetry as a whole:\n"
+            "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: The telemetry above is a compact "
+            "synthesized dashboard (zero raw file dumps); whenever you want deeper detail, you have direct, unrestricted read access "
+            "to the entire `cachedb/` (`cachedb/prices/`, `cachedb/trends/`, `cachedb/trends/24trend/`, `cachedb/telemetry/`, "
+            "`cachedb/macro/`, `cachedb/orders/`, `cachedb/state/`), `logger/execution_audit/`, `logs/`, and `providers.market_api` "
+            "to inspect any file or query any venue on your own.\n"
+            "   - BUSINESS OBJECTIVE & FULL AUTONOMOUS JUDGMENT (ZERO PROFIT OR STRATEGY GUARDS): Your objective "
+            "is to maximize net portfolio value and risk-adjusted returns (net of venue fees) across all platforms while "
+            "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
+            "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
+            "symmetrically on both BUY and SELL as binding constraints. Deterministic bots (`tradeall.py`, `monitortrades.py`, `assetguardian.py`, "
+            "`rtrade.py`, `kraken/bot.py`, `hyperliquid/bot.py`, `212trading/bot.py`) and rigid code filters/configs "
+            "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) continue working in parallel in the "
+            "system and can be consulted by you on demand as advisory indicators and reference guidance—you have full quantitative authority "
+            "to validate, adapt, or override them according to live market structure, with ZERO obligation to consult or follow them.\n"
+            "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
+            "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
+            "(`binance`, `kraken`, `hyperliquid`, `t212`), and WHY to `BUY`, `SELL`, or `HOLD`. Do NOT restrict yourself to tiny "
+            "fixed slices when conviction or profitability is clear: when a position is clearly in profit (e.g. above "
+            "`active_avg_buy_px` / `last_buy_px` or after a strong upward swing), you are completely free to sell a large "
+            f"quantity or the entire profitable position (`50%–100%` of `value_usd`, up to {max_usd:g} USD) at once.\n"
+            f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
+            f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
+            "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
+            "If no instrument warrants action right now, return a single 'HOLD' entry."
+        )
+        schema.append(
+            f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
+            f'"venue": {venue_schema}, "confidence": 0.90, '
+            f'"suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
+        )
+
+    if spec.can_self_heal:
+        role_intro = (
+            "You are the Lead SRE and Autonomous Technical Repair Supervisor for MPTrade.\n"
+            "Your STRICT mandate is solely to detect functional system anomalies (bots, fleet modules, heartbeats), "
+            "Linux OS resource issues, internet & VPN (wgpia0) connectivity failures, configuration errors, and "
+            "persistent unresolved errors in logs, and to remediate them by patching code or configurations and "
+            "restarting/rebooting bots, modules, the trading fleet, VPN/DNS, or the entire Linux system.\n"
+            "Do NOT analyze or report on market prices, trends/slopes, macro sentiment, portfolio balances, or active trading positions.\n\n"
+            f"{context_str}\n\n"
+            "Perform an executive technical diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n"
+        )
+        tool_rule = (
+            "- If you diagnose a reproducible code bug or configuration error and need to verify exact lines before proposing `code_remediation`, "
+            "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
+        )
+        report_format_rule = (
+            "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
+            "  1) A concise, well-structured Markdown report in **Romanian** strictly covering technical & SRE health "
+            "(bullet points for: Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri, "
+            "Conectivitate Internet & Audit Configurații, Erori Persistente Nerezolvate, și "
+            "Acțiuni de Remediere Cod/Config & Reboot Boți/Module/Flotă/Sistem). "
+            "NU analiza și NU menționa prețuri de piață, pante, portofoliu, solduri sau poziții active!\n"
+        )
+    else:
+        role_intro = (
+            "You are the Quantitative Autonomous Portfolio Manager and Trade Executor for MPTrade.\n"
+            "Analyze the complete market telemetry, macro/geopolitical sensors, microstructure, spot wallet balances, and cycle states:\n\n"
+            f"{context_str}\n\n"
+            "Evaluate the market context and formulate autonomous BUY/SELL trading decisions:\n" + "\n".join(tasks) + "\n\n"
+        )
+        tool_rule = (
+            "- You have full, unrestricted access to everything in `cachedb/` (`cachedb/prices/`, `cachedb/trends/`, `cachedb/trends/24trend/`, "
+            "`cachedb/telemetry/`, `cachedb/macro/`, `cachedb/orders/`, `cachedb/state/`) as a direct source of information for your trading decisions, "
+            "as well as full freedom to query live market APIs (`providers.market_api`, `binance_api`, `kraken`, `hyperliquid`, `212trading`) "
+            "and read trade/execution logs (`logs/`, `logger/execution_audit/`) whenever you want deeper verification or to answer user questions.\n"
+            "- Deterministic bots (`tradeall.py`, `monitortrades.py`, `assetguardian.py`, `rtrade.py`, venue bots) and rigid code filters/guards "
+            "(`order_guard.py`, `order_guard.conf`, `instruments.conf`, `intelligence/`) run in parallel and may be inspected on demand if you wish, "
+            "but consulting or following them is never required.\n"
+            "- Keep this thread focused on market analysis, portfolio management, and autonomous BUY/SELL execution across venues.\n"
+        )
+        report_format_rule = (
+            "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
+            "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: "
+            "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI de Tranzacționare / Răspuns la intervențiile din chat).\n"
+        )
+
+    return (
+        role_intro
+        + "INTERACTIVE THREAD RULES:\n"
+        "- If the user wrote any tactical instructions, price targets, overrides, or questions earlier in this "
+        "conversation thread, honor them with highest priority and address them directly.\n"
+        + tool_rule
+        + report_format_rule
+        + "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
+        "```json\n{\n" + ",\n".join(schema) + "\n}\n```"
+    )
+

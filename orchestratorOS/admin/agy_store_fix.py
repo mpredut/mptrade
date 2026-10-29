@@ -597,15 +597,10 @@ def mode_ui_sync_check(idle_sec: int) -> int:
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
         return UI_SYNC_NOTHING
-    from state_io import previous_generation_path, read_json_dict, save_json_state
+    from state_io import discard_generation_file, read_json_dict, save_json_state
     entries = pending_ui_sync()
     if not entries:
-        for st_path in (UI_SYNC_STATE, previous_generation_path(UI_SYNC_STATE)):
-            if os.path.exists(st_path):
-                try:
-                    os.remove(st_path)
-                except OSError:
-                    pass
+        discard_generation_file(UI_SYNC_STATE, include_previous=True)
         return UI_SYNC_NOTHING
     idle_for = time.time() - last_store_activity()
     if idle_for < idle_sec:

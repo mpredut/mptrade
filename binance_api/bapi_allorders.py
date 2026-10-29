@@ -19,6 +19,7 @@ from botcore import (
     safe_pos_int,
 )
 from providers.base import (
+    clean_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -28,24 +29,15 @@ from providers.base import (
 
 from .bapi import (
     _clean_bapi_oid_str,
+    _normalize_bapi_oid,
     _normalize_side,
     _parse_bool_flag,
 )
 
 
 def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
-    if isinstance(raw_tid, float):
-        f = safe_float(raw_tid, default=None)
-        if f is None or not f.is_integer():
-            return None
-    if isinstance(raw_tid, str):
-        s = raw_tid.strip().removeprefix("+")
-        if s.endswith(".0"):
-            s = s[:-2]
-        if not s or not s.isdigit():
-            return None
-        raw_tid = s
-    return safe_pos_int(raw_tid, default=None)
+    cleaned = clean_order_id(raw_tid)
+    return int(cleaned) if cleaned is not None and cleaned.isdigit() else None
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
@@ -161,35 +153,21 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
         grouped = defaultdict(lambda: {'price_qty': 0, 'quantity': 0, 'timestamp': 0, 'side': ''})
 
         for idx, t in enumerate(filtered):
-            raw_oid = t['orderId']
-            if isinstance(raw_oid, float):
-                oid_f = safe_pos_float(raw_oid, default=None)
-                if oid_f is not None and oid_f.is_integer():
-                    raw_oid = int(oid_f)
-            elif isinstance(raw_oid, str):
-                raw_oid = _clean_bapi_oid_str(raw_oid)
-            valid_oid = (
-                raw_oid is not None
-                and not isinstance(raw_oid, (bool, float, dict, list, tuple, set, frozenset))
-                and (not isinstance(raw_oid, int) or raw_oid > 0)
-            )
-            key = raw_oid if valid_oid else f"_unkeyed_{idx}"
+            key = _normalize_bapi_oid(t['orderId']) or f"_unkeyed_{idx}"
             grouped[key]['price_qty'] += t['price'] * t['quantity']
             grouped[key]['quantity'] += t['quantity']
             grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])
             grouped[key]['side'] = t['side']
 
+        def _round_fill_val(val: float) -> float:
+            rounded = round(val, 8 if val >= 1e-8 else 12)
+            return rounded if rounded > 0 else val
+
         result = []
         for oid, data in grouped.items():
             raw_qty = data['quantity']
-            rounded_qty = round(raw_qty, 8) if raw_qty >= 1e-8 else round(raw_qty, 12)
-            qty_out = rounded_qty if rounded_qty > 0 else raw_qty
-            if raw_qty > 0:
-                raw_px = data['price_qty'] / raw_qty
-                rounded_px = round(raw_px, 8) if raw_px >= 1e-8 else round(raw_px, 12)
-                px_out = rounded_px if rounded_px > 0 else raw_px
-            else:
-                px_out = 0
+            qty_out = _round_fill_val(raw_qty)
+            px_out = _round_fill_val(data['price_qty'] / raw_qty) if raw_qty > 0 else 0
             result.append({
                 'orderId': oid,
                 'price': px_out,

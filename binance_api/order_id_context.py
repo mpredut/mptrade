@@ -30,62 +30,25 @@ _PROCESS_NAME_OVERRIDES = {
 }
 
 # Canonical prefix -> bot name mapping.
-BOT_PREFIX_MAP = {
-    # Composite / Lineage prefixes from monitororder replacement
-    "MO_TA_": "tradeall",
-    "MO_TA": "tradeall",
-    "MO_MN_": "manual",
-    "MO_MN": "manual",
-    "MO_RT_": "rtrade",
-    "MO_RT": "rtrade",
-    "MO_MT_": "monitortrades",
-    "MO_MT": "monitortrades",
-    "MO_SD_": "spot_dca",
-    "MO_SD": "spot_dca",
-    # Composite Outbox / Retry prefixes
-    "TA_OR_": "tradeall",
-    "TA_OR": "tradeall",
-    "MN_OR_": "manual",
-    "MN_OR": "manual",
-    "MO_OR_": "monitororder",
-    "MO_OR": "monitororder",
-    "RT_OR_": "rtrade",
-    "RT_OR": "rtrade",
-    "MT_OR_": "monitortrades",
-    "MT_OR": "monitortrades",
-    "SD_OR_": "spot_dca",
-    "SD_OR": "spot_dca",
-    "AG_OR_": "assetguardian",
-    "AG_OR": "assetguardian",
-    # Standard bot prefixes
-    "RT_": "rtrade",
-    "RT": "rtrade",
-    "TA_": "tradeall",
-    "TA": "tradeall",
-    "MO_": "monitororder",
-    "MO": "monitororder",
-    "MT_": "monitortrades",
-    "MT": "monitortrades",
-    "SD_": "spot_dca",
-    "SD": "spot_dca",
-    "AG_": "assetguardian",
-    "AGS": "assetguardian",
-    "AGB": "assetguardian",
-    "AG": "assetguardian",
-    "MN_": "manual",
-    "MN": "manual",
-    "OR_": "order_retry",
-    "OR": "order_retry",
-    "SRV_": "server",
-    "SRV": "server",
-    "CW_": "watchdogfor_cacheandconfig",
-    "MA_": "market_alerts",
-    "T_": "trade",
-    "T2_": "trade2",
-    "T3_": "trade3",
-    "T4_": "trade4",
-    "T5_": "trade5",
-}
+BOT_PREFIX_MAP: dict[str, str] = {}
+for _pfx, _bot in (
+    ("MO_TA", "tradeall"), ("MO_MN", "manual"), ("MO_RT", "rtrade"),
+    ("MO_MT", "monitortrades"), ("MO_SD", "spot_dca"),
+    ("TA_OR", "tradeall"), ("MN_OR", "manual"), ("MO_OR", "monitororder"),
+    ("RT_OR", "rtrade"), ("MT_OR", "monitortrades"), ("SD_OR", "spot_dca"),
+    ("AG_OR", "assetguardian"),
+    ("RT", "rtrade"), ("TA", "tradeall"), ("MO", "monitororder"),
+    ("MT", "monitortrades"), ("SD", "spot_dca"), ("AG", "assetguardian"),
+    ("MN", "manual"), ("OR", "order_retry"), ("SRV", "server"),
+):
+    BOT_PREFIX_MAP[f"{_pfx}_"] = _bot
+    BOT_PREFIX_MAP[_pfx] = _bot
+BOT_PREFIX_MAP.update({
+    "AGS": "assetguardian", "AGB": "assetguardian",
+    "CW_": "watchdogfor_cacheandconfig", "MA_": "market_alerts",
+    "T_": "trade", "T2_": "trade2", "T3_": "trade3", "T4_": "trade4", "T5_": "trade5",
+})
+_SORTED_BOT_PREFIXES = tuple(sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True))
 
 MANUAL_PREFIXES = ("and_", "ios_", "web_", "x-", "electron_")
 
@@ -185,7 +148,7 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     cid = client_order_id.strip()
     if not cid or cid.lower() in {"none", "null", "nan", "inf", "-inf", "+inf", "0", "0.0", "-0", "+0"}:
         return "unspecified"
-    for prefix, bot in sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
+    for prefix, bot in _SORTED_BOT_PREFIXES:
         if cid.startswith(prefix):
             return bot
     if cid.lower().startswith(MANUAL_PREFIXES):

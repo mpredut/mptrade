@@ -17,7 +17,15 @@ import importlib
 from typing import Optional, List
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
-from .base import MarketDataProvider, _normalize_order, bool_env, env_value, normalize_side
+from .base import (
+    MarketDataProvider,
+    _clean_single_order_id,
+    _normalize_order,
+    bool_env,
+    env_value,
+    normalize_side,
+    resolve_market_flag,
+)
 from .strategy_executor import (
     OrderNotFound,
     OrderReconciliationCapabilities,
@@ -319,11 +327,7 @@ class T212Provider(MarketDataProvider):
             return None
         try:
             print(f"[T212][LIVE] {side} {symbol} qty={qty} @ {price}")
-            is_market = (
-                _parse_bool_flag(force, False)
-                or _parse_bool_flag(kwargs.get("market", False), False)
-                or _parse_bool_flag(kwargs.get("force", False), False)
-            )
+            is_market = resolve_market_flag(force=force, **kwargs)
             qty = self.round_quantity(symbol, qty)
             if qty <= 0:
                 print(f"[T212] place_order {symbol}: refused non-positive qty={qty}")
@@ -375,14 +379,15 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"submit_order({symbol}): response without an id: {data}")
         return order_id
 
-    def order_status(self, symbol: str, order_id: str) -> OrderStatus:
-        clean_oid = (
-            extract_order_id(order_id, default=None)
-            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
-            else None
-        )
+    @staticmethod
+    def _require_oid(order_id: object, caller: str) -> str:
+        clean_oid = _clean_single_order_id(order_id)
         if clean_oid is None:
-            raise ProviderError(f"order_status({order_id}): invalid order id")
+            raise ProviderError(f"{caller}({order_id}): invalid order id")
+        return clean_oid
+
+    def order_status(self, symbol: str, order_id: str) -> OrderStatus:
+        clean_oid = self._require_oid(order_id, "order_status")
         try:
             raw = self._client().get_order_status(clean_oid)
         except Exception as e:  # noqa: BLE001
@@ -458,13 +463,7 @@ class T212Provider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
-        clean_oid = (
-            extract_order_id(order_id, default=None)
-            if not isinstance(order_id, (dict, list, tuple, set, frozenset))
-            else None
-        )
-        if clean_oid is None:
-            raise ProviderError(f"cancel_order({order_id}): invalid order id")
+        clean_oid = self._require_oid(order_id, "cancel_order")
         if not self._orders_live():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")
         try:

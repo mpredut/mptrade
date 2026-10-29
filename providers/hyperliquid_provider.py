@@ -41,6 +41,7 @@ from .base import (
     extract_orig_qty,
     extract_timestamp_ms,
     normalize_side,
+    resolve_market_flag,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -383,7 +384,6 @@ class HyperliquidProvider(MarketDataProvider):
                 oid_val = extract_order_id(o, default=None)
                 if not oid_val or oid_val == "0":
                     continue
-                from .base import _clean_single_order_id
                 side = extract_order_side(o) or "SELL"
                 out.append({
                     "orderId": oid_val,
@@ -445,11 +445,7 @@ class HyperliquidProvider(MarketDataProvider):
         is_buy = s_norm == "BUY"
         side = s_norm
         live = self.execution_enabled()
-        is_market = (
-            _parse_bool_flag(force, False)
-            or _parse_bool_flag(kwargs.get("market", False), False)
-            or _parse_bool_flag(kwargs.get("force", False), False)
-        )
+        is_market = resolve_market_flag(force=force, **kwargs)
 
         if is_market:
             curr_px = safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
@@ -733,20 +729,14 @@ class HyperliquidProvider(MarketDataProvider):
 
     @staticmethod
     def _parse_oid(order_id: object, caller: str) -> int:
-        if isinstance(order_id, bool) or order_id is None:
-            raise ProviderError(f"{caller}({order_id}): invalid order id")
-        if isinstance(order_id, int):
-            oid = order_id
-        elif isinstance(order_id, str) and order_id.strip().lstrip("+-").isdigit():
-            oid = int(order_id.strip())
-        else:
+        cleaned = _clean_single_order_id(order_id)
+        if cleaned is not None and cleaned.isdigit():
+            return int(cleaned)
+        if isinstance(order_id, str):
             oid_f = safe_pos_float(order_id, default=None)
-            if oid_f is None or not oid_f.is_integer():
-                raise ProviderError(f"{caller}({order_id}): invalid order id")
-            oid = int(oid_f)
-        if oid <= 0:
-            raise ProviderError(f"{caller}({order_id}): invalid order id")
-        return oid
+            if oid_f is not None and oid_f.is_integer():
+                return int(oid_f)
+        raise ProviderError(f"{caller}({order_id}): invalid order id")
 
     def order_status(self, symbol: str, order_id: str):
         self.validate_symbol(symbol)

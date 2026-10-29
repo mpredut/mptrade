@@ -120,16 +120,9 @@ def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
 
 
 def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
-    from state_io import previous_generation_path, read_json_dict
+    from state_io import read_json_dict
 
-    path = get_topic_registry_path(registry_path)
-    if not os.path.exists(path) and not os.path.exists(previous_generation_path(path)):
-        return {}
-    try:
-        data = read_json_dict(path, recover_previous=True)
-    except (OSError, ValueError) as e:
-        logger.warning("Unreadable topic registry %s: %s", path, e)
-        return {}
+    data = dict(read_json_dict(get_topic_registry_path(registry_path), default={}, recover_previous=True))
     for old_key, new_key in TOPIC_ALIASES.items():
         if old_key in data:
             old_entry = data.pop(old_key)

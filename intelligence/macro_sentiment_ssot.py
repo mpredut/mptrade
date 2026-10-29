@@ -55,6 +55,13 @@ from botcore import (
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from providers.base import normalize_side
+from state_io import (
+    atomic_write_json,
+    discard_generation_file,
+    read_json_dict,
+    read_json_dict_cached,
+    save_json_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -325,16 +332,12 @@ def inspect_daemon_heartbeat(
     include_symbols: bool = False,
 ) -> Dict[str, Any]:
     """Inspect a background daemon's heartbeat file(s) and check PID liveness."""
-    from state_io import read_json_dict
-
     data = None
     for fname in filenames:
-        cand = str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
-        if os.path.exists(cand) or os.path.exists(f"{cand}.previous"):
-            cand_data = read_json_dict(cand, default=None, recover_previous=True)
-            if isinstance(cand_data, dict):
-                data = cand_data
-                break
+        cand_data = read_json_dict(os.path.join(cache_dir, fname), default=None, recover_previous=True)
+        if isinstance(cand_data, dict):
+            data = cand_data
+            break
     if data is None:
         return {"running": False, "reason": "no_heartbeat_file"}
 
@@ -384,14 +387,12 @@ def write_daemon_heartbeat_files(
     log = logger_inst or logger
     if use_save_json_state:
         try:
-            from state_io import save_json_state
             for raw_target in paths:
-                save_json_state(str(resolve_cachedb_filepath(raw_target)), payload, indent=2)
+                save_json_state(raw_target, payload, indent=2)
         except Exception as exc:
             log.debug("Failed writing daemon heartbeat: %s", exc)
         return
 
-    from state_io import atomic_write_json
     for raw_target in paths:
         hb_target = str(resolve_cachedb_filepath(raw_target))
         try:
@@ -399,11 +400,7 @@ def write_daemon_heartbeat_files(
         except Exception as exc:
             log.warning("Primary atomic heartbeat write failed for %s: %s; attempting fallback", hb_target, exc)
             try:
-                if os.path.exists(hb_target):
-                    try:
-                        os.unlink(hb_target)
-                    except OSError:
-                        pass
+                discard_generation_file(hb_target)
                 atomic_write_json(hb_target, payload, indent=2)
             except Exception as fallback_err:
                 log.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
@@ -740,8 +737,8 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 # 2. Specialized Multi-Source Feeds & Dynamic Crisis Lexicon Discovery
 # ============================================================================
 
-_LEXICON_FILE_CACHE: Dict[str, Tuple[int, int, Any]] = {}
-_LEXICON_EVAL_CACHE: Dict[Tuple[str, int, int, int, float], Dict[str, Tuple[str, ...]]] = {}
+_LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
+_LEXICON_EVAL_CACHE: Dict[Tuple[str, int, int, float], Dict[str, Tuple[str, ...]]] = {}
 
 
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
@@ -751,8 +748,6 @@ def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
 
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:
     """Load unexpired dynamically discovered high-severity and acute-shock terms from cachedb."""
-    from state_io import read_json_dict
-
     now = resolve_now_ts(now_ts)
     ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
@@ -762,30 +757,15 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         "dynamic_severity_keywords": (),
         "dynamic_acute_shock_phrases": (),
     }
-    stat_sig: Optional[Tuple[int, int]] = None
-    for candidate in (path, f"{path}.previous"):
-        try:
-            st = os.stat(candidate)
-            stat_sig = (st.st_mtime_ns, st.st_size)
-            break
-        except OSError:
-            continue
-    if stat_sig is None:
-        return empty_res
-    eval_key = (path, stat_sig[0], stat_sig[1], int(now), ttl)
-    cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
-    if cached_eval is not None:
-        return cached_eval
     try:
-        cached_raw = _LEXICON_FILE_CACHE.get(path)
-        if cached_raw is not None and cached_raw[0] == stat_sig[0] and cached_raw[1] == stat_sig[1]:
-            data = cached_raw[2]
-        else:
-            data = read_json_dict(path, default=None, recover_previous=True)
-            _LEXICON_FILE_CACHE[path] = (stat_sig[0], stat_sig[1], data)
+        data = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             return empty_res
+        eval_key = (path, id(data), int(now), ttl)
+        cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
+        if cached_eval is not None:
+            return cached_eval
         high_seen: Dict[str, None] = {}
         acute_seen: Dict[str, None] = {}
         for term, meta in entries.items():
@@ -823,21 +803,18 @@ def update_dynamic_lexicon(
     now_ts: Optional[float] = None,
 ) -> Dict[str, Tuple[str, ...]]:
     """Persist newly discovered crisis terms into ``cachedb/macro_lexicon_collect.json``."""
-    from state_io import read_json_dict, save_json_state
-
     now = resolve_now_ts(now_ts)
     ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
 
     existing_entries: Dict[str, Dict[str, Any]] = {}
-    if os.path.exists(path) or os.path.exists(f"{path}.previous"):
-        raw = read_json_dict(path, default=None, recover_previous=True)
-        if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-            for k, v in raw["entries"].items():
-                if isinstance(k, str) and isinstance(v, dict):
-                    ts = safe_float(v.get("ts"), 0.0)
-                    if ts > 0.0 and (now - ts) <= ttl:
-                        existing_entries[k.strip().lower()] = dict(v)
+    raw = read_json_dict(path, default=None, recover_previous=True)
+    if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
+        for k, v in raw["entries"].items():
+            if isinstance(k, str) and isinstance(v, dict):
+                ts = safe_float(v.get("ts"), 0.0)
+                if ts > 0.0 and (now - ts) <= ttl:
+                    existing_entries[k.strip().lower()] = dict(v)
 
     stopwords = set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
     changed = False
@@ -1306,7 +1283,6 @@ def load_cached_fear_greed_snapshot(
 ) -> Optional[FearGreedSnapshot]:
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-    from state_io import read_json_dict
 
     eval_now = resolve_now_ts(now_ts)
     for fg_fname in get_cache_filenames("fear_greed_files"):
@@ -1349,7 +1325,6 @@ def load_cached_market_breadth_snapshot(
 ) -> Optional[MarketBreadthSnapshot]:
     """Load cached Market Breadth snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-    from state_io import read_json_dict
 
     eval_now = resolve_now_ts(now_ts)
     for mb_fname in get_cache_filenames("market_breadth_files"):
@@ -1398,7 +1373,6 @@ def load_cached_whale_telemetry(
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
     from intelligence.external.collectors.orderbook_depth import _symbol_variants
-    from state_io import read_json_dict
 
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (list(symbols) if symbols else ["BTCUSDC"]):
@@ -1415,8 +1389,6 @@ def load_cached_whale_telemetry(
 
 def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
-    from state_io import read_json_dict
-
     for fname in get_cache_filenames("sentiment_eval_files"):
         cand_path = os.path.join(cache_dir, fname)
         data = read_json_dict(cand_path, default=None, recover_previous=True)
@@ -1431,8 +1403,6 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
 
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
-    from state_io import read_json_dict
-
     fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_eval.json")
     cand_path = os.path.join(cache_dir, fname)
     data = read_json_dict(cand_path, default=None, recover_previous=True)

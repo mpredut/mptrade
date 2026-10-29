@@ -1822,7 +1822,130 @@ def apply_asset_scope_filter(
     return prices_and_trends, microstructure
 
 
+def harvest_macro_and_news_sensors(
+    cache_dir: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
+    """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, and Breaking News."""
+    from providers.base import extract_timestamp_s
 
+    _rj = read_json_fn or read_json_cached
+
+    def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
+        enriched = dict(payload)
+        ref_ts = extract_timestamp_s(enriched)
+        eff_path = str(resolve_cachedb_filepath(fpath))
+        if ref_ts is None and os.path.exists(eff_path):
+            try:
+                ref_ts = os.path.getmtime(eff_path)
+            except OSError:
+                ref_ts = None
+        if ref_ts is not None:
+            enriched.setdefault("age_min", round(max(0.0, now_ts - ref_ts) / 60.0, 1))
+        return enriched
+
+    macro_sensors: Dict[str, Optional[Dict[str, Any]]] = {}
+    for attr, fname in (
+        ("fear_greed", "fear_greed_collect.json"),
+        ("market_breadth", "market_breadth_collect.json"),
+        ("sentiment_advisor", "sentiment_eval.json"),
+        ("geopolitical_threat", "geopolitical_eval.json"),
+    ):
+        s_path = os.path.join(cache_dir, fname)
+        data = _rj(s_path)
+        if isinstance(data, dict) and data:
+            macro_sensors[attr] = _with_age_min(data, s_path)
+
+    breaking_news: List[Dict[str, Any]] = []
+    news_data = _rj(os.path.join(cache_dir, "news_feed_collect.json"))
+    if isinstance(news_data, list) and news_data:
+        valid_news = [item for item in news_data if isinstance(item, dict) and item.get("title")]
+        valid_news.sort(
+            key=lambda x: (
+                1 if x.get("is_high_severity") else 0,
+                safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0,
+            ),
+            reverse=True,
+        )
+        for item in valid_news[:6]:
+            seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
+            age_m = round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None
+            breaking_news.append({
+                "title": item.get("title"),
+                "source": item.get("source"),
+                "is_high_severity": bool(item.get("is_high_severity")),
+                "keywords": item.get("matched_keywords") or [],
+                "age_min": age_m,
+            })
+    return macro_sensors, breaking_news
+
+
+def harvest_initial_prices_and_trends(
+    cache_dir: str,
+    prices_data: Any,
+    trends_data: Any,
+    read_json_fn: Any = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
+    import glob as _glob
+
+    _rj = read_json_fn or read_json_cached
+    prices_and_trends: Dict[str, Dict[str, Any]] = {}
+    price_map: Dict[str, float] = {}
+    if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
+        for sym, item in prices_data["items"].items():
+            px_val = extract_current_price_item(item)
+            if px_val is not None:
+                price_map[sym] = px_val
+
+    if isinstance(trends_data, dict):
+        trends_items = trends_data.get("items") if isinstance(trends_data.get("items"), dict) else trends_data
+        for sym, tinfo in trends_items.items():
+            if sym in ("items", "fetchtime", "rest_sync_cursor", "metadata", "counts"):
+                continue
+            if isinstance(tinfo, dict):
+                entry: Dict[str, Any] = {}
+                apply_short_trend_item(entry, tinfo, fallback_price=price_map.get(sym))
+                prices_and_trends[sym] = entry
+
+    for sym, px in price_map.items():
+        if sym not in prices_and_trends:
+            prices_and_trends[sym] = {"price": px, "trend": 0, "growth_coefficient": 0.0}
+
+    live_24trend_dir = str(resolve_cachedb_filepath(os.path.join(cache_dir, "24trend")))
+    if os.path.isdir(live_24trend_dir):
+        for lt_path in sorted(_glob.glob(os.path.join(live_24trend_dir, "live_*.json"))):
+            fname = os.path.basename(lt_path)
+            sym = fname[len("live_") : -len(".json")].upper()
+            if not sym:
+                continue
+            lt_win = _rj(lt_path)
+            if not isinstance(lt_win, dict):
+                continue
+            entry = prices_and_trends.setdefault(sym, {})
+            apply_live_24trend_windows(entry, lt_win, fallback_price=price_map.get(sym))
+    return prices_and_trends
+
+
+def build_cycle_fallback_prices(
+    microstructure: Dict[str, Any],
+    watcher_price_items: Any,
+) -> Dict[str, float]:
+    """Build fallback price map from orderbook mid-prices and watcher_all_price series for cycle state parsing."""
+    cycle_fallback_prices: Dict[str, float] = {}
+    for m_sym, m_dict in microstructure.items():
+        if isinstance(m_dict, dict):
+            ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0
+            if ob_mid_v > 0:
+                cycle_fallback_prices[m_sym] = ob_mid_v
+    if isinstance(watcher_price_items, dict):
+        for m_sym, m_ser in watcher_price_items.items():
+            if isinstance(m_ser, list) and m_ser and isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
+                m_px = safe_pos_float(m_ser[-1][1], default=0.0) or 0.0
+                if m_px > 0:
+                    cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
+    return cycle_fallback_prices
 
 
 def collect_pretrade_telemetry(

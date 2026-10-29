@@ -72,12 +72,7 @@ _AUDIT = ExecutionAudit()
 _RECONCILE_FOUND = "found"
 _RECONCILE_NOT_FOUND = "not_found"
 _RECONCILE_UNAVAILABLE = "unavailable"
-_AMBIGUOUS_SUBMISSION_REASONS = frozenset({
-    "",
-    "submit_pending",
-    "submit_ambiguous",
-    "response_without_order_id",
-})
+_AMBIGUOUS_SUBMISSION_REASONS = oq.POSSIBLY_SUBMITTED_REASONS
 class _PersistentQuarantineSet(set):
     """In-memory set backed by a JSON state file next to oq.QUEUE_FILE so quarantine
     alerts are deduplicated across worker process restarts."""
@@ -660,32 +655,28 @@ def process_once(mkt, now=None):
         age_progress = min(1.0, max(0.0, age_sec / total_ttl))
         side_u = normalize_side(r.get("side")) or str(r.get("side") or "").upper()
 
-        retry_stage = "standard"
-        if r.get("kind") == "monitor_order_replace":
-            existing_bypasses = _normalize_bypass_set(kwargs.get("bypass_guards"))
-            existing_bypasses.update({"G_PROF", "math_reference"})
-            kwargs["bypass_guards"] = sorted(list(existing_bypasses))
+        def _enable_profit_math_bypass():
+            bypasses = _normalize_bypass_set(kwargs.get("bypass_guards"))
+            bypasses.update({"G_PROF", "math_reference"})
+            kwargs["bypass_guards"] = sorted(bypasses)
             if side_u == "SELL":
                 kwargs["allow_math_reference_sell"] = True
+
+        retry_stage = "standard"
+        if r.get("kind") == "monitor_order_replace":
+            _enable_profit_math_bypass()
             kwargs["wait_for_trend"] = True
         else:
             is_stop_expired_timer = (
                 str(r.get("kind") or kwargs.get("kind") or "").strip().upper() == "STOP"
                 and not _parse_bool_flag(kwargs.get("wait_for_trend"), True)
             )
-            kwargs["wait_for_trend"] = False if is_stop_expired_timer else True
+            kwargs["wait_for_trend"] = not is_stop_expired_timer
             cur_pm_f = safe_float(kwargs.get("profit_margin"), default=None)
-            if age_progress >= 0.75:
-                retry_stage = "salvage"
-                if side_u == "SELL":
-                    existing_bypasses = _normalize_bypass_set(kwargs.get("bypass_guards"))
-                    existing_bypasses.update({"G_PROF", "math_reference"})
-                    kwargs["bypass_guards"] = sorted(list(existing_bypasses))
-                    kwargs["allow_math_reference_sell"] = True
-                if cur_pm_f is None or cur_pm_f > 0.15:
-                    kwargs["profit_margin"] = 0.15
-            elif age_progress >= 0.50:
-                retry_stage = "breakeven"
+            if age_progress >= 0.50:
+                retry_stage = "salvage" if age_progress >= 0.75 else "breakeven"
+                if retry_stage == "salvage" and side_u == "SELL":
+                    _enable_profit_math_bypass()
                 if cur_pm_f is None or cur_pm_f > 0.15:
                     kwargs["profit_margin"] = 0.15
 
@@ -890,6 +881,25 @@ def _alert_queue_corruption(exc):
     return True
 
 
+def _send_quarantine_alert(alert_set, fingerprint, rec, title_prefix, detail_msg, *, label: str, include_lease: bool = False):
+    if hasattr(alert_set, "sync_from_disk"):
+        alert_set.sync_from_disk()
+    if fingerprint in alert_set:
+        return False
+    alert_set.add(fingerprint)
+    try:
+        context = _format_record_context(rec, include_lease=include_lease)
+        alert.notify(
+            title=f"{title_prefix} {rec.get('side')} {rec.get('symbol')}",
+            body=f"{context}\n{detail_msg}",
+            source="order_retry",
+            symbol=str(rec.get("symbol")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[order_retry] {label} alert failed (ignored): {exc}")
+    return True
+
+
 def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
     """Alert once when an expired producer claim cannot be reconciled safely."""
     fingerprint = (
@@ -897,11 +907,6 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
         str(rec.get("provider_name") or "routed"),
         str(reason),
     )
-    if hasattr(_ALERTED_PRODUCER_QUARANTINES, "sync_from_disk"):
-        _ALERTED_PRODUCER_QUARANTINES.sync_from_disk()
-    if fingerprint in _ALERTED_PRODUCER_QUARANTINES:
-        return False
-    _ALERTED_PRODUCER_QUARANTINES.add(fingerprint)
     detail_msg = (
         "The producer lease expired, but its PID/start identity cannot "
         "be verified as either dead or replaced. Automatic recovery is "
@@ -923,16 +928,15 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
         "reconcile the deterministic client order ID. Automatic "
         "submission is blocked; inspect the venue and outbox manually."
     )
-    try:
-        context = _format_record_context(rec, include_lease=True)
-        alert.notify(
-            title=(f"🛑 order producer claim quarantined "
-                   f"{rec.get('side')} {rec.get('symbol')}"),
-            body=f"{context}\n{detail_msg}",
-            source="order_retry", symbol=str(rec.get("symbol")))
-    except Exception as exc:  # noqa: BLE001
-        print(f"[order_retry] producer-quarantine alert failed (ignored): {exc}")
-    return True
+    return _send_quarantine_alert(
+        _ALERTED_PRODUCER_QUARANTINES,
+        fingerprint,
+        rec,
+        "🛑 order producer claim quarantined",
+        detail_msg,
+        label="producer-quarantine",
+        include_lease=True,
+    )
 
 
 def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
@@ -943,11 +947,6 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
         str(rec.get("last_failure_reason") or "unknown"),
         str(reason),
     )
-    if hasattr(_ALERTED_RECONCILIATION_QUARANTINES, "sync_from_disk"):
-        _ALERTED_RECONCILIATION_QUARANTINES.sync_from_disk()
-    if fingerprint in _ALERTED_RECONCILIATION_QUARANTINES:
-        return False
-    _ALERTED_RECONCILIATION_QUARANTINES.add(fingerprint)
     if reason == "not_found_outside_reliable_horizon":
         detail_msg = (
             "The venue reports no matching client order, but this intent is "
@@ -973,17 +972,14 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
             "client-ID reconciliation is unavailable. Automatic submission "
             "and expiry are blocked; inspect the venue and outbox manually."
         )
-    try:
-        context = _format_record_context(rec)
-        alert.notify(
-            title=(f"🛑 order submission quarantined "
-                   f"{rec.get('side')} {rec.get('symbol')}"),
-            body=f"{context}\n{detail_msg}",
-            source="order_retry", symbol=str(rec.get("symbol")))
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"[order_retry] reconciliation-quarantine alert failed (ignored): {exc}")
-    return True
+    return _send_quarantine_alert(
+        _ALERTED_RECONCILIATION_QUARANTINES,
+        fingerprint,
+        rec,
+        "🛑 order submission quarantined",
+        detail_msg,
+        label="reconciliation-quarantine",
+    )
 
 
 def _alert_terminal(rec, status):

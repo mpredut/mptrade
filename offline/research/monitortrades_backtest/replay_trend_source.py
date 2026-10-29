@@ -175,18 +175,25 @@ SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (user, 29 iul)
 UPWARD_EPSILON_K = 0.25
 
 
+def resolve_upward_eps_k() -> float:
+    """Resolve upward-trend noise-gate multiplier k from env, clamping negatives to UPWARD_EPSILON_K."""
+    v = float_env("MPTRADE_UPWARD_EPSILON_K")
+    if v is None:
+        v = float_env("MPTRADE_TREND_NOISE_GATE_K")
+    if v is None or v < 0.0:
+        return UPWARD_EPSILON_K
+    return v
+
+
 def _is_trend_up_tuple(
     trend_tuple: Tuple[int, float, float, float],
     eps: float = 0.0,
     n_samples: Optional[int] = None,
+    up_k: Optional[float] = None,
 ) -> bool:
     """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
     final_trend, gc, _slope_full, _gradient_recent = trend_tuple
-    k_val = float_env("MPTRADE_UPWARD_EPSILON_K")
-    if k_val is None:
-        k_val = float_env("MPTRADE_TREND_NOISE_GATE_K")
-    if k_val is None:
-        k_val = UPWARD_EPSILON_K
+    k_val = resolve_upward_eps_k() if up_k is None else safe_nonneg_float(up_k, UPWARD_EPSILON_K)
     eps_f = safe_pos_float(eps, default=None)
     if eps_f is not None and k_val > 0.0:
         n_f = safe_float(n_samples, default=None)

@@ -15,7 +15,7 @@ from providers.execution_audit import ExecutionAudit
 from order_retry import propagate_submission_refusal
 from providers.quantity import resolve_assets
 from providers.strategy_executor import extract_order_id
-from state_io import read_recovering_previous
+from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import order_guard as _og
 
@@ -149,7 +149,6 @@ TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = sym.btcsymbol
 ORDER_MISSING_CONFIRMATIONS = _required_int_config(
     "AG_ORDER_MISSING_CONFIRMATIONS")
-from state_io import load_json_state, save_json_state
 from lock import FileLock
 
 
@@ -399,7 +398,6 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
 
 def _read_p3b_sentiment(path=None, now_ts=None):
     """Read fresh Pillar 3B SentimentAdvisor assessment if available and within TTL."""
-    data = None
     if path is None:
         state_path = getattr(STATE, "path", None)
         if not state_path:
@@ -407,14 +405,10 @@ def _read_p3b_sentiment(path=None, now_ts=None):
         cache_dir = os.path.dirname(os.path.abspath(state_path))
         from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
         data = load_cached_sentiment_advisor_eval(cache_dir)
-        if not isinstance(data, dict):
-            return None
     else:
-        data = read_recovering_previous(
-            path, json.loads, default=None
-        )
-        if not isinstance(data, dict):
-            return None
+        data = read_json_dict(path, default=None, recover_previous=True)
+    if not isinstance(data, dict):
+        return None
 
     eval_ts = _finite_float(data.get("ts"), positive=True)
     now_val = _finite_float(now_ts, positive=True) or float(time.time())

@@ -185,6 +185,16 @@ def normalize_side(side: Any) -> str:
     return ""
 
 
+def resolve_market_flag(force: Any = False, market: Any = False, **kwargs) -> bool:
+    """Return True when any market/force flag in args or kwargs is truthy."""
+    return (
+        _parse_bool_flag(force, False)
+        or _parse_bool_flag(market, False)
+        or _parse_bool_flag(kwargs.get("market", False), False)
+        or _parse_bool_flag(kwargs.get("force", False), False)
+    )
+
+
 def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):

@@ -32,6 +32,7 @@ from .base import (
     bool_env,
     env_value,
     normalize_side,
+    resolve_market_flag,
 )
 from .strategy_executor import (
     OrderReconciliationCapabilities,
@@ -474,7 +475,6 @@ class KrakenProvider(MarketDataProvider):
             if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
-            from .base import _clean_single_order_id
             normalized.append({
                 "orderId": clean_oid,
                 "clientOrderId": _clean_single_order_id(raw.get("cl_ord_id")),
@@ -544,11 +544,7 @@ class KrakenProvider(MarketDataProvider):
             print(f"[Kraken] place_order {symbol}: refused invalid side={side!r}")
             return None
         s = s_norm.lower()
-        market = (
-            _parse_bool_flag(force, False)
-            or _parse_bool_flag(kwargs.get("market", False), False)
-            or _parse_bool_flag(kwargs.get("force", False), False)
-        )
+        market = resolve_market_flag(force=force, **kwargs)
         ordertype = "market" if market else "limit"
         submit_price = None if market else price
         if not market:

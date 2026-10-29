@@ -136,7 +136,7 @@ def load(path):
         return cached
     from state_io import read_csv_dicts
     rows = []
-    for r in read_csv_dicts(path):
+    for r in read_csv_dicts(path, strict=True):
         ts_f = safe_pos_float(r.get("timestamp"), default=None)
         o = safe_pos_float(r.get("open"), default=None)
         h = safe_pos_float(r.get("high"), default=None)

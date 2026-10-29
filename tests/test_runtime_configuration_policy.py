@@ -52,9 +52,8 @@ def test_operational_thresholds_have_one_versioned_source():
 
 
 def test_specialized_atomic_writers_are_explicitly_bounded():
-    remaining = {
-        "orchestratorOS/admin/agy_store_fix.py",  # standalone systemd agy-daemon helper
-    }
+    # All bespoke atomic writers across the production fleet are fully migrated to state_io
+    remaining = set()
     candidates = []
     tracked = subprocess.check_output(
         ["git", "ls-files", "*.py"], cwd=ROOT, text=True,

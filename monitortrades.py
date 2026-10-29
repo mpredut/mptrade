@@ -25,7 +25,7 @@ from providers.base import (
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
 import cachepaths
-from state_io import previous_generation_path, read_json_dict, save_json_state
+from state_io import discard_generation_file, read_json_dict, save_json_state
 
 import utils as u
 from strategies.position_exit_manager import (
@@ -321,12 +321,7 @@ def clear_position_stats_cache():
         pass
     if _MT_PERSISTENCE_ENABLED and "_MT_STATE_FILE" in globals():
         st_path = _effective_mt_state_file() if "_effective_mt_state_file" in globals() else _MT_STATE_FILE
-        for p in (st_path, previous_generation_path(st_path)):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        discard_generation_file(st_path, include_previous=True)
 
 
 def _summarize_orders(orders):

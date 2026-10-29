@@ -25,12 +25,7 @@ from botcore import (
 )
 from cachepaths import cache_path, canonical_symbol_key
 from providers.base import normalize_side
-from state_io import (
-    atomic_write_json,
-    discard_generation_file,
-    restore_previous_generation,
-    stage_previous_generation,
-)
+from state_io import atomic_write_json, save_json_state
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
@@ -787,26 +782,10 @@ def write_all_trends(all_trends, filename=None):
     
     print("\n" + "="*80 + "\n")
     
-    backup_path = None
-    had_prior = os.path.exists(filename)
-    if had_prior:
-        try:
-            backup_path = stage_previous_generation(filename)
-        except Exception:
-            backup_path = None
     try:
-        atomic_write_json(filename, all_trends, indent=2)
-        if backup_path is not None:
-            discard_generation_file(backup_path)
+        save_json_state(filename, all_trends, indent=2, write_fn=atomic_write_json)
         print(f"Results were written to {filename}")
     except Exception as exc:
-        if backup_path is not None and os.path.exists(backup_path):
-            try:
-                restore_previous_generation(filename, backup_path=backup_path)
-            except Exception:
-                pass
-        elif not had_prior:
-            discard_generation_file(filename)
         print(f"Could not write {filename}: {exc}")
     
     return all_trends

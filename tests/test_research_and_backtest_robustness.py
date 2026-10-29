@@ -6488,3 +6488,62 @@ def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
     assert prov._orders_cache[("BTCUSDC", "BUY")][1] == 1000.0
 
 
+def test_replay_trend_up_ssot_pilot_rate_limit_and_hybrid_reentry_alignment(monkeypatch, tmp_path):
+    """Verify upward-trend epsilon k clamping, pilot rate-limit SSOT, and hybrid reentry interval alignment."""
+    from datetime import datetime, timezone
+    import json
+    from offline.research.monitortrades_backtest.replay_trend_source import (
+        UPWARD_EPSILON_K,
+        _is_trend_up_tuple,
+        resolve_upward_eps_k,
+    )
+    from offline.research.monitortrades_backtest import run_replay_backtest as rb
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+    from offline.research.hybrid_reentry.harness import evaluate_asset
+    from strategies.spot_engine import StratParams
+
+    # 1. Negative MPTRADE_UPWARD_EPSILON_K clamps to UPWARD_EPSILON_K (0.25) in both modules
+    monkeypatch.setenv("MPTRADE_UPWARD_EPSILON_K", "-5.0")
+    assert resolve_upward_eps_k() == UPWARD_EPSILON_K
+    assert rb._resolve_upward_eps_k() == UPWARD_EPSILON_K
+    # With eps=1.0 and k=0.25, gc=0.10 (< 0.25) must NOT be trend_up even if negative env was set
+    assert _is_trend_up_tuple((1, 0.10, 0.10, 0.10), eps=1.0, n_samples=10) is False
+    assert _is_trend_up_tuple((1, 0.30, 0.30, 0.30), eps=1.0, n_samples=10) is True
+    monkeypatch.delenv("MPTRADE_UPWARD_EPSILON_K", raising=False)
+
+    # 2. scheduled_pilot.is_rate_limited handles both timezone-aware and naive ISO timestamps
+    audit_file = tmp_path / "pilot_audit.jsonl"
+    monkeypatch.setattr(sp, "AUDIT_LOG", str(audit_file))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    audit_file.write_text(
+        json.dumps({"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": now_iso}) + "\n",
+        encoding="utf-8",
+    )
+    limited, ts_str = sp.is_rate_limited("BINANCE_BTC.mt.gain")
+    assert limited is True
+    assert ts_str == now_iso
+    assert sp.is_rate_limited("BINANCE_TAO.mt.gain") == (False, None)
+
+    # 3. hybrid_reentry.harness.evaluate_asset aligns mismatched trend_interval (e.g. 240 -> 60)
+    ohlc = [(100.0 + i * 0.1, 101.0 + i * 0.1, 99.0 + i * 0.1, 100.2 + i * 0.1) for i in range(60)]
+    base_params = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.5,
+        dca_amount=50.0,
+        dca_drop_pct=1.5,
+        check_minutes=2.0,
+        takeprofit_pct=4.0,
+        max_budget=1000.0,
+        max_dca_buys=4,
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        trend_overlay=True,
+        trend_interval=240,
+    )
+    rows = evaluate_asset("BTC", ohlc, base_params, bar_minutes=60.0)
+    assert len(rows) == 5
+    assert all("error" not in r for r in rows)
+
+
+

@@ -45,6 +45,8 @@ import monitortrades as mt
 from offline.research.monitortrades_backtest.replay_trend_source import (
     DEFAULT_WINDOW_SECONDS,
     ReplayTrendSource,
+    _is_trend_up_tuple,
+    resolve_upward_eps_k,
 )
 
 SEED_NOTIONAL_USD = 1000.0
@@ -90,13 +92,7 @@ def _norm_trend_window_sec(trend_window_seconds: float | None) -> float:
     return safe_pos_float(trend_window_seconds, DEFAULT_WINDOW_SECONDS)
 
 
-def _resolve_upward_eps_k() -> float:
-    v = float_env("MPTRADE_UPWARD_EPSILON_K")
-    if v is None:
-        v = float_env("MPTRADE_TREND_NOISE_GATE_K")
-    if v is None:
-        return 0.25
-    return v if v >= 0.0 else 0.25
+_resolve_upward_eps_k = resolve_upward_eps_k
 
 
 def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
@@ -176,12 +172,14 @@ def prewarm_trend_series(
                 power=sym_pwr,
                 symbol=symbol,
             )
-            if eps > 0.0 and up_k > 0.0:
-                m_steps = cur_len - 1
-                scale = math.sqrt(10.0 / m_steps) if m_steps > 10 else 1.0
-                tape.append(gc > up_k * scale * eps)
-            else:
-                tape.append(gc > 0.0 or (gc == 0.0 and ft > 0))
+            tape.append(
+                _is_trend_up_tuple(
+                    (ft, gc, _sf, _gr),
+                    eps=eps,
+                    n_samples=cur_len,
+                    up_k=up_k,
+                )
+            )
     res = tuple(tape)
     _TREND_TAPE_CACHE[key] = res
     return res

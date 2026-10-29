@@ -21,6 +21,7 @@ from providers.base import (
     extract_order_price,
     extract_order_side,
     extract_timestamp_ms,
+    resolve_market_flag,
 )
 from providers.strategy_executor import SubmissionRefused
 import binance_cache_health
@@ -269,16 +270,10 @@ def require_account_cache_for_submit():
 
 
 def _require_submit_permit_headroom(status):
-    cache_ages = (status.order_age_sec, status.trade_age_sec)
-    parsed_ages = []
-    for age in cache_ages:
-        age_f = safe_nonneg_float(age, default=None)
-        if age_f is None:
-            raise SubmissionRefused("account_cache_not_fresh")
-        parsed_ages.append(age_f)
+    parsed_ages = [safe_nonneg_float(age, default=None) for age in (status.order_age_sec, status.trade_age_sec)]
     if (
-        max(parsed_ages) + _CACHE_SUBMIT_PERMIT_TTL_SEC
-        > binance_cache_health.MAX_AGE_SEC
+        any(age_f is None for age_f in parsed_ages)
+        or max(parsed_ages) + _CACHE_SUBMIT_PERMIT_TTL_SEC > binance_cache_health.MAX_AGE_SEC
     ):
         # Refuse before cancellation unless the validated snapshot remains inside
         # its freshness time bound for the permit's entire configured lifetime.
@@ -562,16 +557,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     )
 
     try:
-        cp_val = safe_pos_float(api.get_current_price(symbol), default=None)
-        price_f = float(price)
-        if cp_val is not None:
-            if order_type == "BUY":
-                price = round(min(price_f, cp_val), 8)
-            else:  # SELL
-                price = round(max(price_f, cp_val), 8)
-        else:
-            price = round(price_f, 8)
-
+        price = round(order_candidate_price(order_type, price, api.get_current_price(symbol)), 8)
         qty = round(float(qty), 8)
         opposite_order_type = "SELL" if order_type == "BUY" else "BUY"
 
@@ -625,35 +611,28 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
 
                 fetch_window = max(tb_sec, float(ref_window or 0))
                 time_limit = float(time.time() * 1000) - (ref_window * 1000)
-                oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
-                recent_opposite_trades = [trade for trade in oposite_trades
-                                          if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
-                                          and extract_order_price(trade, default=0.0) > 0]
 
+                def _recent_trades(t_side: str):
+                    return [
+                        trade
+                        for trade in (apiorders.get_trade_orders(t_side, symbol, max_age_seconds=fetch_window) or [])
+                        if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
+                        and extract_order_price(trade, default=0.0) > 0
+                    ]
+
+                recent_opposite_trades = _recent_trades(opposite_order_type)
                 if recent_opposite_trades:
-                    if len(recent_opposite_trades) > 1:
-                        same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=fetch_window) or []
-                        recent_same_trades = [
-                            trade for trade in same_trades
-                            if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
-                            and extract_order_price(trade, default=0.0) > 0
-                        ]
-                        window_ref = order_guard.active_cycle_window_ref(
-                            recent_opposite_trades,
-                            recent_same_trades,
-                            order_type,
-                            reference_mode=eff_ref_mode,
-                        )
-                    elif eff_ref_mode in ("average", "last", "hybrid"):
-                        window_ref = order_guard.active_cycle_window_ref(
-                            recent_opposite_trades,
-                            None,
-                            order_type,
-                            reference_mode=eff_ref_mode,
-                        )
-                    else:
-                        _prices = [extract_order_price(t) for t in recent_opposite_trades]
-                        window_ref = order_guard.select_extreme_reference(_prices, order_type, strict=True)
+                    recent_same_trades = (
+                        _recent_trades(order_type)
+                        if len(recent_opposite_trades) > 1
+                        else None
+                    )
+                    window_ref = order_guard.active_cycle_window_ref(
+                        recent_opposite_trades,
+                        recent_same_trades,
+                        order_type,
+                        reference_mode=eff_ref_mode,
+                    )
 
             pg_kwargs = dict(
                 window_ref=window_ref,
@@ -663,12 +642,10 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             )
             if caller_module is not None:
                 pg_kwargs["module"] = caller_module
-            if g_prof_revoked or venue_bypass:
+            if g_prof_revoked or venue_bypass or (bypass_guards is None and bypassed):
                 pg_kwargs["bypass_guards"] = bypassed
             elif bypass_guards is not None:
                 pg_kwargs["bypass_guards"] = bypass_guards
-            elif bypassed:
-                pg_kwargs["bypass_guards"] = bypassed
 
             if not order_guard.profit_guard(
                 provider,
@@ -702,36 +679,54 @@ def _guarded_market_place(symbol, order_type, price, qty, **kwargs):
     return market_api.place(symbol, order_type, price, qty, **kwargs)
 
 
-def place_safe_order(order_type, symbol, price, qty=None,
-                     safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False,
-                     cancelorders=False, hours=PLACE_ORDER_HOURS,
-                     _reason_out=None, **kwargs):
-    """Adapt the compatible safe API to the common pipeline without smart repricing."""
+def _place_via_common_pipeline(
+    order_type,
+    symbol,
+    price,
+    qty=None,
+    *,
+    smart: bool,
+    safeback_seconds=PLACE_ORDER_SAFEBACK_SEC,
+    force=False,
+    cancelorders=False,
+    hours=PLACE_ORDER_HOURS,
+    _reason_out=None,
+    **kwargs,
+):
     order_type = _normalize_side(order_type)
-    # ``None`` is the legacy "maximum permitted" request. Preserve it until the
-    # shared QuantityDecision has loaded balance and policy caps; a synthetic
-    # infinity here would be indistinguishable from an invalid explicit value.
-    sym.validate_params(
-        order_type, symbol, price, 1.0 if qty is None else qty)
+    sym.validate_params(order_type, symbol, price, 1.0 if qty is None else qty)
     call_kwargs = dict(kwargs)
     if isinstance(_reason_out, dict) and "_outcome_context" not in call_kwargs:
         call_kwargs["_outcome_context"] = _reason_out
     order = _guarded_market_place(
-        symbol, order_type, price, qty,
-        smart=False,
+        symbol,
+        order_type,
+        price,
+        qty,
+        smart=smart,
         safeback_seconds=safeback_seconds,
         force=force,
         cancelorders=cancelorders,
         hours=hours,
         **call_kwargs,
     )
-    # The common pipeline logs the exact reason. Retain dict compatibility without
-    # duplicating guard evaluation in the legacy chain.
-    if order is None and _reason_out is not None:
-        if not _reason_out.get("reason"):
-            _reason_out["reason"] = "common_pipeline_refused"
+    if order is None and isinstance(_reason_out, dict) and not _reason_out.get("reason"):
+        _reason_out["reason"] = "common_pipeline_refused"
     return order
-    
+
+
+def place_safe_order(order_type, symbol, price, qty=None,
+                     safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False,
+                     cancelorders=False, hours=PLACE_ORDER_HOURS,
+                     _reason_out=None, **kwargs):
+    """Adapt the compatible safe API to the common pipeline without smart repricing."""
+    return _place_via_common_pipeline(
+        order_type, symbol, price, qty,
+        smart=False, safeback_seconds=safeback_seconds, force=force,
+        cancelorders=cancelorders, hours=hours, _reason_out=_reason_out,
+        **kwargs,
+    )
+
 
 # The fleet-wide journal lives in order_outcomes_log.py as a single source used by
 # Instrument.place for every provider. Re-export the directory for backward compatibility.
@@ -740,11 +735,7 @@ ORDER_OUTCOMES_LOG_DIR = _outcomes_log.ORDER_OUTCOMES_LOG_DIR
 
 
 def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivation):
-    """Write one pipe-delimited fleet-wide record per placement attempt.
-
-    This is observational and cannot affect the caller's return value because the
-    logging implementation contains its own exception boundary.
-    """
+    """Write one pipe-delimited fleet-wide record per placement attempt."""
     try:
         caller = os.path.basename(sys._getframe(2).f_code.co_filename)
     except Exception:
@@ -756,26 +747,12 @@ def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivat
 # Retain ``pair`` only for compatibility with callers that explicitly pass it. It is
 # intentionally ignored legacy code; do not remove it without updating those callers.
 def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None, _reason_out=None, **kwargs):
-    order_type = _normalize_side(order_type)
-    sym.validate_params(
-        order_type, symbol, price, 1.0 if qty is None else qty)
-    call_kwargs = dict(kwargs)
-    if isinstance(_reason_out, dict) and "_outcome_context" not in call_kwargs:
-        call_kwargs["_outcome_context"] = _reason_out
-    order = _guarded_market_place(
-        symbol, order_type, price, qty,
-        smart=True,
-        safeback_seconds=safeback_seconds,
-        force=force,
-        cancelorders=cancelorders,
-        hours=hours,
-        motivation=motivation,
-        **call_kwargs,
+    return _place_via_common_pipeline(
+        order_type, symbol, price, qty,
+        smart=True, safeback_seconds=safeback_seconds, force=force,
+        cancelorders=cancelorders, hours=hours, motivation=motivation,
+        _reason_out=_reason_out, **kwargs,
     )
-    if order is None and isinstance(_reason_out, dict):
-        if not _reason_out.get("reason"):
-            _reason_out["reason"] = "common_pipeline_refused"
-    return order
 
 
 # ============================================================================
@@ -834,11 +811,8 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price,
     if cancel_opposite:
         cancel_opposite_orders(order_type, symbol, price)
     cp = safe_pos_float(api.get_current_price(symbol), default=None)
-    if cp is not None:
-        if order_type == "BUY":
-            price = min(price, cp) * 0.999
-        elif order_type == "SELL":
-            price = max(price, cp) * (1 + 0.001)
+    if cp is not None and order_type in {"BUY", "SELL"}:
+        price = order_candidate_price(order_type, price, cp) * (0.999 if order_type == "BUY" else 1.001)
     try:
         from providers.market_api import api as mkt
         price = mkt.round_price(symbol, price)
@@ -888,12 +862,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     price = float(price)
     qty = float(qty)
     enforce_business_minimum = _parse_bool_flag(enforce_business_minimum, True)
-    is_market = (
-        _parse_bool_flag(force, False)
-        or _parse_bool_flag(market, False)
-        or _parse_bool_flag(kwargs.get("market", False), False)
-        or _parse_bool_flag(kwargs.get("force", False), False)
-    )
+    is_market = resolve_market_flag(force=force, market=market, **kwargs)
     try:
         from providers.quantity import balance_cap_quantity, fee_cap_quantity
         balance_fn = (

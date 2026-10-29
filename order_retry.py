@@ -293,21 +293,7 @@ order_qty_from_response = extract_orig_qty
 
 
 def _clean_retry_order_id(val) -> Optional[str]:
-    if isinstance(val, (int, float)) and not isinstance(val, bool) and val <= 0:
-        return None
-    cleaned = extract_order_id(val, default=None)
-    if cleaned is None:
-        return None
-    s = str(cleaned).strip()
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-        s = s[:-2]
-    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
-        return None
-    if s.startswith("+") and s[1:].isdigit():
-        s = s[1:]
-    if s in {"", "0", "0.0", "-0", "+0", "-0.0", "+0.0"}:
-        return None
-    return s
+    return extract_order_id(val, default=None)
 
 
 def _clean_now_sec(now=None) -> float:
@@ -433,6 +419,29 @@ def _has_prior_venue_evidence(rec):
     return abs(requested - remaining) > max(1e-12, abs(requested) * 1e-9)
 
 
+_TRADEALL_KIND_PREFIXES = (
+    "kalman_primary_",
+    "small_window_",
+    "accel_surge_",
+    "accel_plunge_",
+    "trend_confirmed_",
+    "consistent_or_old_",
+    "slope<=",
+    "slope>=",
+)
+
+
+def _is_tradeall_kind(kind_s: str) -> bool:
+    return kind_s == "trend_signal" or kind_s.startswith(_TRADEALL_KIND_PREFIXES)
+
+
+def _sanitize_place_kwargs(place_kwargs) -> dict:
+    return {
+        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
+        for k, v in dict(place_kwargs or {}).items()
+    }
+
+
 def _set_safe_to_discard(rec, eligible):
     """Persist explicit pre-submit discard eligibility, or fail closed."""
     if eligible and not _has_prior_venue_evidence(rec):
@@ -544,10 +553,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     attempts = attempts_i
     last_attempt_ts = last_attempt_f
     record_id = uuid.uuid4().hex
-    placement = {
-        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
-        for k, v in dict(place_kwargs or {}).items()
-    }
+    placement = _sanitize_place_kwargs(place_kwargs)
     prefix = placement.get("prefix") or (
         f"{placement.get('owner')}_OR" if placement.get("owner") else None
     )
@@ -563,19 +569,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                 prefix = "MO_OR"
         elif kind_s in {"STOP", "TP"}:
             prefix = "MT_OR"
-        elif (
-            kind_s == "trend_signal"
-            or kind_s.startswith((
-                "kalman_primary_",
-                "small_window_",
-                "accel_surge_",
-                "accel_plunge_",
-                "trend_confirmed_",
-                "consistent_or_old_",
-                "slope<=",
-                "slope>=",
-            ))
-        ):
+        elif _is_tradeall_kind(kind_s):
             prefix = "TA_OR"
     if not prefix:
         prefix = "OR"
@@ -688,10 +682,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                     e["qty"] = qty
                     e["requested_qty_total"] = qty
                     revision = int(e.get("revision", 0)) + 1
-                    refreshed_kwargs = {
-                        k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
-                        for k, v in dict(place_kwargs or {}).items()
-                    }
+                    refreshed_kwargs = _sanitize_place_kwargs(place_kwargs)
                     pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
                     refreshed_kwargs.setdefault(
                         "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx))
@@ -801,6 +792,29 @@ def _rev_int(val, default=-1):
     return int(f) if (f is not None and f.is_integer()) else default
 
 
+def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id: str) -> bool:
+    return (
+        record.get("id") == claim_snapshot.get("id")
+        and record.get("claim_token") == claim_snapshot.get("claim_token")
+        and _rev_int(record.get("revision"), 0) == _rev_int(claim_snapshot.get("claim_revision"), -1)
+        and _rev_int(record.get("claim_revision"), -1) == _rev_int(claim_snapshot.get("claim_revision"), -2)
+        and dict(record.get("place_kwargs") or {}).get("client_order_id") == snapshot_client_id
+    )
+
+
+def _apply_claim_qty_and_scale(record: dict, qty=None, applied_scale=None) -> None:
+    q_val = safe_pos_float(qty, default=None)
+    if q_val is not None:
+        record["qty"] = q_val
+        record["requested_qty_total"] = q_val
+    if applied_scale is not None:
+        s_val = safe_pos_float(applied_scale, default=None)
+        if s_val is not None and s_val < 1.0:
+            pk = dict(record.get("place_kwargs") or {})
+            pk["applied_scale"] = s_val
+            record["place_kwargs"] = pk
+
+
 def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     """Durably update the requested quantity of an exact claimed intent before submit.
 
@@ -823,25 +837,9 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
         existing = _read_nolock()
         refreshed = None
         for record in existing:
-            record_client_id = dict(
-                record.get("place_kwargs") or {}).get("client_order_id")
-            exact_claim = (
-                record.get("id") == claim_snapshot.get("id")
-                and record.get("claim_token") == claim_snapshot.get("claim_token")
-                and _rev_int(record.get("revision"), 0) == _rev_int(claim_snapshot.get("claim_revision"), -1)
-                and _rev_int(record.get("claim_revision"), -1) == _rev_int(claim_snapshot.get("claim_revision"), -2)
-                and record_client_id == snapshot_client_id
-            )
-            if not exact_claim:
+            if not _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
                 continue
-            record["qty"] = q_val
-            record["requested_qty_total"] = q_val
-            if applied_scale is not None:
-                s_val = safe_pos_float(applied_scale, default=None)
-                if s_val is not None and s_val < 1.0:
-                    pk = dict(record.get("place_kwargs") or {})
-                    pk["applied_scale"] = s_val
-                    record["place_kwargs"] = pk
+            _apply_claim_qty_and_scale(record, q_val, applied_scale)
             refreshed = dict(record)
             _write_nolock(existing)
             break
@@ -879,19 +877,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
         existing = _read_nolock()
         refreshed = None
         for record in existing:
-            record_client_id = dict(
-                record.get("place_kwargs") or {}).get("client_order_id")
-            exact_claim = (
-                record.get("id") == claim_snapshot.get("id")
-                and record.get("claim_token")
-                == claim_snapshot.get("claim_token")
-                and _rev_int(record.get("revision"), 0)
-                == _rev_int(claim_snapshot.get("claim_revision"), -1)
-                and _rev_int(record.get("claim_revision"), -1)
-                == _rev_int(claim_snapshot.get("claim_revision"), -2)
-                and record_client_id == snapshot_client_id
-            )
-            if not exact_claim:
+            if not _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
                 continue
             _set_safe_to_discard(record, False)
             record["producer_pid"] = current_pid
@@ -900,16 +886,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
             record["claim_until"] = max(
                 safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0,
                 now + lease_sec)
-            q_val = safe_pos_float(qty, default=None)
-            if q_val is not None:
-                record["qty"] = q_val
-                record["requested_qty_total"] = q_val
-            if applied_scale is not None:
-                s_val = safe_pos_float(applied_scale, default=None)
-                if s_val is not None and s_val < 1.0:
-                    pk = dict(record.get("place_kwargs") or {})
-                    pk["applied_scale"] = s_val
-                    record["place_kwargs"] = pk
+            _apply_claim_qty_and_scale(record, qty, applied_scale)
             refreshed = dict(record)
             _write_nolock(existing)
             break
@@ -923,6 +900,13 @@ def load_all(now=None):
         return _read_nolock()
 
 
+def _record_order_and_client_ids(r: dict) -> list:
+    oid = _clean_retry_order_id(r.get("order_id"))
+    place_kw = r.get("place_kwargs")
+    cid = _clean_retry_order_id(place_kw.get("client_order_id") if isinstance(place_kw, dict) else None)
+    return [x for x in (oid, cid) if x]
+
+
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     res = {}
@@ -933,14 +917,8 @@ def get_accepted_order_ttl_map() -> dict:
     for r in records:
         ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
         if ttl_val is not None:
-            oid = _clean_retry_order_id(r.get("order_id"))
-            if oid:
-                res[oid] = ttl_val
-            place_kw = r.get("place_kwargs")
-            cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
-            cid = _clean_retry_order_id(cid_raw)
-            if cid:
-                res[cid] = ttl_val
+            for k in _record_order_and_client_ids(r):
+                res[k] = ttl_val
     return res
 
 
@@ -983,19 +961,7 @@ def infer_record_owner(rec: dict) -> str:
         return "monitororder"
     if kind in {"STOP", "TP"}:
         return "monitortrades"
-    if (
-        kind == "trend_signal"
-        or kind.startswith((
-            "kalman_primary_",
-            "small_window_",
-            "accel_surge_",
-            "accel_plunge_",
-            "trend_confirmed_",
-            "consistent_or_old_",
-            "slope<=",
-            "slope>=",
-        ))
-    ):
+    if _is_tradeall_kind(kind):
         return "tradeall"
     return owner
 
@@ -1013,14 +979,8 @@ def get_accepted_order_owner_map() -> dict:
         inferred = infer_record_owner(r)
         if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
             continue
-        oid = _clean_retry_order_id(r.get("order_id"))
-        if oid:
-            res[oid] = inferred
-        place_kw = r.get("place_kwargs")
-        cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
-        cid = _clean_retry_order_id(cid_raw)
-        if cid:
-            res[cid] = inferred
+        for k in _record_order_and_client_ids(r):
+            res[k] = inferred
     return res
 
 

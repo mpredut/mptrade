@@ -632,11 +632,11 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         self._log_symbol_support()
     
     def _load_symbol_metadata(self):
-        if os.path.exists(self.filename) or os.path.exists(self._previous_generation_path()):
+        data = read_json_dict(self.filename, default=None, recover_previous=True)
+        sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
+        if isinstance(sym_meta, dict):
             try:
-                data = read_json_dict(self.filename, recover_previous=True)
-                sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
-                if isinstance(sym_meta, dict):
+                if True:
                     raw_added = sym_meta.get("added_time")
                     self.symbol_added_time = (
                         {

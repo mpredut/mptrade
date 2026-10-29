@@ -19,7 +19,7 @@ from botcore import safe_float, safe_int, safe_nonneg_int
 
 _safe_f = safe_float
 _safe_int = safe_int
-from strategies import spot_dca as strat
+from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     evaluate_asset,

@@ -26,7 +26,7 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if KRAKEN_DIR not in sys.path:
     sys.path.append(KRAKEN_DIR)
 
-from strategies.spot_replay import run_replay
+from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from strategies import spot_engine as strat
 from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_float
 
@@ -171,7 +171,8 @@ def evaluate_asset(
     """Run all ablation tests on an asset and return structured metrics."""
     if not ohlc:
         return []
-    variants = build_ablation_variants(base_params)
+    aligned_base = align_spot_interval_params(base_params, bar_minutes)
+    variants = build_ablation_variants(aligned_base)
     results = []
     # Warmup first 30 bars if available to seed regime
     warmup_n = min(30, len(ohlc) // 5)
@@ -180,6 +181,7 @@ def evaluate_asset(
     if not run_ohlc:
         return []
 
+    prewarm_trend_series(ohlc, warmup=warmup_n, params=aligned_base, bar_minutes=bar_minutes)
     for test_id, (variant_name, params) in variants.items():
         try:
             res = run_replay(

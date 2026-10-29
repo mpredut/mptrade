@@ -33,40 +33,31 @@ _derivatives_collector = None
 _MICRO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
 
 
+def _get_collector(attr_name: str, module_path: str, cls_name: str):
+    og = sys.modules.get("order_guard")
+    if og and getattr(og, attr_name, None) is not None:
+        return getattr(og, attr_name)
+    cur = globals().get(attr_name)
+    if cur is None:
+        import importlib
+        cur = getattr(importlib.import_module(module_path), cls_name)()
+        globals()[attr_name] = cur
+    return cur
+
+
 def get_whale_collector():
     """Lazily load singleton whale positioning collector."""
-    global _whale_collector
-    og = sys.modules.get("order_guard")
-    if og and getattr(og, "_whale_collector", None) is not None:
-        return og._whale_collector
-    if _whale_collector is None:
-        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
-        _whale_collector = WhalePositioningCollector()
-    return _whale_collector
+    return _get_collector("_whale_collector", "intelligence.external.collectors.whale_positioning", "WhalePositioningCollector")
 
 
 def get_orderbook_collector():
     """Lazily load singleton orderbook depth collector."""
-    global _orderbook_collector
-    og = sys.modules.get("order_guard")
-    if og and getattr(og, "_orderbook_collector", None) is not None:
-        return og._orderbook_collector
-    if _orderbook_collector is None:
-        from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
-        _orderbook_collector = OrderbookDepthCollector()
-    return _orderbook_collector
+    return _get_collector("_orderbook_collector", "intelligence.external.collectors.orderbook_depth", "OrderbookDepthCollector")
 
 
 def get_derivatives_collector():
     """Lazily load singleton derivatives telemetry collector."""
-    global _derivatives_collector
-    og = sys.modules.get("order_guard")
-    if og and getattr(og, "_derivatives_collector", None) is not None:
-        return og._derivatives_collector
-    if _derivatives_collector is None:
-        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
-        _derivatives_collector = DerivativesTelemetryCollector()
-    return _derivatives_collector
+    return _get_collector("_derivatives_collector", "intelligence.external.collectors.derivatives_telemetry", "DerivativesTelemetryCollector")
 
 
 def check_external_order_guards(
@@ -176,72 +167,73 @@ def check_external_order_guards(
                     active_reason = dec.reason
         return None
 
-    # 1. GI_WHALE: Whale Flow & Open Interest Divergence Guard
-    whale_mode = validate_guard_mode_cfg(m["whale_guard_mode"], "whale_guard_mode")
-    if ext_mode == "shadow" and whale_mode == "enforce":
-        whale_mode = "shadow"
-    if whale_mode != "off" and not GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
+    def _eval_ext_guard(
+        mode_key: str,
+        guard_id: str,
+        collector_fn,
+        build_guard,
+        kw_name: str,
+        log_tag: str,
+        notify_key: str,
+        *,
+        log_scale: bool = False,
+        use_brake_value_in_title: bool = False,
+    ) -> Optional[Tuple[bool, str, float]]:
+        g_mode = validate_guard_mode_cfg(m[mode_key], mode_key)
+        if ext_mode == "shadow" and g_mode == "enforce":
+            g_mode = "shadow"
+        if g_mode == "off" or GUARD_REGISTRY[guard_id].is_bypassed(bypassed):
+            return None
         try:
-            from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-            w_snap = fetch_guard_snapshot(get_whale_collector(), symbol, now=now_ts, allow_network=False)
-            w_guard = WhaleDivergenceGuard(
-                severe_cascade_oi_pct=m["severe_cascade_oi_pct"],
-                min_taker_ratio=m["min_taker_ratio"],
-                taker_downscale_threshold=m["taker_downscale_threshold"],
-                taker_downscaled_scale=m["taker_downscaled_scale"],
-            )
+            snap = fetch_guard_snapshot(collector_fn(), symbol, now=now_ts, allow_network=False)
+            guard = build_guard()
             try:
-                w_dec = w_guard.check(symbol, order_side, snapshot=w_snap, now=now_ts)
+                dec = guard.check(symbol, order_side, **{kw_name: snap}, now=now_ts)
             except TypeError:
-                w_dec = w_guard.check(symbol, order_side, snapshot=w_snap)
-            if (veto := _apply_micro_decision(w_dec, whale_mode, "WHALE", "whale", "GI_WHALE", use_brake_value_in_title=True)) is not None:
-                return veto
+                dec = guard.check(symbol, order_side, **{kw_name: snap})
+            return _apply_micro_decision(
+                dec, g_mode, log_tag, notify_key, guard_id,
+                log_scale=log_scale, use_brake_value_in_title=use_brake_value_in_title,
+            )
         except Exception:
-            pass
+            return None
+
+    # 1. GI_WHALE: Whale Flow & Open Interest Divergence Guard
+    if (veto := _eval_ext_guard(
+        "whale_guard_mode", "GI_WHALE", get_whale_collector,
+        lambda: __import__("intelligence.external.guards.whale_divergence_guard", fromlist=["WhaleDivergenceGuard"]).WhaleDivergenceGuard(
+            severe_cascade_oi_pct=m["severe_cascade_oi_pct"],
+            min_taker_ratio=m["min_taker_ratio"],
+            taker_downscale_threshold=m["taker_downscale_threshold"],
+            taker_downscaled_scale=m["taker_downscaled_scale"],
+        ),
+        "snapshot", "WHALE", "whale", use_brake_value_in_title=True,
+    )) is not None:
+        return veto
 
     # 2. GI_OBOOK: Orderbook Depth & Whale Limit Wall Guard
-    ob_mode = validate_guard_mode_cfg(m["orderbook_wall_guard_mode"], "orderbook_wall_guard_mode")
-    if ext_mode == "shadow" and ob_mode == "enforce":
-        ob_mode = "shadow"
-    if ob_mode != "off" and not GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed):
-        try:
-            from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-            ob_snap = fetch_guard_snapshot(get_orderbook_collector(), symbol, now=now_ts, allow_network=False)
-            ob_guard = OrderbookWallGuard(
-                min_buy_imbalance=m["min_buy_imbalance"],
-                max_sell_imbalance=m["max_sell_imbalance"],
-                whale_wall_usd_limit=m["whale_wall_usd_limit"],
-            )
-            try:
-                ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap, now=now_ts)
-            except TypeError:
-                ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap)
-            if (veto := _apply_micro_decision(ob_dec, ob_mode, "ORDERBOOK", "orderbook", "GI_OBOOK")) is not None:
-                return veto
-        except Exception:
-            pass
+    if (veto := _eval_ext_guard(
+        "orderbook_wall_guard_mode", "GI_OBOOK", get_orderbook_collector,
+        lambda: __import__("intelligence.external.guards.orderbook_wall_guard", fromlist=["OrderbookWallGuard"]).OrderbookWallGuard(
+            min_buy_imbalance=m["min_buy_imbalance"],
+            max_sell_imbalance=m["max_sell_imbalance"],
+            whale_wall_usd_limit=m["whale_wall_usd_limit"],
+        ),
+        "snapshot", "ORDERBOOK", "orderbook",
+    )) is not None:
+        return veto
 
     # 3. GI_FUNDING (GI_CROWD): Perpetual Derivatives Funding Rate Crowding Guard
-    funding_mode = validate_guard_mode_cfg(m["funding_guard_mode"], "funding_guard_mode")
-    if ext_mode == "shadow" and funding_mode == "enforce":
-        funding_mode = "shadow"
-    if funding_mode != "off" and not GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed):
-        try:
-            from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-            f_snap = fetch_guard_snapshot(get_derivatives_collector(), symbol, now=now_ts, allow_network=False)
-            f_guard = FundingCrowdingGuard(
-                max_long_funding_rate=m["funding_max_long_rate"],
-                min_short_funding_rate=m["funding_min_short_rate"],
-                crowding_policy=str(m["funding_crowding_policy"] or "").strip().lower(),
-                crowded_scale=m["funding_crowded_scale"],
-            )
-            try:
-                f_dec = f_guard.check(symbol, order_side, telemetry=f_snap, now=now_ts)
-            except TypeError:
-                f_dec = f_guard.check(symbol, order_side, telemetry=f_snap)
-            if (veto := _apply_micro_decision(f_dec, funding_mode, "FUNDING", "funding", "GI_FUNDING", log_scale=True)) is not None:
-                return veto
-        except Exception:
-            pass
+    if (veto := _eval_ext_guard(
+        "funding_guard_mode", "GI_FUNDING", get_derivatives_collector,
+        lambda: __import__("intelligence.external.guards.funding_crowding_guard", fromlist=["FundingCrowdingGuard"]).FundingCrowdingGuard(
+            max_long_funding_rate=m["funding_max_long_rate"],
+            min_short_funding_rate=m["funding_min_short_rate"],
+            crowding_policy=str(m["funding_crowding_policy"] or "").strip().lower(),
+            crowded_scale=m["funding_crowded_scale"],
+        ),
+        "telemetry", "FUNDING", "funding", log_scale=True,
+    )) is not None:
+        return veto
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale

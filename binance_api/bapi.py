@@ -20,6 +20,7 @@ from .bapi_client import client
 from . import bapi_ws
 from . import order_id_context as rc
 from providers.base import (
+    clean_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -192,16 +193,14 @@ def get_account_assets_balances(raise_errors=False):
 def _clean_bapi_oid_str(val):
     if not isinstance(val, str):
         return val
-    s = val.strip()
-    if not s or s.lower() in _INVALID_BAPI_ID_STRINGS or s.startswith("-"):
+    return clean_order_id(val)
+
+
+def _normalize_bapi_oid(val):
+    cleaned = clean_order_id(val)
+    if cleaned is None:
         return None
-    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-        s = s[:-2]
-    if s.startswith("+") and s[1:].isdigit():
-        s = s[1:]
-    if not s or s.lower() in _INVALID_BAPI_ID_STRINGS or s.startswith("-"):
-        return None
-    return s
+    return int(val) if isinstance(val, (int, float)) else cleaned
 
 
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
@@ -250,19 +249,8 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
             raw_time = safe_nonneg_float(order.get('time'), default=None)
             if raw_time is not None:
                 ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
-            raw_oid = order.get('orderId')
-            if isinstance(raw_oid, float):
-                oid_f = safe_pos_float(raw_oid, default=None)
-                raw_oid = int(oid_f) if oid_f is not None and oid_f.is_integer() else None
-            elif isinstance(raw_oid, str):
-                raw_oid = _clean_bapi_oid_str(raw_oid)
-            elif not isinstance(raw_oid, int) or isinstance(raw_oid, bool) or raw_oid <= 0:
-                raw_oid = None
+            raw_oid = _normalize_bapi_oid(order.get('orderId')) or _normalize_bapi_oid(extract_order_id(order))
             if raw_oid is None:
-                raw_oid = extract_order_id(order)
-                if isinstance(raw_oid, str):
-                    raw_oid = _clean_bapi_oid_str(raw_oid)
-            if raw_oid is None or isinstance(raw_oid, bool):
                 continue
             filtered_orders[raw_oid] = {
                 'price': extract_order_price(order),
@@ -287,16 +275,9 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
  
           
 def _resolve_valid_bapi_oid(order_id):
-    cleaned_oid = (
-        extract_order_id(order_id, default=None)
-        if not isinstance(order_id, (dict, list, tuple, set, frozenset))
-        else None
-    )
-    if isinstance(cleaned_oid, str):
-        cleaned_oid = _clean_bapi_oid_str(cleaned_oid)
-    if cleaned_oid is None or str(cleaned_oid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
+    if isinstance(order_id, (dict, list, tuple, set, frozenset)):
         return None
-    return cleaned_oid
+    return clean_order_id(extract_order_id(order_id, default=None))
 
 
 def _cancel_and_resolve(symbol, order_id) -> bool:
@@ -318,17 +299,9 @@ def cancel_order(symbol, order_id):
         cleaned_oid = _resolve_valid_bapi_oid(order_id)
         if cleaned_oid is None:
             return False
-        if isinstance(order_id, int) and not isinstance(order_id, bool):
-            if order_id <= 0:
-                return False
-            oid_arg = order_id
-        elif isinstance(order_id, float):
-            oid_f = safe_pos_float(order_id, default=None)
-            if oid_f is None or not oid_f.is_integer():
-                return False
-            oid_arg = int(oid_f)
-        else:
-            oid_arg = cleaned_oid
+        oid_arg = _normalize_bapi_oid(order_id) if isinstance(order_id, (int, float)) else cleaned_oid
+        if oid_arg is None:
+            return False
         client.cancel_order(symbol=symbol, orderId=oid_arg)
         print(f"The order with ID {order_id} was cancelled.")
         return True
@@ -337,75 +310,60 @@ def cancel_order(symbol, order_id):
         return False
 
 def cancel_open_orders(order_type, symbol, allowed_owners=None):
-    
     order_type = _normalize_side(order_type)
-    sym.validate_params(order_type, symbol) 
-    
+    sym.validate_params(order_type, symbol)
     try:
         open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-        for order_id, order_details in open_orders.items():
+        for order_id in open_orders:
             print(f"Cancelling order {order_id} for {symbol}")
             _cancel_and_resolve(symbol, order_id)
     except Exception as e:
         print(f"Error cancelling orders for {symbol}: {e}")
-        
+
 
 def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
-    
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
     expire_val = safe_pos_float(expire_time, default=None)
     if expire_val is None:
         return
-    
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-
-    #current_time = int(time.time() * 1000)  # Convert current time to milliseconds
-    current_time = float(time.time())
-  
-    if len(open_orders) < 1:
+    if not open_orders:
         return
+    current_time = float(time.time())
     print(f"Available open orders {len(open_orders)}. Try cancel {order_type} orders type ... ")
-      
-    count = 0   
+    count = 0
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-
         if order_time > 0 and current_time - order_time > expire_val:
             if _cancel_and_resolve(symbol, order_id):
                 print(f"Cancelled {order_type} order with ID: {order_id} due to expiration.")
             else:
-                 print(f"Needs cancel because expiration!")
-            count +=1
+                print("Needs cancel because expiration!")
+            count += 1
     print(f"Cancelled {count} orders")
-        
+
 
 def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=None):
-
     order_type = _normalize_side(order_type)
     sym.validate_params(order_type, symbol)
     max_age_val = safe_nonneg_float(max_age_seconds, default=None)
     if max_age_val is None:
         return
-    
     open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-    current_time = float(time.time())  # Current time in seconds
-
-    if len(open_orders) < 1:
+    if not open_orders:
         return
+    current_time = float(time.time())
     print(f"Available open orders {len(open_orders)}. Checking for recent {order_type} orders to cancel... ")
-   
     count = 0
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-        age_sec = current_time - order_time
-        if order_time > 0 and -5.0 <= age_sec <= max_age_val:  # Order is recent
+        if order_time > 0 and -5.0 <= current_time - order_time <= max_age_val:
             if _cancel_and_resolve(symbol, order_id):
                 print(f"Cancelled {order_type} order with ID: {order_id} (recent order).")
                 count += 1
             else:
                 print(f"Failed to cancel {order_type} order with ID: {order_id}. Needs cancel because recent order.")
-    
     print(f"Cancelled {count} recent orders.")
 
 

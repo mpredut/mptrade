@@ -149,11 +149,11 @@ def _walk(value, *, owner: str, source: str, location: str = "$",
 
 
 def _read(path: str, *, json_lines: bool):
-    from state_io import read_jsonl_records, read_recovering_previous
+    from state_io import read_json_file, read_jsonl_records, read_recovering_previous
 
     if json_lines:
         return read_recovering_previous(path, lambda p: read_jsonl_records(p, strict=True))
-    return read_recovering_previous(path, json.loads)
+    return read_json_file(path, recover_previous=True)
 
 
 def _path_context(path: str) -> dict:

@@ -148,16 +148,14 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 
 
 @contextlib.contextmanager
-def atomic_text_writer(path: str, *, encoding: str = "utf-8",
-                       newline: str | None = None) -> Iterator[Any]:
-    """Yield a text handle and atomically publish it only after a successful write."""
+def _atomic_stream_writer(path: str, mode: str, **open_kwargs: Any) -> Iterator[Any]:
     destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
         dir=directory, prefix=f".{os.path.basename(destination)}.", suffix=".tmp",
     )
-    handle = os.fdopen(fd, "w", encoding=encoding, newline=newline)
+    handle = os.fdopen(fd, mode, **open_kwargs)
     try:
         yield handle
         handle.flush()
@@ -167,11 +165,14 @@ def atomic_text_writer(path: str, *, encoding: str = "utf-8",
         _fsync_parent_directory(destination)
     except BaseException:
         handle.close()
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
+        discard_generation_file(temporary)
         raise
+
+
+def atomic_text_writer(path: str, *, encoding: str = "utf-8",
+                       newline: str | None = None) -> contextlib.AbstractContextManager[Any]:
+    """Yield a text handle and atomically publish it only after a successful write."""
+    return _atomic_stream_writer(path, "w", encoding=encoding, newline=newline)
 
 
 def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8",
@@ -187,18 +188,15 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
                       allow_nan: bool = False,
                       default: Any = None) -> None:
     """Serialize JSON through ``atomic_text_writer``."""
-    sort_keys = _parse_bool_flag(sort_keys, False)
-    ensure_ascii = _parse_bool_flag(ensure_ascii, True)
-    allow_nan = _parse_bool_flag(allow_nan, False)
-    clean_indent = _exact_nonneg_int(indent)
-    dump_kwargs = {}
-    if default is not None:
-        dump_kwargs["default"] = default
+    dump_kwargs = {"default": default} if default is not None else {}
     with atomic_text_writer(path) as handle:
         json.dump(
-            value, handle, indent=clean_indent, sort_keys=sort_keys,
-            separators=separators, ensure_ascii=ensure_ascii,
-            allow_nan=allow_nan, **dump_kwargs,
+            value, handle, indent=_exact_nonneg_int(indent),
+            sort_keys=_parse_bool_flag(sort_keys, False),
+            separators=separators,
+            ensure_ascii=_parse_bool_flag(ensure_ascii, True),
+            allow_nan=_parse_bool_flag(allow_nan, False),
+            **dump_kwargs,
         )
 
 
@@ -206,7 +204,8 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     sort_keys: bool = False, separators=None,
                     ensure_ascii: bool = True,
                     allow_nan: bool = False,
-                    default: Any = None) -> None:
+                    default: Any = None,
+                    write_fn: Callable[..., Any] | None = None) -> Any:
     """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
     target_path = str(resolve_cachedb_filepath(os.fspath(path)))
     backup_path = None
@@ -217,13 +216,17 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
         except OSError:
             backup_path = None
     try:
-        atomic_write_json(
-            target_path, value, indent=indent, sort_keys=sort_keys,
-            separators=separators, ensure_ascii=ensure_ascii,
-            allow_nan=allow_nan, default=default,
-        )
+        if write_fn is None:
+            res = atomic_write_json(
+                target_path, value, indent=indent, sort_keys=sort_keys,
+                separators=separators, ensure_ascii=ensure_ascii,
+                allow_nan=allow_nan, default=default,
+            )
+        else:
+            res = write_fn(target_path, value, **({"indent": indent} if indent is not None else {}))
         if backup_path is not None:
             discard_generation_file(backup_path)
+        return res
     except BaseException:
         if backup_path is not None and os.path.exists(backup_path):
             try:
@@ -235,30 +238,9 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
         raise
 
 
-@contextlib.contextmanager
-def atomic_binary_writer(path: str) -> Iterator[Any]:
+def atomic_binary_writer(path: str) -> contextlib.AbstractContextManager[Any]:
     """Yield a binary handle and atomically publish it only after a durable write."""
-    destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
-    directory = os.path.dirname(destination)
-    os.makedirs(directory, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(
-        dir=directory, prefix=f".{os.path.basename(destination)}.", suffix=".tmp",
-    )
-    handle = os.fdopen(fd, "wb")
-    try:
-        yield handle
-        handle.flush()
-        os.fsync(handle.fileno())
-        handle.close()
-        os.replace(temporary, destination)
-        _fsync_parent_directory(destination)
-    except BaseException:
-        handle.close()
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+    return _atomic_stream_writer(path, "wb")
 
 
 def atomic_write_bytes(path: str, data: bytes | bytearray | memoryview) -> None:
@@ -344,46 +326,37 @@ def read_tail_lines(
     max_b = _exact_nonneg_int(max_bytes) if max_bytes is not None else None
     if max_bytes is not None and (max_b is None or max_b <= 0):
         return []
-    if max_b is not None and limit_i is None:
-        try:
-            with open(resolved, "rb") as handle:
-                handle.seek(0, os.SEEK_END)
-                size = handle.tell()
-                handle.seek(max(0, size - max_b))
-                chunk = handle.read(min(size, max_b))
-        except OSError:
-            return []
-        if size > max_b and b"\n" in chunk:
-            chunk = chunk.split(b"\n", 1)[1]
-        return [line for line in chunk.splitlines() if line.strip()]
-    if limit_i is None:
+    if limit_i is None and max_b is None:
         return []
-    limit = limit_i
-    eff_chunk = _positive_chunk_size(chunk_size, 65536)
+    eff_chunk = max_b if limit_i is None else _positive_chunk_size(chunk_size, 65536)
     chunks: list[bytes] = []
     newline_count = 0
-    with open(resolved, "rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        position = handle.tell()
-        min_pos = max(0, position - max_b) if max_b is not None else 0
-        while position > min_pos:
-            step = min(eff_chunk, position - min_pos)
-            position -= step
-            handle.seek(position)
-            chunk = handle.read(step)
-            chunks.append(chunk)
-            newline_count += chunk.count(b"\n")
-            if newline_count > limit and position > min_pos:
-                joined = b"".join(reversed(chunks))
-                complete = joined.split(b"\n", 1)[1] if b"\n" in joined else b""
-                non_empty = [line for line in complete.splitlines() if line.strip()]
-                if len(non_empty) >= limit:
-                    return non_empty[-limit:]
-                newline_count = len(non_empty)
+    try:
+        with open(resolved, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            min_pos = max(0, position - max_b) if max_b is not None else 0
+            while position > min_pos:
+                step = min(eff_chunk, position - min_pos)
+                position -= step
+                handle.seek(position)
+                chunk = handle.read(step)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+                if limit_i is not None and newline_count > limit_i and position > min_pos:
+                    joined = b"".join(reversed(chunks))
+                    complete = joined.split(b"\n", 1)[1] if b"\n" in joined else b""
+                    non_empty = [line for line in complete.splitlines() if line.strip()]
+                    if len(non_empty) >= limit_i:
+                        return non_empty[-limit_i:]
+                    newline_count = len(non_empty)
+    except OSError:
+        return []
     joined = b"".join(reversed(chunks))
     if position > 0 and b"\n" in joined:
         joined = joined.split(b"\n", 1)[1]
-    return [line for line in joined.splitlines() if line.strip()][-limit:]
+    lines = [line for line in joined.splitlines() if line.strip()]
+    return lines[-limit_i:] if limit_i is not None else lines
 
 
 def read_tail_jsonl_records(
@@ -489,14 +462,25 @@ def generation_lock_path(path: str) -> str:
     return f"{os.fspath(path)}.generation.lock"
 
 
-def discard_generation_file(path: str | None) -> None:
-    """Best-effort removal of a staged or temporary generation file."""
+def discard_generation_file(
+    path: str | None,
+    *,
+    include_previous: bool = False,
+    include_meta: bool = False,
+) -> None:
+    """Best-effort removal of a state/generation file (and optional ``.previous`` / ``.meta`` sidecars)."""
     if not path or isinstance(path, (bool, int)):
         return
-    try:
-        os.remove(path)
-    except (OSError, TypeError):
-        pass
+    targets = [path]
+    if include_previous:
+        targets.append(previous_generation_path(path))
+    if include_meta:
+        targets.append(meta_file_path(path))
+    for target in targets:
+        try:
+            os.remove(target)
+        except (OSError, TypeError):
+            pass
 
 
 def stage_previous_generation(path: str, *, backup_path: str | None = None) -> str:
@@ -587,6 +571,28 @@ def _read_json_dict_strict(path: str) -> dict[str, Any]:
     return payload
 
 
+def _read_with_policy(
+    path: str,
+    reader_fn: Callable[[str], T],
+    *,
+    default: Any = _MISSING,
+    backup_path: str | None = None,
+    recover_previous: bool = False,
+) -> T | Any:
+    if recover_previous:
+        return read_recovering_previous(
+            path, reader_fn, backup_path=backup_path, default=default
+        )
+    try:
+        if path is None or isinstance(path, (bool, int, float)):
+            raise TypeError("path must be a valid filesystem path")
+        return reader_fn(path)
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
+
+
 def read_json_file(
     path: str,
     *,
@@ -595,16 +601,9 @@ def read_json_file(
     recover_previous: bool = False,
 ) -> Any:
     """Read and parse any UTF-8 JSON file, with optional ``.previous`` recovery or fallback ``default``."""
-    if recover_previous:
-        return read_recovering_previous(
-            path, _read_json_file_strict, backup_path=backup_path, default=default
-        )
-    try:
-        return _read_json_file_strict(path)
-    except Exception:
-        if default is not _MISSING:
-            return default
-        raise
+    return _read_with_policy(
+        path, _read_json_file_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+    )
 
 
 def read_json_dict(
@@ -615,16 +614,9 @@ def read_json_dict(
     recover_previous: bool = False,
 ) -> dict[str, Any] | Any:
     """Read and parse a UTF-8 JSON file whose root value must be a ``dict``."""
-    if recover_previous:
-        return read_recovering_previous(
-            path, _read_json_dict_strict, backup_path=backup_path, default=default
-        )
-    try:
-        return _read_json_dict_strict(path)
-    except Exception:
-        if default is not _MISSING:
-            return default
-        raise
+    return _read_with_policy(
+        path, _read_json_dict_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+    )
 
 
 def read_jsonl_records(path: str, *, strict: bool = False) -> list[Any]:
@@ -682,18 +674,9 @@ def read_text_file(
         with open(target, "r", encoding=encoding, errors=errors, newline=newline) as handle:
             return handle.read()
 
-    if recover_previous:
-        return read_recovering_previous(
-            path, _read_strict, backup_path=backup_path, default=default
-        )
-    try:
-        if path is None or isinstance(path, (bool, int, float)):
-            raise TypeError("path must be a valid filesystem path")
-        return _read_strict(path)
-    except Exception:
-        if default is not _MISSING:
-            return default
-        raise
+    return _read_with_policy(
+        path, _read_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+    )
 
 
 def read_text_lines(
@@ -715,12 +698,7 @@ def read_text_lines(
             for raw in handle:
                 if skip_empty and not raw.strip():
                     continue
-                if strip:
-                    out.append(raw.strip())
-                elif keepends:
-                    out.append(raw)
-                else:
-                    out.append(raw.rstrip("\r\n"))
+                out.append(raw.strip() if strip else (raw if keepends else raw.rstrip("\r\n")))
             return out
     except OSError:
         return []
@@ -739,35 +717,40 @@ def read_bytes_file(
         with open(target, "rb") as handle:
             return handle.read()
 
-    if recover_previous:
-        return read_recovering_previous(
-            path, _read_strict, backup_path=backup_path, default=default
-        )
-    try:
-        if path is None or isinstance(path, (bool, int, float)):
-            raise TypeError("path must be a valid filesystem path")
-        return _read_strict(path)
-    except Exception:
-        if default is not _MISSING:
-            return default
-        raise
+    return _read_with_policy(
+        path, _read_strict, default=default, backup_path=backup_path, recover_previous=recover_previous
+    )
 
 
 def read_csv_dicts(
     path: str,
     *,
     encoding: str = "utf-8",
+    strict: bool = False,
+    default: Any = _MISSING,
 ) -> list[dict[str, Any]]:
-    """Read rows from a CSV file via ``csv.DictReader``, returning ``[]`` when missing or unreadable."""
+    """Read rows from a CSV file via ``csv.DictReader``."""
     if not path or isinstance(path, (bool, int, float)):
+        if default is not _MISSING:
+            return default
+        if strict:
+            raise TypeError("path must be a valid filesystem path")
         return []
     try:
         target = str(resolve_cachedb_filepath(os.fspath(path)))
         if not os.path.isfile(target):
+            if default is not _MISSING:
+                return default
+            if strict:
+                raise FileNotFoundError(f"No such file: {target!r}")
             return []
         with open(target, "r", encoding=encoding, newline="") as handle:
             return [dict(row) for row in csv.DictReader(handle)]
     except OSError:
+        if default is not _MISSING:
+            return default
+        if strict:
+            raise
         return []
 
 
@@ -824,6 +807,14 @@ _JSON_DICT_MEMO: dict[str, tuple[tuple, dict[str, Any]]] = {}
 _ORIG_READ_RECOVERING_ID = id(read_recovering_previous)
 
 
+def _stat_sig(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def read_json_recovering(path: str, *, default: Any = None) -> Any:
     """Read and parse any UTF-8 JSON file with ``.previous`` recovery, returning ``default`` on error."""
     return read_json_file(path, default=default, recover_previous=True)
@@ -848,18 +839,7 @@ def read_json_dict_cached(
     except Exception:
         return None
     backup_path = previous_generation_path(resolved)
-    st_main = None
-    st_bak = None
-    try:
-        st = os.stat(resolved)
-        st_main = (st.st_mtime_ns, st.st_size)
-    except OSError:
-        pass
-    try:
-        sb = os.stat(backup_path)
-        st_bak = (sb.st_mtime_ns, sb.st_size)
-    except OSError:
-        pass
+    st_main, st_bak = _stat_sig(resolved), _stat_sig(backup_path)
     if st_main is None and st_bak is None and id(read_recovering_previous) == _ORIG_READ_RECOVERING_ID:
         return None
 

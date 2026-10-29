@@ -433,6 +433,9 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     atomic_write_text(str(p_csv), "timestamp,open,close\n100,1.0,2.0\n")
     assert read_csv_dicts(str(p_csv)) == [{"timestamp": "100", "open": "1.0", "close": "2.0"}]
     assert read_csv_dicts(str(tmp_path / "missing.csv")) == []
+    assert read_csv_dicts(str(tmp_path / "missing.csv"), default=[{"fallback": True}]) == [{"fallback": True}]
+    with pytest.raises(FileNotFoundError):
+        read_csv_dicts(str(tmp_path / "missing.csv"), strict=True)
 
     p_tail = tmp_path / "tail.jsonl"
     lines = [json.dumps({"idx": i, "pad": "x" * 20}) for i in range(10)]

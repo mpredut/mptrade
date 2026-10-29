@@ -47,10 +47,13 @@ if not BRANCH:
 
 def _read_proposals():
     """Read backtest_proposals.json from origin/BRANCH WITHOUT a checkout (git show)."""
-    subprocess.run(["git", "-C", ROOT, "fetch", "-q", "origin", BRANCH],
-                   capture_output=True, timeout=30)
-    out = subprocess.run(["git", "-C", ROOT, "show", f"origin/{BRANCH}:backtest_proposals.json"],
-                         capture_output=True, text=True, timeout=15)
+    try:
+        subprocess.run(["git", "-C", ROOT, "fetch", "-q", "origin", BRANCH],
+                       capture_output=True, timeout=30)
+        out = subprocess.run(["git", "-C", ROOT, "show", f"origin/{BRANCH}:backtest_proposals.json"],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return []
     if out.returncode != 0:
         return []
     try:
@@ -91,7 +94,7 @@ def main():
             continue
         try:
             current_raw = sp._current_value(section, key)   # LIVE from prod (authoritative)
-        except KeyError:
+        except (KeyError, ValueError):
             continue
         winner = safe_pos_float(raw_winner, default=None)
         current = safe_pos_float(current_raw, default=None)
@@ -107,23 +110,13 @@ def main():
             print(f"[apply] {fk}: no_change (already {current})")
             continue
 
-        last = sp._last_change_for(fk)
-        if last and isinstance(last, dict) and last.get("ts"):
-            try:
-                last_ts = datetime.fromisoformat(str(last["ts"]))
-                elapsed = (
-                    datetime.now(timezone.utc) - last_ts.astimezone(timezone.utc)
-                    if last_ts.tzinfo is not None
-                    else datetime.now() - last_ts
-                )
-                if elapsed < timedelta(days=sp.MIN_DAYS_BETWEEN_CHANGES):
-                    rec["action"] = "rate_limited"
-                    rec["reason"] = f"last changed at {last['ts']} (< {sp.MIN_DAYS_BETWEEN_CHANGES} days)"
-                    sp._append_audit(rec)
-                    print(f"[apply] {fk}: rate_limited (the last change was {last['ts']})")
-                    continue
-            except (TypeError, ValueError):
-                pass
+        limited, last_ts_str = sp.is_rate_limited(fk)
+        if limited:
+            rec["action"] = "rate_limited"
+            rec["reason"] = f"last changed at {last_ts_str} (< {sp.MIN_DAYS_BETWEEN_CHANGES} days)"
+            sp._append_audit(rec)
+            print(f"[apply] {fk}: rate_limited (the last change was {last_ts_str})")
+            continue
 
         new_value = round((current + winner) / 2, 4)
         rec["proposed_new_value"] = new_value
@@ -134,28 +127,34 @@ def main():
         if not args.dry_run:
             sp._apply_config_change(section, key, current, new_value)
             sp._notify_change(fk, symbol, current, new_value, winner, rec)
-            subprocess.run(["git", "-C", ROOT, "add", "instruments.conf"], capture_output=True, timeout=10)
-            subprocess.run(["git", "-C", ROOT, "commit", "-q", "-m",
-                            f"apply backtest proposal: {fk} {current}->{new_value} "
-                            f"(winner {winner}, dev {p.get('dev_commit')})"], capture_output=True, timeout=10)
+            try:
+                subprocess.run(["git", "-C", ROOT, "add", "instruments.conf"], capture_output=True, timeout=10)
+                subprocess.run(["git", "-C", ROOT, "commit", "-q", "-m",
+                                f"apply backtest proposal: {fk} {current}->{new_value} "
+                                f"(winner {winner}, dev {p.get('dev_commit')})"], capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"[apply] git commit warning for {fk}: {exc}")
             applied_count += 1
         sp._append_audit(rec)
 
     if not args.dry_run:
         if applied_count > 0:
-            push_res = subprocess.run(
-                ["git", "-C", ROOT, "push", "-q", "origin", "HEAD:main"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if push_res.returncode != 0:
-                subprocess.run(
-                    ["git", "-C", ROOT, "pull", "--rebase", "--autostash", "-q", "origin", "main"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                subprocess.run(
+            try:
+                push_res = subprocess.run(
                     ["git", "-C", ROOT, "push", "-q", "origin", "HEAD:main"],
                     capture_output=True, text=True, timeout=30,
                 )
+                if push_res.returncode != 0:
+                    subprocess.run(
+                        ["git", "-C", ROOT, "pull", "--rebase", "--autostash", "-q", "origin", "main"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    subprocess.run(
+                        ["git", "-C", ROOT, "push", "-q", "origin", "HEAD:main"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"[apply] git push warning: {exc}")
         print("[apply] done. The owning process restart is performed by watchdogfor_cacheandconfig "
               "(detects instruments.conf change).")
 

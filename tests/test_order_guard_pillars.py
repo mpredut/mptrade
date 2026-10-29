@@ -1596,3 +1596,75 @@ def test_batch53_short_trend_benchmark_and_mt_backtest_hardening(tmp_path, monke
     assert len(reg_res) == 6
 
 
+def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
+    import subprocess
+    import offline.runners.apply_proposals as ap_mod
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp_mod
+
+    # 1. apply_proposals._read_proposals handles subprocess.TimeoutExpired / OSError cleanly
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=15)
+
+    monkeypatch.setattr(ap_mod.subprocess, "run", _raise_timeout)
+    assert ap_mod._read_proposals() == []
+
+    # 2. apply_proposals.main skips proposals whose live _current_value raises ValueError/KeyError
+    #    and continues to subsequent valid proposals
+    monkeypatch.setattr("sys.argv", ["apply_proposals.py", "--dry-run"])
+    monkeypatch.setattr(
+        ap_mod,
+        "_read_proposals",
+        lambda: [
+            {
+                "full_key": "BINANCE_BAD.mt.gain",
+                "section": "BINANCE_BAD",
+                "key": "mt.gain",
+                "symbol": "BADUSDC",
+                "winner_value": 6.0,
+                "dev_commit": "abc1234",
+            },
+            {
+                "full_key": "BINANCE_OK.mt.gain",
+                "section": "BINANCE_OK",
+                "key": "mt.gain",
+                "symbol": "OKUSDC",
+                "winner_value": 6.0,
+                "dev_commit": "abc1234",
+            },
+        ],
+    )
+    audit_records = []
+    monkeypatch.setattr(sp_mod, "_append_audit", lambda rec: audit_records.append(dict(rec)))
+    monkeypatch.setattr(sp_mod, "is_rate_limited", lambda fk: (False, None))
+
+    def _fake_current_val(sec, key):
+        if sec == "BINANCE_BAD":
+            raise ValueError("Non-finite config value")
+        return 4.0
+
+    monkeypatch.setattr(sp_mod, "_current_value", _fake_current_val)
+    ap_mod.main()
+    assert len(audit_records) == 1
+    assert audit_records[0]["full_key"] == "BINANCE_OK.mt.gain"
+    assert audit_records[0]["proposed_new_value"] == 5.0
+
+    # 3. scheduled_pilot.evaluate_key ignores non-numeric grid annotation tokens cleanly
+    monkeypatch.setattr(
+        sp_mod,
+        "scan_backtest_ranges",
+        lambda _path: {"BINANCE_OK.mt.hardtp": ["bad_token", "nan", "8.0"]},
+    )
+    monkeypatch.setattr(sp_mod, "_current_value", lambda s, k: 6.0)
+    monkeypatch.setattr(sp_mod.rb, "SYMBOLS", {"OKUSDC": {"params": {"mt.hardtp": "bad"}}})
+    monkeypatch.setattr(sp_mod, "_split_series", lambda sym: ([1] * 120, [1] * 120))
+    monkeypatch.setattr(
+        sp_mod,
+        "_run_one",
+        lambda sym, base, params, series: {"net": 100.0 if params.get("mt.hardtp") == "8.0" else 50.0, "buy_hold": 0.0},
+    )
+    res_eval = sp_mod.evaluate_key("BINANCE_OK.mt.hardtp", "OKUSDC", "OK", "mt.hardtp", dry_run=True, propose=True)
+    assert res_eval["action"] == "proposed"
+    assert res_eval["winner_value"] == 8.0
+
+
+
