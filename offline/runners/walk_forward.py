@@ -99,10 +99,11 @@ def dispatch(argv: list[str] | None = None) -> int:
         default="baseline",
     )
 
+    known, remaining_args = pre_parser.parse_known_args(raw_args)
+
     # If top-level help is requested without venue/mode, display dispatcher help
     if any(h in raw_args for h in ("-h", "--help")):
         # Check if user specifically passed --venue or --mode to see venue-specific help
-        known, _ = pre_parser.parse_known_args(raw_args)
         if known.venue is None and known.mode == "baseline":
             doc_help = (
                 "usage: walk_forward.py [--venue {kraken,binance,hyperliquid,t212}] "
@@ -123,13 +124,11 @@ def dispatch(argv: list[str] | None = None) -> int:
             print(doc_help)
             return 0
 
-    known, remaining_args = pre_parser.parse_known_args(raw_args)
-
     if known.mode == "baseline":
         if not known.venue:
             pre_parser.error(
                 "--venue is required in baseline mode. Choose from: "
-                f"{', '.join(sorted(set(VENUE_RUNNER_MODULES.keys())))}"
+                f"{', '.join(sorted(VENUE_RUNNER_MODULES))}"
             )
         return run_baseline(known.venue, remaining_args)
 
