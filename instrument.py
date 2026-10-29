@@ -583,20 +583,13 @@ class Instrument:
             known_balance = None
             if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance) and target_asset:
                 try:
-                    raw_kb = self._provider.free_balance(target_asset)
-                    if raw_kb is not None and not isinstance(raw_kb, bool):
-                        try:
-                            kb_f = float(raw_kb)
-                        except (TypeError, ValueError, OverflowError):
-                            kb_f = float("nan")
-                        if not math.isfinite(kb_f):
-                            known_balance = None
-                        elif kb_f <= 0:
+                    kb_f = safe_float(self._provider.free_balance(target_asset), default=None)
+                    if kb_f is not None:
+                        if kb_f <= 0:
                             print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
                             reason = "balance_unavailable"
                             return None
-                        else:
-                            known_balance = kb_f
+                        known_balance = kb_f
                 except Exception:
                     known_balance = None
 

@@ -10,7 +10,7 @@ import os
 import time
 import requests
 import pandas as pd
-from botcore import load_env_stack
+from botcore import load_env_stack, safe_nonneg_int, safe_pos_float
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_env_stack(os.path.join(_ROOT, ".env"))
@@ -121,14 +121,8 @@ def get_binance_coins():
     for coin in data:
         if not isinstance(coin, dict) or 'symbol' not in coin or 'price' not in coin:
             continue
-        raw_px = coin['price']
-        if isinstance(raw_px, bool):
-            continue
-        try:
-            price = float(raw_px)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not math.isfinite(price) or price <= 0:
+        price = safe_pos_float(coin.get('price'), default=None)
+        if price is None:
             continue
         symbol = str(coin['symbol']).removesuffix('USDT')
         binance_data[symbol] = price
@@ -138,13 +132,7 @@ def get_binance_coins():
 def find_common_coins_and_sort(topn, df_cmc, binance_data):
     # Keep CoinMarketCap symbols that exist in the Binance-derived mapping.
     common_coins = []
-    if isinstance(topn, bool):
-        topn_i = 10
-    else:
-        try:
-            topn_i = max(0, int(topn))
-        except (TypeError, ValueError, OverflowError):
-            topn_i = 10
+    topn_i = safe_nonneg_int(topn, default=10)
     
     for index, row in df_cmc.iterrows():
         symbol = row['symbol']
@@ -152,21 +140,12 @@ def find_common_coins_and_sort(topn, df_cmc, binance_data):
         
         if isinstance(binance_data, dict) and symbol in binance_data:
             price_binance = binance_data[symbol]
-            if isinstance(price_cmc, bool) or isinstance(price_binance, bool):
-                continue
-            try:
-                px_cmc_f = float(price_cmc)
-                px_bin_f = float(price_binance)
-            except (TypeError, ValueError, OverflowError):
+            px_cmc_f = safe_pos_float(price_cmc, default=None)
+            px_bin_f = safe_pos_float(price_binance, default=None)
+            if px_cmc_f is None or px_bin_f is None:
                 continue
             # Use price proximity as a weak cross-source identity check.
-            if (
-                math.isfinite(px_cmc_f)
-                and px_cmc_f > 0
-                and math.isfinite(px_bin_f)
-                and px_bin_f > 0
-                and abs(px_cmc_f - px_bin_f) / px_cmc_f < 0.05
-            ):  # Toleranta de 5%
+            if abs(px_cmc_f - px_bin_f) / px_cmc_f < 0.05:  # Toleranta de 5%
                 common_coins.append({
                     "name": row['name'],
                     "symbol": symbol,

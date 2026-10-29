@@ -11,7 +11,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
 from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_float, safe_pos_int
-from technical_repair_ssot import fleet_script_basenames, parse_finite_float
+from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
 STATE_FILE = ROOT / ".resource_watchdog_state.json"
@@ -62,7 +62,7 @@ def _managed_script(proc):
     return None
 
 
-_safe_float = parse_finite_float
+_safe_float = safe_float
 _as_bool_flag = wc._parse_bool_flag
 
 
@@ -159,18 +159,18 @@ def _processes():
 def _usage(previous, current, previous_total, current_total, cpu_count):
     if not isinstance(previous, dict) or not isinstance(current, dict):
         return None
-    cpu_cnt = _safe_float(cpu_count, 0.0)
+    cpu_cnt = safe_float(cpu_count, 0.0)
     if cpu_cnt <= 0.0:
         return None
-    prev_tot = _safe_float(previous_total, -1.0)
-    curr_tot = _safe_float(current_total, -1.0)
+    prev_tot = safe_float(previous_total, -1.0)
+    curr_tot = safe_float(current_total, -1.0)
     if prev_tot < 0.0 or curr_tot < 0.0:
         return None
     total_delta = curr_tot - prev_tot
     if total_delta <= 0:
         return None
-    prev_ticks = _safe_float(previous.get("ticks"), -1.0)
-    curr_ticks = _safe_float(current.get("ticks"), -1.0)
+    prev_ticks = safe_float(previous.get("ticks"), -1.0)
+    curr_ticks = safe_float(current.get("ticks"), -1.0)
     if prev_ticks < 0.0 or curr_ticks < 0.0:
         return None
     tick_delta = curr_ticks - prev_ticks
@@ -180,7 +180,7 @@ def _usage(previous, current, previous_total, current_total, cpu_count):
 
 
 def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
-    now = _safe_float(now, 0.0)
+    now = safe_float(now, 0.0)
     if now <= 0.0:
         now = time.time()
     total_ticks = _system_ticks() if total_ticks is None else total_ticks
@@ -208,7 +208,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         reasons = []
         if cpu is not None and cpu >= CPU_THRESHOLD:
             reasons.append(f"CPU {cpu:.1f}%")
-        rss_mb = _safe_float(proc.get("rss_mb"), 0.0)
+        rss_mb = safe_float(proc.get("rss_mb"), 0.0)
         if rss_mb >= MEMORY_THRESHOLD_MB:
             reasons.append(f"RSS {rss_mb:.0f} MB")
         item = tracked.get(key, {"high": 0, "normal": 0, "alerted": False, "last_alert": 0})
@@ -216,7 +216,7 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             item = {"high": 0, "normal": 0, "alerted": False, "last_alert": 0}
         alerted = _as_bool_flag(item.get("alerted"), False)
         item["alerted"] = alerted
-        last_alert = _safe_float(item.get("last_alert", 0), 0.0)
+        last_alert = safe_float(item.get("last_alert", 0), 0.0)
         if last_alert > now or last_alert < 0.0:
             last_alert = 0.0
             item["last_alert"] = 0.0

@@ -20,6 +20,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
+from botcore import safe_nonneg_int
 from orchestratorOS.agy.paths import (
     resolve_bot_cli_base,
     resolve_store_lock_path,
@@ -44,14 +45,7 @@ from orchestratorOS.agy.summary_store import (
 from state_io import durable_replace_file
 
 
-def _fallback_safe_step_count(val: Any) -> int:
-    if val is None or isinstance(val, bool):
-        return 0
-    try:
-        fval = float(val)
-        return max(0, int(fval)) if math.isfinite(fval) else 0
-    except (TypeError, ValueError, OverflowError):
-        return 0
+_fallback_safe_step_count = safe_nonneg_int
 
 
 _safe_step_count = getattr(_summary_store, "_safe_step_count", _fallback_safe_step_count)

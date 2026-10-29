@@ -39,9 +39,10 @@ from cachepaths import cache_path
 from intelligence.internal.guards.guard_decision import (
     clean_guard_symbol_key,
     normalize_guard_mode,
-    safe_guard_float as _safe_float,
     snap_attr as _obj_attr,
 )
+
+_safe_float = safe_float
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -276,8 +277,8 @@ class SmartStopLossGuard:
         now_ts = _resolve_now(now)
         sym_key = clean_guard_symbol_key(symbol)
         is_sim = _is_simulated_provider(provider)
-        price_decrease = _safe_float(price_decrease, 0.0)
-        lost_threshold = _safe_float(lost_threshold, 0.0)
+        price_decrease = safe_float(price_decrease, 0.0)
+        lost_threshold = safe_float(lost_threshold, 0.0)
         meta: Dict[str, Any] = {
             "symbol": sym_key,
             "provider": provider,
@@ -331,12 +332,12 @@ class SmartStopLossGuard:
         else:
             ob_snap = fetch_guard_snapshot(get_orderbook_collector(), sym_key, now=now_ts, allow_network=False)
 
-        top_long_pct = _safe_float(_obj_attr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
-        taker_ratio = _safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
+        top_long_pct = safe_float(_obj_attr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
+        taker_ratio = safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
         raw_div_reg = _obj_attr(w_snap, "divergence_regime", None) if w_snap else None
         divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
-        imbalance = _safe_float(_obj_attr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
-        bid_wall = _safe_float(_obj_attr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
+        imbalance = safe_float(_obj_attr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
+        bid_wall = safe_float(_obj_attr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
 
         meta.update({
             "top_long_pct": round(top_long_pct * 100.0, 1),
@@ -375,8 +376,8 @@ class SmartStopLossGuard:
                 if existing_start < 0.0 or existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
                     active_grace = None
             if active_grace is not None and buy_price is not None:
-                saved_buy = _safe_float(active_grace.get("buy_price"), 0.0)
-                curr_buy = _safe_float(buy_price, 0.0)
+                saved_buy = safe_float(active_grace.get("buy_price"), 0.0)
+                curr_buy = safe_float(buy_price, 0.0)
                 if (
                     saved_buy > 0.0
                     and curr_buy > 0.0
@@ -386,8 +387,8 @@ class SmartStopLossGuard:
 
             if active_grace is None:
                 # Start Grace Period
-                cp_clean = _safe_float(current_price, 0.0)
-                bp_clean = _safe_float(buy_price, 0.0)
+                cp_clean = safe_float(current_price, 0.0)
+                bp_clean = safe_float(buy_price, 0.0)
                 tracker[sym_key] = {
                     "start_ts": now_ts,
                     "initial_loss_pct": round(price_decrease * 100.0, 3),
@@ -432,8 +433,8 @@ class SmartStopLossGuard:
                     return True, f"shadow_defer: {reason}", meta
                 return False, reason, meta
             else:
-                cp_clean = _safe_float(current_price, 0.0)
-                bp_clean = _safe_float(buy_price, 0.0)
+                cp_clean = safe_float(current_price, 0.0)
+                bp_clean = safe_float(buy_price, 0.0)
                 if cp_clean > 0.0:
                     active_grace["current_price"] = cp_clean
                 if bp_clean > 0.0 and active_grace.get("buy_price") is None:
@@ -526,8 +527,8 @@ class SmartStopLossGuard:
             is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider"))
             if not is_sim:
                 _save_grace_state()
-            saved_buy = _safe_float(grace_info.get("buy_price"), 0.0)
-            curr_buy = _safe_float(buy_price, 0.0)
+            saved_buy = safe_float(grace_info.get("buy_price"), 0.0)
+            curr_buy = safe_float(buy_price, 0.0)
             if (
                 saved_buy > 0.0
                 and curr_buy > 0.0
@@ -535,9 +536,9 @@ class SmartStopLossGuard:
             ):
                 return False
             now_ts = _resolve_now(now)
-            price_decrease = _safe_float(price_decrease, 0.0)
-            lost_threshold = _safe_float(lost_threshold, 0.0)
-            start_ts = _safe_float(grace_info.get("start_ts"), -1.0)
+            price_decrease = safe_float(price_decrease, 0.0)
+            lost_threshold = safe_float(lost_threshold, 0.0)
+            start_ts = safe_float(grace_info.get("start_ts"), -1.0)
             if start_ts < 0.0 or start_ts > now_ts + 5.0:
                 return False
             elapsed = max(0.0, now_ts - start_ts)
@@ -545,7 +546,7 @@ class SmartStopLossGuard:
                 # Silently discard ancient or unphysical tracker record
                 return False
 
-            init_loss = _safe_float(grace_info.get("initial_loss_pct"), lost_threshold * 100.0)
+            init_loss = safe_float(grace_info.get("initial_loss_pct"), lost_threshold * 100.0)
             prov = str(provider or grace_info.get("provider") or "").strip()
             prov_str = prov.upper() if prov else ""
             prov_tag = f" ({prov_str})" if prov_str else ""
