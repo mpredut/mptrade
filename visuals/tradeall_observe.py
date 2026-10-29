@@ -41,7 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float as _safe_float, safe_int, safe_pos_float
+from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
 from providers.base import normalize_side
 try:
     from intelligence.internal.state.volatility import get_kalman_state_path
@@ -149,10 +149,9 @@ def _read_pipe_log(path, ncols):
 
 
 def _log_dates(days_back):
-    db_f = _safe_float(days_back, default=None) if isinstance(days_back, (int, float)) else None
-    if db_f is None:
+    n_days = safe_pos_int(days_back, default=None)
+    if n_days is None:
         return []
-    n_days = max(0, int(db_f))
     today = datetime.now().date()
     return [today - timedelta(days=i) for i in range(n_days)]
 
@@ -214,7 +213,7 @@ def _parse_price_sample_rows(rows, symbol, *, require_pos_ts: bool = False):
     for ts, sym_, price in rows:
         if sym_ != symbol:
             continue
-        t_val = safe_pos_float(ts, default=None) if require_pos_ts else _safe_float(ts, default=None)
+        t_val = safe_pos_float(ts, default=None) if require_pos_ts else safe_float(ts, default=None)
         p_val = safe_pos_float(price, default=None)
         if t_val is not None and p_val is not None:
             ts_list.append(t_val)
@@ -282,7 +281,7 @@ def _ingest_cachedb_points(points: dict, entries) -> None:
     for entry in entries or ():
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
             continue
-        t_ms = _safe_float(entry[0], default=None)
+        t_ms = safe_pos_float(entry[0], default=None)
         p_val = safe_pos_float(entry[1], default=None)
         if t_ms is not None and p_val is not None:
             points[int(t_ms / 1000.0)] = p_val
@@ -378,12 +377,9 @@ def _parse_shadow_rows(rows, symbol):
             continue
         t_val = safe_pos_float(ts, default=None)
         p_val = safe_pos_float(price, default=None)
-        try:
-            st_val = int(state)
-            ost_val = int(old_state)
-        except ValueError:
-            continue
-        if t_val is None or p_val is None:
+        st_val = safe_int(state, default=None)
+        ost_val = safe_int(old_state, default=None)
+        if st_val is None or ost_val is None or t_val is None or p_val is None:
             continue
         events.append({"ts": t_val, "signal": signal, "state": st_val,
                         "old_state": ost_val, "price": p_val,
@@ -407,14 +403,14 @@ def build_trend_regions(events, window_start, window_end):
     """Build state regions from each trend start to the next (plan steps A/C)."""
     if not events:
         return []
-    ws = _safe_float(window_start, 0.0)
-    we = _safe_float(window_end, 0.0)
+    ws = safe_float(window_start, 0.0)
+    we = safe_float(window_end, 0.0)
     regions = []
     for i, ev in enumerate(events):
         if not isinstance(ev, dict) or "ts" not in ev or "state" not in ev:
             continue
-        ev_ts = _safe_float(ev.get("ts"), 0.0)
-        next_ts = _safe_float(events[i + 1].get("ts"), we) if (i + 1 < len(events) and isinstance(events[i + 1], dict)) else we
+        ev_ts = safe_float(ev.get("ts"), 0.0)
+        next_ts = safe_float(events[i + 1].get("ts"), we) if (i + 1 < len(events) and isinstance(events[i + 1], dict)) else we
         start, end = max(ev_ts, ws), min(next_ts, we)
         if end > start:
             regions.append((start, end, ev["state"]))
@@ -692,19 +688,19 @@ def format_state_text(entry, header, pending=None, exposure=None):
         f"{header}\n"
         f"price:     {entry.get('current_price', '?')}\n"
         f"trend:     {_t_label(entry.get('final_trend'))}\n"
-        f"grad rec:  {_safe_float(entry.get('gradient_recent')):+.4f}\n"
-        f"slope short:{_safe_float(entry.get('slope_small')):+.3f}\n"
-        f"slope long: {_safe_float(entry.get('slope_big')):+.3f}\n"
-        f"epsilon:   {_safe_float(entry.get('epsilon')):.4f}"
+        f"grad rec:  {safe_float(entry.get('gradient_recent')):+.4f}\n"
+        f"slope short:{safe_float(entry.get('slope_small')):+.3f}\n"
+        f"slope long: {safe_float(entry.get('slope_big')):+.3f}\n"
+        f"epsilon:   {safe_float(entry.get('epsilon')):.4f}"
     )
     fast_trend = entry.get("trend_fast")
     if fast_trend is not None:
-        text += f"\nfast:      {_t_label(fast_trend)} (grad: {_safe_float(entry.get('gradient_recent_fast')):+.4f})"
+        text += f"\nfast:      {_t_label(fast_trend)} (grad: {safe_float(entry.get('gradient_recent_fast')):+.4f})"
     # Add shadow rows only when their keys exist in the snapshot.
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {_t_label(entry.get('kalman_trend'))} "
-                 f"(v={_safe_float(entry.get('kalman_vel')):+.3f}%/min ±{_safe_float(entry.get('kalman_vel_std')):.3f})")
-    v1h_f = _safe_float(entry.get("vol_1h_pct"), default=None)
+                 f"(v={safe_float(entry.get('kalman_vel')):+.3f}%/min ±{safe_float(entry.get('kalman_vel_std')):.3f})")
+    v1h_f = safe_float(entry.get("vol_1h_pct"), default=None)
     if v1h_f is not None:
         text += f"\nvol 1h:    {v1h_f:.2f}%"
         if entry.get("adapt_reentry_pct") is not None or entry.get("adapt_dca_pct") is not None:
@@ -741,7 +737,7 @@ def build_analysis_state_text(symbol, active_summary=None):
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
     except (OSError, json.JSONDecodeError):
         pass
-    age = max(0.0, time.time() - _safe_float(entry.get("ts"), 0.0))
+    age = max(0.0, time.time() - safe_float(entry.get("ts"), 0.0))
 
     pending_info = None
     exposure_info = None
@@ -751,8 +747,8 @@ def build_analysis_state_text(symbol, active_summary=None):
         pending_map = by_sym_pending.get(symbol) if isinstance(by_sym_pending, dict) else None
         if isinstance(pending_map, dict):
             parts = []
-            buy_val = _safe_float(pending_map.get("buy"), 0.0)
-            sell_val = _safe_float(pending_map.get("sell"), 0.0)
+            buy_val = safe_pos_float(pending_map.get("buy"), default=0.0)
+            sell_val = safe_pos_float(pending_map.get("sell"), default=0.0)
             if buy_val > 0:
                 parts.append(f"BUY ${buy_val:.2f}")
             if sell_val > 0:
@@ -763,10 +759,10 @@ def build_analysis_state_text(symbol, active_summary=None):
         by_sym_exp = exposures_root.get("by_symbol") if isinstance(exposures_root, dict) else None
         exp_map = by_sym_exp.get(symbol) if isinstance(by_sym_exp, dict) else None
         if isinstance(exp_map, dict):
-            qty_val = _safe_float(exp_map.get("qty"), 0.0)
+            qty_val = safe_float(exp_map.get("qty"), 0.0)
             if abs(qty_val) > 1e-9:
                 raw_cost = exp_map.get("cost")
-                cost_str = f" (${_safe_float(raw_cost, 0.0):.2f})" if raw_cost is not None else ""
+                cost_str = f" (${safe_float(raw_cost, 0.0):.2f})" if raw_cost is not None else ""
                 exposure_info = f"{qty_val}{cost_str}"
 
     return format_state_text(
@@ -787,7 +783,7 @@ def build_backtest_state_text(directory, symbol):
     if not isinstance(entry, dict) or not entry:
         return None
     try:
-        sim_time = datetime.fromtimestamp(_safe_float(entry.get("ts"), 0.0)).strftime("%m-%d %H:%M:%S")
+        sim_time = datetime.fromtimestamp(safe_float(entry.get("ts"), 0.0)).strftime("%m-%d %H:%M:%S")
     except (ValueError, OSError, OverflowError):
         sim_time = "unknown"
     return format_state_text(entry, f"SIMULATED ANALYSIS ({sim_time})")
@@ -816,8 +812,8 @@ def render_symbol_charts_live(symbol, chart_specs, *, window_end=None):
     """
     if not chart_specs:
         return
-    we_val = _safe_float(window_end, 0.0)
-    window_end = we_val if we_val > 0.0 else time.time()
+    we_val = safe_pos_float(window_end, default=0.0)
+    window_end = we_val or time.time()
     max_window = max(window_seconds for _, window_seconds, _ in chart_specs)
     days_back = 9 if max_window > DAY_SECONDS else 2
     include_history = max_window > DAY_SECONDS
@@ -859,7 +855,7 @@ def render_symbol_chart_backtest(symbol, directory, out_path, window_hours=None)
     order_events = load_backtest_order_events(directory, symbol)
 
     all_ts = price_ts + [e["ts"] for e in trend_events] + [e["ts"] for e in order_events]
-    wh_val = _safe_float(window_hours, 0.0)
+    wh_val = safe_pos_float(window_hours, default=0.0)
     if not all_ts:
         window_start, window_end = time.time() - DAY_SECONDS, time.time()
         label = "backtest (tot intervalul reluat)"
@@ -919,10 +915,7 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
 # -- Static, serverless HTML with day/week toggle and auto-refresh. ------------
 
 def write_html(symbols, live_minutes=60, active_summary=None):
-    live_min = _safe_float(live_minutes, 60.0)
-    if live_min <= 0.0:
-        live_min = 60.0
-    live_minutes = live_min
+    live_minutes = safe_pos_float(live_minutes, default=60.0)
     blocks = []
     for s in symbols:
         blocks.append(f'''
@@ -942,9 +935,9 @@ def write_html(symbols, live_minutes=60, active_summary=None):
         exposures = active_summary.get("net_exposures") if isinstance(active_summary.get("net_exposures"), dict) else {}
         summary_html = f'''
 <div class="summary-bar">
-  <span><strong>Fleet Pending BUY:</strong> ${_safe_float(notional.get("total_buy"), 0.0):.2f}</span>
-  <span><strong>Fleet Pending SELL:</strong> ${_safe_float(notional.get("total_sell"), 0.0):.2f}</span>
-  <span><strong>Open Cost Basis:</strong> ${_safe_float(exposures.get("total_cost"), 0.0):.2f}</span>
+  <span><strong>Fleet Pending BUY:</strong> ${safe_float(notional.get("total_buy"), 0.0):.2f}</span>
+  <span><strong>Fleet Pending SELL:</strong> ${safe_float(notional.get("total_sell"), 0.0):.2f}</span>
+  <span><strong>Open Cost Basis:</strong> ${safe_float(exposures.get("total_cost"), 0.0):.2f}</span>
 </div>'''
 
     html = f"""<!doctype html>
