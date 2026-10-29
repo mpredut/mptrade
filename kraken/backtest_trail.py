@@ -163,7 +163,6 @@ def run_intraday(pair, tz_offset=3):
         by_hour[hr].append((c_f - o_f) / o_f * 100)
     print(f"=== INTRADAY {pair} (ora LOCALA UTC+{tz_offset}, {len(rows)} bare orare) ===")
     print(f"{'hour':<5} {'n':<5} {'avg.return/hour':>14} {'% positive bars':>16}")
-    cum = 0.0
     for hr in range(24):
         v = by_hour.get(hr, [])
         if not v:

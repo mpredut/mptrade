@@ -110,6 +110,8 @@ def run_replay(
     fill notional/fees; it does not inject capital after losses or cycle resets.
     """
     _validate_replay(ohlc, params, bar_minutes)
+    if bar_minutes is not None:
+        bar_minutes = safe_pos_float(bar_minutes, default=None)
     include_decision_trace = _strat._parse_bool_flag(include_decision_trace, False)
     intrabar_high = _strat._parse_bool_flag(intrabar_high, False)
     if initial_cash is not None:
@@ -242,6 +244,14 @@ def _run_once(
         bar_step_sec = bar_minutes * 60 if bar_minutes else 1
         side_order = execution.side_order()
 
+        def _record_sell_outcome(gross_before: float) -> None:
+            nonlocal wins, cycle_net_start
+            if strategy.s["realized_gross"] > gross_before:
+                wins += 1
+            if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
+                trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
+                cycle_net_start = strategy.s["realized_net"]
+
         for bar_index, row in enumerate(ohlc):
             open_, high, low, close = float(row[0]), float(row[1]), float(row[2]), float(row[3])
             current_bar = bar_index
@@ -303,13 +313,7 @@ def _run_once(
                             fill_count += 1
                             turnover_notional += volume * price
                             if side == "sell":
-                                if strategy.s["realized_gross"] > gross_before:
-                                    wins += 1
-                                if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                                    trade_pnls.append(
-                                        strategy.s["realized_net"] - cycle_net_start
-                                    )
-                                    cycle_net_start = strategy.s["realized_net"]
+                                _record_sell_outcome(gross_before)
 
                 # Live reconcile() cancels an unfilled limit BUY once it is older than
                 # order_ttl_min and the price has risen more than 0.3% above it; step() then
@@ -343,13 +347,7 @@ def _run_once(
                 )
                 fill_count += 1
                 turnover_notional += volume * price
-                if strategy.s["realized_gross"] > gross_before:
-                    wins += 1
-                if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                    trade_pnls.append(
-                        strategy.s["realized_net"] - cycle_net_start
-                    )
-                    cycle_net_start = strategy.s["realized_net"]
+                _record_sell_outcome(gross_before)
                 if equity_curve:
                     equity_curve[-1] = initial_capital + strategy.s["realized_net"]
     finally:
