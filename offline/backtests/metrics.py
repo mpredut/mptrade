@@ -116,7 +116,7 @@ def calculate_performance_metrics(
 
     exposure_values = [] if exposure is None else list(exposure)
     exposure_pct = (
-        100.0 * sum(bool(value) for value in exposure_values) / len(exposure_values)
+        100.0 * statistics.fmean(bool(value) for value in exposure_values)
         if exposure_values else 0.0
     )
 

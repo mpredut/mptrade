@@ -10,6 +10,7 @@ Provides venue-agnostic comparison math for walk-forward evaluation windows:
 
 from __future__ import annotations
 
+import statistics
 from typing import Any, Mapping, Sequence
 
 from botcore import safe_float, safe_nonneg_float
@@ -54,7 +55,7 @@ def relative_to_baseline(
             "losses_vs_live": 0,
         }
     return {
-        "mean_return_delta_pct": sum(deltas) / len(deltas),
+        "mean_return_delta_pct": statistics.fmean(deltas),
         "wins_vs_live": sum(delta > tol for delta in deltas),
         "ties_vs_live": sum(abs(delta) <= tol for delta in deltas),
         "losses_vs_live": sum(delta < -tol for delta in deltas),
