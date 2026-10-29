@@ -4,7 +4,6 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import json
 import time
-import threading
 import requests
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from datetime import datetime

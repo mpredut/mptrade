@@ -11,7 +11,6 @@ from offline.backtests.execution import ExecutionModel, FeeModel
 from offline.backtests.walk_forward import summarize_test_windows
 from botcore import (
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,

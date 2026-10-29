@@ -26,7 +26,6 @@ import gc
 import json
 from math import ceil
 import os
-import tempfile
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta

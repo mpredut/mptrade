@@ -14,8 +14,6 @@ Usage: ``python3 price_watcher.py [--config PATH] [--check]``.
 """
 
 import argparse
-import os
-import platform
 import threading
 import time
 
