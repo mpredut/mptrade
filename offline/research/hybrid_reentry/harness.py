@@ -55,15 +55,12 @@ def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
         for line in iterable:
             if not line or len(line) < min_len:
                 continue
-            try:
-                o = float(line[o_idx])
-                h = float(line[h_idx])
-                l = float(line[l_idx])
-                c = float(line[c_idx])
-            except (ValueError, IndexError, OverflowError):
-                continue
+            o = safe_pos_float(line[o_idx], default=None)
+            h = safe_pos_float(line[h_idx], default=None)
+            l = safe_pos_float(line[l_idx], default=None)
+            c = safe_pos_float(line[c_idx], default=None)
             if (
-                all(safe_pos_float(x, default=None) is not None for x in (o, h, l, c))
+                None not in (o, h, l, c)
                 and h >= max(o, l, c)
                 and l <= min(o, h, c)
             ):

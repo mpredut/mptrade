@@ -186,14 +186,8 @@ def _norm_params_key(params: dict) -> tuple:
         if isinstance(v, bool):
             items.append((k, ("bool", v)))
             continue
-        try:
-            fv = float(v)
-            if math.isfinite(fv):
-                items.append((k, fv))
-            else:
-                items.append((k, str(v)))
-        except (TypeError, ValueError, OverflowError):
-            items.append((k, str(v)))
+        fv = safe_float(v, default=None)
+        items.append((k, fv if fv is not None else str(v)))
     return tuple(items)
 
 

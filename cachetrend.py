@@ -29,7 +29,7 @@ from collections import defaultdict
 from typing import Optional
 
 import utils as u
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from cachepaths import (
     CACHEDB_SUBDOMAINS,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
@@ -649,14 +649,9 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     # ── Fast Cache24 subscriber channel: gradient and epsilon on every tick ───
     def on_price_update(self, symbol, ts_ms, price):
-        if isinstance(ts_ms, bool) or isinstance(price, bool):
-            return
-        try:
-            ts_int = int(ts_ms)
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if ts_int <= 0 or not math.isfinite(price_f) or price_f <= 0:
+        ts_int = safe_pos_int(ts_ms, default=None)
+        price_f = safe_pos_float(price, default=None)
+        if ts_int is None or price_f is None:
             return
         with self._lock:
             buf = self._get_trend_buffer(symbol)
@@ -795,14 +790,9 @@ class CacheShortTrendManager(CacheManagerInterface):
                 for entry in items:
                     if not isinstance(entry, (list, tuple)) or len(entry) < 2:
                         continue
-                    if isinstance(entry[0], bool):
-                        continue
-                    try:
-                        ts_val = int(entry[0])
-                    except (TypeError, ValueError, OverflowError):
-                        continue
+                    ts_val = safe_pos_int(entry[0], default=None)
                     price_val = safe_pos_float(entry[1], default=None)
-                    if ts_val > 0 and price_val is not None:
+                    if ts_val is not None and price_val is not None:
                         valid_entries.append([ts_val, price_val])
                 return valid_entries
 
