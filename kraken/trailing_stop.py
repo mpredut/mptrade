@@ -40,7 +40,7 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
-                           required_env, required_float_env, safe_float, single_instance)
+                           required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)
 from kraken_client import KrakenClient  # noqa: E402
 try:
     from kraken.notify import notify  # noqa: E402
@@ -125,7 +125,7 @@ class KrakenTrailing:
             trailing_market,
             TRAILING_MARKET if trailing_market is None else False,
         )
-        min_profit_pct = max(0.0, self._safe_float(min_profit_pct, float(MIN_PROFIT_PCT)))
+        min_profit_pct = safe_nonneg_float(min_profit_pct, default=float(MIN_PROFIT_PCT))
         self.state_file = state_file
         self._tick_balances: dict | None = None
         self._retry_counts: dict[tuple[str, str], int] = {}
@@ -333,14 +333,14 @@ class KrakenTrailing:
             self.order_lifecycle, self._retry_counts, pending, persist,
         )
         if result is not None and result.outcome == "terminal":
-            filled = max(0.0, self._safe_float(getattr(result.status, "filled_qty", 0.0), 0.0))
+            filled = safe_nonneg_float(getattr(result.status, "filled_qty", None), default=0.0)
             if filled > 0:
                 meta = result.intent.get("metadata") if isinstance(result.intent.get("metadata"), dict) else {}
                 notify_action = str(result.intent.get("action") or meta.get("action") or "ORDER")
                 notify_asset = result.intent.get("asset") or meta.get("asset") or result.intent.get("symbol")
                 qty = filled
-                cost = max(0.0, self._safe_float(getattr(result.status, "cost", 0.0), 0.0))
-                req_px = max(0.0, self._safe_float(result.intent.get("requested_price"), 0.0))
+                cost = safe_nonneg_float(getattr(result.status, "cost", None), default=0.0)
+                req_px = safe_nonneg_float(result.intent.get("requested_price"), default=0.0)
                 avg = cost / qty if cost > 0 and qty > 0 else req_px
                 notify(
                     title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
@@ -479,8 +479,7 @@ class KrakenTrailing:
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
         px_f = self._safe_float(price, 0.0)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        low_f = self._safe_float(raw_low, px_f)
-        low_val = low_f if low_f > 0 else px_f
+        low_val = safe_pos_float(raw_low, default=px_f)
         self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{px_f:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
 
@@ -543,12 +542,7 @@ def main() -> int:
             e = st.get(a, {}) if isinstance(st, dict) else {}
             if not isinstance(e, dict):
                 e = {}
-            peak_raw = e.get("peak")
-            try:
-                cand_peak = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
-                peak = cand_peak if (cand_peak is not None and math.isfinite(cand_peak) and cand_peak > 0) else None
-            except (TypeError, ValueError, OverflowError):
-                peak = None
+            peak = safe_pos_float(e.get("peak"), default=None)
             rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
             print(f"{a}: varf={peak} trailing={t}% " +
                   (f"sells below {peak*(1-t/100):.4f}" if peak else "(no peak yet)") +

@@ -36,7 +36,15 @@ import math
 from state_io import load_json_state, save_json_state
 
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float as _safe_nonneg_float
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_nonneg_float as _safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+    safe_pos_int,
+)
 
 
 def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:
@@ -46,9 +54,9 @@ def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persis
         return
     rc = st.get("retry_counts")
     if isinstance(rc, dict) and action in rc:
-        persisted = max(0, int(safe_float(rc[action], 0.0)))
+        persisted = safe_nonneg_int(rc[action], 0)
         retry_key = (pair, action)
-        cur_rc_i = max(0, int(safe_float(retry_counts.get(retry_key, 0), 0.0)))
+        cur_rc_i = safe_nonneg_int(retry_counts.get(retry_key), 0)
         if persisted > cur_rc_i:
             retry_counts[retry_key] = persisted
 
@@ -71,7 +79,7 @@ def build_trailing_order_intent(
     from providers.execution_audit import intent_client_order_id
 
     raw_attempt = retry_counts.get((pair, action), 0)
-    attempt = max(0, int(safe_float(raw_attempt, 0.0))) + 1
+    attempt = safe_nonneg_int(raw_attempt, 0) + 1
     qty_f = safe_float(qty, 0.0)
     price_f = safe_float(price, 0.0)
     anchor_f = safe_float(metadata.get("anchor", price_f), price_f)
@@ -108,10 +116,10 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
     retry_key = (pair, action)
     st = getattr(persist, "st", None)
     rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
-    rc_act = max(0, int(safe_float(rc.get(action, 0), 0.0)))
-    att_val = max(1, int(safe_float(pending.get("attempt"), 1.0)))
-    cur_rc_i = max(0, int(safe_float(retry_counts.get(retry_key, 0), 0.0)))
-    attempt_base = max(cur_rc_i, rc_act, max(0, att_val - 1))
+    rc_act = safe_nonneg_int(rc.get(action), 0)
+    att_val = safe_pos_int(pending.get("attempt"), 1)
+    cur_rc_i = safe_nonneg_int(retry_counts.get(retry_key), 0)
+    attempt_base = max(cur_rc_i, rc_act, att_val - 1)
     if result.outcome in ("absent", "retryable"):
         new_count = attempt_base + 1
         retry_counts[retry_key] = new_count
@@ -234,13 +242,7 @@ class TrailingCore:
             raw_trend = self.a.trend(pair)
         except Exception:
             return 0.0
-        if raw_trend is None or isinstance(raw_trend, bool):
-            return 0.0
-        try:
-            val = float(raw_trend)
-            return val if math.isfinite(val) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
+        return safe_float(raw_trend, default=0.0)
 
     def _remaining_qty(self, asset: str) -> float:
         if not asset:
@@ -248,10 +250,9 @@ class TrailingCore:
         total_getter = getattr(self.a, "total_qty", None)
         if callable(total_getter):
             try:
-                tot = total_getter(asset)
-                if (isinstance(tot, (int, float)) and not isinstance(tot, bool)
-                        and math.isfinite(tot) and tot >= 0):
-                    return float(tot)
+                tot = safe_nonneg_float(total_getter(asset), default=None)
+                if tot is not None:
+                    return tot
             except Exception:
                 pass
         return self._safe_free_qty(asset)
@@ -265,20 +266,8 @@ class TrailingCore:
         meta_dict = raw_meta if isinstance(raw_meta, dict) else {}
         raw_act = pending.get("action") or meta_dict.get("action")
         action = raw_act.strip().upper() if isinstance(raw_act, str) else ""
-        try:
-            raw_filled = status.filled_qty
-            filled = 0.0 if (raw_filled is None or isinstance(raw_filled, bool)) else float(raw_filled)
-            if not math.isfinite(filled) or filled < 0.0:
-                filled = 0.0
-        except (TypeError, ValueError, OverflowError):
-            filled = 0.0
-        try:
-            raw_cost = status.cost
-            cost_val = 0.0 if (raw_cost is None or isinstance(raw_cost, bool)) else float(raw_cost)
-            if not math.isfinite(cost_val) or cost_val < 0.0:
-                cost_val = 0.0
-        except (TypeError, ValueError, OverflowError):
-            cost_val = 0.0
+        filled = safe_nonneg_float(getattr(status, "filled_qty", None), 0.0)
+        cost_val = safe_nonneg_float(getattr(status, "cost", None), 0.0)
         avg = cost_val / filled if filled > 0 and cost_val > 0 else price
         if not math.isfinite(avg) or avg <= 0:
             avg = price
@@ -391,26 +380,16 @@ class TrailingCore:
         rb = st.get("rebuy")
         if not isinstance(rb, dict) or not rb:
             return
-        raw_low = rb.get("low")
-        if (
-            isinstance(raw_low, bool)
-            or not isinstance(raw_low, (int, float))
-            or not math.isfinite(float(raw_low))
-            or float(raw_low) <= 0
-        ):
+        low_f = safe_pos_float(rb.get("low"), default=None)
+        if low_f is None:
             rb["low"] = price
         else:
-            rb["low"] = min(float(raw_low), price)          # track the post-sale low
-        raw_qty = rb.get("qty", 0)
-        if (
-            isinstance(raw_qty, bool)
-            or not isinstance(raw_qty, (int, float))
-            or not math.isfinite(float(raw_qty))
-            or float(raw_qty) <= 0
-        ):
+            rb["low"] = min(low_f, price)          # track the post-sale low
+        qty_f = safe_pos_float(rb.get("qty"), default=None)
+        if qty_f is None:
             st.pop("rebuy", None)
             return
-        qty = round(float(raw_qty), 8)                        # one tranche equals the full quantity sold
+        qty = round(qty_f, 8)                        # one tranche equals the full quantity sold
         if qty <= 0:
             st.pop("rebuy", None)
             return
@@ -433,38 +412,24 @@ class TrailingCore:
 
     # -- one asset ------------------------------------------------------------
     def _process(self, key, asset, pair, trail, state) -> None:
-        if trail is None or isinstance(trail, bool):
-            return
-        try:
-            trail_f = float(trail)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not math.isfinite(trail_f) or trail_f <= 0.0 or trail_f >= 100.0:
+        trail_f = safe_pos_float(trail, default=None)
+        if trail_f is None or trail_f >= 100.0:
             return
         trail = trail_f
         free = self._safe_free_qty(asset)
         raw_price = self.a.price(pair)
-        if not raw_price or isinstance(raw_price, bool):
-            return
-        try:
-            price = float(raw_price)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not math.isfinite(price) or price <= 0:
+        price = safe_pos_float(raw_price, default=None)
+        if price is None:
             return
         is_new = key not in state or not isinstance(state.get(key), dict)
         if is_new:
             state[key] = {"peak": price}
         st = state[key]
-        raw_peak = st.get("peak")
-        if (isinstance(raw_peak, bool) or not isinstance(raw_peak, (int, float))
-                or not math.isfinite(float(raw_peak)) or float(raw_peak) <= 0):
+        raw_peak = safe_pos_float(st.get("peak"), default=None)
+        if raw_peak is None:
             st["peak"] = price
-        if "warmup_at" in st:
-            raw_warmup = st.get("warmup_at")
-            if (isinstance(raw_warmup, bool) or not isinstance(raw_warmup, (int, float))
-                    or not math.isfinite(float(raw_warmup)) or float(raw_warmup) <= 0):
-                st.pop("warmup_at", None)
+        if "warmup_at" in st and safe_pos_float(st.get("warmup_at"), default=None) is None:
+            st.pop("warmup_at", None)
 
         total_pos = self._remaining_qty(asset)
         if total_pos <= 0:
@@ -481,9 +446,9 @@ class TrailingCore:
                         basis = basis_getter(pair)
                     except Exception:
                         basis = None
-                    if (isinstance(basis, (int, float)) and not isinstance(basis, bool)
-                            and math.isfinite(basis) and basis > 0):
-                        ref = float(basis)
+                    basis_f = safe_pos_float(basis, default=None)
+                    if basis_f is not None:
+                        ref = basis_f
                 st["peak"] = max(price, ref)
                 if self.min_profit_pct > 0:
                     st["warmup_at"] = ref * (1 + self.min_profit_pct / 100.0)  # activation threshold
@@ -495,16 +460,11 @@ class TrailingCore:
         if isinstance(st.get("rebuy"), dict) and st.get("rebuy") and not st.get("exit_sold_qty"):
             # Keep the low while a dynamic gate is closed, so later recovery can
             # resume the existing intent without forgetting the intervening dip.
-            raw_low = st["rebuy"].get("low")
-            if (
-                isinstance(raw_low, bool)
-                or not isinstance(raw_low, (int, float))
-                or not math.isfinite(float(raw_low))
-                or float(raw_low) <= 0
-            ):
+            low_f = safe_pos_float(st["rebuy"].get("low"), default=None)
+            if low_f is None:
                 st["rebuy"]["low"] = price
             else:
-                st["rebuy"]["low"] = min(float(raw_low), price)
+                st["rebuy"]["low"] = min(low_f, price)
             if self._rebuy_for(pair):
                 self._handle_rebuy(key, asset, pair, st, price, state)
                 if st.get("pending_order"):

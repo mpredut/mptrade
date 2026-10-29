@@ -58,7 +58,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     sync_trailing_retry_count,
 )
 from botcore import (_parse_bool_flag, load_dotenv, log, required_bool_env, required_float_env,
-                     required_int_env, safe_float, safe_pos_float, single_instance)  # noqa: E402
+                     required_int_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)  # noqa: E402
 from cachepaths import cache_path  # noqa: E402
 
 DEFAULT_STATE = cache_path("trailing_state.json")
@@ -274,11 +274,9 @@ class TrailingStop:
             if len(balances) != 1:
                 return None
             balance = balances[0]
-            raw_free, raw_locked = balance.get("free"), balance.get("locked")
-            if isinstance(raw_free, bool) or isinstance(raw_locked, bool):
-                return None
-            free, locked = float(raw_free), float(raw_locked)
-            if not all(math.isfinite(v) and v >= 0 for v in (free, locked)):
+            free = safe_nonneg_float(balance.get("free"), default=None)
+            locked = safe_nonneg_float(balance.get("locked"), default=None)
+            if free is None or locked is None:
                 return None
             return self.po.position_cost_basis(
                 pair_norm or pair, free + locked, _COST_BASIS_LOOKBACK_S, provider_name="binance")
@@ -289,7 +287,7 @@ class TrailingStop:
     def _free_qty(self, balances: list, asset: str) -> float:
         for bal in balances or []:
             if isinstance(bal, dict) and bal.get("asset") == asset:
-                return max(0.0, safe_float(bal.get("free", 0.0), 0.0))
+                return safe_nonneg_float(bal.get("free"), default=0.0)
         return 0.0
 
     # -- instant trend from cacheManager for optional filters ------------------
@@ -344,19 +342,12 @@ class TrailingStop:
     def total_qty(self, asset: str) -> float:
         for bal in self._balances or []:
             if isinstance(bal, dict) and bal.get("asset") == asset:
-                raw_f = bal.get("free", 0.0)
-                raw_l = bal.get("locked", 0.0)
-                if isinstance(raw_f, bool) or isinstance(raw_l, bool):
+                f = safe_nonneg_float(bal.get("free", 0.0), default=None)
+                l = safe_nonneg_float(bal.get("locked", 0.0), default=None)
+                if f is None or l is None:
                     return 0.0
-                try:
-                    f = float(0.0 if raw_f is None else raw_f)
-                    l = float(0.0 if raw_l is None else raw_l)
-                    if not (math.isfinite(f) and f >= 0 and math.isfinite(l) and l >= 0):
-                        return 0.0
-                    tot = f + l
-                    return tot if math.isfinite(tot) and tot >= 0 else 0.0
-                except (TypeError, ValueError, OverflowError):
-                    return 0.0
+                tot = f + l
+                return tot if math.isfinite(tot) else 0.0
         return 0.0
 
     def unlock_qty(self, pair: str) -> bool:
@@ -373,16 +364,9 @@ class TrailingStop:
                     for bal in self._balances:
                         if isinstance(bal, dict) and bal.get("asset") == asset:
                             found = True
-                            raw_l = bal.get("locked", 0.0)
-                            if isinstance(raw_l, bool) or raw_l is None:
-                                locked = 0.0
-                            else:
-                                try:
-                                    locked = float(raw_l)
-                                except (TypeError, ValueError, OverflowError):
-                                    locked = 0.0
+                            locked = safe_pos_float(bal.get("locked", 0.0), default=0.0)
                             break
-                    if found and (not math.isfinite(locked) or locked <= 0.0):
+                    if found and locked <= 0.0:
                         return False
                 cancel_fn("SELL", pair)
                 refreshed = self.api.get_account_assets_balances()
@@ -477,13 +461,11 @@ class TrailingStop:
         # falling knife cascades (liquidation cascades, taker dumps) by bypassing only
         # the historical math reference while keeping microstructure/AI guards active.
         self._sync_retry_count_from_state(pair, "REBUY", persist)
-        price_f = self._safe_float(price, 0.0)
+        price_f = safe_nonneg_float(price, 0.0)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        low_f = self._safe_float(raw_low, price_f)
-        anchor_val = low_f if low_f > 0 else price_f
+        anchor_val = safe_pos_float(raw_low, default=price_f)
         raw_sp = rb.get("sell_price") if isinstance(rb, dict) else None
-        sp_f = self._safe_float(raw_sp, 0.0)
-        sell_price_val = sp_f if sp_f >= 0 else 0.0
+        sell_price_val = safe_nonneg_float(raw_sp, default=0.0)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
             anchor=anchor_val,
@@ -508,10 +490,9 @@ class TrailingStop:
                  f"[set TRAILING_ENABLED=true for it to execute]")
 
     def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
-        price_f = self._safe_float(price, 0.0)
+        price_f = safe_nonneg_float(price, 0.0)
         raw_low = rb.get("low") if isinstance(rb, dict) else None
-        low_f = self._safe_float(raw_low, price_f)
-        low_val = low_f if low_f > 0 else price_f
+        low_val = safe_pos_float(raw_low, default=price_f)
         self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price_f:.4f}  "
                  f"(a pullback from the low {low_val:.4f})  [TRAILING_ENABLED=true for it to execute]")
 
@@ -569,12 +550,7 @@ def main() -> int:
             st = state.get(s, {}) if isinstance(state, dict) else {}
             if not isinstance(st, dict):
                 st = {}
-            peak_raw = st.get("peak")
-            try:
-                peak_f = float(peak_raw) if peak_raw is not None and not isinstance(peak_raw, bool) else None
-                peak = peak_f if (peak_f is not None and math.isfinite(peak_f) and peak_f > 0) else None
-            except (TypeError, ValueError, OverflowError):
-                peak = None
+            peak = safe_pos_float(st.get("peak"), default=None)
             mode = ("pending order" if st.get("pending_order") else
                     "warming up" if "warmup_at" in st else
                     "waiting for rebuy" if st.get("rebuy") else
