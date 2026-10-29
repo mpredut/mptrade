@@ -498,6 +498,23 @@ def reconcile_intents_from_execution_audit(
     return updated
 
 
+def _filter_intents_by_scope(intents_data: list[dict[str, Any]], scope: str) -> list[dict[str, Any]]:
+    """Filter intent records to those matching the requested asset scope ('crypto', 'equities', or 'all')."""
+    from cachepaths import normalize_venue_name
+
+    if not isinstance(intents_data, list):
+        return []
+    return [
+        i
+        for i in intents_data
+        if isinstance(i, dict)
+        and (
+            scope not in ("equities", "crypto")
+            or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
+        )
+    ]
+
+
 def _resolve_intent_execution_details(
     i: dict[str, Any],
     now_ts: float,
@@ -507,7 +524,7 @@ def _resolve_intent_execution_details(
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
     from cachepaths import normalize_venue_name
-    from .base import extract_order_id, extract_order_price, extract_order_qty, extract_orig_qty
+    from .base import extract_executed_qty, extract_order_id, extract_order_price, extract_orig_qty
 
     venue = normalize_venue_name(i.get("venue")) or i.get("venue")
     symbol = str(i.get("symbol") or "").strip().upper()
@@ -547,18 +564,10 @@ def _resolve_intent_execution_details(
                 break
 
     fill_px = extract_order_price(exec_pay, default=None)
-    filled_qty = extract_order_qty(exec_pay, default=0.0)
+    filled_qty = extract_executed_qty(exec_pay, default=0.0)
     orig_qty = extract_orig_qty(exec_pay, default=None) or safe_pos_float(last_hist.get("qty"), default=None)
     if matched_open is not None:
-        open_filled = (
-            safe_nonneg_float(
-                matched_open.get("filled_qty")
-                if matched_open.get("filled_qty") is not None
-                else matched_open.get("executedQty"),
-                default=0.0,
-            )
-            or 0.0
-        )
+        open_filled = extract_executed_qty(matched_open, default=0.0)
         if open_filled > filled_qty:
             filled_qty = open_filled
         if fill_px is None:
@@ -611,7 +620,13 @@ def _resolve_intent_execution_details(
         default=None,
     )
     slippage_bps: Optional[float] = None
-    if fill_px is not None and fill_px > 0 and ref_px is not None and ref_px > 0:
+    if (
+        exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED")
+        and fill_px is not None
+        and fill_px > 0
+        and ref_px is not None
+        and ref_px > 0
+    ):
         raw_slip = (
             ((fill_px - ref_px) / ref_px) * 10_000.0
             if side == "BUY"
@@ -621,7 +636,11 @@ def _resolve_intent_execution_details(
     elif exec_status in ("FILLED", "SHADOW_SIMULATED") and fill_px is not None:
         slippage_bps = 0.0
 
-    eff_qty = filled_qty if filled_qty > 0 else (orig_qty if orig_qty is not None else None)
+    eff_qty = (
+        filled_qty
+        if filled_qty > 0
+        else (orig_qty if (orig_qty is not None and exec_status in ("FILLED", "SHADOW_SIMULATED")) else None)
+    )
     return {
         "venue": venue,
         "symbol": symbol,
@@ -651,17 +670,7 @@ def summarize_recent_ai_intents(
     open_orders: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Summarize the most recent AI trade intents filtered by asset scope."""
-    from cachepaths import normalize_venue_name
-
-    scoped_intents = [
-        i
-        for i in intents_data
-        if isinstance(i, dict)
-        and (
-            scope not in ("equities", "crypto")
-            or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
-        )
-    ]
+    scoped_intents = _filter_intents_by_scope(intents_data, scope)
     recent_intents_out: list[dict[str, Any]] = []
     for i in scoped_intents[-8:]:
         det = _resolve_intent_execution_details(
@@ -704,17 +713,7 @@ def build_last_cycle_execution_status(
     open_orders: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[Any]:
     """Build closed-loop mathematical fill confirmation (fill_px, slippage_bps, status) for the last cycle's intent(s)."""
-    from cachepaths import normalize_venue_name
-
-    scoped_intents = [
-        i
-        for i in intents_data
-        if isinstance(i, dict)
-        and (
-            scope not in ("equities", "crypto")
-            or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
-        )
-    ]
+    scoped_intents = _filter_intents_by_scope(intents_data, scope)
     if not scoped_intents:
         return None
     last_ts = safe_float(scoped_intents[-1].get("timestamp"), 0.0)

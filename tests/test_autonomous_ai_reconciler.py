@@ -3114,6 +3114,58 @@ def test_telemetry_bugfixes_and_api_normalization(tmp_path):
     assert "trailing_peak" not in positions[0]
     assert "dd_from_peak_pct" not in positions[0]
 
+    # 8. extract_executed_qty & build_last_cycle_execution_status report OPEN_RESTING (not PARTIALLY_FILLED) on unfilled resting limit orders
+    from providers.base import extract_executed_qty
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    assert extract_executed_qty({"status": "NEW", "origQty": "0.005", "executedQty": "0.0"}) == 0.0
+    assert extract_executed_qty({"status": "WORKING", "orderedQuantity": 2.0, "filledQuantity": 0.0}) == 0.0
+    assert extract_executed_qty({"status": "resting", "sz": "10.0", "origSz": "10.0"}) == 0.0
+    assert extract_executed_qty({"status": "PARTIALLY_FILLED", "origQty": "0.005", "executedQty": "0.002"}) == 0.002
+
+    resting_status = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": 1793306000.0,
+                "decision": "BUY",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 78500.0,
+                "reference_price": 79200.0,
+                "suggested_notional_usd": 392.5,
+                "status": "EXECUTED",
+                "execution_payload": {
+                    "orderId": "990011",
+                    "status": "NEW",
+                    "price": "78500.0",
+                    "origQty": "0.005",
+                    "executedQty": "0.0",
+                },
+            }
+        ],
+        "crypto",
+        1793306060.0,
+        extract_intent_notional,
+        open_orders=[
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "order_type": "LIMIT",
+                "order_id": "990011",
+                "price": 78500.0,
+                "orig_qty": 0.005,
+                "filled_qty": 0.0,
+                "remaining_qty": 0.005,
+                "status": "NEW",
+            }
+        ],
+    )
+    assert resting_status["status"] == "OPEN_RESTING"
+    assert resting_status["filled_qty"] is None
+    assert resting_status["slippage_bps"] is None
+
 
 def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_path):
     """Verify open_limit_orders, SPY/QQQ/DXY/US10Y/Futures 24h delta macro benchmarks, and last_cycle_execution_status."""

@@ -522,20 +522,16 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
 
 
-_UNFILLED_ORDER_STATUSES = frozenset({
-    "CANCELED", "CANCELLED", "REJECTED", "EXPIRED", "NEW", "OPEN", "PENDING",
-})
-
-
 def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     """Extract last action side, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
         return None
     from providers.base import (
         _EXEC_QTY_KEYS,
+        _UNFILLED_ORDER_STATUSES,
         aggregate_fills_by_order_id,
+        extract_executed_qty,
         extract_order_price,
-        extract_order_qty,
         extract_order_side,
         extract_timestamp_ms,
     )
@@ -567,7 +563,7 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
 
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
         p_f = extract_order_price(o, default=0.0)
-        q_f = extract_order_qty(o, default=0.0)
+        q_f = extract_executed_qty(o, default=0.0)
         ts_ms = extract_timestamp_ms(o, default=None)
         ts_raw = ts_ms if ts_ms is not None else (o.get("timestamp") if o.get("timestamp") is not None else o.get("time"))
         return (round(p_f, 6) if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
@@ -1094,7 +1090,7 @@ def resolve_venue_fee_and_limits(
     gateway_max_usd: float = 2000.0,
 ) -> Dict[str, Any]:
     """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
-    from providers.quantity import t212_sell_balance_cap
+    from providers.quantity import venue_fee_cap_quantity
 
     v_norm = normalize_venue_name(venue)
     fee_tier, maker_bps, taker_bps, min_notional = _VENUE_DEFAULT_FEE_SPECS.get(
@@ -1191,7 +1187,7 @@ def resolve_venue_fee_and_limits(
         out["effective_max_buy_usd"] = round(min(float(gateway_max_usd), fq_f * 0.995), 2)
     fb_f = safe_nonneg_float(free_base, default=None)
     if fb_f is not None and px_f > 0.0:
-        sellable_qty = t212_sell_balance_cap(fb_f, px_f) if v_norm == "t212" else fb_f
+        sellable_qty = venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f)
         out["effective_max_sell_usd"] = round(min(float(gateway_max_usd), sellable_qty * px_f), 2)
     return out
 
@@ -2252,6 +2248,8 @@ def harvest_recent_orders_and_enrich_positions(
                 cyc["dd_pct"] = None
                 pos.pop("trailing_peak", None)
                 pos.pop("dd_from_peak_pct", None)
+                if is_flat_after_exit and pos.get("last_sell_px") is not None:
+                    cyc["last_sell_price"] = pos["last_sell_px"]
             elif not is_flat_after_exit:
                 cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
@@ -2259,6 +2257,10 @@ def harvest_recent_orders_and_enrich_positions(
                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
+            if cyc.get("last_buy_price") is None and pos.get("last_buy_px") is not None:
+                cyc["last_buy_price"] = pos["last_buy_px"]
+            if cyc.get("last_sell_price") is None and pos.get("last_sell_px") is not None:
+                cyc["last_sell_price"] = pos["last_sell_px"]
         sym_spread = next(
             (
                 prices_and_trends[c].get("spread_bps")
@@ -2989,8 +2991,9 @@ def collect_pretrade_telemetry(
             ):
                 w_usd = safe_pos_float(obj_attr(ob_snap, usd_attr, 0.0), 0.0)
                 w_px = safe_pos_float(obj_attr(ob_snap, px_attr, 0.0), 0.0)
+                w_px_fmt = f"{w_px:,.2f}" if w_px >= 1.0 else f"{w_px:.6f}".rstrip("0").rstrip(".")
                 telemetry[f"Orderbook {side_lbl} Wall Ahead"] = (
-                    f"${w_usd:,.0f} @ ${w_px:,.2f}"
+                    f"${w_usd:,.0f} @ ${w_px_fmt}"
                     if w_usd > 100_000.0 and w_px > 0.0
                     else "None detected within 2%"
                 )

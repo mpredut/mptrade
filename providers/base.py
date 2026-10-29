@@ -61,6 +61,10 @@ _ORIG_QTY_KEYS = (
     "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",
 )
 _EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty", "z")
+_UNFILLED_ORDER_STATUSES = frozenset({
+    "NEW", "OPEN", "RESTING", "WORKING", "PENDING",
+    "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "UNFILLED",
+})
 _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
@@ -302,6 +306,28 @@ def extract_order_qty(order: Any, default: float = 0.0) -> float:
             if val > 0:
                 return val
     return default
+
+
+def extract_executed_qty(order: Any, default: float = 0.0) -> float:
+    """Extract executed/filled quantity without falling back to origQty on unfilled/resting orders."""
+    if not isinstance(order, dict):
+        return default
+    for key in _EXEC_QTY_KEYS:
+        if key in order and order[key] is not None:
+            val = safe_float(order[key], default=None)
+            if val is not None:
+                return abs(val)
+    filled_sub = order.get("filled")
+    if isinstance(filled_sub, dict):
+        for key in ("totalSz", "sz", "qty", *_EXEC_QTY_KEYS):
+            if key in filled_sub and filled_sub[key] is not None:
+                val = safe_float(filled_sub[key], default=None)
+                if val is not None:
+                    return abs(val)
+    raw_st = str(order.get("status") or "").strip().upper()
+    if raw_st in _UNFILLED_ORDER_STATUSES or (isinstance(order.get("resting"), dict) and not filled_sub):
+        return 0.0
+    return extract_order_qty(order, default=default)
 
 
 def extract_orig_qty(order: Any, default: Optional[float] = None) -> Optional[float]:
