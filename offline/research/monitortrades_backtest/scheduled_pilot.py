@@ -153,8 +153,8 @@ def _current_value(section, key):
     cp.read(INSTRUMENTS_CONF, encoding="utf-8")
     if section not in cp or key not in cp[section]:
         raise KeyError(f"{section}.{key} not found in {INSTRUMENTS_CONF}")
-    val = float(cp[section][key])
-    if not math.isfinite(val):
+    val = safe_float(cp[section][key], default=None)
+    if val is None:
         raise ValueError(f"Non-finite value for {section}.{key}: {cp[section][key]!r}")
     return val
 

@@ -66,8 +66,7 @@ def remaining_average_cost(fills, held_qty):
                 return None
         if qty <= 0 or not math.isclose(qty, held_qty, rel_tol=1e-9, abs_tol=1e-8):
             return None
-        avg = cost / qty
-        return avg if math.isfinite(avg) and avg > 0 else None
+        return safe_pos_float(cost / qty, default=None)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
 
