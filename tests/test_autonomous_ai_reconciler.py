@@ -2573,11 +2573,11 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert "slopes(90s=+0.00092, 3.7m=+0.00064, 15m=+0.00045, 2.5h=+0.00021, grad_rec=+0.0012, grad_fast=+0.0018/eps=0.0004)" in prompt_out
     assert "g_coeff(90s=+0.00081, 3.7m=+0.00055, 15m=+0.00038, 2.5h=+0.00019)" in prompt_out
     assert "vol_1h=0.85%(adapt_reentry=1.7%) adapt_dca=2.1%" in prompt_out
-    assert "Recent Exchange Execution Audit Log (logger/execution_audit/):" in prompt_out
-    assert "Complete cachedb/ Data Sources Available for Decision-Making (Full Read/Query Access):" in prompt_out
     assert "FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE" in prompt_out
-    assert "UNBIASED QUANTITATIVE FREEDOM" in prompt_out
+    assert "UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING" in prompt_out
+    assert "50%–100%` of `value_usd`" in prompt_out
     assert "providers.market_api" in prompt_out
+    assert "cachedb_catalog" not in prompt_out
     assert "STRONG_SELL_HARVEST_ZONE" not in prompt_out
     assert "SWING_3_8_RULE" not in prompt_out
     assert "do NOT call tools, shell commands, or file readers" not in prompt_out

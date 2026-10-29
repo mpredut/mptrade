@@ -1790,53 +1790,6 @@ class AutonomousAIReconciler:
             if active_retries:
                 snapshot.portfolio_summary["active_retry_queue"] = active_retries
 
-        exec_audit_dir = os.path.join(self.workspace_dir, "logger", "execution_audit")
-        if os.path.isdir(exec_audit_dir):
-            audit_files = sorted(glob.glob(os.path.join(exec_audit_dir, "execution_audit_*.jsonl")))
-            if audit_files:
-                audit_events: List[Dict[str, Any]] = []
-                try:
-                    for af_path in audit_files[-2:]:
-                        with open(af_path, "r", encoding="utf-8", errors="replace") as f:
-                            for raw_line in f.readlines()[-40:]:
-                                raw_line = raw_line.strip()
-                                if not raw_line:
-                                    continue
-                                try:
-                                    rec = json.loads(raw_line)
-                                except ValueError:
-                                    continue
-                                if not isinstance(rec, dict):
-                                    continue
-                                evt = str(rec.get("event") or "")
-                                st = str(rec.get("status") or "")
-                                if evt == "order_status" and st.lower() == "open":
-                                    continue
-                                item_aud: Dict[str, Any] = {
-                                    "venue": normalize_venue_name(rec.get("venue")),
-                                    "symbol": rec.get("symbol"),
-                                    "event": evt,
-                                }
-                                if rec.get("side"):
-                                    item_aud["side"] = str(rec.get("side")).upper()
-                                if st:
-                                    item_aud["status"] = st
-                                if rec.get("qty") is not None or rec.get("filled_qty") is not None:
-                                    item_aud["qty"] = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
-                                if rec.get("price") is not None or rec.get("reference_price") is not None:
-                                    item_aud["price"] = rec.get("price") if rec.get("price") is not None else rec.get("reference_price")
-                                if rec.get("cost") is not None:
-                                    item_aud["cost"] = rec.get("cost")
-                                if rec.get("reason") or rec.get("error"):
-                                    item_aud["reason"] = rec.get("reason") or rec.get("error")
-                                if rec.get("ts_utc"):
-                                    item_aud["ts_utc"] = rec.get("ts_utc")
-                                audit_events.append(item_aud)
-                except Exception:
-                    pass
-                if audit_events:
-                    snapshot.portfolio_summary["recent_execution_audit"] = audit_events[-10:]
-
         mt_state = _read_json(os.path.join(self.cache_dir, "mt_state.json"))
         if isinstance(mt_state, dict):
             active_mt = {
@@ -1855,30 +1808,6 @@ class AutonomousAIReconciler:
         ssl_state = _read_json(os.path.join(self.cache_dir, "smart_stop_loss_state.json"))
         if isinstance(ssl_state, dict) and ssl_state:
             snapshot.portfolio_summary["smart_stop_loss_state"] = ssl_state
-
-        # Build live catalog of all data files in cachedb/ available as decision sources
-        if os.path.isdir(self.cache_dir):
-            cachedb_catalog: Dict[str, List[str]] = {}
-            for sub_rel in ("prices", "trends", "trends/24trend", "telemetry", "macro", "orders", "state", ""):
-                sub_dir = os.path.join(self.cache_dir, sub_rel) if sub_rel else self.cache_dir
-                if not os.path.isdir(sub_dir):
-                    continue
-                files_found: List[str] = []
-                try:
-                    for fn in sorted(os.listdir(sub_dir)):
-                        full_fn = os.path.join(sub_dir, fn)
-                        if not os.path.isfile(full_fn):
-                            continue
-                        if fn.endswith((".meta", ".lock", ".tmp", ".heartbeat", "_eval.json")):
-                            continue
-                        if fn.endswith((".json", ".jsonl", ".npz")):
-                            files_found.append(f"{sub_rel}/{fn}" if sub_rel else fn)
-                except OSError:
-                    pass
-                if files_found:
-                    cachedb_catalog[sub_rel or "root"] = files_found
-            if cachedb_catalog:
-                snapshot.portfolio_summary["cachedb_catalog"] = cachedb_catalog
 
         if scope in ("equities", "crypto"):
             want_t212 = scope == "equities"
@@ -1905,7 +1834,7 @@ class AutonomousAIReconciler:
                     if not str(k).upper().endswith(("_EQ", "_US_EQ"))
                 }
                 snapshot.portfolio_summary.pop("t212_cycles", None)
-            for list_key in ("recent_ai_intents", "active_retry_queue", "recent_execution_audit"):
+            for list_key in ("recent_ai_intents", "active_retry_queue"):
                 if list_key in snapshot.portfolio_summary:
                     filtered_items = [
                         item for item in snapshot.portfolio_summary[list_key]
@@ -2570,12 +2499,6 @@ class AutonomousAIReconciler:
                 context_items.append(f"  * Active Smart Stop-Loss State (smart_stop_loss_state.json): {ps['smart_stop_loss_state']}")
             if ps.get("recent_ai_intents"):
                 context_items.append(f"  * Recent Autonomous Intents: {ps['recent_ai_intents']}")
-            if ps.get("recent_execution_audit"):
-                context_items.append(f"  * Recent Exchange Execution Audit Log (logger/execution_audit/): {ps['recent_execution_audit']}")
-            if ps.get("cachedb_catalog"):
-                context_items.append(
-                    f"  * Complete cachedb/ Data Sources Available for Decision-Making (Full Read/Query Access): {ps['cachedb_catalog']}"
-                )
 
         if not is_pure_sre and focus_symbols:
             raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols
@@ -2635,22 +2558,22 @@ class AutonomousAIReconciler:
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} by synthesizing the "
                 "entire MPTrade system telemetry as a whole:\n"
-                "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: You have direct, unrestricted access to "
-                "all files and subdirectories in `cachedb/` (listed in `cachedb_catalog` above) and may use everything in `cachedb/` as a source of information for your trading decisions:\n"
-                "     * `cachedb/prices/`: `cache_current_price.json`, `cache_watcher_all_price.json` (7d multi-coin price curves & raw `swing_wave` percentages: `low`, `high`, `rally_low`, `pullback_high`, `swings_7d`, `avg_amp`), `cache_24_price_<SYM>.json` (24h tick history & `1m..24h` deltas), `cache_365_price_<SYM>.jsonl`/`.npz` (long-term history), and `cache_sparse_price_<SYM>.jsonl`.\n"
-                "     * `cachedb/trends/`: `cache_short_trend.json` & `cachedb/trends/24trend/live_<SYM>.json` (1-second ultra-fast dynamic trend windows `90s`, `3.7m`/`222s`, `15m`/`900s`, `2.5h`/`9000s`, slopes, growth coefficients `g_coeff`, `grad_rec`, `grad_fast`/`eps`), `cache_kalman_trend.json` (`kalman_vel`, `vol_1h`, `adapt_reentry`, `adapt_dca`), `cache_long_trend.json` & `priceanalysis.json` (long trend direction, duration, `est_rem` hours), and `cache_T_trend.json` (`med_d`/`p90_d` Weibull duration stats).\n"
-                "     * `cachedb/telemetry/`: `orderbook_depth_<SYM>.json` (bid/ask depth USD, imbalance, bid/ask walls & distances), `derivatives_telemetry_<SYM>.json` (funding, predicted funding, OI USD & 1h change, taker buy/sell ratio), and `whale_snapshot_<SYM>.json` (whale long/short positioning & divergence regime).\n"
-                "     * `cachedb/macro/`: `fear_greed_collect.json`, `market_breadth_collect.json`, `sentiment_eval.json`, `geopolitical_eval.json`, `news_feed_collect.json` (1m live breaking news), and `macro_lexicon_collect.json`.\n"
-                "     * `cachedb/orders/` & `cachedb/state/`: `cache_order.json`, `cache_trade.jsonl`, `cache_trade_kraken.json`, `cache_asset_value.jsonl`, `order_retry_queue.jsonl`, `mt_state.json`, `trailing_state.json`, `assetguardian_state.json`, `smart_stop_loss_state.json`, `autonomous_trade_intents_state.json`, plus venue cycle states (`.state_*.json` in `kraken/`, `hyperliquid/`, `212trading/`) and `logger/execution_audit/`.\n"
+                "   - FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE: The telemetry above is a compact "
+                "synthesized dashboard (zero raw file dumps); whenever you want deeper detail, you have direct, unrestricted read access "
+                "to the entire `cachedb/` (`cachedb/prices/`, `cachedb/trends/`, `cachedb/trends/24trend/`, `cachedb/telemetry/`, "
+                "`cachedb/macro/`, `cachedb/orders/`, `cachedb/state/`), `logger/execution_audit/`, `logs/`, and `providers.market_api` "
+                "to inspect any file or query any venue on your own.\n"
                 "   - BUSINESS OBJECTIVE & FULL AUTONOMOUS JUDGMENT (ZERO PROFIT OR STRATEGY GUARDS): Your objective "
                 "is to maximize net portfolio value and risk-adjusted returns (net of venue fees) across all platforms while "
                 "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
                 "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
                 "symmetrically on both BUY and SELL.\n"
-                "   - UNBIASED QUANTITATIVE FREEDOM: No rigid trading rules, fixed percentage thresholds, or directional biases "
-                "are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform (`binance`, `kraken`, "
-                "`hyperliquid`, `t212`), and WHY to `BUY`, `SELL` (whether harvesting profits on upward swings, scaling in/out "
-                "in tranches, or selling below entry/last-BUY to reduce risk), or `HOLD` based on your own holistic judgment of the market and portfolio data.\n"
+                "   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: No rigid trading rules, fixed percentage thresholds, "
+                "or directional biases are imposed on you—judge 100% freely on your own WHEN, WHAT, HOW MUCH, on WHICH platform "
+                "(`binance`, `kraken`, `hyperliquid`, `t212`), and WHY to `BUY`, `SELL`, or `HOLD`. Do NOT restrict yourself to tiny "
+                "fixed slices when conviction or profitability is clear: when a position is clearly in profit (e.g. above "
+                "`active_avg_buy_px` / `last_buy_px` or after a strong upward swing), you are completely free to sell a large "
+                f"quantity or the entire profitable position (`50%–100%` of `value_usd`, up to {max_usd:g} USD) at once.\n"
                 f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
                 "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
@@ -2659,7 +2582,7 @@ class AutonomousAIReconciler:
             schema.append(
                 f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
                 f'"venue": {venue_schema}, "confidence": 0.90, '
-                f'"suggested_notional_usd": 500.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
+                f'"suggested_notional_usd": 1000.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
             )
 
         if spec.can_self_heal:
