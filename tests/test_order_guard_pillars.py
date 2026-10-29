@@ -1428,3 +1428,48 @@ def test_batch48_offline_runners_backtests_and_legacy_tools_hardening(tmp_path, 
     assert cleaned_data["items"]["_meta"] == {"version": 1}
 
 
+def test_batch49_cmc_platform_and_news_feed_deadline_hardening(monkeypatch):
+    import market_monitor.pricefetcher as pf_mod
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+    # 1. Explicit api_key=None or api_key="" does not fall back to os.environ["CMC_API_KEY"]
+    monkeypatch.setenv("CMC_API_KEY", "env-cmc-secret-key")
+    p_none = pf_mod.CoinMarketCapPricePlatform(api_key=None)
+    assert p_none.api_key is None
+    assert p_none._supported_symbols == set()
+
+    p_empty = pf_mod.CoinMarketCapPricePlatform(api_key="   ")
+    assert p_empty.api_key is None
+    assert p_empty._supported_symbols == set()
+
+    # 2. NewsFeedCollector.fetch stops iterating remaining feeds when deadline is exhausted after parsing a feed
+    collector = NewsFeedCollector()
+    monkeypatch.setattr(collector, "get_active_feed_urls", lambda: ["https://feed1.example/rss", "https://feed2.example/rss"])
+    calls = []
+
+    class _DummyResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b"<rss><channel><item><title>BTC surges</title></item></channel></rss>"
+
+    t_vals = iter([100.0, 100.1, 110.8])
+    monkeypatch.setattr("intelligence.macro.news_feed_collector.time.monotonic", lambda: next(t_vals, 111.0))
+
+    def _fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, timeout))
+        return _DummyResp()
+
+    monkeypatch.setattr("intelligence.macro.news_feed_collector.urllib.request.urlopen", _fake_urlopen)
+    res = collector.fetch(force_refresh=True)
+    assert len(calls) == 1
+    assert calls[0][0] == "https://feed1.example/rss"
+    assert calls[0][1] <= 4.0
+    assert res is not None and res.total_fetched == 1
+
+
+

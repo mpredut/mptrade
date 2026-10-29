@@ -359,13 +359,18 @@ class NewsFeedCollector:
 
         collected_headlines: List[NewsHeadline] = []
         any_parsed = False
+        deadline = time.monotonic() + 11.0
         for feed_url in self.get_active_feed_urls():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.5 and any_parsed:
+                break
+            req_timeout = max(1.0, min(4.0, remaining)) if remaining > 0 else 2.0
             try:
                 req = urllib.request.Request(
                     feed_url,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) mptrade-macro/1.0"},
                 )
-                with urllib.request.urlopen(req, timeout=8) as resp:
+                with urllib.request.urlopen(req, timeout=req_timeout) as resp:
                     latest = self.parse_rss_xml(resp.read(), now_ts=now, cache_dir=cache_dir)
                 if latest:
                     any_parsed = True

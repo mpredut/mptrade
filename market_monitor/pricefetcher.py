@@ -278,10 +278,17 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             return None
 
 
+_CMC_KEY_UNSET = object()
+
+
 class CoinMarketCapPricePlatform(PricePlatformInterface):
-    def __init__(self, api_key: Optional[str] = None):
-        # Define ``api_key`` before use.
-        self.api_key = api_key or os.environ.get('CMC_API_KEY')
+    def __init__(self, api_key: Optional[str] = _CMC_KEY_UNSET):  # type: ignore[assignment]
+        # Respect explicit api_key=None (offline/disabled) without falling back to os.environ.
+        if api_key is _CMC_KEY_UNSET:
+            raw_key = os.environ.get('CMC_API_KEY')
+        else:
+            raw_key = api_key
+        self.api_key = raw_key.strip() if isinstance(raw_key, str) and raw_key.strip() else None
         self._base_url = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest"
         self._supported_symbols: Set[str] = set()
         self._all_listings: Dict[str, Dict] = {}
@@ -309,9 +316,8 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
                 return False
 
             def _read_cache(path: str):
-                with open(path, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                if not isinstance(payload, dict) or not payload:
+                payload = read_json_dict(path)
+                if not payload:
                     raise ValueError("CMC cache must be a non-empty dict")
                 return payload
 

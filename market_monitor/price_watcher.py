@@ -262,7 +262,8 @@ def main():
         return
 
     print("\n⏳ Initialising the price cache...")
-    cachePriceAll = create_cachePriceAll(cmc_api_key=CMC_API_KEY,
+    cmc_key_for_cache = CMC_API_KEY if (cfg.get("discover_new_coins") and ALERT_NEW_COIN) else None
+    cachePriceAll = create_cachePriceAll(cmc_api_key=cmc_key_for_cache,
                                          symbols=cfg["watch"], max_symbols=cfg["max_monitored"])
     print("⏳ Waiting for the first price sync (5s)...")
     time.sleep(5)
