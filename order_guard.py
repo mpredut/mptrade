@@ -1230,11 +1230,8 @@ def _read_cached_trend_duration(symbol: str) -> float:
                 if entry is None:
                     break
                 if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
-                    raw_dur = entry.get("duration_seconds", 0.0)
-                    if isinstance(raw_dur, bool):
-                        continue
-                    dur = float(raw_dur or 0.0)
-                    if math.isfinite(dur) and dur > 0:
+                    dur = safe_pos_float(entry.get("duration_seconds"), default=None)
+                    if dur is not None:
                         return dur
     except Exception:
         pass
@@ -1249,11 +1246,9 @@ def _resolve_trend_duration(symbol: str) -> float:
         import cacheManager as cm
         trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
         if trend_meta and "duration_seconds" in trend_meta:
-            raw_dur = trend_meta["duration_seconds"]
-            if not isinstance(raw_dur, bool):
-                dur = float(raw_dur or 0.0)
-                if math.isfinite(dur) and dur > 0:
-                    return dur
+            dur = safe_pos_float(trend_meta["duration_seconds"], default=None)
+            if dur is not None:
+                return dur
     except Exception:
         pass
     return _read_cached_trend_duration(symbol)
@@ -1331,36 +1326,52 @@ def _read_cached_price_history(
         if c and c not in cand_symbols:
             cand_symbols.append(c)
 
+    def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return None
+        ts_raw = safe_pos_float(item[0], default=None)
+        px = safe_pos_float(item[1], default=None)
+        if ts_raw is None or px is None:
+            return None
+        return (ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw), px
+
+    def _lookup_symbol_items(mapping: Any) -> Any:
+        if not isinstance(mapping, dict):
+            return None
+        for cand in cand_symbols:
+            items = mapping.get(cand)
+            if items:
+                return items
+        for k, v in mapping.items():
+            if k and v and _normalize_base_asset(str(k)) == su_base:
+                return v
+        return None
+
     def _extract_valid_ticks(raw_items: Any) -> None:
         if isinstance(raw_items, list) and len(raw_items) > 512:
             tail_buf: List[Tuple[float, float]] = []
             older_streak = 0
             for item in reversed(raw_items):
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    ts_raw = safe_pos_float(item[0], default=None)
-                    px = safe_pos_float(item[1], default=None)
-                    if ts_raw is None or px is None:
-                        continue
-                    ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                    if ts_sec < cutoff_ts:
-                        older_streak += 1
-                        if older_streak >= 64:
-                            break
-                        continue
-                    older_streak = 0
-                    if ts_sec <= (now_ts + 5.0):
-                        tail_buf.append((ts_sec, px))
+                parsed = _parse_tick(item)
+                if parsed is None:
+                    continue
+                ts_sec, px = parsed
+                if ts_sec < cutoff_ts:
+                    older_streak += 1
+                    if older_streak >= 64:
+                        break
+                    continue
+                older_streak = 0
+                if ts_sec <= (now_ts + 5.0):
+                    tail_buf.append((ts_sec, px))
             tail_buf.reverse()
             history.extend(tail_buf)
             return
 
         for item in raw_items or []:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                ts_raw = safe_pos_float(item[0], default=None)
-                px = safe_pos_float(item[1], default=None)
-                if ts_raw is None or px is None:
-                    continue
-                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+            parsed = _parse_tick(item)
+            if parsed is not None:
+                ts_sec, px = parsed
                 if cutoff_ts <= ts_sec <= (now_ts + 5.0):
                     history.append((ts_sec, px))
 
@@ -1377,19 +1388,7 @@ def _read_cached_price_history(
             continue
         try:
             items_map = data.get("items", {})
-            raw_items = None
-            if isinstance(items_map, dict):
-                for cand in cand_symbols:
-                    raw_items = items_map.get(cand)
-                    if raw_items:
-                        break
-                if not raw_items:
-                    for k, v in items_map.items():
-                        if v and _normalize_base_asset(str(k)) == su_base:
-                            raw_items = v
-                            break
-            elif isinstance(items_map, list):
-                raw_items = items_map
+            raw_items = items_map if isinstance(items_map, list) else _lookup_symbol_items(items_map)
             _extract_valid_ticks(raw_items)
             if history:
                 break
@@ -1402,18 +1401,7 @@ def _read_cached_price_history(
         data = _read_json_recovering(p_multi)
         if isinstance(data, dict):
             try:
-                all_items = data.get("items", {})
-                raw_items = None
-                for cand in cand_symbols:
-                    raw_items = all_items.get(cand)
-                    if raw_items:
-                        break
-                if not raw_items:
-                    for k, v in all_items.items():
-                        if k and _normalize_base_asset(k) == su_base:
-                            raw_items = v
-                            break
-                _extract_valid_ticks(raw_items)
+                _extract_valid_ticks(_lookup_symbol_items(data.get("items", {})))
             except Exception:
                 pass
 
@@ -1858,23 +1846,9 @@ def check_math_profit_reference(
               f"for this venue/module (order_guard.conf); price {price} is not compared with past {opp_side.lower()}s")
         return True
 
-    def _parse_ref(val):
-        if val is None or isinstance(val, bool):
-            return None
-        try:
-            f = float(val)
-            return f if math.isfinite(f) and f > 0 else None
-        except (TypeError, ValueError):
-            return None
-
-    px_val = _parse_ref(price)
-    if px_val is None or profit_percentage is None or isinstance(profit_percentage, bool):
-        return False
-    try:
-        prof_pct = float(profit_percentage)
-    except (TypeError, ValueError):
-        return False
-    if not math.isfinite(prof_pct):
+    px_val = safe_pos_float(price, default=None)
+    prof_pct = safe_float(profit_percentage, default=None)
+    if px_val is None or prof_pct is None:
         return False
 
     if mode == "dynamic":
@@ -1896,7 +1870,7 @@ def check_math_profit_reference(
             regime_context=regime_context,
         )
         dyn_hours = dyn_window_s / 3600.0
-        pos_window_ref = _parse_ref(window_ref)
+        pos_window_ref = safe_pos_float(window_ref, default=None)
         if pos_window_ref is not None:
             diff = profit_diff_pct(side, px_val, pos_window_ref)
             if diff < prof_pct:
@@ -1975,7 +1949,7 @@ def check_math_profit_reference(
         else (provider.last_opposite_fill(symbol, side) if hasattr(provider, "last_opposite_fill") else None)
     )
 
-    ref = _parse_ref(raw_ref)
+    ref = safe_pos_float(raw_ref, default=None)
     if ref is None:
         return True
     diff = profit_diff_pct(side, px_val, ref)
