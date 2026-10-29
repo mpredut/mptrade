@@ -78,8 +78,7 @@ class MarketRegimeDecision:
         samples_f = safe_pos_float(self.n_samples, default=None)
         if grad_f is None or samples_f is None or samples_f < 2:
             return None
-        move = grad_f * (samples_f - 1.0) * 100.0
-        return move if math.isfinite(move) else None
+        return safe_float(grad_f * (samples_f - 1.0) * 100.0, default=None)
 
     def adverse_to(self, exposure_side: str) -> bool:
         if isinstance(exposure_side, bool):
@@ -313,8 +312,7 @@ class MarketRegimeEvidence:
         obs_f = safe_float(self.observed_at, default=None)
         if eval_f is None or obs_f is None:
             return None
-        age = eval_f - obs_f
-        return age if math.isfinite(age) else None
+        return safe_float(eval_f - obs_f, default=None)
 
     @property
     def temporal_state(self) -> str:
@@ -411,10 +409,8 @@ class MarketRegimeEvaluator:
     """Transform a common snapshot into a deterministic decision."""
 
     def __init__(self, strength_threshold: float = 2.0):
-        if isinstance(strength_threshold, bool):
-            raise ValueError("strength_threshold must be positive")
-        threshold = float(strength_threshold)
-        if not math.isfinite(threshold) or threshold <= 0:
+        threshold = safe_pos_float(strength_threshold, default=None)
+        if threshold is None:
             raise ValueError("strength_threshold must be positive")
         self.strength_threshold = threshold
 
