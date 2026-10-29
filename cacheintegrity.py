@@ -5,12 +5,11 @@ from collections import defaultdict
 from decimal import Decimal
 import hashlib
 import json
-import math
 import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
-from botcore import safe_int, safe_pos_int
+from botcore import safe_float, safe_int, safe_pos_int
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -96,9 +95,10 @@ def _strict_int_field(val: Any) -> int:
     if isinstance(val, bool) or val is None or not isinstance(val, (int, float, str)):
         raise ValueError("invalid Trade row field type")
     if isinstance(val, float):
-        if not math.isfinite(val) or not val.is_integer():
+        vf = safe_float(val, default=None)
+        if vf is None or not vf.is_integer():
             raise ValueError("invalid Trade row field type")
-        return int(val)
+        return int(vf)
     if isinstance(val, str):
         s = val.strip()
         if s.endswith(".0"):

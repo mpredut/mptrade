@@ -1,7 +1,6 @@
 import asyncio
 from collections import defaultdict, deque
 import logging
-import math
 import os
 import re
 import signal

@@ -10,7 +10,6 @@ perform.
 The format is consumed by ``tradeall_observe.py``:
     ts|symbol|side|price|qty|outcome|refuse_reason|caller|motivation
 """
-import math
 import os
 import time
 from datetime import datetime
@@ -29,7 +28,7 @@ def _sanitize_outcome_field(value):
     """Remove characters that would break the pipe-delimited record format."""
     if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
         return ""
-    if isinstance(value, float) and not math.isfinite(value):
+    if isinstance(value, float) and safe_float(value, default=None) is None:
         return ""
     text = str(value).replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
     return "" if text.lower() in _INVALID_LOG_STRINGS else text

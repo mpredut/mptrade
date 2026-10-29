@@ -1,7 +1,6 @@
 """Bounded fail-safe persistence for venue-accepted order claims."""
 from __future__ import annotations
 
-import math
 import os
 import time
 
@@ -21,8 +20,7 @@ ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC = required_float_env(
 if not 2 <= ACCEPTED_TRACKING_PERSIST_ATTEMPTS <= 10:
     raise ValueError(
         "ACCEPTED_TRACKING_PERSIST_ATTEMPTS must be between 2 and 10")
-if (not math.isfinite(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
-        or not 0 < ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC <= 5):
+if not 0 < ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC <= 5:
     raise ValueError(
         "ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC must be finite, > 0, "
         "and <= 5")
@@ -103,7 +101,7 @@ def complete_accepted_claim(
     if isinstance(px, (bool, float)) and px_f is None:
         px = None
     val_f = (qty_f * px_f) if (qty_f is not None and px_f is not None) else None
-    val_str = f"~${val_f:.2f}" if (val_f is not None and math.isfinite(val_f)) else "N/A"
+    val_str = f"~${val_f:.2f}" if safe_float(val_f, default=None) is not None else "N/A"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = (
         f"venue={provider_name} symbol={symbol} side={side} "

@@ -11,7 +11,6 @@ import contextlib
 import glob
 import gzip
 import json
-import math
 import os
 import shutil
 import tempfile

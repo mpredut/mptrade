@@ -5,7 +5,6 @@ trading engines (monitortrades, 212trading, etc.).
 """
 from __future__ import annotations
 
-import math
 from typing import Any, Callable
 
 from botcore import safe_pos_float as _finite_pos_float
@@ -40,7 +39,7 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
         else ("TP" if side == "SELL" else "ENTRY")
     )
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0
-    computed_amount = prod if math.isfinite(prod) and prod > 0.0 else 0.0
+    computed_amount = _finite_pos_float(prod, default=0.0)
     amount = _finite_pos_float(raw_amount, default=computed_amount)
 
     return {
@@ -82,12 +81,7 @@ def restore_cancelled_orders(
         if not isinstance(raw_ord, dict):
             continue
         params = extract_order_restore_params(raw_ord)
-        if not (
-            math.isfinite(params["qty"])
-            and params["qty"] > 0.0
-            and math.isfinite(params["limit"])
-            and params["limit"] > 0.0
-        ):
+        if not (_finite_pos_float(params.get("qty"), default=None) and _finite_pos_float(params.get("limit"), default=None)):
             continue
         try:
             res = restore_fn(params)

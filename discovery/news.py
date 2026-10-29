@@ -5,7 +5,6 @@ prints reports immediately when imported; it is not a side-effect-free library.
 The request paths below do not set timeouts or call ``raise_for_status``.
 """
 
-import math
 import os
 import time
 import requests

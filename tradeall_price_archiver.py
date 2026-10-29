@@ -28,7 +28,6 @@ After enough dense history has accumulated:
         --cache24-file cachedb/cache_365_price_BTCUSDC.jsonl
 """
 import argparse
-import math
 import os
 import re
 import signal

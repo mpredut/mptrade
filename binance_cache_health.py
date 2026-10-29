@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import math
 import os
 import sys
 import threading
