@@ -40,6 +40,7 @@ from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
     split_order_fill,
+    validate_ohlc_bars,
 )
 from offline.backtests.metrics import calculate_performance_metrics
 from providers.replay_clock import SimClock as _SimClock
@@ -100,23 +101,7 @@ def run_replay(
         if ppy_f is None:
             raise ValueError("periods_per_year must be a finite positive number")
         periods_per_year = ppy_f
-    for idx, row in enumerate(ohlc):
-        if not isinstance(row, (list, tuple)) or len(row) != 4:
-            raise ValueError(f"invalid OHLC bar at index {idx}")
-        o_f = safe_pos_float(row[0], default=None)
-        h_f = safe_pos_float(row[1], default=None)
-        l_f = safe_pos_float(row[2], default=None)
-        c_f = safe_pos_float(row[3], default=None)
-        if (
-            o_f is None
-            or h_f is None
-            or l_f is None
-            or c_f is None
-            or h_f < l_f
-            or h_f < max(o_f, c_f)
-            or l_f > min(o_f, c_f)
-        ):
-            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+    validate_ohlc_bars(ohlc, exact_len_4=True, check_envelope=True)
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
         raise ValueError(
             "dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal"

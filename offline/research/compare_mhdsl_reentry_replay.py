@@ -10,7 +10,7 @@ if ROOT not in sys.path:
 
 from pathlib import Path
 from strategies import spot_engine as strat
-from strategies.spot_replay import run_replay
+from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from offline.backtests.datasets import load_dataset, validate_dataset
 from offline.backtests.evaluation import to_ohlc
 from botcore import safe_float, safe_int, safe_nonneg_int
@@ -51,14 +51,14 @@ def run_comparison(csv_path=None):
             reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[],
             reentry_hybrid_enabled=True, reentry_pullback_pct=2.0, reentry_ttl_hours=48.0,
         )
-        p_base = strat.StratParams(
+        p_base = align_spot_interval_params(strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
             dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=5.0, max_budget=1050.0,
             max_dca_buys=7, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=sl,
             sl_mhdsl_enabled=False,
             **common_reentry,
-        )
-        p_prop = strat.StratParams(
+        ), 240)
+        p_prop = align_spot_interval_params(strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
             dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=5.0, max_budget=1050.0,
             max_dca_buys=7, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=sl,
@@ -72,7 +72,9 @@ def run_comparison(csv_path=None):
             sl_bounce_ratchet_enabled=True,
             sl_structural_break_enabled=True,
             **common_reentry,
-        )
+        ), 240)
+        if sl == sl_levels[0] and len(bars) > 40:
+            prewarm_trend_series(bars, warmup=0, params=p_base, bar_minutes=240.0)
 
         res_base = run_replay(bars, p_base, fee_pct=0.26, bar_minutes=240)
         res_prop = run_replay(bars, p_prop, fee_pct=0.26, bar_minutes=240)

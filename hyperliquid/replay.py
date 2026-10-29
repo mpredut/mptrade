@@ -11,7 +11,6 @@ modeling through ExecutionModel.
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 from typing import Any
@@ -32,6 +31,7 @@ from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
     split_order_fill,
+    validate_ohlc_bars,
 )
 from offline.backtests.metrics import calculate_performance_metrics
 
@@ -181,22 +181,7 @@ def _run_once(
         replay_mode=True,
     )
 
-    for idx, row in enumerate(ohlc):
-        if not isinstance(row, (list, tuple)) or len(row) < 4:
-            raise ValueError(f"invalid OHLC bar at index {idx}")
-        if any(isinstance(v, bool) for v in row[:4]):
-            raise ValueError(f"OHLC bar at index {idx} contains bool")
-        try:
-            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
-        if (
-            not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f))
-            or h_f < l_f
-            or h_f < max(o_f, c_f)
-            or l_f > min(o_f, c_f)
-        ):
-            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+    validate_ohlc_bars(ohlc, check_envelope=True)
 
     initial_capital = float(strat_params.max_budget)
     equity_curve = [initial_capital]

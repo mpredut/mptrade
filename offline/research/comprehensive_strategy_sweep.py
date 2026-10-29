@@ -208,7 +208,8 @@ def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     total_pct = (safe_float(m_dict.get("total"), 0.0) / safe_budget) * 100.0
     max_dd = safe_float(m_dict.get("max_drawdown_pct"), 0.0)
     calmar = (net_pct / max_dd) if max_dd > 0 else 0.0
-    sharpe = safe_float(m_dict.get("sharpe_ratio"), 0.0)
+    raw_sharpe = m_dict.get("sharpe") if m_dict.get("sharpe") is not None else m_dict.get("sharpe_ratio")
+    sharpe = safe_float(raw_sharpe, 0.0)
     return {
         "net_pct": net_pct,
         "total_pct": total_pct,
@@ -240,15 +241,15 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
         params = align_spot_interval_params(
             dataclasses.replace(LIVE_PARAMS, **overrides), interval
         )
+        adapter = kraken_replay.make_kraken_replay_adapter(
+            params, fee_pct=fee_pct, bar_minutes=interval, execution=ExecutionModel(),
+        )
         windows = []
         for fold in folds:
             warmup = records[max(0, fold.test.start - warmup_bars):fold.test.start]
             seg = evaluate_segment(
                 records[fold.test],
-                lambda ohlc, w, _ctx: kraken_replay.run_replay(
-                    ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
-                    warmup_ohlc=w, execution=ExecutionModel(),
-                ),
+                adapter,
                 warmup_records=warmup,
             )
             windows.append(seg["metrics"])
@@ -375,6 +376,10 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     results = {}
     fee_pct = 0.26
     interval = 240
+    if len(fwd_ohlc) > 40:
+        kraken_replay.prewarm_trend_series(fwd_ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
+    if len(full_ohlc) > 40:
+        kraken_replay.prewarm_trend_series(full_ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
     for name, overrides in candidates.items():
         params = align_spot_interval_params(

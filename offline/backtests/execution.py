@@ -197,3 +197,30 @@ def choose_intrabar_scenario(
         for policy, metrics in scenarios.items()
     }
     return result
+
+
+def validate_ohlc_bars(
+    ohlc: Any,
+    *,
+    exact_len_4: bool = False,
+    check_envelope: bool = True,
+) -> None:
+    """Validate a non-empty sequence of OHLC bars."""
+    if not isinstance(ohlc, (list, tuple)) or not ohlc:
+        raise ValueError("ohlc cannot be empty")
+    for idx, row in enumerate(ohlc):
+        if not isinstance(row, (list, tuple)) or (len(row) != 4 if exact_len_4 else len(row) < 4):
+            raise ValueError(f"invalid OHLC bar at index {idx}")
+        if any(isinstance(row[i], bool) for i in range(4)):
+            raise ValueError(f"OHLC bar at index {idx} contains bool")
+        try:
+            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
+        if (
+            any(safe_pos_float(v, default=None) is None for v in (o_f, h_f, l_f, c_f))
+            or h_f < l_f
+            or (check_envelope and (h_f < max(o_f, c_f) or l_f > min(o_f, c_f)))
+        ):
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+

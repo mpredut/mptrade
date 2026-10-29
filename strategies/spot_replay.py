@@ -14,6 +14,7 @@ from offline.backtests.execution import (
     FeeModel,
     choose_intrabar_scenario,
     split_order_fill,
+    validate_ohlc_bars,
 )
 from offline.backtests.metrics import calculate_performance_metrics
 from providers.strategy_executor import PairPrecision
@@ -45,19 +46,7 @@ class _ReplayClient:
 
 
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
-    if not ohlc:
-        raise ValueError("ohlc cannot be empty")
-    for idx, row in enumerate(ohlc):
-        if not isinstance(row, (list, tuple)) or len(row) < 4:
-            raise ValueError(f"invalid OHLC bar at index {idx}")
-        if any(isinstance(row[i], bool) for i in range(4)):
-            raise ValueError(f"OHLC bar at index {idx} contains bool")
-        try:
-            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
-        if any(safe_pos_float(v, default=None) is None for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
-            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+    validate_ohlc_bars(ohlc, check_envelope=False)
     if bar_minutes is not None and safe_pos_float(bar_minutes, default=None) is None:
         raise ValueError("bar_minutes must be finite and positive")
     surge_window_enabled = (

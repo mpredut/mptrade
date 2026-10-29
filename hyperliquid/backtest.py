@@ -33,6 +33,10 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 
+from botcore import safe_pos_float
+from offline.backtests.metrics import format_performance_summary
+
+
 def _load_hl_local(name: str):
     mod = sys.modules.get(name)
     mod_file = getattr(mod, "__file__", None) if mod is not None else None
@@ -49,8 +53,6 @@ def _load_hl_local(name: str):
 _common_mod = _load_hl_local("common")
 log = _common_mod.log
 _load_dotenv = _common_mod.load_dotenv
-from botcore import safe_pos_float
-from offline.backtests.metrics import format_performance_summary
 _md_local = _load_hl_local("market_data")
 fetch_ohlc_candles = _md_local.fetch_ohlc_candles
 fetch_funding_history = _md_local.fetch_funding_history
@@ -120,18 +122,14 @@ def main() -> int:
     ap.add_argument("--step", type=int, default=8)
     args = ap.parse_args()
 
-    import os as _os
     from botcore import (
         float_env as _float_env,
-        load_dotenv as _botcore_load_dotenv,
         required_env as _required_env,
         required_float_env as _required_float_env,
         required_int_env as _required_int_env,
     )
-    _hl_dir = _os.path.dirname(_os.path.abspath(__file__))
     try:
-        _botcore_load_dotenv(_os.path.join(_hl_dir, "config.env"))
-        _botcore_load_dotenv(_os.path.join(_hl_dir, ".env"))
+        _common_mod.load_env_stack(os.path.join(_HERE, ".env"))
     except Exception:
         pass
 

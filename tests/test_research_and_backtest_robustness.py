@@ -6632,3 +6632,43 @@ def test_load_venue_module_ssot_stratparams_from_dict_and_hl_candles_validation(
     with pytest.raises(argparse.ArgumentTypeError):
         _parse_intervals("60,999")
 
+
+def test_validate_ohlc_bars_ssot_and_sweep_sharpe_and_mhdsl_replay(tmp_path, monkeypatch):
+    """Verify validate_ohlc_bars SSOT, comprehensive_strategy_sweep sharpe lookup, and compare_mhdsl_reentry_replay 240m alignment."""
+    from offline.backtests.execution import validate_ohlc_bars
+    from offline.research.comprehensive_strategy_sweep import _summarize_replay
+    from offline.research.compare_mhdsl_reentry_replay import run_comparison
+
+    # 1. validate_ohlc_bars handles exact_len_4, check_envelope, bool, and non-numeric bars
+    with pytest.raises(ValueError, match="ohlc cannot be empty"):
+        validate_ohlc_bars([])
+    with pytest.raises(ValueError, match="invalid OHLC bar at index 0"):
+        validate_ohlc_bars([(10.0, 11.0, 9.0, 10.5, 1000)], exact_len_4=True)
+    with pytest.raises(ValueError, match="contains bool"):
+        validate_ohlc_bars([(True, 11.0, 9.0, 10.5)])
+    with pytest.raises(ValueError, match="non-numeric prices"):
+        validate_ohlc_bars([("bad", 11.0, 9.0, 10.5)])
+    with pytest.raises(ValueError, match="non-finite or invalid prices"):
+        validate_ohlc_bars([(105.0, 101.0, 99.0, 100.0)], check_envelope=True)
+    # Without check_envelope, high >= low is sufficient
+    validate_ohlc_bars([(105.0, 101.0, 99.0, 100.0)], check_envelope=False)
+
+    # 2. _summarize_replay reads 'sharpe' key returned by calculate_performance_metrics
+    s1 = _summarize_replay({"net": 50.0, "total": 60.0, "max_drawdown_pct": 10.0, "sharpe": 1.75}, 1000.0)
+    assert s1["sharpe"] == pytest.approx(1.75)
+    s2 = _summarize_replay({"net": 50.0, "total": 60.0, "max_drawdown_pct": 10.0, "sharpe_ratio": 1.25}, 1000.0)
+    assert s2["sharpe"] == pytest.approx(1.25)
+
+    # 3. compare_mhdsl_reentry_replay.run_comparison succeeds even when STRAT_TREND_INTERVAL != 240 in env
+    monkeypatch.delenv("STRAT_TREND_INTERVAL", raising=False)
+    csv_p = tmp_path / "hype_240m.csv"
+    lines = ["timestamp,open,high,low,close"]
+    for idx in range(50):
+        ts = 1700000000 + idx * 14400
+        px = 20.0 + (idx % 5) * 0.2
+        lines.append(f"{ts},{px:.2f},{px + 0.5:.2f},{px - 0.5:.2f},{px + 0.1:.2f}")
+    csv_p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    comp = run_comparison(str(csv_p))
+    assert len(comp) == 4
+
+

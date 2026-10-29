@@ -50,7 +50,7 @@ from state_io import atomic_write_json, atomic_write_text, read_json_file, read_
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
-from botcore import required_env, safe_float, safe_int, safe_pos_float  # noqa: E402
+from botcore import exact_pos_int, required_env, safe_float, safe_int, safe_pos_float  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
 CONFIG_ENV = os.path.join(HERE, "config.env")
@@ -158,9 +158,9 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     """On first run, anchor at the latest closed bar to begin forward testing now.
     Subsequent runs reuse it, so the window grows instead of sliding."""
     path = _anchor_path(pair, interval)
-    vf = safe_pos_float(read_text_file(path, default="").strip(), default=None)
-    if vf is not None and vf.is_integer():
-        return int(vf)
+    vi = exact_pos_int(read_text_file(path, default="").strip(), default=None)
+    if vi is not None:
+        return vi
     anchor_val = int(safe_pos_float(default_ts, default=0.0))
     atomic_write_text(path, f"{anchor_val}\n")
     return anchor_val
@@ -212,11 +212,16 @@ def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
     return merged
 
 
-def _run_one(ohlc, params, interval, fee_pct, *, include_decision_trace=False):
+def _get_replay_module():
     try:
         from kraken import replay as rp
     except ImportError:
         import replay as rp
+    return rp
+
+
+def _run_one(ohlc, params, interval, fee_pct, *, include_decision_trace=False):
+    rp = _get_replay_module()
     with contextlib.redirect_stdout(io.StringIO()):
         m = rp.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
@@ -246,10 +251,7 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
-    try:
-        from kraken import replay as rp
-    except ImportError:
-        import replay as rp
+    rp = _get_replay_module()
     variants = _variants(interval)
     cur_params = variants.get("current")
     if hasattr(rp, "prewarm_trend_series") and hasattr(cur_params, "surge_guard"):
