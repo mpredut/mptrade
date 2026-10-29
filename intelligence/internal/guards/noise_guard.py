@@ -1,8 +1,6 @@
 """Noise floor guard: defers trading during dead, flat chop or within the noise threshold."""
 from __future__ import annotations
 
-from typing import Optional
-
 from botcore import safe_float, safe_nonneg_float
 from intelligence.internal.guards.guard_decision import GuardDecision
 
