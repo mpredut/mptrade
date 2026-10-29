@@ -632,7 +632,7 @@ def collect_pretrade_telemetry(
 
     try:
         fills = {}
-        for ord_file in ("cache_order.json", "cache_trade_kraken.json"):
+        for ord_file in ("cache_order.json", "cache_trade_kraken.json", "cache_trade_hyperliquid.json", "cache_trade_t212.json"):
             ord_path = os.path.join(cachedb_dir, ord_file)
             ord_data = read_recovering_previous(ord_path, json.loads, default=None)
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
@@ -653,9 +653,18 @@ def collect_pretrade_telemetry(
     except Exception:
         pass
 
+    from intelligence.macro_sentiment_ssot import get_cache_filenames
+
+    def _read_first_cached_dict(group_key: str, default_file: str) -> Optional[Dict[str, Any]]:
+        for fname in (get_cache_filenames(group_key) or (default_file,)):
+            data = read_recovering_previous(os.path.join(cachedb_dir, fname), json.loads, default=None)
+            if isinstance(data, dict):
+                return data
+        return None
+
     # 5. Macro Sentiment Bias & Fear/Greed Index (Pillar 3)
     try:
-        m_data = read_recovering_previous(os.path.join(cachedb_dir, "sentiment_eval.json"), json.loads, default=None)
+        m_data = _read_first_cached_dict("sentiment_eval_files", "sentiment_eval.json")
         if isinstance(m_data, dict):
             bias = str(m_data.get("market_bias") or "").strip()
             risk = str(m_data.get("risk_level") or "").strip()
@@ -666,7 +675,7 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        fg_data = read_recovering_previous(os.path.join(cachedb_dir, "fear_greed_collect.json"), json.loads, default=None)
+        fg_data = _read_first_cached_dict("fear_greed_files", "fear_greed_collect.json")
         if isinstance(fg_data, dict):
             val = fg_data.get("value", "")
             label = fg_data.get("classification", "")
@@ -678,7 +687,7 @@ def collect_pretrade_telemetry(
 
     # 6. Geopolitical Threat Shield (Pillar 4)
     try:
-        g_data = read_recovering_previous(os.path.join(cachedb_dir, "geopolitical_eval.json"), json.loads, default=None)
+        g_data = _read_first_cached_dict("geopolitical_eval_file", "geopolitical_eval.json")
         if isinstance(g_data, dict):
             level = g_data.get("threat_level", "")
             if level is not None and not isinstance(level, bool) and str(level).strip() != "":

@@ -9,12 +9,11 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-from botcore import float_env, safe_nonneg_float, safe_pos_float
+from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 
 def _f_env(name: str, default: float) -> float:
-    val = float_env(name)
-    return val if val is not None else default
+    return safe_float(float_env(name), default)
 
 
 K_REENTRY_DEFAULT = _f_env("SHADOW_K_REENTRY", 2.0)

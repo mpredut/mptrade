@@ -146,9 +146,9 @@ def parse_symbol_list(symbols: Any) -> List[str]:
         else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
     )
     return [
-        str(s).strip().upper()
+        s.strip().upper()
         for s in raw
-        if s is not None and not isinstance(s, bool) and str(s).strip()
+        if isinstance(s, str) and s.strip()
     ]
 
 

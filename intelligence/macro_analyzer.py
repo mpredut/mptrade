@@ -118,14 +118,8 @@ class MacroAnalyzer:
             except TypeError:
                 return nc.get_pool_snapshot()
 
-        news_snap = None
         cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
-        if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
-            nc = NewsFeedCollector(history_file=cand_path)
-            news_snap = _snap(nc)
-        if news_snap is None:
-            news_snap = _snap(NewsFeedCollector(history_file=cand_path))
-        return news_snap
+        return _snap(NewsFeedCollector(history_file=cand_path))
 
     def _maybe_notify_assessment(
         self,

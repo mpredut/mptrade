@@ -124,12 +124,12 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
     # 2. Pillar 2: External Microstructure & Derivatives
     try:
         from intelligence.external.collectors.orderbook_depth import _symbol_variants
-        sym_candidates = [symbol] if (symbol and "/" not in symbol) else []
-        for cand in _symbol_variants(symbol):
-            if cand and "/" not in cand and cand not in sym_candidates:
-                sym_candidates.append(cand)
-        if not sym_candidates:
-            sym_candidates = [symbol]
+        from intelligence.macro_sentiment_ssot import clean_symbol_key
+        sym_candidates = list(
+            dict.fromkeys(
+                c for v in (symbol, *_symbol_variants(symbol)) if (c := clean_symbol_key(v))
+            )
+        ) or [symbol]
 
         for key, prefix in (
             ("orderbook", "orderbook_depth"),

@@ -25,23 +25,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
-
-try:
-    from strategies.spot_rules import are_close, diff_percent
-except ImportError:
-    def diff_percent(v1: float, v2: float) -> float:
-        if v1 == 0 and v2 == 0:
-            return 0.0
-        return abs(v1 - v2) / ((abs(v1) + abs(v2)) / 2) * 100
-
-    def are_close(v1: float, v2: float, tol_pct: float) -> bool:
-        return diff_percent(v1, v2) <= tol_pct
+from botcore import (
+    _parse_bool_flag,
+    are_close,
+    diff_percent,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 try:
     from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
 except ImportError:
     from intelligence import resolve_cached_volatility_1h, vol_ratio_to_pct
+
+
+def _clean_symbol_str(symbol: Any) -> str:
+    return str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
 
 
 class ExitAction(str, Enum):
@@ -163,7 +163,7 @@ class PositionSnapshot(PriceGeometrySnapshot):
     window_move_pct: Optional[float] = None
 
     def __post_init__(self) -> None:
-        self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
+        self.symbol = _clean_symbol_str(self.symbol)
         for attr in ("current_price", "avg_buy_price"):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=0.0))
         for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
@@ -285,7 +285,7 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     vol_source: str = "default"
 
     def __post_init__(self) -> None:
-        self.symbol = str(self.symbol).strip() if self.symbol is not None and not isinstance(self.symbol, bool) else ""
+        self.symbol = _clean_symbol_str(self.symbol)
         self.current_price = safe_pos_float(self.current_price, default=0.0)
         for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough", "last_sell_time_s"):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=None))
@@ -500,7 +500,7 @@ class PositionExitManager:
         self.hard_tp_last: Dict[str, float] = {}
 
     def _pop_reentry_state(self, symbol: str) -> None:
-        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        sym_clean = _clean_symbol_str(symbol)
         if not sym_clean:
             return
         popped = self.reentry_state.pop(sym_clean, None)
@@ -509,7 +509,7 @@ class PositionExitManager:
 
     def restore_reentry_state(self, symbol: str) -> None:
         """Restore the most recently popped re-entry state if an approved entry was not placed."""
-        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        sym_clean = _clean_symbol_str(symbol)
         if not sym_clean:
             return
         popped = self._last_popped_reentry_state.pop(sym_clean, None)
@@ -532,8 +532,8 @@ class PositionExitManager:
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
         """Clear tracking state for a single symbol or all symbols."""
-        if symbol is not None and not isinstance(symbol, bool) and str(symbol).strip():
-            sym_clean = str(symbol).strip()
+        sym_clean = _clean_symbol_str(symbol)
+        if sym_clean:
             self.sl_bounce_state.pop(sym_clean, None)
             self.sl_episode_state.pop(sym_clean, None)
             self.tp_ride_state.pop(sym_clean, None)
@@ -550,7 +550,7 @@ class PositionExitManager:
 
     def get_state(self, symbol: str) -> Dict[str, Any]:
         """Return the current active states for a symbol."""
-        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        sym_clean = _clean_symbol_str(symbol)
         return {
             "sl_bounce_state": self.sl_bounce_state.get(sym_clean),
             "sl_episode_state": self.sl_episode_state.get(sym_clean),
@@ -561,7 +561,7 @@ class PositionExitManager:
 
     def reset_sl_episode(self, symbol: str) -> None:
         """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
-        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        sym_clean = _clean_symbol_str(symbol)
         if not sym_clean:
             return
         self.sl_episode_state.pop(sym_clean, None)
@@ -583,7 +583,7 @@ class PositionExitManager:
         Returns:
             (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
         """
-        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        sym_clean = _clean_symbol_str(symbol)
         episode = self.sl_episode_state.get(sym_clean)
         if not isinstance(episode, dict):
             episode = None
@@ -608,7 +608,7 @@ class PositionExitManager:
 
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
-        sym_clean = str(symbol).strip() if symbol is not None and not isinstance(symbol, bool) else ""
+        sym_clean = _clean_symbol_str(symbol)
         if not sym_clean:
             return
         self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
@@ -1116,29 +1116,9 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 0: Hard TP Spike Exit
         # ---------------------------------------------------------------------
-        if (
-            self.config.hard_tp_enabled
-            and 0 < self.config.hard_tp_frac <= 1.0
-            and self.config.hard_tp_pct > 0
-            and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
-        ):
-            last_hard = safe_nonneg_float(self.hard_tp_last.get(symbol), default=0.0)
-            if last_hard > now:
-                last_hard = 0.0
-                self.hard_tp_last.pop(symbol, None)
-            if last_hard <= 0 or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
-                reason = (
-                    f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
-                    f"selling {self.config.hard_tp_frac*100:.0f}%)"
-                )
-                return ExitDecision(
-                    action=ExitAction.PARTIAL_SELL,
-                    should_exit=True,
-                    reason=reason,
-                    forced=True,
-                    sell_fraction=self.config.hard_tp_frac,
-                    metadata={"priority": 0, "gain": snapshot.gain_ratio},
-                )
+        tp_spike = self._check_hard_tp_spike(snapshot, now)
+        if tp_spike is not None:
+            return tp_spike
 
         # ---------------------------------------------------------------------
         # Take-Profit Boundary Check
@@ -1591,8 +1571,6 @@ class PositionExitManager:
         """Unified entrypoint evaluating position exits in strict mirror sequence."""
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price = float(snapshot.current_price)
-        buy_price = float(snapshot.avg_buy_price)
 
         # Check Hard TP (Spike Exit) first without mutating tp_ride_state if on cooldown
         tp_spike = self._check_hard_tp_spike(snapshot, _resolve_now_s(snapshot.current_time_s))

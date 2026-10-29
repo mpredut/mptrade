@@ -19,6 +19,7 @@ import websockets
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.external.collectors.orderbook_depth import _symbol_variants
+from intelligence.macro_sentiment_ssot import clean_symbol_key, parse_symbol_list
 from providers.base import normalize_side
 
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
@@ -73,17 +74,7 @@ class BybitLiquidationCollector:
         symbols: Optional[List[str]] = None,
         retention_sec: float = MAX_RETENTION_SEC,
     ) -> None:
-        raw_syms = (
-            symbols.split(",")
-            if isinstance(symbols, str)
-            else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else DEFAULT_SYMBOLS)
-        )
-        cleaned_syms = [
-            str(s).strip().upper()
-            for s in raw_syms
-            if isinstance(s, str) and s.strip()
-        ]
-        self._symbols = cleaned_syms or list(DEFAULT_SYMBOLS)
+        self._symbols = parse_symbol_list(symbols) or list(DEFAULT_SYMBOLS)
         self._retention = safe_pos_float(retention_sec, default=MAX_RETENTION_SEC) or MAX_RETENTION_SEC
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
@@ -194,7 +185,7 @@ class BybitLiquidationCollector:
         notional = safe_pos_float(notional_usd, default=None)
         if notional is None or not isinstance(symbol, str):
             return
-        sym_norm = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym_norm = clean_symbol_key(symbol)
         if not sym_norm:
             return
         side_norm = _normalize_liq_side(side)
@@ -217,7 +208,7 @@ class BybitLiquidationCollector:
         now: Optional[float] = None,
     ) -> LiquidationSummary:
         """Aggregate liquidation metrics for symbol over window_sec."""
-        symbol = symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "") if isinstance(symbol, str) else ""
+        symbol = clean_symbol_key(symbol)
         now_ts = safe_pos_float(now, default=None) or time.time()
         win_sec = safe_pos_float(window_sec, default=300.0) or 300.0
         cutoff = now_ts - win_sec

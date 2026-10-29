@@ -13,8 +13,7 @@ from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerE
 
 
 def _f_env(name: str, default: float) -> float:
-    val = float_env(name)
-    return val if (val is not None and val > 0.0) else default
+    return safe_pos_float(float_env(name), default)
 
 
 KALMAN_QR = _f_env("SHADOW_KALMAN_QR", 0.0005)
