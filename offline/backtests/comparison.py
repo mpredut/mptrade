@@ -10,6 +10,7 @@ Provides venue-agnostic comparison math for walk-forward evaluation windows:
 
 from __future__ import annotations
 
+from collections.abc import Hashable
 import statistics
 from typing import Any, Mapping, Sequence
 
@@ -37,11 +38,14 @@ def relative_to_baseline(
     base_by_key = {
         window[key_field]: window
         for window in baseline
-        if isinstance(window, Mapping) and key_field in window
+        if isinstance(window, Mapping) and key_field in window and isinstance(window[key_field], Hashable)
     }
     deltas = []
     for window in candidate:
-        if not isinstance(window, Mapping) or window.get(key_field) not in base_by_key:
+        if not isinstance(window, Mapping):
+            continue
+        w_key = window.get(key_field)
+        if not isinstance(w_key, Hashable) or w_key not in base_by_key:
             continue
         c_val = _finite_float(window.get(metric_field))
         b_val = _finite_float(base_by_key[window[key_field]].get(metric_field))

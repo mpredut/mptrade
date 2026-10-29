@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -78,7 +79,14 @@ def validate_continuity(records: list[dict], interval_minutes: int) -> None:
         curr_ts = current.get("timestamp")
         if isinstance(prev_ts, bool) or isinstance(curr_ts, bool) or prev_ts is None or curr_ts is None:
             raise ValueError("discontinuous dataset: invalid timestamp")
-        actual_seconds = int(curr_ts) - int(prev_ts)
+        try:
+            prev_f = float(prev_ts)
+            curr_f = float(curr_ts)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("discontinuous dataset: invalid timestamp") from exc
+        if not (math.isfinite(prev_f) and math.isfinite(curr_f) and prev_f.is_integer() and curr_f.is_integer()):
+            raise ValueError("discontinuous dataset: invalid timestamp")
+        actual_seconds = int(curr_f) - int(prev_f)
         if actual_seconds != expected_seconds:
             raise ValueError(
                 "discontinuous dataset: "

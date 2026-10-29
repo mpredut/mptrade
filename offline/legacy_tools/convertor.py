@@ -11,8 +11,11 @@ from state_io import atomic_write_json
 
 
 def convert_price_cache(input_file: str, output_file: str, symbol: str):
-    with open(input_file, "r") as f:
+    with open(input_file, "r", encoding="utf-8") as f:
         data = json.load(f)
+
+    if not isinstance(data, dict):
+        data = {"items": data if isinstance(data, list) else []}
 
     # input: {"items": [[ts, price], [ts, price], ...]}
     raw_items = data.get("items", [])
@@ -20,9 +23,9 @@ def convert_price_cache(input_file: str, output_file: str, symbol: str):
     # output: {"items": {SYMBOL: [[ts, price], ...]}, "fetchtime": {}}
     new_data = {
         "items": {
-            symbol: raw_items
+            symbol: raw_items if isinstance(raw_items, list) else []
         },
-        "fetchtime": data.get("fetchtime", {})
+        "fetchtime": data.get("fetchtime", {}) if isinstance(data.get("fetchtime"), dict) else {}
     }
 
     atomic_write_json(output_file, new_data, indent=2, separators=(",", ": "))

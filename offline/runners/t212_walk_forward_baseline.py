@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"profil inexistent: {config_path}")
     config = parse_dotenv(str(config_path))
     params = StratParams.from_env(config)
-    symbol = (config.get("YAHOO_SYMBOL") or params.yahoo_sym).strip().upper()
+    symbol = str(config.get("YAHOO_SYMBOL") or params.yahoo_sym or "").strip().upper()
     if not symbol:
         parser.error("the profile does not define YAHOO_SYMBOL")
     if args.fx_to_usd is not None and args.fx_dataset is not None:
@@ -125,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--fx-to-usd must be positive")
     execution = build_execution_model_from_args(parser, args)
     warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup
+    if warmup < 0:
+        parser.error("--warmup cannot be negative")
 
     source = args.dataset.expanduser().resolve() if args.dataset else None
     seed_source = args.seed_dataset.expanduser().resolve() if args.seed_dataset else None

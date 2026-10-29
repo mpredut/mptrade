@@ -1365,9 +1365,66 @@ def test_batch47_surge_sweep_grids_and_ml_forecast_hardening():
     assert np.isnan(rv[2])  # because index 1 (True) was sanitized to NaN
 
 
+def test_batch48_offline_runners_backtests_and_legacy_tools_hardening(tmp_path, monkeypatch):
+    import json
+    import pytest
+    import offline.backtests.comparison as cmp_mod
+    import offline.backtests.promotion as prom_mod
+    import offline.legacy_tools.clean_order_cache as coc_mod
+    import offline.legacy_tools.convertor as conv_mod
+    import offline.runners.fetch_hyperliquid_candles as fhc_mod
 
+    # 1. fetch_hyperliquid_candles.validate_continuity handles float strings and rejects NaN/inf/non-integer timestamps
+    fhc_mod.validate_continuity([{"timestamp": "1700000000.0"}, {"timestamp": "1700003600.0"}], 60)
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        fhc_mod.validate_continuity([{"timestamp": float("nan")}, {"timestamp": 1700003600}], 60)
+    with pytest.raises(ValueError, match="invalid timestamp"):
+        fhc_mod.validate_continuity([{"timestamp": 1700000000.5}, {"timestamp": 1700003600.5}], 60)
 
+    # 2. comparison.relative_to_baseline ignores unhashable window keys instead of raising TypeError
+    rel = cmp_mod.relative_to_baseline(
+        [{"key": ["unhashable"], "return_pct": 5.0}, {"key": "w1", "return_pct": 3.0}],
+        [{"key": {"bad": 1}, "return_pct": 1.0}, {"key": "w1", "return_pct": 1.0}],
+    )
+    assert rel["wins_vs_live"] == 1
+    assert rel["mean_return_delta_pct"] == pytest.approx(2.0)
 
+    # 3. promotion._extract_scenario_windows rejects unhashable or bool window keys with ValueError
+    with pytest.raises(ValueError, match="different windows"):
+        prom_mod._extract_scenario_windows(
+            "central",
+            {"assumptions": {}, "windows": [{"key": ["unhashable"], "return_pct": 1.0}]},
+            {"assumptions": {}, "windows": [{"key": ["unhashable"], "return_pct": 2.0}]},
+        )
 
+    # 4. convertor.convert_price_cache handles list-rooted JSON and non-dict fetchtime
+    in_path = tmp_path / "in_cache.json"
+    out_path = tmp_path / "out_cache.json"
+    in_path.write_text(json.dumps([[1700000000, 50000.0]]), encoding="utf-8")
+    conv_mod.convert_price_cache(str(in_path), str(out_path), "BTCUSDC")
+    converted = json.loads(out_path.read_text(encoding="utf-8"))
+    assert converted["items"]["BTCUSDC"] == [[1700000000, 50000.0]]
+    assert converted["fetchtime"] == {}
+
+    # 5. clean_order_cache preserves non-list entries in items when cleaning
+    order_file = tmp_path / "cache_order.json"
+    order_file.write_text(
+        json.dumps({
+            "items": {
+                "BTCUSDC": [
+                    {"status": "FILLED", "price": "50000.0"},
+                    {"status": "CANCELED", "price": "0.0"},
+                ],
+                "_meta": {"version": 1},
+            }
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(coc_mod, "ORDER_FILE", str(order_file))
+    monkeypatch.setattr("sys.argv", ["clean_order_cache.py"])
+    coc_mod.main()
+    cleaned_data = json.loads(order_file.read_text(encoding="utf-8"))
+    assert len(cleaned_data["items"]["BTCUSDC"]) == 1
+    assert cleaned_data["items"]["_meta"] == {"version": 1}
 
 

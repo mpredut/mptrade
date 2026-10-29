@@ -48,7 +48,7 @@ def main():
         print(f"{ORDER_FILE} does not exist — nothing to do.")
         return
 
-    with open(ORDER_FILE) as f:
+    with open(ORDER_FILE, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         print(f"{ORDER_FILE} does not contain a JSON object — nothing to do.")
@@ -62,6 +62,7 @@ def main():
     cleaned = {}
     for sym, lst in items.items():
         if not isinstance(lst, list):
+            cleaned[sym] = lst
             continue
         keep = [o for o in lst if not is_garbage(o)]
         total += len(lst)

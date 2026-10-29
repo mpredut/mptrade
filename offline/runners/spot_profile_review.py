@@ -55,8 +55,10 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
     cash = cash_f
     records = validate_dataset(load_dataset(DEFAULT_DATASET), interval_minutes=240)
     digest = dataset_sha256(records)
-    manifest = json.loads(DEFAULT_MANIFEST.read_text())
-    if digest != manifest["datasets"]["240"]["sha256"]:
+    manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    ds_240 = ((manifest.get("datasets") if isinstance(manifest, dict) else None) or {}).get("240")
+    expected_sha = ds_240.get("sha256") if isinstance(ds_240, dict) else None
+    if digest != expected_sha:
         raise ValueError("dataset does not match the frozen manifest")
     before, after = revision_params(baseline), revision_params(candidate)
     profiles = {"previous": before, "current": after,
@@ -69,6 +71,8 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
         FeeModel(limit_fee_pct=0.04, market_fee_pct=0.07), central.execution))
     folds = walk_forward_splits(len(records), train_size=720, validation_size=180,
                                 test_size=90, step_size=90)
+    if not folds:
+        raise ValueError("dataset too small for walk-forward splits")
     reports = {}
     with patch.object(_strat, "log", lambda *_args: None):
         for name, params in profiles.items():

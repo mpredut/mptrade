@@ -107,12 +107,12 @@ def _extract_scenario_windows(name: str, base: dict, cand: dict) -> tuple[dict, 
     base_windows = {
         window["key"]: window
         for window in base_win_list
-        if isinstance(window, dict) and "key" in window
+        if isinstance(window, dict) and isinstance(window.get("key"), (str, int)) and not isinstance(window.get("key"), bool)
     }
     cand_windows = {
         window["key"]: window
         for window in cand_win_list
-        if isinstance(window, dict) and "key" in window
+        if isinstance(window, dict) and isinstance(window.get("key"), (str, int)) and not isinstance(window.get("key"), bool)
     }
     if (
         len(base_windows) != len(base_win_list)
