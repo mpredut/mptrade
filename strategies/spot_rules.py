@@ -235,13 +235,13 @@ def dynamic_surge_gain_pct(
     vol_f = _finite_float(hourly_volatility_pct)
     fb_f = _finite_float(fallback_gain_pct, 25.0)
     if vol_f is None or vol_f <= 0:
-        return float(fb_f)
+        return fb_f
     mult_f = _finite_float(vol_multiplier, 10.0)
     min_raw = _finite_float(min_gain_pct, 24.0)
     max_raw = _finite_float(max_gain_pct, 32.0)
-    raw = vol_f * float(mult_f)
-    min_g = min(float(min_raw), float(max_raw))
-    max_g = max(float(min_raw), float(max_raw))
+    raw = vol_f * mult_f
+    min_g = min(min_raw, max_raw)
+    max_g = max(min_raw, max_raw)
     return max(min_g, min(max_g, raw))
 
 
@@ -262,14 +262,14 @@ def dynamic_flat_tp_pct(
     str_f = _finite_float(strength)
     base_f = _finite_float(base_tp_pct, 5.0)
     if str_f is None or str_f < 0:
-        return float(base_f)
+        return base_f
     thresh_f = _finite_float(strength_threshold)
     thresh = thresh_f if (thresh_f is not None and thresh_f > 0) else 2.0
     c_flat = min(1.0, max(0.0, str_f / thresh))
     min_raw = _finite_float(tp_min_pct, 3.0)
     max_raw = _finite_float(tp_max_pct, 7.0)
-    min_tp = min(float(min_raw), float(max_raw))
-    max_tp = max(float(min_raw), float(max_raw))
+    min_tp = min(min_raw, max_raw)
+    max_tp = max(min_raw, max_raw)
     return min_tp + c_flat * (max_tp - min_tp)
 
 
@@ -291,12 +291,12 @@ def dynamic_trend_trail_pct(
     to preserve a healthy breathing cushion (preventing 3-4% pullbacks from prematurely
     liquidating the position before it can reach the 25% parabolic surge trigger).
     """
-    base = max(0.0, float(_finite_float(base_trail_pct, 8.0)))
-    min_t = float(_finite_float(min_trail_pct, 3.0))
+    base = max(0.0, _finite_float(base_trail_pct, 8.0))
+    min_t = _finite_float(min_trail_pct, 3.0)
     eff_min = max(min_t, 5.0) if _bool_flag(surge_guard_active) else min_t
     floor = min(base, max(0.0, eff_min))
-    thresh = max(0.0, float(_finite_float(gain_threshold_pct, 6.0)))
-    k = max(0.0, float(_finite_float(ratchet_k, 0.5)))
+    thresh = max(0.0, _finite_float(gain_threshold_pct, 6.0))
+    k = max(0.0, _finite_float(ratchet_k, 0.5))
     gain = _finite_float(peak_gain_pct)
     if gain is None or gain <= thresh or k == 0.0:
         return base
