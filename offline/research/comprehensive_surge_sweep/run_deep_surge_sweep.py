@@ -617,31 +617,31 @@ def main():
     results.sort(key=lambda x: (x["total_profit_usd"], x["pnl_per_drawdown_point"]), reverse=True)
 
     # Save JSON database
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "schema_version": 2,
-                "timestamp": datetime.now().isoformat(),
-                "config_path": str(args.config.resolve()),
-                "strategy_params": dataclasses.asdict(base_params),
-                "initial_cash_per_asset": initial_cash,
-                "fee_pct_per_leg": args.fee_pct,
-                "bar_minutes": 240,
-                "limitations": [
-                    "Same candidates compared on both halves; no held-out walk-forward selection.",
-                    "Four-hour bars do not validate five-minute guards.",
-                    "Assets use independent cash accounts; the sum is not a shared-wallet simulation.",
-                    "The replay fee is an explicit assumption, not a verified live venue fee.",
-                ],
-                "total_candidates": len(results),
-                "duration_seconds": round(total_time, 1),
-                "baseline": baseline,
-                "top_10": results[:10],
-                "all_results": results,
-            },
-            f,
-            indent=2,
-        )
+    from state_io import atomic_write_json, atomic_write_text
+    atomic_write_json(
+        json_path,
+        {
+            "schema_version": 2,
+            "timestamp": datetime.now().isoformat(),
+            "config_path": str(args.config.resolve()),
+            "strategy_params": dataclasses.asdict(base_params),
+            "initial_cash_per_asset": initial_cash,
+            "fee_pct_per_leg": args.fee_pct,
+            "bar_minutes": 240,
+            "limitations": [
+                "Same candidates compared on both halves; no held-out walk-forward selection.",
+                "Four-hour bars do not validate five-minute guards.",
+                "Assets use independent cash accounts; the sum is not a shared-wallet simulation.",
+                "The replay fee is an explicit assumption, not a verified live venue fee.",
+            ],
+            "total_candidates": len(results),
+            "duration_seconds": round(total_time, 1),
+            "baseline": baseline,
+            "top_10": results[:10],
+            "all_results": results,
+        },
+        indent=2,
+    )
     print(f"Saved full JSON database to: {json_path}")
 
     # Generate Markdown Report
@@ -725,8 +725,7 @@ def main():
         lines.append(f"# Description: {top_cand['desc']}")
     lines.append("```\n")
 
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    atomic_write_text(md_path, "\n".join(lines))
 
     print(f"Generated comprehensive markdown report: {md_path}")
     print("\n=== TOP 5 CANDIDATES PREVIEW ===")
