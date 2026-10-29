@@ -297,8 +297,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
             if pos_qty > 1e-12:
                 pos_cost -= (pos_cost / pos_qty) * executed_qty
             pos_qty -= executed_qty
-            pos_qty = max(pos_qty, 0.0)
-            pos_cost = max(pos_cost, 0.0)
+            if pos_qty <= 1e-9:
+                pos_qty = 0.0
+                pos_cost = 0.0
         self._orders.setdefault(symbol, []).append(
             {"side": side, "price": fill_px, "qty": executed_qty,
              "timestamp": ts_ms})
