@@ -321,7 +321,7 @@ def load_symbol_price_series(
         for p24_path in (primary_24, *legacy_filenames_for(primary_24)):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            ser = _extract_cached_items_series(read_json_dict(p24_path, default=None, recover_previous=True), cands)
+            ser = _extract_cached_items_series(read_json_cached(p24_path), cands)
             if len(ser) >= 2:
                 series_24h = list(ser)
                 break
@@ -355,7 +355,7 @@ def load_symbol_price_series(
                 continue
             try:
                 if arch_path.endswith(".json"):
-                    aser = _extract_cached_items_series(read_json_dict(arch_path, default=None, recover_previous=True), cands)
+                    aser = _extract_cached_items_series(read_json_cached(arch_path), cands)
                     if len(aser) >= 2:
                         archive_pts = list(aser)
                         break
@@ -431,9 +431,17 @@ def load_symbol_price_series(
                         series_24h = list(series_24h) + [[last_pt[0] + 1000.0, px_f]]
                     break
 
-    # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] points
+    # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] (or [tms, px, vol]) points
     if series_24h:
-        cleaned_24h = [[pt[0], pt[1]] for row in series_24h if (pt := _parse_ts_px_row(row)) is not None]
+        cleaned_24h = [
+            (
+                [pt[0], pt[1], vol_v]
+                if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None
+                else [pt[0], pt[1]]
+            )
+            for row in series_24h
+            if (pt := _parse_ts_px_row(row)) is not None
+        ]
         if len(cleaned_24h) >= 2:
             cleaned_24h.sort(key=lambda x: x[0])
             dedup_24h = [cleaned_24h[0]]
@@ -1021,7 +1029,11 @@ def compute_liquidation_clusters(
         return {}
     p_dict = pinfo if isinstance(pinfo, dict) else {}
     cur_px = safe_pos_float(p_dict.get("price"), default=0.0) or 0.0
-    ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
+    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
+    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
+    ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or (
+        (b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else 0.0
+    )
     if ob_mid > 0.0 and (cur_px <= 0.0 or abs(cur_px - ob_mid) / ob_mid > 0.10):
         cur_px = ob_mid
     if cur_px <= 0.0:
@@ -1051,7 +1063,7 @@ def compute_liquidation_clusters(
     long_near_raw = _blend_structural_liq_anchor(
         cur_px,
         cur_px * (1.0 - near_band_pct / 100.0),
-        ((p_dict.get("val_px"), 0.995), (p_dict.get("low_24h"), 0.996)),
+        ((p_dict.get("val_px"), 0.995), (p_dict.get("low_24h"), 0.996), (minfo.get("bid_wall_px"), 0.997)),
         is_short=False,
         min_dist=0.012,
         max_dist=0.065,
@@ -1060,7 +1072,7 @@ def compute_liquidation_clusters(
     short_near_raw = _blend_structural_liq_anchor(
         cur_px,
         cur_px * (1.0 + near_band_pct / 100.0),
-        ((p_dict.get("vah_px"), 1.005), (p_dict.get("high_24h"), 1.004)),
+        ((p_dict.get("vah_px"), 1.005), (p_dict.get("high_24h"), 1.004), (minfo.get("ask_wall_px"), 1.003)),
         is_short=True,
         min_dist=0.012,
         max_dist=0.065,
@@ -1979,9 +1991,14 @@ def enrich_24h_and_microstructure(
                 try:
                     s5 = ohlc_fn(sym, 5)
                     cutoff_24h = now_ts - 86400.0
+                    s5_vols = getattr(s5, "volumes", ()) or ()
                     pts_24h = [
-                        [int(ts * 1000), float(px)]
-                        for ts, px in zip(getattr(s5, "timestamps", ()), getattr(s5, "closes", ()))
+                        (
+                            [int(ts * 1000), float(px), float(s5_vols[idx])]
+                            if idx < len(s5_vols) and (safe_pos_float(s5_vols[idx], 0.0) or 0.0) > 0.0
+                            else [int(ts * 1000), float(px)]
+                        )
+                        for idx, (ts, px) in enumerate(zip(getattr(s5, "timestamps", ()), getattr(s5, "closes", ())))
                         if ts >= cutoff_24h and float(px) > 0
                     ]
                     m24 = compute_24h_price_metrics(pts_24h) or {}
@@ -2931,6 +2948,7 @@ def populate_market_and_portfolio_snapshot(
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
     from providers.execution_audit import (
         build_last_cycle_execution_status,
+        collect_known_ai_order_ids,
         extract_intent_notional,
         summarize_recent_ai_intents,
     )
@@ -2954,15 +2972,7 @@ def populate_market_and_portfolio_snapshot(
     snapshot.prices_and_trends = harvest_initial_prices_and_trends(cache_dir, prices_data, trends_data, _rj)
 
     intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
-    known_ai_oids: set[str] = set()
-    if isinstance(intents_data, list):
-        from providers.base import extract_order_id as _extract_oid
-
-        for _it in intents_data:
-            if isinstance(_it, dict):
-                _oid = _extract_oid(_it.get("execution_payload"), default="")
-                if _oid:
-                    known_ai_oids.add(str(_oid))
+    known_ai_oids = collect_known_ai_order_ids(intents_data)
 
     tradable_positions: List[Dict[str, Any]] = []
     open_orders_list: List[Dict[str, Any]] = []
