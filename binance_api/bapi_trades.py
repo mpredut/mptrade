@@ -1,7 +1,6 @@
 
 import os
 import time
-import math
 import json
 import threading
 from collections import defaultdict
@@ -57,9 +56,10 @@ def _valid_fill_id(val):
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
     if isinstance(val, float):
-        if not math.isfinite(val) or not val.is_integer() or val < 0:
+        val_f = safe_nonneg_float(val, default=None)
+        if val_f is None or not val_f.is_integer():
             return None
-        return int(val)
+        return int(val_f)
     if isinstance(val, str):
         s = val.strip()
         if not s or s.startswith("-") or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
@@ -377,7 +377,9 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     print(f"Fetching trades from the last {backdays} days for {symbol}, order type {order_type}.")
 
     # Fetch new fills.
-    new_trades = get_my_trades_simple(order_type, symbol, backdays=math.ceil(backdays), limit=limit)
+    bd_f = safe_pos_float(backdays, default=1.0)
+    bd_ceil = int(bd_f) + (1 if bd_f > int(bd_f) else 0)
+    new_trades = get_my_trades_simple(order_type, symbol, backdays=bd_ceil, limit=limit)
 
     # Remove duplicates by fill ID.
     # new_trades = [trade for trade in new_trades if trade['time'] > most_recent_trade_time]    #
