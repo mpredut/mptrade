@@ -316,10 +316,6 @@ def _clean_retry_order_id(val) -> Optional[str]:
     return s
 
 
-def _clean_opt_finite_float(val):
-    return safe_float(val, default=None)
-
-
 def _clean_now_sec(now=None) -> float:
     return safe_pos_float(now, default=float(time.time()))
 
@@ -594,8 +590,8 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     custom_ttl = safe_pos_float(raw_ttl, default=None)
     if custom_ttl is not None:
         custom_ttl = min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-    requested_price = _clean_opt_finite_float(requested_price)
-    ref_price = _clean_opt_finite_float(ref_price)
+    requested_price = safe_float(requested_price, default=None)
+    ref_price = safe_float(ref_price, default=None)
     rec = {
         "id": record_id,
         "prefix": prefix,
