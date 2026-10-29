@@ -519,7 +519,6 @@ if __name__ == "__main__":
         sym: [asdict(s) for s in stats]
         for sym, stats in results.items()
     }
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(json_data, f, indent=2)
+    from state_io import atomic_write_json
+    atomic_write_json(args.out, json_data, indent=2)
     logger.info("Saved chop benchmark results to %s", args.out)
