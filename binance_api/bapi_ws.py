@@ -19,7 +19,6 @@ BinanceAccountStream     (private user-data execution reports)
 import asyncio
 import json
 import logging
-import math
 import os
 import threading
 import time
@@ -29,7 +28,7 @@ from typing import Dict, Optional, Set, Callable
 
 import symbols as sym
 import utils as u
-from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_nonneg_int
 
 try:
     from keys.apikeys import api_key_ws
@@ -602,7 +601,8 @@ class BinanceAccountStream(BinanceWSBase):
                 age = max(0.0, now - self._last_event_ts) if self._last_event_ts else float("inf")
                 available, healthy = self._available, self._healthy
             if available and healthy and age > self.loss_timeout_sec:
-                age_s = str(int(age)) if math.isfinite(age) else "inf"
+                age_i = safe_nonneg_int(age, default=None)
+                age_s = str(age_i) if age_i is not None else "inf"
                 logger.warning("[WS][WARN] No WS events for %ss -> falling back to polling.", age_s)
                 self._mark_unhealthy()
             self._stop_event.wait(5)

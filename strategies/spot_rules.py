@@ -12,7 +12,6 @@ the same price thresholds.
 """
 from __future__ import annotations
 
-import math
 from botcore import (
     _parse_bool_flag,
     are_close as _botcore_are_close,
@@ -422,8 +421,8 @@ def check_parabolic_surge_exhaustion(
 
     # Invariant: A parabolic surge exhaustion exit is a TAKE-PROFIT guard.
     # It must never execute below the minimum surge profit floor!
-    min_floor = parabolic_surge_profit_floor_pct(sg_f, ep_f, mp_f)
-    if not (math.isfinite(min_floor) and current_gain_pct >= min_floor):
+    min_floor = safe_float(parabolic_surge_profit_floor_pct(sg_f, ep_f, mp_f), default=None)
+    if min_floor is None or current_gain_pct < min_floor:
         return False, ""
 
     pos_surge = sg_f > 0 and (current_gain_pct >= sg_f or peak_gain_pct >= sg_f)

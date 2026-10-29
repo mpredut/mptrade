@@ -13,7 +13,6 @@ to the instrument/strategy loop; this provider itself requests regular-hours ord
 """
 import os
 import time
-import math
 import importlib
 from typing import Optional, List
 
@@ -284,7 +283,7 @@ class T212Provider(MarketDataProvider):
         if raw_f is None:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         qty_f = round(raw_f, _VOLUME_DECIMALS)
-        if not math.isfinite(qty_f) or qty_f < _ORDER_MIN:
+        if safe_pos_float(qty_f, default=0.0) < _ORDER_MIN:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         if side_u == "BUY":
             return qty_f
@@ -446,7 +445,7 @@ class T212Provider(MarketDataProvider):
             fill_price = raw.get("fillPrice", raw.get("averagePrice"))
             fp_f = safe_float(fill_price, default=None)
             fp_val = abs(fp_f) if fp_f is not None else 0.0
-            if fp_val <= 0 or not math.isfinite(fp_val * filled_qty):
+            if safe_pos_float(fp_val, default=0.0) <= 0 or safe_pos_float(fp_val * filled_qty, default=None) is None:
                 raise ProviderError(
                     f"order_status({order_id}): fill {filled_qty} without an executed cost"
                 )

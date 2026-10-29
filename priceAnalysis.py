@@ -1,6 +1,5 @@
 
 import os
-import math
 import time
 import psutil
 
@@ -621,7 +620,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
             return None, (lo, hi)
         x, y = timestamps[lo:hi], prices[lo:hi]
         s, _ = _fast_linear_regression_1d(x, y)
-        if not math.isfinite(s):
+        if safe_float(s, default=None) is None:
             return None, (lo, hi)
         return s * 3600.0, (lo, hi)
 
@@ -929,7 +928,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             return float(cached_w[0])
 
     trend_len_quanta = dur_sec / quant_sec_f
-    if not math.isfinite(trend_len_quanta) or trend_len_quanta <= 0:
+    if safe_pos_float(trend_len_quanta, default=None) is None:
         print(f"[{symbol}] duration_seconds invalid, return None")
         return None
 

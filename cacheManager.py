@@ -3,7 +3,6 @@ import gzip
 import hashlib
 import json
 import glob
-import math
 import os
 import time
 import datetime
@@ -79,6 +78,7 @@ from botcore import (
     required_env,
     required_float_env,
     required_int_env,
+    safe_float,
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
@@ -751,8 +751,7 @@ class CacheManagerInterface(ABC):
                     str(symbol): max(0, int(cursor))
                     for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
                     if isinstance(cursor, (int, float))
-                    and not isinstance(cursor, bool)
-                    and math.isfinite(cursor)
+                    and safe_float(cursor, default=None) is not None
                 }
                 counts = {symbol: len(items) for symbol, items in self.cache.items()}
                 payload = {
@@ -838,8 +837,7 @@ class CacheManagerInterface(ABC):
                     str(symbol): max(0, int(cursor))
                     for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
                     if isinstance(cursor, (int, float))
-                    and not isinstance(cursor, bool)
-                    and math.isfinite(cursor)
+                    and safe_float(cursor, default=None) is not None
                 }
                 counts = {
                     symbol: len(items)
@@ -2397,8 +2395,8 @@ class CacheTradeManager(CacheManagerInterface):
             isinstance(trade["symbol"], str) and bool(trade["symbol"].strip())
             and not isinstance(trade["id"], bool) and trade_id >= 0
             and not isinstance(trade["orderId"], bool) and order_id > 0
-            and math.isfinite(price) and price > 0
-            and math.isfinite(quantity) and quantity > 0
+            and safe_pos_float(price, default=None) is not None
+            and safe_pos_float(quantity, default=None) is not None
             and timestamp > 0 and isinstance(trade["isBuyer"], bool)
         )
 
@@ -2576,8 +2574,8 @@ class CacheOrderManager(CacheManagerInterface):
             return False
         return (
             not isinstance(trade["orderId"], bool) and order_id > 0
-            and math.isfinite(price) and price > 0
-            and math.isfinite(quantity) and quantity > 0
+            and safe_pos_float(price, default=None) is not None
+            and safe_pos_float(quantity, default=None) is not None
             and timestamp > 0
             and str(trade["side"]).upper() in ("BUY", "SELL")
             and (

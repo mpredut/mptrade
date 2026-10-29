@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import math
 import os
 import re
 import sys
@@ -690,8 +689,8 @@ class HyperliquidProvider(MarketDataProvider):
             price_f = safe_pos_float(price, default=None)
             if price_f is None:
                 raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
-        required = qty_f * price_f
-        if not math.isfinite(required) or required <= 0:
+        required = safe_pos_float(qty_f * price_f, default=None)
+        if required is None:
             raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
         avail_f = safe_nonneg_float(self.free_balance("USDC"), default=None)
         if avail_f is None:
@@ -874,7 +873,7 @@ class HyperliquidProvider(MarketDataProvider):
             original = safe_nonneg_float(raw_orig_sz if raw_orig_sz is not None else 0.0, default=None)
             remaining = safe_nonneg_float(raw_rem_sz if raw_rem_sz is not None else 0.0, default=None)
             if (original is None or remaining is None
-                    or not all(math.isfinite(v) and v >= 0.0 for v in (filled, cost, fee))):
+                    or any(safe_nonneg_float(v, default=None) is None for v in (filled, cost, fee))):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order sizes"
                 )

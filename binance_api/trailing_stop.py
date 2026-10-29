@@ -34,7 +34,6 @@ SAFETY:
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 import time
@@ -240,7 +239,7 @@ class TrailingStop:
                     k for k in klines
                     if isinstance(k, (list, tuple)) and len(k) >= 7
                     and not any(isinstance(k[i], bool) for i in (0, 4, 6))
-                    and math.isfinite(float(k[6])) and float(k[6]) < day * 86400000
+                    and safe_float(k[6], default=None) is not None and float(k[6]) < day * 86400000
                 ]
                 window = closed[-REBUY_TREND_DAYS:]
                 if len(window) != REBUY_TREND_DAYS:
@@ -248,14 +247,14 @@ class TrailingStop:
                 closes = []
                 for index, kline in enumerate(window):
                     expected_open = (day - REBUY_TREND_DAYS + index) * 86400000
-                    close = float(kline[4])
+                    close = safe_pos_float(kline[4], default=None)
                     if (float(kline[0]) != expected_open
                             or float(kline[6]) != expected_open + 86400000 - 1
-                            or not math.isfinite(close) or close <= 0):
+                            or close is None):
                         raise ValueError("stale, discontinuous or invalid daily history")
                     closes.append(close)
-                sma = sum(closes) / len(closes)
-                if not math.isfinite(sma):
+                sma = safe_pos_float(sum(closes) / len(closes), default=None)
+                if sma is None:
                     raise ValueError("invalid daily average")
                 self._long_trend_cache[symbol] = (sma, day)
             price = _finite(self.api.get_current_price(symbol), name="re-buy price", minimum=0)
@@ -341,7 +340,7 @@ class TrailingStop:
                 if f is None or l is None:
                     return 0.0
                 tot = f + l
-                return tot if math.isfinite(tot) else 0.0
+                return safe_nonneg_float(tot, default=0.0)
         return 0.0
 
     def unlock_qty(self, pair: str) -> bool:

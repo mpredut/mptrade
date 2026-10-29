@@ -8,8 +8,6 @@ intrabar ambiguity resolution without network, notifications, or persistent stat
 
 from __future__ import annotations
 
-import math
-
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (
     ExecutionModel,
@@ -58,7 +56,7 @@ def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
             o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
-        if not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
+        if any(safe_pos_float(v, default=None) is None for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
             raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
     if bar_minutes is not None and safe_pos_float(bar_minutes, default=None) is None:
         raise ValueError("bar_minutes must be finite and positive")
@@ -371,11 +369,9 @@ def _run_once(
         trade_pnls=trade_pnls,
         turnover_notional=turnover_notional,
     )
-    rounded = lambda value: (
-        round(value, 10)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
-        else value
-    )
+    def rounded(value):
+        vf = safe_float(value, default=None) if isinstance(value, (int, float)) else None
+        return round(vf, 10) if vf is not None else value
     result = {
         "realized": rounded(strategy.s["realized_gross"]),
         "net": rounded(strategy.s["realized_net"]),
@@ -391,10 +387,7 @@ def _run_once(
         "initial_capital": rounded(initial_capital),
         "account_currency": params.currency,
     }
-    result.update({
-        key: (round(value, 10) if isinstance(value, float) and math.isfinite(value) else value)
-        for key, value in performance.items()
-    })
+    result.update({key: rounded(value) for key, value in performance.items()})
     if include_decision_trace:
         result["decision_trace"] = decision_trace
     if cash is not None:
