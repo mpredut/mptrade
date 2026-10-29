@@ -844,16 +844,7 @@ class Strategy:
         return round(max(ticks, 0) * step, self.vol_dec)
 
     def _has_open(self, side: str) -> bool:
-        target = str(side or "").strip().lower() if not isinstance(side, bool) else ""
-        if not target:
-            return False
-        orders = self.s.get("orders")
-        if not isinstance(orders, list):
-            return False
-        return any(
-            isinstance(o, dict) and str(o.get("side") or "").strip().lower() == target
-            for o in orders
-        )
+        return self._find_open(side) is not None
 
     def _find_open(self, side: str) -> dict | None:
         target = str(side or "").strip().lower() if not isinstance(side, bool) else ""

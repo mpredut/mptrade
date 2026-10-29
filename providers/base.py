@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
@@ -687,10 +688,9 @@ class MarketDataProvider(ABC):
             return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            dec_f = safe_nonneg_float(getattr(pp, "volume_decimals", None) if pp is not None else None, default=None)
-            if dec_f is not None and dec_f.is_integer():
-                dec = min(int(dec_f), 18)
-                factor = 10 ** dec
+            dec = exact_nonneg_int(getattr(pp, "volume_decimals", None) if pp is not None else None, default=None)
+            if dec is not None:
+                factor = 10 ** min(dec, 18)
                 return math.floor(qty_f * factor + 1e-12) / factor
         except Exception:
             pass
@@ -707,9 +707,9 @@ class MarketDataProvider(ABC):
             return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            dec_f = safe_nonneg_float(getattr(pp, "price_decimals", None) if pp is not None else None, default=None)
-            if dec_f is not None and dec_f.is_integer():
-                return round(price_f, min(int(dec_f), 18))
+            dec = exact_nonneg_int(getattr(pp, "price_decimals", None) if pp is not None else None, default=None)
+            if dec is not None:
+                return round(price_f, min(dec, 18))
         except Exception:
             pass
         return price_f

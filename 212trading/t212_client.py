@@ -217,6 +217,12 @@ class T212Client:
                 self._invalidate_order_caches_locked()
         return status, data
 
+    @staticmethod
+    def _clean_ticker(ticker: str) -> str:
+        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+            raise ValueError(f"invalid T212 ticker: {ticker!r}")
+        return str(ticker).strip()
+
     def place_limit_order(
         self,
         ticker: str,
@@ -225,8 +231,7 @@ class T212Client:
         validity: str = "DAY",
     ) -> tuple[int, dict]:
         """Place a limit order and return HTTP status with response payload."""
-        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
-            raise ValueError(f"invalid T212 ticker: {ticker!r}")
+        clean_ticker = self._clean_ticker(ticker)
         if isinstance(quantity, bool) or isinstance(limit_price, bool):
             raise ValueError("place_limit_order quantity and limit_price cannot be bool")
         val_u = str(validity or "").strip().upper() if not isinstance(validity, bool) else ""
@@ -241,7 +246,7 @@ class T212Client:
         if qty_r == 0.0 or price_r <= 0.0:
             raise ValueError("place_limit_order rounded quantity must be non-zero and limit_price positive")
         return self._place_order("limit", {
-            "ticker": str(ticker).strip(),
+            "ticker": clean_ticker,
             "quantity": qty_r,   # Positive buys and negative sells.
             "limitPrice": price_r,
             "timeValidity": val_u,
@@ -254,8 +259,7 @@ class T212Client:
         extended_hours: bool = False,
     ) -> tuple[int, dict]:
         """Place a market order, using quantity sign for direction as with limits."""
-        if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
-            raise ValueError(f"invalid T212 ticker: {ticker!r}")
+        clean_ticker = self._clean_ticker(ticker)
         if isinstance(quantity, bool):
             raise ValueError("place_market_order quantity cannot be bool")
         qty_f = safe_float(quantity, default=None)
@@ -266,7 +270,7 @@ class T212Client:
             raise ValueError("place_market_order rounded quantity must be non-zero")
         ext_flag = _parse_bool_flag(extended_hours, default=False)
         return self._place_order("market", {
-            "ticker": str(ticker).strip(),
+            "ticker": clean_ticker,
             "quantity": qty_r,
             "extendedHours": ext_flag,
         })

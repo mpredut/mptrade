@@ -21,6 +21,8 @@ from typing import Optional, List
 
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
+    exact_pos_int,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -773,8 +775,7 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"cancel_order {order_id}: missing count in Kraken response ({result})"
             )
-        cnt_f = safe_pos_float(result.get("count"), default=None)
-        if cnt_f is None or not cnt_f.is_integer() or int(cnt_f) < 1:
+        if exact_pos_int(result.get("count"), default=None) is None:
             raise ProviderError(
                 f"cancel_order {order_id}: Kraken did not confirm the cancellation ({result})"
             )
@@ -798,17 +799,17 @@ class KrakenProvider(MarketDataProvider):
                 )
             if isinstance(info["base"], bool):
                 raise ValueError("boolean values not allowed in pair_precision")
-            p_f = safe_nonneg_float(info["pair_decimals"], default=None)
-            v_f = safe_nonneg_float(info["lot_decimals"], default=None)
+            p_dec = exact_nonneg_int(info["pair_decimals"], default=None)
+            v_dec = exact_nonneg_int(info["lot_decimals"], default=None)
             ord_min = safe_pos_float(info["ordermin"], default=None)
-            if p_f is None or v_f is None or ord_min is None or not p_f.is_integer() or not v_f.is_integer():
+            if p_dec is None or v_dec is None or ord_min is None:
                 raise ValueError("invalid decimals or ordermin in pair_precision")
             base_str = str(info["base"]).strip()
             if not base_str:
                 raise ValueError("empty base asset in pair_precision")
             return PairPrecision(
-                price_decimals=int(p_f),
-                volume_decimals=int(v_f),
+                price_decimals=p_dec,
+                volume_decimals=v_dec,
                 order_min=ord_min,
                 base_asset=base_str,
             )
@@ -816,10 +817,9 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        itv_f = safe_pos_float(interval_min, default=None)
-        if itv_f is None or not itv_f.is_integer():
+        interval_i = exact_pos_int(interval_min, default=None)
+        if interval_i is None:
             raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
-        interval_i = int(itv_f)
         try:
             client = self._client()
             series_reader = getattr(

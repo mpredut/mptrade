@@ -28,6 +28,7 @@ from .base import (
     extract_order_side,
     extract_timestamp_ms,
     normalize_side,
+    resolve_market_flag,
 )
 from .binance_filters import (
     BinanceFilterError,
@@ -150,13 +151,7 @@ def _parse_binance_order_id(order_id: Any, context: str) -> int:
     clean_id = clean_order_id(order_id)
     if clean_id is None or not clean_id.isdigit():
         raise ProviderError(f"{context}: invalid order id")
-    try:
-        oid = int(clean_id)
-    except (ValueError, TypeError, OverflowError) as exc:
-        raise ProviderError(f"{context}: invalid order id") from exc
-    if oid <= 0:
-        raise ProviderError(f"{context}: invalid order id")
-    return oid
+    return int(clean_id)
 
 
 def _step_decimals(step: str) -> int:
@@ -387,11 +382,7 @@ class BinanceProvider(MarketDataProvider):
         # applies daily, profit, quantity, trend, cooldown, and logging policies via
         # provider-neutral hooks. force and market both specify market order execution.
         from binance_api import bapi_placeorder as _po
-        is_market = (
-            _parse_bool_flag(force, False)
-            or _parse_bool_flag(kwargs.get("market", False), False)
-            or _parse_bool_flag(kwargs.get("force", False), False)
-        )
+        is_market = resolve_market_flag(force=force, **kwargs)
         mechanics_kwargs = {
             "force": is_market,
             "enforce_business_minimum": _parse_bool_flag(enforce_business_minimum, True),

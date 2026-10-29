@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, runtime_checkable
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import exact_int, exact_nonneg_int, safe_float, safe_nonneg_float, safe_pos_float
 
 
 class ProviderError(Exception):
@@ -176,10 +176,10 @@ class PairPrecision:
     def __post_init__(self):
         for name in ("price_decimals", "volume_decimals"):
             raw = getattr(self, name)
-            raw_f = safe_nonneg_float(raw, default=None)
-            if raw_f is None or not raw_f.is_integer():
+            val = exact_nonneg_int(raw, default=None)
+            if val is None:
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
-            object.__setattr__(self, name, int(raw_f))
+            object.__setattr__(self, name, val)
         minimum = safe_nonneg_float(self.order_min, default=None)
         if minimum is None:
             raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
@@ -196,10 +196,9 @@ _CANDLE_INTERVALS = {
 
 def candle_interval(interval_min: int) -> str:
     """Return the canonical venue interval or reject an unsupported horizon."""
-    itv_f = safe_float(interval_min, default=None)
-    if itv_f is None or not itv_f.is_integer():
+    minutes = exact_int(interval_min, default=None)
+    if minutes is None:
         raise ProviderError(f"invalid candle interval: {interval_min!r}")
-    minutes = int(itv_f)
     if minutes not in _CANDLE_INTERVALS:
         raise ProviderError(f"unsupported candle interval: {interval_min!r} minutes")
     return _CANDLE_INTERVALS[minutes]

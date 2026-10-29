@@ -612,13 +612,20 @@ class MarketRegimeService:
                        fallback_used=_parse_bool_flag(fallback_used, False))
 
     @staticmethod
-    def _snapshot_observed_at(snapshot: Optional[Mapping]) -> Optional[float]:
+    def _pos_timestamp_seconds(value) -> Optional[float]:
+        val_f = safe_pos_float(value, default=None)
+        if val_f is None:
+            return None
+        return val_f / 1000.0 if val_f > 100_000_000_000 else val_f
+
+    @classmethod
+    def _snapshot_observed_at(cls, snapshot: Optional[Mapping]) -> Optional[float]:
         if not snapshot or not isinstance(snapshot, Mapping):
             return None
         for field in ("observed_at", "ts"):
-            value = safe_pos_float(snapshot.get(field), default=None)
-            if value is not None:
-                return value / 1000.0 if value > 100_000_000_000 else value
+            val = cls._pos_timestamp_seconds(snapshot.get(field))
+            if val is not None:
+                return val
         return None
 
     @staticmethod
@@ -1091,13 +1098,11 @@ class MarketRegimeService:
             interval_min,
         )
 
-    @staticmethod
-    def _timestamp_seconds(value) -> float:
-        val_f = safe_pos_float(value, default=None)
+    @classmethod
+    def _timestamp_seconds(cls, value) -> float:
+        val_f = cls._pos_timestamp_seconds(value)
         if val_f is None:
             raise ValueError("invalid closed-candle timestamp")
-        if val_f > 100_000_000_000:
-            val_f /= 1000.0
         return val_f
 
     @classmethod

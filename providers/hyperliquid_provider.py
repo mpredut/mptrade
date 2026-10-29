@@ -23,10 +23,11 @@ from typing import List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
+    exact_pos_int,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
-    safe_pos_int,
 )
 from .base import (
     MarketDataProvider,
@@ -534,10 +535,9 @@ class HyperliquidProvider(MarketDataProvider):
             return None
         try:
             raw_szd = c.sz_decimals(self._token)
-            szd_f = safe_nonneg_float(raw_szd, default=None)
-            if szd_f is None or not szd_f.is_integer():
+            szd = exact_nonneg_int(raw_szd, default=None)
+            if szd is None:
                 raise ValueError(f"invalid sz_decimals={raw_szd!r}")
-            szd = int(szd_f)
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"pair_precision({symbol}): {e}") from e
         # Spot price permits 8-szDecimals decimal places and volume permits
@@ -548,8 +548,8 @@ class HyperliquidProvider(MarketDataProvider):
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
-        interval = safe_pos_int(interval_min, default=None)
-        if interval is None or (isinstance(interval_min, float) and not interval_min.is_integer()):
+        interval = exact_pos_int(interval_min, default=None)
+        if interval is None:
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
         client = self._hl()
         pair = self._pair()
@@ -730,12 +730,9 @@ class HyperliquidProvider(MarketDataProvider):
     @staticmethod
     def _parse_oid(order_id: object, caller: str) -> int:
         cleaned = _clean_single_order_id(order_id)
-        if cleaned is not None and cleaned.isdigit():
-            return int(cleaned)
-        if isinstance(order_id, str):
-            oid_f = safe_pos_float(order_id, default=None)
-            if oid_f is not None and oid_f.is_integer():
-                return int(oid_f)
+        oid_i = exact_pos_int(cleaned if cleaned is not None else order_id, default=None)
+        if oid_i is not None:
+            return oid_i
         raise ProviderError(f"{caller}({order_id}): invalid order id")
 
     def order_status(self, symbol: str, order_id: str):

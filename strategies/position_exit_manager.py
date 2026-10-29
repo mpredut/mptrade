@@ -187,22 +187,12 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def gain_ratio(self) -> float:
         """Positive price gain ratio, or 0.0 if position is in loss."""
-        bp = self._finite_pos_float(getattr(self, "avg_buy_price", None))
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        if bp is None or cp is None:
-            return 0.0
-        diff = cp - bp
-        return diff / bp if diff > 0.0 else 0.0
+        return max(0.0, self.price_change_ratio)
 
     @property
     def loss_ratio(self) -> float:
         """Positive price loss ratio, or 0.0 if position is in profit."""
-        bp = self._finite_pos_float(getattr(self, "avg_buy_price", None))
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        if bp is None or cp is None:
-            return 0.0
-        diff = bp - cp
-        return diff / bp if diff > 0.0 else 0.0
+        return max(0.0, -self.price_change_ratio)
 
     @property
     def gain_pct(self) -> float:
@@ -222,31 +212,22 @@ class PositionSnapshot(PriceGeometrySnapshot):
             and self._finite_pos_float(self.current_price) is not None
         )
 
-    def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
+    def _ratio_reaches_threshold(self, ratio: float, threshold: float, tol_pct: float = 0.0) -> bool:
         th = self._finite_pos_float(threshold)
         if th is None:
             return False
-        loss = self.loss_ratio
-        if loss >= th:
+        if ratio >= th:
             return True
         tol = self._finite_nonneg_float(tol_pct) or 0.0
-        if (loss > 0.0 or tol >= 200.0) and tol > 0 and are_close(loss, th, tol):
-            return True
-        return False
+        return (ratio > 0.0 or tol >= 200.0) and tol > 0 and are_close(ratio, th, tol)
+
+    def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
+        return self._ratio_reaches_threshold(self.loss_ratio, threshold, tol_pct)
 
     def in_tp_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if position is in take-profit territory honoring fuzzy tolerance."""
-        th = self._finite_pos_float(threshold)
-        if th is None:
-            return False
-        gain = self.gain_ratio
-        if gain >= th:
-            return True
-        tol = self._finite_nonneg_float(tol_pct) or 0.0
-        if (gain > 0.0 or tol >= 200.0) and tol > 0 and are_close(gain, th, tol):
-            return True
-        return False
+        return self._ratio_reaches_threshold(self.gain_ratio, threshold, tol_pct)
 
 
 class ReentryAction(str, Enum):

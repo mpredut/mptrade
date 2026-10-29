@@ -663,14 +663,9 @@ class Strategy:
             return False
         raw_pending = self.s.get("pending_submit")
         pending = raw_pending if isinstance(raw_pending, dict) else {}
-        orders = self.s.get("orders")
-        orders_list = orders if isinstance(orders, list) else []
         return (
             str(pending.get("side") or "").strip().upper() == side_u
-            or any(
-                isinstance(o, dict) and str(o.get("side") or "").strip().upper() == side_u
-                for o in orders_list
-            )
+            or self._find_open(side_u) is not None
         )
 
     def _find_open(self, side: str) -> dict | None:
@@ -850,6 +845,25 @@ class Strategy:
         if lvl_f not in sold:
             sold.append(lvl_f)
 
+    def _all_tp_ladder_levels_sold(self) -> bool:
+        if not self.p.tp_ladder:
+            return False
+        ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder}
+        return bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
+
+    def _sync_real_position_cost(
+        self,
+        real_qty: float,
+        avg_price: float,
+        *,
+        sync_spent_only_when_held: bool = False,
+    ) -> None:
+        self.s["qty"] = real_qty
+        self.s["cost_usd"] = real_qty * avg_price
+        if not sync_spent_only_when_held or real_qty > 1e-9:
+            fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
+            self.s["spent_cash"] = round(real_qty * avg_price / fx_rate, 2)
+
     def _close_cycle(
         self,
         exit_price: float,
@@ -929,8 +943,7 @@ class Strategy:
                    body=(f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
                          f"Ntot{self.s['realized_net_usd']:+.2f}$ | ciclu{self.s['cycle']} inchis"),
                    source="T212", price=price, desktop=self.desktop)
-            ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder} if self.p.tp_ladder else set()
-            all_tp_sold = bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
+            all_tp_sold = self._all_tp_ladder_levels_sold()
             is_flat = self.s["qty"] <= 1e-9
             is_dust_exit = (
                 self._is_dust(self.s["qty"], price)
@@ -1434,10 +1447,7 @@ class Strategy:
                 self.s["entry_price"] = fp
             if is_dca:
                 self.s["dca_buys"] += 1
-            self.s["qty"] = real_qty
-            self.s["cost_usd"] = real_qty * eff_real_avg
-            fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
-            self.s["spent_cash"] = round(real_qty * eff_real_avg / fx_rate, 2)
+            self._sync_real_position_cost(real_qty, eff_real_avg)
             kind_label = (
                 "ADOPTAT" if is_adoption
                 else str((source_order or {}).get("kind") or ("DCA" if prev_qty > 1e-9 else "ENTRY"))
@@ -1461,10 +1471,7 @@ class Strategy:
             self.s["realized_pnl_usd"] += gross
             self.s["realized_net_usd"] += net
             self.s["fees_usd"] += fee
-            self.s["qty"] = real_qty
-            self.s["cost_usd"] = real_qty * real_avg
-            fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
-            self.s["spent_cash"] = round(real_qty * real_avg / fx_rate, 2)
+            self._sync_real_position_cost(real_qty, real_avg)
             self.s["last_sell_price"] = sell_price
             approx = "" if exact_price is not None else "~"
             log(f"  [STRAT] SELL EXECUTED {sold:.4f} @ {approx}{sell_price:.2f} USD  "
@@ -1477,11 +1484,7 @@ class Strategy:
 
         else:
             # Unchanged position: synchronize state with the actual position.
-            self.s["qty"] = real_qty
-            self.s["cost_usd"] = real_qty * real_avg
-            if real_qty > 1e-9:
-                fx_rate = _clean_pos_float(self.fx_to_usd) or 1.0
-                self.s["spent_cash"] = round(real_qty * real_avg / fx_rate, 2)
+            self._sync_real_position_cost(real_qty, real_avg, sync_spent_only_when_held=True)
 
         # --- Remove inactive orders and enforce the TTL for stale BUY orders. ---
         for o in list(self.s["orders"]):
@@ -1517,8 +1520,7 @@ class Strategy:
 
         # --- Closed cycle (the full position or all exit tranches were sold): start a new cycle. ---
         is_flat = real_qty <= 1e-9
-        ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder} if self.p.tp_ladder else set()
-        all_tp_sold = bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
+        all_tp_sold = self._all_tp_ladder_levels_sold()
         has_open_sells = self._has_open("SELL")
         is_dust = self._is_dust(real_qty, real_avg or price)
         cycle_closed = (is_flat and prev_qty > 1e-9) or (
