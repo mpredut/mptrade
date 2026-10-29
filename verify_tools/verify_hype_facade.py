@@ -33,14 +33,9 @@ MAXAGE = 17 * 24 * 3600
 failures = []
 
 
-def _f(val, default=0.0):
-    if isinstance(val, bool) or val is None:
-        return default
-    try:
-        v = float(val)
-        return v if math.isfinite(v) else default
-    except (TypeError, ValueError):
-        return default
+from botcore import safe_float
+
+_f = safe_float
 
 
 def check(name, cond, detail=""):

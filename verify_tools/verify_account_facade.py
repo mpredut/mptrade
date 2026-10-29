@@ -38,14 +38,7 @@ import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 base_of = utils.base_asset
 
 
-def _f(val, default=0.0):
-    if isinstance(val, bool) or val is None:
-        return default
-    try:
-        v = float(val)
-        return v if math.isfinite(v) else default
-    except (TypeError, ValueError):
-        return default
+from botcore import safe_float as _f, safe_float, safe_pos_float
 
 
 def free_direct(base):
@@ -60,15 +53,15 @@ def position_from(buy_orders, sell_orders):
     """The get_position_stats logic: avg_buy + net_qty derived from order lists."""
     buys = [
         o for o in (buy_orders or [])
-        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0.0 and _f(extract_order_price(o), 0.0) > 0.0
+        if isinstance(o, dict) and safe_pos_float(extract_order_qty(o), default=0.0) > 0.0 and safe_pos_float(extract_order_price(o), default=0.0) > 0.0
     ]
     sells = [
         o for o in (sell_orders or [])
-        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0.0
+        if isinstance(o, dict) and safe_pos_float(extract_order_qty(o), default=0.0) > 0.0
     ]
-    tq = sum(_f(extract_order_qty(o), 0.0) for o in buys)
-    tv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in buys)
-    sq = sum(_f(extract_order_qty(o), 0.0) for o in sells)
+    tq = sum(safe_pos_float(extract_order_qty(o), default=0.0) for o in buys)
+    tv = sum(safe_pos_float(extract_order_price(o), default=0.0) * safe_pos_float(extract_order_qty(o), default=0.0) for o in buys)
+    sq = sum(safe_pos_float(extract_order_qty(o), default=0.0) for o in sells)
     avg = tv / tq if tq > 0 else 0.0
     return avg, tq - sq
 
@@ -77,9 +70,9 @@ def order_key(o):
     if not isinstance(o, dict):
         return (0.0, 0.0, 0.0, "")
     return (
-        _f(extract_timestamp_ms(o, default=0), 0.0),
-        _f(extract_order_price(o), 0.0),
-        _f(extract_order_qty(o), 0.0),
+        safe_float(extract_timestamp_ms(o, default=0), 0.0),
+        safe_float(extract_order_price(o), 0.0),
+        safe_float(extract_order_qty(o), 0.0),
         str(extract_order_side(o) or "").upper(),
     )
 

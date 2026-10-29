@@ -22,7 +22,7 @@ from binance_api import bapi as api  # noqa: E402
 from binance_api import bapi_allorders as apiorders  # noqa: E402
 import cacheManager as cm  # noqa: E402
 from providers.base import extract_order_price, extract_order_qty, extract_timestamp_ms  # noqa: E402
-from botcore import safe_float as _f  # noqa: E402
+from botcore import safe_float as _f, safe_float, safe_pos_float  # noqa: E402
 from instrument_registry import load_registry, symbols_for  # noqa: E402
 import pricewindow as pw  # noqa: E402
 
@@ -44,17 +44,17 @@ def free_qty(symbol):
 def position(symbol, maxage=17 * 24 * 3600):
     buys = [
         o for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or [])
-        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0 and _f(extract_order_price(o), 0.0) > 0
+        if isinstance(o, dict) and safe_pos_float(extract_order_qty(o), default=0.0) > 0 and safe_pos_float(extract_order_price(o), default=0.0) > 0
     ]
     sells = [
         o for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or [])
-        if isinstance(o, dict) and _f(extract_order_qty(o), 0.0) > 0
+        if isinstance(o, dict) and safe_pos_float(extract_order_qty(o), default=0.0) > 0
     ]
-    tq = sum(_f(extract_order_qty(o), 0.0) for o in buys)
-    tv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in buys)
-    sq = sum(_f(extract_order_qty(o), 0.0) for o in sells)
+    tq = sum(safe_pos_float(extract_order_qty(o), default=0.0) for o in buys)
+    tv = sum(safe_pos_float(extract_order_price(o), default=0.0) * safe_pos_float(extract_order_qty(o), default=0.0) for o in buys)
+    sq = sum(safe_pos_float(extract_order_qty(o), default=0.0) for o in sells)
     last_buy = (
-        _f(extract_order_price(max(buys, key=lambda o: _f(extract_timestamp_ms(o, default=0), 0.0))), 0.0)
+        safe_float(extract_order_price(max(buys, key=lambda o: safe_float(extract_timestamp_ms(o, default=0), 0.0))), 0.0)
         if buys else 0.0
     )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells), last_buy
