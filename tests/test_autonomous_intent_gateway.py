@@ -869,7 +869,7 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert rec_clamp["status"] == "EXECUTED"
     assert rec_clamp["limit_price"] == pytest.approx(80500.0)
 
-    # 4. Out-of-bounds limit_price (< 0.5x or > 2.0x live price) is rejected with REJECTED_INVALID_LIMIT_PRICE
+    # 4. Out-of-bounds or missing limit_price (< 0.5x, > 2.0x, or None when order_type="LIMIT") is rejected
     with patch.object(gw, "_dispatch_notify", return_value=True):
         rec_bad = gw.submit({
             "decision": "BUY",
@@ -880,7 +880,17 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
             "confidence": 0.92,
             "suggested_notional_usd": 300.0,
         }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
+        rec_missing_px = gw.submit({
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": None,
+            "confidence": 0.92,
+            "suggested_notional_usd": 300.0,
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"BTCUSDC": btc_inst})
     assert rec_bad["status"] == "REJECTED_INVALID_LIMIT_PRICE"
+    assert rec_missing_px["status"] == "REJECTED_INVALID_LIMIT_PRICE"
 
     # 5. normalize_trading_decisions, summarize_recent_ai_intents, condense_decision, and prompt_formatters
     norm = normalize_trading_decisions({

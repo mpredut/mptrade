@@ -553,6 +553,8 @@ def summarize_recent_ai_intents(
         }
         if i.get("limit_price") is not None:
             intent_summary["limit_price"] = i.get("limit_price")
+        if exec_pay.get("status"):
+            intent_summary["venue_status"] = str(exec_pay.get("status")).strip().upper()
         if ts_val > 0 and now_ts >= ts_val:
             intent_summary["age_h"] = round((now_ts - ts_val) / 3600.0, 2)
         recent_intents_out.append(intent_summary)
@@ -614,7 +616,7 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
     if norm_type == "MARKET":
         return "MARKET"
     if norm_type == "LIMIT" or limit_px is not None:
-        return "LIMIT" if limit_px is not None else "MARKET"
+        return "LIMIT"
     return "MARKET"
 
 
@@ -1039,6 +1041,8 @@ def cancel_existing_ai_open_orders(
     inst: Any,
     side: str,
     log: Optional[Any] = None,
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
 ) -> list[str]:
     """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
     canceled_ids: list[str] = []
@@ -1052,16 +1056,17 @@ def cancel_existing_ai_open_orders(
             return canceled_ids
         from providers.base import extract_order_id, normalize_side
 
+        ai_oids = known_ai_order_ids or set()
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue
             oo_side = normalize_side(oo.get("side") or oo.get("type"))
             if oo_side != side:
                 continue
-            raw_cid = str(oo.get("clientOrderId") or oo.get("cloid") or oo.get("userref") or "").strip()
-            if not raw_cid.startswith(("AI_", "SD_")):
-                continue
             oid = extract_order_id(oo, default="")
+            raw_cid = str(oo.get("clientOrderId") or oo.get("cloid") or oo.get("userref") or "").strip()
+            if not raw_cid.startswith(("AI_", "SD_")) and (not oid or str(oid) not in ai_oids):
+                continue
             if oid:
                 try:
                     cancel_fn(str(oid))
@@ -1139,12 +1144,11 @@ def resolve_intent_execution_price(
     """
     order_type = extract_intent_order_type(intent)
     limit_px = extract_intent_limit_price(intent, default=None)
-    is_limit = bool(order_type == "LIMIT" and limit_px is not None and limit_px > 0)
-    if is_limit:
-        if limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
+    if order_type == "LIMIT":
+        if limit_px is None or limit_px <= 0 or limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
             if log:
                 log.warning(
-                    "[INTENT GATEWAY] Intent %s rejected: limit_price $%.4g out of [0.5x, 2.0x] bounds vs live $%.4g for %s",
+                    "[INTENT GATEWAY] Intent %s rejected: invalid or out-of-bounds limit_price %r vs live $%.4g for %s",
                     intent_id, limit_px, live_price, symbol,
                 )
             intent["status"] = "REJECTED_INVALID_LIMIT_PRICE"
@@ -1166,6 +1170,129 @@ def resolve_intent_execution_price(
         return True, price, True
     intent["order_type"] = "MARKET"
     return True, live_price, False
+
+
+def load_durable_intents_state(
+    intents_file: str,
+    reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
+) -> list[dict[str, Any]]:
+    """Load all trade intents from the durable JSON queue with `.previous` crash recovery."""
+    from state_io import load_json_state
+
+    data = load_json_state(
+        intents_file,
+        default_factory=list,
+        fail_closed=False,
+        label="autonomous_trade_intents",
+        root_type=list,
+    )
+    items = [item for item in data if isinstance(item, dict)]
+    if callable(reconcile_fn):
+        reconcile_fn(items)
+    return items
+
+
+def save_durable_intents_state(
+    intents_file: str,
+    intents: list[dict[str, Any]],
+    log: Optional[Any] = None,
+) -> bool:
+    """Transactionally persist all intents to disk using `.previous` staging and atomic replace."""
+    from orchestratorOS.lib.technical_repair_ssot import clean_json_value
+    from state_io import save_json_state
+
+    try:
+        cleaned = clean_json_value(intents if isinstance(intents, list) else [])
+        save_json_state(intents_file, cleaned, indent=2)
+        return True
+    except Exception as e:
+        if log:
+            log.error("Failed saving intents to %s: %s", intents_file, e)
+        return False
+
+
+def preflight_intent_and_resolve_price(
+    intent: dict[str, Any],
+    *,
+    min_confidence: float,
+    min_notional_usd: float,
+    max_notional_usd: float,
+    resolve_instrument_fn: Callable[..., Any],
+    get_live_price_fn: Callable[[Any], Any],
+    instruments_map: Optional[dict[str, Any]],
+    now_ts: float,
+    log: Optional[Any] = None,
+) -> tuple[bool, str, str, str, str, float, Any, float, float, bool]:
+    """Validate intent fields, confidence, instrument, and live/limit price before order execution."""
+    from cachepaths import normalize_venue_name
+
+    intent_id, decision, symbol, venue = normalize_intent_fields(intent, now_ts)
+    if decision not in ("BUY", "SELL"):
+        intent["status"] = "REJECTED_INVALID_DECISION"
+        append_intent_history(intent, {
+            "ts": now_ts, "action": "REJECTED_INVALID_DECISION", "decision": decision,
+        })
+        return False, intent_id, decision, symbol, venue, 0.0, None, 0.0, 0.0, False
+
+    confidence = parse_intent_confidence(intent.get("confidence"), 0.0)
+    intent["confidence"] = confidence
+    if confidence < min_confidence:
+        if log:
+            log.info(
+                "[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
+                intent_id, confidence, min_confidence,
+            )
+        intent["status"] = "REJECTED_LOW_CONFIDENCE"
+        append_intent_history(intent, {
+            "ts": now_ts,
+            "action": "REJECTED_LOW_CONFIDENCE",
+            "confidence": confidence,
+            "min_confidence": min_confidence,
+        })
+        return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
+
+    inst = resolve_instrument_fn(symbol, venue=venue, instruments_map=instruments_map)
+    if not inst or (
+        normalize_venue_name(str(getattr(inst, "provider_name", ""))) != "t212"
+        and str(getattr(inst, "symbol", "")).upper().endswith("BTC")
+    ):
+        if log:
+            log.warning(
+                "[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",
+                intent_id, symbol, venue,
+            )
+        intent["status"] = "REJECTED_UNKNOWN_INSTRUMENT"
+        append_intent_history(intent, {
+            "ts": now_ts, "action": "REJECTED_UNKNOWN_INSTRUMENT", "symbol": symbol, "venue": venue,
+        })
+        return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
+
+    suggested_usd = extract_intent_notional(intent, max_notional_usd)
+    effective_usd = max(min_notional_usd, min(suggested_usd, max_notional_usd))
+
+    live_price = safe_pos_float(get_live_price_fn(inst), default=None)
+    if live_price is None:
+        if log:
+            log.warning("[INTENT GATEWAY] Intent %s rejected: invalid price for %s", intent_id, symbol)
+        intent["status"] = "REJECTED_PRICE_UNAVAILABLE"
+        append_intent_history(intent, {
+            "ts": now_ts, "action": "REJECTED_PRICE_UNAVAILABLE", "symbol": symbol,
+        })
+        return False, intent_id, decision, symbol, venue, confidence, inst, effective_usd, 0.0, False
+
+    px_ok, price, is_limit = resolve_intent_execution_price(
+        intent,
+        intent_id=intent_id,
+        decision=decision,
+        symbol=symbol,
+        live_price=live_price,
+        now_ts=now_ts,
+        log=log,
+    )
+    if not px_ok:
+        return False, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
+
+    return True, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
 
 
 

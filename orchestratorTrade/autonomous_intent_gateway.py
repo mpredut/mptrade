@@ -126,13 +126,16 @@ from providers.execution_audit import (
     extract_intent_order_type as _extract_intent_order_type,
     extract_intent_side as _extract_intent_side,
     generate_unique_intent_id,
+    load_durable_intents_state,
     normalize_intent_fields,
     parse_intent_confidence as _parse_intent_confidence,
     parse_intent_gateway_config,
+    preflight_intent_and_resolve_price,
     reconcile_intents_from_execution_audit,
     record_shadow_intent_observation,
     resolve_intent_execution_price,
     resolve_intent_topic_tag,
+    save_durable_intents_state,
     validate_and_build_intent_dict,
 )
 
@@ -177,17 +180,7 @@ class AutonomousIntentGateway:
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
-        from state_io import load_json_state
-        data = load_json_state(
-            self.intents_file,
-            default_factory=list,
-            fail_closed=False,
-            label="autonomous_trade_intents",
-            root_type=list,
-        )
-        items = [item for item in data if isinstance(item, dict)]
-        self.reconcile_intents(items)
-        return items
+        return load_durable_intents_state(self.intents_file, reconcile_fn=self.reconcile_intents)
 
     def reconcile_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Reconciles FAILED or PENDING_EXECUTION intents against execution_audit_*.jsonl if later filled via retry worker."""
@@ -199,15 +192,7 @@ class AutonomousIntentGateway:
 
     def save_all_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Transactionally persists all intents to disk using `.previous` staging and atomic replace."""
-        from orchestratorOS.lib.technical_repair_ssot import clean_json_value
-        from state_io import save_json_state
-        try:
-            cleaned = clean_json_value(intents if isinstance(intents, list) else [])
-            save_json_state(self.intents_file, cleaned, indent=2)
-            return True
-        except Exception as e:
-            logger.error("Failed saving intents to %s: %s", self.intents_file, e)
-            return False
+        return save_durable_intents_state(self.intents_file, intents, log=logger)
 
     def get_pending_intents(self) -> List[Dict[str, Any]]:
         """Returns all intents with PENDING status."""
@@ -305,63 +290,29 @@ class AutonomousIntentGateway:
         else:
             mode = str(mode)
         now = time.time()
-        intent_id, decision, symbol, venue = normalize_intent_fields(intent, now)
-
-        if decision not in ("BUY", "SELL"):
-            intent["status"] = "REJECTED_INVALID_DECISION"
-            _append_intent_history(intent, {
-                "ts": now, "action": "REJECTED_INVALID_DECISION", "decision": decision
-            })
-            return intent
-
-        confidence = _parse_intent_confidence(intent.get("confidence"), 0.0)
-        intent["confidence"] = confidence
-
-        if confidence < self.min_confidence:
-            logger.info("[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
-                        intent_id, confidence, self.min_confidence)
-            intent["status"] = "REJECTED_LOW_CONFIDENCE"
-            _append_intent_history(intent, {
-                "ts": now, "action": "REJECTED_LOW_CONFIDENCE",
-                "confidence": confidence, "min_confidence": self.min_confidence
-            })
-            return intent
-
-        inst = self.resolve_instrument(symbol, venue=venue, instruments_map=instruments_map)
-        if not inst or (
-            normalize_venue_name(str(getattr(inst, "provider_name", ""))) != "t212"
-            and str(getattr(inst, "symbol", "")).upper().endswith("BTC")
-        ):
-            logger.warning("[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",
-                           intent_id, symbol, venue)
-            intent["status"] = "REJECTED_UNKNOWN_INSTRUMENT"
-            _append_intent_history(intent, {
-                "ts": now, "action": "REJECTED_UNKNOWN_INSTRUMENT", "symbol": symbol, "venue": venue
-            })
-            return intent
-
-        suggested_usd = _extract_intent_notional(intent, self.max_notional_usd)
-        effective_usd = max(self.min_notional_usd, min(suggested_usd, self.max_notional_usd))
-
-        live_price = safe_pos_float(self._get_live_price(inst), default=None)
-        if live_price is None:
-            logger.warning("[INTENT GATEWAY] Intent %s rejected: invalid price for %s", intent_id, symbol)
-            intent["status"] = "REJECTED_PRICE_UNAVAILABLE"
-            _append_intent_history(intent, {
-                "ts": now, "action": "REJECTED_PRICE_UNAVAILABLE", "symbol": symbol
-            })
-            return intent
-
-        px_ok, price, is_limit = resolve_intent_execution_price(
+        (
+            ok,
+            intent_id,
+            decision,
+            symbol,
+            venue,
+            confidence,
+            inst,
+            effective_usd,
+            price,
+            is_limit,
+        ) = preflight_intent_and_resolve_price(
             intent,
-            intent_id=intent_id,
-            decision=decision,
-            symbol=symbol,
-            live_price=live_price,
+            min_confidence=self.min_confidence,
+            min_notional_usd=self.min_notional_usd,
+            max_notional_usd=self.max_notional_usd,
+            resolve_instrument_fn=self.resolve_instrument,
+            get_live_price_fn=self._get_live_price,
+            instruments_map=instruments_map,
             now_ts=now,
             log=logger,
         )
-        if not px_ok:
+        if not ok:
             return intent
 
         if mode == "enforce" and _parse_bool_flag(intent.get("replace_open_orders"), default=False):
@@ -438,7 +389,19 @@ class AutonomousIntentGateway:
 
     def _cancel_existing_ai_open_orders(self, inst: Any, side: str) -> List[str]:
         """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
-        return cancel_existing_ai_open_orders(inst, side, log=logger)
+        known_oids: set[str] = set()
+        try:
+            from providers.base import extract_order_id
+
+            for item in self.load_all_intents():
+                if not isinstance(item, dict):
+                    continue
+                oid = extract_order_id(item.get("execution_payload"), default="")
+                if oid:
+                    known_oids.add(str(oid))
+        except Exception:
+            pass
+        return cancel_existing_ai_open_orders(inst, side, log=logger, known_ai_order_ids=known_oids)
 
     def submit(
         self,
