@@ -431,7 +431,7 @@ def _apply_config_change(section, key, old_value, new_value):
     """Replace ONLY the numeric value on the `key = ...` line in
     sectiunea `section`, pastrand tot restul fisierului (comentarii,
     formatare, alte sectiuni) neatins."""
-    from state_io import atomic_text_writer
+    from state_io import atomic_write_text
 
     with open(INSTRUMENTS_CONF, encoding="utf-8") as f:
         lines = f.readlines()
@@ -447,8 +447,7 @@ def _apply_config_change(section, key, old_value, new_value):
             if m:
                 lines[i] = f"{m.group(1)}{new_value}{m.group(3)}\n"
                 break
-    with atomic_text_writer(INSTRUMENTS_CONF) as f:
-        f.writelines(lines)
+    atomic_write_text(INSTRUMENTS_CONF, "".join(lines))
 
 
 def _restart_monitortrades():
