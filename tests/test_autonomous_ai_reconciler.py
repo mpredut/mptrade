@@ -3751,6 +3751,65 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert "deep_SHORT=" in telem["Liquidation Clusters (LONG vs SHORT)"]
     assert "(by=AI)" in telem["Recent Venue Fills"]
 
+    from types import SimpleNamespace
+    from intelligence.sentiment.guards.high_stake_guard import (
+        load_symbol_microstructure,
+        resolve_venue_fee_and_limits,
+    )
+
+    hl_inst = SimpleNamespace(
+        params={},
+        _provider=SimpleNamespace(
+            _spot_pair="@107",
+            _client=SimpleNamespace(
+                _meta_cache={},
+                info=SimpleNamespace(
+                    name_to_coin={"HYPE/USDC": "@107"},
+                    coin_to_asset={"@107": 10107},
+                    asset_to_sz_decimals={10107: 2},
+                ),
+            ),
+        ),
+    )
+    hl_limits = resolve_venue_fee_and_limits("hyperliquid", "HYPEUSDC", hl_inst, price=42.5)
+    assert hl_limits["step_size"] == pytest.approx(0.01)
+    assert hl_limits["min_qty"] == pytest.approx(0.01)
+    assert hl_limits["tick_size"] == pytest.approx(0.001)
+
+    m_from_objs = load_symbol_microstructure(
+        str(tmp_path),
+        "UNLISTEDUSDC",
+        ob=SimpleNamespace(
+            imbalance_ratio=0.61,
+            mid_price=50.0,
+            best_bid=49.98,
+            best_ask=50.02,
+            spread_bps=8.0,
+            bid_depth_usd=150000.0,
+            ask_depth_usd=95000.0,
+            depth_1pct_bid_usd=100000.0,
+            depth_1pct_ask_usd=65000.0,
+            largest_bid_wall_usd=45000.0,
+            largest_ask_wall_usd=30000.0,
+            largest_bid_wall_price=49.5,
+            largest_ask_wall_price=50.5,
+        ),
+        deriv=SimpleNamespace(funding_rate=0.0001, predicted_funding_rate=0.00012, open_interest_usd=25000000.0),
+        whale=SimpleNamespace(
+            top_traders_long_pct=0.58,
+            top_traders_long_ratio=1.38,
+            taker_buy_sell_ratio=1.18,
+            taker_buy_vol_usd=300000.0,
+            taker_sell_vol_usd=180000.0,
+            open_interest_1h_change_pct=1.2,
+            divergence_regime="BULLISH_ACCUMULATION",
+        ),
+    )
+    assert m_from_objs is not None
+    assert m_from_objs["ob_imbalance"] == pytest.approx(0.61)
+    assert m_from_objs["cvd_15m_usd"] == pytest.approx(120000.0)
+    assert m_from_objs["oi_usd"] == pytest.approx(25000000.0)
+
 
 
 
