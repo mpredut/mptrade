@@ -16,6 +16,7 @@ import subprocess
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from botcore import _parse_bool_flag, safe_float
+from state_io import read_json_recovering
 
 parse_finite_float = safe_float
 
@@ -190,21 +191,6 @@ def clean_json_value(val: Any) -> Any:
     if isinstance(val, (list, tuple)):
         return [clean_json_value(v) for v in val]
     return val
-
-
-def read_json_recovering(fpath: str) -> Optional[Any]:
-    """Read JSON from ``fpath`` with automatic fallback to ``fpath.previous`` and thematic cachedb subdomains."""
-    from cachepaths import resolve_cachedb_filepath
-
-    resolved = str(resolve_cachedb_filepath(fpath))
-    for cand in (resolved, f"{resolved}.previous", fpath, f"{fpath}.previous"):
-        if os.path.exists(cand):
-            try:
-                with open(cand, "r", encoding="utf-8", errors="replace") as f:
-                    return json.load(f)
-            except Exception:
-                continue
-    return None
 
 
 # ---------------------------------------------------------------------------

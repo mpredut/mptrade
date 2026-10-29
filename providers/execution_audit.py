@@ -526,6 +526,7 @@ def _resolve_intent_execution_details(
     from cachepaths import normalize_venue_name
     from instrument_registry import casefold_get
     from .base import (
+        _UNFILLED_ORDER_STATUSES,
         extract_executed_qty,
         extract_order_id,
         extract_order_price,
@@ -598,8 +599,8 @@ def _resolve_intent_execution_details(
             if isinstance(last_fill, dict):
                 f_ts_ms = safe_float(last_fill.get("ts_ms"), 0.0)
                 if ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= (ts_val - 120.0) * 1000.0:
-                    if fill_px is None:
-                        fill_px = safe_pos_float(last_fill.get("price"), default=None)
+                    if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
+                        fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
                     if filled_qty <= 0:
                         filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
     if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW"):
@@ -1041,7 +1042,8 @@ def execute_enforce_intent_order(
         )
 
     try:
-        intent_cid = f"AI_{intent_id[:28]}" if intent_id else None
+        cid_body = f"{intent_id[:16]}_{intent_id[-11:]}" if intent_id and len(intent_id) > 28 else intent_id
+        intent_cid = f"AI_{cid_body}" if cid_body else None
         outcome_ctx: dict[str, Any] = {}
         order_res = None
         for attempt in range(2):

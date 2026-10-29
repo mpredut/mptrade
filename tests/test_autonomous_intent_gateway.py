@@ -303,6 +303,10 @@ def test_multi_tranche_same_side_scaling_has_zero_dedup_lock_and_previous_recove
         assert second["status"] == "EXECUTED"
         assert second["intent_id"] != first["intent_id"]
         assert mock_inst.place.call_count == 2
+        cid_1 = mock_inst.place.call_args_list[0].kwargs["client_order_id"]
+        cid_2 = mock_inst.place.call_args_list[1].kwargs["client_order_id"]
+        assert cid_1.startswith("AI_") and cid_2.startswith("AI_")
+        assert cid_1 != cid_2
 
     # Verify .previous crash recovery on corrupted primary intents file
     import shutil
@@ -1125,6 +1129,44 @@ def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect
 
     known_ids = collect_known_ai_order_ids(intents, {"INIT_1"})
     assert known_ids == {"INIT_1", "KRK_LIM_1", "HIST_OID_9"}
+
+    # When the resting LIMIT order later fills (no longer in open_orders) and recent_orders
+    # records the fill price, fill_px updates to the actual fill price rather than staying
+    # locked to the initial NEW placement limit price.
+    filled_intents = [
+        {
+            "intent_id": "filled_lim_1",
+            "timestamp": now_ts - 20.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 78500.0,
+            "reference_price": 78500.0,
+            "suggested_notional_usd": 392.5,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "orderId": "BIN_LIM_99",
+                "status": "NEW",
+                "price": "78500.0",
+                "origQty": "0.005",
+                "executedQty": "0.0",
+            },
+        }
+    ]
+    recent_after_fill = {
+        "binance:BTCUSDC": {
+            "last_buy": {"price": 78420.0, "qty": 0.005, "ts_ms": int((now_ts - 5.0) * 1000), "actor": "AI"}
+        }
+    }
+    filled_st = build_last_cycle_execution_status(
+        filled_intents, "crypto", now_ts, extract_intent_notional, recent_orders=recent_after_fill, open_orders=[]
+    )
+    assert isinstance(filled_st, dict)
+    assert filled_st["status"] == "FILLED"
+    assert filled_st["fill_px"] == pytest.approx(78420.0)
+    assert filled_st["filled_qty"] == pytest.approx(0.005)
+    assert filled_st["slippage_bps"] == pytest.approx(((78420.0 - 78500.0) / 78500.0) * 10000.0, abs=0.05)
 
 
 
