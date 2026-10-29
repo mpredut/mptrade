@@ -8,7 +8,10 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 import monitortrades as mt
+from botcore import _parse_bool_flag
 from offline.research.monitortrades_backtest.run_replay_backtest import SYMBOLS, run_symbol
+from offline.research.monitortrades_backtest.sweep_mt_models import load_archive_series
+
 
 def main():
     results = {}
@@ -16,6 +19,8 @@ def main():
         ("PROPOSED (structural break ON)", True),
         ("BASELINE (structural break OFF)", False),
     ]
+    use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
+    series_map = {sym: load_archive_series(sym, use_365=use_365) for sym in SYMBOLS._SECTIONS}
     orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
     try:
         for label, enabled in variants:
@@ -28,7 +33,7 @@ def main():
             for sym in SYMBOLS._SECTIONS:
                 cfg = SYMBOLS[sym]
                 print(f"Starting {sym}...")
-                res = run_symbol(sym, cfg["params"], cfg["base"], quiet=True)
+                res = run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series_map.get(sym))
                 results[label][sym] = res
                 if res:
                     print(f"[{sym}] Net PnL: {(res.get('net') or 0.0):.2f} USD | Sells: {res.get('sells') or 0} | Buys: {res.get('buys') or 0}")

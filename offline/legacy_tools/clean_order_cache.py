@@ -26,11 +26,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
-from cachepaths import get_cachedb_dir
+from cachepaths import cache_path, get_cachedb_dir
 from state_io import atomic_write_json
 
 CACHE_DIR = get_cachedb_dir()
-ORDER_FILE = os.path.join(CACHE_DIR, "cache_order.json")
+ORDER_FILE = cache_path("cache_order.json")
 
 BAD_STATUS = {"CANCELED", "EXPIRED", "REJECTED", "NEW"}
 
@@ -79,7 +79,7 @@ def main():
         return
 
     bak = ORDER_FILE + f".bak.{int(time.time())}"
-    os.rename(ORDER_FILE, bak)
+    os.replace(ORDER_FILE, bak)
     print(f"Backup: {bak}")
     data["items"] = cleaned
     atomic_write_json(ORDER_FILE, data, indent=1)

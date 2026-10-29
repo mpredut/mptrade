@@ -248,6 +248,21 @@ def make_tape(
     return cond.tolist()
 
 
+def load_archive_series(sym: str, use_365: bool = False) -> list[tuple[float, float]]:
+    """Load dense 1s (.npz / .jsonl) or sparse 329d price series for `sym`."""
+    npz_path = cache_path(f"cache_365_price_{sym}.npz")
+    if use_365 and os.path.exists(npz_path):
+        with np.load(npz_path) as z:
+            return list(zip(z["ts"].tolist(), z["px"].tolist()))
+    fname = f"cache_365_price_{sym}.jsonl" if use_365 else f"cache_sparse_price_{sym}.jsonl"
+    path = cache_path(fname)
+    if not os.path.exists(path):
+        path = cache_path(f"cache_sparse_price_{sym}.jsonl")
+    if not os.path.exists(path):
+        return []
+    return load_price_series(path, sym)
+
+
 def evaluate_dataset(use_365: bool = False):
     label = "DENSE 1-SECOND ARCHIVE (cache_365_price_*.jsonl)" if use_365 else "FULL 329-DAY SPARSE ARCHIVE (cache_sparse_price_*.jsonl)"
     print(f"\n{'=' * 105}")
@@ -261,16 +276,7 @@ def evaluate_dataset(use_365: bool = False):
 
     for sym in all_symbols:
         t0 = time.time()
-        npz_path = cache_path(f"cache_365_price_{sym}.npz")
-        if use_365 and os.path.exists(npz_path):
-            z = np.load(npz_path)
-            series = list(zip(z["ts"].tolist(), z["px"].tolist()))
-        else:
-            fname = f"cache_365_price_{sym}.jsonl" if use_365 else f"cache_sparse_price_{sym}.jsonl"
-            path = cache_path(fname)
-            if not os.path.exists(path):
-                path = cache_path(f"cache_sparse_price_{sym}.jsonl")
-            series = load_price_series(path, sym)
+        series = load_archive_series(sym, use_365=use_365)
         if not series:
             continue
         symbols.append(sym)

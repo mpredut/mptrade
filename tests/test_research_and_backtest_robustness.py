@@ -6452,3 +6452,39 @@ def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
     assert len(wins) == 2
     assert wins[0]["bars"] == 10
 
+    # 5. simulate_should_wait and evaluate_regime_900s handle short/empty arrays without NaN or IndexError
+    from offline.research.monitortrades_backtest.backtest_wait_and_regime import (
+        evaluate_regime_900s,
+        simulate_should_wait,
+    )
+    from providers.replay_provider import ReplayMarketDataProvider
+
+    short_ts = np.arange(50, dtype=np.float64)
+    short_px = 100.0 + short_ts * 0.1
+    short_sig = compute_exact_time_window_signals(short_ts, short_px, 10.0, "BTCUSDC")
+    wait_res = simulate_should_wait(
+        short_ts, short_px, short_sig["gc"] < 0, short_sig["gc"] > 0, stride=10
+    )
+    assert np.isfinite(wait_res["roundtrip_bps"])
+    reg_res, raw_s, scaled_s = evaluate_regime_900s(short_ts, short_px, short_sig, horizon_sec=10.0, stride=10)
+    assert len(reg_res) == 6
+    assert len(raw_s) > 0 and len(scaled_s) > 0
+
+    # 6. ReplayMarketDataProvider.get_orders side-specific cache window ignores opposite-side timestamps
+    prov = ReplayMarketDataProvider(
+        {"BTCUSDC": [(1.0, 100.0), (2.0, 101.0), (3.0, 102.0), (4.0, 103.0)]}
+    )
+    prov.advance("BTCUSDC")
+    prov.place_order("BTCUSDC", "BUY", 100.0, 2.0)   # ts=1000ms
+    prov.advance("BTCUSDC")
+    prov.place_order("BTCUSDC", "SELL", 101.0, 1.0)  # ts=2000ms
+    prov.advance("BTCUSDC")
+    prov.place_order("BTCUSDC", "BUY", 102.0, 1.0)   # ts=3000ms
+    prov.advance("BTCUSDC")                          # now=4.0s (4000ms)
+    buys_since_1_5s = prov.get_orders("BTCUSDC", "BUY", 1.5)  # cutoff=2500ms
+    assert len(buys_since_1_5s) == 1
+    assert buys_since_1_5s[0]["timestamp"] == 3000
+    # Cached low_ms for BUY must be 1000ms (the older BUY), not 2000ms (the SELL)
+    assert prov._orders_cache[("BTCUSDC", "BUY")][1] == 1000.0
+
+

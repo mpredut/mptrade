@@ -240,12 +240,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
         out = _OrderList()
         low_ms = -1e18
         for o in reversed(orders):
+            if side_u is not None and o["side"] != side_u:
+                continue
             ts = o["timestamp"]
             if ts < cutoff_ms:
                 low_ms = safe_float(ts, default=-1e18)
                 break
-            if side_u is None or o["side"] == side_u:
-                out.append(o)
+            out.append(o)
         out.reverse()
         out._sorted_desc = len(out) <= 1
         high_ms = safe_float(out[0]["timestamp"], default=1e18) if out else 1e18

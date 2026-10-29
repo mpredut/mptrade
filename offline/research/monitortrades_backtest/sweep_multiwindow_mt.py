@@ -17,10 +17,11 @@ os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import pricewindow as pw
-from cachepaths import cache_path
-from providers.replay_provider import load_price_series
 import offline.research.monitortrades_backtest.run_replay_backtest as rrb
-from offline.research.monitortrades_backtest.sweep_mt_models import compute_all_signals
+from offline.research.monitortrades_backtest.sweep_mt_models import (
+    compute_all_signals,
+    load_archive_series,
+)
 
 
 def run_multiwindow_sweep(use_365: bool = False):
@@ -35,15 +36,7 @@ def run_multiwindow_sweep(use_365: bool = False):
     sigs = {}
 
     for sym in all_symbols:
-        npz_path = cache_path(f"cache_365_price_{sym}.npz")
-        if use_365 and os.path.exists(npz_path):
-            z = np.load(npz_path)
-            series = list(zip(z["ts"].tolist(), z["px"].tolist()))
-        else:
-            path = cache_path(f"cache_sparse_price_{sym}.jsonl")
-            if not os.path.exists(path):
-                continue
-            series = load_price_series(path, sym)
+        series = load_archive_series(sym, use_365=use_365)
         if not series:
             continue
         symbols.append(sym)

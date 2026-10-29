@@ -19,10 +19,22 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import pricewindow as pw
 from cachepaths import cache_path
-from providers.replay_provider import load_price_series
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_window_signals_from_bounds,
+    load_archive_series,
 )
+
+
+def _load_ts_px(sym: str) -> tuple[np.ndarray, np.ndarray, str]:
+    """Load (ts, px, src_label) for `sym`, preferring dense 1s .npz when available."""
+    npz_path = cache_path(f"cache_365_price_{sym}.npz")
+    if os.path.exists(npz_path):
+        with np.load(npz_path) as z:
+            return z["ts"].astype(np.float64), z["px"].astype(np.float64), "1s-dense"
+    series = load_archive_series(sym, use_365=False)
+    ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=len(series))
+    px = np.fromiter((p for _, p in series), dtype=np.float64, count=len(series))
+    return ts, px, "329d-sparse"
 
 
 def compute_exact_time_window_signals(
@@ -57,7 +69,20 @@ def simulate_should_wait(
 ):
     """Evaluate average execution improvement (in bps) over sampled intent arrival points."""
     N = len(ts)
-    sample_idx = np.arange(1000, N - 1000, stride, dtype=np.int64)
+    stride = max(1, int(stride))
+    if N > 2000:
+        sample_idx = np.arange(1000, N - 1000, stride, dtype=np.int64)
+    else:
+        sample_idx = np.arange(0, N, stride, dtype=np.int64)
+    if len(sample_idx) == 0:
+        return {
+            "buy_bps": 0.0,
+            "sell_bps": 0.0,
+            "roundtrip_bps": 0.0,
+            "buy_wait_pct": 0.0,
+            "sell_wait_pct": 0.0,
+            "avg_wait_s": 0.0,
+        }
     buy_bps = np.zeros(len(sample_idx), dtype=np.float64)
     sell_bps = np.zeros(len(sample_idx), dtype=np.float64)
     buy_waited_s = np.zeros(len(sample_idx), dtype=np.float64)
@@ -101,7 +126,14 @@ def evaluate_regime_900s(
 ):
     """Evaluate 900s regime filter for rtrade: sideways % vs forward 15m adverse excursion & spread fill."""
     N = len(ts)
-    sample_idx = np.arange(2000, N - 2000, stride, dtype=np.int64)
+    stride = max(1, int(stride))
+    if N > 4000:
+        sample_idx = np.arange(2000, N - 2000, stride, dtype=np.int64)
+    else:
+        sample_idx = np.arange(0, N, stride, dtype=np.int64)
+    if len(sample_idx) == 0:
+        z = np.zeros(1, dtype=np.float64)
+        return [], z, z
     # Forward 15m endpoint for each sample_idx
     fwd_end = np.searchsorted(ts, ts[sample_idx] + horizon_sec, side="left")
     fwd_end = np.minimum(N - 1, fwd_end)
@@ -165,20 +197,10 @@ def main():
     print("=" * 110)
 
     for sym in symbols:
-        npz_path = cache_path(f"cache_365_price_{sym}.npz")
-        if os.path.exists(npz_path):
-            z = np.load(npz_path)
-            ts = z["ts"].astype(np.float64)
-            px = z["px"].astype(np.float64)
-            src_label = "1s-dense"
-            stride = max(60, len(ts) // 25000)
-        else:
-            path = cache_path(f"cache_sparse_price_{sym}.jsonl")
-            series = load_price_series(path, sym)
-            ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=len(series))
-            px = np.fromiter((p for _, p in series), dtype=np.float64, count=len(series))
-            src_label = "329d-sparse"
-            stride = max(5, len(ts) // 15000)
+        ts, px, src_label = _load_ts_px(sym)
+        if len(ts) == 0:
+            continue
+        stride = max(60, len(ts) // 25000) if src_label == "1s-dense" else max(5, len(ts) // 15000)
 
         sig222 = compute_exact_time_window_signals(ts, px, 222.0, sym)
         gc = sig222["gc"]
@@ -219,20 +241,10 @@ def main():
     print("=" * 110)
 
     for sym in ["TAOUSDC", "BTCUSDC", "ARBUSDC", "HYPEUSD"]:
-        npz_path = cache_path(f"cache_365_price_{sym}.npz")
-        if os.path.exists(npz_path):
-            z = np.load(npz_path)
-            ts = z["ts"].astype(np.float64)
-            px = z["px"].astype(np.float64)
-            src_label = "1s-dense"
-            stride = max(60, len(ts) // 20000)
-        else:
-            path = cache_path(f"cache_sparse_price_{sym}.jsonl")
-            series = load_price_series(path, sym)
-            ts = np.fromiter((t for t, _ in series), dtype=np.float64, count=len(series))
-            px = np.fromiter((p for _, p in series), dtype=np.float64, count=len(series))
-            src_label = "329d-sparse"
-            stride = max(5, len(ts) // 12000)
+        ts, px, src_label = _load_ts_px(sym)
+        if len(ts) == 0:
+            continue
+        stride = max(60, len(ts) // 20000) if src_label == "1s-dense" else max(5, len(ts) // 12000)
 
         sig900 = compute_exact_time_window_signals(ts, px, 900.0, sym)
         results, raw_s, scaled_s = evaluate_regime_900s(ts, px, sig900, horizon_sec=900.0, stride=stride)
