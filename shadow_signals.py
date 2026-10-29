@@ -17,10 +17,9 @@ from __future__ import annotations
 import math
 import os
 import time
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import read_recovering_previous, save_json_state
 from datetime import date
 
-import numpy as np
 from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 
@@ -37,10 +36,6 @@ KALMAN_SAMPLE_SEC = _f_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
 from intelligence.internal.triggers.kalman_trigger import (
     KalmanTrend,
     KALMAN_QR,
-    CONF_ENTER,
-    CONF_EXIT,
-    MIN_VEL_PCT_MIN,
-    DT_MIN,
     GAP_RESET_SEC,
 )
 from intelligence.internal.state.volatility import (
