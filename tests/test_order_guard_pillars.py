@@ -1517,5 +1517,41 @@ def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
     wtd_mod.main()
 
 
+def test_batch52_macro_analyzer_and_daemon_sigterm_exit_and_agy_store_fix(tmp_path, monkeypatch):
+    import signal
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.macro_analyzer import MacroAnalyzer
+
+    # 1. MacroAnalyzer.start() exits immediately without sleeping when SIGTERM handler raises SystemExit(0)
+    ma = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["BTCUSDC"])
+    sleep_calls = []
+    monkeypatch.setattr("intelligence.macro_analyzer.time.sleep", lambda s: sleep_calls.append(s))
+    registered_handlers = {}
+    monkeypatch.setattr("intelligence.macro_analyzer.signal.signal", lambda sig, fn: registered_handlers.setdefault(sig, fn))
+
+    def _ma_cycle(force=False):
+        registered_handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    monkeypatch.setattr(ma, "run_cycle", _ma_cycle)
+    ma.start(poll_interval_sec=5.0)
+    assert ma.running is False
+    assert sleep_calls == []
+
+    # 2. IntelligenceTelemetryDaemon.start() exits immediately without sleeping when SIGTERM handler raises SystemExit(0)
+    itd = IntelligenceTelemetryDaemon(cache_dir=str(tmp_path), symbols=["BTCUSDC"], skip_macro=True, skip_external=True)
+    itd_handlers = {}
+    monkeypatch.setattr("intelligence.daemon.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("intelligence.daemon.signal.signal", lambda sig, fn: itd_handlers.setdefault(sig, fn))
+
+    def _itd_cycle(force=False):
+        itd_handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    monkeypatch.setattr(itd, "run_cycle", _itd_cycle)
+    itd.start(poll_interval_sec=5.0)
+    assert itd.running is False
+    assert sleep_calls == []
+
+
+
 
 

@@ -328,6 +328,7 @@ def repair_summaries(mt: dict) -> int:
     for pb_path in (PB, os.path.join(CLI, "jetbox_summaries_proto.pb")):
         if pb_path != PB and not os.path.exists(pb_path):
             continue
+        os.makedirs(os.path.dirname(os.path.abspath(pb_path)) or ".", exist_ok=True)
         tmp = pb_path + ".tmp"
         with open(tmp, "wb") as f:
             f.write(bytes(out))
@@ -630,6 +631,8 @@ def mode_ui_sync_check(idle_sec: int) -> int:
 
 def main(argv) -> int:
     mode = argv[1] if len(argv) > 1 else "check"
+    os.makedirs(os.path.dirname(os.path.abspath(LOG_FILE)) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(LOCK)) or ".", exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)])
     lock = open(LOCK, "w")

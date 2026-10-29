@@ -389,6 +389,7 @@ class MacroAnalyzer:
         def _handle_exit(signum, frame):
             logger.info("Received termination signal (%d), stopping macro analyzer...", signum)
             self.running = False
+            raise SystemExit(0)
 
         signal.signal(signal.SIGINT, _handle_exit)
         signal.signal(signal.SIGTERM, _handle_exit)
@@ -398,15 +399,23 @@ class MacroAnalyzer:
 
         try:
             self.run_cycle(force=False)
+        except SystemExit:
+            logger.info("MacroAnalyzer stopped gracefully.")
+            return
         except Exception as e:
             logger.warning("Error during initial macro analysis cycle: %s", e)
 
         while self.running:
             try:
                 self.run_cycle(force=False)
+                if self.running:
+                    time.sleep(poll_interval_sec)
+            except SystemExit:
+                break
             except Exception as e:
                 logger.error("Unexpected error in macro analyzer loop: %s", e)
-            time.sleep(poll_interval_sec)
+                if self.running:
+                    time.sleep(poll_interval_sec)
 
         logger.info("MacroAnalyzer stopped gracefully.")
 

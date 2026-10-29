@@ -184,6 +184,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         def _handle_exit(signum, frame):
             logger.info("Received termination signal (%d), stopping daemon...", signum)
             self.running = False
+            raise SystemExit(0)
 
         signal.signal(signal.SIGINT, _handle_exit)
         signal.signal(signal.SIGTERM, _handle_exit)
@@ -191,15 +192,23 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         logger.info("Starting IntelligenceTelemetryDaemon for symbols: %s (PID=%d)", ", ".join(self.symbols), os.getpid())
         try:
             self.run_cycle(force=True)
+        except SystemExit:
+            logger.info("IntelligenceTelemetryDaemon stopped gracefully.")
+            return
         except Exception as e:
             logger.warning("Error during initial daemon update cycle: %s", e)
 
         while self.running:
             try:
                 self.run_cycle(force=False)
+                if self.running:
+                    time.sleep(poll_interval_sec)
+            except SystemExit:
+                break
             except Exception as e:
                 logger.error("Unexpected error in daemon loop: %s", e)
-            time.sleep(poll_interval_sec)
+                if self.running:
+                    time.sleep(poll_interval_sec)
 
         logger.info("IntelligenceTelemetryDaemon stopped gracefully.")
 
