@@ -1489,4 +1489,33 @@ def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeyp
     assert "suez freeze" in matched2
 
 
+def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import verify_tools.translation_audit as ta_mod
+    import verify_tools.watch_trade_decisions as wtd_mod
+
+    # 1. translation_audit.scan_file handles missing/unreadable files cleanly without raising
+    hits, is_rt = ta_mod.scan_file(str(tmp_path / "nonexistent.py"), 2)
+    assert hits == [] and is_rt is False
+
+    # 2. watch_trade_decisions.main handles specs where spec.number("mt.gain") returns None (e.g. ARBUSDC)
+    class _DummyMgr:
+        def get_snapshot(self, sym):
+            return {"current_price": 1.5, "growth_coefficient": 0.01}
+
+    class _DummySpec:
+        symbol = "ARBUSDC"
+
+        def number(self, key):
+            return None
+
+    monkeypatch.setattr(wtd_mod, "SYMBOLS", ["ARBUSDC"])
+    monkeypatch.setattr(wtd_mod.cm, "get_short_trend_manager", lambda: _DummyMgr())
+    monkeypatch.setattr(wtd_mod, "load_registry", lambda: {"BINANCE_ARB": _DummySpec()})
+    monkeypatch.setattr(wtd_mod, "position", lambda sym: (1.4, 10.0, 0, 1.4))
+    monkeypatch.setattr(wtd_mod, "free_qty", lambda sym: 10.0)
+    wtd_mod.main()
+
+
+
 

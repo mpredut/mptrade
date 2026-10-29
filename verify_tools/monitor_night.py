@@ -14,6 +14,7 @@ configuration is missing: it connects to whatever lives at that address today an
 reports its processes as if they were the trading server's.
 """
 import os
+import shlex
 import sys
 import collections
 import datetime
@@ -178,7 +179,7 @@ def main():
     ok = []
 
     for p in procs:
-        alive = run(c, f"pgrep -f '{p.pat}' > /dev/null 2>&1 && echo YES || echo NO")
+        alive = run(c, f"pgrep -f {shlex.quote(p.pat)} > /dev/null 2>&1 && echo YES || echo NO")
         is_alive = alive.strip() == "YES"
         errors = check_errors(c, p.log)
 

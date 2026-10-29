@@ -77,11 +77,11 @@ def main():
     for s in SYMBOLS:
         spec = specs_by_sym.get(s)
         try:
-            gain_pct = spec.number("mt.gain") if spec else 9.2
+            gain_pct = safe_pos_float(spec.number("mt.gain") if spec else None, default=9.2)
         except Exception:
             gain_pct = 9.2
         try:
-            hard_tp_pct = spec.number("mt.hardtp") if spec else 17.0
+            hard_tp_pct = safe_pos_float(spec.number("mt.hardtp") if spec else None, default=17.0)
         except Exception:
             hard_tp_pct = 17.0
 

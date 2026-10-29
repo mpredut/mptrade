@@ -84,8 +84,11 @@ def doc_is_runtime_text(source: str) -> bool:
 
 def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
     """Return (hits, doc_is_runtime) for one file; a hit is (line, kind, score, text)."""
-    with open(path, encoding="utf-8") as handle:
-        source = handle.read()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+    except (OSError, UnicodeDecodeError):
+        return [], False
 
     hits: List[tuple] = []
 
@@ -203,10 +206,18 @@ def cmd_verify(args) -> int:
             failures += 1
             continue
 
-        with open(path, encoding="utf-8", newline="") as handle:
-            work_source = handle.read()
+        try:
+            with open(path, encoding="utf-8", newline="") as handle:
+                work_source = handle.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"FAIL {path:<40} unreadable on disk ({exc})")
+            failures += 1
+            continue
 
-        same_code = code_fingerprint(head_source) == code_fingerprint(work_source)
+        try:
+            same_code = code_fingerprint(head_source) == code_fingerprint(work_source)
+        except SyntaxError:
+            same_code = False
         head_endings = line_ending_style(head_source)
         work_endings = line_ending_style(work_source)
         same_endings = head_endings == work_endings

@@ -91,9 +91,11 @@ def main():
         # 1) free_balance ------------------------------------------------------
         fd = free_direct(base)
         ff = mkt.free_balance_for("binance", base)
-        balance_available = ff is not None and fd is not None
+        fd_f = safe_float(fd, default=None)
+        ff_f = safe_float(ff, default=None)
+        balance_available = ff_f is not None and fd_f is not None
         same_free = balance_available and math.isclose(
-            float(fd), float(ff), rel_tol=1e-9, abs_tol=1e-12
+            fd_f, ff_f, rel_tol=1e-9, abs_tol=1e-12
         )
         state = "OK" if same_free else ("SKIP (date indisponibile)" if not balance_available else "DIFERA")
         print(f"  free: direct={fd!r}  facada={ff!r}  -> {state}")

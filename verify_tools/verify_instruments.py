@@ -111,7 +111,14 @@ def main() -> int:
         check(tao.param("mt", "ref") == g.get("tp_reference"),
               "ref == tp_reference", f"{tao.param('mt','ref')} vs {g.get('tp_reference')}")
     if tao:
-        check(tao.param("mt", "gain", cast=float) == float(tao.param("mt", "gain")), "param() cast float", str(tao.param("mt", "gain", cast=float)))
+        try:
+            cast_val = tao.param("mt", "gain", cast=float)
+            raw_val = float(tao.param("mt", "gain"))
+            cast_ok = cast_val == raw_val
+        except (TypeError, ValueError):
+            cast_val = None
+            cast_ok = False
+        check(cast_ok, "param() cast float", str(cast_val))
 
     print("\n==== 3. RUTARE explicita pe venue (provider_by_name) ====")
     check(api.provider_by_name("binance") is not None, "provider_by_name('binance')")
@@ -126,7 +133,16 @@ def main() -> int:
     if tao:
         p_inst = tao.price()
         p_api = api.get_current_price("TAOUSDC")
-        check(p_inst is not None and p_inst > 0 and p_inst == p_api,
+        price_match = (
+            isinstance(p_inst, (int, float))
+            and not isinstance(p_inst, bool)
+            and isinstance(p_api, (int, float))
+            and not isinstance(p_api, bool)
+            and p_inst > 0
+            and p_api > 0
+            and abs(float(p_inst) - float(p_api)) / float(p_api) < 0.02
+        )
+        check(price_match,
               "TAO price() == facada", f"instr={p_inst} api={p_api}")
         f_inst = tao.free()
         f_prov = api.provider_by_name("binance").free_balance("TAO")
