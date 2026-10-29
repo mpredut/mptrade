@@ -8,8 +8,8 @@ resolution from telemetry harvesting and order execution in
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import safe_float as _parse_finite_float, safe_pos_float
-from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_venue_name
+from botcore import safe_float as _parse_finite_float
+from cachepaths import canonical_base_asset, normalize_venue_name
 from intelligence.sentiment.guards.high_stake_guard import (
     _VENUE_DEFAULT_FEE_SPECS,
     enrich_microstructure_cvd,
@@ -498,24 +498,23 @@ def _format_microstructure_section(
                 return f"${vf / 1_000.0:.1f}K"
             return f"${vf:.0f}"
 
+        if (
+            minfo.get("depth_1pct_bid_usd") is None
+            or minfo.get("est_slip_2k_bps") is None
+            or minfo.get("cvd_15m_usd") is None
+            or minfo.get("cvd_regime") is None
+            or (minfo.get("cvd_15m_base") is None and cur_px > 0.0)
+        ):
+            enrich_microstructure_cvd(minfo, {"price": cur_px} if cur_px > 0.0 else None)
         d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
-        if d1_b <= 0.0 and _parse_finite_float(minfo.get("bid_depth_usd"), 0.0) > 0.0:
-            d1_b = round(_parse_finite_float(minfo.get("bid_depth_usd"), 0.0) * (1.0 / 1.5), 0)
-        if d1_a <= 0.0 and _parse_finite_float(minfo.get("ask_depth_usd"), 0.0) > 0.0:
-            d1_a = round(_parse_finite_float(minfo.get("ask_depth_usd"), 0.0) * (1.0 / 1.5), 0)
-        depth_1pct_sfx = ""
-        if d1_b > 0.0 or d1_a > 0.0:
-            slip_2k = minfo.get("est_slip_2k_bps")
-            if slip_2k is None:
-                eff_d1 = min(d1_b, d1_a) if (d1_b > 0.0 and d1_a > 0.0) else max(d1_b, d1_a)
-                sp_half = _parse_finite_float(minfo.get("spread_bps"), 2.0) * 0.5
-                slip_2k = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
-            depth_1pct_sfx = f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={slip_2k}bps)"
+        depth_1pct_sfx = (
+            f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
+            if (d1_b > 0.0 or d1_a > 0.0)
+            else ""
+        )
 
         cvd_sfx = ""
-        if minfo.get("cvd_15m_usd") is None or minfo.get("cvd_regime") is None or (minfo.get("cvd_15m_base") is None and cur_px > 0.0):
-            enrich_microstructure_cvd(minfo, {"price": cur_px} if cur_px > 0.0 else None)
         cvd_usd_raw = minfo.get("cvd_15m_usd")
         if cvd_usd_raw is not None:
             cvd_u = _parse_finite_float(cvd_usd_raw, 0.0)

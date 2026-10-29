@@ -3810,11 +3810,59 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert m_from_objs["cvd_15m_usd"] == pytest.approx(120000.0)
     assert m_from_objs["oi_usd"] == pytest.approx(25000000.0)
 
+    from intelligence.sentiment.guards.high_stake_guard import (
+        harvest_macro_and_news_sensors,
+        load_symbol_price_series,
+    )
 
+    (tmp_path / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "BTCUSDC": [
+                    [1000.0, 80000.0, 12.5],
+                    [2000.0, 80100.0, 45.0],
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    series_24h, _ = load_symbol_price_series(
+        str(tmp_path),
+        "BTCUSDC",
+        current_price_items={"BTCUSDC": [[2000.0, 80120.0]]},
+    )
+    assert series_24h[-1] == [2000000.0, 80120.0, 45.0]
 
+    (tmp_path / "fear_greed_collect.json").write_text(
+        json.dumps({"value": 24, "classification": "Extreme Fear"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "market_breadth_collect.json").write_text(
+        json.dumps({"advance_ratio": 0.35, "regime": "WEAK"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sentiment_eval.json").write_text(
+        json.dumps({"market_bias": "NEUTRAL", "risk_level": "MODERATE"}),
+        encoding="utf-8",
+    )
+    macro_map, _ = harvest_macro_and_news_sensors(str(tmp_path), now_ts=1793300000.0)
+    assert macro_map["fear_greed"]["value"] == 24
+    assert macro_map["market_breadth"]["advance_ratio"] == pytest.approx(0.35)
+    assert macro_map["sentiment_advisor"]["market_bias"] == "NEUTRAL"
 
+    from providers.base import extract_executed_qty, extract_order_side, normalize_open_order
 
-
-
-
+    assert extract_order_side({"type": "limit", "descr": {"type": "buy"}}) == "BUY"
+    assert extract_order_side({"dir": "Spot", "isBuyer": True}) == "BUY"
+    assert extract_executed_qty({"oid": 12345, "sz": "10.0", "origSz": "10.0"}) == 0.0
+    assert extract_executed_qty({"oid": 12345, "sz": "6.0", "origSz": "10.0"}) == pytest.approx(4.0)
+    hl_partial = normalize_open_order(
+        {"oid": 12345, "sz": "6.0", "origSz": "10.0", "limitPx": "40.0", "side": "B"},
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+    )
+    assert hl_partial is not None
+    assert hl_partial["filled_qty"] == pytest.approx(4.0)
+    assert hl_partial["remaining_qty"] == pytest.approx(6.0)
+    assert hl_partial["status"] == "PARTIALLY_FILLED"
 

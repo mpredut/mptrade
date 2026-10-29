@@ -1,12 +1,11 @@
 """LLM high-stake guard validating large BUY orders (e.g. >= 1000 EUR)."""
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 import statistics
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from botcore import _parse_bool_flag, extract_current_price_item, load_key_value_conf
 from cachepaths import (
@@ -34,7 +33,6 @@ from intelligence.sentiment.gemini_client import GeminiClient
 from instrument_registry import casefold_get
 from orchestratorOS.agy.topics import topic_spec
 from state_io import (
-    read_json_dict,
     read_json_dict_recovering as read_json_cached,
     read_json_recovering,
     read_tail_jsonl_records,
@@ -286,15 +284,17 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
 
 
 def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
+    if isinstance(data, list):
+        return data
     if not isinstance(data, dict):
         return []
-    raw_items = data.get("items", {})
+    raw_items = data.get("items") if "items" in data else data
     if isinstance(raw_items, dict):
         for k_cand in cands:
             ser = casefold_get(raw_items, k_cand, [])
             if isinstance(ser, list) and ser:
                 return ser
-        if raw_items:
+        if "items" in data and raw_items:
             first_val = next(iter(raw_items.values()), [])
             return first_val if isinstance(first_val, list) else []
     elif isinstance(raw_items, list):
@@ -423,10 +423,8 @@ def load_symbol_price_series(
                     if isinstance(pt, (list, tuple)) and len(pt) >= 2
                 ]
                 break
-            elif cur_item is not None and not isinstance(cur_item, bool):
-                raw_px = cur_item.get("price") or cur_item.get("c") if isinstance(cur_item, dict) else cur_item
-                px_f = safe_pos_float(raw_px, 0.0)
-                if px_f > 0.0 and series_24h:
+            elif (px_f := extract_current_price_item(cur_item)) is not None:
+                if series_24h:
                     last_pt = _parse_ts_px_row(series_24h[-1])
                     if last_pt is not None:
                         series_24h = list(series_24h) + [[last_pt[0] + 1000.0, px_f]]
@@ -449,6 +447,8 @@ def load_symbol_price_series(
             for pt in cleaned_24h[1:]:
                 if pt[0] > dedup_24h[-1][0]:
                     dedup_24h.append(pt)
+                elif len(pt) < 3 and len(dedup_24h[-1]) >= 3:
+                    dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]]
                 else:
                     dedup_24h[-1] = pt
             series_24h = dedup_24h if len(dedup_24h) >= 2 else []
@@ -551,7 +551,6 @@ def extract_symbol_recent_fills(
         extract_order_side,
         extract_timestamp_ms,
         format_actor_tag,
-        resolve_order_actor,
         resolve_order_origin,
     )
 
@@ -969,16 +968,6 @@ def load_symbol_microstructure(
         ):
             val = safe_nonneg_float(obj_attr(ob, k_src), default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
-        if not m_info.get("depth_1pct_bid_usd") and (m_info.get("bid_depth_usd") or 0.0) > 0.0:
-            m_info["depth_1pct_bid_usd"] = round(float(m_info["bid_depth_usd"]) * (1.0 / 1.5), 0)
-        if not m_info.get("depth_1pct_ask_usd") and (m_info.get("ask_depth_usd") or 0.0) > 0.0:
-            m_info["depth_1pct_ask_usd"] = round(float(m_info["ask_depth_usd"]) * (1.0 / 1.5), 0)
-        d1_b = safe_pos_float(m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
-        d1_a = safe_pos_float(m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
-        eff_d1 = min(d1_b, d1_a) if (d1_b > 0.0 and d1_a > 0.0) else max(d1_b, d1_a)
-        if eff_d1 > 0.0:
-            sp_half = (safe_nonneg_float(m_info.get("spread_bps"), default=2.0) or 2.0) * 0.5
-            m_info["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
         m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price")
         m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price")
     if deriv is not None:
@@ -1001,9 +990,24 @@ def enrich_microstructure_cvd(
     minfo: Dict[str, Any],
     pinfo: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Populate `cvd_15m_usd`, `cvd_15m_base`, and `cvd_regime` on a microstructure dict."""
+    """Populate 1% orderbook depth / $2k slippage and `cvd_15m_usd`, `cvd_15m_base`, `cvd_regime` on `minfo`."""
     if not isinstance(minfo, dict):
         return
+    if not safe_pos_float(minfo.get("depth_1pct_bid_usd"), default=None) and (
+        bd_f := safe_pos_float(minfo.get("bid_depth_usd"), default=None)
+    ):
+        minfo["depth_1pct_bid_usd"] = round(bd_f * (1.0 / 1.5), 0)
+    if not safe_pos_float(minfo.get("depth_1pct_ask_usd"), default=None) and (
+        ad_f := safe_pos_float(minfo.get("ask_depth_usd"), default=None)
+    ):
+        minfo["depth_1pct_ask_usd"] = round(ad_f * (1.0 / 1.5), 0)
+    if minfo.get("est_slip_2k_bps") is None:
+        d1_b = safe_pos_float(minfo.get("depth_1pct_bid_usd"), default=0.0) or 0.0
+        d1_a = safe_pos_float(minfo.get("depth_1pct_ask_usd"), default=0.0) or 0.0
+        eff_d1 = min(d1_b, d1_a) if (d1_b > 0.0 and d1_a > 0.0) else max(d1_b, d1_a)
+        if eff_d1 > 0.0:
+            sp_half = (safe_nonneg_float(minfo.get("spread_bps"), default=2.0) or 2.0) * 0.5
+            minfo["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
     cvd_usd = safe_float(minfo.get("cvd_15m_usd"), default=None)
     if cvd_usd is None:
         tb_v = safe_nonneg_float(minfo.get("taker_buy_vol_usd"), default=None)
@@ -2791,6 +2795,24 @@ def apply_asset_scope_filter(
     return prices_and_trends, microstructure
 
 
+def _read_first_cached_dict(
+    cache_dir: str,
+    group_key: str,
+    default_file: str,
+    read_json_fn: Any = None,
+) -> tuple[Optional[Dict[str, Any]], str]:
+    """Read the first non-empty dict matching `get_cache_filenames(group_key)` (or `default_file`) in `cache_dir`."""
+    from intelligence.macro_sentiment_ssot import get_cache_filenames
+
+    rj = read_json_cached if read_json_fn is None else read_json_fn
+    for fname in (get_cache_filenames(group_key) or (default_file,)):
+        fpath = os.path.join(cache_dir, fname)
+        data = rj(fpath)
+        if isinstance(data, dict) and data:
+            return data, fpath
+    return None, ""
+
+
 def harvest_macro_and_news_sensors(
     cache_dir: str,
     now_ts: float,
@@ -2815,16 +2837,15 @@ def harvest_macro_and_news_sensors(
         return enriched
 
     macro_sensors: Dict[str, Optional[Dict[str, Any]]] = {}
-    for attr, fname in (
-        ("fear_greed", "fear_greed_collect.json"),
-        ("market_breadth", "market_breadth_collect.json"),
-        ("sentiment_advisor", "sentiment_eval.json"),
-        ("geopolitical_threat", "geopolitical_eval.json"),
-        ("macro_benchmarks", "macro_benchmarks_collect.json"),
+    for attr, group_key, fname in (
+        ("fear_greed", "fear_greed_files", "fear_greed_collect.json"),
+        ("market_breadth", "market_breadth_files", "market_breadth_collect.json"),
+        ("sentiment_advisor", "sentiment_eval_files", "sentiment_eval.json"),
+        ("geopolitical_threat", "geopolitical_eval_file", "geopolitical_eval.json"),
+        ("macro_benchmarks", "macro_benchmarks_files", "macro_benchmarks_collect.json"),
     ):
-        s_path = os.path.join(cache_dir, fname)
-        data = _rj(s_path)
-        if isinstance(data, dict) and data:
+        data, s_path = _read_first_cached_dict(cache_dir, group_key, fname, _rj)
+        if data is not None:
             enriched = _with_age_min(data, s_path)
             if attr == "macro_benchmarks" and not enriched.get("summary_line"):
                 summary_s = format_macro_benchmarks_summary_line(enriched)
@@ -3501,18 +3522,9 @@ def collect_pretrade_telemetry(
     except Exception:
         pass
 
-    from intelligence.macro_sentiment_ssot import get_cache_filenames
-
-    def _read_first_cached_dict(group_key: str, default_file: str) -> Optional[Dict[str, Any]]:
-        for fname in (get_cache_filenames(group_key) or (default_file,)):
-            data = read_json_cached(os.path.join(cachedb_dir, fname))
-            if isinstance(data, dict):
-                return data
-        return None
-
     # 5. Macro Sentiment Bias & Fear/Greed Index (Pillar 3)
     try:
-        m_data = _read_first_cached_dict("sentiment_eval_files", "sentiment_eval.json")
+        m_data, _ = _read_first_cached_dict(cachedb_dir, "sentiment_eval_files", "sentiment_eval.json")
         if isinstance(m_data, dict):
             bias = str(m_data.get("market_bias") or "").strip()
             risk = str(m_data.get("risk_level") or "").strip()
@@ -3523,7 +3535,7 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        fg_data = _read_first_cached_dict("fear_greed_files", "fear_greed_collect.json")
+        fg_data, _ = _read_first_cached_dict(cachedb_dir, "fear_greed_files", "fear_greed_collect.json")
         if isinstance(fg_data, dict):
             val = fg_data.get("value", "")
             label = fg_data.get("classification", "")
@@ -3535,7 +3547,7 @@ def collect_pretrade_telemetry(
 
     # 6. Geopolitical Threat Shield (Pillar 4)
     try:
-        g_data = _read_first_cached_dict("geopolitical_eval_file", "geopolitical_eval.json")
+        g_data, _ = _read_first_cached_dict(cachedb_dir, "geopolitical_eval_file", "geopolitical_eval.json")
         if isinstance(g_data, dict):
             level = g_data.get("threat_level", "")
             if level is not None and not isinstance(level, bool) and str(level).strip() != "":

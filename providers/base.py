@@ -204,25 +204,17 @@ def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):
         return ""
-    raw_side = next(
-        (
-            order[k]
-            for k in ("side", "S", "dir")
-            if k in order
-            and order[k] is not None
-            and not isinstance(order[k], bool)
-            and str(order[k]).strip()
-        ),
-        None,
-    )
-    if raw_side is not None and str(raw_side).strip():
-        return normalize_side(raw_side)
-    raw_type = order.get("type")
-    if raw_type is None and isinstance(order.get("descr"), dict):
-        raw_type = order["descr"].get("type")
-    t_norm = normalize_side(raw_type)
-    if t_norm in ("BUY", "SELL"):
-        return t_norm
+    for k in ("side", "S", "dir"):
+        s_norm = normalize_side(order.get(k))
+        if s_norm:
+            return s_norm
+    for raw_type in (
+        order.get("type"),
+        order["descr"].get("type") if isinstance(order.get("descr"), dict) else None,
+    ):
+        t_norm = normalize_side(raw_type)
+        if t_norm in ("BUY", "SELL"):
+            return t_norm
     if "isBuyer" in order and order.get("isBuyer") is not None:
         raw_buyer = order["isBuyer"]
         parsed_b = _parse_bool_flag(raw_buyer, None)
@@ -324,6 +316,11 @@ def extract_executed_qty(order: Any, default: float = 0.0) -> float:
                 val = safe_float(filled_sub[key], default=None)
                 if val is not None:
                     return abs(val)
+    if "origSz" in order and "sz" in order:
+        orig_sz = safe_float(order.get("origSz"), default=None)
+        rem_sz = safe_float(order.get("sz"), default=None)
+        if orig_sz is not None and rem_sz is not None:
+            return round(max(0.0, abs(orig_sz) - abs(rem_sz)), 8)
     raw_st = str(order.get("status") or "").strip().upper()
     if raw_st in _UNFILLED_ORDER_STATUSES or (isinstance(order.get("resting"), dict) and not filled_sub):
         return 0.0
@@ -615,13 +612,12 @@ def normalize_open_order(
     px = extract_order_price(order)
     orig_q = extract_orig_qty(order)
     cid = extract_client_order_id(order)
-    raw_exec = (
-        order.get("executedQty")
-        if order.get("executedQty") is not None
-        else (order.get("vol_exec") if order.get("vol_exec") is not None else order.get("filledQuantity", 0))
-    )
     orig_f = safe_nonneg_float(orig_q, default=0.0) or 0.0
-    exec_f = safe_nonneg_float(raw_exec, default=0.0) or 0.0
+    exec_f = (
+        extract_executed_qty(order, default=0.0)
+        if (any(k in order for k in _EXEC_QTY_KEYS) or ("origSz" in order and "sz" in order))
+        else 0.0
+    )
     rem_f = extract_remaining_qty(order, default=max(0.0, orig_f - exec_f) if orig_f > 0 else 0.0)
     qty_f = rem_f if rem_f > 0 else orig_f
     raw_status = str(order.get("status") or "").strip().upper()
@@ -661,7 +657,7 @@ def normalize_open_order(
         "remaining_qty": round(rem_f, 8),
         "status": norm_status,
         "origQty": orig_q,
-        "executedQty": raw_exec,
+        "executedQty": round(exec_f, 8) if exec_f > 0 else order.get("executedQty", 0),
     }
     if mod:
         rec["module"] = mod
