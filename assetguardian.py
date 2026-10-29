@@ -34,6 +34,7 @@ from botcore import (
     required_int_env,
     safe_float,
     safe_pos_float,
+    safe_pos_int,
 )
 from cachepaths import cache_path
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1100,15 +1101,7 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     submit semantics while retaining venue-side idempotency where supported.
     """
     threshold = _finite_float(pending.get("threshold"), positive=True)
-    raw_attempt = pending.get("attempt")
-    attempt = 0
-    if raw_attempt is not None and not isinstance(raw_attempt, bool):
-        try:
-            att_f = float(raw_attempt)
-            if math.isfinite(att_f) and att_f.is_integer():
-                attempt = int(att_f)
-        except (TypeError, ValueError, OverflowError):
-            attempt = 0
+    attempt = safe_pos_int(pending.get("attempt"), default=0) or 0
     if threshold is None or attempt <= 0:
         print(f"[{symbol}] Cannot reuse corrupt {kind.upper()} attempt; preserve counters.")
         return state
