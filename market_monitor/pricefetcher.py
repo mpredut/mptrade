@@ -6,7 +6,6 @@ import json
 import time
 import threading
 import requests
-import math
 from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from datetime import datetime
 from typing import Dict, Optional, List, Set, Tuple
@@ -861,17 +860,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         return None
 
     def get_price_history(self, symbol: str, limit: int = 100) -> List[Dict]:
-        if isinstance(limit, bool) or limit is None:
+        lim_f = safe_pos_float(limit, default=None)
+        if lim_f is None or not lim_f.is_integer() or not isinstance(symbol, str) or not symbol.strip():
             return []
-        try:
-            lim_f = float(limit)
-            if not math.isfinite(lim_f) or not lim_f.is_integer():
-                return []
-            limit_i = int(lim_f)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if limit_i <= 0 or not isinstance(symbol, str) or not symbol.strip():
-            return []
+        limit_i = int(lim_f)
         sym_clean = symbol.strip()
         # Copy only references under the lock. Convert and format afterward so datetime
         # work and allocations do not block price synchronization.
