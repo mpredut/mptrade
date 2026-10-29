@@ -16,7 +16,17 @@ if _ROOT not in sys.path:
 from strategies.spot_engine import (  # noqa: E402
     StratParams,
     Strategy,
+    _new_state,
+    _parse_tranches,
+    notify,
     state_path_for,
 )
 
-__all__ = ["StratParams", "Strategy", "state_path_for"]
+__all__ = [
+    "StratParams",
+    "Strategy",
+    "_new_state",
+    "_parse_tranches",
+    "notify",
+    "state_path_for",
+]
