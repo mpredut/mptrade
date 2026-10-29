@@ -12,8 +12,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from botcore import safe_float  # noqa: E402
 from cachepaths import normalize_venue_name  # noqa: E402
+from offline.backtests.comparison import format_number as _fmt  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
 )
@@ -55,11 +55,6 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
                     continue
                 events.append(event)
     return events
-
-
-def _fmt(value) -> str:
-    fval = safe_float(value, default=None)
-    return f"{fval:.3f}" if fval is not None else "n/a"
 
 
 def markdown_report(report: dict, paths: list[Path]) -> str:

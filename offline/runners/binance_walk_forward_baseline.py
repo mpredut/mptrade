@@ -69,20 +69,20 @@ def main(argv: list[str] | None = None) -> int:
         strat_params = StratParams.from_env(cfg)
     except Exception:
         # If .env does not specify every parameter, fall back to safe default test parameters
-        strat_params = StratParams(
-            currency="USDT",
-            entry_amount=extract_cfg_float(cfg, "STRAT_ENTRY", 100.0),
-            entry_discount_pct=extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2),
-            dca_amount=extract_cfg_float(cfg, "STRAT_DCA", 50.0),
-            dca_drop_pct=extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0),
-            takeprofit_pct=extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 2.0),
-            max_budget=extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 500.0),
-            max_dca_buys=max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 5)),
-            stop_loss_pct=extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0),
-            check_minutes=1.0,
-            enable_takeprofit=True,
-            order_ttl_min=60.0,
-        )
+        strat_params = StratParams.from_dict({
+            "currency": "USDT",
+            "entry_amount": extract_cfg_float(cfg, "STRAT_ENTRY", 100.0),
+            "entry_discount_pct": extract_cfg_float(cfg, "STRAT_ENTRY_DISCOUNT_PCT", 0.2),
+            "dca_amount": extract_cfg_float(cfg, "STRAT_DCA", 50.0),
+            "dca_drop_pct": extract_cfg_float(cfg, "STRAT_DCA_DROP_PCT", 2.0),
+            "takeprofit_pct": extract_cfg_float(cfg, "STRAT_TAKEPROFIT_PCT", 2.0),
+            "max_budget": extract_cfg_float(cfg, "STRAT_MAX_BUDGET", 500.0),
+            "max_dca_buys": max(0, extract_cfg_int(cfg, "STRAT_MAX_DCA_BUYS", 5)),
+            "stop_loss_pct": extract_cfg_float(cfg, "STRAT_STOP_LOSS_PCT", 0.0),
+            "check_minutes": 1.0,
+            "enable_takeprofit": True,
+            "order_ttl_min": 60.0,
+        })
 
     execution = build_execution_model_from_args(parser, args)
     supplied_datasets = _parse_dataset_specs(args.dataset)

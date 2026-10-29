@@ -17,7 +17,9 @@ import numpy as np
 from scipy.stats import linregress
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import pricewindow as pw
 import priceAnalysis as pa

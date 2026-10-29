@@ -4,12 +4,18 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 os.chdir(ROOT)
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import monitortrades as mt
 from botcore import _parse_bool_flag, safe_float
-from offline.research.monitortrades_backtest.run_replay_backtest import SYMBOLS, run_symbol
+from offline.research.monitortrades_backtest.run_replay_backtest import (
+    SYMBOLS,
+    prewarm_trend_series,
+    run_symbol,
+)
 from offline.research.monitortrades_backtest.sweep_mt_models import load_archive_series
 
 
@@ -21,6 +27,9 @@ def main():
     ]
     use_365 = _parse_bool_flag(os.environ.get("MPTRADE_REPLAY_USE_365"), False)
     series_map = {sym: load_archive_series(sym, use_365=use_365) for sym in SYMBOLS._SECTIONS}
+    for sym, series in series_map.items():
+        if series:
+            prewarm_trend_series(sym, series)
     orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
     try:
         for label, enabled in variants:

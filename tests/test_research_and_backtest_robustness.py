@@ -6755,3 +6755,18 @@ def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize
     assert _format(1.2345, signed=True) == "+1.234"
     assert _format(float("nan")) == "n/a"
 
+
+def test_t212_backtest_simulate_trail_and_calibrate_audit_fmt():
+    """Verify 212trading/backtest.py simulate() with trail_pct/sl/tp overrides and calibrate_execution_audit._fmt."""
+    from offline.backtests.evaluation import load_venue_module
+    from offline.runners.calibrate_execution_audit import _fmt
+    from offline.research.intelligence_backtest import _req_pos_num
+
+    t212_bt = load_venue_module("212trading", "backtest.py", "t212_bt_test")
+    bars = [(20.0 + (i % 4) * 0.2, 20.5 + (i % 4) * 0.2, 19.5 + (i % 4) * 0.2, 20.1 + (i % 4) * 0.2) for i in range(30)]
+    res = t212_bt.simulate(bars, {"budget": 500.0, "entry": 100.0, "dca": 50.0, "tp": 2.0, "drop": 1.5, "sl": 10.0, "trail_pct": 1.0, "trail_min_profit": 2.0})
+    assert isinstance(res, dict) and "total" in res
+    assert _fmt(0.5) == "0.500"
+    assert _fmt(None) == "n/a"
+    assert _req_pos_num(10, "step") == 10.0
+

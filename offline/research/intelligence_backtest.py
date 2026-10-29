@@ -23,9 +23,7 @@ if ROOT not in sys.path:
 
 from cachepaths import cache_path as resolve_cache_path
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
-from offline.research.chop_weight_backtest import _downsample_price_series
-
-_safe_float = safe_float
+from offline.research.chop_weight_backtest import _downsample_price_series, _req_pos_num
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -81,13 +79,6 @@ class BacktestStats:
     funding_downscales: int = 0
     geopolitical_vetoes: int = 0
     sentiment_downscales: int = 0
-
-
-def _req_pos_num(val: object, name: str) -> float:
-    fval = safe_pos_float(val, default=None) if isinstance(val, (int, float)) else None
-    if fval is None:
-        raise ValueError(f"{name} must be finite and > 0")
-    return fval
 
 
 def _precompute_intelligence_tape(
