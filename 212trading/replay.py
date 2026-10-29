@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Sequence
-import math
 import os
 import sys
 from unittest.mock import MagicMock
@@ -298,7 +297,9 @@ def _run_once(
     avg = engine._avg_cost()
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-    rounded = lambda value: round(float(value), 10) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else value
+    def rounded(value):
+        vf = safe_float(value, default=None) if isinstance(value, (int, float)) else None
+        return round(vf, 10) if vf is not None else value
     result = {
         "realized": rounded(engine.s["realized_pnl_usd"]),
         "net": rounded(engine.s["realized_net_usd"]),
@@ -315,10 +316,7 @@ def _run_once(
         "ambiguous_bars": ambiguous_bars,
         "initial_capital": rounded(initial_capital),
     }
-    result.update({
-        key: (rounded(value) if isinstance(value, float) and math.isfinite(value) else value)
-        for key, value in performance.items()
-    })
+    result.update({key: rounded(value) for key, value in performance.items()})
     return result
 
 

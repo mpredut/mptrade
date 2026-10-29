@@ -421,6 +421,16 @@ class T212Client:
         else:
             log(f"  ! T212 {what}: HTTP {status}")
 
+    def _peek_cached_locked(self, attr: str) -> tuple[bool, list | dict | None]:
+        c = getattr(self, attr)
+        now = time.monotonic()
+        if c and (now - c[0]) < self._pf_ttl:
+            return True, c[1]
+        fail_ts = self._fetch_fail.get(attr, 0.0)
+        if (now - fail_ts) < self._pf_ttl:
+            return True, (c[1] if (c and (now - c[0]) < 60.0) else None)
+        return False, None
+
     def _read_cached(self, attr: str, path: str, what: str) -> list | None:
         """GET through a TTL cache with double-checked anti-stampede locking.
 
@@ -428,26 +438,14 @@ class T212Client:
         triggers near-simultaneous requests against roughly five-second limits.
         """
         with self._lock:
-            c = getattr(self, attr)
-            now = time.monotonic()
-            if c and (now - c[0]) < self._pf_ttl:
-                return c[1]
-            fail_ts = self._fetch_fail.get(attr, 0.0)
-            if (now - fail_ts) < self._pf_ttl:
-                if c and (now - c[0]) < 60.0:
-                    return c[1]
-                return None
+            hit, val = self._peek_cached_locked(attr)
+            if hit:
+                return val
         with self._fetch_lock:
             with self._lock:   # Another thread may have refilled while this one waited.
-                c = getattr(self, attr)
-                now = time.monotonic()
-                if c and (now - c[0]) < self._pf_ttl:
-                    return c[1]
-                fail_ts = self._fetch_fail.get(attr, 0.0)
-                if (now - fail_ts) < self._pf_ttl:
-                    if c and (now - c[0]) < 60.0:
-                        return c[1]
-                    return None
+                hit, val = self._peek_cached_locked(attr)
+                if hit:
+                    return val
             status, body = http_get(f"{self.base}{path}", headers=self._headers())
             if status == 429:
                 self.notify_rate_limit(max(5.0, self._pf_ttl))

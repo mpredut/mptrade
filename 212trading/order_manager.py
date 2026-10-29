@@ -243,6 +243,16 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
     return matches
 
 
+def _append_venue_order_id(record: dict, oid: object) -> list[str]:
+    raw_hist = record.get("venue_order_ids")
+    history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []
+    oid_str = str(oid)
+    if oid_str not in history:
+        history.append(oid_str)
+    record["venue_order_ids"] = history
+    return history
+
+
 def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                       *, now: float, retry_delay: float,
                       desktop: bool) -> str:
@@ -286,10 +296,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         elif status in {"CANCELLED", "CANCELED", "EXPIRED"}:
             record["lifecycle"] = "expired" if status == "EXPIRED" else "canceled"
         elif status == "REJECTED":
-            raw_hist = record.get("venue_order_ids")
-            history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []
-            if str(order_id) not in history:
-                history.append(str(order_id))
+            history = _append_venue_order_id(record, order_id)
             record.update({
                 "lifecycle": "submit_pending", "order_id": None,
                 "venue_order_ids": history,
@@ -421,8 +428,6 @@ def place_order_with_retry(
         # Legacy accepted markers stay blocking rather than silently creating a
         # second order whose identity cannot be reconstructed.
         ver_i = safe_int(record.get("version"), 1)
-        if ver_i is None:
-            ver_i = 1
         if ver_i < 2:
             legacy = record.get("order") if isinstance(record.get("order"), dict) else {}
             legacy_id = T212Client._clean_order_id(legacy.get("id"))
@@ -524,11 +529,7 @@ def place_order_with_retry(
             "lifecycle": lifecycle, "order": data,
         })
         if venue_status == "REJECTED":
-            raw_hist = record.get("venue_order_ids")
-            history = list(raw_hist) if isinstance(raw_hist, (list, tuple)) else []
-            if oid not in history:
-                history.append(oid)
-            record["venue_order_ids"] = history
+            _append_venue_order_id(record, oid)
         _persist_marker(record, marker_path)
         log(f"  [ORDER] raspuns submit: id={oid}  status={venue_status or 'NECUNOSCUT'}")
         if lifecycle in {"canceled", "expired"}:
