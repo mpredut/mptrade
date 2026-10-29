@@ -5,7 +5,13 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from botcore import _parse_bool_flag, parse_dotenv
+from botcore import (
+    _parse_bool_flag,
+    parse_dotenv,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -63,13 +69,8 @@ def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optiona
     Millisecond values (``>= 100_000_000_000``) and small synthetic test integers
     (``< 1_000_000_000``) are preserved as-is.
     """
-    if value is None or isinstance(value, bool):
-        return default
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if not math.isfinite(numeric) or numeric < 0.0:
+    numeric = safe_nonneg_float(value, default=None)
+    if numeric is None:
         return default
     if numeric == 0.0:
         return 0
@@ -98,18 +99,11 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
         return default
     for key in _TIMESTAMP_KEYS:
         if key in order and order[key] is not None:
-            raw = order[key]
-            if isinstance(raw, bool):
-                continue
-            try:
-                numeric = float(raw)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not math.isfinite(numeric) or numeric < 0.0:
-                continue
-            if numeric >= 100_000_000_000.0:
-                return numeric / 1000.0
-            return numeric
+            numeric = safe_nonneg_float(order[key], default=None)
+            if numeric is not None:
+                if numeric >= 100_000_000_000.0:
+                    return numeric / 1000.0
+                return numeric
     return default
 
 
@@ -239,25 +233,15 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
     if not isinstance(order, dict):
         return default
     for key in _PRICE_KEYS:
-        if key in order and order[key] is not None and not isinstance(order[key], bool):
-            try:
-                val = float(order[key] or 0.0)
-                if math.isfinite(val) and val > 0:
-                    return val
-            except (TypeError, ValueError, OverflowError):
-                continue
-    descr = order.get("descr")
-    if (
-        isinstance(descr, dict)
-        and descr.get("price") is not None
-        and not isinstance(descr.get("price"), bool)
-    ):
-        try:
-            val = float(descr["price"] or 0.0)
-            if math.isfinite(val) and val > 0:
+        if key in order and order[key] is not None:
+            val = safe_pos_float(order[key], default=None)
+            if val is not None:
                 return val
-        except (TypeError, ValueError, OverflowError):
-            pass
+    descr = order.get("descr")
+    if isinstance(descr, dict):
+        val = safe_pos_float(descr.get("price"), default=None)
+        if val is not None:
+            return val
     for cost_key, exec_key in (
         ("cummulativeQuoteQty", "executedQty"),
         ("cummulativeQuoteQty", "qty"),
