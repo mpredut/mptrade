@@ -230,7 +230,6 @@ def resolve_tradable_instrument(
 
 def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     """Fetch live market price for ``inst`` from provider or ``cachedb`` fallbacks."""
-    import json
     import os
     from botcore import extract_current_price_item, safe_pos_float
     from cachepaths import cache_symbol_variants, canonical_base_asset, split_symbol_assets

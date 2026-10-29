@@ -1,6 +1,5 @@
 # Dead module with no importers, replaced by ``cacheManager.CacheTradeManager``.
 # Retained as a reference; do not run it directly.
-import json
 import os
 import time
 from collections import defaultdict

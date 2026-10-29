@@ -1,6 +1,5 @@
 """A historical manual converter; it is not part of the runtime."""
 
-import json
 import os
 import sys
 

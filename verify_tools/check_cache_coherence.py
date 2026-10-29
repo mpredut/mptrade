@@ -2,7 +2,6 @@
 # check_cache_coherence.py — checks the FRESHNESS and consistency of trend/price caches
 # for ALL symbols (Binance and non-Binance entries from instruments.conf). Exits 1 if anything is stale.
 # Run periodically (cron/loop) to detect a frozen cache.
-import json
 import os
 import sys
 import time

@@ -20,7 +20,6 @@ Key Mechanics:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -103,7 +102,7 @@ def _is_buy_price_changed(saved_buy_raw: Any, curr_buy_raw: Any) -> bool:
 
 
 _GRACE_FILE_MEMO: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
-_LOADED_STATE_FILE_KEY: Optional[Tuple[str, Any]] = None
+_LOADED_STATE_FILE_KEY: Optional[Tuple[Any, ...]] = None
 
 
 def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -115,13 +114,14 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     data = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
     if not isinstance(data, dict):
         return _GRACE_TRACKER
-    file_key = (state_file, id(data))
+    file_sig = next(iter(_GRACE_FILE_MEMO.values()))[0] if _GRACE_FILE_MEMO else None
+    file_key = (state_file, file_sig, id(data))
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
     # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
     now_curr = time.time()
     clean_data = {
-        norm_k: v
+        norm_k: dict(v)
         for k, v in data.items()
         if isinstance(v, dict)
         and (sts := safe_float(v.get("start_ts"), None)) is not None
@@ -142,7 +142,7 @@ def _save_grace_state() -> None:
         from state_io import save_json_state
         save_json_state(state_file, _GRACE_TRACKER, indent=2)
         _GRACE_FILE_MEMO.clear()
-        _LOADED_STATE_FILE_KEY = None
+        _LOADED_STATE_FILE_KEY = (state_file, None) if not _GRACE_TRACKER else None
     except Exception as e:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 

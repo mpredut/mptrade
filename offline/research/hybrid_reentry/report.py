@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Generate comprehensive comparative report for Hybrid Re-Entry Ablation Suite."""
 
-import json
 import os
 import sys
 

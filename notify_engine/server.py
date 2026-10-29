@@ -712,7 +712,7 @@ class NotificationServer:
             try:
                 from state_io import atomic_write_text, read_text_lines
 
-                lines = read_text_lines(self.queue_file, keepends=True)
+                lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
                 if not lines:
                     continue
                 
@@ -823,7 +823,7 @@ class NotificationServer:
                     # Preserve any notifications appended concurrently while network I/O ran
                     newly_appended = []
                     if os.path.exists(self.queue_file):
-                        cur_lines = read_text_lines(self.queue_file, keepends=True)
+                        cur_lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
                         if len(cur_lines) > read_count:
                             newly_appended = [
                                 l.strip() for l in cur_lines[read_count:] if l.strip()

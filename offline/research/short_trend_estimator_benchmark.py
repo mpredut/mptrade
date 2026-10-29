@@ -23,7 +23,6 @@ Result on 27 Oct 2026 (BTC 6.78M + TAO 3.97M + ARB 0.51M ticks, 14 Jul - 27 Oct)
 usage: short_trend_estimator_benchmark.py [--data-dir DIR] [SYMBOL ...]
 """
 import argparse
-import json
 import os
 import sys
 from multiprocessing import Pool

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from botcore import safe_float, safe_pos_float
-from state_io import atomic_write_bytes
+from state_io import atomic_write_bytes, read_csv_dicts
 
 
 REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
@@ -95,8 +95,6 @@ def load_ohlc_tuples_csv(
     """Load valid (timestamp, open, high, low, close) tuples from a CSV file via state_io.read_csv_dicts."""
     if isinstance(path, (bool, int, float)):
         return []
-    from state_io import read_csv_dicts
-
     rows: list[tuple[int, float, float, float, float]] = []
     for r in read_csv_dicts(path, strict=strict):
         ts_f = safe_pos_float(r.get("timestamp"), default=None)

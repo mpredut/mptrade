@@ -245,12 +245,8 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
             for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=max_bytes)
             if rec.get("s") == symbol and "i" in rec
         ]
-    try:
-        data = read_json_dict(path, recover_previous=True)
-        items = data.get("items")
-        return items.get(symbol, []) if isinstance(items, dict) else []
-    except (OSError, json.JSONDecodeError, ValueError):
-        return []   # Another process may be writing the file; skip this cycle.
+    items = read_json_dict(path, default={}, recover_previous=True).get("items")
+    return items.get(symbol, []) if isinstance(items, dict) else []
 
 
 def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
@@ -698,10 +694,9 @@ def format_state_text(entry, header, pending=None, exposure=None):
 def _lookup_symbol_dict(mapping, symbol):
     if not isinstance(mapping, dict):
         return None
-    val = mapping.get(symbol)
-    if isinstance(val, dict):
-        return val
-    for cand in cache_symbol_variants(symbol):
+    if symbol not in mapping and isinstance(mapping.get("items"), dict):
+        mapping = mapping["items"]
+    for cand in (symbol, *cache_symbol_variants(symbol)):
         val = mapping.get(cand)
         if isinstance(val, dict):
             return val
@@ -714,21 +709,14 @@ def build_analysis_state_text(symbol, active_summary=None):
     tradeall writes cache_kalman_trend.json directly because cacheManager owns the
     trend cache file.
     """
-    try:
-        raw_trend = read_json_dict(CACHE_TREND_PATH, recover_previous=True)
-        trend_map = raw_trend.get("items") if isinstance(raw_trend.get("items"), dict) else raw_trend
-        entry = _lookup_symbol_dict(trend_map, symbol)
-    except (OSError, json.JSONDecodeError, ValueError):
-        entry = None
+    entry = _lookup_symbol_dict(read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True), symbol)
     if not isinstance(entry, dict) or not entry:
         return None
     try:
-        raw_sh = read_json_dict(get_kalman_state_path(), recover_previous=True)
-        sh_map = raw_sh.get("items") if isinstance(raw_sh.get("items"), dict) else raw_sh
-        sh = _lookup_symbol_dict(sh_map, symbol)
+        sh = _lookup_symbol_dict(read_json_dict(get_kalman_state_path(), default={}, recover_previous=True), symbol)
         if isinstance(sh, dict) and sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
-    except (OSError, json.JSONDecodeError, ValueError):
+    except Exception:
         pass
     age = max(0.0, time.time() - safe_float(entry.get("ts"), 0.0))
 
@@ -767,11 +755,7 @@ def build_analysis_state_text(symbol, active_summary=None):
 def build_backtest_state_text(directory, symbol):
     """Load simulated analysis state written by offline/backtests/tradeall.py."""
     path = os.path.join(directory, "analysis_state.json")
-    try:
-        raw_state = read_json_dict(path, recover_previous=True)
-        entry = _lookup_symbol_dict(raw_state, symbol)
-    except (OSError, json.JSONDecodeError, ValueError):
-        entry = None
+    entry = _lookup_symbol_dict(read_json_dict(path, default={}, recover_previous=True), symbol)
     if not isinstance(entry, dict) or not entry:
         return None
     try:

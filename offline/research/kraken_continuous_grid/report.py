@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Aggregate results.jsonl from grid.py into REPORT.md (plain markdown tables)."""
-import json
 import os
 import statistics as st
 import sys

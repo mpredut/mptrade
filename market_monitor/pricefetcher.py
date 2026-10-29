@@ -5,7 +5,6 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-import json
 import time
 import requests
 from state_io import atomic_write_json, read_json_dict, read_recovering_previous, save_json_state

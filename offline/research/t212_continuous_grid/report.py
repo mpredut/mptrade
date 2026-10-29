@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Summarise results.jsonl from grid.py into REPORT.md."""
 from collections import defaultdict
-import json
 import os
 import statistics as st
 import sys

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 
@@ -14,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from botcore import safe_float  # noqa: E402
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
+from state_io import atomic_write_json, read_json_file  # noqa: E402
 
 
 def _fmt_calmar_pct(calmar) -> str:
@@ -27,7 +27,6 @@ def main() -> int:
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    from state_io import read_json_file
     baseline = read_json_file(args.baseline.expanduser().resolve())
     candidate = read_json_file(args.candidate.expanduser().resolve())
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
@@ -51,7 +50,6 @@ def main() -> int:
         )
         print(f"  ddW/T/L={dd['wins']}/{dd['ties']}/{dd['losses']}")
     if args.output:
-        from state_io import atomic_write_json
         atomic_write_json(args.output.expanduser().resolve(), result, indent=2, ensure_ascii=False)
     return 0 if result["promote"] else 2
 

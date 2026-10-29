@@ -9,7 +9,6 @@ Environment variables (from .env / config.env in the repository root):
   SMTP_SERVER / SMTP_PORT                         — email server (default gmail:587)
 """
 import os
-import json
 from pathlib import Path
 import sys
 

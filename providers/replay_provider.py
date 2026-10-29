@@ -14,7 +14,6 @@ fidelity, and its results must be treated as a simplified backtest.
 """
 from __future__ import annotations
 
-import json
 import os
 from typing import Dict, List, Optional, Tuple
 

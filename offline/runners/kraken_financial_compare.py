@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
-import json
 from pathlib import Path
 import sys
 
@@ -29,16 +28,12 @@ from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
 )
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
+from state_io import read_json_file as _load_json  # noqa: E402
 
 
 DEFAULT_BASELINE = (
     ROOT / "offline" / "research" / "hype_dataset" / "financial_baseline_v1.json"
 )
-
-
-def _load_json(path: Path) -> dict:
-    from state_io import read_json_file
-    return read_json_file(path)
 
 
 def _scenario_summary(report: dict) -> dict:

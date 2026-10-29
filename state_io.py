@@ -197,6 +197,26 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
         )
 
 
+def _rollback_generation(
+    target_path: str,
+    backup_path: str | None,
+    had_prior: bool,
+    *,
+    on_rollback_error: Callable[[OSError], None] | None = None,
+    suppress_error: bool = False,
+) -> None:
+    if backup_path is not None and os.path.exists(backup_path):
+        try:
+            restore_previous_generation(target_path, backup_path=backup_path)
+        except OSError as exc:
+            if on_rollback_error is not None:
+                on_rollback_error(exc)
+            elif not suppress_error:
+                raise
+    elif not had_prior:
+        discard_generation_file(target_path)
+
+
 def save_json_state(path: str, value: Any, *, indent: int | None = None,
                     sort_keys: bool = False, separators=None,
                     ensure_ascii: bool = True,
@@ -225,13 +245,7 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
             discard_generation_file(backup_path)
         return res
     except BaseException:
-        if backup_path is not None and os.path.exists(backup_path):
-            try:
-                restore_previous_generation(target_path, backup_path=backup_path)
-            except OSError:
-                pass
-        elif not had_prior:
-            discard_generation_file(target_path)
+        _rollback_generation(target_path, backup_path, had_prior, suppress_error=True)
         raise
 
 
@@ -309,7 +323,7 @@ def read_tail_lines(
     max_bytes: int | None = None,
 ) -> list[bytes]:
     """Read up to the last ``limit`` lines and/or ``max_bytes`` from ``path`` with bounded memory."""
-    if not path or isinstance(path, (bool, int)):
+    if not path or isinstance(path, (bool, int, float)):
         return []
     try:
         resolved = str(resolve_cachedb_filepath(os.fspath(path)))
@@ -417,7 +431,7 @@ def prune_rotated_archives(
     keep_count: int,
 ) -> list[str]:
     """Retain the newest ``keep_count`` ``<base_filename>.*.archive*`` files."""
-    if not base_filename or isinstance(base_filename, (bool, int)):
+    if not base_filename or isinstance(base_filename, (bool, int, float)):
         return []
     try:
         base_fspath = os.fspath(base_filename)
@@ -466,13 +480,16 @@ def discard_generation_file(
     include_meta: bool = False,
 ) -> None:
     """Best-effort removal of a state/generation file (and optional ``.previous`` / ``.meta`` sidecars)."""
-    if not path or isinstance(path, (bool, int)):
+    if not path or isinstance(path, (bool, int, float)):
         return
-    targets = [path]
-    if include_previous:
-        targets.append(previous_generation_path(path))
-    if include_meta:
-        targets.append(meta_file_path(path))
+    try:
+        targets = [path]
+        if include_previous:
+            targets.append(previous_generation_path(path))
+        if include_meta:
+            targets.append(meta_file_path(path))
+    except TypeError:
+        return
     for target in targets:
         try:
             os.remove(target)
@@ -528,24 +545,17 @@ def commit_file_and_meta(
         write_data_fn()
         data_replaced = True
         if not _parse_bool_flag(write_meta_fn(), False):
-            if backup_path is not None and os.path.exists(backup_path):
-                restore_previous_generation(target_path, backup_path=backup_path)
-            elif not had_prior_file:
-                discard_generation_file(target_path)
+            _rollback_generation(target_path, backup_path, had_prior_file)
             return False
         if backup_path is not None:
             discard_generation_file(backup_path)
         return True
     except BaseException:
         if data_replaced:
-            if backup_path is not None and os.path.exists(backup_path):
-                try:
-                    restore_previous_generation(target_path, backup_path=backup_path)
-                except OSError as rollback_error:
-                    if on_rollback_error is not None:
-                        on_rollback_error(rollback_error)
-            elif not had_prior_file:
-                discard_generation_file(target_path)
+            _rollback_generation(
+                target_path, backup_path, had_prior_file,
+                on_rollback_error=on_rollback_error, suppress_error=True,
+            )
         raise
     finally:
         if backup_path is not None and os.path.exists(backup_path):
@@ -618,15 +628,15 @@ def read_json_dict(
 
 def read_jsonl_records(path: str, *, strict: bool = False) -> list[Any]:
     """Read JSON records from a UTF-8 JSONL file, optionally enforcing strict line parsing."""
-    if not path or isinstance(path, (bool, int)):
+    if not path or isinstance(path, (bool, int, float)):
         if strict:
             raise TypeError("path must be a valid filesystem path")
         return []
-    target = str(resolve_cachedb_filepath(os.fspath(path)))
-    if not strict and not os.path.isfile(target):
-        return []
     records: list[Any] = []
     try:
+        target = str(resolve_cachedb_filepath(os.fspath(path)))
+        if not strict and not os.path.isfile(target):
+            return []
         with open(target, "r", encoding="utf-8") as handle:
             for line in handle:
                 raw = line.strip()
@@ -637,7 +647,7 @@ def read_jsonl_records(path: str, *, strict: bool = False) -> list[Any]:
                 except ValueError:
                     if strict:
                         raise
-    except OSError:
+    except (OSError, TypeError):
         if strict:
             raise
         return []
@@ -691,13 +701,12 @@ def read_text_lines(
     try:
         target = str(resolve_cachedb_filepath(os.fspath(path)))
         with open(target, "r", encoding=encoding, errors=errors) as handle:
-            out: list[str] = []
-            for raw in handle:
-                if skip_empty and not raw.strip():
-                    continue
-                out.append(raw.strip() if strip else (raw if keepends else raw.rstrip("\r\n")))
-            return out
-    except OSError:
+            return [
+                raw.strip() if strip else (raw if keepends else raw.rstrip("\r\n"))
+                for raw in handle
+                if not (skip_empty and not raw.strip())
+            ]
+    except (OSError, TypeError):
         return []
 
 
@@ -727,28 +736,15 @@ def read_csv_dicts(
     default: Any = _MISSING,
 ) -> list[dict[str, Any]]:
     """Read rows from a CSV file via ``csv.DictReader``."""
-    if not path or isinstance(path, (bool, int, float)):
-        if default is not _MISSING:
-            return default
-        if strict:
+    def _read_strict(candidate_path: str) -> list[dict[str, Any]]:
+        if not candidate_path:
             raise TypeError("path must be a valid filesystem path")
-        return []
-    try:
-        target = str(resolve_cachedb_filepath(os.fspath(path)))
-        if not os.path.isfile(target):
-            if default is not _MISSING:
-                return default
-            if strict:
-                raise FileNotFoundError(f"No such file: {target!r}")
-            return []
+        target = str(resolve_cachedb_filepath(os.fspath(candidate_path)))
         with open(target, "r", encoding=encoding, newline="") as handle:
             return [dict(row) for row in csv.DictReader(handle)]
-    except OSError:
-        if default is not _MISSING:
-            return default
-        if strict:
-            raise
-        return []
+
+    eff_default = default if default is not _MISSING else (_MISSING if strict else [])
+    return _read_with_policy(path, _read_strict, default=eff_default)
 
 
 def read_recovering_previous(
@@ -766,8 +762,19 @@ def read_recovering_previous(
     ``.previous`` is validated with ``read_fn(backup_path)``, durably promoted
     onto ``path``, and re-read from ``path``.
     """
-    target_path = str(resolve_cachedb_filepath(os.fspath(path)))
-    target_backup = str(resolve_cachedb_filepath(backup_path)) if backup_path else previous_generation_path(target_path)
+    try:
+        if path is None or isinstance(path, (bool, int, float)):
+            raise TypeError("path must be a valid filesystem path")
+        target_path = str(resolve_cachedb_filepath(os.fspath(path)))
+        target_backup = (
+            str(resolve_cachedb_filepath(backup_path))
+            if backup_path
+            else previous_generation_path(target_path)
+        )
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
     if read_fn is json.loads:
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:
@@ -823,13 +830,13 @@ def read_json_dict_recovering(path: str, *, default: Any = None) -> dict[str, An
 
 
 def read_json_dict_cached(
-    path: str,
+    path: str | os.PathLike[str],
     memo: dict[str, tuple[tuple, dict[str, Any]]] | None = None,
     *,
     max_entries: int = 32,
 ) -> dict[str, Any] | None:
     """Stat-memoized ``read_json_dict(..., default=None, recover_previous=True)`` checking both ``path`` and ``path.previous``."""
-    if not path or not isinstance(path, str):
+    if not path or isinstance(path, (bool, int, float, bytes)):
         return None
     try:
         resolved = str(resolve_cachedb_filepath(os.fspath(path)))
@@ -848,6 +855,8 @@ def read_json_dict_cached(
 
     res = read_json_dict(resolved, default=None, backup_path=backup_path, recover_previous=True)
     if isinstance(res, dict):
+        if st_bak is not None:
+            sig = (_stat_sig(resolved), _stat_sig(backup_path), id(read_recovering_previous), id(json.load))
         if len(cache_store) > max_entries:
             cache_store.clear()
         cache_store[resolved] = (sig, res)

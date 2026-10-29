@@ -446,4 +446,29 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     tail_recs = read_tail_jsonl_records(str(p_tail), limit=3, max_bytes=300)
     assert [r["idx"] for r in tail_recs] == [7, 8, 9]
 
+    from state_io import (
+        discard_generation_file,
+        read_json_dict,
+        read_json_dict_cached,
+        read_jsonl_records,
+        read_recovering_previous,
+    )
+    assert read_recovering_previous(None, default={"ok": 1}) == {"ok": 1}
+    assert read_json_dict(None, default={"ok": 2}, recover_previous=True) == {"ok": 2}
+    assert read_json_dict(123, default={"ok": 3}, recover_previous=True) == {"ok": 3}
+    assert read_jsonl_records(object(), strict=False) == []
+    assert read_text_lines(object()) == []
+    discard_generation_file(1.5, include_previous=True, include_meta=True)
+    discard_generation_file(object(), include_previous=True, include_meta=True)
+
+    p_cached = tmp_path / "cached_rec.json"
+    p_cached_prev = tmp_path / "cached_rec.json.previous"
+    atomic_write_text(str(p_cached), "{corrupt")
+    atomic_write_text(str(p_cached_prev), '{"recovered": 42}')
+    memo = {}
+    assert read_json_dict_cached(p_cached, memo) == {"recovered": 42}
+    assert not p_cached_prev.exists()
+    assert read_json_dict_cached(p_cached, memo) == {"recovered": 42}
+
+
 

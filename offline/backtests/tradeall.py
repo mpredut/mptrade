@@ -16,7 +16,6 @@ Visualisation (while running or afterwards): in another terminal,
     python -m visuals.tradeall_observe --backtest-dir logger/backtest/<run_id> --symbols BTCUSDC
 """
 import argparse
-import json
 import os
 import sys
 import time

@@ -738,12 +738,12 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 # ============================================================================
 
 _LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
-_LEXICON_EVAL_CACHE: Dict[Tuple[str, int, int, float], Dict[str, Tuple[str, ...]]] = {}
+_LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Dict[str, Tuple[str, ...]]] = {}
 
 
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
     fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
-    return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname))) if cache_dir else cache_path(fname)
+    return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname) if cache_dir else cache_path(fname)))
 
 
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:
@@ -762,7 +762,8 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             return empty_res
-        eval_key = (path, id(data), int(now), ttl)
+        file_sig = (_LEXICON_FILE_CACHE.get(path) or (None,))[0]
+        eval_key = (path, file_sig, id(data), int(now), ttl)
         cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
         if cached_eval is not None:
             return cached_eval
@@ -808,7 +809,7 @@ def update_dynamic_lexicon(
     path = _dynamic_lexicon_path(cache_dir)
 
     existing_entries: Dict[str, Dict[str, Any]] = {}
-    raw = read_json_dict(path, default=None, recover_previous=True)
+    raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
     if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
         for k, v in raw["entries"].items():
             if isinstance(k, str) and isinstance(v, dict):
@@ -835,7 +836,7 @@ def update_dynamic_lexicon(
             save_json_state(path, {"updated_ts": now, "entries": existing_entries}, indent=2)
         except Exception as exc:
             logger.debug("Could not save dynamic lexicon to %s: %s", path, exc)
-        _LEXICON_FILE_CACHE.pop(path, None)
+        _LEXICON_FILE_CACHE.clear()
         _LEXICON_EVAL_CACHE.clear()
 
     return load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now)

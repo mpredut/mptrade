@@ -114,7 +114,6 @@ class KalmanStateTracker:
 
     def _port_and_load_initial_state(self) -> None:
         """Port legacy shadow_state.json to kalman_state.json if needed and load initial state."""
-        import json
         try:
             if (
                 os.path.basename(self.state_path) in ("cache_kalman_trend.json", "kalman_state.json")

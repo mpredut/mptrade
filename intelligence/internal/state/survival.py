@@ -426,7 +426,7 @@ def estimate_T(
     cache[cache_key] = res
     try:
         save_json_state(t_cache_path, cache, indent=2)
-        _T_CACHE_FILE_MEMO.pop(t_cache_path, None)
+        _T_CACHE_FILE_MEMO.clear()
     except OSError:
         pass
     return res

@@ -36,35 +36,34 @@ _safe_int = safe_int
 
 def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
     """Load OHLC rows as (open, high, low, close) tuples."""
+    from state_io import read_text_lines
+
     rows: list[tuple[float, float, float, float]] = []
-    if not csv_path or isinstance(csv_path, (bool, int, float)) or not os.path.isfile(str(csv_path)):
+    reader = csv.reader(read_text_lines(csv_path))
+    first = next(reader, None)
+    if not first:
         return rows
-    with open(csv_path, "r", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        first = next(reader, None)
-        if not first:
-            return rows
-        col_map = {col.strip().lower(): idx for idx, col in enumerate(first)}
-        has_header = any(k in col_map for k in ("open", "high", "low", "close", "timestamp", "time", "date"))
-        o_idx = col_map.get("open", 1) if has_header else 1
-        h_idx = col_map.get("high", 2) if has_header else 2
-        l_idx = col_map.get("low", 3) if has_header else 3
-        c_idx = col_map.get("close", 4) if has_header else 4
-        min_len = max(o_idx, h_idx, l_idx, c_idx) + 1
-        iterable = reader if has_header else [first, *reader]
-        for line in iterable:
-            if not line or len(line) < min_len:
-                continue
-            o = safe_pos_float(line[o_idx], default=None)
-            h = safe_pos_float(line[h_idx], default=None)
-            l = safe_pos_float(line[l_idx], default=None)
-            c = safe_pos_float(line[c_idx], default=None)
-            if (
-                None not in (o, h, l, c)
-                and h >= max(o, l, c)
-                and l <= min(o, h, c)
-            ):
-                rows.append((o, h, l, c))
+    col_map = {col.strip().lower(): idx for idx, col in enumerate(first)}
+    has_header = any(k in col_map for k in ("open", "high", "low", "close", "timestamp", "time", "date"))
+    o_idx = col_map.get("open", 1) if has_header else 1
+    h_idx = col_map.get("high", 2) if has_header else 2
+    l_idx = col_map.get("low", 3) if has_header else 3
+    c_idx = col_map.get("close", 4) if has_header else 4
+    min_len = max(o_idx, h_idx, l_idx, c_idx) + 1
+    iterable = reader if has_header else [first, *reader]
+    for line in iterable:
+        if not line or len(line) < min_len:
+            continue
+        o = safe_pos_float(line[o_idx], default=None)
+        h = safe_pos_float(line[h_idx], default=None)
+        l = safe_pos_float(line[l_idx], default=None)
+        c = safe_pos_float(line[c_idx], default=None)
+        if (
+            None not in (o, h, l, c)
+            and h >= max(o, l, c)
+            and l <= min(o, h, c)
+        ):
+            rows.append((o, h, l, c))
     return rows
 
 

@@ -9,7 +9,6 @@ Evaluates high-profit / low-drawdown ("profit mare si pierdere mica") candidates
 from __future__ import annotations
 
 import dataclasses
-import json
 import statistics
 import sys
 from pathlib import Path

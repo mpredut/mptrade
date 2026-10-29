@@ -18,7 +18,6 @@ Idempotent.
 """
 import os
 import sys
-import json
 import time
 
 # offline/legacy_tools/ sits two levels below the repository root.
