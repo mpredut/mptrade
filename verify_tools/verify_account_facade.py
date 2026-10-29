@@ -51,17 +51,22 @@ def free_direct(base):
 
 def position_from(buy_orders, sell_orders):
     """The get_position_stats logic: avg_buy + net_qty derived from order lists."""
-    buys = [
-        o for o in (buy_orders or [])
-        if isinstance(o, dict) and safe_pos_float(extract_order_qty(o), default=0.0) > 0.0 and safe_pos_float(extract_order_price(o), default=0.0) > 0.0
+    buy_pairs = [
+        (q, p)
+        for o in (buy_orders or [])
+        if isinstance(o, dict)
+        and (q := safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
+        and (p := safe_pos_float(extract_order_price(o), default=0.0) or 0.0) > 0.0
     ]
-    sells = [
-        o for o in (sell_orders or [])
-        if isinstance(o, dict) and safe_pos_float(extract_order_qty(o), default=0.0) > 0.0
+    sells_q = [
+        q
+        for o in (sell_orders or [])
+        if isinstance(o, dict)
+        and (q := safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
     ]
-    tq = sum(safe_pos_float(extract_order_qty(o), default=0.0) for o in buys)
-    tv = sum(safe_pos_float(extract_order_price(o), default=0.0) * safe_pos_float(extract_order_qty(o), default=0.0) for o in buys)
-    sq = sum(safe_pos_float(extract_order_qty(o), default=0.0) for o in sells)
+    tq = sum(q for q, _ in buy_pairs)
+    tv = sum(q * p for q, p in buy_pairs)
+    sq = sum(sells_q)
     avg = tv / tq if tq > 0 else 0.0
     return avg, tq - sq
 
