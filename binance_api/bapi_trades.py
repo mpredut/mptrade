@@ -1,7 +1,6 @@
 
 import os
 import time
-import json
 import threading
 from collections import defaultdict
 from state_io import atomic_write_json, load_json_state
@@ -9,7 +8,7 @@ from state_io import atomic_write_json, load_json_state
 # Repository imports.
 import utils as u
 import symbols as sym
-from botcore import safe_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
+from botcore import safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from . import bapi as api
 from providers.base import (
     extract_order_fee,

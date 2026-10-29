@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import math
 import os
-import statistics
 import time
 from collections import deque
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Callable
 
 from alertnotifiers import bind_notify
@@ -26,7 +24,7 @@ from botcore import (
 from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
 from providers.execution_audit import intent_client_order_id
-from providers.strategy_executor import ProviderError, StrategyExecutor
+from providers.strategy_executor import ProviderError
 from order_retry import (
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,

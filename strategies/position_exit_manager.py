@@ -28,7 +28,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     are_close,
-    diff_percent,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,

@@ -13,7 +13,6 @@ import json
 import time
 import urllib.parse
 import urllib.request
-from typing import Mapping
 
 from botcore import _parse_bool_flag, safe_float, safe_pos_float
 
