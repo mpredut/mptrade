@@ -59,18 +59,9 @@ _REGIME_BAR_SETTLE_MAX_SEC = 900.0
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 
-def _clean_pos_float(val: object) -> float | None:
-    return safe_pos_float(val, default=None)
-
-
-def _clean_nonneg_float(val: object) -> float | None:
-    return safe_nonneg_float(val, default=None)
-
-
-def _clean_finite_float(val: object) -> float | None:
-    return safe_float(val, default=None)
-
-
+_clean_pos_float = lambda val: safe_pos_float(val, default=None)
+_clean_nonneg_float = lambda val: safe_nonneg_float(val, default=None)
+_clean_finite_float = lambda val: safe_float(val, default=None)
 _clean_order_id = _clean_single_order_id
 
 
@@ -686,13 +677,13 @@ class Strategy:
                 if "intent_id" in o:
                     o["intent_id"] = _clean_order_id(o.get("intent_id"))
                 if "vol" in o:
-                    o["vol"] = _clean_pos_float(o.get("vol")) or 0.0
+                    o["vol"] = safe_pos_float(o.get("vol"), 0.0)
                 if "price" in o:
-                    o["price"] = _clean_pos_float(o.get("price")) or 0.0
+                    o["price"] = safe_pos_float(o.get("price"), 0.0)
                 if "amount" in o:
-                    o["amount"] = _clean_nonneg_float(o.get("amount")) or 0.0
+                    o["amount"] = safe_nonneg_float(o.get("amount"), 0.0)
                 if "ts" in o:
-                    o["ts"] = _clean_nonneg_float(o.get("ts")) or 0.0
+                    o["ts"] = safe_nonneg_float(o.get("ts"), 0.0)
                 if "market" in o:
                     o["market"] = _parse_bool_flag(o.get("market"), False)
                 if "cancel_requested" in o:
@@ -745,16 +736,16 @@ class Strategy:
         )
 
     def _order_from_pending(self, pending: dict) -> dict:
-        req_qty = _clean_pos_float(pending.get("requested_qty")) or 0.0
-        sub_qty = _clean_pos_float(pending.get("submitted_qty"))
+        req_qty = safe_pos_float(pending.get("requested_qty"), 0.0)
+        sub_qty = safe_pos_float(pending.get("submitted_qty"), None)
         eff_vol = sub_qty if sub_qty is not None else req_qty
         meta = pending.get("metadata")
         meta_amount = meta.get("amount") if isinstance(meta, dict) else None
-        amount = _clean_nonneg_float(pending.get("amount")) or _clean_nonneg_float(meta_amount) or 0.0
+        amount = safe_nonneg_float(pending.get("amount"), None) or safe_nonneg_float(meta_amount, 0.0)
         if 0.0 < eff_vol < req_qty and amount > 0.0:
             amount = amount * (eff_vol / req_qty)
-        price = _clean_pos_float(pending.get("requested_price")) or 0.0
-        ts = _clean_pos_float(pending.get("created_at")) or self._now()
+        price = safe_pos_float(pending.get("requested_price"), 0.0)
+        ts = safe_pos_float(pending.get("created_at"), self._now())
         market_val = pending.get("market")
         if market_val is None and isinstance(meta, dict):
             market_val = meta.get("market")
@@ -1303,14 +1294,9 @@ class Strategy:
                     log(f"  ! [STRAT] status {o['txid']} has an invalid execution — keeping the order")
                     continue
 
-                applied_vol = _clean_nonneg_float(o.get("applied_vol")) or 0.0
-                applied_cost = _clean_nonneg_float(o.get("applied_cost")) or 0.0
-                raw_af = o.get("applied_fee")
-                try:
-                    af_val = 0.0 if raw_af is None or isinstance(raw_af, bool) else float(raw_af)
-                except (TypeError, ValueError, OverflowError):
-                    af_val = 0.0
-                applied_fee = af_val if math.isfinite(af_val) else 0.0
+                applied_vol = safe_nonneg_float(o.get("applied_vol"), 0.0)
+                applied_cost = safe_nonneg_float(o.get("applied_cost"), 0.0)
+                applied_fee = safe_float(o.get("applied_fee"), 0.0)
                 eps = max(1e-12, float(o["vol"]) * 1e-12)
                 if total_vol + eps < applied_vol or total_cost + eps < applied_cost:
                     log(f"  ! [STRAT] status {o['txid']} regressed cumulatively "
@@ -2111,17 +2097,17 @@ class Strategy:
         self, price: float, regime: MarketRegimeDecision | None, tick_time: float
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across trend overlay and DCA entries."""
-        lsp = _clean_pos_float(self.s.get("last_sell_price")) or _clean_pos_float(self.s.get("last_sell"))
+        lsp = safe_pos_float(self.s.get("last_sell_price"), None) or safe_pos_float(self.s.get("last_sell"), None)
         if not lsp:
             return True, "no_last_sell"
 
-        cur_peak = _clean_pos_float(self.s.get("post_sell_peak")) or lsp
+        cur_peak = safe_pos_float(self.s.get("post_sell_peak"), lsp)
         self.s["post_sell_peak"] = max(cur_peak, price)
-        cur_trough = _clean_pos_float(self.s.get("post_sell_trough")) or lsp
+        cur_trough = safe_pos_float(self.s.get("post_sell_trough"), lsp)
         self.s["post_sell_trough"] = min(cur_trough, price)
         last_kind = self.s.get("last_exit_kind")
         if last_kind == "STOP":
-            cur_sl_low = _clean_pos_float(self.s.get("sl_low")) or price
+            cur_sl_low = safe_pos_float(self.s.get("sl_low"), price)
             self.s["sl_low"] = min(cur_sl_low, price)
 
         # Symmetrical Re-entry Evaluation via PositionExitManager
@@ -2224,7 +2210,7 @@ class Strategy:
 
         # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
         if self.p.surge_guard:
-            surge_peak = max(_clean_pos_float(self.s.get("surge_peak")) or price, price)
+            surge_peak = max(safe_pos_float(self.s.get("surge_peak"), price), price)
             self.s["surge_peak"] = surge_peak
             peak_gain = (surge_peak - avg) / avg * 100.0
             is_armed = bool(self.s.get("surge_active"))
@@ -2302,7 +2288,7 @@ class Strategy:
 
         # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
         if self.p.slow_grind_guard:
-            slow_peak = max(_clean_pos_float(self.s.get("slow_grind_peak")) or price, price)
+            slow_peak = max(safe_pos_float(self.s.get("slow_grind_peak"), price), price)
             self.s["slow_grind_peak"] = slow_peak
             entry_ts = self.s.get("entry_ts")
             if entry_ts is not None and current_gain >= self.p.slow_grind_min_gain_pct:
@@ -2344,7 +2330,7 @@ class Strategy:
                 return True
 
             # 4. Dynamic Profit Ratchet Trailing (Horizon 2)
-            peak = max(_clean_pos_float(self.s.get("trend_peak")) or price, price)
+            peak = max(safe_pos_float(self.s.get("trend_peak"), price), price)
             self.s["trend_peak"] = peak
             if self.p.trend_trail_dynamic and avg:
                 peak_gain = (peak - avg) / avg * 100.0
@@ -2723,7 +2709,7 @@ class Strategy:
                     return
                 elif decision.action == ExitAction.HOLD:
                     ride_state = self.exit_manager.tp_ride_state.get(self.pair)
-                    peak_px = (_clean_pos_float(ride_state.get("peak_price")) if isinstance(ride_state, dict) else None) or price
+                    peak_px = (safe_pos_float(ride_state.get("peak_price"), None) if isinstance(ride_state, dict) else None) or price
                     self.s["trail_peak"] = peak_px
                     if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
                         return
@@ -2733,7 +2719,7 @@ class Strategy:
 
             # Arm trailing at the first TP crossing and keep it armed through exit, even
             # if price later falls below TP, so the target pullback does not reset the peak.
-            peak = max(_clean_pos_float(self.s.get("trail_peak")) or tp_ref_price, tp_ref_price)
+            peak = max(safe_pos_float(self.s.get("trail_peak"), tp_ref_price), tp_ref_price)
             self.s["trail_peak"] = peak
 
             if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
@@ -2743,7 +2729,7 @@ class Strategy:
             candidate_stop = peak * (1 - eff_trail / 100)
             # A trailing stop ratchets one way: volatility may widen distance for future
             # peaks but cannot surrender profit already protected by the current stop.
-            previous_stop = _clean_pos_float(self.s.get("trail_stop"))
+            previous_stop = safe_pos_float(self.s.get("trail_stop"), default=None)
             trail_stop = max(candidate_stop, previous_stop or candidate_stop)
             self.s["trail_stop"] = trail_stop
             # Use the same conservative reference as the MARKET order. Apply the floor

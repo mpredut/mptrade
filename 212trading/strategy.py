@@ -78,12 +78,8 @@ def state_path_for(ticker: str) -> str:
     return os.path.join(_HERE, f".state_{safe}.json")
 
 
-def _clean_pos_float(val: object) -> float | None:
-    return safe_pos_float(val, default=None)
-
-
-def _clean_nonneg_float(val: object, default: float = 0.0) -> float:
-    return safe_nonneg_float(val, default=default)
+_clean_pos_float = lambda val: safe_pos_float(val, default=None)
+_clean_nonneg_float = lambda val, default=0.0: safe_nonneg_float(val, default=default)
 
 
 
@@ -593,9 +589,9 @@ class Strategy:
         if ccy == "USD":
             return 1.0
         if ccy == "EUR":
-            return _clean_pos_float(get_eur_usd()) or 1.08          # USD per EUR
+            return safe_pos_float(get_eur_usd(), default=1.08)          # USD per EUR
         if ccy == "RON":
-            ron_rate = _clean_pos_float(get_usd_ron()) or 4.65
+            ron_rate = safe_pos_float(get_usd_ron(), default=4.65)
             return 1.0 / ron_rate                                   # USD per RON = 1 / (RON per USD)
         rate = _clean_pos_float(get_price_usd(f"{ccy}USD=X"))       # generic: GBP, CHF, PLN...
         if rate:
@@ -1847,9 +1843,9 @@ class Strategy:
         if not lsp:
             return True, "no_last_sell"
 
-        cur_peak = _clean_pos_float(self.s.get("post_sell_peak")) or lsp
+        cur_peak = safe_pos_float(self.s.get("post_sell_peak"), lsp)
         self.s["post_sell_peak"] = max(cur_peak, price)
-        cur_trough = _clean_pos_float(self.s.get("post_sell_trough")) or lsp
+        cur_trough = safe_pos_float(self.s.get("post_sell_trough"), lsp)
         self.s["post_sell_trough"] = min(cur_trough, price)
 
         last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
