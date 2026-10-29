@@ -137,9 +137,21 @@ class TestBoundedPlotIndices(unittest.TestCase):
     def test_wma_and_legacy_trend_edge_cases(self):
         with self.subTest(msg="weighted_moving_average_clamps_window"):
             self.assertEqual(pa.weighted_moving_average(np.array([]), 5).size, 0)
+            self.assertEqual(pa.weighted_moving_average(None, 5).size, 0)
             np.testing.assert_array_equal(pa.weighted_moving_average(np.array([10.0, 20.0]), 0), np.array([0.0, 0.0]))
+            np.testing.assert_array_equal(pa.weighted_moving_average(np.array([10.0, 20.0]), True), np.array([0.0, 0.0]))
             wma = pa.weighted_moving_average(np.array([10.0, 20.0]), 10)
             self.assertAlmostEqual(float(wma[-1]), (10.0 + 40.0) / 3.0)
+            series = np.array([10.0, 20.0, 30.0, 25.0, 35.0])
+            wma3 = pa.weighted_moving_average(series, 3)
+            expected = np.array([
+                10.0,
+                (10.0 * 1 + 20.0 * 2) / 3.0,
+                (10.0 * 1 + 20.0 * 2 + 30.0 * 3) / 6.0,
+                (20.0 * 1 + 30.0 * 2 + 25.0 * 3) / 6.0,
+                (30.0 * 1 + 25.0 * 2 + 35.0 * 3) / 6.0,
+            ])
+            np.testing.assert_allclose(wma3, expected, rtol=1e-12)
 
         with self.subTest(msg="trend_wma_handles_ms_timestamps_and_large_delta"):
             # Coarse 4h bars in milliseconds
@@ -186,6 +198,17 @@ class TestBoundedPlotIndices(unittest.TestCase):
                 px_inverted[j] = 300.0 - (j - 48) * 15.0
             r2 = pa.detect_long_term_trend(ts, px_inverted, window_hours=12, step_hours=4)
             self.assertNotEqual(r2, r1)
+
+
+            # Keep endpoints, midpoint, AND sum(prices) identical while inverting the recent interior window
+            px_zero_sum = list(px_up)
+            for j in range(48, 53):
+                delta = (5 - (j - 48)) * 40.0
+                px_zero_sum[j] += delta
+                px_zero_sum[57 - (j - 48)] -= delta
+            self.assertAlmostEqual(sum(px_zero_sum), sum(px_up), places=6)
+            r3 = pa.detect_long_term_trend(ts, px_zero_sum, window_hours=12, step_hours=4)
+            self.assertNotEqual(r3, r1)
 
 
 if __name__ == "__main__":

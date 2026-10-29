@@ -164,17 +164,26 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
     """
     Calculate the weighted moving average, giving newer values greater weight.
     """
-    if len(prices) == 0 or window <= 0:
-        return np.zeros_like(prices, dtype=float)
-    window = min(int(window), len(prices))
-    wma = np.zeros_like(prices, dtype=float)
-    for i in range(window - 1):
-        w = np.arange(1, i + 2, dtype=float)
-        wma[i] = float(np.dot(prices[:i + 1], w) / (0.5 * (i + 1) * (i + 2)))
-    weights = np.arange(1, window + 1, dtype=float)
-    weight_sum = 0.5 * window * (window + 1)
-    for i in range(window - 1, len(prices)):
-        wma[i] = float(np.dot(prices[i - window + 1:i + 1], weights) / weight_sum)
+    if prices is None or isinstance(prices, (bool, str, bytes)):
+        return np.array([], dtype=float)
+    p = np.asarray(prices, dtype=float)
+    n = len(p)
+    if n == 0 or window is None or isinstance(window, bool):
+        return np.zeros_like(p, dtype=float)
+    try:
+        win_i = int(float(window))
+    except (TypeError, ValueError, OverflowError):
+        return np.zeros_like(p, dtype=float)
+    if win_i <= 0:
+        return np.zeros_like(p, dtype=float)
+    w = min(win_i, n)
+    wma = np.zeros(n, dtype=float)
+    if w > 1:
+        idx = np.arange(1, w, dtype=float)
+        wma[:w - 1] = np.cumsum(p[:w - 1] * idx) / (0.5 * idx * (idx + 1.0))
+    weights = np.arange(1, w + 1, dtype=float)
+    weight_sum = 0.5 * w * (w + 1.0)
+    wma[w - 1:] = np.convolve(p, weights[::-1], mode="valid") / weight_sum
     return wma
 
 
@@ -397,7 +406,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
     print(f"trend_block {trend_block} and trend_block_ups {trend_block_ups}")
     trend_direction = 'up' if trend_ref_slope_h > 0 else 'down'
 
-    if draw:
+    if _parse_bool_flag(draw, True):
         drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_direction, duration_hours)
 
     return {
@@ -591,6 +600,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     p_penult = float(prices[-2])
     p_sum = round(float(np.sum(prices)), 6)
     t_sum = round(float(np.sum(timestamps)), 3)
+    pt_dot = round(float(np.dot(prices, timestamps - t_first)), 3)
     cache_key = (
         n_pts,
         t_first,
@@ -601,6 +611,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         p_last,
         p_sum,
         t_sum,
+        pt_dot,
         window_hours,
         step_hours,
         min_consecutive_blocks,
