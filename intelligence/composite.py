@@ -41,14 +41,6 @@ from intelligence.macro_sentiment_ssot import (
 )
 
 
-def _opt_finite(val: object) -> Optional[float]:
-    return safe_float(val, default=None)
-
-
-def _opt_pos_finite(val: object) -> Optional[float]:
-    return safe_pos_float(val, default=None)
-
-
 @dataclass(frozen=True)
 class MarketIntelligenceEvaluation:
     """Consolidated outcome of evaluating directional triggers against all guards."""
@@ -170,8 +162,8 @@ class CompositeMarketIntelligence:
                 _record_downscale(dec)
             return None
 
-        grad_finite = _opt_finite(gradient)
-        eps_finite = _opt_finite(epsilon)
+        grad_finite = safe_float(gradient, default=None)
+        eps_finite = safe_float(epsilon, default=None)
 
         # 1. Noise Floor Guard
         if grad_finite is not None and eps_finite is not None and not _is_bypassed(None, "noise_guard", "noisefloorguard"):
@@ -236,9 +228,9 @@ class CompositeMarketIntelligence:
                 return veto
 
         # 8. Google Gemini High-Stake Guard (GLLM1)
-        computed_notional = _opt_pos_finite(notional_eur)
-        qty_finite = _opt_pos_finite(qty)
-        price_finite = _opt_pos_finite(price)
+        computed_notional = safe_pos_float(notional_eur, default=None)
+        qty_finite = safe_pos_float(qty, default=None)
+        price_finite = safe_pos_float(price, default=None)
         if computed_notional is None and qty_finite is not None and price_finite is not None:
             computed_notional = price_finite * qty_finite
         if (
@@ -368,7 +360,7 @@ class CompositeMarketIntelligence:
 
         can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
         raw_sc = getattr(guard_dec, "suggested_scale", 1.0)
-        sc_f = _opt_finite(raw_sc)
+        sc_f = safe_float(raw_sc, default=None)
         if sc_f is not None:
             if 1.0 < sc_f <= 100.0:
                 sc_f = sc_f / 100.0
