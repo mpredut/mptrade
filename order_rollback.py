@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from typing import Any, Callable
 
-from intelligence.macro_sentiment_ssot import safe_pos_float as _finite_pos_float
+from botcore import safe_pos_float as _finite_pos_float
 from providers.base import (
     extract_order_price,
     extract_order_side,
