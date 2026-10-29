@@ -51,8 +51,8 @@ class ExtremeGreedGuard:
         if normalize_order_side(side) != "BUY":
             return GuardDecision.allow("ExtremeGreedGuard", "sell_permitted_in_greed")
 
-        val_f = safe_float(obj_attr(snapshot, "value", None), float("nan"))
-        if not math.isfinite(val_f):
+        val_f = safe_float(obj_attr(snapshot, "value", None), default=None)
+        if val_f is None:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
         val = int(round(val_f))
         cls_label = str(obj_attr(snapshot, "classification", None) or "Unknown")
