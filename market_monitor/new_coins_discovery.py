@@ -13,7 +13,7 @@ from collections import defaultdict
 # Repository integrations.
 import log
 import utils as u
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_pos_int
 
 # ============================================
 # Global configuration
@@ -686,8 +686,7 @@ class NewCoinsMonitor:
             print(f"[NewCoinsMonitor] {symbol} is already in the watchlist")
             return False
         raw_max_wl = getattr(self.price_monitor, 'max_monitored_symbols', MAX_NEW_COINS_TO_TRACK)
-        max_wl_f = _safe_num(raw_max_wl, float(MAX_NEW_COINS_TO_TRACK))
-        max_watchlist_symbols = int(max_wl_f) if max_wl_f > 0 else MAX_NEW_COINS_TO_TRACK
+        max_watchlist_symbols = safe_pos_int(raw_max_wl, default=MAX_NEW_COINS_TO_TRACK) or MAX_NEW_COINS_TO_TRACK
         if hasattr(self.price_monitor, 'active_symbols') and len(self.price_monitor.active_symbols) >= max_watchlist_symbols:
             print(f"[NewCoinsMonitor] Watchlist limit reached: maximum {max_watchlist_symbols} coins")
             return False

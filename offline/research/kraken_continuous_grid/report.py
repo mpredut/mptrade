@@ -34,13 +34,8 @@ def _load_jsonl_dicts(path: str) -> list[dict]:
 
 
 def q(xs, p):
-    if p is None or isinstance(p, bool):
-        return float("nan")
-    try:
-        pf = float(p)
-    except (TypeError, ValueError, OverflowError):
-        return float("nan")
-    if not math.isfinite(pf):
+    pf = safe_float(p, default=None)
+    if pf is None:
         return float("nan")
     pf = min(1.0, max(0.0, pf))
     clean = sorted(
@@ -56,14 +51,9 @@ def win_stats(r, key):
     for x in w:
         if not isinstance(x, (list, tuple)) or len(x) < 3:
             continue
-        if x[0] is None or x[2] is None or isinstance(x[0], bool) or isinstance(x[2], bool):
-            continue
-        try:
-            r0 = float(x[0])
-            r2 = float(x[2])
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(r0) and math.isfinite(r2):
+        r0 = safe_float(x[0], default=None)
+        r2 = safe_float(x[2], default=None)
+        if r0 is not None and r2 is not None:
             valid.append((r0, r2))
     rets = [x[0] for x in valid]
     if not rets:

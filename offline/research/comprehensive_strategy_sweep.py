@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "kraken") not in sys.path:
     sys.path.append(str(ROOT / "kraken"))
 
-from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int
+from botcore import parse_dotenv, safe_float as _safe_f, safe_int as _safe_int, safe_nonneg_int
 from kraken import replay as kraken_replay
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import load_dataset
@@ -212,9 +212,9 @@ def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
         "max_dd": max_dd,
         "calmar": calmar,
         "sharpe": sharpe,
-        "cycles": _safe_int(m_dict.get("cycles"), 0),
-        "wins": _safe_int(m_dict.get("wins"), 0),
-        "fills": _safe_int(m_dict.get("fills"), 0),
+        "cycles": safe_nonneg_int(m_dict.get("cycles"), default=0) or 0,
+        "wins": safe_nonneg_int(m_dict.get("wins"), default=0) or 0,
+        "fills": safe_nonneg_int(m_dict.get("fills"), default=0) or 0,
     }
 
 

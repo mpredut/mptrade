@@ -10,7 +10,7 @@ from state_io import atomic_write_json
 # Repository imports.
 import utils as u
 import symbols as sym
-from botcore import safe_int
+from botcore import safe_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from . import bapi as api
 from providers.base import (
     extract_order_fee,
@@ -114,12 +114,8 @@ def aggregate_trades(trades):
         px = extract_order_price(trade)
         if qty <= 0 or px <= 0:
             continue
-        raw_qq_val = trade.get('quoteQty', 0.0)
-        try:
-            raw_qq = 0.0 if (raw_qq_val is None or isinstance(raw_qq_val, bool)) else float(raw_qq_val)
-            quote_qty = raw_qq if math.isfinite(raw_qq) and raw_qq > 0 else (px * qty)
-        except (TypeError, ValueError, OverflowError):
-            quote_qty = px * qty
+        raw_qq = safe_pos_float(trade.get('quoteQty'), default=None)
+        quote_qty = raw_qq if raw_qq is not None else (px * qty)
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
         side = extract_order_side(trade)
         raw_is_buyer = trade.get('isBuyer')
@@ -136,15 +132,7 @@ def aggregate_trades(trades):
         if clean_sym or not aggregated_trades[orderId]['symbol']:
             aggregated_trades[orderId]['symbol'] = clean_sym
         raw_px = trade.get('price')
-        try:
-            has_pos_raw_px = (
-                raw_px is not None
-                and not isinstance(raw_px, bool)
-                and math.isfinite(float(raw_px))
-                and float(raw_px) > 0
-            )
-        except (TypeError, ValueError, OverflowError):
-            has_pos_raw_px = False
+        has_pos_raw_px = safe_pos_float(raw_px, default=None) is not None
         aggregated_trades[orderId]['price'] = (
             raw_px
             if has_pos_raw_px
@@ -163,13 +151,7 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['quoteQty'] += quote_qty
         aggregated_trades[orderId]['weightedCost'] += px * qty
         fee_info = extract_order_fee(trade)
-        raw_comm = trade.get('commission', 0.0)
-        try:
-            comm_val = 0.0 if (raw_comm is None or isinstance(raw_comm_val := raw_comm, bool)) else float(raw_comm_val)
-            if not math.isfinite(comm_val) or comm_val < 0:
-                comm_val = 0.0
-        except (TypeError, ValueError, OverflowError):
-            comm_val = 0.0
+        comm_val = safe_nonneg_float(trade.get('commission'), default=0.0) or 0.0
         if comm_val == 0.0 and fee_info is not None:
             comm_val = fee_info['fee']
         raw_comm_asset = trade.get('commissionAsset')
@@ -234,8 +216,7 @@ def aggregate_trades(trades):
     return aggregated_list
     
 def _clean_non_neg_int(val, default: int = 0) -> int:
-    i = safe_int(val, default=None)
-    return i if (i is not None and i >= 0) else default
+    return safe_nonneg_int(val, default=default) or default
 
 
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
@@ -245,7 +226,6 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     sym.validate_symbols(symbol)
     days_ago = _clean_non_neg_int(days_ago, default=0)
     limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
-    
     
     all_trades = []
     try:
@@ -283,37 +263,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
             if next_start <= start_time:
                 break
             start_time = next_start
-        
-        
-        # aggregated_trades = {}
 
-        # for trade in all_trades:
-            # oid = trade['orderId']
-            # if oid not in aggregated_trades:
-                # aggregated_trades[oid] = {
-                    # 'symbol': trade['symbol'],
-                    # 'id': oid,
-                    # 'orderId': oid,
-                    # 'isBuyer': trade['isBuyer'],
-                    # 'side': 'BUY' if trade['isBuyer'] else 'SELL',
-                    # 'qty': 0.0,
-                    # 'price': 0.0,
-                    # 'time': trade['time'],
-                    # 'trades': []
-                # }
-            # # Add the fill to the internal list.
-            # aggregated_trades[oid]['trades'].append(trade)
-            # # Update total quantity and cost.
-            # qty = float(trade['qty'])
-            # price = float(trade['price'])
-            # aggregated_trades[oid]['qty'] += qty
-            # aggregated_trades[oid]['price'] += qty * price
-
-        # An average price could also be calculated here.
-        # for agg in aggregated_trades.values():
-        #    agg['avg_price'] = agg['price'] / agg['qty'] if agg['qty'] else 0
-            
-        ##########
         return _dedup_trades_by_fill_id(all_trades)
         
 
@@ -332,18 +282,12 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
     
     all_trades = []
     
-    #try:
     for days_ago in range(backdays + 1):
         print(f"[{symbol}] get_my_trades: Fetching trades for day {days_ago:03d}... ", end=" ")
         trades = get_my_trades_24(order_type, symbol, days_ago=days_ago, limit=limit)
         
         if not trades:
             continue
-            # retry from cache .....
-            #trades = get_trade_orders_for_day_24(order_type, symbol, days_ago)
-            #if not trades:
-                #print(f"No trades found for day {days_ago:03d}.")
-                #continue
         
         print(f" [{len(trades)}] found ")
         if order_type in ("BUY", "SELL"):
@@ -355,10 +299,6 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
 
     print(f"")
     return all_trades
-
-    #except Exception as e:
-    #    print(f"get_my_trades: An error occurred: {e}") #3600 * 24 * 7
-    #    return get_trade_orders(order_type, symbol, (backdays + 1) * 24 * 3600 )
         
         
         
@@ -549,13 +489,8 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     if not trades:
         return []
         
-    try:
-        if max_age_seconds is None or isinstance(max_age_seconds, bool):
-            return []
-        max_age_val = float(max_age_seconds)
-    except (TypeError, ValueError, OverflowError):
-        return []
-    if not math.isfinite(max_age_val) or max_age_val < 0:
+    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
+    if max_age_val is None:
         return []
     current_time_ms = int(time.time() * 1000)
     max_age_ms = max_age_val * 1000.0  # Convert to milliseconds.

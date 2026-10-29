@@ -7,6 +7,11 @@ import os
 import statistics as st
 import sys
 
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from botcore import safe_float
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 EXP = os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
@@ -17,13 +22,8 @@ def g(r, itv, k):
     if not isinstance(sub, dict):
         return None
     val = sub.get(k)
-    if val is None or isinstance(val, bool):
-        return None
-    try:
-        fval = float(val)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(fval):
+    fval = safe_float(val, default=None)
+    if fval is None:
         return None
     return int(fval) if isinstance(val, int) else fval
 
@@ -72,10 +72,8 @@ def generate_report(exp_dir=None):
                 continue
             w = r.get("w90") or []
             w_rets = [
-                float(x[0]) for x in w
-                if isinstance(x, (list, tuple)) and len(x) > 0
-                and isinstance(x[0], (int, float)) and not isinstance(x[0], bool)
-                and math.isfinite(float(x[0]))
+                safe_float(x[0]) for x in w
+                if isinstance(x, (list, tuple)) and len(x) > 0 and safe_float(x[0], default=None) is not None
             ]
             wm = st.mean(w_rets) if w_rets else None
             wp = (100.0 * sum(ret > 0 for ret in w_rets) / len(w_rets)) if w_rets else None
