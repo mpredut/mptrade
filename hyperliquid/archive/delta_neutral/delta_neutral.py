@@ -27,6 +27,7 @@ for _p in (_HL_DIR, _ROOT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 from common import (
     log, now_str, required_env, defined_env, required_float_env,
     required_int_env, required_bool_env,
@@ -144,45 +145,22 @@ class DeltaNeutral:
         if state.get("status") not in ("flat", "open"):
             state["status"] = "flat"
         for k in ("target_sz", "fees_paid", "funding_accrued", "cooldown_until", "spot_qty", "perp_szi"):
-            raw_v = state.get(k)
-            try:
-                v_f = 0.0 if isinstance(raw_v, bool) or raw_v is None else float(raw_v)
-                state[k] = v_f if math.isfinite(v_f) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                state[k] = 0.0
+            state[k] = safe_float(state.get(k), 0.0)
         for k in ("orphan_count", "gone_count", "drift_count", "order_fails"):
-            raw_i = state.get(k)
-            try:
-                i_f = 0.0 if isinstance(raw_i, bool) or raw_i is None else float(raw_i)
-                state[k] = max(0, int(i_f)) if math.isfinite(i_f) else 0
-            except (TypeError, ValueError, OverflowError):
-                state[k] = 0
-        raw_la = state.get("liq_alerted")
-        state["liq_alerted"] = (
-            raw_la.strip().lower() in ("1", "true", "yes", "on")
-            if isinstance(raw_la, str)
-            else bool(raw_la)
-        )
+            state[k] = max(0, int(safe_float(state.get(k), 0.0)))
+        state["liq_alerted"] = _parse_bool_flag(state.get("liq_alerted"), False)
         raw_ots = state.get("opened_ts")
         if raw_ots is not None:
-            try:
-                ots_f = -1.0 if isinstance(raw_ots, bool) else float(raw_ots)
-                state["opened_ts"] = ots_f if math.isfinite(ots_f) and ots_f > 0 else None
-            except (TypeError, ValueError, OverflowError):
-                state["opened_ts"] = None
+            state["opened_ts"] = safe_pos_float(raw_ots, default=None)
         clean_hist = []
         raw_hist = state.get("funding_hist")
         if isinstance(raw_hist, (list, tuple)):
             for item in raw_hist:
                 if not isinstance(item, (list, tuple)) or len(item) < 2:
                     continue
-                if isinstance(item[0], bool) or isinstance(item[1], bool):
-                    continue
-                try:
-                    t_v, r_v = float(item[0]), float(item[1])
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if math.isfinite(t_v) and t_v > 0 and math.isfinite(r_v):
+                t_v = safe_pos_float(item[0], default=None)
+                r_v = safe_float(item[1], default=None)
+                if t_v is not None and r_v is not None:
                     clean_hist.append([t_v, r_v])
         state["funding_hist"] = clean_hist
         return state
@@ -430,12 +408,8 @@ class DeltaNeutral:
         pos = self.client.position_full(self.p.coin)
         if not isinstance(pos, dict) or not pos:
             return False
-        raw_liq = pos.get("liquidationPx")
-        try:
-            liq = 0.0 if isinstance(raw_liq, bool) else float(raw_liq or 0)
-        except (TypeError, ValueError, OverflowError):
-            liq = 0.0
-        if not math.isfinite(liq) or liq <= 0:
+        liq = safe_pos_float(pos.get("liquidationPx"), default=None)
+        if liq is None:
             return False
         perp_px = L["perp_px"]
         dist_pct = (liq - perp_px) / perp_px * 100   # Short liquidation is above price.

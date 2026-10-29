@@ -15,7 +15,7 @@ from urllib.parse import quote
 # Import your existing modules
 import log
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import canonical_base_asset
+from cachepaths import cache_symbol_variants, canonical_base_asset
 from market_monitor.pricefetcher import get_base_symbol
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
@@ -258,22 +258,18 @@ class PriceChecker:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
         if not isinstance(symbol_added_time, dict) or isinstance(symbol, bool) or symbol is None:
             return False
-        sym_clean = str(symbol).strip()
-        sym_up = sym_clean.upper()
-        raw_ts = (
-            symbol_added_time.get(symbol)
-            if symbol in symbol_added_time
-            else (
-                symbol_added_time.get(sym_clean)
-                if sym_clean in symbol_added_time
-                else symbol_added_time.get(sym_up)
-            )
-        )
+        cands = cache_symbol_variants(symbol)
+        raw_ts = next((symbol_added_time[c] for c in cands if c in symbol_added_time and symbol_added_time[c] is not None), None)
         if raw_ts is None:
-            for k, v in symbol_added_time.items():
-                if not isinstance(k, bool) and k is not None and str(k).strip().upper() == sym_up:
-                    raw_ts = v
-                    break
+            cands_u = {c.upper() for c in cands}
+            raw_ts = next(
+                (
+                    v
+                    for k, v in symbol_added_time.items()
+                    if not isinstance(k, bool) and k is not None and str(k).strip().upper() in cands_u
+                ),
+                None,
+            )
         return safe_pos_float(raw_ts, default=None) is not None
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:
@@ -288,17 +284,18 @@ class PriceChecker:
             base = get_base_symbol(sym_up) or get_base_symbol(sym_str) or ""
             base_up = str(base).strip().upper() if base else ""
             canon = canonical_base_asset(sym_up)
-            for cand in (sym_str, sym_up, base, base_up, canon):
-                if cand and isinstance(per_coin.get(cand), dict):
-                    chosen = per_coin[cand]
-                    break
+            all_cands = (*cache_symbol_variants(symbol), base, base_up, canon)
+            chosen = next((per_coin[c] for c in all_cands if c and isinstance(per_coin.get(c), dict)), None)
             if chosen is None:
-                target_keys = {k for k in (sym_up, base_up, canon) if k}
-                for k, v in per_coin.items():
-                    if isinstance(v, dict) and not isinstance(k, bool) and k is not None:
-                        if str(k).strip().upper() in target_keys:
-                            chosen = v
-                            break
+                target_keys = {c.upper() for c in all_cands if c}
+                chosen = next(
+                    (
+                        v
+                        for k, v in per_coin.items()
+                        if isinstance(v, dict) and not isinstance(k, bool) and k is not None and str(k).strip().upper() in target_keys
+                    ),
+                    None,
+                )
         raw = chosen if isinstance(chosen, dict) else fallback
 
         def_up = safe_pos_float(fallback.get("up_percent"), default=PRICE_ALERT_CONFIG["default"]["up_percent"])

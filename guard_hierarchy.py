@@ -36,26 +36,23 @@ class BaseGuard(ABC):
         if isinstance(bypassed_guards, BaseGuard):
             return [bypassed_guards.code.lower()]
         _falsy = {"none", "off", "false", "no", "0", "n", "f", "null", "nan"}
-        if isinstance(bypassed_guards, str):
-            return [
-                p.strip().lower()
-                for p in bypassed_guards.replace(";", ",").split(",")
-                if p.strip() and p.strip().lower() not in _falsy
-            ]
-        if isinstance(bypassed_guards, (set, frozenset, list, tuple)):
-            out: list[str] = []
-            for x in bypassed_guards:
-                if x is True:
-                    out.append("all")
-                elif isinstance(x, BaseGuard):
-                    out.append(x.code.lower())
-                elif x and not isinstance(x, bool):
-                    for p in str(x).replace(";", ",").split(","):
-                        ps = p.strip().lower()
-                        if ps and ps not in _falsy:
-                            out.append(ps)
-            return out
-        return []
+        items = (
+            [bypassed_guards]
+            if isinstance(bypassed_guards, str)
+            else (bypassed_guards if isinstance(bypassed_guards, (set, frozenset, list, tuple)) else ())
+        )
+        out: list[str] = []
+        for x in items:
+            if x is True:
+                out.append("all")
+            elif isinstance(x, BaseGuard):
+                out.append(x.code.lower())
+            elif x and not isinstance(x, bool):
+                for p in str(x).replace(";", ",").split(","):
+                    ps = p.strip().lower()
+                    if ps and ps not in _falsy:
+                        out.append(ps)
+        return out
 
     @staticmethod
     def _coerce_bypass_set(bypassed_guards: Any) -> set[str]:
@@ -346,6 +343,11 @@ def normalize_bypassed_guards(
                 f"known guards are {', '.join(g.code for g in GUARD_INSTANCES)}"
             )
 
+    def _add_guard_tokens(g: BaseGuard) -> None:
+        bypassed.update(g.aliases)
+        bypassed.add(g.canonical)
+        bypassed.add(g.code.lower())
+
     # Expand master bypass ('all' or '*')
     if "all" in bypassed or "*" in bypassed:
         bypassed.update({
@@ -353,9 +355,7 @@ def normalize_bypassed_guards(
             "profit", "qlimit", "financial", "intelligence", "llm", "gllm",
         })
         for g in GUARD_INSTANCES:
-            bypassed.update(g.aliases)
-            bypassed.add(g.canonical)
-            bypassed.add(g.code.lower())
+            _add_guard_tokens(g)
 
     # Distinguish category-wide 'llm' / 'gllm' from GLLM1's 'llm' alias when re-normalizing
     gllm1_specific = {"gllm1", "llm_high_stake", "high_stake", "ai"}
@@ -384,24 +384,17 @@ def normalize_bypassed_guards(
             if cat_name == "llm":
                 bypassed.add("gllm")
             for g in cat_guards:
-                bypassed.update(g.aliases)
-                bypassed.add(g.canonical)
-                bypassed.add(g.code.lower())
+                _add_guard_tokens(g)
 
     # Expand composite profit_guard (G_PROF: math_profit + G_QLIMIT1: quantity_policy)
     if "profit_guard" in bypassed:
         bypassed.add("profit_guard")
         for code in ("G_PROF", "G_QLIMIT1"):
-            g = GUARD_REGISTRY[code]
-            bypassed.update(g.aliases)
-            bypassed.add(g.canonical)
-            bypassed.add(g.code.lower())
+            _add_guard_tokens(GUARD_REGISTRY[code])
 
     # Expand any individual token to include its canonical name and all alias variations
     for g in GUARD_INSTANCES:
         if bypassed.intersection(g.aliases) or g.code.lower() in bypassed:
-            bypassed.update(g.aliases)
-            bypassed.add(g.canonical)
-            bypassed.add(g.code.lower())
+            _add_guard_tokens(g)
 
     return bypassed

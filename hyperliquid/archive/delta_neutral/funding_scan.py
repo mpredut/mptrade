@@ -31,20 +31,14 @@ for _p in (_HERE, _HL_DIR, _ROOT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from botcore import safe_float, safe_nonneg_float
+
 
 def rank(universe, ctxs, min_vol_usd, top=20):
     """Pure/testable: filter by volume and rank annualized funding descending."""
-    try:
-        min_vol_f = 0.0 if isinstance(min_vol_usd, bool) else float(min_vol_usd or 0.0)
-        if not math.isfinite(min_vol_f) or min_vol_f < 0.0:
-            min_vol_f = 0.0
-    except (TypeError, ValueError, OverflowError):
-        min_vol_f = 0.0
-    try:
-        top_f = 20.0 if isinstance(top, bool) or top is None else float(top)
-        top_i = max(0, int(top_f)) if math.isfinite(top_f) else 20
-    except (TypeError, ValueError, OverflowError):
-        top_i = 20
+    min_vol_f = safe_nonneg_float(min_vol_usd, 0.0)
+    top_f = safe_float(top, default=None) if top is not None else 20.0
+    top_i = max(0, int(top_f)) if top_f is not None else 20
     ctx_list = list(ctxs) if isinstance(ctxs, (list, tuple)) else []
     rows = []
     for i, a in enumerate(universe or []):
@@ -53,14 +47,11 @@ def rank(universe, ctxs, min_vol_usd, top=20):
         c = ctx_list[i] if i < len(ctx_list) and isinstance(ctx_list[i], dict) else {}
         if any(isinstance(c.get(k), bool) for k in ("funding", "dayNtlVlm", "markPx", "openInterest")):
             continue
-        try:
-            f = float(c.get("funding") or 0)
-            vol = float(c.get("dayNtlVlm") or 0)
-            mark = float(c.get("markPx") or 0)
-            oi = float(c.get("openInterest") or 0)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not all(math.isfinite(v) for v in (f, vol, mark, oi)) or mark < 0.0 or oi < 0.0:
+        f = safe_float(c.get("funding") or 0, default=None)
+        vol = safe_float(c.get("dayNtlVlm") or 0, default=None)
+        mark = safe_nonneg_float(c.get("markPx") or 0, default=None)
+        oi = safe_nonneg_float(c.get("openInterest") or 0, default=None)
+        if None in (f, vol, mark, oi):
             continue
         if vol < min_vol_f or f <= 0:           # require positive funding earned by shorts
             continue

@@ -49,6 +49,7 @@ def _load_hl_local(name: str):
 _common_mod = _load_hl_local("common")
 log = _common_mod.log
 _load_dotenv = _common_mod.load_dotenv
+from botcore import safe_pos_float
 from offline.backtests.metrics import format_performance_summary
 try:
     import market_data as _md_local
@@ -117,8 +118,8 @@ def simulate(ohlc, ts, fund, sig, P, direction):
 
 def run(coin, ohlc, ts, fund, sig, P, direction, budget):
     m = simulate(ohlc, ts, fund, sig, P, direction)
-    b_ok = not isinstance(budget, bool) and isinstance(budget, (int, float)) and budget == budget and abs(float(budget)) != float("inf") and float(budget) > 0
-    total_pct = m["total"] / float(budget) * 100 if b_ok else 0.0  # TRUE result: realized + funding + open position
+    b_val = safe_pos_float(budget, default=None)
+    total_pct = m["total"] / b_val * 100 if b_val is not None else 0.0  # TRUE result: realized + funding + open position
     wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
     return total_pct, m, wr
 
