@@ -25,10 +25,10 @@ import time
 import urllib.parse
 
 try:
-    from kraken.kraken_common import _parse_bool_flag, http_get, http_post_form, log
+    from kraken.kraken_common import _parse_bool_flag, http_get, http_post_form, log, safe_pos_float
 except ImportError:
-    from kraken_common import _parse_bool_flag, http_get, http_post_form, log
-from providers.base import normalize_side
+    from kraken_common import _parse_bool_flag, http_get, http_post_form, log, safe_pos_float
+from providers.base import _clean_single_order_id, normalize_side
 
 API_URL = "https://api.kraken.com"
 
@@ -62,15 +62,7 @@ def _read_ttl(method: str, params: dict) -> float | None:
     ttl = _READ_TTL.get(method)
     if not ttl or method != "OHLC":
         return ttl
-    raw_itv = params.get("interval", 1)
-    if isinstance(raw_itv, bool):
-        interval = 1.0
-    else:
-        try:
-            itv_f = float(raw_itv)
-            interval = max(1.0, itv_f) if math.isfinite(itv_f) else 1.0
-        except (TypeError, ValueError, OverflowError):
-            interval = 1.0
+    interval = max(1.0, safe_pos_float(params.get("interval", 1), default=1.0))
     return min(float(ttl), max(3.0, interval * 30.0))
 
 
@@ -246,14 +238,9 @@ class KrakenClient:
         for row in rows:
             if not isinstance(row, (list, tuple)) or len(row) < 5:
                 continue
-            if isinstance(row[0], bool) or isinstance(row[4], bool):
-                continue
-            try:
-                ts_val = float(row[0])
-                c_val = float(row[4])
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not (math.isfinite(ts_val) and ts_val > 0 and math.isfinite(c_val) and c_val > 0):
+            ts_val = safe_pos_float(row[0], default=None)
+            c_val = safe_pos_float(row[4], default=None)
+            if ts_val is None or c_val is None:
                 continue
             closes.append(c_val)
             timestamps.append(ts_val + itv_sec)
@@ -276,12 +263,8 @@ class KrakenClient:
         try:
             if not t:
                 return None
-            raw = t["c"][0]
-            if raw is None or isinstance(raw, bool):
-                return None
-            px = float(raw)
-            return px if math.isfinite(px) and px > 0.0 else None      # 'c' = latest trade [price, volume]
-        except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+            return safe_pos_float(t["c"][0], default=None)      # 'c' = latest trade [price, volume]
+        except (KeyError, IndexError, TypeError):
             return None
 
     # ----- PRIVATE -------------------------------------------------------------
@@ -317,13 +300,8 @@ class KrakenClient:
         if not pair or isinstance(pair, bool) or not str(pair).strip():
             raise ValueError(f"invalid Kraken pair: {pair!r}")
         pair_s = str(pair).strip()
-        if isinstance(volume, bool) or volume is None:
-            raise ValueError(f"invalid Kraken order volume: {volume!r}")
-        try:
-            vol_f = float(volume)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid Kraken order volume: {volume!r}") from exc
-        if not math.isfinite(vol_f) or vol_f <= 0.0:
+        vol_f = safe_pos_float(volume, default=None)
+        if vol_f is None:
             raise ValueError(f"invalid Kraken order volume: {volume!r}")
         side_u = normalize_side(side)
         if not side_u:
@@ -342,13 +320,8 @@ class KrakenClient:
             "volume": vol_str,
         }
         if ot_norm == "limit":
-            if price is None or isinstance(price, bool):
-                raise ValueError(f"invalid Kraken limit price: {price!r}")
-            try:
-                px_f = float(price)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid Kraken limit price: {price!r}") from exc
-            if not math.isfinite(px_f) or px_f <= 0.0:
+            px_f = safe_pos_float(price, default=None)
+            if px_f is None:
                 raise ValueError(f"invalid Kraken limit price: {price!r}")
             price = round(px_f, self.price_decimals(pair_s))
             if price <= 0.0:
@@ -368,23 +341,11 @@ class KrakenClient:
 
     @staticmethod
     def _clean_txid(txid: object) -> str:
-        if (
-            txid is None
-            or isinstance(txid, (bool, float, dict, list, tuple, set, frozenset))
-            or not isinstance(txid, (str, int))
-        ):
+        if isinstance(txid, float):
             raise ValueError(f"invalid Kraken txid: {txid!r}")
-        if isinstance(txid, int) and txid <= 0:
+        cleaned = _clean_single_order_id(txid)
+        if cleaned is None:
             raise ValueError(f"invalid Kraken txid: {txid!r}")
-        cleaned = str(txid).strip()
-        if cleaned.endswith(".0") and cleaned[:-2].lstrip("+-").isdigit():
-            cleaned = cleaned[:-2]
-        if not cleaned or cleaned.lower() in {"0", "0.0", "-0", "+0", "-0.0", "+0.0", "nan", "inf", "-inf", "+inf", "none", "null"}:
-            raise ValueError(f"invalid Kraken txid: {txid!r}")
-        if cleaned.lstrip("+-").isdigit() and int(cleaned) <= 0:
-            raise ValueError(f"invalid Kraken txid: {txid!r}")
-        if cleaned.startswith("+") and cleaned[1:].isdigit():
-            cleaned = cleaned[1:]
         return cleaned
 
     def cancel_order(self, txid: str) -> dict:

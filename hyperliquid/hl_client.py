@@ -37,6 +37,8 @@ if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.
     _c_spec.loader.exec_module(_common_mod)
 log = _common_mod.log
 safe_float = _common_mod.safe_float
+safe_pos_float = _common_mod.safe_pos_float
+safe_nonneg_float = _common_mod.safe_nonneg_float
 
 try:
     import eth_account
@@ -233,11 +235,7 @@ class HLClient:
             mids = self.info.all_mids()
             if not isinstance(mids, dict):
                 return None
-            v = mids.get(key)
-            if v is None or isinstance(v, bool):
-                return None
-            px = float(v)
-            return px if math.isfinite(px) and px > 0.0 else None
+            return safe_pos_float(mids.get(key), None)
         except Exception as e:  # noqa: BLE001
             log(f"  ! {label}({key}) failed: {e}")
             return None
@@ -293,11 +291,7 @@ class HLClient:
 
     def withdrawable(self) -> float:
         try:
-            raw = self._user_state().get("withdrawable")
-            if raw is None or isinstance(raw, bool):
-                return 0.0
-            val = float(raw)
-            return val if math.isfinite(val) and val >= 0.0 else 0.0
+            return safe_nonneg_float(self._user_state().get("withdrawable"), 0.0)
         except Exception:  # noqa: BLE001
             return 0.0
 
@@ -399,11 +393,7 @@ class HLClient:
                 return None
             for i, a in enumerate(universe):
                 if isinstance(a, dict) and a.get("name") == coin and i < len(ctxs) and isinstance(ctxs[i], dict):
-                    raw_f = ctxs[i].get("funding")
-                    if raw_f is None or isinstance(raw_f, bool):
-                        return None
-                    rate = float(raw_f)
-                    return rate if math.isfinite(rate) else None
+                    return safe_float(ctxs[i].get("funding"), None)
         except Exception as e:  # noqa: BLE001
             log(f"  ! funding_rate({coin}) failed: {e}")
         return None

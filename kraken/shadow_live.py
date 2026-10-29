@@ -51,7 +51,7 @@ from state_io import atomic_text_writer  # noqa: E402
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
-from botcore import required_env  # noqa: E402
+from botcore import required_env, safe_float, safe_int  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
 CONFIG_ENV = os.path.join(HERE, "config.env")
@@ -277,37 +277,21 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
-    def _sf(v, default: float = 0.0) -> float:
-        if v is None or isinstance(v, bool):
-            return default
-        try:
-            f = float(v)
-            return f if math.isfinite(f) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
-    def _si(v, default: int = 0) -> int:
-        if v is None or isinstance(v, bool):
-            return default
-        try:
-            f = float(v)
-            return int(f) if math.isfinite(f) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
     rows = {}
     for name, params in _variants(interval).items():
-        budget = _sf(params.effective_max_budget(), 0.0)
+        budget = safe_float(params.effective_max_budget(), 0.0)
         m = _run_one(
             ohlc4, params, interval, fee_pct,
             include_decision_trace=include_decision_trace,
         )
-        net_val = _sf(m.get("net"), 0.0)
-        tot_val = _sf(m.get("total"), 0.0)
+        net_val = safe_float(m.get("net"), 0.0)
+        tot_val = safe_float(m.get("total"), 0.0)
         rows[name] = {
             "net_pct": round(net_val / budget * 100.0, 4) if budget > 0 else 0.0,
             "total_pct": round(tot_val / budget * 100.0, 4) if budget > 0 else 0.0,  # includes open unrealized PnL
-            "maxdd_pct": round(_sf(m.get("max_drawdown_pct"), 0.0), 4),
-            "cycles": max(0, _si(m.get("cycles"), 0)),
-            "open_qty": max(0.0, _sf(m.get("open_qty"), 0.0)),
+            "maxdd_pct": round(safe_float(m.get("max_drawdown_pct"), 0.0), 4),
+            "cycles": max(0, safe_int(m.get("cycles"), 0) or 0),
+            "open_qty": max(0.0, safe_float(m.get("open_qty"), 0.0)),
         }
         if include_decision_trace:
             rows[name]["decision_trace"] = m.get("decision_trace", [])

@@ -385,25 +385,10 @@ def _sanitize_t212_state(st: dict) -> dict:
     for k in ("qty", "cost_usd", "spent_cash", "fees_usd", "pos_peak"):
         st[k] = _clean_nonneg_float(st.get(k), 0.0)
     for k in ("realized_pnl_usd", "realized_net_usd"):
-        raw_v = st.get(k)
-        if isinstance(raw_v, bool) or raw_v is None:
-            st[k] = 0.0
-        else:
-            try:
-                vf = float(raw_v)
-                st[k] = vf if math.isfinite(vf) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                st[k] = 0.0
+        st[k] = safe_float(st.get(k), 0.0)
     for k, min_i in (("cycle", 1), ("dca_buys", 0), ("loss_band", 0)):
-        raw_i = st.get(k)
-        if isinstance(raw_i, bool) or raw_i is None:
-            st[k] = min_i
-        else:
-            try:
-                if_val = float(raw_i)
-                st[k] = max(min_i, int(if_val)) if math.isfinite(if_val) else min_i
-            except (TypeError, ValueError, OverflowError):
-                st[k] = min_i
+        if_val = safe_float(st.get(k), None)
+        st[k] = max(min_i, int(if_val)) if if_val is not None else min_i
     for k in ("tr_alerted", "tr_armed", "sl_alerted", "sl_pending"):
         if k in st or k in defaults:
             st[k] = _parse_bool_flag(st.get(k), False)
@@ -801,24 +786,12 @@ class Strategy:
         pending_side = str(raw_ps or "").strip().upper() if not isinstance(raw_ps, bool) else ""
         if not pending_side or not _t212_tickers_match(ticker, self.ticker) or side != pending_side:
             return False
-        raw_expected_qty = pending.get("qty")
-        try:
-            expected_qty = float(raw_expected_qty) if raw_expected_qty is not None and not isinstance(raw_expected_qty, bool) else 0.0
-            if not math.isfinite(expected_qty):
-                expected_qty = 0.0
-        except (TypeError, ValueError, OverflowError):
-            expected_qty = 0.0
+        expected_qty = safe_float(pending.get("qty"), 0.0)
         if qty is None or abs(qty - expected_qty) > max(0.011, expected_qty * 1e-6):
             return False
         if pending.get("market"):
             return True
-        raw_expected_limit = pending.get("limit")
-        try:
-            expected_limit = float(raw_expected_limit) if raw_expected_limit is not None and not isinstance(raw_expected_limit, bool) else 0.0
-            if not math.isfinite(expected_limit):
-                expected_limit = 0.0
-        except (TypeError, ValueError, OverflowError):
-            expected_limit = 0.0
+        expected_limit = safe_float(pending.get("limit"), 0.0)
         return limit is not None and abs(limit - expected_limit) <= 0.011
 
     def _recover_pending_submit(self, real_qty: float,
@@ -848,32 +821,16 @@ class Strategy:
             log("  ! [STRAT] ambiguous T212 submit: several active orders match — keeping it pending")
             return "waiting"
 
-        raw_before = pending.get("before_qty")
-        try:
-            before = float(raw_before) if raw_before is not None and not isinstance(raw_before, bool) else 0.0
-            if not math.isfinite(before):
-                before = 0.0
-        except (TypeError, ValueError, OverflowError):
-            before = 0.0
+        before = safe_float(pending.get("before_qty"), 0.0)
         side = str(pending.get("side") or "").upper()
-        try:
-            real_qty_f = float(real_qty) if real_qty is not None and not isinstance(real_qty, bool) else before
-            if not math.isfinite(real_qty_f):
-                real_qty_f = before
-        except (TypeError, ValueError, OverflowError):
-            real_qty_f = before
+        real_qty_f = safe_float(real_qty, before)
         delta = real_qty_f - before
         if (side == "BUY" and delta > 1e-6) or (side == "SELL" and delta < -1e-6):
             pending["portfolio_fill_observed"] = True
             self._persist_pending_submit(pending)
             return "filled"
 
-        raw_misses = pending.get("lookup_misses")
-        try:
-            misses_base = int(float(raw_misses)) if raw_misses is not None and not isinstance(raw_misses, bool) and math.isfinite(float(raw_misses)) else 0
-        except (TypeError, ValueError, OverflowError):
-            misses_base = 0
-        misses = max(0, misses_base) + 1
+        misses = max(0, int(_clean_nonneg_float(pending.get("lookup_misses"), 0.0))) + 1
         pending["lookup_misses"] = misses
         if misses < 2:
             self._persist_pending_submit(pending)
@@ -884,6 +841,39 @@ class Strategy:
         )
         self._persist_pending_submit(None)
         return "retryable"
+
+    def _close_cycle(self, exit_price: float, *, keep_pending_submit: bool = False) -> None:
+        self._cancel_all_orders()
+        saved_orders = list(self.s.get("orders") or [])
+        saved_pending_submit = self.s.get("pending_submit") if keep_pending_submit else None
+        was_sl = bool(self.s.get("sl_pending"))
+        pnl, net_tot, fees = (
+            self.s["realized_pnl_usd"],
+            self.s["realized_net_usd"],
+            self.s["fees_usd"],
+        )
+        nxt = self.s.get("cycle", 1) + 1
+        self.s = _new_state()
+        self.s["orders"] = saved_orders
+        if keep_pending_submit:
+            self.s["pending_submit"] = saved_pending_submit
+        self.s["realized_pnl_usd"] = pnl
+        self.s["realized_net_usd"] = net_tot
+        self.s["fees_usd"] = fees
+        self.s["cycle"] = nxt
+        self.s["last_sell_price"] = exit_price   # Reentry rule: do not buy back higher.
+        self.s["post_sell_peak"] = exit_price
+        self.s["post_sell_trough"] = exit_price
+        self.s["last_exit_kind"] = "STOP" if was_sl else "TP"
+        self.s["last_sell_ts"] = self._now()
+        if self.exit_manager is not None:
+            self.exit_manager.clear_state(self.ticker)
+            self.exit_manager.bind_state(self.s)
+        if was_sl and self.p.sl_rebuy_enabled:
+            self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
+            log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
+                f"(expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
+        log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
 
     # -- aplicare fill ---------------------------------------------------------
     def _apply_fill(self, order: dict, qty: float, price: float) -> None:
@@ -930,31 +920,7 @@ class Strategy:
                 and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
             )
             if is_flat or is_dust_exit:
-                self._cancel_all_orders()
-                saved_orders = list(self.s.get("orders") or [])
-                was_sl = bool(self.s.get("sl_pending"))
-                pnl, net_tot, fees = (self.s["realized_pnl_usd"],
-                                      self.s["realized_net_usd"], self.s["fees_usd"])
-                nxt = self.s.get("cycle", 1) + 1
-                self.s = _new_state()
-                self.s["orders"] = saved_orders
-                self.s["realized_pnl_usd"] = pnl
-                self.s["realized_net_usd"] = net_tot
-                self.s["fees_usd"] = fees
-                self.s["cycle"] = nxt
-                self.s["last_sell_price"] = price   # Reentry rule: do not buy back higher.
-                self.s["post_sell_peak"] = price
-                self.s["post_sell_trough"] = price
-                self.s["last_exit_kind"] = "STOP" if was_sl else "TP"
-                self.s["last_sell_ts"] = self._now()
-                if self.exit_manager is not None:
-                    self.exit_manager.clear_state(self.ticker)
-                    self.exit_manager.bind_state(self.s)
-                if was_sl and self.p.sl_rebuy_enabled:
-                    self.s["sl_rebuy"] = {"low": price, "sell_price": price}
-                    log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
-                        f"(expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
-                log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
+                self._close_cycle(price)
 
     # -- plasare / anulare -----------------------------------------------------
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
@@ -1532,12 +1498,7 @@ class Strategy:
                         self.s.setdefault("tp_sold_levels", []).append(o["level"])
                     self._remove_order(o)
                 elif status == "not_found":
-                    raw_m = o.get("lookup_misses")
-                    try:
-                        m_base = 0 if (raw_m is None or isinstance(raw_m, bool)) else max(0, int(float(raw_m)))
-                    except (TypeError, ValueError, OverflowError):
-                        m_base = 0
-                    misses = m_base + 1
+                    misses = max(0, int(_clean_nonneg_float(o.get("lookup_misses"), 0.0))) + 1
                     o["lookup_misses"] = misses
                     max_misses = 2 if o.get("cancel_requested") else 3
                     if misses >= max_misses:
@@ -1567,33 +1528,8 @@ class Strategy:
             prev_qty > 1e-9 and is_dust and not has_open_sells and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
         )
         if cycle_closed:
-            self._cancel_all_orders()
-            saved_orders = list(self.s.get("orders") or [])
-            pnl, net_tot, fees = (self.s["realized_pnl_usd"],
-                                  self.s["realized_net_usd"], self.s["fees_usd"])
-            was_sl = bool(self.s.get("sl_pending"))   # Was this a catastrophic stop-loss exit?
             exit_price = self.s.get("last_sell_price") or price
-            nxt = self.s.get("cycle", 1) + 1
-            saved_pending_submit = self.s.get("pending_submit")
-            self.s = _new_state()
-            self.s["orders"] = saved_orders
-            self.s["pending_submit"] = saved_pending_submit
-            self.s["realized_pnl_usd"] = pnl
-            self.s["realized_net_usd"] = net_tot
-            self.s["fees_usd"] = fees
-            self.s["cycle"] = nxt
-            self.s["last_sell_price"] = exit_price
-            self.s["post_sell_peak"] = exit_price
-            self.s["post_sell_trough"] = exit_price
-            self.s["last_exit_kind"] = "STOP" if was_sl else "TP"
-            self.s["last_sell_ts"] = self._now()
-            if self.exit_manager is not None:
-                self.exit_manager.clear_state(self.ticker)
-                self.exit_manager.bind_state(self.s)
-            if was_sl and self.p.sl_rebuy_enabled:   # Rebuy on a bounce, not below the sale, to catch recovery.
-                self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
-                log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss (expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
-            log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
+            self._close_cycle(exit_price, keep_pending_submit=True)
         return True
 
     # -- decision step ---------------------------------------------------------

@@ -13,7 +13,12 @@ the same price thresholds.
 from __future__ import annotations
 
 import math
-from botcore import _parse_bool_flag, safe_float
+from botcore import (
+    _parse_bool_flag,
+    are_close as _botcore_are_close,
+    diff_percent as _botcore_diff_percent,
+    safe_float,
+)
 
 def _finite_float(val: object, default: float | None = None) -> float | None:
     return safe_float(val, default=default)
@@ -24,27 +29,32 @@ def _bool_flag(val: object) -> bool:
 
 
 def diff_percent(v1: float, v2: float) -> float:
-    """Return symmetric percentage difference relative to the absolute mean.
-    Identical to botcore.diff_percent but self-contained for isolated backtests."""
-    f1 = _finite_float(v1)
-    f2 = _finite_float(v2)
-    if f1 is None or f2 is None:
-        return float("inf")
-    if f1 == f2:
-        return 0.0
-    denom = (abs(f1) + abs(f2)) / 2
-    if denom <= 0:
-        return float("inf")
-    return abs(f1 - f2) / denom * 100
+    """Return symmetric percentage difference relative to the absolute mean."""
+    return _botcore_diff_percent(v1, v2)
 
 
 def are_close(v1: float, v2: float, tol_pct: float) -> bool:
     """Return whether v1 is within tol_pct%% of v2, matching botcore.are_close.
     Treat near-threshold prices as reached to avoid missing entries by a few cents."""
-    tol_f = _finite_float(tol_pct)
-    if tol_f is None or tol_f < 0:
-        return False
-    return diff_percent(v1, v2) <= tol_f
+    return _botcore_are_close(v1, v2, tol_pct)
+
+
+def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]]:
+    if (
+        shadow_prices is None
+        or isinstance(shadow_prices, (bool, str, bytes, dict))
+        or not hasattr(shadow_prices, "__iter__")
+    ):
+        return []
+    out: list[tuple[float, float]] = []
+    for item in shadow_prices:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        tf = _finite_float(item[0])
+        pf = _finite_float(item[1])
+        if tf is not None and pf is not None and pf > 0:
+            out.append((tf, pf))
+    return out
 
 
 def entry_price(close: float, disc_pct: float) -> float:
@@ -334,19 +344,7 @@ def check_fast_profit_reversal(
     required_gain = tp_f * mult_f
     if not (current_gain_pct >= required_gain):
         return False, current_gain_pct, 0.0
-    valid_shadows = []
-    shadow_iter = (
-        shadow_prices
-        if shadow_prices is not None and not isinstance(shadow_prices, (bool, str, bytes, dict)) and hasattr(shadow_prices, "__iter__")
-        else ()
-    )
-    for item in shadow_iter:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        tf = _finite_float(item[0])
-        pf = _finite_float(item[1])
-        if tf is not None and pf is not None and pf > 0:
-            valid_shadows.append((tf, pf))
+    valid_shadows = _iter_valid_shadow_prices(shadow_prices)
     if not valid_shadows:
         return False, current_gain_pct, 0.0
     now_f = _finite_float(current_time)
@@ -499,19 +497,10 @@ def check_slow_grind_exhaustion(
     # Check flash drop
     win_s = _finite_float(flash_window_sec, 0.0)
     cutoff = cur_t_f - max(0.0, win_s)
-    recent = []
-    shadow_iter = (
-        shadow_prices
-        if shadow_prices is not None and not isinstance(shadow_prices, (bool, str, bytes, dict)) and hasattr(shadow_prices, "__iter__")
-        else ()
-    )
-    for item in shadow_iter:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
-            continue
-        tf = _finite_float(item[0])
-        pf = _finite_float(item[1])
-        if tf is not None and pf is not None and pf > 0 and cutoff <= tf <= cur_t_f:
-            recent.append(pf)
+    recent = [
+        pf for tf, pf in _iter_valid_shadow_prices(shadow_prices)
+        if cutoff <= tf <= cur_t_f
+    ]
     fd_f = _finite_float(flash_drop_pct)
     if fd_f is not None and fd_f > 0 and win_s > 0 and recent:
         local_flash_peak = max(max(recent), px_f)

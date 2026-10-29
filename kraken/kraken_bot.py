@@ -31,14 +31,14 @@ if _ROOT not in sys.path:
 try:
     from kraken.kraken_common import (log, required_bool_env, required_env,
                                       required_int_env, load_env_stack,
-                                      single_instance, _parse_bool_flag)
+                                      single_instance, _parse_bool_flag, safe_pos_float)
     from kraken.kraken_client import KrakenClient, KrakenError
     from kraken.market_data import check_pair_listing, get_price, pair_available
     from kraken.notify import notify
 except ImportError:
     from kraken_common import (log, required_bool_env, required_env,
                                required_int_env, load_env_stack,
-                               single_instance, _parse_bool_flag)
+                               single_instance, _parse_bool_flag, safe_pos_float)
     from kraken_client import KrakenClient, KrakenError
     from market_data import check_pair_listing, get_price, pair_available
     from notify import notify
@@ -224,13 +224,7 @@ def _cmd_balance(client: KrakenClient) -> int:
     log("=== Kraken balances ===")
     if isinstance(bal, dict):
         for asset, amt in bal.items():
-            if isinstance(amt, bool):
-                continue
-            try:
-                amt_f = float(amt)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(amt_f) and amt_f > 0:
+            if safe_pos_float(amt, default=None) is not None:
                 log(f"  {asset:<8} {amt}")
     return 0
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_nonneg_float
 
 _as_bool = _parse_bool_flag
 
@@ -41,24 +41,19 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
     try:
         if (
             session is None
-            or isinstance(attempts, bool)
-            or isinstance(read, bool)
-            or isinstance(backoff, bool)
             or isinstance(status_forcelist, (bool, str, bytes))
             or not isinstance(attempts, (int, float, str))
             or not isinstance(read, (int, float, str))
             or not isinstance(backoff, (int, float, str))
         ):
             return False
-        att_f = float(attempts)
-        read_f = float(read)
-        bo_f = float(backoff)
-        if not (math.isfinite(att_f) and math.isfinite(read_f) and math.isfinite(bo_f)):
+        att_f = safe_nonneg_float(attempts, default=None)
+        read_f = safe_nonneg_float(read, default=None)
+        bo_f = safe_nonneg_float(backoff, default=None)
+        if att_f is None or read_f is None or bo_f is None:
             return False
         att_i = int(att_f)
         read_i = int(read_f)
-        if att_i < 0 or read_i < 0 or bo_f < 0.0:
-            return False
         forcelist = None
         if status_forcelist:
             forcelist = []

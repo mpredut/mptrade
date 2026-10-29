@@ -34,14 +34,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 try:
     from kraken.kraken_common import (
         _parse_bool_flag, log, load_env_stack, single_instance, required_env,
-        required_float_env, required_bool_env,
+        required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
     from kraken.notify import notify
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
     from kraken_common import (
         _parse_bool_flag, log, load_env_stack, single_instance, required_env,
-        required_float_env, required_bool_env,
+        required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
     from notify import notify
     from kraken_client import KrakenClient, KrakenError
@@ -74,17 +74,11 @@ def _load_state() -> dict:
     if isinstance(raw, dict):
         merged.update(raw)
     if isinstance(merged.get("known_assets"), dict):
-        clean_known: dict[str, float] = {}
-        for k, v in merged["known_assets"].items():
-            if not k or isinstance(k, bool) or isinstance(v, bool) or v is None:
-                continue
-            try:
-                vf = float(v)
-                if math.isfinite(vf) and vf > 0:
-                    clean_known[str(k)] = vf
-            except (TypeError, ValueError, OverflowError):
-                continue
-        merged["known_assets"] = clean_known
+        merged["known_assets"] = {
+            str(k): vf
+            for k, v in merged["known_assets"].items()
+            if k and not isinstance(k, bool) and (vf := safe_pos_float(v, None)) is not None
+        }
     else:
         merged["known_assets"] = {}
     for bkey in ("alerted_pair", "alerted_tp", "alerted_tp2", "alerted_sl", "alerted_need_price"):
@@ -132,19 +126,10 @@ def yahoo_last(sym: str) -> float | None:
         quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
         q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
         for c in reversed(q.get("close") or []):
-            if c is not None and not isinstance(c, bool):
-                try:
-                    cf = float(c)
-                    if math.isfinite(cf) and cf > 0:
-                        return cf
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            if (cf := safe_pos_float(c, None)) is not None:
+                return cf
         meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
-        raw_px = meta.get("regularMarketPrice")
-        if raw_px is None or isinstance(raw_px, bool):
-            return None
-        px = float(raw_px)
-        return px if math.isfinite(px) and px > 0 else None
+        return safe_pos_float(meta.get("regularMarketPrice"), None)
     except Exception as e:  # noqa: BLE001
         log(f"  ! yahoo {sym}: {e}")
         return None
@@ -160,16 +145,11 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
         return
     if not isinstance(bal, dict):
         return
-    assets: dict[str, float] = {}
-    for a, q in bal.items():
-        if isinstance(q, bool):
-            continue
-        try:
-            qf = float(q)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(qf) and qf > 0:
-            assets[a] = qf
+    assets: dict[str, float] = {
+        a: qf
+        for a, q in bal.items()
+        if (qf := safe_pos_float(q, None)) is not None
+    }
     if not isinstance(st.get("known_assets"), dict):
         st["known_assets"] = {}
     if not st["known_assets"]:
@@ -259,18 +239,10 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
                  tp_pct: float, sl_pct: float, yahoo_sym: str, desktop: bool) -> None:
     """Alert once at +tp% or -sl% relative to the allocation price."""
     allocated = st.get("allocated")
-    if (
-        not isinstance(allocated, dict)
-        or any(isinstance(v, bool) for v in (alloc_price, tp_pct, sl_pct))
-    ):
-        return
-    try:
-        alloc_f = float(alloc_price)
-        tp_f = float(tp_pct)
-        sl_f = float(sl_pct)
-    except (TypeError, ValueError, OverflowError):
-        return
-    if not all(math.isfinite(v) for v in (alloc_f, tp_f, sl_f)) or alloc_f <= 0:
+    alloc_f = safe_pos_float(alloc_price, None)
+    tp_f = safe_float(tp_pct, None)
+    sl_f = safe_float(sl_pct, None)
+    if not isinstance(allocated, dict) or alloc_f is None or tp_f is None or sl_f is None:
         return
     alloc_price, tp_pct, sl_pct = alloc_f, tp_f, sl_f
     price = None
@@ -281,23 +253,12 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
             pass
     if price is None and yahoo_sym:
         price = yahoo_last(yahoo_sym)
-    if not price or isinstance(price, bool):
-        return
-    try:
-        price = float(price)
-    except (TypeError, ValueError, OverflowError):
-        return
-    if not math.isfinite(price) or price <= 0:
+    price = safe_pos_float(price, None)
+    if price is None:
         return
     chg = (price - alloc_price) / alloc_price * 100
     log(f"  price {price} vs allocation {alloc_price} ({chg:+.1f}%)")
-    raw_qty = allocated.get("qty", 0)
-    try:
-        qty = 0.0 if isinstance(raw_qty, bool) else float(raw_qty or 0)
-    except (TypeError, ValueError, OverflowError):
-        qty = 0.0
-    if not math.isfinite(qty) or qty < 0:
-        qty = 0.0
+    qty = safe_nonneg_float(allocated.get("qty", 0), 0.0)
     if tp_pct > 0 and not st.get("alerted_tp") and chg >= tp_pct:
         st["alerted_tp"] = True
         notify(title=f"📈 xStock {chg:+.1f}% above the allocation ({price})",
@@ -366,14 +327,8 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     pair = st.get("pair")
     if not (isinstance(allocated, dict) and allocated.get("asset") and pair):
         return
-    if isinstance(alloc_price, bool) or alloc_price is None:
-        alloc_f = 0.0
-    else:
-        try:
-            alloc_f = float(alloc_price)
-        except (TypeError, ValueError, OverflowError):
-            alloc_f = 0.0
-    if not math.isfinite(alloc_f) or alloc_f <= 0:
+    alloc_f = safe_pos_float(alloc_price, 0.0)
+    if alloc_f <= 0:
         if not st.get("alerted_need_price"):
             st["alerted_need_price"] = True
             notify(title="⚠ xStock: completeaza XSTOCK_ALLOC_PRICE",
@@ -450,26 +405,16 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             return 1
         if not isinstance(bal, dict):
             return 1
-        raw_asset_bal = bal.get(asset, 0)
-        try:
-            asset_bal = 0.0 if (raw_asset_bal is None or isinstance(raw_asset_bal, bool)) else float(raw_asset_bal)
-        except (TypeError, ValueError, OverflowError):
-            asset_bal = 0.0
-        if not math.isfinite(asset_bal) or asset_bal <= 0:
+        asset_bal = safe_pos_float(bal.get(asset, 0), 0.0)
+        if asset_bal <= 0:
             log(f"  ! n-ai {asset} in cont — alege alt activ: XSTOCK_TRIAL_ASSET=...")
             return 1
         st = _load_state()
-        known: dict[str, float] = {}
-        for a, q in bal.items():
-            if a == asset or q is None or isinstance(q, bool):
-                continue
-            try:
-                qf = float(q)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(qf) and qf > 0:
-                known[a] = qf
-        st["known_assets"] = known
+        st["known_assets"] = {
+            a: qf
+            for a, q in bal.items()
+            if a != asset and (qf := safe_pos_float(q, None)) is not None
+        }
         log(f"  [proba] cobai: {asset} — removing it from the snapshot so it 'arrives' now")
         check_balance(client, st, asset, desktop)                # 1. allocation detection
         verdict["alocare detectata"] = bool(st["allocated"])
