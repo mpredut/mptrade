@@ -31,6 +31,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
+from instrument_registry import casefold_get
 from orchestratorOS.agy.topics import topic_spec
 from state_io import (
     read_json_dict,
@@ -289,7 +290,7 @@ def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
     raw_items = data.get("items", {})
     if isinstance(raw_items, dict):
         for k_cand in cands:
-            ser = raw_items.get(k_cand, [])
+            ser = casefold_get(raw_items, k_cand, [])
             if isinstance(ser, list) and ser:
                 return ser
         if raw_items:
@@ -413,7 +414,7 @@ def load_symbol_price_series(
     # 3. Overlay ultra-recent 1-second ticks from cache_current_price.json
     if isinstance(current_price_items, dict) and current_price_items:
         for cand in cands:
-            cur_item = current_price_items.get(cand)
+            cur_item = casefold_get(current_price_items, cand)
             if isinstance(cur_item, list) and cur_item:
                 series_24h = list(series_24h) + [
                     [pt[0], pt[1]]
@@ -526,6 +527,7 @@ def extract_symbol_recent_fills(
     orders_list: list,
     *,
     known_ai_order_ids: Optional[set[str]] = None,
+    audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
@@ -539,7 +541,9 @@ def extract_symbol_recent_fills(
         extract_order_price,
         extract_order_side,
         extract_timestamp_ms,
+        format_actor_tag,
         resolve_order_actor,
+        resolve_order_origin,
     )
 
     valid = [
@@ -554,29 +558,42 @@ def extract_symbol_recent_fills(
     if not valid:
         return None
     ai_oids: set[str] = set(known_ai_order_ids or ())
-    ai_side_ts: set[tuple[str, Any]] = set()
+    origin_by_oid: Dict[str, tuple[str, Optional[str], Optional[str]]] = {}
+    origin_by_side_ts: Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]] = {}
     for o in valid:
-        if resolve_order_actor(o, ai_oids) == "AI":
-            oid_v = extract_order_id(o, default="")
-            if oid_v:
+        act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
+        oid_v = extract_order_id(o, default="")
+        if oid_v:
+            if act_v == "AI":
                 ai_oids.add(str(oid_v))
-            else:
-                ai_side_ts.add((extract_order_side(o), extract_timestamp_ms(o, default=None)))
+            prev = origin_by_oid.get(str(oid_v))
+            if prev is None or (not prev[1] and mod_v) or (not prev[2] and rule_v) or act_v == "AI":
+                origin_by_oid[str(oid_v)] = (
+                    "AI" if (act_v == "AI" or (prev and prev[0] == "AI")) else "BOT",
+                    mod_v or (prev[1] if prev else None),
+                    rule_v or (prev[2] if prev else None),
+                )
+        else:
+            origin_by_side_ts[(extract_order_side(o), extract_timestamp_ms(o, default=None))] = (act_v, mod_v, rule_v)
 
     if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
         agg = aggregate_fills_by_order_id(valid)
         if agg:
             valid = agg
 
-    def _fill_actor(o: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         if not isinstance(o, dict):
-            return None
-        act = resolve_order_actor(o, ai_oids)
+            return None, None, None, None
+        oid_k = str(extract_order_id(o, default="") or "")
+        side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+        act, mod, rule = (
+            origin_by_oid.get(oid_k)
+            or origin_by_side_ts.get(side_ts_k)
+            or resolve_order_origin(o, ai_oids, audit_origin_map)
+        )
         if act == "AI":
-            return "AI"
-        if (extract_order_side(o), extract_timestamp_ms(o, default=None)) in ai_side_ts:
-            return "AI"
-        return "BOT"
+            return "AI", None, None, "AI"
+        return "BOT", mod, rule, format_actor_tag("BOT", mod, rule)
 
     ordered = sorted(
         enumerate(valid),
@@ -599,15 +616,22 @@ def extract_symbol_recent_fills(
     for o in chron:
         side_o = extract_order_side(o)
         p_f, q_f, ts_raw = _norm_fill(o)
-        act_o = _fill_actor(o)
+        act_o, mod_o, rule_o, tag_o = _fill_origin(o)
+        item_d: Dict[str, Any] = {"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o}
+        if mod_o:
+            item_d["module"] = mod_o
+        if rule_o:
+            item_d["rule"] = rule_o
+        if tag_o and tag_o != act_o:
+            item_d["actor_tag"] = tag_o
         if side_o == "BUY":
-            buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o})
+            buys_fmt.append(item_d)
             if q_f is not None and p_f is not None:
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
         elif side_o == "SELL":
-            sells_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o})
+            sells_fmt.append(item_d)
             if q_f is not None:
                 if q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12:
                     cost_qty = 0.0
@@ -615,15 +639,23 @@ def extract_symbol_recent_fills(
                 else:
                     cost_qty -= q_f
 
-    return {
+    last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
+    out_fills: Dict[str, Any] = {
         "last_action_side": extract_order_side(last_any) or last_any.get("side"),
-        "last_action_actor": _fill_actor(last_any),
+        "last_action_actor": last_act,
         "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
         "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
         "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
         "recent_buys": buys_fmt[-4:],
         "recent_sells": sells_fmt[-3:],
     }
+    if last_mod:
+        out_fills["last_action_module"] = last_mod
+    if last_rule:
+        out_fills["last_action_rule"] = last_rule
+    if last_tag and last_tag != last_act:
+        out_fills["last_action_actor_tag"] = last_tag
+    return out_fills
 
 
 def apply_short_trend_item(
@@ -903,11 +935,23 @@ def load_symbol_microstructure(
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"),
             ("ask_depth_usd", "ask_depth_usd"),
+            ("depth_1pct_bid_usd", "depth_1pct_bid_usd"),
+            ("depth_1pct_ask_usd", "depth_1pct_ask_usd"),
             ("largest_bid_wall_usd", "bid_wall_usd"),
             ("largest_ask_wall_usd", "ask_wall_usd"),
         ):
             val = safe_nonneg_float(ob.get(k_src), default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
+        if not m_info.get("depth_1pct_bid_usd") and (m_info.get("bid_depth_usd") or 0.0) > 0.0:
+            m_info["depth_1pct_bid_usd"] = round(float(m_info["bid_depth_usd"]) * (1.0 / 1.5), 0)
+        if not m_info.get("depth_1pct_ask_usd") and (m_info.get("ask_depth_usd") or 0.0) > 0.0:
+            m_info["depth_1pct_ask_usd"] = round(float(m_info["ask_depth_usd"]) * (1.0 / 1.5), 0)
+        d1_b = safe_pos_float(m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
+        d1_a = safe_pos_float(m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
+        eff_d1 = min(d1_b, d1_a) if (d1_b > 0.0 and d1_a > 0.0) else max(d1_b, d1_a)
+        if eff_d1 > 0.0:
+            sp_half = (safe_nonneg_float(m_info.get("spread_bps"), default=2.0) or 2.0) * 0.5
+            m_info["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
         m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
         m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
     if isinstance(deriv, dict):
@@ -922,6 +966,10 @@ def load_symbol_microstructure(
         m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
         m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
         m_info["divergence_regime"] = whale.get("divergence_regime")
+        tb_v = safe_nonneg_float(whale.get("taker_buy_vol_usd"), default=None)
+        ts_v = safe_nonneg_float(whale.get("taker_sell_vol_usd"), default=None)
+        if tb_v is not None and ts_v is not None and (tb_v + ts_v) > 0.0:
+            m_info["cvd_15m_usd"] = round(tb_v - ts_v, 0)
     return m_info
 
 
@@ -1226,13 +1274,13 @@ def resolve_symbol_price(
         return 0.0
     sym_variants = cache_symbol_variants(symbol)
     for cand in sym_variants:
-        entry = prices_and_trends.get(cand)
+        entry = casefold_get(prices_and_trends, cand)
         cand_px = safe_pos_float(entry.get("price") if isinstance(entry, dict) else None, default=0.0) or 0.0
         if cand_px > 0:
             return cand_px
     if isinstance(fallback_prices, dict):
         for cand in sym_variants:
-            cand_px = safe_pos_float(fallback_prices.get(cand), default=0.0) or 0.0
+            cand_px = safe_pos_float(casefold_get(fallback_prices, cand), default=0.0) or 0.0
             if cand_px > 0:
                 return cand_px
     return 0.0
@@ -1686,14 +1734,14 @@ def harvest_tradable_positions_and_orders(
             v_trail_map = trailing_by_venue.get(v_norm, {})
             t_state = next(
                 (
-                    v_trail_map[c]
+                    val
                     for c in cache_symbol_variants(sym, include_original=True, include_base=True)
-                    if isinstance(v_trail_map.get(c), dict)
+                    if isinstance((val := casefold_get(v_trail_map, c)), dict)
                 ),
                 {},
             )
-            if not t_state and v_norm == "binance" and isinstance(trailing_map.get(sym), dict):
-                t_state = trailing_map[sym]
+            if not t_state and v_norm == "binance" and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
+                t_state = val_b
             peak = t_state.get("peak")
             peak_f = safe_float(peak, 0.0)
             if peak_f > 0 and px_f > 0 and peak_f < px_f:
@@ -1782,13 +1830,13 @@ def enrich_cross_venue_trends(
         )
         if not has_slopes and isinstance(trends_items_map, dict):
             for ck in cand_keys[1:]:
-                tinfo = trends_items_map.get(ck)
+                tinfo = casefold_get(trends_items_map, ck)
                 if isinstance(tinfo, dict) and apply_short_trend_item(entry, tinfo, require_any_slope=True):
                     has_slopes = True
                     break
         if not has_slopes:
             for ck in cand_keys[1:]:
-                sib = prices_and_trends.get(ck)
+                sib = casefold_get(prices_and_trends, ck)
                 if isinstance(sib, dict) and any(
                     sib.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")
                 ):
@@ -1804,7 +1852,7 @@ def enrich_cross_venue_trends(
                     break
 
         if isinstance(kalman_data, dict):
-            k_sym = next((kalman_data[ck] for ck in cand_keys if isinstance(kalman_data.get(ck), dict)), None)
+            k_sym = next((val for ck in cand_keys if isinstance((val := casefold_get(kalman_data, ck)), dict)), None)
             if isinstance(k_sym, dict):
                 entry["kalman_vel"] = k_sym.get("kalman_vel")
                 entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
@@ -1818,7 +1866,7 @@ def enrich_cross_venue_trends(
         lt_obj: Optional[Dict[str, Any]] = None
         if isinstance(long_items, dict):
             for ck in cand_keys:
-                raw_lt = long_items.get(ck)
+                raw_lt = casefold_get(long_items, ck)
                 if isinstance(raw_lt, list):
                     valid_lts = [x for x in raw_lt if isinstance(x, dict) and x.get("direction")]
                     if valid_lts:
@@ -1836,9 +1884,9 @@ def enrich_cross_venue_trends(
             if isinstance(pa_map, dict):
                 lt_obj = next(
                     (
-                        pa_map[ck]
+                        val
                         for ck in cand_keys
-                        if isinstance(pa_map.get(ck), dict) and pa_map[ck].get("direction")
+                        if isinstance((val := casefold_get(pa_map, ck)), dict) and val.get("direction")
                     ),
                     None,
                 )
@@ -1850,7 +1898,7 @@ def enrich_cross_venue_trends(
             if est_rem >= 0.0:
                 entry["long_trend_est_rem_hours"] = round(est_rem, 1)
         if isinstance(t_trend_map, dict):
-            tt = next((t_trend_map[ck] for ck in cand_keys if isinstance(t_trend_map.get(ck), dict)), None)
+            tt = next((val for ck in cand_keys if isinstance((val := casefold_get(t_trend_map, ck)), dict)), None)
             if isinstance(tt, dict):
                 entry["weibull_median_d"] = tt.get("median_d")
                 entry["weibull_p90_d"] = tt.get("p90_d")
@@ -1858,7 +1906,7 @@ def enrich_cross_venue_trends(
             sym_px_cur = safe_float(entry.get("price"), 0.0)
             m_series = None
             for ck in cand_keys:
-                cand_ser = watcher_price_items.get(ck)
+                cand_ser = casefold_get(watcher_price_items, ck)
                 if not isinstance(cand_ser, list) or len(cand_ser) < 2:
                     continue
                 last_m_px = (
@@ -2089,7 +2137,7 @@ def sync_sibling_symbol_telemetry(
         for cand in sym_variants:
             if cand == sym:
                 continue
-            sib_pinfo = prices_and_trends.get(cand)
+            sib_pinfo = casefold_get(prices_and_trends, cand)
             if isinstance(sib_pinfo, dict):
                 p_px = safe_float(pinfo.get("price"), 0.0)
                 s_px = safe_float(sib_pinfo.get("price"), 0.0)
@@ -2106,7 +2154,7 @@ def sync_sibling_symbol_telemetry(
                         pinfo[k] = v
                     elif k in ("trend", "growth_coefficient") and pinfo.get(k) in (0, 0.0) and v not in (0, 0.0):
                         pinfo[k] = v
-            sib_micro = microstructure.get(cand)
+            sib_micro = casefold_get(microstructure, cand)
             if isinstance(sib_micro, dict) and sib_micro:
                 if sym not in microstructure:
                     microstructure[sym] = dict(sib_micro)
@@ -2124,21 +2172,72 @@ def sync_sibling_symbol_telemetry(
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
             continue
-        p_match = prices_and_trends.get(msym)
+        p_match = casefold_get(prices_and_trends, msym)
         if not isinstance(p_match, dict):
             p_match = next(
                 (
-                    prices_and_trends[c]
+                    val
                     for c in cache_symbol_variants(msym, include_original=True, include_base=True)
-                    if isinstance(prices_and_trends.get(c), dict)
+                    if isinstance((val := casefold_get(prices_and_trends, c)), dict)
                 ),
                 None,
             )
         liq_clusters = compute_liquidation_clusters(p_match, minfo)
         if liq_clusters:
             minfo.update(liq_clusters)
+        cvd_usd = safe_float(minfo.get("cvd_15m_usd"), default=None)
+        if cvd_usd is not None:
+            m_px = (
+                safe_pos_float(p_match.get("price") if isinstance(p_match, dict) else None, default=None)
+                or safe_pos_float(minfo.get("ob_mid_price"), default=None)
+            )
+            if m_px is not None and m_px > 0.0:
+                b_dec = 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1)
+                minfo["cvd_15m_base"] = round(cvd_usd / m_px, b_dec)
+            ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+            chg_15m = safe_float(p_match.get("chg_15m_pct") if isinstance(p_match, dict) else None, default=0.0) or 0.0
+            if cvd_usd > 0.0:
+                minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.54 and chg_15m <= 0.20) else "aggressive_buying"
+            elif cvd_usd < 0.0:
+                minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.58 and chg_15m >= -0.05) else "aggressive_market_dumps"
+            else:
+                minfo["cvd_regime"] = "balanced_flow"
         if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
             p_match.setdefault("spread_bps", minfo["spread_bps"])
+
+
+def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str], Optional[str]]]:
+    """Load recent orderId/clientOrderId -> (module, rule) mappings from execution_audit jsonl logs."""
+    from providers.base import resolve_order_origin
+    from state_io import read_tail_jsonl_dicts
+
+    out: Dict[str, tuple[Optional[str], Optional[str]]] = {}
+    cand_dirs = [
+        os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit"),
+        cache_dir,
+    ]
+    for d in cand_dirs:
+        if not os.path.isdir(d):
+            continue
+        try:
+            files = sorted(
+                (os.path.join(d, f) for f in os.listdir(d) if f.startswith("execution_audit") and f.endswith(".jsonl")),
+                reverse=True,
+            )
+        except Exception:
+            continue
+        for fpath in files[:2]:
+            for rec in read_tail_jsonl_dicts(fpath, limit=250):
+                _, mod, rule = resolve_order_origin(rec)
+                if not (mod or rule):
+                    continue
+                for k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
+                    kv = str(rec.get(k) or "").strip()
+                    if kv:
+                        out.setdefault(kv, (mod, rule))
+        if out:
+            break
+    return out
 
 
 def harvest_recent_orders_and_enrich_positions(
@@ -2155,6 +2254,7 @@ def harvest_recent_orders_and_enrich_positions(
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, and Hyperliquid and enrich tradable_positions with cost-basis anchors."""
     _rj = read_json_fn or read_json_cached
+    audit_origin_map = _load_recent_audit_origins(cache_dir)
     recent_orders: Dict[str, Any] = {}
     venue_recent_orders: Dict[str, Dict[str, Any]] = {
         "binance": {},
@@ -2171,7 +2271,11 @@ def harvest_recent_orders_and_enrich_positions(
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             for sym, o_list in orders_data["items"].items():
-                fills = extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids)
+                fills = extract_symbol_recent_fills(
+                    o_list,
+                    known_ai_order_ids=known_ai_order_ids,
+                    audit_origin_map=audit_origin_map,
+                )
                 if fills:
                     venue_recent_orders[cache_venue][sym] = fills
                     if sym in recent_orders and cache_venue != "binance":
@@ -2187,7 +2291,11 @@ def harvest_recent_orders_and_enrich_positions(
             prov = getattr(inst, "_provider", None)
             if prov is not None and hasattr(prov, "get_orders"):
                 hl_orders = prov.get_orders(sym, None, 90 * 86400.0)
-                fills = extract_symbol_recent_fills(hl_orders, known_ai_order_ids=known_ai_order_ids)
+                fills = extract_symbol_recent_fills(
+                    hl_orders,
+                    known_ai_order_ids=known_ai_order_ids,
+                    audit_origin_map=audit_origin_map,
+                )
                 if fills:
                     venue_recent_orders["hyperliquid"][sym] = fills
                     if sym in recent_orders:
@@ -2219,7 +2327,7 @@ def harvest_recent_orders_and_enrich_positions(
                     pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
         v_ro_map = venue_recent_orders.get(p_venue, {})
         ro = next(
-            (v_ro_map[c] for c in p_variants if isinstance(v_ro_map.get(c), dict)),
+            (val for c in p_variants if isinstance((val := casefold_get(v_ro_map, c)), dict)),
             None,
         )
         fb_cur = safe_float(pos.get("free_base"), -1.0)
@@ -2262,9 +2370,9 @@ def harvest_recent_orders_and_enrich_positions(
             else ()
         )
         for cyc_map in venue_cyc_maps:
-            cyc = cyc_map.get(p_sym)
+            cyc = casefold_get(cyc_map, p_sym)
             if not isinstance(cyc, dict):
-                cyc = next((cyc_map[c] for c in p_variants if isinstance(cyc_map.get(c), dict)), None)
+                cyc = next((val for c in p_variants if isinstance((val := casefold_get(cyc_map, c)), dict)), None)
             if not isinstance(cyc, dict):
                 continue
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
@@ -2295,10 +2403,10 @@ def harvest_recent_orders_and_enrich_positions(
                 cyc["last_sell_price"] = pos["last_sell_px"]
         sym_spread = next(
             (
-                prices_and_trends[c].get("spread_bps")
+                val.get("spread_bps")
                 for c in p_variants
-                if isinstance(prices_and_trends.get(c), dict)
-                and prices_and_trends[c].get("spread_bps") is not None
+                if isinstance((val := casefold_get(prices_and_trends, c)), dict)
+                and val.get("spread_bps") is not None
             ),
             pos.get("spread_bps"),
         )
@@ -3196,7 +3304,7 @@ def collect_pretrade_telemetry(
         st_data = read_json_cached(st_path)
         if isinstance(st_data, dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
-            tinfo = next((st_items.get(cand) for cand in sym_variants if isinstance(st_items.get(cand), dict)), None)
+            tinfo = next((val for cand in sym_variants if isinstance((val := casefold_get(st_items, cand)), dict)), None)
             if isinstance(tinfo, dict):
                 t_entry: Dict[str, Any] = {}
                 apply_short_trend_item(t_entry, tinfo)
@@ -3217,7 +3325,7 @@ def collect_pretrade_telemetry(
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
             if not isinstance(o_items, dict):
                 continue
-            orders_for_sym = next((o_items.get(cand, []) for cand in sym_variants if o_items.get(cand)), [])
+            orders_for_sym = next((val for cand in sym_variants if (val := casefold_get(o_items, cand))), [])
             fills = extract_symbol_recent_fills(orders_for_sym)
             if fills:
                 break

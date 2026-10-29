@@ -497,6 +497,50 @@ def _format_microstructure_section(
                 return f"${vf / 1_000.0:.1f}K"
             return f"${vf:.0f}"
 
+        d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
+        d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
+        if d1_b <= 0.0 and _parse_finite_float(minfo.get("bid_depth_usd"), 0.0) > 0.0:
+            d1_b = round(_parse_finite_float(minfo.get("bid_depth_usd"), 0.0) * (1.0 / 1.5), 0)
+        if d1_a <= 0.0 and _parse_finite_float(minfo.get("ask_depth_usd"), 0.0) > 0.0:
+            d1_a = round(_parse_finite_float(minfo.get("ask_depth_usd"), 0.0) * (1.0 / 1.5), 0)
+        depth_1pct_sfx = ""
+        if d1_b > 0.0 or d1_a > 0.0:
+            slip_2k = minfo.get("est_slip_2k_bps")
+            if slip_2k is None:
+                eff_d1 = min(d1_b, d1_a) if (d1_b > 0.0 and d1_a > 0.0) else max(d1_b, d1_a)
+                sp_half = _parse_finite_float(minfo.get("spread_bps"), 2.0) * 0.5
+                slip_2k = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
+            depth_1pct_sfx = f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={slip_2k}bps)"
+
+        cvd_sfx = ""
+        cvd_usd_raw = minfo.get("cvd_15m_usd")
+        if cvd_usd_raw is None and (minfo.get("taker_buy_vol_usd") is not None or minfo.get("taker_sell_vol_usd") is not None):
+            tb_f = _parse_finite_float(minfo.get("taker_buy_vol_usd"), 0.0)
+            ts_f = _parse_finite_float(minfo.get("taker_sell_vol_usd"), 0.0)
+            if (tb_f + ts_f) > 0.0:
+                cvd_usd_raw = round(tb_f - ts_f, 0)
+        if cvd_usd_raw is not None:
+            cvd_u = _parse_finite_float(cvd_usd_raw, 0.0)
+            cvd_b = minfo.get("cvd_15m_base")
+            if cvd_b is None and cur_px > 0.0:
+                b_dec = 3 if cur_px >= 100.0 else (2 if cur_px >= 1.0 else 1)
+                cvd_b = round(cvd_u / cur_px, b_dec)
+            cvd_reg = minfo.get("cvd_regime")
+            if not cvd_reg:
+                ob_imb = _parse_finite_float(minfo.get("ob_imbalance"), 0.5)
+                cvd_reg = (
+                    ("spot_absorbing" if ob_imb >= 0.54 else "aggressive_buying")
+                    if cvd_u > 0.0
+                    else (("spot_absorbing" if ob_imb >= 0.58 else "aggressive_market_dumps") if cvd_u < 0.0 else "balanced_flow")
+                )
+            sign_s = "+" if cvd_u >= 0.0 else "-"
+            usd_s = f"{sign_s}{_fmt_liq_usd(abs(cvd_u))}"
+            if cvd_b is not None:
+                cvd_b_f = _parse_finite_float(cvd_b, 0.0)
+                cvd_sfx = f", cvd_15m={cvd_b_f:+g} {b_canon_3b} ({usd_s}, {cvd_reg})"
+            else:
+                cvd_sfx = f", cvd_15m={usd_s} ({cvd_reg})"
+
         liq_sfx = ""
         if minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
             ll_d = _parse_finite_float(minfo.get("long_liq_dist_pct"), 0.0)
@@ -513,12 +557,12 @@ def _format_microstructure_section(
             )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
-            f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
+            f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
             f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
             f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
             f"whale_long_pct={minfo.get('whale_long_pct')}, div_regime={minfo.get('divergence_regime')}, "
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
-            f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}), "
+            f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}, "
             f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
             f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{spread_sfx}{liq_sfx}"
         )
@@ -610,16 +654,22 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     if len(r_buys) > 1:
         t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
         tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
+    from providers.base import format_actor_tag
+
     lb_px = _round_opt_px(lb.get("price"), 6)
     ls_px = _round_opt_px(ls.get("price"), 6)
-    lb_actor = str(lb.get("actor") or "").strip().upper()
-    ls_actor = str(ls.get("actor") or "").strip().upper()
-    lb_by = f", by={lb_actor}" if lb_actor in ("AI", "BOT") else ""
-    ls_by = f", by={ls_actor}" if ls_actor in ("AI", "BOT") else ""
+    lb_tag = lb.get("actor_tag") or format_actor_tag(lb.get("actor"), lb.get("module"), lb.get("rule"))
+    ls_tag = ls.get("actor_tag") or format_actor_tag(ls.get("actor"), ls.get("module"), ls.get("rule"))
+    lb_by = f", by={lb_tag}" if lb_tag else ""
+    ls_by = f", by={ls_tag}" if ls_tag else ""
     lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h{lb_by})" if lb_px is not None else "none"
     ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h{ls_by})" if ls_px is not None else "none"
-    last_act_actor = str(oinfo.get("last_action_actor") or "").strip().upper()
-    last_act_sfx = f" (by={last_act_actor})" if last_act_actor in ("AI", "BOT") else ""
+    last_act_tag = oinfo.get("last_action_actor_tag") or format_actor_tag(
+        oinfo.get("last_action_actor"),
+        oinfo.get("last_action_module"),
+        oinfo.get("last_action_rule"),
+    )
+    last_act_sfx = f" (by={last_act_tag})" if last_act_tag else ""
     return (
         f"  * {sym} Last Action={oinfo.get('last_action_side')}{last_act_sfx}: "
         f"Last BUY={lb_str} | "

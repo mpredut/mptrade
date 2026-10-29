@@ -229,6 +229,8 @@ class OrderbookSnapshot:
     best_bid: float = 0.0
     best_ask: float = 0.0
     spread_bps: float = 0.0
+    depth_1pct_bid_usd: float = 0.0
+    depth_1pct_ask_usd: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -245,11 +247,19 @@ class OrderbookSnapshot:
         spread_bps = round_spread_bps(
             data.get("spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=mid_price
         ) or 0.0
+        bid_depth = max(0.0, _clean_dict_float(data, "bid_depth_usd", 0.0))
+        ask_depth = max(0.0, _clean_dict_float(data, "ask_depth_usd", 0.0))
+        d1_bid = max(0.0, _clean_dict_float(data, "depth_1pct_bid_usd", 0.0))
+        d1_ask = max(0.0, _clean_dict_float(data, "depth_1pct_ask_usd", 0.0))
+        if d1_bid <= 0.0 and bid_depth > 0.0:
+            d1_bid = round(bid_depth * (1.0 / 1.5), 2)
+        if d1_ask <= 0.0 and ask_depth > 0.0:
+            d1_ask = round(ask_depth * (1.0 / 1.5), 2)
         return cls(
             symbol=sym_str,
             mid_price=mid_price,
-            bid_depth_usd=max(0.0, _clean_dict_float(data, "bid_depth_usd", 0.0)),
-            ask_depth_usd=max(0.0, _clean_dict_float(data, "ask_depth_usd", 0.0)),
+            bid_depth_usd=bid_depth,
+            ask_depth_usd=ask_depth,
             imbalance_ratio=min(1.0, max(0.0, _clean_dict_float(data, "imbalance_ratio", 0.5))),
             largest_bid_wall_usd=max(0.0, _clean_dict_float(data, "largest_bid_wall_usd", 0.0)),
             largest_bid_wall_price=max(0.0, _clean_dict_float(data, "largest_bid_wall_price", 0.0)),
@@ -259,6 +269,8 @@ class OrderbookSnapshot:
             best_bid=best_bid,
             best_ask=best_ask,
             spread_bps=spread_bps,
+            depth_1pct_bid_usd=d1_bid,
+            depth_1pct_ask_usd=d1_ask,
         )
 
 
@@ -368,6 +380,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             ask_depth_usd, max_ask_usd, max_ask_px = _accumulate_side(
                 asks, mid * (1.0 + self.depth_band_pct / 100.0), False
             )
+            depth_1pct_bid_usd, _, _ = _accumulate_side(bids, mid * 0.99, True)
+            depth_1pct_ask_usd, _, _ = _accumulate_side(asks, mid * 1.01, False)
 
             total_depth = bid_depth_usd + ask_depth_usd
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
@@ -387,6 +401,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 best_bid=best_bid,
                 best_ask=best_ask,
                 spread_bps=spread_bps,
+                depth_1pct_bid_usd=round(depth_1pct_bid_usd, 2),
+                depth_1pct_ask_usd=round(depth_1pct_ask_usd, 2),
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

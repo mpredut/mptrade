@@ -3455,9 +3455,9 @@ def test_bot_vs_ai_fill_attribution_and_reversal_prompt(temp_env):
 
     reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
     prompt_text = captured_prompts[-1]
-    assert "BTCUSDC Last Action=SELL (by=BOT):" in prompt_text
+    assert "BTCUSDC Last Action=SELL (by=BOT" in prompt_text
     assert "by=AI)" in prompt_text
-    assert "by=BOT)" in prompt_text
+    assert "by=BOT" in prompt_text
     assert "If a bot SOLD prematurely or when it should NOT have" in prompt_text
     assert "If a bot BOUGHT prematurely or when it should NOT have" in prompt_text
 
@@ -3518,6 +3518,103 @@ def test_harvest_recent_orders_multi_venue_cache_and_symbol_collision(temp_env):
     assert recent["NVDA_US_EQ"]["last_buy"]["price"] == 125.5
     assert positions[0]["last_buy_px"] == 71000.0
     assert positions[1]["last_buy_px"] == 125.5
+
+
+def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
+    from intelligence.sentiment.guards.high_stake_guard import (
+        extract_symbol_recent_fills,
+        harvest_recent_orders_and_enrich_positions,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    _, cache_dir, _ = temp_env
+    with open(os.path.join(cache_dir, "execution_audit_2026_10_30.jsonl"), "w", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "order_id": "9901",
+                    "client_order_id": "AGB1700000001",
+                    "kind": "SL_PANIC",
+                }
+            )
+            + "\n"
+        )
+    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "9900",
+                            "clientOrderId": "TA_OR_1700000000",
+                            "side": "BUY",
+                            "price": "68000.0",
+                            "executedQty": "0.01",
+                            "time": 1700000000000,
+                            "rule": "kalman_primary_up",
+                        },
+                        {
+                            "orderId": "9901",
+                            "clientOrderId": "AGB1700000001",
+                            "side": "SELL",
+                            "price": "67500.0",
+                            "executedQty": "0.01",
+                            "time": 1700000005000,
+                        },
+                    ]
+                }
+            },
+            f,
+        )
+
+    recent = harvest_recent_orders_and_enrich_positions(cache_dir, {}, [], {}, {}, {}, {})
+    btc_ro = recent["BTCUSDC"]
+    assert btc_ro["last_buy"]["actor"] == "BOT"
+    assert btc_ro["last_buy"]["module"] == "tradeall"
+    assert btc_ro["last_buy"]["rule"] == "kalman_primary_up"
+    assert btc_ro["last_sell"]["actor"] == "BOT"
+    assert btc_ro["last_sell"]["module"] == "assetguardian"
+    assert btc_ro["last_sell"]["rule"] == "SL_PANIC"
+    assert btc_ro["last_action_actor_tag"] == "BOT(module=assetguardian, rule=SL_PANIC)"
+
+    from types import SimpleNamespace
+
+    sensors = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 68000.0, "chg_15m_pct": 0.08}},
+        microstructure={
+            "BTCUSDC": {
+                "ob_imbalance": 0.62,
+                "bid_depth_usd": 67500.0,
+                "ask_depth_usd": 78000.0,
+                "depth_1pct_bid_usd": 45000.0,
+                "depth_1pct_ask_usd": 52000.0,
+                "spread_bps": 2.0,
+                "bid_wall_px": 67500.0,
+                "bid_wall_usd": 25000.0,
+                "ask_wall_px": 68500.0,
+                "ask_wall_usd": 30000.0,
+                "whale_long_pct": 0.58,
+                "divergence_regime": "BULLISH_ABSORPTION",
+                "taker_buy_sell_ratio": 1.14,
+                "taker_buy_vol_usd": 1_360_000.0,
+                "taker_sell_vol_usd": 680_000.0,
+                "funding_rate": 0.0001,
+                "pred_funding_rate": 0.0001,
+                "oi_usd": 50_000_000.0,
+                "oi_1h_chg_pct": 1.2,
+            }
+        },
+        portfolio_summary={
+            "total_value_usdc": 2000.0,
+            "tradable_positions": [],
+            "recent_orders": recent,
+        },
+    )
+    prompt = build_supervisor_prompt(sensors, [])
+    assert "by=BOT(module=assetguardian, rule=SL_PANIC)" in prompt
+    assert "by=BOT(module=tradeall, rule=kalman_primary_up)" in prompt
+    assert "depth_1pct=(bid=$45.0K/ask=$52.0K, slip_2k=3.2bps)" in prompt
+    assert "cvd_15m=+10 BTC (+$680.0K, spot_absorbing)" in prompt
 
 
 

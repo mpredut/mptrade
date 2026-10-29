@@ -464,14 +464,34 @@ def normalize_order(order: dict) -> dict:
     }
 
 
-def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
-    """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
-    if not isinstance(order, dict):
-        return "BOT"
-    explicit = str(order.get("actor") or "").strip().upper()
-    if explicit in ("AI", "BOT"):
-        return explicit
-    raw_cid = str(
+_BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
+    ("MO_TA", "tradeall"),
+    ("MO_MT", "monitortrades"),
+    ("MO_RT", "rtrade"),
+    ("MO_SD", "trailing"),
+    ("TA_OR", "tradeall"),
+    ("MT_OR", "monitortrades"),
+    ("AG_OR", "assetguardian"),
+    ("RT_OR", "rtrade"),
+    ("SD_OR", "trailing"),
+    ("MO_OR", "monitororder"),
+    ("AGS", "assetguardian"),
+    ("AGB", "assetguardian"),
+    ("TRL", "trailing"),
+    ("TA", "tradeall"),
+    ("TO", "tradeall"),
+    ("MT", "monitortrades"),
+    ("AG", "assetguardian"),
+    ("RT", "rtrade"),
+    ("MO", "monitororder"),
+    ("TS", "trailing"),
+    ("SD", "trailing"),
+)
+_GENERIC_CID_TOKENS = frozenset({"OR", "MAINTHREAD", "WORKER", "BOT", "ORDER", "RETRY", "OUTBOX"})
+
+
+def _extract_order_cid(order: dict) -> str:
+    return str(
         order.get("clientOrderId")
         or order.get("client_order_id")
         or order.get("cloid")
@@ -479,12 +499,93 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
         or order.get("userref")
         or ""
     ).strip()
-    if raw_cid.upper().startswith(("AI_", "SD_")):
-        return "AI"
+
+
+def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
+    """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
+    if not isinstance(order, dict):
+        return "BOT"
+    explicit = str(order.get("actor") or "").strip().upper()
+    if explicit in ("AI", "BOT"):
+        return explicit
     oid = extract_order_id(order, default="")
     if oid and known_ai_order_ids and str(oid) in known_ai_order_ids:
         return "AI"
+    raw_cid = _extract_order_cid(order).upper()
+    if raw_cid.startswith("AI_"):
+        return "AI"
+    if raw_cid.startswith("SD_") and len(raw_cid) >= 20 and all(c in "0123456789ABCDEF" for c in raw_cid[3:]):
+        return "AI"
     return "BOT"
+
+
+def resolve_order_origin(
+    order: Any,
+    known_ai_order_ids: Optional[set[str]] = None,
+    audit_origin_map: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Resolve ``(actor, module, rule)`` for an order or fill record."""
+    actor = resolve_order_actor(order, known_ai_order_ids)
+    if actor == "AI" or not isinstance(order, dict):
+        return actor, None, None
+
+    mod = str(order.get("module") or order.get("bot") or order.get("caller") or "").strip().lower() or None
+    rule = (
+        str(
+            order.get("rule")
+            or order.get("trigger_rule")
+            or order.get("kind")
+            or order.get("role")
+            or order.get("motivation")
+            or ""
+        ).strip()
+        or None
+    )
+    oid = extract_order_id(order, default="")
+    raw_cid = _extract_order_cid(order)
+
+    if isinstance(audit_origin_map, dict):
+        for lookup_key in (str(oid) if oid else "", raw_cid):
+            if lookup_key and lookup_key in audit_origin_map:
+                a_mod, a_rule = audit_origin_map[lookup_key]
+                if not mod and a_mod:
+                    mod = a_mod
+                if not rule and a_rule:
+                    rule = a_rule
+
+    if raw_cid:
+        cid_up = raw_cid.upper()
+        for pfx, bot_name in _BOT_CID_PREFIX_MODULES:
+            if cid_up.startswith(f"{pfx}_") or cid_up == pfx or (pfx in ("AGS", "AGB") and cid_up.startswith(pfx)):
+                if not mod:
+                    mod = bot_name
+                if not rule:
+                    if pfx == "AGS":
+                        rule = "SL_PROTECT"
+                    elif pfx == "AGB":
+                        rule = "BUY_TIER"
+                    else:
+                        rem = raw_cid[len(pfx) :].lstrip("_-")
+                        tokens = [t for t in re.split(r"[_-]+", rem) if t and t.upper() not in _GENERIC_CID_TOKENS]
+                        if tokens:
+                            cand = "_".join(tokens[:-1]) if len(tokens) > 1 and (tokens[-1].isdigit() or len(tokens[-1]) >= 8) else tokens[0]
+                            if not (len(cand) >= 8 and all(c in "0123456789abcdefABCDEF" for c in cand)) and not cand.isdigit():
+                                rule = cand.upper()
+                break
+    return "BOT", mod, rule
+
+
+def format_actor_tag(actor: Optional[str], module: Optional[str] = None, rule: Optional[str] = None) -> str:
+    """Format compact actor attribution string (e.g. ``'AI'`` or ``'BOT(module=assetguardian, rule=SL_PANIC)'``)."""
+    act_u = str(actor or "").strip().upper()
+    if act_u != "BOT":
+        return act_u or "BOT"
+    parts: list[str] = []
+    if module:
+        parts.append(f"module={module}")
+    if rule:
+        parts.append(f"rule={rule}")
+    return f"BOT({', '.join(parts)})" if parts else "BOT"
 
 
 def normalize_open_order(
@@ -493,6 +594,7 @@ def normalize_open_order(
     venue: str = "",
     symbol: str = "",
     known_ai_order_ids: Optional[set[str]] = None,
+    audit_origin_map: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
 ) -> Optional[dict]:
     """Normalize a venue open-order dict into a uniform telemetry record."""
     if not isinstance(order, dict):
@@ -528,14 +630,17 @@ def normalize_open_order(
         )
         or "LIMIT"
     )
-    return {
+    actor, mod, rule = resolve_order_origin(
+        order, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map
+    )
+    rec = {
         "venue": venue,
         "symbol": symbol,
         "side": extract_order_side(order) or str(order.get("side") or order.get("type") or "").upper(),
         "order_type": str(raw_otype).strip().upper() or "LIMIT",
         "order_id": str(oid) if oid is not None else None,
         "orderId": oid,
-        "actor": resolve_order_actor(order, known_ai_order_ids),
+        "actor": actor,
         "price": px,
         "qty": round(qty_f, 8) if qty_f > 0 else orig_q,
         "orig_qty": round(orig_f, 8) if orig_f > 0 else orig_q,
@@ -545,6 +650,11 @@ def normalize_open_order(
         "origQty": orig_q,
         "executedQty": raw_exec,
     }
+    if mod:
+        rec["module"] = mod
+    if rule:
+        rec["rule"] = rule
+    return rec
 
 
 _PARENT_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "oid")
