@@ -16,7 +16,6 @@ Run it locally with the venv that has the HL SDK:
   ../.venv/bin/python verify_hype_facade.py
 Exits non-zero if anything is clearly unhealthy (wrong routing, invalid price, real order).
 """
-import math
 import os
 import sys
 import time

@@ -1,7 +1,6 @@
 
 import os
 import sys
-import math
 import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Optional
@@ -96,14 +95,15 @@ def min_max_scale(arr: np.ndarray):
         if not clean:
             return np.array([], dtype=np.float64), 0.0, 0.0
         arr_f = np.asarray(clean, dtype=np.float64)
-    vmin = float(np.min(arr_f))
-    vmax = float(np.max(arr_f))
-    if not (math.isfinite(vmin) and math.isfinite(vmax)):
+    vmin = safe_float(np.min(arr_f), default=None)
+    vmax = safe_float(np.max(arr_f), default=None)
+    if vmin is None or vmax is None:
         return np.full_like(arr_f, 0.5, dtype=np.float64), 0.0, 0.0
-    if vmax == vmin or not math.isfinite(vmax - vmin):
+    diff = safe_float(vmax - vmin, default=0.0)
+    if diff <= 0.0:
         # Map a constant series to 0.5 to avoid division by zero.
         return np.full_like(arr_f, 0.5, dtype=np.float64), vmin, vmax
-    scaled = (arr_f - vmin) / (vmax - vmin)
+    scaled = (arr_f - vmin) / diff
     return scaled, vmin, vmax
 
 def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
@@ -114,9 +114,10 @@ def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
     vmax_f = safe_float(vmax, default=None)
     if vmin_f is None or vmax_f is None:
         return np.zeros_like(arr_f, dtype=np.float64)
-    if vmax_f == vmin_f or not math.isfinite(vmax_f - vmin_f):
+    diff = safe_float(vmax_f - vmin_f, default=0.0)
+    if diff <= 0.0:
         return np.full_like(arr_f, vmin_f, dtype=np.float64)
-    return arr_f * (vmax_f - vmin_f) + vmin_f
+    return arr_f * diff + vmin_f
 
 
 # ==========================

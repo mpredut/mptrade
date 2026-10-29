@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Aggregate results.jsonl from grid.py into REPORT.md (plain markdown tables)."""
 import json
-import math
 import os
 import statistics as st
 import sys
@@ -97,8 +96,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         w90 = [win_stats(by[c][a], "w90") for a in assets]
         w30 = [win_stats(by[c][a], "w30") for a in assets]
         beat_w90 = sum(
-            (w90_item["mean"] > live_w90_m + 1e-9)
-            if math.isfinite(w90_item["mean"]) and math.isfinite(live_w90_m := win_stats(live.get(a, {}), "w90")["mean"])
+            (w90_m > live_w90_m + 1e-9)
+            if (w90_m := safe_float(w90_item.get("mean"), default=None)) is not None
+            and (live_w90_m := safe_float(win_stats(live.get(a, {}), "w90").get("mean"), default=None)) is not None
             else False
             for a, w90_item in zip(assets, w90)
         )
@@ -108,12 +108,12 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             for y in (by[c][a].get("year") or {}).values()
             if isinstance(y, dict) and (yr_ret := safe_float(y.get("ret"), default=None)) is not None
         ]
-        w90_means = [x["mean"] for x in w90 if math.isfinite(x["mean"])]
-        w90_pos = [x["pos"] for x in w90 if math.isfinite(x["pos"])]
-        w90_p10 = [x["p10"] for x in w90 if math.isfinite(x["p10"])]
-        w90_down = [x["down"] for x in w90 if math.isfinite(x["down"])]
-        w30_means = [x["mean"] for x in w30 if math.isfinite(x["mean"])]
-        w30_pos = [x["pos"] for x in w30 if math.isfinite(x["pos"])]
+        w90_means = [m for x in w90 if (m := safe_float(x.get("mean"), default=None)) is not None]
+        w90_pos = [m for x in w90 if (m := safe_float(x.get("pos"), default=None)) is not None]
+        w90_p10 = [m for x in w90 if (m := safe_float(x.get("p10"), default=None)) is not None]
+        w90_down = [m for x in w90 if (m := safe_float(x.get("down"), default=None)) is not None]
+        w30_means = [m for x in w30 if (m := safe_float(x.get("mean"), default=None)) is not None]
+        w30_pos = [m for x in w30 if (m := safe_float(x.get("pos"), default=None)) is not None]
         summary.append({
             "cfg": c, "beat_full": beat_full, "beat_w90": beat_w90,
             "full_med": st.median(full) if full else 0.0,

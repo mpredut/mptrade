@@ -19,7 +19,6 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import json
-import math
 import os
 import sys
 import time
@@ -34,7 +33,14 @@ _KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
 
-from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int
+from botcore import (
+    parse_dotenv,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_nonneg_int,
+    safe_pos_float,
+)
 
 _safe_f = safe_float
 _safe_int = safe_int
@@ -287,23 +293,18 @@ def _win_move_at_ts(
     ts: float,
     w_hours: float,
 ) -> float | None:
-    if ts is None or w_hours is None or isinstance(ts, bool) or isinstance(w_hours, bool):
-        return None
-    try:
-        ts_f = float(ts)
-        wh_f = float(w_hours)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not (math.isfinite(ts_f) and ts_f >= 0 and math.isfinite(wh_f) and wh_f > 0):
+    ts_f = safe_nonneg_float(ts, default=None)
+    wh_f = safe_pos_float(w_hours, default=None)
+    if ts_f is None or wh_f is None:
         return None
     bar_idx = int(round(ts_f / (240.0 * 60.0)))
     nb = max(1, round(wh_f / 4.0))
     idx = warmup_n + bar_idx
     if idx < nb or idx >= len(all_closes):
         return None
-    past_p = all_closes[idx - nb]
-    cur_p = all_closes[idx]
-    if not (math.isfinite(past_p) and past_p > 0 and math.isfinite(cur_p)):
+    past_p = safe_pos_float(all_closes[idx - nb], default=None)
+    cur_p = safe_float(all_closes[idx], default=None)
+    if past_p is None or cur_p is None:
         return None
     return (cur_p - past_p) / past_p * 100.0
 
@@ -496,9 +497,9 @@ def main():
     base_params = load_base_params(args.config)
     initial_cash = (base_params.effective_max_budget()
                     if args.initial_cash is None else args.initial_cash)
-    if not math.isfinite(initial_cash) or initial_cash <= 0:
+    if safe_pos_float(initial_cash, default=None) is None:
         parser.error("initial cash must be finite and positive")
-    if not math.isfinite(args.fee_pct) or args.fee_pct < 0:
+    if safe_nonneg_float(args.fee_pct, default=None) is None:
         parser.error("fee percentage must be finite and non-negative")
     if args.workers < 1:
         parser.error("workers must be positive")

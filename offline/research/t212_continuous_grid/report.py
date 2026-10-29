@@ -2,7 +2,6 @@
 """Summarise results.jsonl from grid.py into REPORT.md."""
 from collections import defaultdict
 import json
-import math
 import os
 import statistics as st
 import sys

@@ -12,7 +12,6 @@ It also shows the thresholds: HARD-TP (+18%) and the normal sell (gain>9.2% AND 
 """
 from __future__ import annotations
 
-import math
 import os
 import sys
 import time

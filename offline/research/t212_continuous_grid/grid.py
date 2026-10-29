@@ -29,7 +29,7 @@ try:
     sys.modules[_rp_spec.name] = rp
     _rp_spec.loader.exec_module(rp)
     strat = rp._strat
-    from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float  # noqa: E402
+    from botcore import parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float, safe_pos_int  # noqa: E402
 
     _safe_f = safe_float
     _safe_int = safe_int
@@ -106,21 +106,20 @@ def load(asset, itv):
         _LOAD_CACHE[key] = None
         _SPLIT_CACHE[key] = (None, None)
         return None
-    import math
     rows = []
     with open(path, encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
-            try:
-                ts_val = int(float(r["timestamp"]))
-                o = float(r["open"])
-                h = float(r["high"])
-                l = float(r["low"])
-                c = float(r["close"])
-            except (KeyError, TypeError, ValueError, OverflowError):
-                continue
+            ts_val = safe_pos_int(r.get("timestamp"), default=None)
+            o = safe_pos_float(r.get("open"), default=None)
+            h = safe_pos_float(r.get("high"), default=None)
+            l = safe_pos_float(r.get("low"), default=None)
+            c = safe_pos_float(r.get("close"), default=None)
             if (
-                ts_val > 0
-                and all(math.isfinite(x) and x > 0 for x in (o, h, l, c))
+                ts_val is not None
+                and o is not None
+                and h is not None
+                and l is not None
+                and c is not None
                 and h >= max(o, l, c)
                 and l <= min(o, h, c)
             ):

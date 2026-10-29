@@ -2,7 +2,6 @@
 """Run Tests 0 to 4 ablation across 11 crypto assets and US equities."""
 
 import json
-import math
 import os
 import statistics
 import sys

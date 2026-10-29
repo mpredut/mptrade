@@ -11,7 +11,6 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -25,6 +24,7 @@ if str(ROOT / "kraken") not in sys.path:
 from botcore import (
     parse_dotenv,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
@@ -346,25 +346,25 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     if anchor_path.exists():
         try:
             with open(anchor_path, encoding="utf-8") as f:
-                raw_anchor = float(f.read().strip())
-                anchor_ts = int(raw_anchor) if math.isfinite(raw_anchor) else 0
-        except (OSError, ValueError, OverflowError):
+                anchor_ts = safe_nonneg_int(f.read().strip(), default=0)
+        except OSError:
             anchor_ts = 0
 
     valid_bars = []
     for b in full_bars:
         if not isinstance(b, (list, tuple)) or len(b) < 5:
             continue
-        if any(isinstance(b[i], bool) or b[i] is None for i in range(5)):
-            continue
-        try:
-            ts_f = float(b[0])
-            o_f, h_f, l_f, c_f = float(b[1]), float(b[2]), float(b[3]), float(b[4])
-        except (TypeError, ValueError, OverflowError):
-            continue
+        ts_f = safe_nonneg_float(b[0], default=None)
+        o_f = safe_pos_float(b[1], default=None)
+        h_f = safe_pos_float(b[2], default=None)
+        l_f = safe_pos_float(b[3], default=None)
+        c_f = safe_pos_float(b[4], default=None)
         if (
-            math.isfinite(ts_f)
-            and all(math.isfinite(x) and x > 0 for x in (o_f, h_f, l_f, c_f))
+            ts_f is not None
+            and o_f is not None
+            and h_f is not None
+            and l_f is not None
+            and c_f is not None
             and h_f >= max(o_f, l_f, c_f)
             and l_f <= min(o_f, h_f, c_f)
         ):

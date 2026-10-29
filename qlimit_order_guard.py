@@ -56,8 +56,6 @@ def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) ->
         if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):
-                import math
-
                 p90_d = safe_pos_float(ent.get("p90_d"), 0.0) or None
                 med_d = safe_pos_float(ent.get("median_d"), 0.0) or None
                 t_val = safe_pos_float(ent.get("T"), 0.0) or None

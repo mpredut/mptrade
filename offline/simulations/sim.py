@@ -1,6 +1,5 @@
 """A manual simulation; it is not part of the live runtime."""
 
-import math
 import os
 import sys
 import numpy as np
@@ -13,24 +12,27 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_float  # noqa: E402
+from botcore import safe_float, safe_nonneg_float, safe_pos_int  # noqa: E402
 
 
 class PriceWindow:
     def __init__(self, window_size, max_index=1000000, epsilon=1e-5):
-        if isinstance(window_size, bool) or not isinstance(window_size, (int, float)) or not math.isfinite(float(window_size)) or int(window_size) < 1:
+        ws = safe_pos_int(window_size, default=None) if isinstance(window_size, (int, float)) else None
+        if ws is None:
             raise ValueError("window_size must be a positive integer")
-        if isinstance(max_index, bool) or not isinstance(max_index, (int, float)) or not math.isfinite(float(max_index)) or int(max_index) < 1:
+        mi = safe_pos_int(max_index, default=None) if isinstance(max_index, (int, float)) else None
+        if mi is None:
             raise ValueError("max_index must be a positive integer")
-        if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)) or not math.isfinite(float(epsilon)) or float(epsilon) < 0.0:
+        eps = safe_nonneg_float(epsilon, default=None) if isinstance(epsilon, (int, float)) else None
+        if eps is None:
             raise ValueError("epsilon must be a non-negative finite number")
-        self.window_size = max(1, int(window_size))
+        self.window_size = ws
         self.prices = deque()  # Keeps every price in the window.
         self.min_deque = deque()  # Gestionarea minimului
         self.max_deque = deque()  # Gestionarea maximului
         self.current_index = 0  # An internal counter tracking the index.
-        self.max_index = max(1, int(max_index))  # The threshold at which normalisation happens.
-        self.epsilon = max(0.0, float(epsilon))  # The tolerance for approximately equal lows.
+        self.max_index = mi  # The threshold at which normalisation happens.
+        self.epsilon = eps  # The tolerance for approximately equal lows.
 
     def _evict_expired(self, dq: deque) -> None:
         cutoff = self.current_index - self.window_size

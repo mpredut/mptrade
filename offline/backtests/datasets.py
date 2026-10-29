@@ -10,7 +10,6 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import hashlib
-import math
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -121,7 +120,7 @@ def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None
         previous_timestamp = timestamp
 
         open_, high, low, close = row["open"], row["high"], row["low"], row["close"]
-        if not all(math.isfinite(v) for v in (open_, high, low, close)) or min(open_, high, low, close) <= 0:
+        if not all(safe_pos_float(v, default=None) is not None for v in (open_, high, low, close)):
             raise ValueError(f"non-positive price at line {index}")
         if high < max(open_, close, low) or low > min(open_, close, high):
             raise ValueError(f"invalid OHLC invariant at line {index}")

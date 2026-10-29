@@ -17,7 +17,6 @@ import argparse
 from dataclasses import asdict, dataclass
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -103,9 +102,10 @@ def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str
         slope, _ = np.polyfit(x, p_arr, 1)
     except Exception:
         return "CHOP", 0.0
-    if not math.isfinite(float(slope)):
+    slope_f = safe_float(slope, default=None)
+    if slope_f is None:
         return "CHOP", 0.0
-    norm_slope = float(slope) / float(p_arr[-1]) if p_arr[-1] > 0 else 0.0
+    norm_slope = slope_f / float(p_arr[-1]) if p_arr[-1] > 0 else 0.0
 
     _, _, p_mk = calculate_mann_kendall(p_arr)
     af = safe_pos_float(mk_alpha, default=None)

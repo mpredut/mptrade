@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Aggregate results2.jsonl (wave 2) into REPORT2.md."""
 import json
-import math
 import os
 import statistics as st
 import sys
@@ -114,15 +113,14 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         live = by.get(("live", "std"), {})
         full = [safe_float(d[a]["full"].get("ret"), float("nan")) for a in assets]
         dd = [safe_float(d[a]["full"].get("dd"), float("nan")) for a in assets]
-        if not all(math.isfinite(x) for x in full + dd):
+        if not all(safe_float(x) is not None for x in full + dd):
             return None
         w90_means = []
         w90pos_vals = []
         for a in assets:
             w90_valid = [
-                float(x[0]) for x in (d[a].get("w90") or [])
-                if isinstance(x, (list, tuple)) and x and isinstance(x[0], (int, float))
-                and not isinstance(x[0], bool) and math.isfinite(float(x[0]))
+                v for x in (d[a].get("w90") or [])
+                if isinstance(x, (list, tuple)) and x and (v := safe_float(x[0], default=None)) is not None
             ]
             if w90_valid:
                 w90_means.append(st.mean(w90_valid))
@@ -149,7 +147,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                      f"{s['dd_med']:.1f} | {s['dd_max']:.1f} | {s['calmar']:+.2f} | {s['w90']:+.2f} | {s['w90pos']:.0f} |")
 
     fine = [s for s in (summ(k) for k in by if k[1] == "std") if s]
-    table(sorted(fine, key=lambda s: -(s["calmar"] if math.isfinite(s["calmar"]) else float("-inf")))[:40], "Fine grid + wave-1 configs, top 40 by median return/DD")
+    table(sorted(fine, key=lambda s: -(safe_float(s.get("calmar"), default=float("-inf"))))[:40], "Fine grid + wave-1 configs, top 40 by median return/DD")
     fee = []
     for k in by:
         if k[1] == "stress":

@@ -1,9 +1,16 @@
 """A historical offline experiment; it is not an automated test."""
 
-import math
+import datetime
+import os
+import sys
 import pandas as pd
 import requests
-import datetime
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from botcore import safe_nonneg_float, safe_pos_float
 
 def fetch_data():
     # The API for the historical data (for example: the Binance API).
@@ -41,9 +48,9 @@ def analyze_drops_with_distribution(df, show_plot: bool = False):
         return 0, 0.0, 0, 0.0, 0, 0.0
 
     for i in range(total_intervals):
-        start_price = float(df['close'].iloc[i])
-        end_price = float(df['close'].iloc[i + 2 * 60])
-        if not (math.isfinite(start_price) and start_price > 0 and math.isfinite(end_price) and end_price >= 0):
+        start_price = safe_pos_float(df['close'].iloc[i], default=None)
+        end_price = safe_nonneg_float(df['close'].iloc[i + 2 * 60], default=None)
+        if start_price is None or end_price is None:
             continue
         drop_percent = (start_price - end_price) / start_price * 100
         drops.append(drop_percent)

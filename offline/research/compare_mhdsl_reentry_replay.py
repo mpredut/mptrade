@@ -2,7 +2,6 @@
 """Compare MHDSL and baseline spot DCA replay on HYPE spot dataset."""
 
 import csv
-import math
 import os
 import sys
 

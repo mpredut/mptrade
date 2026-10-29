@@ -2,7 +2,6 @@
 """Generate comprehensive comparative report for Hybrid Re-Entry Ablation Suite."""
 
 import json
-import math
 import os
 import sys
 
