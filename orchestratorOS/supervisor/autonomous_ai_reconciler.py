@@ -12,12 +12,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
-import glob
-import json
 import logging
 import os
-import re
-import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,84 +32,28 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import (
-    cache_symbol_variants,
-    canonical_base_asset,
-    normalize_venue_name,
-    resolve_cachedb_filepath,
-    split_symbol_assets,
-)
-from providers.base import (
-    extract_order_id,
-    extract_order_price,
-    extract_order_side,
-    extract_orig_qty,
-    extract_timestamp_s,
-    normalize_open_order,
-    normalize_side,
-)
-from state_io import (
-    read_last_jsonl_dict as _read_last_jsonl_dict,
-    read_tail_jsonl_dicts,
-    read_tail_lines,
-)
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
-    apply_asset_scope_filter,
-    apply_live_24trend_windows as _apply_live_24trend_windows,
     apply_short_trend_item as _apply_short_trend_item,
-    build_cross_market_context as _build_cross_market_context,
-    build_cycle_fallback_prices,
-    compute_7d_range_metrics as _compute_7d_range_metrics,
-    compute_24h_price_metrics,
-    compute_cross_btc_metrics,
     compute_liquidation_clusters,
     compute_swing_wave_metrics as _compute_swing_wave_metrics,
     compute_volume_profile_metrics,
-    enrich_24h_and_microstructure,
-    enrich_cross_venue_trends,
-    extract_current_price_item,
-    extract_symbol_recent_fills,
-    harvest_bot_runtime_states,
-    harvest_initial_prices_and_trends,
-    harvest_kraken_xstocks as _harvest_kraken_xstocks,
-    harvest_macro_and_news_sensors,
-    harvest_portfolio_and_venue_cycles,
-    harvest_recent_orders_and_enrich_positions,
-    harvest_tradable_positions_and_orders,
-    harvest_venue_cycles as _harvest_venue_cycles,
-    load_symbol_microstructure as _load_symbol_microstructure,
-    load_symbol_price_series,
-    load_venue_trailing_maps,
     parse_venue_cycle_state as _parse_venue_cycle_state,
     populate_market_and_portfolio_snapshot,
     resolve_venue_fee_and_limits,
-    set_pos_anchor as _set_pos_anchor,
-    sync_sibling_symbol_telemetry,
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
-    ACTIONABLE_ERROR_SEVERITIES,
-    ALL_DIAGNOSED_CATEGORIES,
-    ALL_REPAIR_ACTIONS,
-    AUDITED_CONFIG_FILES,
     BOT_AND_ORDER_ERROR_CATEGORIES,
-    BOT_MODULE_REPAIR_ACTIONS,
-    BOT_OR_FLEET_ERROR_ACTIONS,
-    DIAGNOSED_SEVERITIES,
     LogEventSummary,
-    SYSTEM_ADMIN_ACTION_SPECS,
-    SYSTEM_OS_ERROR_ACTIONS,
     SYSTEM_OS_ERROR_CATEGORIES,
     apply_code_patch_safely,
     apply_reconciliation_plan,
     audit_workspace_configs,
-    build_system_admin_command,
-    clean_json_value,
+    build_sensor_health_summary,
     default_supervisor_fallback_plan,
     execute_venue_or_fleet_repair_action,
     format_supervisor_ntfy_notification,
-    gather_system_and_vpn_telemetry,
     harvest_fleet_and_system_telemetry,
     harvest_heartbeats_and_state_files,
     harvest_log_anomalies_from_dirs,
@@ -121,37 +61,24 @@ from orchestratorOS.lib.technical_repair_ssot import (
     is_error_report,
     is_system_os_error_report,
     normalize_error_signature,
-    normalize_repair_action,
     parse_supervisor_config,
     persist_supervisor_audit_artifact,
     read_json_recovering,
     recent_log_lines,
-    resolve_patchable_target,
     send_supervisor_ntfy_http,
+    submit_supervisor_trading_decisions,
 )
 from orchestratorOS.supervisor.prompt_formatters import (
-    _format_horizon_range,
-    _format_macro_and_news_section,
-    _format_market_prices_section,
-    _format_microstructure_section,
-    _format_portfolio_section,
-    _format_sre_and_fleet_section,
     _format_venue_cycle_line,
-    _resolve_symbol_price,
-    _round_opt_px,
     build_supervisor_prompt,
 )
 from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
-    _extract_intent_notional,
     _is_us_rth_open,
-    _parse_intent_confidence,
-    _parse_notify_enabled_flag,
     load_key_value_conf,
 )
 from providers.execution_audit import (
     normalize_trading_decisions as _normalize_trading_decisions,
-    summarize_recent_ai_intents,
 )
 
 _parse_finite_float = safe_float
@@ -498,22 +425,23 @@ class AutonomousAIReconciler:
             else (False, None)
         )
 
-        decisions_list: List[Dict[str, Any]] = _normalize_trading_decisions(plan) if spec.can_trade else []
-        market_decision: Dict[str, Any] = decisions_list[0] if decisions_list else {}
-        intents_emitted: List[Dict[str, Any]] = []
-        actionable_decs = [
-            d for d in decisions_list
-            if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
-        ]
-        submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
-        effective_max_mode = "shadow" if (scope == "equities" and not _is_us_rth_open(now)) else self.mode
-        for dec in submit_decs:
-            emitted = self.intent_gateway.submit(dec, source=topic_key, max_mode=effective_max_mode)
-            if isinstance(emitted, dict):
-                intents_emitted.append(emitted)
-                if self.mode == "enforce" and emitted.get("status") == "EXECUTED":
-                    executed = True
-        primary_intent = intents_emitted[0] if intents_emitted else None
+        (
+            decisions_list,
+            market_decision,
+            intents_emitted,
+            primary_intent,
+            trade_executed,
+        ) = submit_supervisor_trading_decisions(
+            plan,
+            spec,
+            topic_key=topic_key,
+            mode=self.mode,
+            now_ts=now,
+            intent_gateway=self.intent_gateway,
+            is_rth_open_fn=_is_us_rth_open,
+        )
+        if trade_executed:
+            executed = True
 
         raw_issues = plan.get("diagnosed_issues") if spec.can_self_heal else []
         raw_actions = plan.get("venue_actions") if spec.can_self_heal else []
@@ -529,14 +457,7 @@ class AutonomousAIReconciler:
             market_trading_decisions=decisions_list,
             intent_emitted=primary_intent,
             intents_emitted=intents_emitted,
-            sensor_health={
-                "fear_greed_present": sensors.fear_greed is not None,
-                "market_breadth_present": sensors.market_breadth is not None,
-                "sentiment_advisor_present": sensors.sentiment_advisor is not None,
-                "geopolitical_threat_present": sensors.geopolitical_threat is not None,
-                "prices_and_trends_count": len(sensors.prices_and_trends),
-                "active_heartbeats_count": len(sensors.active_heartbeats),
-            },
+            sensor_health=build_sensor_health_summary(sensors),
             actions_executed=executed,
             tests_passed=tests_passed,
         )

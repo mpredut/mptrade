@@ -16,9 +16,11 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
+    exact_int,
+    exact_nonneg_int,
+    exact_pos_int,
     load_dotenv,
     required_float_env,
-    safe_float,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -122,8 +124,7 @@ def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
     timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         _writer_path = os.fspath(path)
-        cand_pid = _exact_int(pid)
-        writer_pid = cand_pid if (cand_pid is not None and cand_pid > 0) else os.getpid()
+        writer_pid = exact_pos_int(pid, default=None) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
             _writer_enabled = False
@@ -193,9 +194,13 @@ def _clean_version_str(value: object) -> str:
     return "" if s.lower() in _INVALID_VERSION_STRINGS else s
 
 
-def record_successful_sync(cache_name: str, data_version: str, *,
-                           now_ms: Optional[int] = None) -> bool:
-    """Publish one complete, persisted Order or Trade reconciliation success."""
+def _record_cache_version(
+    cache_name: str,
+    data_version: str,
+    *,
+    now_ms: Optional[int] = None,
+    update_sync: bool = False,
+) -> bool:
     norm_name = _normalize_cache_name(cache_name)
     version = _clean_version_str(data_version)
     if not norm_name or not version:
@@ -203,62 +208,54 @@ def record_successful_sync(cache_name: str, data_version: str, *,
     fields = _SYNC_FIELDS.get(norm_name)
     if fields is None:
         return False
-    sync_timestamp = _clean_now_ms(now_ms)
     sync_field, version_field = fields
+    timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         if not _writer_enabled:
             return False
-        _writer_state[sync_field] = sync_timestamp
+        if update_sync:
+            _writer_state[sync_field] = timestamp
+            # Publication time describes this atomic write, while the conservative
+            # synchronization timestamp remains the first request start of the cycle.
+            _writer_state["published_at_ms"] = _now_ms()
+        else:
+            _writer_state["published_at_ms"] = timestamp
         _writer_state[version_field] = version
-        # Publication time describes this atomic write, while the conservative
-        # synchronization timestamp remains the first request start of the cycle.
-        _writer_state["published_at_ms"] = _now_ms()
         _writer_state["generation"] += 1
         _publish_locked()
     return True
+
+
+def record_successful_sync(cache_name: str, data_version: str, *,
+                           now_ms: Optional[int] = None) -> bool:
+    """Publish one complete, persisted Order or Trade reconciliation success."""
+    return _record_cache_version(
+        cache_name, data_version, now_ms=now_ms, update_sync=True
+    )
 
 
 def record_persisted_version(cache_name: str, data_version: str, *,
                              now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
-    norm_name = _normalize_cache_name(cache_name)
-    version = _clean_version_str(data_version)
-    if not norm_name or not version:
-        return False
-    fields = _SYNC_FIELDS.get(norm_name)
-    if fields is None:
-        return False
-    _sync_field, version_field = fields
-    timestamp = _clean_now_ms(now_ms)
-    with _writer_lock:
-        if not _writer_enabled:
-            return False
-        _writer_state[version_field] = version
-        _writer_state["published_at_ms"] = timestamp
-        _writer_state["generation"] += 1
-        _publish_locked()
-    return True
+    return _record_cache_version(
+        cache_name, data_version, now_ms=now_ms, update_sync=False
+    )
 
 
 def _exact_int(value: Any) -> Optional[int]:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    f = safe_float(value, default=None)
-    return int(f) if (f is not None and f.is_integer()) else None
+    return exact_int(value, default=None)
 
 
 def _positive_int(value, field: str) -> int:
-    val = _exact_int(value)
-    if val is None or val <= 0:
+    val = exact_pos_int(value, default=None)
+    if val is None:
         raise ValueError(f"invalid {field}")
     return val
 
 
 def _nonnegative_int(value, field: str) -> int:
-    val = _exact_int(value)
-    if val is None or val < 0:
+    val = exact_nonneg_int(value, default=None)
+    if val is None:
         raise ValueError(f"invalid {field}")
     return val
 

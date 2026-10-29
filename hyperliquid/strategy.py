@@ -50,15 +50,16 @@ load_env_stack(os.path.join(_HERE, ".env"))
 HL_FEE_PCT = required_float_env("HL_FEE_PCT")
 
 
+def _safe_state_token(val: object, default: str, *, lower: bool = False) -> str:
+    if isinstance(val, bool) or not isinstance(val, str):
+        return default
+    s = val.strip().lower() if lower else val
+    return "".join(c for c in s if c.isalnum() or c in "._-").strip("._-") or default
+
+
 def state_path_for(coin: str, direction: str) -> str:
-    if isinstance(coin, bool) or not isinstance(coin, str):
-        safe = "unknown"
-    else:
-        safe = "".join(c for c in coin if c.isalnum() or c in "._-").strip("._-") or "unknown"
-    if isinstance(direction, bool) or not isinstance(direction, str):
-        dir_safe = "long"
-    else:
-        dir_safe = "".join(c for c in direction.strip().lower() if c.isalnum() or c in "._-").strip("._-") or "long"
+    safe = _safe_state_token(coin, "unknown")
+    dir_safe = _safe_state_token(direction, "long", lower=True)
     return os.path.join(_HERE, f".state_{safe}_{dir_safe}.json")
 
 
@@ -142,21 +143,10 @@ class StratParams:
             raw = d.get(key, default)
             if raw is None:
                 return default
-            if isinstance(raw, bool):
-                return raw
-            if isinstance(raw, str):
-                s = raw.strip().lower()
-                if s in ("1", "1.0", "true", "yes", "on"):
-                    return True
-                if s in ("0", "0.0", "false", "no", "off", ""):
-                    return False
-                raise ValueError(f"invalid boolean string for {key}: {raw!r}")
-            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-                f_raw = safe_float(raw, default=None)
-                if f_raw in (0.0, 1.0):
-                    return bool(f_raw)
-                raise ValueError(f"invalid numeric boolean for {key}: {raw!r}")
-            raise ValueError(f"invalid boolean value for {key}: {raw!r}")
+            parsed = _parse_bool_flag(raw, default=None)
+            if parsed is None:
+                raise ValueError(f"invalid boolean value for {key}: {raw!r}")
+            return parsed
 
         raw_ccy = d.get("currency", "USDC")
         ccy_val = (

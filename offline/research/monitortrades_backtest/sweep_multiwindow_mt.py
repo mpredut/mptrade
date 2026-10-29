@@ -21,6 +21,7 @@ import offline.research.monitortrades_backtest.run_replay_backtest as rrb
 from offline.research.monitortrades_backtest.sweep_mt_models import (
     compute_all_signals,
     load_archive_series,
+    make_tape,
 )
 
 
@@ -49,12 +50,10 @@ def run_multiwindow_sweep(use_365: bool = False):
         }
 
     def _up_arr(s_win):
-        gc = s_win["diff"]
-        eps = s_win["eps"]
-        sc = s_win["scale_inv"]
-        cond = np.where(eps > 0.0, gc > (0.25 * sc * eps), gc > 0.0)
-        cond[:1] = False
-        return cond
+        return np.asarray(
+            make_tape(s_win["diff"], s_win["eps"], k_eps=0.25, scale_inv=s_win["scale_inv"]),
+            dtype=bool,
+        )
 
     def _not_crash_arr(s_win, k_crash: float = 1.5):
         gc = s_win["diff"]

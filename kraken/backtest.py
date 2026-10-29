@@ -25,7 +25,7 @@ if _HERE not in sys.path:
 
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary
-from botcore import exact_nonneg_int, parse_dotenv, safe_float, safe_pos_float
+from botcore import exact_nonneg_int, load_dotenv, parse_dotenv, safe_float, safe_pos_float
 
 import dataclasses
 try:
@@ -140,12 +140,7 @@ def main() -> int:
 
     # Load live STRAT_* configuration so the faithful engine uses production
     # re-entry, tranche, and tolerance values.
-    import os as _os
-    try:
-        from kraken.kraken_common import load_dotenv as _load_dotenv
-    except ImportError:
-        from kraken_common import load_dotenv as _load_dotenv
-    _load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.env"))
+    load_dotenv(os.path.join(_HERE, "config.env"))
 
     try:
         ohlc = fetch_candles(args.pair, args.interval)
@@ -178,6 +173,8 @@ def main() -> int:
         return 0
 
     print(f"=== SWEEP {args.pair} interval={args.interval}m  (buy&hold {bh:+.1f}%) [{engine}] ===")
+    if len(ohlc) > 40 and hasattr(rp, "prewarm_trend_series"):
+        rp.prewarm_trend_series(ohlc, warmup=0, params=_bt_params(base), bar_minutes=args.interval)
     rows = []
     for tp in (1.0, 1.5, 2.0, 3.0, 5.0):
         for drop in (1.0, 2.0, 3.0, 5.0):

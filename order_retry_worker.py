@@ -39,6 +39,7 @@ import order_retry as oq
 import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
+    exact_nonneg_int,
     required_float_env,
     safe_float,
     safe_int,
@@ -190,16 +191,7 @@ def _hydrate_missing_order_orig_qty(mkt, symbol, order, *, provider_name=None):
     return order
 
 
-def _submission_requires_reconciliation(record):
-    """Return whether a persisted intent might already have reached its venue."""
-    submission_state = str(
-        record.get("submission_state") or "").strip().lower()
-    if submission_state == "refused":
-        return False
-    if submission_state in {"producer_claimed", "unknown"}:
-        return True
-    reason = str(record.get("last_failure_reason") or "").strip().lower()
-    return reason in _AMBIGUOUS_SUBMISSION_REASONS
+_submission_requires_reconciliation = oq.submission_requires_reconciliation
 
 
 def _reconcile_client_order(
@@ -311,8 +303,7 @@ def _audit_event(record, event, **fields):
     payload = {
         "side": str(record.get("side") or "").lower() or None,
         "kind": record.get("kind"),
-        "client_order_id": dict(record.get("place_kwargs") or {}).get(
-            "client_order_id"),
+        "client_order_id": oq._record_client_order_id(record),
         "order_id": record.get("order_id"),
         "revision": record.get("revision"),
     }
@@ -324,6 +315,25 @@ def _audit_event(record, event, **fields):
         symbol=str(record.get("symbol") or "unknown"),
         **payload,
     )
+
+
+def _complete_reconciled_order(
+    mkt, r: dict, existing_order, now: float, *, provider_name=None, live_producer: bool = False
+) -> bool:
+    symbol = r.get("symbol")
+    existing_order = _hydrate_missing_order_orig_qty(
+        mkt, symbol, existing_order, provider_name=provider_name
+    )
+    if not oq.complete_claim(
+        r, "accepted", now, order=existing_order, provider_name=provider_name
+    ):
+        return False
+    oid = oq.order_id_from_response(existing_order)
+    audit_kw = {"order_id": oid, "live_producer": True} if live_producer else {"order_id": oid}
+    _audit_event(r, "order_recovered", **audit_kw)
+    label = "RECONCILED live producer" if live_producer else "RECONCILED"
+    print(f"[order_retry] {label} {r.get('side')} {symbol} orderId={oid}")
+    return True
 
 
 def process_once(mkt, now=None):
@@ -407,30 +417,16 @@ def process_once(mkt, now=None):
     for r in live_producer_reconciliation:
         symbol = r.get("symbol")
         provider_name = _provider_name(mkt, r)
-        client_order_id = dict(
-            r.get("place_kwargs") or {}).get("client_order_id")
+        client_order_id = oq._record_client_order_id(r)
         reconciliation_state, existing_order = _reconcile_client_order(
             mkt, symbol, client_order_id, provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
-            existing_order = _hydrate_missing_order_orig_qty(
-                mkt, symbol, existing_order, provider_name=provider_name
-            )
-            if oq.complete_claim(
-                    r, "accepted", now, order=existing_order,
-                    provider_name=provider_name):
+            if _complete_reconciled_order(
+                mkt, r, existing_order, now, provider_name=provider_name, live_producer=True
+            ):
                 succeeded += 1
                 reconciled += 1
-                _audit_event(
-                    r, "order_recovered",
-                    order_id=oq.order_id_from_response(existing_order),
-                    live_producer=True,
-                )
-                print(
-                    f"[order_retry] RECONCILED live producer "
-                    f"{r.get('side')} {symbol} "
-                    f"orderId={oq.order_id_from_response(existing_order)}"
-                )
             continue
         quarantine_reason = (
             "live_owner_not_found"
@@ -572,17 +568,9 @@ def process_once(mkt, now=None):
             if reconciliation_state == _RECONCILE_FOUND:
                 succeeded += 1
                 reconciled += 1
-                existing_order = _hydrate_missing_order_orig_qty(
-                    mkt, symbol, existing_order, provider_name=provider_name
+                _complete_reconciled_order(
+                    mkt, r, existing_order, now, provider_name=provider_name
                 )
-                oq.complete_claim(
-                    r, "accepted", now, order=existing_order,
-                    provider_name=provider_name)
-                _audit_event(
-                    r, "order_recovered",
-                    order_id=oq.order_id_from_response(existing_order))
-                print(f"[order_retry] RECONCILED {r.get('side')} {symbol} "
-                      f"orderId={oq.order_id_from_response(existing_order)}")
                 continue
             if reconciliation_state == _RECONCILE_NOT_FOUND:
                 absence_reliable, not_found_reason = _not_found_reliability_status(
@@ -1065,17 +1053,15 @@ class IncidentDigest:
                 labels = event["labels"]
                 quantity = safe_nonneg_float(event.get("quantity"), default=None)
                 raw_attempts = event.get("attempts", 0)
-                att_f = safe_nonneg_float(0 if raw_attempts is None else raw_attempts, default=None)
+                ev_attempts = exact_nonneg_int(0 if raw_attempts is None else raw_attempts, default=None)
                 if (
                     quantity is None
-                    or att_f is None
-                    or not att_f.is_integer()
+                    or ev_attempts is None
                     or not isinstance(labels, dict)
                     or not labels
                     or not all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items())
                 ):
                     raise ValueError("invalid notification digest event")
-                ev_attempts = int(att_f)
                 key = json.dumps(labels, sort_keys=True, separators=(",", ":"))
                 group = groups.setdefault(key, {
                     "labels": labels, "next_at": now, "reported": False,

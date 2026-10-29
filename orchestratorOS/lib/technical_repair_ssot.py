@@ -1493,5 +1493,53 @@ def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[st
     return fleet_processes, system_and_vpn
 
 
+def submit_supervisor_trading_decisions(
+    plan: Dict[str, Any],
+    spec: Any,
+    *,
+    topic_key: str,
+    mode: str,
+    now_ts: float,
+    intent_gateway: Any,
+    is_rth_open_fn: Any,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
+    """Normalize and submit LLM trading decisions to AutonomousIntentGateway."""
+    from providers.execution_audit import normalize_trading_decisions
+
+    if not getattr(spec, "can_trade", False):
+        return [], {}, [], None, False
+    decisions_list = normalize_trading_decisions(plan)
+    market_decision = decisions_list[0] if decisions_list else {}
+    intents_emitted: List[Dict[str, Any]] = []
+    actionable_decs = [
+        d for d in decisions_list
+        if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
+    ]
+    submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
+    scope = getattr(spec, "asset_scope", "all")
+    effective_max_mode = "shadow" if (scope == "equities" and not is_rth_open_fn(now_ts)) else mode
+    any_executed = False
+    for dec in submit_decs:
+        emitted = intent_gateway.submit(dec, source=topic_key, max_mode=effective_max_mode)
+        if isinstance(emitted, dict):
+            intents_emitted.append(emitted)
+            if mode == "enforce" and emitted.get("status") == "EXECUTED":
+                any_executed = True
+    primary_intent = intents_emitted[0] if intents_emitted else None
+    return decisions_list, market_decision, intents_emitted, primary_intent, any_executed
+
+
+def build_sensor_health_summary(sensors: Any) -> Dict[str, Any]:
+    """Build sensor_health dictionary for SupervisorAuditReport."""
+    return {
+        "fear_greed_present": getattr(sensors, "fear_greed", None) is not None,
+        "market_breadth_present": getattr(sensors, "market_breadth", None) is not None,
+        "sentiment_advisor_present": getattr(sensors, "sentiment_advisor", None) is not None,
+        "geopolitical_threat_present": getattr(sensors, "geopolitical_threat", None) is not None,
+        "prices_and_trends_count": len(getattr(sensors, "prices_and_trends", None) or {}),
+        "active_heartbeats_count": len(getattr(sensors, "active_heartbeats", None) or {}),
+    }
+
+
 
 

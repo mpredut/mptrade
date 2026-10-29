@@ -20,25 +20,12 @@ Operational Architecture:
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, field
-import glob
-import json
+from dataclasses import dataclass, field
 import logging
-import math
 import os
-import re
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
-
-from botcore import (
-    _parse_bool_flag,
-    parse_dotenv,
-    safe_float,
-    safe_nonneg_float,
-    safe_pos_float,
-)
-from providers.base import normalize_side
 
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -47,14 +34,36 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from cachepaths import (
-    cache_symbol_variants,
-    canonical_base_asset,
-    normalize_venue_name,
-    resolve_cachedb_filepath,
-    split_symbol_assets,
+from botcore import (
+    _parse_bool_flag,
+    extract_current_price_item,
+    is_us_rth_open as _is_us_rth_open,
+    load_key_value_conf,
+    parse_notify_enabled_flag as _parse_notify_enabled_flag,
+    safe_float,
 )
-
+from instruments_config import (
+    discover_kraken_cache_pairs as _discover_kraken_cache_pairs,
+    discover_t212_equities as _discover_t212_equities,
+    load_tradable_instruments as _load_tradable_instruments,
+    resolve_instrument_live_price,
+    resolve_tradable_instrument,
+)
+from providers.execution_audit import (
+    append_intent_history as _append_intent_history,
+    cancel_existing_ai_open_orders,
+    execute_enforce_intent_order,
+    extract_intent_notional as _extract_intent_notional,
+    load_durable_intents_state,
+    parse_intent_confidence as _parse_intent_confidence,
+    parse_intent_gateway_config,
+    preflight_intent_and_resolve_price,
+    reconcile_intents_from_execution_audit,
+    record_shadow_intent_observation,
+    resolve_intent_topic_tag,
+    save_durable_intents_state,
+    validate_and_build_intent_dict,
+)
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
 # Trade thesis, profit/loss protection, multi-tranche scaling, trend timing, microstructure, and
@@ -95,52 +104,7 @@ class TradeIntentRecord:
 
 
 MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
-
-
 _parse_finite_float = safe_float
-
-from botcore import (
-    conf_or_override as _conf_or_override,
-    extract_current_price_item,
-    is_us_rth_open as _is_us_rth_open,
-    load_env_file_defaults as _load_env_file_defaults,
-    load_key_value_conf,
-    parse_env_file as _parse_env_file,
-    parse_notify_enabled_flag as _parse_notify_enabled_flag,
-)
-from instruments_config import (
-    discover_hyperliquid_spot as _discover_hyperliquid_spot,
-    discover_kraken_cache_pairs as _discover_kraken_cache_pairs,
-    discover_t212_equities as _discover_t212_equities,
-    load_tradable_instruments as _load_tradable_instruments,
-    resolve_instrument_live_price,
-    resolve_tradable_instrument,
-)
-from intelligence.macro_sentiment_ssot import clean_scale, clean_symbol_key
-from providers.execution_audit import (
-    append_intent_history as _append_intent_history,
-    cancel_existing_ai_open_orders,
-    execute_enforce_intent_order,
-    extract_intent_limit_price as _extract_intent_limit_price,
-    extract_intent_notional as _extract_intent_notional,
-    extract_intent_order_type as _extract_intent_order_type,
-    extract_intent_side as _extract_intent_side,
-    generate_unique_intent_id,
-    load_durable_intents_state,
-    normalize_intent_fields,
-    parse_intent_confidence as _parse_intent_confidence,
-    parse_intent_gateway_config,
-    preflight_intent_and_resolve_price,
-    reconcile_intents_from_execution_audit,
-    record_shadow_intent_observation,
-    resolve_intent_execution_price,
-    resolve_intent_topic_tag,
-    save_durable_intents_state,
-    validate_and_build_intent_dict,
-)
-
-_norm_sym = clean_symbol_key
-_split_symbol_assets = split_symbol_assets
 
 
 class AutonomousIntentGateway:
@@ -389,19 +353,7 @@ class AutonomousIntentGateway:
 
     def _cancel_existing_ai_open_orders(self, inst: Any, side: str) -> List[str]:
         """Cancel any prior unfilled AI-placed open orders on the same symbol and side before placing a replacement."""
-        known_oids: set[str] = set()
-        try:
-            from providers.base import extract_order_id
-
-            for item in self.load_all_intents():
-                if not isinstance(item, dict):
-                    continue
-                oid = extract_order_id(item.get("execution_payload"), default="")
-                if oid:
-                    known_oids.add(str(oid))
-        except Exception:
-            pass
-        return cancel_existing_ai_open_orders(inst, side, log=logger, known_ai_order_ids=known_oids)
+        return cancel_existing_ai_open_orders(inst, side, log=logger, intents=self.load_all_intents())
 
     def submit(
         self,

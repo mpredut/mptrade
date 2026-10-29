@@ -33,7 +33,9 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
-SUPPORTED_VENUES = ("kraken", "binance", "hyperliquid", "trading212", "t212")
+from cachepaths import normalize_venue_name
+
+SUPPORTED_VENUES = ("kraken", "binance", "hyperliquid", "hl", "trading212", "t212")
 SUPPORTED_MODES = ("baseline", "compare")
 
 VENUE_RUNNER_MODULES = {
@@ -51,9 +53,8 @@ def canonical_venue(venue: str | None) -> str | None:
     normalized = str(getattr(venue, "name", venue) or "").strip().lower()
     if not normalized:
         return None
-    if normalized == "trading212":
-        return "t212"
-    return normalized
+    norm = normalize_venue_name(normalized) or normalized
+    return "t212" if norm == "trading212" else norm
 
 
 def run_baseline(venue: str, argv: list[str] | None = None) -> int:

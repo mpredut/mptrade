@@ -31,6 +31,7 @@ except ImportError:
     from kraken_common import (
         _parse_bool_flag, http_get, http_post_form, log, safe_nonneg_float, safe_pos_float,
     )
+from botcore import exact_nonneg_int, exact_pos_int
 from providers.base import _clean_single_order_id, normalize_side
 
 API_URL = "https://api.kraken.com"
@@ -230,10 +231,9 @@ class KrakenClient:
             or (isinstance(interval, str) and "." in interval.strip())
         ):
             raise ValueError("interval must be a positive integer")
-        itv_f = safe_pos_float(interval, default=None)
-        if itv_f is None or not itv_f.is_integer():
+        itv_int = exact_pos_int(interval, default=None)
+        if itv_int is None:
             raise ValueError("interval must be a positive integer")
-        itv_int = int(itv_f)
         itv_sec = itv_int * 60
         res = self._public("OHLC", {"pair": pair, "interval": itv_int})
         key = next((key for key in res if key != "last"), None)
@@ -283,9 +283,9 @@ class KrakenClient:
         Kraken accepts fewer decimals but never more (e.g. HYPE/USD = 2)."""
         try:
             info = self.pair_info(pair)
-            dec_f = safe_nonneg_float(info.get("pair_decimals") if isinstance(info, dict) else None, default=None)
-            if dec_f is not None and dec_f <= 18 and dec_f.is_integer():
-                return int(dec_f)
+            dec_i = exact_nonneg_int(info.get("pair_decimals") if isinstance(info, dict) else None, default=None)
+            if dec_i is not None and dec_i <= 18:
+                return dec_i
         except Exception:  # noqa: BLE001 — conservatively fall back without blocking the order
             pass
         return 2

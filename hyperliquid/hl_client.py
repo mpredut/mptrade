@@ -38,6 +38,7 @@ log = _common_mod.log
 safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
+from botcore import exact_int
 
 try:
     import eth_account
@@ -59,24 +60,8 @@ EXCHANGE_TIMEOUT_SECONDS = 30.0
 
 
 def _exact_int_in_range(val: object, lo: int = 0, hi: int | None = None) -> int | None:
-    if isinstance(val, bool) or val is None:
-        return None
-    if isinstance(val, int):
-        i = val
-    elif isinstance(val, str):
-        try:
-            i = int(val.strip(), 10)
-        except ValueError:
-            f = safe_float(val, default=None)
-            if f is None or not f.is_integer():
-                return None
-            i = int(f)
-    else:
-        f = safe_float(val, default=None)
-        if f is None or not f.is_integer():
-            return None
-        i = int(f)
-    if i < lo or (hi is not None and i > hi):
+    i = exact_int(val, default=None)
+    if i is None or i < lo or (hi is not None and i > hi):
         return None
     return i
 
@@ -101,6 +86,24 @@ def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     max_dec = (6 if is_perp else 8) - dec_i
     px = float(f"{px_f:.5g}")           # five significant figures
     return round(px, max(max_dec, 0))
+
+
+def _validate_and_round_order_params(
+    sz: object, px: object, dec_i: int | None, *, is_perp: bool
+) -> tuple[float | None, float | None, str | None]:
+    if isinstance(sz, bool) or isinstance(px, bool):
+        return None, None, "invalid boolean order parameter"
+    sz_f = safe_float(sz, default=None)
+    px_f = safe_float(px, default=None)
+    if sz_f is None or px_f is None or dec_i is None:
+        return None, None, "invalid numeric order parameter"
+    if sz_f <= 0 or px_f <= 0:
+        return None, None, "invalid non-positive sz or px"
+    sz_r = round(sz_f, dec_i)
+    px_r = _round_px(px_f, dec_i, is_perp=is_perp)
+    if sz_r <= 0 or px_r <= 0:
+        return None, None, "rounded sz or px is non-positive"
+    return sz_r, px_r, None
 
 
 def _parse_order_response(res: object, *, include_avg_px: bool = False) -> tuple[bool, int | None, str]:
@@ -489,20 +492,14 @@ class HLClient:
             return False, None, "invalid non-boolean is_market"
         if tif is not None and (isinstance(tif, bool) or not isinstance(tif, str) or not tif.strip()):
             return False, None, "invalid tif"
-        if isinstance(sz, bool) or isinstance(px, bool) or isinstance(sz_decimals, bool):
+        if isinstance(sz_decimals, bool):
             return False, None, "invalid boolean order parameter"
-        sz_f = safe_float(sz, default=None)
-        px_f = safe_float(px, default=None)
         dec_raw = _exact_int_in_range(sz_decimals, 0)
-        if sz_f is None or px_f is None or dec_raw is None:
-            return False, None, "invalid numeric order parameter"
-        dec_i = min(dec_raw, 18)
-        if sz_f <= 0 or px_f <= 0:
-            return False, None, "invalid non-positive sz or px"
-        sz = round(sz_f, dec_i)
-        px = _round_px(px_f, dec_i, is_perp=False)
-        if sz <= 0 or px <= 0:
-            return False, None, "rounded sz or px is non-positive"
+        sz, px, err = _validate_and_round_order_params(
+            sz, px, min(dec_raw, 18) if dec_raw is not None else None, is_perp=False
+        )
+        if err is not None:
+            return False, None, err
         order_tif = tif or ("Ioc" if is_market else "Gtc")
         try:
             kwargs = {}
@@ -542,17 +539,15 @@ class HLClient:
             return False, None, "invalid non-boolean is_buy or reduce_only"
         if isinstance(sz, bool) or isinstance(px, bool):
             return False, None, "invalid boolean order parameter"
-        sz_f = safe_float(sz, default=None)
-        px_f = safe_float(px, default=None)
-        if sz_f is None or px_f is None:
+        if safe_float(sz, default=None) is None or safe_float(px, default=None) is None:
             return False, None, "invalid numeric order parameter"
-        if sz_f <= 0 or px_f <= 0:
+        if safe_float(sz, default=0.0) <= 0 or safe_float(px, default=0.0) <= 0:
             return False, None, "invalid non-positive sz or px"
-        dec_i = self.sz_decimals(coin)
-        sz = round(sz_f, dec_i)
-        px = _round_px(px_f, dec_i)
-        if sz <= 0 or px <= 0:
-            return False, None, "rounded sz or px is non-positive"
+        sz, px, err = _validate_and_round_order_params(
+            sz, px, self.sz_decimals(coin), is_perp=True
+        )
+        if err is not None:
+            return False, None, err
         try:
             res = self.exchange.order(coin, is_buy, sz, px,
                                       {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)

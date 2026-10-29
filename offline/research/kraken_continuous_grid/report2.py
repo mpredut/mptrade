@@ -11,14 +11,17 @@ if ROOT not in sys.path:
 from botcore import safe_float
 
 try:
-    from .report import _load_jsonl_dicts
+    from .report import _format_errors_section, _load_jsonl_dicts, _resolve_exp_dir
 except ImportError:
-    from offline.research.kraken_continuous_grid.report import _load_jsonl_dicts
+    from offline.research.kraken_continuous_grid.report import (
+        _format_errors_section,
+        _load_jsonl_dicts,
+        _resolve_exp_dir,
+    )
 
 
 def generate_report(exp_dir: str | None = None) -> list[str]:
-    exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
-    os.makedirs(exp, exist_ok=True)
+    exp = _resolve_exp_dir(exp_dir)
     results2_path = os.path.join(exp, "results2.jsonl")
     rows = _load_jsonl_dicts(results2_path)
     results_path = os.path.join(exp, "results.jsonl")
@@ -140,12 +143,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 fee += [a, b]
     table(fee, "Fee stress: 0.26% vs 0.40% per leg")
 
-    if errors:
-        L.append("\n## Errors\n")
-        for e in errors[:20]:
-            err_lines = str(e.get("error") or "").strip().splitlines()
-            last_err = err_lines[-1] if err_lines else "unknown"
-            L.append(f"- {e.get('args', '?')}: `{last_err}`")
+    L.extend(_format_errors_section(errors, label_fn=lambda e: str(e.get("args", "?"))))
     from state_io import atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT2.md"), "\n".join(L) + "\n")
     return L

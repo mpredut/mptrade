@@ -73,15 +73,20 @@ def _valid_fill_id(val):
     return None
 
 
+def _trade_fill_key(trade_obj):
+    if not isinstance(trade_obj, dict):
+        return None
+    raw_key = _valid_fill_id(trade_obj.get('id'))
+    return raw_key if raw_key is not None else _valid_fill_id(trade_obj.get('orderId'))
+
+
 def _dedup_trades_by_fill_id(all_trades):
     """Deduplicate trade fills by individual fill ID (falling back to orderId when absent)."""
     latest_trades = {}
     for idx, trade in enumerate(all_trades or ()):
         if not isinstance(trade, dict):
             continue
-        raw_key = _valid_fill_id(trade.get('id'))
-        if raw_key is None:
-            raw_key = _valid_fill_id(trade.get('orderId'))
+        raw_key = _trade_fill_key(trade)
         fill_key = raw_key if raw_key is not None else f"_unkeyed_{idx}"
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
         if (
@@ -204,13 +209,25 @@ def _clean_non_neg_int(val, default: int = 0) -> int:
     return safe_nonneg_int(val, default=default)
 
 
-def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
-    
+def _validate_trade_query_args(order_type, symbol, days, *, default_days: int, limit=1000):
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
-    days_ago = _clean_non_neg_int(days_ago, default=0)
-    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
+    days_val = safe_nonneg_int(days, default=default_days)
+    limit_val = min(1000, safe_nonneg_int(limit, default=1000) or 1000)
+    return order_type, days_val, limit_val
+
+
+def _filter_trades_by_side(trades, order_type):
+    if order_type in ("BUY", "SELL"):
+        return [trade for trade in (trades or ()) if extract_order_side(trade) == order_type]
+    return list(trades or ())
+
+
+def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
+    order_type, days_ago, limit = _validate_trade_query_args(
+        order_type, symbol, days_ago, default_days=0, limit=limit
+    )
     
     all_trades = []
     try:
@@ -233,12 +250,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
             if not trades:
                 break
 
-            if order_type in ("BUY", "SELL"):
-                filtered_trades = [trade for trade in trades if extract_order_side(trade) == order_type]
-            else:
-                filtered_trades = trades
-
-            all_trades.extend(filtered_trades)
+            all_trades.extend(_filter_trades_by_side(trades, order_type))
             
             if len(trades) < limit:
                 break
@@ -258,12 +270,9 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
 
 
 def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
-    
-    order_type = _normalize_side(order_type)
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
-    backdays = _clean_non_neg_int(backdays, default=3)
-    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
+    order_type, backdays, limit = _validate_trade_query_args(
+        order_type, symbol, backdays, default_days=3, limit=limit
+    )
     
     all_trades = []
     
@@ -275,12 +284,7 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
             continue
         
         print(f" [{len(trades)}] found ")
-        if order_type in ("BUY", "SELL"):
-            filtered_trades = [trade for trade in trades if extract_order_side(trade) == order_type]
-        else:
-            filtered_trades = trades
-            
-        all_trades.extend(filtered_trades)
+        all_trades.extend(_filter_trades_by_side(trades, order_type))
 
     print(f"")
     return all_trades
@@ -288,22 +292,19 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
         
         
 def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
-
-    order_type = _normalize_side(order_type)
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
-    backdays = _clean_non_neg_int(backdays, default=3)
-    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
+    order_type, backdays, limit = _validate_trade_query_args(
+        order_type, symbol, backdays, default_days=3, limit=limit
+    )
 
     try:
         from . import bapi_allorders as apiorders
         # Paginate the entire window with ``fromId`` so days containing more than 1,000
         # fills are not truncated.
         start_time = int(time.time() * 1000) - (backdays + 1) * 24 * 60 * 60 * 1000
-        all_trades = apiorders.paginate_my_trades(api.client, symbol, start_time, limit)
-
-        if order_type in ("BUY", "SELL"):
-            all_trades = [t for t in all_trades if extract_order_side(t) == order_type]
+        all_trades = _filter_trades_by_side(
+            apiorders.paginate_my_trades(api.client, symbol, start_time, limit),
+            order_type,
+        )
 
         # Deduplicate by individual fill ID (falling back to orderId only when id is absent)
         # so multi-fill orders do not lose earlier partial fills.
@@ -316,12 +317,11 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
 
 # Append newly fetched fills to an existing file.
 def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=2):
-    order_type = _normalize_side(order_type)
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
+    order_type, years_to_keep, limit = _validate_trade_query_args(
+        order_type, symbol, years_to_keep, default_days=2, limit=limit
+    )
     symbol = str(symbol).strip().upper().replace("/", "")
-    limit = min(1000, _clean_non_neg_int(limit, default=1000) or 1000)
-    years_to_keep = _clean_non_neg_int(years_to_keep, default=2) or 2
+    years_to_keep = years_to_keep or 2
 
     print(f"save_trades_to_file")
     print(f"{symbol} symbol and order_type {order_type} ")
@@ -381,15 +381,6 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     new_trades = get_my_trades_simple(order_type, symbol, backdays=bd_ceil, limit=limit)
 
     # Remove duplicates by fill ID.
-    # new_trades = [trade for trade in new_trades if trade['time'] > most_recent_trade_time]    #
-    def _trade_fill_key(trade_obj):
-        if not isinstance(trade_obj, dict):
-            return None
-        rk = _valid_fill_id(trade_obj.get('id'))
-        if rk is None:
-            rk = _valid_fill_id(trade_obj.get('orderId'))
-        return rk
-
     existing_trade_ids = {
         k for k in (_trade_fill_key(trade) for trade in filtered_existing_trades)
         if k is not None

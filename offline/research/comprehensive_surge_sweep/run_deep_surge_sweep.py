@@ -44,7 +44,7 @@ from botcore import (
 
 _safe_f = safe_float
 _safe_int = safe_int
-from strategies.spot_replay import run_replay
+from strategies.spot_replay import align_spot_interval_params, run_replay
 from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
 
@@ -58,7 +58,7 @@ DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
 def load_base_params(config_path: str | Path) -> strat.StratParams:
     """Read one explicit profile without inheriting shell variables or secrets."""
     path = Path(config_path).resolve(strict=True)
-    return strat.StratParams.from_env(parse_dotenv(str(path)))
+    return align_spot_interval_params(strat.StratParams.from_env(parse_dotenv(str(path))), 240)
 
 R = dataclasses.replace
 
@@ -161,6 +161,75 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
     return candidates
 
 
+from strategies import spot_replay as _spot_replay
+
+
+def _asset_slices(ohlc: list[tuple[float, float, float, float]]):
+    warmup_n = min(30, len(ohlc) // 5)
+    warmup_ohlc = ohlc[:warmup_n]
+    run_ohlc = ohlc[warmup_n:]
+    half_idx = len(run_ohlc) // 2
+    ohlc_h1 = run_ohlc[:half_idx]
+    ohlc_h2 = run_ohlc[half_idx:]
+    warmup_h2 = ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc
+    return (
+        ("full", warmup_ohlc, run_ohlc),
+        ("h1", warmup_ohlc, ohlc_h1),
+        ("h2", warmup_h2, ohlc_h2),
+    )
+
+
+def _new_acc_entry() -> dict[str, Any]:
+    return {
+        "total_profit": 0.0,
+        "worst_maxdd": 0.0,
+        "total_cycles": 0,
+        "h1_profits": 0.0,
+        "h2_profits": 0.0,
+        "asset_profits": {},
+        "asset_maxdds": {},
+    }
+
+
+def _record_slice_outcome(
+    ca: dict[str, Any],
+    sname: str,
+    asset: str,
+    metrics: tuple[float, float, int],
+) -> None:
+    pnl, dd, cyc = metrics
+    if sname == "full":
+        ca["total_profit"] += pnl
+        ca["worst_maxdd"] = max(ca["worst_maxdd"], dd)
+        ca["total_cycles"] += cyc
+        ca["asset_profits"][asset] = round(pnl, 2)
+        ca["asset_maxdds"][asset] = round(dd, 2)
+    elif sname == "h1":
+        ca["h1_profits"] += pnl
+    else:
+        ca["h2_profits"] += pnl
+
+
+def _format_candidate_result(candidate: dict[str, Any], ca: dict[str, Any]) -> dict[str, Any]:
+    tp = ca["total_profit"]
+    wdd = ca["worst_maxdd"]
+    pnl_per_dd = (tp / wdd) if wdd > 0 else 0.0
+    return {
+        "id": candidate["id"],
+        "category": candidate["category"],
+        "desc": candidate["desc"],
+        "strategy_params": dataclasses.asdict(candidate["params"]),
+        "total_profit_usd": round(tp, 2),
+        "worst_maxdd_pct": round(wdd, 2),
+        "pnl_per_drawdown_point": round(pnl_per_dd, 2),
+        "total_cycles": ca["total_cycles"],
+        "h1_profit_usd": round(ca["h1_profits"], 2),
+        "h2_profit_usd": round(ca["h2_profits"], 2),
+        "asset_profits": ca["asset_profits"],
+        "asset_maxdds": ca["asset_maxdds"],
+    }
+
+
 def evaluate_single_candidate(
     candidate: dict[str, Any],
     asset_data: dict[str, list[tuple[float, float, float, float]]],
@@ -168,91 +237,18 @@ def evaluate_single_candidate(
     fee_pct: float,
 ) -> dict[str, Any]:
     """Run replay for a candidate across all assets and both chronological halves."""
-    cid = candidate["id"]
     params = candidate["params"]
-    category = candidate["category"]
-    desc = candidate["desc"]
+    ca = _new_acc_entry()
 
-    total_profit = 0.0
-    worst_maxdd = 0.0
-    total_cycles = 0
-    asset_profits = {}
-    asset_maxdds = {}
+    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+        for asset, ohlc in asset_data.items():
+            if not ohlc or len(ohlc) < 60:
+                continue
+            for sname, w_ohlc, s_ohlc in _asset_slices(ohlc):
+                metrics, _, _ = _run_slice_replay(s_ohlc, w_ohlc, params, initial_cash, fee_pct)
+                _record_slice_outcome(ca, sname, asset, metrics)
 
-    # The same candidate is evaluated on both halves; neither is held out.
-    h1_profits = 0.0
-    h2_profits = 0.0
-
-    for asset, ohlc in asset_data.items():
-        if not ohlc or len(ohlc) < 60:
-            continue
-        warmup_n = min(30, len(ohlc) // 5)
-        warmup_ohlc = ohlc[:warmup_n]
-        run_ohlc = ohlc[warmup_n:]
-
-        with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
-            # Full run
-            res = run_replay(
-                ohlc=run_ohlc,
-                params=params,
-                fee_pct=fee_pct,
-                bar_minutes=240.0,
-                warmup_ohlc=warmup_ohlc,
-                initial_cash=initial_cash,
-            )
-            pnl = safe_float(res.get("total"), 0.0)
-            dd = safe_float(res.get("max_drawdown_pct"), 0.0)
-            cyc = safe_nonneg_int(res.get("cycles"), default=0)
-
-            total_profit += pnl
-            worst_maxdd = max(worst_maxdd, dd)
-            total_cycles += cyc
-            asset_profits[asset] = round(pnl, 2)
-            asset_maxdds[asset] = round(dd, 2)
-
-            # Two chronological halves, each reset to the same cash balance.
-            half_idx = len(run_ohlc) // 2
-            ohlc_h1 = run_ohlc[:half_idx]
-            ohlc_h2 = run_ohlc[half_idx:]
-
-            res_h1 = run_replay(
-                ohlc=ohlc_h1,
-                params=params,
-                fee_pct=fee_pct,
-                bar_minutes=240.0,
-                warmup_ohlc=warmup_ohlc,
-                initial_cash=initial_cash,
-            )
-            res_h2 = run_replay(
-                ohlc=ohlc_h2,
-                params=params,
-                fee_pct=fee_pct,
-                bar_minutes=240.0,
-                warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
-                initial_cash=initial_cash,
-            )
-            h1_profits += safe_float(res_h1.get("total"), 0.0)
-            h2_profits += safe_float(res_h2.get("total"), 0.0)
-
-    pnl_per_drawdown_point = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
-
-    return {
-        "id": cid,
-        "category": category,
-        "desc": desc,
-        "strategy_params": dataclasses.asdict(params),
-        "total_profit_usd": round(total_profit, 2),
-        "worst_maxdd_pct": round(worst_maxdd, 2),
-        "pnl_per_drawdown_point": round(pnl_per_drawdown_point, 2),
-        "total_cycles": total_cycles,
-        "h1_profit_usd": round(h1_profits, 2),
-        "h2_profit_usd": round(h2_profits, 2),
-        "asset_profits": asset_profits,
-        "asset_maxdds": asset_maxdds,
-    }
-
-
-from strategies import spot_replay as _spot_replay
+    return _format_candidate_result(candidate, ca)
 
 
 def _run_slice_replay(
@@ -331,38 +327,13 @@ def evaluate_candidate_group(
         return [evaluate_single_candidate(c, asset_data, initial_cash, fee_pct) for c in group]
 
     # Per-candidate accumulators
-    acc = {
-        c["id"]: {
-            "total_profit": 0.0,
-            "worst_maxdd": 0.0,
-            "total_cycles": 0,
-            "h1_profits": 0.0,
-            "h2_profits": 0.0,
-            "asset_profits": {},
-            "asset_maxdds": {},
-        }
-        for c in group
-    }
+    acc = {c["id"]: _new_acc_entry() for c in group}
 
     with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
         for asset, ohlc in asset_data.items():
             if not ohlc or len(ohlc) < 60:
                 continue
-            warmup_n = min(30, len(ohlc) // 5)
-            warmup_ohlc = ohlc[:warmup_n]
-            run_ohlc = ohlc[warmup_n:]
-            half_idx = len(run_ohlc) // 2
-            ohlc_h1 = run_ohlc[:half_idx]
-            ohlc_h2 = run_ohlc[half_idx:]
-            warmup_h2 = ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc
-
-            slices = (
-                ("full", warmup_ohlc, run_ohlc),
-                ("h1", warmup_ohlc, ohlc_h1),
-                ("h2", warmup_h2, ohlc_h2),
-            )
-
-            for sname, w_ohlc, s_ohlc in slices:
+            for sname, w_ohlc, s_ohlc in _asset_slices(ohlc):
                 all_closes = [bar[3] for bar in w_ohlc] + [bar[3] for bar in s_ohlc]
                 wn = len(w_ohlc)
                 res_w72, max_vol_w72, win_ts_w72 = _run_slice_replay(
@@ -415,40 +386,9 @@ def evaluate_candidate_group(
 
                 # Record slice outcomes for all candidates in the group
                 for c in group:
-                    pnl, dd, cyc = slice_results[c["id"]]
-                    ca = acc[c["id"]]
-                    if sname == "full":
-                        ca["total_profit"] += pnl
-                        ca["worst_maxdd"] = max(ca["worst_maxdd"], dd)
-                        ca["total_cycles"] += cyc
-                        ca["asset_profits"][asset] = round(pnl, 2)
-                        ca["asset_maxdds"][asset] = round(dd, 2)
-                    elif sname == "h1":
-                        ca["h1_profits"] += pnl
-                    else:
-                        ca["h2_profits"] += pnl
+                    _record_slice_outcome(acc[c["id"]], sname, asset, slice_results[c["id"]])
 
-    out = []
-    for c in group:
-        ca = acc[c["id"]]
-        tp = ca["total_profit"]
-        wdd = ca["worst_maxdd"]
-        pnl_per_dd = (tp / wdd) if wdd > 0 else 0.0
-        out.append({
-            "id": c["id"],
-            "category": c["category"],
-            "desc": c["desc"],
-            "strategy_params": dataclasses.asdict(c["params"]),
-            "total_profit_usd": round(tp, 2),
-            "worst_maxdd_pct": round(wdd, 2),
-            "pnl_per_drawdown_point": round(pnl_per_dd, 2),
-            "total_cycles": ca["total_cycles"],
-            "h1_profit_usd": round(ca["h1_profits"], 2),
-            "h2_profit_usd": round(ca["h2_profits"], 2),
-            "asset_profits": ca["asset_profits"],
-            "asset_maxdds": ca["asset_maxdds"],
-        })
-    return out
+    return [_format_candidate_result(c, acc[c["id"]]) for c in group]
 
 
 _WORKER_STATE: dict[str, Any] = {}

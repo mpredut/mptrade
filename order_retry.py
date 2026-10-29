@@ -37,6 +37,8 @@ from typing import Callable, Dict, Optional
 from botcore import (
     _parse_bool_flag,
     exact_int,
+    exact_nonneg_int,
+    exact_pos_int,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -140,10 +142,8 @@ POSSIBLY_SUBMITTED_REASONS = frozenset({
 })
 
 
-def is_possibly_submitted(rec):
-    """Return whether an intent may already exist at its configured venue."""
-    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending":
-        return False
+def submission_requires_reconciliation(rec) -> bool:
+    """Return whether a persisted intent might already have reached its venue."""
     submission_state = str(
         rec.get("submission_state") or "").strip().lower()
     if submission_state == "refused":
@@ -152,6 +152,13 @@ def is_possibly_submitted(rec):
         return True
     reason = str(rec.get("last_failure_reason") or "").strip().lower()
     return reason in POSSIBLY_SUBMITTED_REASONS
+
+
+def is_possibly_submitted(rec):
+    """Return whether an intent may already exist at its configured venue."""
+    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending":
+        return False
+    return submission_requires_reconciliation(rec)
 
 
 def is_non_failure_deferral(reason):
@@ -790,13 +797,20 @@ def _rev_int(val, default=-1):
     return exact_int(val, default=default)
 
 
+def _record_client_order_id(rec: object):
+    if not isinstance(rec, dict):
+        return None
+    place_kw = rec.get("place_kwargs")
+    return place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
+
+
 def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id: str) -> bool:
     return (
         record.get("id") == claim_snapshot.get("id")
         and record.get("claim_token") == claim_snapshot.get("claim_token")
         and _rev_int(record.get("revision"), 0) == _rev_int(claim_snapshot.get("claim_revision"), -1)
         and _rev_int(record.get("claim_revision"), -1) == _rev_int(claim_snapshot.get("claim_revision"), -2)
-        and dict(record.get("place_kwargs") or {}).get("client_order_id") == snapshot_client_id
+        and _record_client_order_id(record) == snapshot_client_id
     )
 
 
@@ -826,8 +840,7 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     q_val = safe_pos_float(qty, default=None)
     if q_val is None:
         return None
-    snapshot_client_id = dict(
-        claim_snapshot.get("place_kwargs") or {}).get("client_order_id")
+    snapshot_client_id = _record_client_order_id(claim_snapshot)
     if not snapshot_client_id:
         return None
     _ensure_dir()
@@ -866,8 +879,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
             OSError, ProcessLookupError, TypeError, ValueError,
             OverflowError):
         return None
-    snapshot_client_id = dict(
-        claim_snapshot.get("place_kwargs") or {}).get("client_order_id")
+    snapshot_client_id = _record_client_order_id(claim_snapshot)
     if not snapshot_client_id:
         return None
     _ensure_dir()
@@ -898,21 +910,23 @@ def load_all(now=None):
         return _read_nolock()
 
 
+def _safe_load_all() -> list:
+    try:
+        return load_all()
+    except Exception:
+        return []
+
+
 def _record_order_and_client_ids(r: dict) -> list:
     oid = _clean_retry_order_id(r.get("order_id"))
-    place_kw = r.get("place_kwargs")
-    cid = _clean_retry_order_id(place_kw.get("client_order_id") if isinstance(place_kw, dict) else None)
+    cid = _clean_retry_order_id(_record_client_order_id(r))
     return [x for x in (oid, cid) if x]
 
 
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     res = {}
-    try:
-        records = load_all()
-    except Exception:
-        return res
-    for r in records:
+    for r in _safe_load_all():
         ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
         if ttl_val is not None:
             for k in _record_order_and_client_ids(r):
@@ -967,11 +981,7 @@ def infer_record_owner(rec: dict) -> str:
 def get_accepted_order_owner_map() -> dict:
     """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
     res = {}
-    try:
-        records = load_all()
-    except Exception:
-        return res
-    for r in records:
+    for r in _safe_load_all():
         if str(r.get("lifecycle") or "").lower() != "accepted":
             continue
         inferred = infer_record_owner(r)
@@ -991,11 +1001,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
     if not target_sym or not target_owner:
         return []
     out = []
-    try:
-        records = load_all()
-    except Exception:
-        return out
-    for r in records:
+    for r in _safe_load_all():
         if str(r.get("lifecycle") or "").lower() != "accepted":
             continue
         if str(r.get("symbol") or "").strip().upper() != target_sym:
@@ -1083,7 +1089,7 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None,
         for rec in existing:
             if rec.get("id") != record_id:
                 continue
-            current_cid = dict(rec.get("place_kwargs") or {}).get("client_order_id")
+            current_cid = _record_client_order_id(rec)
             if client_order_id is not None and current_cid != client_order_id:
                 continue
             previous = rec.get("last_failure_reason")
@@ -1112,8 +1118,7 @@ def _append_order_history(rec, *, observed_at, status=None):
         return
     row = {
         "order_id": str(order_id),
-        "client_order_id": dict(rec.get("place_kwargs") or {}).get(
-            "client_order_id"),
+        "client_order_id": _record_client_order_id(rec),
         "revision": int(rec.get("revision", 0)),
         "observed_at": float(observed_at),
     }
@@ -1169,7 +1174,7 @@ def mark_accepted(record_id, order, *, now=None, client_order_id=None,
         for rec in existing:
             if rec.get("id") != record_id:
                 continue
-            current_cid = dict(rec.get("place_kwargs") or {}).get("client_order_id")
+            current_cid = _record_client_order_id(rec)
             if client_order_id is not None and current_cid != client_order_id:
                 continue
             changed = _apply_accepted(
@@ -1201,8 +1206,7 @@ def resolve_record(record_id, *, client_order_id=None):
                 == "submit_pending"
             )
             if matches and client_order_id is not None:
-                matches = (dict(rec.get("place_kwargs") or {}).get(
-                    "client_order_id") == client_order_id)
+                matches = (_record_client_order_id(rec) == client_order_id)
             if matches:
                 removed = True
             else:
@@ -1286,10 +1290,8 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
             if not matches:
                 remaining.append(rec)
                 continue
-            claimed_client_id = dict(
-                claimed.get("place_kwargs") or {}).get("client_order_id")
-            current_client_id = dict(
-                rec.get("place_kwargs") or {}).get("client_order_id")
+            claimed_client_id = _record_client_order_id(claimed)
+            current_client_id = _record_client_order_id(rec)
             same_revision = (
                 _rev_int(rec.get("revision"), 0)
                 == _rev_int(claimed.get("claim_revision"), -1)
@@ -1594,8 +1596,7 @@ def discard_expired(snapshots, now=None):
         key = (
             snapshot.get("id"),
             rev,
-            dict(snapshot.get("place_kwargs") or {}).get(
-                "client_order_id"),
+            _record_client_order_id(snapshot),
         )
         if key[0] and key[2]:
             exact.add(key)
@@ -1610,8 +1611,7 @@ def discard_expired(snapshots, now=None):
             key = (
                 record.get("id"),
                 _rev_int(record.get("revision"), 0),
-                dict(record.get("place_kwargs") or {}).get(
-                    "client_order_id"),
+                _record_client_order_id(record),
             )
             if key in exact and is_expired(record, now):
                 removed.append(record)
@@ -1710,8 +1710,8 @@ def is_expired(rec, now=None):
     if raw_attempts is None:
         attempts = 0
     else:
-        attempts = safe_nonneg_int(raw_attempts, default=None)
-        if attempts is None or (isinstance(raw_attempts, float) and not raw_attempts.is_integer()):
+        attempts = exact_nonneg_int(raw_attempts, default=None)
+        if attempts is None:
             return True
     if now_f is None or created is None or ttl_started is None:
         return True
@@ -1920,10 +1920,9 @@ class TrackedOrderLifecycle:
             raise ValueError("provider_name is required")
         if venue is not None and (isinstance(venue, bool) or not isinstance(venue, str) or not venue.strip()):
             raise ValueError("venue must be a non-empty string")
-        mc_f = safe_pos_float(missing_confirmations, default=None)
-        if mc_f is None or not mc_f.is_integer():
+        mc_int = exact_pos_int(missing_confirmations, default=None)
+        if mc_int is None:
             raise ValueError("missing_confirmations must be positive")
-        mc_int = int(mc_f)
         if max_age_seconds is not None:
             parsed_age = _lifecycle_finite(max_age_seconds, positive=True)
             if parsed_age is None:
@@ -1988,10 +1987,9 @@ class TrackedOrderLifecycle:
             raise ValueError("tracked intent requested_qty must be positive")
         if isinstance(requested_price, bool):
             raise ValueError("tracked intent requested_price must be positive")
-        att_f = safe_float(attempt, default=None)
-        if att_f is None or not att_f.is_integer() or att_f <= 0:
+        att_int = exact_pos_int(attempt, default=None)
+        if att_int is None:
             raise ValueError("tracked intent attempt must be positive")
-        att_int = int(att_f)
         clean_iid = _clean_retry_order_id(intent_id)
         clean_cid = _clean_retry_order_id(client_order_id)
         clean_sym = _clean_retry_order_id(symbol)

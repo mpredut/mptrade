@@ -13,14 +13,17 @@ from botcore import safe_float
 _safe_f = safe_float
 
 try:
-    from .report import _load_jsonl_dicts
+    from .report import _format_errors_section, _load_jsonl_dicts, _resolve_exp_dir
 except ImportError:
-    from offline.research.kraken_continuous_grid.report import _load_jsonl_dicts
+    from offline.research.kraken_continuous_grid.report import (
+        _format_errors_section,
+        _load_jsonl_dicts,
+        _resolve_exp_dir,
+    )
 
 
 def generate_report(exp_dir: str | None = None) -> list[str]:
-    exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
-    os.makedirs(exp, exist_ok=True)
+    exp = _resolve_exp_dir(exp_dir)
     results3_path = os.path.join(exp, "results3.jsonl")
     rows = _load_jsonl_dicts(results3_path)
     errors = [r for r in rows if "error" in r]
@@ -75,12 +78,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 cells.append("- / -")
         L.append(f"| {a} | " + " | ".join(cells) + " |")
 
-    if errors:
-        L.append("\n## Errors\n")
-        for e in errors[:20]:
-            err_lines = str(e.get("error") or "").strip().splitlines()
-            last_err = err_lines[-1] if err_lines else "unknown"
-            L.append(f"- {e.get('asset', '?')} {e.get('cfg', '?')}: `{last_err}`")
+    L.extend(_format_errors_section(errors))
 
     from state_io import atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT3.md"), "\n".join(L) + "\n")

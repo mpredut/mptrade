@@ -186,6 +186,24 @@ def extract_short_trend_slope(snap: dict, symbol: str) -> float:
     return safe_float(raw_val, default=0.0)
 
 
+_EXIT_PROGRESS_KEYS = ("target_exit_qty", "exit_sold_qty", "exit_sold_cost")
+
+
+def _clear_exit_progress(st: dict) -> None:
+    for k in _EXIT_PROGRESS_KEYS:
+        st.pop(k, None)
+
+
+def _vwap_or_fallback(cost: object, qty: object, fallback: object) -> float:
+    cost_f = safe_nonneg_float(cost, default=0.0)
+    qty_f = safe_nonneg_float(qty, default=0.0)
+    if qty_f > 0 and cost_f > 0:
+        vwap = safe_pos_float(cost_f / qty_f, default=None)
+        if vwap is not None:
+            return vwap
+    return safe_pos_float(fallback, default=0.0) or 0.0
+
+
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
     c = safe_pos_float(current, default=None)
@@ -300,19 +318,14 @@ class TrailingCore:
         pending = raw_intent if isinstance(raw_intent, dict) else {}
         action, asset = extract_trailing_intent_action_asset(pending)
         filled = safe_nonneg_float(getattr(status, "filled_qty", None), 0.0)
-        cost_val = safe_nonneg_float(getattr(status, "cost", None), 0.0)
-        avg = safe_pos_float(cost_val / filled, default=None) if filled > 0 and cost_val > 0 else None
-        if avg is None:
-            avg = safe_pos_float(price, default=0.0) or 0.0
+        avg = _vwap_or_fallback(getattr(status, "cost", None), filled, price)
         if action == "SELL" and filled > 0:
             if not asset:
                 asset = self._asset_for_pair(pair)
 
             accum_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0)) + filled
             accum_cost = safe_nonneg_float(st.get("exit_sold_cost", 0.0)) + (avg * filled)
-            overall_avg = safe_pos_float(accum_cost / accum_qty, default=None) if accum_qty > 0 else avg
-            if overall_avg is None:
-                overall_avg = avg
+            overall_avg = _vwap_or_fallback(accum_cost, accum_qty, avg)
 
             target_qty = safe_nonneg_float(st.get("target_exit_qty", 0.0))
             remaining_balance = self._remaining_qty(asset)
@@ -327,9 +340,7 @@ class TrailingCore:
 
             if is_complete:
                 st["peak"] = avg
-                st.pop("target_exit_qty", None)
-                st.pop("exit_sold_qty", None)
-                st.pop("exit_sold_cost", None)
+                _clear_exit_progress(st)
                 if is_flat:
                     st["is_flat"] = True
                 if self._rebuy_for(pair, arm=True):
@@ -498,8 +509,7 @@ class TrailingCore:
 
         if not _parse_bool_flag(st.get("is_flat"), default=False) and "warmup_at" not in st and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
-            for k in ("target_exit_qty", "exit_sold_qty", "exit_sold_cost"):
-                st.pop(k, None)
+            _clear_exit_progress(st)
         stop_at = st["peak"] * (1 - trail / 100.0)
 
         # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
@@ -552,10 +562,7 @@ class TrailingCore:
         if total_pos * price < self.min_notional:
             sold_qty = safe_nonneg_float(st.get("exit_sold_qty", 0.0))
             if sold_qty > 0:
-                sold_cost = safe_nonneg_float(st.get("exit_sold_cost", 0.0))
-                overall_avg = safe_pos_float(sold_cost / sold_qty, default=None) if sold_cost > 0 else None
-                if overall_avg is None:
-                    overall_avg = price
+                overall_avg = _vwap_or_fallback(st.get("exit_sold_cost", 0.0), sold_qty, price)
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):
                     st["rebuy"] = {
@@ -564,8 +571,7 @@ class TrailingCore:
                         "low": min(overall_avg, price),
                     }
             st["is_flat"] = True
-            for k in ("target_exit_qty", "exit_sold_qty", "exit_sold_cost"):
-                st.pop(k, None)
+            _clear_exit_progress(st)
             return                                            # nothing to protect; keep resting orders intact
 
         if free * price < self.min_notional:

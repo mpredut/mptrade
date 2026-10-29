@@ -48,9 +48,26 @@ def win_stats(r, key):
             "up": st.fmean(up_vals) if up_vals else float("nan")}
 
 
-def generate_report(exp_dir: str | None = None) -> list[str]:
+def _resolve_exp_dir(exp_dir: str | None = None) -> str:
     exp = exp_dir or os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
     os.makedirs(exp, exist_ok=True)
+    return exp
+
+
+def _format_errors_section(errors: list[dict], *, label_fn=None) -> list[str]:
+    if not errors:
+        return []
+    lines = ["\n## Errors\n"]
+    for e in errors[:20]:
+        err_lines = str(e.get("error") or "").strip().splitlines()
+        last_err = err_lines[-1] if err_lines else "unknown"
+        label = label_fn(e) if label_fn is not None else f"{e.get('asset', '?')} {e.get('cfg', '?')}"
+        lines.append(f"- {label}: `{last_err}`")
+    return lines
+
+
+def generate_report(exp_dir: str | None = None) -> list[str]:
+    exp = _resolve_exp_dir(exp_dir)
     results_path = os.path.join(exp, "results.jsonl")
     rows = _load_jsonl_dicts(results_path)
     errors = [r for r in rows if "error" in r]
@@ -140,7 +157,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                      f"{s['w90_p10']:+.2f} | {s['w90_down']:+.2f} | {s['w30_mean']:+.2f} | "
                      f"{s['yr_pos']:.0f} | {s['yr_worst']:+.1f} | {s['yr_med']:+.1f} |")
 
-    table(sorted(summary, key=lambda s: -s["calmar_med"]), "All configs, ranked by median full-run return/drawdown")
+    table(sorted(summary, key=lambda s: -safe_float(s.get("calmar_med"), default=float("-inf"))), "All configs, ranked by median full-run return/drawdown")
     table([s for s in summary if s["cfg"] in ("live", "old_live_pre0923") or s["cfg"].startswith("abl_")],
           "23 Sep promotion: live vs pre-promotion vs one-change-reverted ablations")
 
@@ -185,12 +202,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             else:
                 L.append(f"| {a} | {y} | {r_bh:+.0f} | {r_ret:+.1f} | - | - |")
 
-    if errors:
-        L.append("\n## Errors\n")
-        for e in errors[:20]:
-            err_lines = str(e.get("error") or "").strip().splitlines()
-            last_err = err_lines[-1] if err_lines else "unknown"
-            L.append(f"- {e.get('asset', '?')} {e.get('cfg', '?')}: `{last_err}`")
+    L.extend(_format_errors_section(errors))
 
     from state_io import atomic_write_json, atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT.md"), "\n".join(L) + "\n")

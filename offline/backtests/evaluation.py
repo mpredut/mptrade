@@ -296,28 +296,64 @@ def load_venue_module(
     subdir: str,
     filename: str = "replay.py",
     module_name: str | None = None,
+    *,
+    reload: bool = False,
 ):
     """Load a module from a venue directory (e.g. 'hyperliquid', '212trading') while preserving sys.path."""
     import importlib.util
     import sys
 
     root = Path(__file__).resolve().parents[2]
-    venue_dir = root / subdir
+    venue_dir = (root / subdir).resolve()
     file_path = venue_dir / (filename if filename.endswith(".py") else f"{filename}.py")
     mod_name = module_name or f"{subdir}_{file_path.stem}"
+    if not reload and mod_name in sys.modules and sys.modules[mod_name] is not None:
+        cached_mod = sys.modules[mod_name]
+        cached_file = getattr(cached_mod, "__file__", None)
+        if cached_file:
+            try:
+                if Path(cached_file).resolve().is_relative_to(venue_dir):
+                    return cached_mod
+            except (ValueError, TypeError):
+                pass
     orig_sys_path = list(sys.path)
+
+    _AMBIGUOUS = ("strategy", "market_data", "replay", "common", "notify", "hl_client", "t212_client")
+    saved_ambiguous: dict[str, Any] = {}
+    for name in _AMBIGUOUS:
+        if name in sys.modules:
+            mod_file = getattr(sys.modules[name], "__file__", "") or ""
+            if mod_file:
+                try:
+                    is_rel = Path(mod_file).resolve().is_relative_to(venue_dir)
+                except (ValueError, TypeError):
+                    is_rel = False
+                if not is_rel:
+                    saved_ambiguous[name] = sys.modules.pop(name)
+
     try:
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        if str(venue_dir) not in sys.path:
-            sys.path.append(str(venue_dir))
+        venue_str = str(venue_dir)
+        root_str = str(root)
+        while venue_str in sys.path:
+            sys.path.remove(venue_str)
+        while root_str in sys.path:
+            sys.path.remove(root_str)
+        sys.path.insert(0, root_str)
+        sys.path.insert(0, venue_str)
+
         spec = importlib.util.spec_from_file_location(mod_name, str(file_path))
         mod = importlib.util.module_from_spec(spec)
         sys.modules[mod_name] = mod
-        spec.loader.exec_module(mod)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            sys.modules.pop(mod_name, None)
+            raise
         return mod
     finally:
         sys.path[:] = orig_sys_path
+        for name, saved_mod in saved_ambiguous.items():
+            sys.modules[name] = saved_mod
 
 
 def load_layered_env_config(
