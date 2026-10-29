@@ -52,10 +52,8 @@ def main() -> int:
         )
         print(f"  ddW/T/L={dd['wins']}/{dd['ties']}/{dd['losses']}")
     if args.output:
-        output = args.output.expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("w", encoding="utf-8") as handle:
-            json.dump(result, handle, indent=2, ensure_ascii=False)
+        from state_io import atomic_write_json
+        atomic_write_json(args.output.expanduser().resolve(), result, indent=2, ensure_ascii=False)
     return 0 if result["promote"] else 2
 
 
