@@ -88,9 +88,7 @@ def calculate_performance_metrics(
         growth = curve[-1] / initial_capital
         if growth > 0:
             try:
-                ann_cand = growth ** (periods_per_year / periods) - 1.0
-                if math.isfinite(ann_cand):
-                    annualized_return = ann_cand
+                annualized_return = safe_float(growth ** (periods_per_year / periods) - 1.0, default=None)
             except OverflowError:
                 annualized_return = None
 
@@ -201,7 +199,7 @@ def validate_replay_metrics(result: dict) -> None:
             if isinstance(val, bool) or not isinstance(val, int) or val < 0:
                 raise AssertionError(f"{key} must be a non-negative int, got {val!r}")
         else:
-            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+            if safe_float(val, default=None) is None:
                 raise AssertionError(f"{key} must be a finite number, got {val!r}")
     if "ambiguous_bars" in result:
         val = result["ambiguous_bars"]
