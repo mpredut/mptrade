@@ -36,18 +36,12 @@ from .bapi import (
 
 
 def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
-    if raw_tid is None or isinstance(raw_tid, bool):
+    if isinstance(raw_tid, float) and (not math.isfinite(raw_tid) or not raw_tid.is_integer()):
         return None
-    if isinstance(raw_tid, float):
-        if not math.isfinite(raw_tid) or not raw_tid.is_integer():
-            return None
-        raw_tid = int(raw_tid)
-    elif isinstance(raw_tid, str):
-        s = raw_tid.strip()
+    if isinstance(raw_tid, str):
+        s = raw_tid.strip().removeprefix("+")
         if s.endswith(".0"):
             s = s[:-2]
-        if s.startswith("+"):
-            s = s[1:]
         if not s or not s.isdigit():
             return None
         raw_tid = s

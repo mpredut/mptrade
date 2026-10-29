@@ -210,24 +210,27 @@ def is_order_repriceable_by_monitororder(client_order_id: Optional[str]) -> bool
     return owner in REPRICEABLE_BOTS
 
 
+def _normalize_allowed_owners(allowed_owners: Union[str, Iterable[str], None]) -> set[str]:
+    if allowed_owners is None or isinstance(allowed_owners, bool):
+        return set()
+    if isinstance(allowed_owners, str):
+        clean_owner = allowed_owners.strip().lower()
+        return {clean_owner} if clean_owner else set()
+    try:
+        return {
+            str(o).strip().lower()
+            for o in allowed_owners
+            if o is not None and not isinstance(o, bool) and str(o).strip()
+        }
+    except TypeError:
+        return set()
+
+
 def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[str, Iterable[str], None]) -> bool:
     """Check if an order's clientOrderId matches any of the allowed owners."""
     if allowed_owners is None:
         return True
-    if isinstance(allowed_owners, bool):
-        return False
-    if isinstance(allowed_owners, str):
-        clean_owner = allowed_owners.strip().lower()
-        allowed_set = {clean_owner} if clean_owner else set()
-    else:
-        try:
-            allowed_set = {
-                str(o).strip().lower()
-                for o in allowed_owners
-                if o is not None and not isinstance(o, bool) and str(o).strip()
-            }
-        except TypeError:
-            return False
+    allowed_set = _normalize_allowed_owners(allowed_owners)
     if not allowed_set:
         return False
     owner = resolve_order_owner(client_order_id).lower()

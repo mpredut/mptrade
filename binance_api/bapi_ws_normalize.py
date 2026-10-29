@@ -22,6 +22,19 @@ def _clean_now_ms(now_ms: Any) -> int:
     return safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
 
 
+def _strip_int_str(val: Any) -> str | None:
+    if not isinstance(val, str):
+        return None
+    s = val.strip()
+    if not s:
+        return None
+    if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        s = s[:-2]
+    if s.startswith("+") and s[1:].isdigit():
+        s = s[1:]
+    return s
+
+
 def _normalize_ws_order_id(raw_id: Any, *, strict_float: bool = False) -> int | str | None:
     if isinstance(raw_id, bool):
         if strict_float:
@@ -34,11 +47,7 @@ def _normalize_ws_order_id(raw_id: Any, *, strict_float: bool = False) -> int | 
             return None
         raw_id = int(raw_id)
     elif isinstance(raw_id, str):
-        raw_id = raw_id.strip() or None
-        if raw_id is not None and raw_id.endswith(".0") and raw_id[:-2].lstrip("+-").isdigit():
-            raw_id = raw_id[:-2]
-        if raw_id is not None and raw_id.startswith("+") and raw_id[1:].isdigit():
-            raw_id = raw_id[1:]
+        raw_id = _strip_int_str(raw_id)
         if raw_id is not None and (
             raw_id.startswith("-")
             or raw_id in {"0", "+0", "-0"}
@@ -101,11 +110,7 @@ def parse_order_execution_report(
         if isinstance(raw_t, float) and (not math.isfinite(raw_t) or not raw_t.is_integer()):
             raise ValueError("non-integer Binance trade ID")
         elif isinstance(raw_t, str):
-            raw_t = raw_t.strip()
-            if raw_t.endswith(".0") and raw_t[:-2].lstrip("+-").isdigit():
-                raw_t = raw_t[:-2]
-            if raw_t.startswith("+") and raw_t[1:].isdigit():
-                raw_t = raw_t[1:]
+            raw_t = _strip_int_str(raw_t) or ""
         raw_i = _normalize_ws_order_id(raw_i, strict_float=True)
         if raw_i is None:
             raise ValueError("missing or invalid Binance order ID")
@@ -182,11 +187,7 @@ def parse_trade_execution_report(
             return None
         raw_trade_id = int(raw_trade_id)
     elif isinstance(raw_trade_id, str):
-        raw_trade_id = raw_trade_id.strip() or None
-        if raw_trade_id is not None and raw_trade_id.endswith(".0") and raw_trade_id[:-2].lstrip("+-").isdigit():
-            raw_trade_id = raw_trade_id[:-2]
-        if raw_trade_id is not None and raw_trade_id.startswith("+") and raw_trade_id[1:].isdigit():
-            raw_trade_id = raw_trade_id[1:]
+        raw_trade_id = _strip_int_str(raw_trade_id)
         if raw_trade_id is not None and (
             raw_trade_id.startswith("-")
             or raw_trade_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}

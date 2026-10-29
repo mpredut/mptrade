@@ -93,6 +93,10 @@ def _dedup_trades_by_fill_id(all_trades):
     return list(latest_trades.values())
 
 
+def _fmt_trade_num(val: float) -> str:
+    return (f"{val:.8f}" if val >= 1e-8 else f"{val:.12f}").rstrip("0").rstrip(".") or str(val)
+
+
 def aggregate_trades(trades):
     aggregated_trades = defaultdict(lambda: {
         'symbol': '', 'price': '', 'qty': 0.0, 'quoteQty': 0.0, 'weightedCost': 0.0,
@@ -136,16 +140,7 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['price'] = (
             raw_px
             if has_pos_raw_px
-            else (
-                (
-                    (f"{px:.8f}" if px >= 1e-8 else f"{px:.12f}")
-                    .rstrip("0")
-                    .rstrip(".")
-                    or str(px)
-                )
-                if px > 0
-                else (raw_px if raw_px is not None else px)
-            )
+            else (_fmt_trade_num(px) if px > 0 else (raw_px if raw_px is not None else px))
         )
         aggregated_trades[orderId]['qty'] += qty
         aggregated_trades[orderId]['quoteQty'] += quote_qty
@@ -176,22 +171,13 @@ def aggregate_trades(trades):
         total_qty = aggregated['qty']
         if aggregated['count'] > 1 and total_qty > 0:
             vwap = aggregated['weightedCost'] / total_qty
-            price_val = (
-                (
-                    (f"{vwap:.8f}" if vwap >= 1e-8 else f"{vwap:.12f}")
-                    .rstrip("0")
-                    .rstrip(".")
-                    or str(vwap)
-                )
-                if vwap > 0
-                else "0"
-            )
+            price_val = _fmt_trade_num(vwap) if vwap > 0 else "0"
         else:
             price_val = aggregated['price']
         qty_str = (
             f"{total_qty:.8f}"
             if total_qty <= 0 or total_qty >= 1e-8
-            else (f"{total_qty:.12f}".rstrip("0").rstrip(".") or str(total_qty))
+            else _fmt_trade_num(total_qty)
         )
         side = "BUY" if aggregated['isBuyer'] else "SELL"
         aggregated_list.append({

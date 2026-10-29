@@ -240,19 +240,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         accepted_owner_map.get(str(extract_order_id(order) or ''))
                         or accepted_owner_map.get(cid)
                     )
-                    if isinstance(allowed_owners, bool):
-                        allowed_set = set()
-                    elif isinstance(allowed_owners, str):
-                        allowed_set = {allowed_owners.strip().lower()} if allowed_owners.strip() else set()
-                    else:
-                        try:
-                            allowed_set = {
-                                str(o).strip().lower()
-                                for o in allowed_owners
-                                if o is not None and not isinstance(o, bool) and str(o).strip()
-                            }
-                        except TypeError:
-                            allowed_set = set()
+                    allowed_set = rc._normalize_allowed_owners(allowed_owners)
                     if not inferred or str(inferred).strip().lower() not in allowed_set:
                         continue
                 else:
@@ -336,14 +324,11 @@ def cancel_order(symbol, order_id):
         cleaned_oid = _resolve_valid_bapi_oid(order_id)
         if cleaned_oid is None:
             return False
-        if isinstance(order_id, int) and not isinstance(order_id, bool):
-            if order_id <= 0:
+        if isinstance(order_id, (int, float)) and not isinstance(order_id, bool):
+            oid_f = safe_pos_float(order_id, default=None)
+            if oid_f is None or not oid_f.is_integer():
                 return False
-            oid_arg = order_id
-        elif isinstance(order_id, float) and math.isfinite(order_id) and order_id.is_integer():
-            if int(order_id) <= 0:
-                return False
-            oid_arg = int(order_id)
+            oid_arg = int(oid_f)
         else:
             oid_arg = cleaned_oid
         client.cancel_order(symbol=symbol, orderId=oid_arg)
