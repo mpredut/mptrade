@@ -233,9 +233,9 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
         return 0.0
     k = np.arange(1, m + 1, dtype=np.float64)
     w = k ** pwr if pwr != 1.0 else k
-    val = float(np.dot(w, np.diff(arr)) / np.sum(w))
+    val = safe_float(np.dot(w, np.diff(arr)) / np.sum(w), default=None)
     tol = 1e-10 * max(1.0, abs(float(arr[-1])))
-    return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
+    return 0.0 if (val is None or abs(val) <= tol) else val
 
 
 def step_wols_cubic_slope(prices, sample_rate_sec=None) -> float:
@@ -493,10 +493,10 @@ class IncrementalTrendBuffer:
             m3 = float(m) ** 3
             total = m3 * (ref_last - y_ref) - (3.0 * sum_r2 + 3.0 * sum_r1 + a0)
             s3 = (0.5 * float(m) * float(m + 1)) ** 2
-            val = float(total / s3)
+            val = safe_float(total / s3, default=None)
 
         tol = 1e-10 * max(1.0, abs(ref_last))
-        return 0.0 if (not math.isfinite(val) or abs(val) <= tol) else val
+        return 0.0 if (val is None or abs(val) <= tol) else val
 
     def step_wols_cubic(self, a: int, b: int, sample_rate_sec=None) -> float:
         """Backward-compatible alias for step_wols_slope on [a, b]."""
@@ -1117,8 +1117,8 @@ class PriceWindow:
         if n < 3:
             return 0.0, 0.0
 
-        p0 = float(prices[0])
-        if p0 <= 0.0 or not math.isfinite(p0):
+        p0 = safe_pos_float(prices[0], default=None)
+        if p0 is None:
             return 0.0, 0.0
 
         try:
@@ -1136,9 +1136,9 @@ class PriceWindow:
             c1 = scale_pct * float(np.dot(u, dp)) / d1
             c2 = scale_pct * float(np.dot(u * u - v1, dp)) / d2
             dt_min = rate / 60.0
-            velocity = float((c1 + c2 * (n_f - 1.0)) / dt_min)
-            acceleration = float((2.0 * c2) / (dt_min * dt_min))
-            if not (math.isfinite(velocity) and math.isfinite(acceleration)):
+            velocity = safe_float((c1 + c2 * (n_f - 1.0)) / dt_min, default=None)
+            acceleration = safe_float((2.0 * c2) / (dt_min * dt_min), default=None)
+            if velocity is None or acceleration is None:
                 return 0.0, 0.0
             return velocity, acceleration
         except Exception:

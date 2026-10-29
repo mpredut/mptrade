@@ -37,8 +37,9 @@ from botcore import (
     _parse_bool_flag,
     safe_float,
     safe_nonneg_float,
-    safe_pos_float as _finite_pos_float,
+    safe_pos_float,
 )
+_finite_pos_float = safe_pos_float
 from cachepaths import cache_path
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,
@@ -178,18 +179,11 @@ def _validate_intent_recovery_config(
             or missing_confirmations < 2):
         raise ValueError(
             "RTRADE_INTENT_MISSING_CONFIRMATIONS must be an integer >= 2")
-    if isinstance(poll_sec, bool) or isinstance(horizon_sec, bool):
-        raise ValueError("rtrade intent recovery timing must be numeric")
-    try:
-        poll_sec = float(poll_sec)
-        horizon_sec = float(horizon_sec)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(
-            "rtrade intent recovery timing must be numeric") from exc
-    if not math.isfinite(poll_sec) or poll_sec <= 0:
+    poll = safe_pos_float(poll_sec, default=None)
+    horizon = safe_pos_float(horizon_sec, default=None)
+    if poll is None:
         raise ValueError("RTRADE_PAIR_POLL_SEC must be finite and positive")
-    if (not math.isfinite(horizon_sec)
-            or horizon_sec < poll_sec * missing_confirmations):
+    if horizon is None or horizon < poll * missing_confirmations:
         raise ValueError(
             "RTRADE_INTENT_RECOVERY_HORIZON_SEC is too short")
 
@@ -284,15 +278,10 @@ class _LivePairVenue:
 
     @staticmethod
     def _parse_bounded_revision(value, *, int_err: str, range_err: str | None = None) -> int:
-        if isinstance(value, bool):
+        f = safe_float(value, default=None)
+        if f is None or not f.is_integer():
             raise ValueError(int_err)
-        try:
-            rev_f = float(value)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(int_err) from exc
-        if not math.isfinite(rev_f) or not rev_f.is_integer():
-            raise ValueError(int_err)
-        rev = int(rev_f)
+        rev = int(f)
         if not 0 <= rev <= 1_000_000:
             raise ValueError(range_err or int_err)
         return rev
@@ -448,17 +437,17 @@ class _LivePairVenue:
         pair_id = record["pair_id"]
         persist_raw = self._persist_callback(
             pair_id, side, kind, requested_qty=pending["requested_qty"])
-        now = float(self._recovery_clock())
-        if not math.isfinite(now) or now <= 0:
+        now = safe_pos_float(self._recovery_clock(), default=None)
+        if now is None:
             raise ValueError("rtrade recovery clock returned invalid time")
         if not pending.get("order_id"):
             recovery_started_at = pending.get("recovery_started_at")
             if recovery_started_at is not None:
-                try:
-                    recovery_age = max(0.0, now - float(recovery_started_at))
-                except (TypeError, ValueError, OverflowError) as exc:
+                r_started = safe_float(recovery_started_at, default=None)
+                if r_started is None:
                     raise ValueError(
-                        f"{kind}:{side} has invalid recovery timing") from exc
+                        f"{kind}:{side} has invalid recovery timing")
+                recovery_age = max(0.0, now - r_started)
                 if recovery_age >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
                     pending["recovery_state"] = "horizon_exhausted"
                     pending["recovery_horizon_exhausted_at"] = now
@@ -472,15 +461,11 @@ class _LivePairVenue:
                     f"{kind}:{side} requires manual reconciliation")
             next_recovery_at = pending.get("next_recovery_at")
             if next_recovery_at is not None:
-                try:
-                    next_recovery_at = float(next_recovery_at)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise ValueError(
-                        f"{kind}:{side} has invalid next recovery time") from exc
-                if not math.isfinite(next_recovery_at):
+                n_rec = safe_float(next_recovery_at, default=None)
+                if n_rec is None:
                     raise ValueError(
                         f"{kind}:{side} has invalid next recovery time")
-                if now < next_recovery_at:
+                if now < n_rec:
                     raise _IntentRecoveryPending(
                         f"{kind}:{side} reconciliation is not due yet")
 
