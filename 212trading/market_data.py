@@ -209,12 +209,17 @@ def get_price_usd(sym: str) -> float | None:
 
 def compute_ols_slope_pct(closes, bars: int = 12) -> float | None:
     """Compute short-term OLS trend slope percentage per bar over the last ``bars`` closes."""
+    if closes is None or isinstance(closes, bool):
+        return None
     bars_i = safe_int(bars, default=None)
     bars_n = max(4, bars_i) if bars_i is not None else 12
-    clean_closes = [
-        cf for c in (closes or ())
-        if (cf := safe_pos_float(c, default=None)) is not None
-    ][-bars_n:]
+    try:
+        clean_closes = [
+            cf for c in closes
+            if (cf := safe_pos_float(c, default=None)) is not None
+        ][-bars_n:]
+    except TypeError:
+        return None
     if len(clean_closes) < max(4, bars_n // 2):
         return None
     n = len(clean_closes)

@@ -574,9 +574,8 @@ class HyperliquidProvider(MarketDataProvider):
                 f"ohlc_series({symbol}): client/pair unavailable")
         lookback_h = max(1, int(90 * interval / 60))
         try:
-            completed = list(
-                client.candles(pair, candle_interval(interval), lookback_h) or ()
-            )[:-1]
+            raw_candles = client.candles(pair, candle_interval(interval), lookback_h)
+            completed = list(raw_candles)[:-1] if raw_candles is not None else []
             valid = []
             for item in completed:
                 if not isinstance(item, dict):

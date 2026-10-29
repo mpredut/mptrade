@@ -338,12 +338,11 @@ class KrakenProvider(MarketDataProvider):
             candidates = _kraken_balance_asset_candidates(asset)
             for key in candidates:
                 if key in bal:
-                    raw_val = bal[key]
-                    return safe_nonneg_float(raw_val if raw_val is not None else 0.0, default=None) if not isinstance(raw_val, bool) else None
+                    return safe_nonneg_float(bal[key], default=None)
             cands_up = {c.upper() for c in candidates}
             for k_raw, raw_val in bal.items():
                 if str(k_raw).strip().upper() in cands_up:
-                    return safe_nonneg_float(raw_val if raw_val is not None else 0.0, default=None) if not isinstance(raw_val, bool) else None
+                    return safe_nonneg_float(raw_val, default=None)
             return 0.0
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] balance {asset}: {e}")
@@ -767,7 +766,7 @@ class KrakenProvider(MarketDataProvider):
                 client, "ohlc_closes_with_timestamps", None)
             if callable(series_reader):
                 closes, timestamps = series_reader(symbol, interval_i)
-                timestamps = tuple(timestamps or ())
+                timestamps = tuple(timestamps) if timestamps is not None else ()
                 observed_at = timestamps[-1] if timestamps else None
             else:
                 reader = getattr(client, "ohlc_closes_with_timestamp", None)
@@ -778,7 +777,7 @@ class KrakenProvider(MarketDataProvider):
                     observed_at = None
                 timestamps = ()
             return ClosedPriceSeries(
-                tuple(closes or ()),
+                tuple(closes) if closes is not None else (),
                 interval_i,
                 observed_at,
                 timestamps,
