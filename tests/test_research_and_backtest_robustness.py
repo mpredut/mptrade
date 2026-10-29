@@ -6672,3 +6672,41 @@ def test_validate_ohlc_bars_ssot_and_sweep_sharpe_and_mhdsl_replay(tmp_path, mon
     assert len(comp) == 4
 
 
+def test_surge_sweep_slices_kraken_grid_report_errors_and_walk_forward_venue(tmp_path):
+    """Verify run_deep_surge_sweep slice helpers, kraken_continuous_grid report error formatting, and canonical_venue('hl')."""
+    from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as dss
+    from offline.research.kraken_continuous_grid import report as k_rep, report2 as k_rep2, report3 as k_rep3
+    from offline.runners.walk_forward import canonical_venue
+
+    # 1. canonical_venue normalizes 'hl' -> 'hyperliquid' and 'trading212' -> 't212'
+    assert canonical_venue("hl") == "hyperliquid"
+    assert canonical_venue("trading212") == "t212"
+    assert canonical_venue("t212") == "t212"
+    assert canonical_venue(True) is None
+
+    # 2. _format_errors_section and report/report2/report3 on empty/error jsonl
+    err_lines = k_rep._format_errors_section([{"asset": "BTC", "cfg": "live", "error": "line1\nValueError: boom"}])
+    assert any("BTC live: `ValueError: boom`" in ln for ln in err_lines)
+    exp_dir = str(tmp_path / "grid_exp")
+    assert k_rep.generate_report(exp_dir)
+    assert k_rep2.generate_report(exp_dir)
+    assert k_rep3.generate_report(exp_dir)
+
+    # 3. run_deep_surge_sweep evaluate_single_candidate and evaluate_candidate_group parity
+    base_p = dss.load_base_params(dss.DEFAULT_CONFIG)
+    assert base_p.trend_interval == 240
+    bars = [(20.0 + (i % 5) * 0.2, 20.5 + (i % 5) * 0.2, 19.5 + (i % 5) * 0.2, 20.1 + (i % 5) * 0.2) for i in range(80)]
+    cand = {
+        "id": "FIXED_g20_pb3.0_w72",
+        "category": "Fixed",
+        "params": dss.R(base_p, surge_guard=True, surge_dynamic=False, surge_gain_pct=20.0, surge_move_pct=20.0, surge_exit_pullback_pct=3.0, surge_window_hours=72.0),
+        "desc": "test",
+    }
+    r_single = dss.evaluate_single_candidate(cand, {"HYPE": bars}, 1000.0, 0.26)
+    r_group = dss.evaluate_candidate_group([cand, {**cand, "id": "FIXED_g20_pb3.0_w48", "params": dss.R(cand["params"], surge_window_hours=48.0)}], {"HYPE": bars}, 1000.0, 0.26)
+    assert r_single["total_profit_usd"] == r_group[0]["total_profit_usd"]
+    assert r_single["h1_profit_usd"] == r_group[0]["h1_profit_usd"]
+    assert r_single["h2_profit_usd"] == r_group[0]["h2_profit_usd"]
+
+
+
