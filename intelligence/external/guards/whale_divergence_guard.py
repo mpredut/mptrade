@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
@@ -73,9 +73,9 @@ class WhaleDivergenceGuard:
             )
 
         regime = str(snap_attr(snapshot, "divergence_regime") or "neutral").strip().lower()
-        oi_1h = safe_float(snap_attr(snapshot, "open_interest_1h_change_pct"), default=0.0) or 0.0
-        taker_ratio = safe_float(snap_attr(snapshot, "taker_buy_sell_ratio"), default=1.0) or 1.0
-        top_long_pct = safe_float(snap_attr(snapshot, "top_traders_long_pct"), default=0.5) or 0.5
+        oi_1h = safe_float(snap_attr(snapshot, "open_interest_1h_change_pct"), default=0.0)
+        taker_ratio = safe_nonneg_float(snap_attr(snapshot, "taker_buy_sell_ratio"), default=1.0)
+        top_long_pct = safe_nonneg_float(snap_attr(snapshot, "top_traders_long_pct"), default=0.5)
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":

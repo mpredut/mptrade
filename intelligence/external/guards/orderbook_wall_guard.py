@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from botcore import safe_float, safe_pos_float
+from botcore import safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
@@ -62,11 +62,11 @@ class OrderbookWallGuard:
                 reason="no_orderbook_snapshot",
             )
 
-        imb = safe_float(snap_attr(snapshot, "imbalance_ratio"), default=0.5) or 0.5
-        ask_wall_usd = safe_float(snap_attr(snapshot, "largest_ask_wall_usd"), default=0.0) or 0.0
-        ask_wall_px = safe_float(snap_attr(snapshot, "largest_ask_wall_price"), default=0.0) or 0.0
-        bid_wall_usd = safe_float(snap_attr(snapshot, "largest_bid_wall_usd"), default=0.0) or 0.0
-        bid_wall_px = safe_float(snap_attr(snapshot, "largest_bid_wall_price"), default=0.0) or 0.0
+        imb = safe_nonneg_float(snap_attr(snapshot, "imbalance_ratio"), default=0.5)
+        ask_wall_usd = safe_nonneg_float(snap_attr(snapshot, "largest_ask_wall_usd"), default=0.0)
+        ask_wall_px = safe_nonneg_float(snap_attr(snapshot, "largest_ask_wall_price"), default=0.0)
+        bid_wall_usd = safe_nonneg_float(snap_attr(snapshot, "largest_bid_wall_usd"), default=0.0)
+        bid_wall_px = safe_nonneg_float(snap_attr(snapshot, "largest_bid_wall_price"), default=0.0)
 
         # 1. Evaluate BUY side against ask walls and heavy ask imbalance
         if side_norm == "BUY":

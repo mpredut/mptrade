@@ -2322,7 +2322,7 @@ class AutonomousAIReconciler:
             gw = self.intent_gateway
             max_usd = safe_pos_float(getattr(gw, "max_notional_usd", None), default=2000.0) or 2000.0
             min_usd = safe_pos_float(getattr(gw, "min_notional_usd", None), default=10.0) or 10.0
-            min_conf = safe_nonneg_float(getattr(gw, "min_confidence", None), default=0.85) or 0.85
+            min_conf = safe_nonneg_float(getattr(gw, "min_confidence", None), default=0.85)
             is_equities = getattr(spec, "asset_scope", "all") == "equities"
             target_desc = (
                 "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken read-only xStocks SPCXx.T exposure)"

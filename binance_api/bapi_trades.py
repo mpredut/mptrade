@@ -202,7 +202,7 @@ def aggregate_trades(trades):
     return aggregated_list
     
 def _clean_non_neg_int(val, default: int = 0) -> int:
-    return safe_nonneg_int(val, default=default) or default
+    return safe_nonneg_int(val, default=default)
 
 
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):

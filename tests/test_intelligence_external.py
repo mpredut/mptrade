@@ -823,6 +823,32 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             mt._SL_BOUNCE_STATE.pop(sym, None)
             mt._SL_EPISODE_STATE.pop(sym, None)
 
+    def test_zero_imbalance_and_zero_taker_ratio_not_coerced_to_neutral_defaults(self):
+        from binance_api.bapi_trades import _clean_non_neg_int
+        from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+        from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+
+        ob_guard = OrderbookWallGuard(min_buy_imbalance=0.25)
+        ob_dec = ob_guard.check(
+            "BTCUSDC",
+            "BUY",
+            snapshot={"imbalance_ratio": 0.0, "largest_ask_wall_usd": 0.0},
+        )
+        self.assertFalse(ob_dec.allowed)
+        self.assertIn("orderbook_heavily_ask_dominated", ob_dec.reason)
+
+        whale_guard = WhaleDivergenceGuard(min_taker_ratio=0.75)
+        w_dec = whale_guard.check(
+            "BTCUSDC",
+            "BUY",
+            snapshot={"divergence_regime": "neutral", "taker_buy_sell_ratio": 0.0, "top_traders_long_pct": 0.0},
+        )
+        self.assertFalse(w_dec.allowed)
+        self.assertIn("severe_taker_selling_dominated", w_dec.reason)
+
+        self.assertEqual(_clean_non_neg_int(0, default=3), 0)
+        self.assertEqual(_clean_non_neg_int(-1, default=3), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
