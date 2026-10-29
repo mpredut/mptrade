@@ -12,6 +12,7 @@ from botcore import safe_float as _parse_finite_float, safe_pos_float
 from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_venue_name
 from intelligence.sentiment.guards.high_stake_guard import (
     _VENUE_DEFAULT_FEE_SPECS,
+    enrich_microstructure_cvd,
     resolve_symbol_price as _resolve_symbol_price,
     round_opt_px as _round_opt_px,
 )
@@ -513,26 +514,13 @@ def _format_microstructure_section(
             depth_1pct_sfx = f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={slip_2k}bps)"
 
         cvd_sfx = ""
+        if minfo.get("cvd_15m_usd") is None or minfo.get("cvd_regime") is None or (minfo.get("cvd_15m_base") is None and cur_px > 0.0):
+            enrich_microstructure_cvd(minfo, {"price": cur_px} if cur_px > 0.0 else None)
         cvd_usd_raw = minfo.get("cvd_15m_usd")
-        if cvd_usd_raw is None and (minfo.get("taker_buy_vol_usd") is not None or minfo.get("taker_sell_vol_usd") is not None):
-            tb_f = _parse_finite_float(minfo.get("taker_buy_vol_usd"), 0.0)
-            ts_f = _parse_finite_float(minfo.get("taker_sell_vol_usd"), 0.0)
-            if (tb_f + ts_f) > 0.0:
-                cvd_usd_raw = round(tb_f - ts_f, 0)
         if cvd_usd_raw is not None:
             cvd_u = _parse_finite_float(cvd_usd_raw, 0.0)
             cvd_b = minfo.get("cvd_15m_base")
-            if cvd_b is None and cur_px > 0.0:
-                b_dec = 3 if cur_px >= 100.0 else (2 if cur_px >= 1.0 else 1)
-                cvd_b = round(cvd_u / cur_px, b_dec)
-            cvd_reg = minfo.get("cvd_regime")
-            if not cvd_reg:
-                ob_imb = _parse_finite_float(minfo.get("ob_imbalance"), 0.5)
-                cvd_reg = (
-                    ("spot_absorbing" if ob_imb >= 0.54 else "aggressive_buying")
-                    if cvd_u > 0.0
-                    else (("spot_absorbing" if ob_imb >= 0.58 else "aggressive_market_dumps") if cvd_u < 0.0 else "balanced_flow")
-                )
+            cvd_reg = minfo.get("cvd_regime") or "balanced_flow"
             sign_s = "+" if cvd_u >= 0.0 else "-"
             usd_s = f"{sign_s}{_fmt_liq_usd(abs(cvd_u))}"
             if cvd_b is not None:

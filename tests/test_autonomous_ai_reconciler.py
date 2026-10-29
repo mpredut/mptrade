@@ -3617,6 +3617,108 @@ def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
     assert "cvd_15m=+10 BTC (+$680.0K, spot_absorbing)" in prompt
 
 
+def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tmp_path):
+    """Verify collect_pretrade_telemetry populates microstructure/liquidation clusters without 24h series and gateway_max_usd forwards."""
+    from intelligence.sentiment.guards.high_stake_guard import (
+        build_cycle_fallback_prices,
+        collect_pretrade_telemetry,
+        harvest_tradable_positions_and_orders,
+    )
+
+    # 1. build_cycle_fallback_prices falls back to (best_bid + best_ask) / 2.0 when ob_mid_price is absent
+    fb_px = build_cycle_fallback_prices(
+        {"BTCUSDC": {"best_bid": 80_000.0, "best_ask": 80_200.0}},
+        {},
+    )
+    assert fb_px["BTCUSDC"] == 80_100.0
+
+    # 2. harvest_tradable_positions_and_orders forwards gateway_max_usd to resolve_venue_fee_and_limits
+    inst_mock = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    inst_mock._provider.free_balance.side_effect = lambda a: 1.0 if a == "BTC" else 5000.0
+    inst_mock.open_orders.return_value = []
+    positions, _, _, _ = harvest_tradable_positions_and_orders(
+        {"BTCUSDC": inst_mock},
+        {"BTCUSDC": {"price": 80_000.0}},
+        {},
+        {},
+        gateway_max_usd=1250.0,
+    )
+    assert len(positions) == 1
+    assert positions[0]["effective_max_buy_usd"] == 1250.0
+    assert positions[0]["effective_max_sell_usd"] == 1250.0
+
+    # 3. collect_pretrade_telemetry populates spread, 1% depth, CVD, and deep liquidation clusters even without 24h series
+    telem_dir = tmp_path / "telemetry"
+    telem_dir.mkdir(parents=True, exist_ok=True)
+    (telem_dir / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps({
+            "symbol": "BTCUSDC",
+            "imbalance_ratio": 0.60,
+            "best_bid": 79_990.0,
+            "best_ask": 80_010.0,
+            "bid_depth_usd": 600_000.0,
+            "ask_depth_usd": 450_000.0,
+            "depth_1pct_bid_usd": 400_000.0,
+            "depth_1pct_ask_usd": 300_000.0,
+            "largest_bid_wall_price": 79_500.0,
+            "largest_bid_wall_usd": 180_000.0,
+            "largest_ask_wall_price": 80_600.0,
+            "largest_ask_wall_usd": 210_000.0,
+        }),
+        encoding="utf-8",
+    )
+    (telem_dir / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps({
+            "symbol": "BTCUSDC",
+            "funding_rate": 0.0001,
+            "predicted_funding_rate": 0.00012,
+            "open_interest_usd": 120_000_000.0,
+        }),
+        encoding="utf-8",
+    )
+    (telem_dir / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({
+            "symbol": "BTCUSDC",
+            "top_traders_long_pct": 0.56,
+            "top_traders_long_ratio": 1.27,
+            "taker_buy_sell_ratio": 1.20,
+            "taker_buy_vol_usd": 900_000.0,
+            "taker_sell_vol_usd": 500_000.0,
+            "open_interest_1h_change_pct": 1.5,
+            "divergence_regime": "BULLISH_FLOW",
+        }),
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {"status": "EXECUTED", "execution_payload": {"orderId": "777001"}}
+        ]),
+        encoding="utf-8",
+    )
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir(parents=True, exist_ok=True)
+    (orders_dir / "cache_order.json").write_text(
+        json.dumps({
+            "items": {
+                "BTCUSDC": [
+                    {"orderId": "777001", "side": "BUY", "status": "FILLED", "price": "79800.0", "executedQty": "0.01", "time": 1000},
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    telem = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
+    assert "Orderbook Bid-Ask Spread" in telem
+    assert "Orderbook Depth Within 1%" in telem
+    assert "15m Cumulative Volume Delta (CVD)" in telem
+    assert "Liquidation Clusters (LONG vs SHORT)" in telem
+    assert "deep_LONG=" in telem["Liquidation Clusters (LONG vs SHORT)"]
+    assert "deep_SHORT=" in telem["Liquidation Clusters (LONG vs SHORT)"]
+    assert "(by=AI)" in telem["Recent Venue Fills"]
+
+
 
 
 

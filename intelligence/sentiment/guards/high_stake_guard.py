@@ -36,6 +36,7 @@ from orchestratorOS.agy.topics import topic_spec
 from state_io import (
     read_json_dict,
     read_json_dict_recovering as read_json_cached,
+    read_json_recovering,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
 )
@@ -974,11 +975,46 @@ def load_symbol_microstructure(
         m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
         m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
         m_info["divergence_regime"] = whale.get("divergence_regime")
-        tb_v = safe_nonneg_float(whale.get("taker_buy_vol_usd"), default=None)
-        ts_v = safe_nonneg_float(whale.get("taker_sell_vol_usd"), default=None)
-        if tb_v is not None and ts_v is not None and (tb_v + ts_v) > 0.0:
-            m_info["cvd_15m_usd"] = round(tb_v - ts_v, 0)
+    enrich_microstructure_cvd(m_info)
     return m_info
+
+
+def enrich_microstructure_cvd(
+    minfo: Dict[str, Any],
+    pinfo: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Populate `cvd_15m_usd`, `cvd_15m_base`, and `cvd_regime` on a microstructure dict."""
+    if not isinstance(minfo, dict):
+        return
+    cvd_usd = safe_float(minfo.get("cvd_15m_usd"), default=None)
+    if cvd_usd is None:
+        tb_v = safe_nonneg_float(minfo.get("taker_buy_vol_usd"), default=None)
+        ts_v = safe_nonneg_float(minfo.get("taker_sell_vol_usd"), default=None)
+        if tb_v is not None and ts_v is not None and (tb_v + ts_v) > 0.0:
+            cvd_usd = round(tb_v - ts_v, 0)
+            minfo["cvd_15m_usd"] = cvd_usd
+    if cvd_usd is None:
+        return
+    p_dict = pinfo if isinstance(pinfo, dict) else {}
+    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
+    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
+    m_px = (
+        safe_pos_float(p_dict.get("price"), default=None)
+        or safe_pos_float(minfo.get("ob_mid_price"), default=None)
+        or ((b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else None)
+    )
+    if m_px is not None and m_px > 0.0:
+        b_dec = 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1)
+        minfo["cvd_15m_base"] = round(cvd_usd / m_px, b_dec)
+    if not minfo.get("cvd_regime") or pinfo is not None:
+        ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+        chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
+        if cvd_usd > 0.0:
+            minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.54 and chg_15m <= 0.20) else "aggressive_buying"
+        elif cvd_usd < 0.0:
+            minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.58 and chg_15m >= -0.05) else "aggressive_market_dumps"
+        else:
+            minfo["cvd_regime"] = "balanced_flow"
 
 
 def _blend_structural_liq_anchor(
@@ -1646,6 +1682,7 @@ def harvest_tradable_positions_and_orders(
     trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]],
     *,
     known_ai_order_ids: Optional[set[str]] = None,
+    gateway_max_usd: float = 2000.0,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     from providers.base import normalize_open_order
@@ -1794,6 +1831,7 @@ def harvest_tradable_positions_and_orders(
                     price=px_f,
                     free_quote=quote_free,
                     free_base=base_free,
+                    gateway_max_usd=gateway_max_usd,
                 )
             )
             tradable_positions.append(pos_entry)
@@ -2202,23 +2240,7 @@ def sync_sibling_symbol_telemetry(
         liq_clusters = compute_liquidation_clusters(p_match, minfo)
         if liq_clusters:
             minfo.update(liq_clusters)
-        cvd_usd = safe_float(minfo.get("cvd_15m_usd"), default=None)
-        if cvd_usd is not None:
-            m_px = (
-                safe_pos_float(p_match.get("price") if isinstance(p_match, dict) else None, default=None)
-                or safe_pos_float(minfo.get("ob_mid_price"), default=None)
-            )
-            if m_px is not None and m_px > 0.0:
-                b_dec = 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1)
-                minfo["cvd_15m_base"] = round(cvd_usd / m_px, b_dec)
-            ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
-            chg_15m = safe_float(p_match.get("chg_15m_pct") if isinstance(p_match, dict) else None, default=0.0) or 0.0
-            if cvd_usd > 0.0:
-                minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.54 and chg_15m <= 0.20) else "aggressive_buying"
-            elif cvd_usd < 0.0:
-                minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.58 and chg_15m >= -0.05) else "aggressive_market_dumps"
-            else:
-                minfo["cvd_regime"] = "balanced_flow"
+        enrich_microstructure_cvd(minfo, p_match)
         if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
             p_match.setdefault("spread_bps", minfo["spread_bps"])
 
@@ -2268,6 +2290,7 @@ def harvest_recent_orders_and_enrich_positions(
     read_json_fn: Any = None,
     *,
     known_ai_order_ids: Optional[set[str]] = None,
+    gateway_max_usd: float = 2000.0,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, and Hyperliquid and enrich tradable_positions with cost-basis anchors."""
     _rj = read_json_fn or read_json_cached
@@ -2437,6 +2460,7 @@ def harvest_recent_orders_and_enrich_positions(
                 free_quote=safe_nonneg_float(pos.get("free_quote"), default=None),
                 free_base=safe_nonneg_float(pos.get("free_base"), default=None),
                 spread_bps=safe_nonneg_float(sym_spread, default=None),
+                gateway_max_usd=gateway_max_usd,
             )
         )
     return recent_orders
@@ -2733,7 +2757,7 @@ def harvest_macro_and_news_sensors(
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     from providers.base import extract_timestamp_s
 
-    _rj = read_json_fn or read_json_cached
+    _rj = read_json_fn or read_json_recovering
 
     def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
         enriched = dict(payload)
@@ -2856,6 +2880,11 @@ def build_cycle_fallback_prices(
     for m_sym, m_dict in microstructure.items():
         if isinstance(m_dict, dict):
             ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0
+            if ob_mid_v <= 0:
+                bb_v = safe_pos_float(m_dict.get("best_bid"), default=0.0) or 0.0
+                ba_v = safe_pos_float(m_dict.get("best_ask"), default=0.0) or 0.0
+                if bb_v > 0 and ba_v >= bb_v:
+                    ob_mid_v = (bb_v + ba_v) / 2.0
             if ob_mid_v > 0:
                 cycle_fallback_prices[m_sym] = ob_mid_v
     if isinstance(watcher_price_items, dict):
@@ -2953,7 +2982,7 @@ def populate_market_and_portfolio_snapshot(
         summarize_recent_ai_intents,
     )
 
-    _rj = read_json_fn or read_json_cached
+    _rj = read_json_fn or read_json_recovering
 
     macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
     for attr, val in macro_sensors.items():
@@ -2973,6 +3002,7 @@ def populate_market_and_portfolio_snapshot(
 
     intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
     known_ai_oids = collect_known_ai_order_ids(intents_data)
+    gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 
     tradable_positions: List[Dict[str, Any]] = []
     open_orders_list: List[Dict[str, Any]] = []
@@ -3007,6 +3037,7 @@ def populate_market_and_portfolio_snapshot(
                 trailing_map,
                 trailing_by_venue,
                 known_ai_order_ids=known_ai_oids,
+                gateway_max_usd=gw_max_usd,
             )
         )
 
@@ -3073,6 +3104,7 @@ def populate_market_and_portfolio_snapshot(
         t212_cycles,
         _rj,
         known_ai_order_ids=known_ai_oids,
+        gateway_max_usd=gw_max_usd,
     )
     if recent_orders:
         snapshot.portfolio_summary["recent_orders"] = recent_orders
@@ -3258,22 +3290,6 @@ def collect_pretrade_telemetry(
                     f"VAH=${m24.get('vah_px')} ({float(m24.get('vah_dist_pct', 0.0)):+.2f}%), "
                     f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}"
                 )
-            cur_m_info = load_symbol_microstructure(cachedb_dir, symbol)
-            if cur_m_info:
-                if cur_m_info.get("spread_bps") is not None:
-                    telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
-                cur_px_est = safe_pos_float(alt_series_24h[-1][1], default=0.0) if alt_series_24h else 0.0
-                p_est = dict(m24)
-                if cur_px_est and cur_px_est > 0:
-                    p_est["price"] = cur_px_est
-                liq_c = compute_liquidation_clusters(p_est, cur_m_info)
-                if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
-                    telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
-                        f"LONG liq=${liq_c['long_liq_px']} (${liq_c.get('long_liq_usd', 0):,.0f}, {float(liq_c.get('long_liq_dist_pct', 0.0)):+.2f}%), "
-                        f"SHORT liq=${liq_c['short_liq_px']} (${liq_c.get('short_liq_usd', 0):,.0f}, {float(liq_c.get('short_liq_dist_pct', 0.0)):+.2f}%), "
-                        f"magnet={liq_c.get('liq_magnet_bias')}"
-                    )
-
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
                 btc_series_24h, _ = load_symbol_price_series(
                     cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
@@ -3306,6 +3322,56 @@ def collect_pretrade_telemetry(
                         if cross_parts:
                             rel_str = f"{rel_str} | {', '.join(cross_parts)}" if rel_str else ", ".join(cross_parts)
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
+
+        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol)
+        if cur_m_info:
+            if cur_m_info.get("spread_bps") is not None:
+                telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
+            d1_b = safe_pos_float(cur_m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
+            d1_a = safe_pos_float(cur_m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
+            if d1_b > 0.0 or d1_a > 0.0:
+                slip_s = (
+                    f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps"
+                    if cur_m_info.get("est_slip_2k_bps") is not None
+                    else ""
+                )
+                telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{slip_s}"
+            cur_px_est = safe_pos_float(alt_series_24h[-1][1], default=0.0) if alt_series_24h else 0.0
+            if not cur_px_est or cur_px_est <= 0.0:
+                cur_px_est = next(
+                    (
+                        px_v
+                        for cand in sym_variants
+                        if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None
+                        and px_v > 0.0
+                    ),
+                    0.0,
+                )
+            p_est = dict(m24)
+            if cur_px_est and cur_px_est > 0:
+                p_est["price"] = cur_px_est
+            enrich_microstructure_cvd(cur_m_info, p_est)
+            if cur_m_info.get("cvd_15m_usd") is not None:
+                cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
+                cvd_reg = cur_m_info.get("cvd_regime") or "balanced_flow"
+                telemetry["15m Cumulative Volume Delta (CVD)"] = f"${cvd_u:+,.0f} ({cvd_reg})"
+            liq_c = compute_liquidation_clusters(p_est, cur_m_info)
+            if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
+                deep_parts = []
+                if liq_c.get("long_liq_deep_px") is not None:
+                    deep_parts.append(
+                        f"deep_LONG=${liq_c['long_liq_deep_px']} (${liq_c.get('long_liq_deep_usd', 0):,.0f}, {float(liq_c.get('long_liq_deep_dist_pct', 0.0)):+.2f}%)"
+                    )
+                if liq_c.get("short_liq_deep_px") is not None:
+                    deep_parts.append(
+                        f"deep_SHORT=${liq_c['short_liq_deep_px']} (${liq_c.get('short_liq_deep_usd', 0):,.0f}, {float(liq_c.get('short_liq_deep_dist_pct', 0.0)):+.2f}%)"
+                    )
+                deep_sfx = f", {', '.join(deep_parts)}" if deep_parts else ""
+                telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
+                    f"LONG liq=${liq_c['long_liq_px']} (${liq_c.get('long_liq_usd', 0):,.0f}, {float(liq_c.get('long_liq_dist_pct', 0.0)):+.2f}%), "
+                    f"SHORT liq=${liq_c['short_liq_px']} (${liq_c.get('short_liq_usd', 0):,.0f}, {float(liq_c.get('short_liq_dist_pct', 0.0)):+.2f}%){deep_sfx}, "
+                    f"magnet={liq_c.get('liq_magnet_bias')}"
+                )
     except Exception:
         pass
 
@@ -3328,6 +3394,12 @@ def collect_pretrade_telemetry(
         pass
 
     try:
+        from providers.execution_audit import collect_known_ai_order_ids
+
+        known_ai_oids = collect_known_ai_order_ids(
+            read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
+        )
+        audit_origin_map = _load_recent_audit_origins(cachedb_dir)
         fills = {}
         for ord_file in ("cache_order.json", "cache_trade_kraken.json", "cache_trade_hyperliquid.json", "cache_trade_t212.json"):
             ord_path = os.path.join(cachedb_dir, ord_file)
@@ -3336,16 +3408,22 @@ def collect_pretrade_telemetry(
             if not isinstance(o_items, dict):
                 continue
             orders_for_sym = next((val for cand in sym_variants if (val := casefold_get(o_items, cand))), [])
-            fills = extract_symbol_recent_fills(orders_for_sym)
+            fills = extract_symbol_recent_fills(
+                orders_for_sym,
+                known_ai_order_ids=known_ai_oids,
+                audit_origin_map=audit_origin_map,
+            )
             if fills:
                 break
         if fills:
             lb = fills.get("last_buy") or {}
             ls = fills.get("last_sell") or {}
+            lb_by = f" (by={lb.get('actor_tag') or lb.get('actor')})" if (lb.get("actor_tag") or lb.get("actor")) else ""
+            ls_by = f" (by={ls.get('actor_tag') or ls.get('actor')})" if (ls.get("actor_tag") or ls.get("actor")) else ""
             telemetry["Recent Venue Fills"] = (
                 f"Last Action={fills.get('last_action_side')}, "
-                f"Last BUY={lb.get('qty')} @ {lb.get('price')}, "
-                f"Last SELL={ls.get('qty')} @ {ls.get('price')}"
+                f"Last BUY={lb.get('qty')} @ {lb.get('price')}{lb_by}, "
+                f"Last SELL={ls.get('qty')} @ {ls.get('price')}{ls_by}"
             )
     except Exception:
         pass
