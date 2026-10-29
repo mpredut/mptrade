@@ -208,10 +208,9 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
             last_err = err_lines[-1] if err_lines else "unknown"
             L.append(f"- {e.get('asset', '?')} {e.get('cfg', '?')}: `{last_err}`")
 
-    with open(os.path.join(exp, "REPORT.md"), "w") as f:
-        f.write("\n".join(L) + "\n")
-    with open(os.path.join(exp, "summary.json"), "w") as f:
-        json.dump(summary, f, indent=1)
+    from state_io import atomic_write_json, atomic_write_text
+    atomic_write_text(os.path.join(exp, "REPORT.md"), "\n".join(L) + "\n")
+    atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1)
     return L
 
 
