@@ -191,9 +191,8 @@ def main() -> int:
 
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     manifest_path = output_dir.parent / f"manifest_{stamp}.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, indent=2, ensure_ascii=False)
+    from state_io import atomic_write_json
+    atomic_write_json(manifest_path, manifest, indent=2, ensure_ascii=False)
     print(f"Manifest: {manifest_path}")
     return 0
 
