@@ -1592,8 +1592,8 @@ class Strategy:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
         if hasattr(self, "_shadow_vol_1h"):
             try:
-                vol = self._shadow_vol_1h()
-                if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
+                vol = safe_pos_float(self._shadow_vol_1h(), default=None)
+                if vol is not None:
                     return vol_pct_to_ratio(vol), "shadow"
             except Exception:
                 pass
@@ -1615,8 +1615,8 @@ class Strategy:
         trend_up = False
         if include_trend and self._trend_slope_provider:
             try:
-                slope = self._trend_slope_provider(self.yahoo_sym)
-                if slope is not None and not isinstance(slope, bool) and math.isfinite(float(slope)) and float(slope) >= 0.0:
+                slope = safe_nonneg_float(self._trend_slope_provider(self.yahoo_sym), default=None)
+                if slope is not None:
                     trend_up = True
             except Exception:
                 pass
@@ -1789,9 +1789,7 @@ class Strategy:
         vol = None
         if hasattr(self, "_shadow_vol_1h"):
             try:
-                v = self._shadow_vol_1h()
-                if v is not None and math.isfinite(float(v)) and float(v) > 0:
-                    vol = float(v)
+                vol = safe_pos_float(self._shadow_vol_1h(), default=None)
             except Exception:
                 vol = None
         if vol is None and not self.replay_mode:
@@ -1844,9 +1842,8 @@ class Strategy:
         trend_down = False
         if not trend_up and self._trend_slope_provider:
             try:
-                slope = self._trend_slope_provider(self.yahoo_sym)
-                if slope is not None and not isinstance(slope, bool) and math.isfinite(float(slope)):
-                    slope_f = float(slope)
+                slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
+                if slope_f is not None:
                     if slope_f >= 0.0:
                         trend_up = True
                     elif slope_f < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
@@ -2091,15 +2088,10 @@ class Strategy:
             if self.p.dca_trend_gate_pct > 0:
                 if self._now() < getattr(self, "_dca_gate_until", 0):
                     return   # Recently trend-blocked; retry after the cache window.
-                slope = self._trend_slope_provider(self.yahoo_sym)
-                if (
-                    slope is not None
-                    and not isinstance(slope, bool)
-                    and math.isfinite(float(slope))
-                    and float(slope) < -self.p.dca_trend_gate_pct
-                ):
+                slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
+                if slope_f is not None and slope_f < -self.p.dca_trend_gate_pct:
                     self._dca_gate_until = self._now() + 300
-                    log(f"  [STRAT] DCA BLOCKED de trend: slope {float(slope):+.3f}%/bar "
+                    log(f"  [STRAT] DCA BLOCKED de trend: slope {slope_f:+.3f}%/bar "
                         f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-verific in 5 min")
                     return
             log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}"
@@ -2125,7 +2117,7 @@ class Strategy:
         log(f"      ! break-even threshold ~{self.p.fx_fee_pct*2:.2f}% (FX) plus spread; TP={self.p.takeprofit_pct}%")
 
         def _delay(delay_sec: float) -> None:
-            eff_sec = max(1.0, float(delay_sec)) if (_clean_pos_float(delay_sec) is not None) else 60.0
+            eff_sec = max(1.0, safe_float(delay_sec, default=60.0))
             if stop is not None:
                 stop.wait(eff_sec)
             else:

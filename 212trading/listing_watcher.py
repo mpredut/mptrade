@@ -8,13 +8,12 @@ pre-listing placeholder for trading. Reused by t212_bot.py for every awaited ass
 """
 from __future__ import annotations
 
-import math
 import threading
 import time
 from datetime import datetime
 
 try:
-    from .ipo_common import ET, log
+    from .ipo_common import ET, log, safe_float
     from .market_data import check_market
 except ImportError:
     import os as _os
@@ -25,7 +24,7 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import ET, log
+    from ipo_common import ET, log, safe_float
     try:
         from market_data import check_market
     except ImportError:
@@ -66,11 +65,7 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
     Return True at launch and False if `stop` is set first. Optional `on_launch(info)`
     receives the market dictionary at launch, for example to send a notification.
     """
-    eff_interval = (
-        max(float(interval), 1.0)
-        if not isinstance(interval, bool) and isinstance(interval, (int, float)) and math.isfinite(float(interval))
-        else 60.0
-    )
+    eff_interval = max(1.0, safe_float(interval, default=60.0))
     log(f"    [{label}] waiting for the launch... (poll {eff_interval:g}s)")
     while not (stop is not None and stop.is_set()):
         if market_hours_only and not in_market_window():

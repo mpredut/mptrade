@@ -25,6 +25,7 @@ if T212_DIR not in sys.path:
     sys.path.append(T212_DIR)
 
 from offline.backtests.metrics import format_performance_summary
+from botcore import safe_float, safe_pos_float
 
 try:
     import importlib.util
@@ -68,18 +69,16 @@ def simulate(ohlc, P):
                 return P[k]
         return default
 
-    budget = float(_p_val(("budget", "max_budget"), 500.0))  # type: ignore[arg-type]
-    raw_entry = _p_val(("entry", "entry_amount"), None)
-    raw_dca = _p_val(("dca", "dca_amount"), None)
-    entry_pct = float(
-        P["entry_pct"]
-        if P.get("entry_pct") is not None
-        else ((float(raw_entry) / budget * 100.0) if budget > 0 and raw_entry is not None else 10.0)
+    budget = safe_pos_float(_p_val(("budget", "max_budget"), 500.0), default=500.0)
+    raw_entry = safe_pos_float(_p_val(("entry", "entry_amount"), None))
+    raw_dca = safe_pos_float(_p_val(("dca", "dca_amount"), None))
+    entry_pct = safe_float(
+        P.get("entry_pct"),
+        default=((raw_entry / budget * 100.0) if budget > 0 and raw_entry is not None else 10.0),
     )
-    dca_pct = float(
-        P["dca_pct"]
-        if P.get("dca_pct") is not None
-        else ((float(raw_dca) / budget * 100.0) if budget > 0 and raw_dca is not None else 10.0)
+    dca_pct = safe_float(
+        P.get("dca_pct"),
+        default=((raw_dca / budget * 100.0) if budget > 0 and raw_dca is not None else 10.0),
     )
 
     env_overrides = {
