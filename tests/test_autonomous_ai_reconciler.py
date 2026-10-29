@@ -2962,6 +2962,117 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     assert "max_buy=$995.0, max_sell=$2000.0" in full_prompt
 
 
+def test_telemetry_bugfixes_and_api_normalization(tmp_path):
+    """Verifies bug fixes across spread rounding, 24h range decimation, VP timestamp filtering,
+    canceled order exclusion, multi-fill aggregation, T212 sell dust cap, and flat trailing peak cleanup.
+    """
+    from intelligence.external.collectors.orderbook_depth import round_spread_bps
+    from intelligence.sentiment.guards.high_stake_guard import (
+        compute_24h_price_metrics,
+        compute_liquidation_clusters,
+        compute_volume_profile_metrics,
+        extract_symbol_recent_fills,
+        harvest_recent_orders_and_enrich_positions,
+        resolve_venue_fee_and_limits,
+    )
+
+    # 1. round_spread_bps precision & inverted book protection
+    assert round_spread_bps(best_bid=100_000.0, best_ask=100_000.5) == 0.05
+    assert round_spread_bps(best_bid=100.0, best_ask=100.1) == 10.0
+    assert round_spread_bps(best_bid=100.1, best_ask=100.0) is None
+
+    # 2. compute_24h_price_metrics preserves final point in low_24h/high_24h on 1,000-point series
+    now_ms = 1_760_000_000_000
+    series_1000 = [[now_ms - (1000 - i) * 60_000, 100.0 + (i % 10)] for i in range(999)]
+    series_1000.append([now_ms, 125.0])  # Index 999 (skipped by [::2] step if decimated early)
+    m24 = compute_24h_price_metrics(series_1000)
+    assert m24 is not None
+    assert m24["high_24h"] == 125.0
+    assert m24["dd_24h_high_pct"] == 0.0
+    assert m24["pos_24h_pct"] == 100.0
+
+    # 3. compute_volume_profile_metrics filters invalid boolean timestamps and sorts chronologically
+    unsorted_vp = (
+        [[True, 999999.0], [now_ms, 108.0]]
+        + [[now_ms - (20 - i) * 60_000, 100.0 + (i % 3)] for i in range(15)]
+    )
+    vp = compute_volume_profile_metrics(unsorted_vp)
+    assert vp["poc_px"] < 200.0
+    assert vp["va_regime"] == "ABOVE_VAH"
+
+    # 4. compute_liquidation_clusters keeps live cur_px when cur_px moves past nearby orderbook walls
+    liq = compute_liquidation_clusters(
+        {"price": 82_000.0, "vol_1h_pct": 1.2},
+        {"ob_mid_price": 80_500.0, "bid_wall_px": 80_000.0, "ask_wall_px": 81_000.0, "oi_usd": 100_000_000.0},
+    )
+    assert liq["long_liq_px"] < 82_000.0 < liq["short_liq_px"]
+
+    # 5. extract_symbol_recent_fills ignores unfilled CANCELED orders & aggregates partial fills by orderId
+    fills = extract_symbol_recent_fills([
+        {"orderId": 101, "side": "BUY", "status": "PARTIALLY_FILLED", "price": "50.0", "executedQty": "1.0", "time": 1000},
+        {"orderId": 101, "side": "BUY", "status": "FILLED", "price": "52.0", "executedQty": "1.0", "time": 1005},
+        {"orderId": 102, "side": "SELL", "status": "CANCELED", "price": "60.0", "origQty": "5.0", "executedQty": "0.0", "time": 2000},
+    ])
+    assert fills is not None
+    assert fills["last_action_side"] == "BUY"
+    assert fills["last_sell"] is None
+    assert len(fills["recent_buys"]) == 1
+    assert fills["recent_buys"][0]["qty"] == 2.0
+    assert fills["recent_buys"][0]["price"] == 51.0
+
+    # 6. resolve_venue_fee_and_limits applies t212_sell_balance_cap for 3rd-decimal fractional dust
+    t212_dust_specs = resolve_venue_fee_and_limits(
+        "t212", "NVDA_US_EQ", price=200.0, free_quote=500.0, free_base=0.155
+    )
+    # 0.155 shares @ $200 has 0.005 dust ($1.00 < $6.00), so $6 buffer (0.03 shares) caps sellable qty to 0.12 shares = $24.0
+    assert t212_dust_specs["effective_max_sell_usd"] == 24.0
+
+    # 7. Flat cycle position clears stale trailing_peak and Hyperliquid does not overwrite Binance recent_orders
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "cache_order.json").write_text(
+        json.dumps({
+            "items": {
+                "TAOUSDC": [
+                    {"orderId": 1, "side": "BUY", "status": "FILLED", "price": "300.0", "executedQty": "1.0", "time": 1000}
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    hl_inst = MagicMock(symbol="TAOUSDC", provider_name="hyperliquid")
+    hl_inst._provider.get_orders.return_value = [
+        {"oid": 2, "side": "B", "px": "310.0", "sz": "1.0", "time": 2000}
+    ]
+    positions = [
+        {
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "base": "HYPE",
+            "quote": "USD",
+            "price": 43.877,
+            "free_base": 0.0,
+            "free_quote": 85.0,
+            "trailing_peak": 43.877,
+            "dd_from_peak_pct": 0.0,
+        }
+    ]
+    ro_map = harvest_recent_orders_and_enrich_positions(
+        cache_dir=str(cache_dir),
+        inst_by_sym={"HL_TAO": hl_inst},
+        tradable_positions=positions,
+        prices_and_trends={"HYPEUSD": {"price": 43.877}},
+        kraken_cycles={"HYPEUSD": {"qty": 0.0, "cost_usd": 0.0, "last_sell_price": 42.1}},
+        hyperliquid_cycles={},
+        t212_cycles={},
+    )
+    assert ro_map["TAOUSDC"]["last_buy"]["price"] == 300.0
+    assert ro_map["hyperliquid:TAOUSDC"]["last_buy"]["price"] == 310.0
+    assert "trailing_peak" not in positions[0]
+    assert "dd_from_peak_pct" not in positions[0]
+
+
+
 
 
 

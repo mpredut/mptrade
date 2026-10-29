@@ -48,6 +48,27 @@ def _clean_dict_float(data: Dict[str, Any], key: str, default: float) -> float:
     return safe_float(data.get(key) if isinstance(data, dict) else None, default)
 
 
+def round_spread_bps(
+    spread_bps: Any = None,
+    *,
+    best_bid: Any = None,
+    best_ask: Any = None,
+    mid_price: Any = None,
+) -> Optional[float]:
+    """Return bid-ask spread in bps rounded to 4 decimals when < 0.1 bps else 2 decimals."""
+    sp = safe_pos_float(spread_bps, default=None)
+    if sp is None:
+        b_bid = safe_pos_float(best_bid, default=None)
+        b_ask = safe_pos_float(best_ask, default=None)
+        if b_bid is not None and b_ask is not None and b_ask >= b_bid:
+            eff_mid = safe_pos_float(mid_price, default=None) or ((b_bid + b_ask) / 2.0)
+            if eff_mid > 0.0:
+                sp = ((b_ask - b_bid) / eff_mid) * 10000.0
+    if sp is None:
+        return None
+    return round(sp, 4 if sp < 0.1 else 2)
+
+
 class _DiskBackedSymbolCollector:
     """Shared in-memory and disk snapshot caching base for external symbol telemetry collectors."""
 
@@ -230,12 +251,9 @@ class OrderbookSnapshot:
         mid_price = max(0.0, _clean_dict_float(data, "mid_price", 0.0))
         best_bid = max(0.0, _clean_dict_float(data, "best_bid", 0.0))
         best_ask = max(0.0, _clean_dict_float(data, "best_ask", 0.0))
-        spread_bps = max(0.0, _clean_dict_float(data, "spread_bps", 0.0))
-        if spread_bps <= 0.0 and best_bid > 0.0 and best_ask >= best_bid:
-            eff_mid = mid_price if mid_price > 0.0 else (best_bid + best_ask) / 2.0
-            if eff_mid > 0.0:
-                raw_sp = ((best_ask - best_bid) / eff_mid) * 10000.0
-                spread_bps = round(raw_sp, 4 if raw_sp < 0.1 else 2)
+        spread_bps = round_spread_bps(
+            data.get("spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=mid_price
+        ) or 0.0
         return cls(
             symbol=sym_str,
             mid_price=mid_price,
@@ -288,9 +306,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             last_err: Optional[Exception] = None
             kraken_pair = resolve_kraken_lookup_symbol(symbol)
             urls = (
-                f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=50",
-                f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=50",
-                f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=50",
+                f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
+                f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
             )
             for url in urls:
                 try:
@@ -314,66 +332,55 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 raise last_err if last_err is not None else ValueError(f"No depth data for {symbol}")
 
             def _parse_side(rows: Any) -> List[Tuple[float, float]]:
-                out: List[Tuple[float, float]] = []
                 if not isinstance(rows, list):
-                    return out
-                for item in rows:
-                    if not isinstance(item, (list, tuple)) or len(item) < 2:
-                        continue
-                    pf = safe_pos_float(item[0], default=None)
-                    qf = safe_pos_float(item[1], default=None)
-                    if pf is not None and qf is not None:
-                        out.append((pf, qf))
-                return out
+                    return []
+                return [
+                    (pf, qf)
+                    for item in rows
+                    if isinstance(item, (list, tuple))
+                    and len(item) >= 2
+                    and (pf := safe_pos_float(item[0], default=None)) is not None
+                    and (qf := safe_pos_float(item[1], default=None)) is not None
+                ]
 
             bids = _parse_side(data.get("bids"))
             asks = _parse_side(data.get("asks"))
-
             if not bids or not asks:
                 return None
 
             bids.sort(key=lambda x: x[0], reverse=True)
             asks.sort(key=lambda x: x[0])
 
-            best_bid = bids[0][0]
-            best_ask = asks[0][0]
+            best_bid, best_ask = bids[0][0], asks[0][0]
             if best_bid <= 0 or best_ask <= 0 or best_bid > best_ask:
                 return None
             mid = safe_pos_float((best_bid + best_ask) / 2.0, default=None)
             if mid is None:
                 return None
 
-            bid_lower_bound = mid * (1.0 - self.depth_band_pct / 100.0)
-            ask_upper_bound = mid * (1.0 + self.depth_band_pct / 100.0)
+            def _accumulate_side(
+                levels: List[Tuple[float, float]], bound: float, is_bid: bool
+            ) -> Tuple[float, float, float]:
+                depth_usd = max_usd = max_px = 0.0
+                for p, q in levels:
+                    if (p < bound) if is_bid else (p > bound):
+                        break
+                    val = p * q
+                    depth_usd += val
+                    if val > max_usd:
+                        max_usd, max_px = val, p
+                return depth_usd, max_usd, max_px
 
-            bid_depth_usd = 0.0
-            max_bid_usd = 0.0
-            max_bid_px = 0.0
-            for p, q in bids:
-                if p < bid_lower_bound:
-                    break
-                val = p * q
-                bid_depth_usd += val
-                if val > max_bid_usd:
-                    max_bid_usd = val
-                    max_bid_px = p
-
-            ask_depth_usd = 0.0
-            max_ask_usd = 0.0
-            max_ask_px = 0.0
-            for p, q in asks:
-                if p > ask_upper_bound:
-                    break
-                val = p * q
-                ask_depth_usd += val
-                if val > max_ask_usd:
-                    max_ask_usd = val
-                    max_ask_px = p
+            bid_depth_usd, max_bid_usd, max_bid_px = _accumulate_side(
+                bids, mid * (1.0 - self.depth_band_pct / 100.0), True
+            )
+            ask_depth_usd, max_ask_usd, max_ask_px = _accumulate_side(
+                asks, mid * (1.0 + self.depth_band_pct / 100.0), False
+            )
 
             total_depth = bid_depth_usd + ask_depth_usd
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
-            raw_sp = ((best_ask - best_bid) / mid) * 10000.0 if mid > 0 else 0.0
-            spread_bps = round(raw_sp, 4 if raw_sp < 0.1 else 2)
+            spread_bps = round_spread_bps(best_bid=best_bid, best_ask=best_ask, mid_price=mid) or 0.0
 
             snapshot = OrderbookSnapshot(
                 symbol=symbol,

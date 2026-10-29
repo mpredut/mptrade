@@ -9,8 +9,9 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float as _parse_finite_float, safe_pos_float
-from cachepaths import cache_symbol_variants, canonical_base_asset
+from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_venue_name
 from intelligence.sentiment.guards.high_stake_guard import (
+    _VENUE_DEFAULT_FEE_SPECS,
     resolve_symbol_price as _resolve_symbol_price,
     round_opt_px as _round_opt_px,
 )
@@ -495,6 +496,103 @@ def _format_microstructure_section(
     return lines
 
 
+def _format_tradable_position_line(pos: Dict[str, Any]) -> str:
+    """Format a single tradable position line for Section 3C."""
+    t_extra = ""
+    if pos.get("active_avg_buy_px") is not None:
+        t_extra += f", avg_buy_px={pos.get('active_avg_buy_px')} (pnl_vs_avg={pos.get('pnl_vs_avg_pct')}%)"
+    if (
+        pos.get("cycle_avg_cost_px") is not None
+        and pos.get("cycle_avg_cost_px") != pos.get("active_avg_buy_px")
+    ):
+        t_extra += f", cycle_avg_cost={pos.get('cycle_avg_cost_px')} (pnl_vs_cycle_cost={pos.get('pnl_vs_cycle_cost_pct')}%)"
+    if pos.get("last_buy_px") is not None:
+        t_extra += f", last_buy_px={pos.get('last_buy_px')} (pnl_vs_last_buy={pos.get('pnl_vs_last_buy_pct')}%)"
+    if (
+        pos.get("lowest_buy_px") is not None
+        and pos.get("lowest_buy_px") != pos.get("last_buy_px")
+    ):
+        t_extra += f", lowest_buy_px={pos.get('lowest_buy_px')} (pnl_vs_lowest_buy={pos.get('pnl_vs_lowest_buy_pct')}%)"
+    if pos.get("last_sell_px") is not None:
+        t_extra += f", last_sell_px={pos.get('last_sell_px')} (chg_vs_last_sell={pos.get('chg_vs_last_sell_pct')}%)"
+    if pos.get("trailing_peak") is not None:
+        t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
+    if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
+        t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
+    venue = pos.get("venue")
+    def_tier, def_maker, def_taker, _ = _VENUE_DEFAULT_FEE_SPECS.get(
+        normalize_venue_name(venue), ("INVEST_RTH", 15.0, 15.0, 1.0)
+    )
+    taker_bps = _parse_finite_float(pos.get("taker_fee_bps"), def_taker)
+    maker_bps = _parse_finite_float(pos.get("maker_fee_bps"), def_maker)
+    fee_tier = pos.get("fee_tier") or def_tier
+    sp_part = f", spread={pos.get('spread_bps')}bps" if pos.get("spread_bps") is not None else ""
+    t_extra += (
+        f", venue_fee_per_leg={taker_bps:g}bps "
+        f"(tier={fee_tier}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
+    )
+    lim_parts: List[str] = []
+    if pos.get("exchange_min_notional_usd") is not None:
+        lim_parts.append(f"min_notional=${_parse_finite_float(pos.get('exchange_min_notional_usd'), 0.0):g}")
+    if pos.get("min_qty") is not None:
+        lim_parts.append(f"min_qty={pos.get('min_qty')}")
+    if pos.get("step_size") is not None:
+        lim_parts.append(f"step={pos.get('step_size')}")
+    if pos.get("tick_size") is not None:
+        lim_parts.append(f"tick={pos.get('tick_size')}")
+    if pos.get("effective_max_buy_usd") is not None:
+        lim_parts.append(f"max_buy=${pos.get('effective_max_buy_usd')}")
+    if pos.get("effective_max_sell_usd") is not None:
+        lim_parts.append(f"max_sell=${pos.get('effective_max_sell_usd')}")
+    if lim_parts:
+        t_extra += f", limits({', '.join(lim_parts)})"
+    fb_val = pos.get("free_base")
+    val_usd = pos.get("value_usd")
+    fb_str = (
+        f"{fb_val} (${val_usd} USD)"
+        if fb_val is not None and val_usd is not None
+        else (f"{fb_val}" if fb_val is not None else "N/A")
+    )
+    fq_val = pos.get("free_quote")
+    fq_str = f"${fq_val}" if fq_val is not None else "N/A"
+    fq_bd = pos.get("free_quote_breakdown")
+    if fq_val is not None and isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != pos.get("quote") for k in fq_bd)):
+        bd_s = ", ".join(f"{bk}=${_parse_finite_float(bv, 0.0):,.2f}" for bk, bv in fq_bd.items())
+        fq_str += f" ({bd_s})"
+    return (
+        f"    - [{venue}] {pos['symbol']}: free_{pos['base']}={fb_str}, "
+        f"free_{pos['quote']}={fq_str}, "
+        f"px={pos.get('price')}{t_extra}"
+    )
+
+
+def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
+    """Format a single recent order summary line for Section 3C."""
+    lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
+    ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
+    lb_ts = _parse_finite_float(lb.get("ts_ms"), 0.0)
+    ls_ts = _parse_finite_float(ls.get("ts_ms"), 0.0)
+    lb_age_h = round((now_ms - int(lb_ts)) / 3_600_000.0, 1) if lb_ts > 0 else None
+    ls_age_h = round((now_ms - int(ls_ts)) / 3_600_000.0, 1) if ls_ts > 0 else None
+    avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
+    avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
+    r_buys = oinfo.get("recent_buys") or []
+    tranches_str = ""
+    if len(r_buys) > 1:
+        t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
+        tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
+    lb_px = _round_opt_px(lb.get("price"), 6)
+    ls_px = _round_opt_px(ls.get("price"), 6)
+    lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h)" if lb_px is not None else "none"
+    ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h)" if ls_px is not None else "none"
+    return (
+        f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
+        f"Last BUY={lb_str} | "
+        f"Last SELL={ls_str}"
+        f"{avg_b_str}{tranches_str}"
+    )
+
+
 def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
@@ -517,79 +615,7 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
     if ps.get("tradable_positions"):
         lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
         for pos in ps["tradable_positions"]:
-            t_extra = ""
-            if pos.get("active_avg_buy_px") is not None:
-                t_extra += f", avg_buy_px={pos.get('active_avg_buy_px')} (pnl_vs_avg={pos.get('pnl_vs_avg_pct')}%)"
-            if (
-                pos.get("cycle_avg_cost_px") is not None
-                and pos.get("cycle_avg_cost_px") != pos.get("active_avg_buy_px")
-            ):
-                t_extra += f", cycle_avg_cost={pos.get('cycle_avg_cost_px')} (pnl_vs_cycle_cost={pos.get('pnl_vs_cycle_cost_pct')}%)"
-            if pos.get("last_buy_px") is not None:
-                t_extra += f", last_buy_px={pos.get('last_buy_px')} (pnl_vs_last_buy={pos.get('pnl_vs_last_buy_pct')}%)"
-            if (
-                pos.get("lowest_buy_px") is not None
-                and pos.get("lowest_buy_px") != pos.get("last_buy_px")
-            ):
-                t_extra += f", lowest_buy_px={pos.get('lowest_buy_px')} (pnl_vs_lowest_buy={pos.get('pnl_vs_lowest_buy_pct')}%)"
-            if pos.get("last_sell_px") is not None:
-                t_extra += f", last_sell_px={pos.get('last_sell_px')} (chg_vs_last_sell={pos.get('chg_vs_last_sell_pct')}%)"
-            if pos.get("trailing_peak") is not None:
-                t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
-            if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
-                t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
-            default_taker = (
-                10 if pos.get("venue") == "binance"
-                else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
-            )
-            default_maker = (
-                10 if pos.get("venue") == "binance"
-                else (16 if pos.get("venue") == "kraken" else (4 if pos.get("venue") == "hyperliquid" else 15))
-            )
-            taker_bps = _parse_finite_float(pos.get("taker_fee_bps"), default_taker)
-            maker_bps = _parse_finite_float(pos.get("maker_fee_bps"), default_maker)
-            fee_tier = pos.get("fee_tier") or (
-                "VIP0" if pos.get("venue") == "binance"
-                else ("PRO_TIER0" if pos.get("venue") == "kraken" else ("SPOT_TIER0" if pos.get("venue") == "hyperliquid" else "INVEST_RTH"))
-            )
-            sp_part = f", spread={pos.get('spread_bps')}bps" if pos.get("spread_bps") is not None else ""
-            t_extra += (
-                f", venue_fee_per_leg={taker_bps:g}bps "
-                f"(tier={fee_tier}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
-            )
-            lim_parts: List[str] = []
-            if pos.get("exchange_min_notional_usd") is not None:
-                lim_parts.append(f"min_notional=${_parse_finite_float(pos.get('exchange_min_notional_usd'), 0.0):g}")
-            if pos.get("min_qty") is not None:
-                lim_parts.append(f"min_qty={pos.get('min_qty')}")
-            if pos.get("step_size") is not None:
-                lim_parts.append(f"step={pos.get('step_size')}")
-            if pos.get("tick_size") is not None:
-                lim_parts.append(f"tick={pos.get('tick_size')}")
-            if pos.get("effective_max_buy_usd") is not None:
-                lim_parts.append(f"max_buy=${pos.get('effective_max_buy_usd')}")
-            if pos.get("effective_max_sell_usd") is not None:
-                lim_parts.append(f"max_sell=${pos.get('effective_max_sell_usd')}")
-            if lim_parts:
-                t_extra += f", limits({', '.join(lim_parts)})"
-            fb_val = pos.get("free_base")
-            val_usd = pos.get("value_usd")
-            fb_str = (
-                f"{fb_val} (${val_usd} USD)"
-                if fb_val is not None and val_usd is not None
-                else (f"{fb_val}" if fb_val is not None else "N/A")
-            )
-            fq_val = pos.get("free_quote")
-            fq_str = f"${fq_val}" if fq_val is not None else "N/A"
-            fq_bd = pos.get("free_quote_breakdown")
-            if fq_val is not None and isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != pos.get("quote") for k in fq_bd)):
-                bd_s = ", ".join(f"{bk}=${_parse_finite_float(bv, 0.0):,.2f}" for bk, bv in fq_bd.items())
-                fq_str += f" ({bd_s})"
-            lines.append(
-                f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={fb_str}, "
-                f"free_{pos['quote']}={fq_str}, "
-                f"px={pos.get('price')}{t_extra}"
-            )
+            lines.append(_format_tradable_position_line(pos))
     if ps.get("open_orders"):
         lines.append(f"  * Active Open Orders on Exchange (Locking Liquidity): {ps['open_orders']}")
     for cyc_key, venue_lbl, venue_id in (
@@ -619,33 +645,10 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
                 )
     if ps.get("hyperliquid_readonly"):
         lines.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
+    now_ms = int(time.time() * 1000)
     for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
-        if not isinstance(oinfo, dict):
-            continue
-        lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
-        ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
-        now_ms = int(time.time() * 1000)
-        lb_ts = _parse_finite_float(lb.get("ts_ms"), 0.0)
-        ls_ts = _parse_finite_float(ls.get("ts_ms"), 0.0)
-        lb_age_h = round((now_ms - int(lb_ts)) / 3_600_000.0, 1) if lb_ts > 0 else None
-        ls_age_h = round((now_ms - int(ls_ts)) / 3_600_000.0, 1) if ls_ts > 0 else None
-        avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
-        avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
-        r_buys = oinfo.get("recent_buys") or []
-        tranches_str = ""
-        if len(r_buys) > 1:
-            t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
-            tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
-        lb_px = _round_opt_px(lb.get("price"), 6)
-        ls_px = _round_opt_px(ls.get("price"), 6)
-        lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h)" if lb_px is not None else "none"
-        ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h)" if ls_px is not None else "none"
-        lines.append(
-            f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
-            f"Last BUY={lb_str} | "
-            f"Last SELL={ls_str}"
-            f"{avg_b_str}{tranches_str}"
-        )
+        if isinstance(oinfo, dict):
+            lines.append(_format_recent_order_line(sym, oinfo, now_ms))
     for st_key, st_label in (
         ("active_retry_queue", "Active Queued Retry Orders (order_retry_queue.jsonl)"),
         ("monitortrades_active_state", "Active MonitorTrades Ride/Stop State (mt_state.json)"),

@@ -15,6 +15,7 @@ from cachepaths import (
     normalize_venue_name,
     split_symbol_assets,
 )
+from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
@@ -54,6 +55,46 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return (tf * 1000.0 if tf < 1e11 else tf), pf
 
 
+def _build_vp_position_dict(
+    cur_px: float,
+    poc_px: float,
+    val_px: float,
+    vah_px: float,
+) -> Dict[str, Any]:
+    """Compute symmetric % distances from POC/VAL/VAH, Value Area position %, and VA regime."""
+    if cur_px <= 0.0 or poc_px <= 0.0 or val_px <= 0.0 or vah_px <= 0.0:
+        return {}
+    return {
+        "poc_dist_pct": round(((cur_px / poc_px) - 1.0) * 100.0, 2),
+        "vah_dist_pct": round(((cur_px / vah_px) - 1.0) * 100.0, 2),
+        "val_dist_pct": round(((cur_px / val_px) - 1.0) * 100.0, 2),
+        "va_pos_pct": round(((cur_px - val_px) / (vah_px - val_px)) * 100.0, 1) if vah_px > val_px else 50.0,
+        "va_regime": (
+            "ABOVE_VAH"
+            if cur_px > vah_px
+            else ("BELOW_VAL" if cur_px < val_px else ("INSIDE_VA_UPPER" if cur_px >= poc_px else "INSIDE_VA_LOWER"))
+        ),
+    }
+
+
+def _compute_horizon_range_dict(
+    cur_px: float,
+    low_px: float,
+    high_px: float,
+    suffix: str,
+) -> Dict[str, Any]:
+    """Build low/high range geometry (`dd_<sfx>_high_pct`, `bounce_<sfx>_low_pct`, `span_<sfx>_pct`, `pos_<sfx>_pct`)."""
+    out: Dict[str, Any] = {f"low_{suffix}": low_px, f"high_{suffix}": high_px}
+    if high_px > 0:
+        out[f"dd_{suffix}_high_pct"] = round((cur_px / high_px - 1.0) * 100.0, 2)
+    if low_px > 0:
+        out[f"bounce_{suffix}_low_pct"] = round((cur_px / low_px - 1.0) * 100.0, 2)
+        out[f"span_{suffix}_pct"] = round((high_px / low_px - 1.0) * 100.0, 2)
+    if high_px > low_px > 0:
+        out[f"pos_{suffix}_pct"] = round(((cur_px - low_px) / (high_px - low_px)) * 100.0, 1)
+    return out
+
+
 def compute_volume_profile_metrics(
     series: list,
     *,
@@ -65,35 +106,37 @@ def compute_volume_profile_metrics(
     if not isinstance(series, list) or len(series) < 4:
         return {}
     try:
-        samples: list[Tuple[float, float]] = []
-        prev_px: Optional[float] = None
+        timed_rows: list[Tuple[float, float, float]] = []
+        scalar_rows: list[float] = []
         for row in series:
             if isinstance(row, (list, tuple)) and len(row) >= 2:
-                px_f = safe_pos_float(row[1], 0.0)
-                if px_f <= 0.0:
-                    continue
-                vol_w = safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0
-                if vol_w <= 0.0:
-                    if prev_px is not None and prev_px > 0.0:
-                        vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0)
-                    else:
-                        vol_w = 1.0
-                prev_px = px_f
-                samples.append((px_f, vol_w))
-            else:
+                pt = _parse_ts_px_row(row)
+                if pt is not None:
+                    vol_w = safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0
+                    timed_rows.append((pt[0], pt[1], vol_w))
+            elif not isinstance(row, (list, tuple)):
                 px_f = safe_pos_float(row, 0.0)
                 if px_f > 0.0:
-                    vol_w = (
-                        1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0)
-                        if prev_px is not None and prev_px > 0.0
-                        else 1.0
-                    )
-                    prev_px = px_f
-                    samples.append((px_f, vol_w))
+                    scalar_rows.append(px_f)
+
+        samples: list[Tuple[float, float]] = []
+        prev_px: Optional[float] = None
+        if timed_rows:
+            timed_rows.sort(key=lambda x: x[0])
+            for _, px_f, vol_w in timed_rows:
+                if vol_w <= 0.0:
+                    vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
+                prev_px = px_f
+                samples.append((px_f, vol_w))
+        else:
+            for px_f in scalar_rows:
+                vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
+                prev_px = px_f
+                samples.append((px_f, vol_w))
+
         if len(samples) < 4:
             return {}
 
-        # Downsample very dense tick arrays (>4000 pts) uniformly to keep latency <0.3 ms
         if len(samples) > 4000:
             step = max(1, len(samples) // 2000)
             downsampled = samples[::step]
@@ -116,11 +159,7 @@ def compute_volume_profile_metrics(
         bin_px_sums = [0.0] * n_bins
         total_vol = 0.0
         for px_v, w_v in samples:
-            b_idx = int((px_v - low_px) / bin_w)
-            if b_idx < 0:
-                b_idx = 0
-            elif b_idx >= n_bins:
-                b_idx = n_bins - 1
+            b_idx = min(n_bins - 1, max(0, int((px_v - low_px) / bin_w)))
             bin_vols[b_idx] += w_v
             bin_px_sums[b_idx] += px_v * w_v
             total_vol += w_v
@@ -135,38 +174,28 @@ def compute_volume_profile_metrics(
             else (low_px + (poc_idx + 0.5) * bin_w)
         )
 
-        va_ratio = max(0.50, min(0.90, float(value_area_pct)))
-        target_vol = total_vol * va_ratio
+        target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol = bin_vols[poc_idx]
-        val_idx = poc_idx
-        vah_idx = poc_idx
+        val_idx = vah_idx = poc_idx
 
         while acc_vol < target_vol and (val_idx > 0 or vah_idx < n_bins - 1):
             down_vol = bin_vols[val_idx - 1] if val_idx > 0 else -1.0
             up_vol = bin_vols[vah_idx + 1] if vah_idx < n_bins - 1 else -1.0
-            if up_vol > down_vol:
+            if up_vol > down_vol or (up_vol == down_vol and (poc_idx - val_idx) > (vah_idx - poc_idx) and vah_idx < n_bins - 1):
                 vah_idx += 1
                 acc_vol += up_vol
-            elif down_vol > up_vol:
+            elif val_idx > 0:
                 val_idx -= 1
                 acc_vol += down_vol
+            elif vah_idx < n_bins - 1:
+                vah_idx += 1
+                acc_vol += up_vol
             else:
-                if (poc_idx - val_idx) <= (vah_idx - poc_idx) and val_idx > 0:
-                    val_idx -= 1
-                    acc_vol += down_vol
-                elif vah_idx < n_bins - 1:
-                    vah_idx += 1
-                    acc_vol += up_vol
-                else:
-                    break
+                break
 
         val_raw = min(poc_raw, low_px + val_idx * bin_w)
         vah_raw = max(poc_raw, low_px + (vah_idx + 1) * bin_w)
-        eff_dec = (
-            decimals
-            if decimals is not None
-            else (2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6))
-        )
+        eff_dec = decimals if decimals is not None else (2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6))
         poc_px = round(poc_raw, eff_dec)
         val_px = round(val_raw, eff_dec)
         vah_px = round(vah_raw, eff_dec)
@@ -174,33 +203,9 @@ def compute_volume_profile_metrics(
             vah_px = round(high_px, eff_dec)
             val_px = round(low_px, eff_dec)
 
-        poc_dist_pct = round(((cur_px / poc_px) - 1.0) * 100.0, 2) if poc_px > 0 else 0.0
-        vah_dist_pct = round(((cur_px / vah_px) - 1.0) * 100.0, 2) if vah_px > 0 else 0.0
-        val_dist_pct = round(((cur_px / val_px) - 1.0) * 100.0, 2) if val_px > 0 else 0.0
-        va_pos_pct = (
-            round(((cur_px - val_px) / (vah_px - val_px)) * 100.0, 1)
-            if vah_px > val_px > 0
-            else 50.0
-        )
-        if cur_px > vah_px:
-            va_regime = "ABOVE_VAH"
-        elif cur_px < val_px:
-            va_regime = "BELOW_VAL"
-        elif cur_px >= poc_px:
-            va_regime = "INSIDE_VA_UPPER"
-        else:
-            va_regime = "INSIDE_VA_LOWER"
-
-        return {
-            "poc_px": poc_px,
-            "vah_px": vah_px,
-            "val_px": val_px,
-            "poc_dist_pct": poc_dist_pct,
-            "vah_dist_pct": vah_dist_pct,
-            "val_dist_pct": val_dist_pct,
-            "va_pos_pct": va_pos_pct,
-            "va_regime": va_regime,
-        }
+        out: Dict[str, Any] = {"poc_px": poc_px, "vah_px": vah_px, "val_px": val_px}
+        out.update(_build_vp_position_dict(cur_px, poc_px, val_px, vah_px))
+        return out
     except Exception:
         return {}
 
@@ -234,20 +239,9 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             return False
 
         span_ms = now_ms - clean_series[0][0]
-        sample_prices = [x[1] for x in clean_series[::max(1, len(clean_series) // 500)]]
-        l24 = min(sample_prices) if sample_prices else cur_px
-        h24 = max(sample_prices) if sample_prices else cur_px
-        out: Dict[str, Any] = {
-            "low_24h": l24,
-            "high_24h": h24,
-        }
-        if h24 > 0:
-            out["dd_24h_high_pct"] = round((cur_px / h24 - 1.0) * 100.0, 2)
-        if l24 > 0:
-            out["bounce_24h_low_pct"] = round((cur_px / l24 - 1.0) * 100.0, 2)
-            out["span_24h_pct"] = round((h24 / l24 - 1.0) * 100.0, 2)
-        if h24 > l24 > 0:
-            out["pos_24h_pct"] = round(((cur_px - l24) / (h24 - l24)) * 100.0, 1)
+        l24 = min(x[1] for x in clean_series)
+        h24 = max(x[1] for x in clean_series)
+        out = _compute_horizon_range_dict(cur_px, l24, h24, "24h")
 
         for key, mins, min_span_ms, max_gap_mins in (
             ("chg_1m_pct", 1.0, 60000.0, 2.5),
@@ -528,19 +522,39 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
 
 
+_UNFILLED_ORDER_STATUSES = frozenset({
+    "CANCELED", "CANCELLED", "REJECTED", "EXPIRED", "NEW", "OPEN", "PENDING",
+})
+
+
 def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     """Extract last action side, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
         return None
-    valid = [o for o in orders_list if isinstance(o, dict)]
-    if not valid:
-        return None
     from providers.base import (
+        _EXEC_QTY_KEYS,
+        aggregate_fills_by_order_id,
         extract_order_price,
         extract_order_qty,
         extract_order_side,
         extract_timestamp_ms,
     )
+
+    valid = [
+        o
+        for o in orders_list
+        if isinstance(o, dict)
+        and (
+            str(o.get("status") or "").strip().upper() not in _UNFILLED_ORDER_STATUSES
+            or any((safe_pos_float(o.get(k), 0.0) or 0.0) > 0.0 for k in _EXEC_QTY_KEYS)
+        )
+    ]
+    if not valid:
+        return None
+    if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
+        agg = aggregate_fills_by_order_id(valid)
+        if agg:
+            valid = agg
 
     ordered = sorted(
         enumerate(valid),
@@ -596,10 +610,6 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         "recent_buys": buys_fmt[-4:],
         "recent_sells": sells_fmt[-3:],
     }
-
-
-from botcore import extract_current_price_item, load_key_value_conf
-from cachepaths import cache_symbol_variants, canonical_base_asset
 
 
 def apply_short_trend_item(
@@ -828,16 +838,8 @@ def compute_7d_range_metrics(vals: list[float], decimals: Optional[int] = None) 
     h7_v = round(raw_high, eff_dec)
     metrics: Dict[str, Any] = {
         "chg_7d_pct": round(((cur_v - vals[0]) / vals[0]) * 100.0, 2),
-        "low_7d": l7_v,
-        "high_7d": h7_v,
+        **_compute_horizon_range_dict(cur_v, l7_v, h7_v, "7d"),
     }
-    if h7_v > 0:
-        metrics["dd_7d_high_pct"] = round((cur_v / h7_v - 1.0) * 100.0, 2)
-    if l7_v > 0:
-        metrics["bounce_7d_low_pct"] = round((cur_v / l7_v - 1.0) * 100.0, 2)
-        metrics["span_7d_pct"] = round((h7_v / l7_v - 1.0) * 100.0, 2)
-    if h7_v > l7_v > 0:
-        metrics["pos_7d_pct"] = round(((cur_v - l7_v) / (h7_v - l7_v)) * 100.0, 1)
     metrics.update(compute_swing_wave_metrics(vals, decimals=eff_dec))
     return metrics
 
@@ -848,38 +850,20 @@ def load_symbol_microstructure(
     read_json_fn: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
-    from cachepaths import cache_symbol_variants
-
     if read_json_fn is None:
         read_json_fn = read_json_cached
     sym_cands = cache_symbol_variants(sym)
-    ob = next(
-        (
-            d
-            for cand in sym_cands
-            for d in (read_json_fn(os.path.join(cache_dir, f"orderbook_depth_{cand}.json")),)
-            if isinstance(d, dict)
-        ),
-        None,
-    )
-    deriv = next(
-        (
-            d
-            for cand in sym_cands
-            for d in (read_json_fn(os.path.join(cache_dir, f"derivatives_telemetry_{cand}.json")),)
-            if isinstance(d, dict)
-        ),
-        None,
-    )
-    whale = next(
-        (
-            d
-            for cand in sym_cands
-            for d in (read_json_fn(os.path.join(cache_dir, f"whale_snapshot_{cand}.json")),)
-            if isinstance(d, dict)
-        ),
-        None,
-    )
+
+    def _first_telemetry_dict(prefix: str) -> Optional[Dict[str, Any]]:
+        for cand in sym_cands:
+            d = read_json_fn(os.path.join(cache_dir, f"{prefix}{cand}.json"))
+            if isinstance(d, dict):
+                return d
+        return None
+
+    ob = _first_telemetry_dict("orderbook_depth_")
+    deriv = _first_telemetry_dict("derivatives_telemetry_")
+    whale = _first_telemetry_dict("whale_snapshot_")
     if not (ob or deriv or whale):
         return None
     m_info: Dict[str, Any] = {}
@@ -894,14 +878,14 @@ def load_symbol_microstructure(
             m_info["best_bid"] = best_bid
         if best_ask is not None:
             m_info["best_ask"] = best_ask
-        spread_bps = safe_pos_float(ob.get("spread_bps"), default=None)
-        if spread_bps is None and best_bid is not None and best_ask is not None and best_ask >= best_bid:
-            eff_mid = ob_mid if ob_mid is not None and ob_mid > 0 else (best_bid + best_ask) / 2.0
-            if eff_mid > 0:
-                raw_sp = ((best_ask - best_bid) / eff_mid) * 10000.0
-                spread_bps = round(raw_sp, 4 if raw_sp < 0.1 else 2)
+        spread_bps = round_spread_bps(
+            ob.get("spread_bps"),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            mid_price=ob_mid,
+        )
         if spread_bps is not None:
-            m_info["spread_bps"] = round(spread_bps, 4 if spread_bps < 0.1 else 2)
+            m_info["spread_bps"] = spread_bps
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"),
             ("ask_depth_usd", "ask_depth_usd"),
@@ -927,6 +911,37 @@ def load_symbol_microstructure(
     return m_info
 
 
+def _blend_structural_liq_anchor(
+    cur_px: float,
+    base_px: float,
+    levels_and_pads: tuple[tuple[Any, float], ...],
+    *,
+    is_short: bool,
+    min_dist: float,
+    max_dist: float,
+    bound_px: float,
+    inner_guard_px: Optional[float] = None,
+) -> float:
+    """Blend base liquidation distance with validated structural stop/liquidity pool anchors."""
+    cands: list[float] = []
+    for raw_lvl, pad in levels_and_pads:
+        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
+        if lvl <= 0.0:
+            continue
+        swept = lvl * pad
+        dist_ratio = ((swept - cur_px) if is_short else (cur_px - swept)) / cur_px
+        if not (min_dist <= dist_ratio <= max_dist):
+            continue
+        if inner_guard_px is not None:
+            if is_short and swept <= inner_guard_px * 1.01:
+                continue
+            if not is_short and swept >= inner_guard_px * 0.99:
+                continue
+        cands.append(swept)
+    blended = 0.5 * base_px + 0.5 * (sum(cands) / len(cands)) if cands else base_px
+    return max(bound_px, blended) if is_short else min(bound_px, blended)
+
+
 def compute_liquidation_clusters(
     pinfo: Optional[Dict[str, Any]],
     minfo: Optional[Dict[str, Any]],
@@ -943,15 +958,9 @@ def compute_liquidation_clusters(
     if not isinstance(minfo, dict):
         return {}
     p_dict = pinfo if isinstance(pinfo, dict) else {}
-    cur_px = safe_pos_float(p_dict.get("price"), default=None) or safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
+    cur_px = safe_pos_float(p_dict.get("price"), default=0.0) or 0.0
     ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
-    bw_px = safe_pos_float(minfo.get("bid_wall_px"), default=0.0) or 0.0
-    aw_px = safe_pos_float(minfo.get("ask_wall_px"), default=0.0) or 0.0
-    if ob_mid > 0 and (
-        cur_px <= 0
-        or (bw_px > 0 and cur_px < bw_px)
-        or (aw_px > 0 and cur_px > aw_px)
-    ):
+    if ob_mid > 0.0 and (cur_px <= 0.0 or abs(cur_px - ob_mid) / ob_mid > 0.10):
         cur_px = ob_mid
     if cur_px <= 0.0:
         return {}
@@ -965,12 +974,8 @@ def compute_liquidation_clusters(
     if oi_usd <= 0.0:
         return {}
 
-    raw_long_pct = safe_float(minfo.get("whale_long_pct"), default=0.50)
-    if raw_long_pct is None:
-        raw_long_pct = 0.50
-    elif raw_long_pct > 1.0:
-        raw_long_pct = raw_long_pct / 100.0
-    long_share = min(0.85, max(0.15, float(raw_long_pct)))
+    raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=0.50, allow_percentage=True)
+    long_share = min(0.85, max(0.15, float(raw_long_pct if raw_long_pct is not None else 0.50)))
 
     funding = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
     funding_tilt = max(-0.30, min(0.30, funding * 1500.0))
@@ -981,86 +986,43 @@ def compute_liquidation_clusters(
     near_band_pct = max(1.2, min(4.5, vol_1h * 1.65))
     deep_band_pct = max(near_band_pct * 1.85, min(10.0, vol_1h * 3.4))
 
-    base_long_near = cur_px * (1.0 - near_band_pct / 100.0)
-    base_short_near = cur_px * (1.0 + near_band_pct / 100.0)
-
-    # Symmetric structural stop/liquidity pool anchors for nearest (25x-50x) cluster
-    long_near_cands: list[float] = []
-    for raw_lvl, pad in (
-        (p_dict.get("val_px"), 0.995),
-        (p_dict.get("low_24h"), 0.996),
-    ):
-        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
-        if lvl > 0.0:
-            swept = lvl * pad
-            dist_ratio = (cur_px - swept) / cur_px
-            if 0.012 <= dist_ratio <= 0.065:
-                long_near_cands.append(swept)
-
-    short_near_cands: list[float] = []
-    for raw_lvl, pad in (
-        (p_dict.get("vah_px"), 1.005),
-        (p_dict.get("high_24h"), 1.004),
-    ):
-        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
-        if lvl > 0.0:
-            swept = lvl * pad
-            dist_ratio = (swept - cur_px) / cur_px
-            if 0.012 <= dist_ratio <= 0.065:
-                short_near_cands.append(swept)
-
-    long_near_raw = min(
-        cur_px * (1.0 - 0.012),
-        0.5 * base_long_near + 0.5 * (sum(long_near_cands) / len(long_near_cands))
-        if long_near_cands
-        else base_long_near,
+    long_near_raw = _blend_structural_liq_anchor(
+        cur_px,
+        cur_px * (1.0 - near_band_pct / 100.0),
+        ((p_dict.get("val_px"), 0.995), (p_dict.get("low_24h"), 0.996)),
+        is_short=False,
+        min_dist=0.012,
+        max_dist=0.065,
+        bound_px=cur_px * (1.0 - 0.012),
     )
-    short_near_raw = max(
-        cur_px * (1.0 + 0.012),
-        0.5 * base_short_near + 0.5 * (sum(short_near_cands) / len(short_near_cands))
-        if short_near_cands
-        else base_short_near,
+    short_near_raw = _blend_structural_liq_anchor(
+        cur_px,
+        cur_px * (1.0 + near_band_pct / 100.0),
+        ((p_dict.get("vah_px"), 1.005), (p_dict.get("high_24h"), 1.004)),
+        is_short=True,
+        min_dist=0.012,
+        max_dist=0.065,
+        bound_px=cur_px * (1.0 + 0.012),
     )
-
-    # Symmetric structural anchors for secondary deep cascade (10x-20x) cluster
-    base_long_deep = min(cur_px * (1.0 - deep_band_pct / 100.0), long_near_raw * 0.978)
-    base_short_deep = max(cur_px * (1.0 + deep_band_pct / 100.0), short_near_raw * 1.022)
-
-    long_deep_cands: list[float] = []
-    for raw_lvl, pad in (
-        (p_dict.get("swing_low_px"), 0.995),
-        (p_dict.get("low_7d"), 0.996),
-    ):
-        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
-        if lvl > 0.0:
-            swept = lvl * pad
-            dist_ratio = (cur_px - swept) / cur_px
-            if 0.022 <= dist_ratio <= 0.14 and swept < long_near_raw * 0.99:
-                long_deep_cands.append(swept)
-
-    short_deep_cands: list[float] = []
-    for raw_lvl, pad in (
-        (p_dict.get("swing_high_px"), 1.005),
-        (p_dict.get("high_7d"), 1.004),
-    ):
-        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
-        if lvl > 0.0:
-            swept = lvl * pad
-            dist_ratio = (swept - cur_px) / cur_px
-            if 0.022 <= dist_ratio <= 0.14 and swept > short_near_raw * 1.01:
-                short_deep_cands.append(swept)
-
-    long_deep_raw = min(
-        long_near_raw * 0.985,
-        0.5 * base_long_deep + 0.5 * (sum(long_deep_cands) / len(long_deep_cands))
-        if long_deep_cands
-        else base_long_deep,
+    long_deep_raw = _blend_structural_liq_anchor(
+        cur_px,
+        min(cur_px * (1.0 - deep_band_pct / 100.0), long_near_raw * 0.978),
+        ((p_dict.get("swing_low_px"), 0.995), (p_dict.get("low_7d"), 0.996)),
+        is_short=False,
+        min_dist=0.022,
+        max_dist=0.14,
+        bound_px=long_near_raw * 0.985,
+        inner_guard_px=long_near_raw,
     )
-    short_deep_raw = max(
-        short_near_raw * 1.015,
-        0.5 * base_short_deep + 0.5 * (sum(short_deep_cands) / len(short_deep_cands))
-        if short_deep_cands
-        else base_short_deep,
+    short_deep_raw = _blend_structural_liq_anchor(
+        cur_px,
+        max(cur_px * (1.0 + deep_band_pct / 100.0), short_near_raw * 1.022),
+        ((p_dict.get("swing_high_px"), 1.005), (p_dict.get("high_7d"), 1.004)),
+        is_short=True,
+        min_dist=0.022,
+        max_dist=0.14,
+        bound_px=short_near_raw * 1.015,
+        inner_guard_px=short_near_raw,
     )
 
     eff_dec = (
@@ -1112,6 +1074,14 @@ def compute_liquidation_clusters(
     }
 
 
+_VENUE_DEFAULT_FEE_SPECS: Dict[str, tuple[str, float, float, float]] = {
+    "binance": ("VIP0", 10.0, 10.0, 5.0),
+    "kraken": ("PRO_TIER0", 16.0, 26.0, 1.0),
+    "hyperliquid": ("SPOT_TIER0", 4.0, 7.0, 10.0),
+    "t212": ("INVEST_RTH", 15.0, 15.0, 1.0),
+}
+
+
 def resolve_venue_fee_and_limits(
     venue: str,
     symbol: str,
@@ -1124,32 +1094,12 @@ def resolve_venue_fee_and_limits(
     gateway_max_usd: float = 2000.0,
 ) -> Dict[str, Any]:
     """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
+    from providers.quantity import t212_sell_balance_cap
+
     v_norm = normalize_venue_name(venue)
-    if v_norm == "binance":
-        fee_tier = "VIP0"
-        maker_bps = 10.0
-        taker_bps = 10.0
-        min_notional = 5.0
-    elif v_norm == "kraken":
-        fee_tier = "PRO_TIER0"
-        maker_bps = 16.0
-        taker_bps = 26.0
-        min_notional = 1.0
-    elif v_norm == "hyperliquid":
-        fee_tier = "SPOT_TIER0"
-        maker_bps = 4.0
-        taker_bps = 7.0
-        min_notional = 10.0
-    elif v_norm == "t212":
-        fee_tier = "INVEST_RTH"
-        maker_bps = 15.0
-        taker_bps = 15.0
-        min_notional = 1.0
-    else:
-        fee_tier = "STANDARD"
-        maker_bps = 15.0
-        taker_bps = 15.0
-        min_notional = 5.0
+    fee_tier, maker_bps, taker_bps, min_notional = _VENUE_DEFAULT_FEE_SPECS.get(
+        v_norm, ("STANDARD", 15.0, 15.0, 5.0)
+    )
 
     px_f = safe_pos_float(price, default=0.0) or 0.0
     if v_norm == "t212":
@@ -1233,15 +1183,16 @@ def resolve_venue_fee_and_limits(
         "tick_size": tick_size,
         "buy_buffer_pct": 99.5,
     }
-    sp_f = safe_nonneg_float(spread_bps, default=None)
-    if sp_f is not None:
-        out["spread_bps"] = round(sp_f, 4 if sp_f < 0.1 else 2)
+    sp_rounded = round_spread_bps(spread_bps)
+    if sp_rounded is not None:
+        out["spread_bps"] = sp_rounded
     fq_f = safe_nonneg_float(free_quote, default=None)
     if fq_f is not None:
         out["effective_max_buy_usd"] = round(min(float(gateway_max_usd), fq_f * 0.995), 2)
     fb_f = safe_nonneg_float(free_base, default=None)
     if fb_f is not None and px_f > 0.0:
-        out["effective_max_sell_usd"] = round(min(float(gateway_max_usd), fb_f * px_f), 2)
+        sellable_qty = t212_sell_balance_cap(fb_f, px_f) if v_norm == "t212" else fb_f
+        out["effective_max_sell_usd"] = round(min(float(gateway_max_usd), sellable_qty * px_f), 2)
     return out
 
 
@@ -1748,7 +1699,10 @@ def harvest_tradable_positions_and_orders(
             }
             if quote_breakdown:
                 pos_entry["free_quote_breakdown"] = quote_breakdown
-            if peak is not None and peak_f > 0:
+            has_held_base = base_free is None or (
+                base_free > 1e-8 and (px_f <= 0.0 or base_free * px_f >= 1.0)
+            )
+            if peak is not None and peak_f > 0 and has_held_base:
                 pos_entry["trailing_peak"] = round(peak_f, 6)
                 pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
             if params.get("trailing.pct"):
@@ -2144,15 +2098,7 @@ def sync_sibling_symbol_telemetry(
         val_v = safe_pos_float(pinfo.get("val_px"), default=0.0) or 0.0
         vah_v = safe_pos_float(pinfo.get("vah_px"), default=0.0) or 0.0
         if p_cur > 0.0 and poc_v > 0.0 and val_v > 0.0 and vah_v > val_v:
-            pinfo["poc_dist_pct"] = round(((p_cur / poc_v) - 1.0) * 100.0, 2)
-            pinfo["val_dist_pct"] = round(((p_cur / val_v) - 1.0) * 100.0, 2)
-            pinfo["vah_dist_pct"] = round(((p_cur / vah_v) - 1.0) * 100.0, 2)
-            pinfo["va_pos_pct"] = round(((p_cur - val_v) / (vah_v - val_v)) * 100.0, 1)
-            pinfo["va_regime"] = (
-                "ABOVE_VAH"
-                if p_cur > vah_v
-                else ("BELOW_VAL" if p_cur < val_v else ("INSIDE_VA_UPPER" if p_cur >= poc_v else "INSIDE_VA_LOWER"))
-            )
+            pinfo.update(_build_vp_position_dict(p_cur, poc_v, val_v, vah_v))
 
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
@@ -2216,7 +2162,10 @@ def harvest_recent_orders_and_enrich_positions(
                 fills = extract_symbol_recent_fills(hl_orders)
                 if fills:
                     venue_recent_orders["hyperliquid"][sym] = fills
-                    recent_orders[sym] = fills
+                    if sym in recent_orders:
+                        recent_orders[f"hyperliquid:{sym}"] = fills
+                    else:
+                        recent_orders[sym] = fills
         except Exception:
             pass
     for pos in tradable_positions:
@@ -2246,12 +2195,11 @@ def harvest_recent_orders_and_enrich_positions(
             None,
         )
         fb_cur = safe_float(pos.get("free_base"), -1.0)
-        last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
-        is_flat_after_exit = (
-            fb_cur >= 0.0
-            and (fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0))
-            and last_side_ro == "SELL"
+        is_flat_balance = fb_cur >= 0.0 and (
+            fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
         )
+        last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
+        is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
         if isinstance(ro, dict):
             lb = ro.get("last_buy")
             ls = ro.get("last_sell")
@@ -2291,17 +2239,19 @@ def harvest_recent_orders_and_enrich_positions(
                 cyc = next((cyc_map[c] for c in p_variants if isinstance(cyc_map.get(c), dict)), None)
             if not isinstance(cyc, dict):
                 continue
-            if pos.get("free_base") is None and cyc.get("qty") is not None:
-                cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
-                if cyc_qty is not None:
-                    pos["free_base"] = round(cyc_qty, 6)
-                    if pos_px_f > 0:
-                        pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
-            if is_flat_after_exit and not cyc.get("resting_orders"):
+            cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
+            if pos.get("free_base") is None and cyc_qty is not None:
+                pos["free_base"] = round(cyc_qty, 6)
+                if pos_px_f > 0:
+                    pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
+            cyc_flat = is_flat_balance and (cyc_qty is None or cyc_qty <= 1e-8) and not cyc.get("resting_orders")
+            if (is_flat_after_exit or cyc_flat) and not cyc.get("resting_orders"):
                 cyc["qty"] = round(max(0.0, fb_cur), 6)
                 cyc["cost_usd"] = 0.0
                 cyc["avg_cost_px"] = None
                 cyc["dd_pct"] = None
+                pos.pop("trailing_peak", None)
+                pos.pop("dd_from_peak_pct", None)
             elif not is_flat_after_exit:
                 cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
