@@ -42,7 +42,9 @@ from orchestratorOS.agy.ui_mirror import (
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
-_safe_int = safe_int
+def _safe_int(val: Any, default: int = 0) -> int:
+    f = safe_float(val, default=None)
+    return int(round(f)) if f is not None else default
 
 
 @dataclass(frozen=True)
