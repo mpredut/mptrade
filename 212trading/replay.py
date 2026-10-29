@@ -37,6 +37,7 @@ finally:
         sys.modules["market_data"] = _prev_md
     else:
         sys.modules.pop("market_data", None)
+from botcore import safe_float, safe_pos_float
 from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
@@ -47,31 +48,7 @@ from providers.replay_clock import SimClock as _SimClock
 
 
 def _ols_slope_pct(closes: list[float]) -> float | None:
-    clean_closes: list[float] = []
-    for c in closes or []:
-        if isinstance(c, bool):
-            continue
-        try:
-            cf = float(c)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(cf) and cf > 0:
-            clean_closes.append(cf)
-    values = clean_closes[-12:]
-    if len(values) < 6:
-        return None
-    n = len(values)
-    mean_x = (n - 1) / 2.0
-    mean_y = sum(values) / n
-    denominator = sum((index - mean_x) ** 2 for index in range(n))
-    if denominator == 0 or mean_y == 0 or not math.isfinite(mean_y):
-        return None
-    slope = sum(
-        (index - mean_x) * (value - mean_y)
-        for index, value in enumerate(values)
-    ) / denominator
-    res = slope / mean_y * 100.0
-    return res if math.isfinite(res) else None
+    return _md.compute_ols_slope_pct(closes, bars=12)
 
 
 def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
@@ -122,19 +99,13 @@ def run_replay(
     if not isinstance(ohlc, (list, tuple)) or not ohlc:
         raise ValueError("ohlc cannot be empty")
     if bar_minutes is not None:
-        try:
-            bm_f = float(bar_minutes)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("bar_minutes must be a finite positive number") from exc
-        if isinstance(bar_minutes, bool) or not math.isfinite(bm_f) or bm_f <= 0:
+        bm_f = safe_pos_float(bar_minutes, default=None)
+        if bm_f is None:
             raise ValueError("bar_minutes must be a finite positive number")
         bar_minutes = bm_f
     if periods_per_year is not None:
-        try:
-            ppy_f = float(periods_per_year)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("periods_per_year must be a finite positive number") from exc
-        if isinstance(periods_per_year, bool) or not math.isfinite(ppy_f) or ppy_f <= 0:
+        ppy_f = safe_pos_float(periods_per_year, default=None)
+        if ppy_f is None:
             raise ValueError("periods_per_year must be a finite positive number")
         periods_per_year = ppy_f
     for idx, row in enumerate(ohlc):
@@ -205,13 +176,10 @@ def _run_once(
     clock = _SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
     for row in warmup_ohlc or ():
-        if not isinstance(row, (list, tuple)) or len(row) < 4 or isinstance(row[3], bool):
+        if not isinstance(row, (list, tuple)) or len(row) < 4:
             continue
-        try:
-            cf = float(row[3])
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(cf) and cf > 0:
+        cf = safe_pos_float(row[3], default=None)
+        if cf is not None:
             trend_closes.append(cf)
     original_log = _strat.log
     original_notify = _strat.notify

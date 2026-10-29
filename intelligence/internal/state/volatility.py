@@ -9,7 +9,7 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-from botcore import float_env
+from botcore import float_env, safe_nonneg_float, safe_pos_float
 
 
 def _f_env(name: str, default: float) -> float:
@@ -26,33 +26,27 @@ _VOL_MEMO_MAX_ENTRIES = 128
 
 def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> Optional[float]:
     """Estimate one-sigma hourly volatility percentage from scaled log returns."""
-    if (
-        prices is None
-        or isinstance(prices, (bool, str, bytes))
-        or sample_rate_sec is None
-        or isinstance(sample_rate_sec, bool)
-    ):
+    if prices is None or isinstance(prices, (bool, str, bytes)):
+        return None
+    sr_f = safe_pos_float(sample_rate_sec, default=None)
+    if sr_f is None:
         return None
     try:
-        sr_f = float(sample_rate_sec)
         n = len(prices)
-    except (TypeError, ValueError):
+    except TypeError:
         return None
-    if n < 20 or not math.isfinite(sr_f) or sr_f <= 0:
+    if n < 20:
         return None
     sample_rate_sec = sr_f
 
     p0 = None
     pn = None
     if not isinstance(prices[0], (bool, np.bool_)) and not isinstance(prices[-1], (bool, np.bool_)):
-        try:
-            cand0 = float(prices[0])
-            candn = float(prices[-1])
-            if math.isfinite(cand0) and cand0 > 0 and math.isfinite(candn) and candn > 0:
-                p0 = cand0
-                pn = candn
-        except (TypeError, ValueError):
-            pass
+        cand0 = safe_pos_float(prices[0], default=None)
+        candn = safe_pos_float(prices[-1], default=None)
+        if cand0 is not None and candn is not None:
+            p0 = cand0
+            pn = candn
 
     tbuf = getattr(prices, "_trend_buf", None)
     if tbuf is not None and p0 is not None and pn is not None:
@@ -91,16 +85,11 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
                 raise TypeError("bool in prices")
             p = np.asarray(prices, dtype=float)
         except (TypeError, ValueError):
-            clean_p = []
-            for x in prices:
-                if x is None or isinstance(x, (bool, np.bool_)):
-                    continue
-                try:
-                    xf = float(x)
-                    if math.isfinite(xf) and xf > 0:
-                        clean_p.append(xf)
-                except (TypeError, ValueError):
-                    continue
+            clean_p = [
+                xf for x in prices
+                if not isinstance(x, (bool, np.bool_))
+                and (xf := safe_pos_float(x, default=None)) is not None
+            ]
             p = np.asarray(clean_p, dtype=float)
             cache_key = None
     p = p[np.isfinite(p) & (p > 0)]
@@ -128,16 +117,8 @@ class RollingVolatilityTracker:
     """O(1) incremental realized volatility tracker using Welford's algorithm over a sliding window."""
 
     def __init__(self, window_size: int = 100) -> None:
-        ws = 100
-        if window_size is not None and not isinstance(window_size, bool):
-            try:
-                wf = float(window_size)
-                if math.isfinite(wf) and wf >= 20:
-                    ws = int(wf)
-                elif math.isfinite(wf) and wf > 0:
-                    ws = 20
-            except (TypeError, ValueError, OverflowError):
-                pass
+        wf = safe_pos_float(window_size, default=None)
+        ws = max(20, int(wf)) if wf is not None else 100
         self.window_size = ws
         self._prices: deque[float] = deque(maxlen=ws + 1)
         self._rets: deque[float] = deque(maxlen=ws)
@@ -147,13 +128,8 @@ class RollingVolatilityTracker:
 
     def add_price(self, price: float, sample_rate_sec: float) -> Optional[float]:
         """Add a price tick and return updated 1h volatility in O(1)."""
-        if price is None or isinstance(price, bool):
-            return None
-        try:
-            price = float(price)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(price) or price <= 0:
+        price = safe_pos_float(price, default=None)
+        if price is None:
             return None
         if len(self._prices) > 0:
             prev = self._prices[-1]
@@ -177,13 +153,8 @@ class RollingVolatilityTracker:
 
         self._prices.append(price)
 
-        if sample_rate_sec is None or isinstance(sample_rate_sec, bool):
-            return None
-        try:
-            sr_f = float(sample_rate_sec)
-        except (TypeError, ValueError):
-            return None
-        if self._count < 20 or not math.isfinite(sr_f) or sr_f <= 0:
+        sr_f = safe_pos_float(sample_rate_sec, default=None)
+        if self._count < 20 or sr_f is None:
             return None
 
         variance = self._m2 / self._count
@@ -199,29 +170,10 @@ def adaptive_thresholds(
     k_dca: float = K_DCA_DEFAULT,
 ) -> Tuple[Optional[float], Optional[float]]:
     """Return adaptive reentry and DCA percentages as multipliers of hourly volatility."""
-    if (
-        vol1h is None
-        or isinstance(vol1h, bool)
-        or k_reentry is None
-        or k_dca is None
-        or isinstance(k_reentry, bool)
-        or isinstance(k_dca, bool)
-    ):
-        return None, None
-    try:
-        vol_f = float(vol1h)
-        kr_f = float(k_reentry)
-        kd_f = float(k_dca)
-    except (TypeError, ValueError):
-        return None, None
-    if not (
-        math.isfinite(vol_f)
-        and vol_f >= 0
-        and math.isfinite(kr_f)
-        and kr_f >= 0
-        and math.isfinite(kd_f)
-        and kd_f >= 0
-    ):
+    vol_f = safe_nonneg_float(vol1h, default=None)
+    kr_f = safe_nonneg_float(k_reentry, default=None)
+    kd_f = safe_nonneg_float(k_dca, default=None)
+    if vol_f is None or kr_f is None or kd_f is None:
         return None, None
     return round(kr_f * vol_f, 3), round(kd_f * vol_f, 3)
 
@@ -232,24 +184,14 @@ vol_1h_pct = calculate_volatility_1h
 
 def vol_pct_to_ratio(vol_pct: float) -> float:
     """Convert an hourly volatility percentage to decimal ratio (e.g. 2.5% -> 0.025, 0.05% -> 0.0005)."""
-    if vol_pct is None or isinstance(vol_pct, bool):
-        return 0.0
-    try:
-        vf = float(vol_pct)
-        return (vf / 100.0) if (math.isfinite(vf) and vf > 0.0) else 0.0
-    except (TypeError, ValueError):
-        return 0.0
+    vf = safe_pos_float(vol_pct, default=None)
+    return (vf / 100.0) if vf is not None else 0.0
 
 
 def vol_ratio_to_pct(vol_ratio: float) -> float:
     """Convert an hourly volatility decimal ratio to percentage (e.g. 0.025 -> 2.5%, 0.0005 -> 0.05%)."""
-    if vol_ratio is None or isinstance(vol_ratio, bool):
-        return 0.0
-    try:
-        vf = float(vol_ratio)
-        return (vf * 100.0) if (math.isfinite(vf) and vf > 0.0) else 0.0
-    except (TypeError, ValueError):
-        return 0.0
+    vf = safe_pos_float(vol_ratio, default=None)
+    return (vf * 100.0) if vf is not None else 0.0
 
 
 def get_kalman_state_path() -> str:
@@ -312,14 +254,8 @@ def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
                     entry = mapping.get(cand)
                     if not isinstance(entry, dict):
                         continue
-                    v = entry.get("vol_1h_pct")
-                    if v is None or isinstance(v, bool):
-                        continue
-                    try:
-                        vf = float(v)
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-                    if math.isfinite(vf) and vf > 0:
+                    vf = safe_pos_float(entry.get("vol_1h_pct"), default=None)
+                    if vf is not None:
                         return vol_pct_to_ratio(vf)
     except Exception:
         pass

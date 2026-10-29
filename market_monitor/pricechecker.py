@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 # Import your existing modules
 import log
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from market_monitor.pricefetcher import get_base_symbol
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
@@ -46,22 +47,13 @@ class PriceAlert:
     def __init__(self, symbol: str, alert_type: str, current_price: float,
                  reference_price: float, percent_change: float, threshold: float,
                  url: Optional[str] = None, reference_time: Optional[str] = None):
-        def _sf(val, default: float = 0.0) -> float:
-            if val is None or isinstance(val, bool):
-                return default
-            try:
-                f = float(val)
-                return f if math.isfinite(f) else default
-            except (TypeError, ValueError, OverflowError):
-                return default
-
         self.symbol = "N/A" if isinstance(symbol, bool) or symbol is None else (str(symbol).strip() or "N/A")
         raw_atype = "down" if isinstance(alert_type, bool) or alert_type is None else (str(alert_type).strip().lower() or "down")
         self.alert_type = "up" if raw_atype in ("up", "rise", "▲") else ("down" if raw_atype in ("down", "drop", "▼") else raw_atype)
-        self.current_price = _sf(current_price, 0.0)
-        self.reference_price = _sf(reference_price, 0.0)
-        self.percent_change = _sf(percent_change, 0.0)
-        self.threshold = _sf(threshold, 0.0)
+        self.current_price = safe_float(current_price, default=0.0)
+        self.reference_price = safe_float(reference_price, default=0.0)
+        self.percent_change = safe_float(percent_change, default=0.0)
+        self.threshold = safe_float(threshold, default=0.0)
         self.timestamp = time.time()
         self.url = "" if isinstance(url, bool) or url is None else str(url)
         self.reference_time = None if isinstance(reference_time, bool) else reference_time
@@ -165,15 +157,10 @@ class PriceChecker:
 
     def _get_price_history_last_hours(self, symbol: str, hours: float):
         """Return compact validated (timestamp_ms, price, readable_time) tuples."""
-        if hours is None or isinstance(hours, bool):
+        hours_f = safe_pos_float(hours, default=None)
+        if hours_f is None:
             return []
-        try:
-            hours = float(hours)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(hours) or hours <= 0:
-            return []
-        eff_hours = min(hours, 24.0 * 365.0)
+        eff_hours = min(hours_f, 24.0 * 365.0)
         history_limit = max(1000, min(100_000, int(math.ceil(eff_hours * 60)) + 2))
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
         cutoff_time = (time.time() - eff_hours * 3600) * 1000
@@ -182,16 +169,9 @@ class PriceChecker:
         for entry in history or ():
             if not isinstance(entry, dict):
                 continue
-            raw_ts = entry.get("timestamp")
-            raw_px = entry.get("price")
-            if raw_ts is None or raw_px is None or isinstance(raw_ts, bool) or isinstance(raw_px, bool):
-                continue
-            try:
-                timestamp = float(raw_ts)
-                price = float(raw_px)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not math.isfinite(timestamp) or not math.isfinite(price) or price <= 0:
+            timestamp = safe_float(entry.get("timestamp"), default=None)
+            price = safe_pos_float(entry.get("price"), default=None)
+            if timestamp is None or price is None:
                 continue
             if timestamp < 10_000_000_000:
                 timestamp *= 1000
@@ -212,15 +192,8 @@ class PriceChecker:
 
     def _calculate_24h_stats(self, symbol: str) -> Dict:
         """Calculate price extremes and time bounds in one O(n) pass."""
-        current_price = self.cachePriceAll.get_latest_price(symbol)
-        if current_price is None or isinstance(current_price, bool):
-            current_price = math.nan
-        else:
-            try:
-                current_price = float(current_price)
-            except (TypeError, ValueError):
-                current_price = math.nan
-        if not math.isfinite(current_price) or current_price <= 0:
+        current_price = safe_pos_float(self.cachePriceAll.get_latest_price(symbol), default=None)
+        if current_price is None:
             return {"has_data": False, "error": "No current price available"}
 
         lookback_hours = self.config.get("lookback_hours", 24)
@@ -259,28 +232,13 @@ class PriceChecker:
         """Check whether we can send a new alert (spam prevention)."""
         key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
         now = time.time()
-        raw_last = self._last_alert_time.get(key, 0.0)
-        last_time = 0.0
-        if raw_last is not None and not isinstance(raw_last, bool):
-            try:
-                lf = float(raw_last)
-                if math.isfinite(lf) and 0.0 <= lf <= now:
-                    last_time = lf
-                else:
-                    self._last_alert_time[key] = 0.0
-            except (TypeError, ValueError, OverflowError):
-                self._last_alert_time[key] = 0.0
+        lf = safe_nonneg_float(self._last_alert_time.get(key, 0.0), default=None)
+        if lf is not None and lf <= now:
+            last_time = lf
         else:
+            last_time = 0.0
             self._last_alert_time[key] = 0.0
-        raw_cd = self.config.get("cooldown_minutes", 30)
-        cd_min = 30.0
-        if raw_cd is not None and not isinstance(raw_cd, bool):
-            try:
-                cf = float(raw_cd)
-                if math.isfinite(cf) and cf >= 0.0:
-                    cd_min = cf
-            except (TypeError, ValueError, OverflowError):
-                cd_min = 30.0
+        cd_min = safe_nonneg_float(self.config.get("cooldown_minutes", 30), default=30.0)
         cooldown_seconds = cd_min * 60.0
 
         return (now - last_time) >= cooldown_seconds
@@ -305,13 +263,7 @@ class PriceChecker:
                 if not isinstance(k, bool) and k is not None and str(k).strip().upper() == sym_up:
                     raw_ts = v
                     break
-        if raw_ts is None or isinstance(raw_ts, bool):
-            return False
-        try:
-            ts = float(raw_ts)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        return math.isfinite(ts) and ts > 0.0
+        return safe_pos_float(raw_ts, default=None) is not None
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:
         fallback = self.config.get("dynamic") if self._is_dynamic_symbol(symbol) else self.config.get("default")
@@ -342,20 +294,11 @@ class PriceChecker:
                                 break
         raw = chosen if isinstance(chosen, dict) else fallback
 
-        def _pos_float(val, default_val: float) -> float:
-            if val is None or isinstance(val, bool):
-                return default_val
-            try:
-                f = float(val)
-                return f if math.isfinite(f) and f > 0 else default_val
-            except (TypeError, ValueError, OverflowError):
-                return default_val
-
-        def_up = _pos_float(fallback.get("up_percent"), PRICE_ALERT_CONFIG["default"]["up_percent"])
-        def_down = _pos_float(fallback.get("down_percent"), PRICE_ALERT_CONFIG["default"]["down_percent"])
+        def_up = safe_pos_float(fallback.get("up_percent"), default=PRICE_ALERT_CONFIG["default"]["up_percent"])
+        def_down = safe_pos_float(fallback.get("down_percent"), default=PRICE_ALERT_CONFIG["default"]["down_percent"])
         return {
-            "up_percent": _pos_float(raw.get("up_percent"), def_up),
-            "down_percent": _pos_float(raw.get("down_percent"), def_down),
+            "up_percent": safe_pos_float(raw.get("up_percent"), default=def_up),
+            "down_percent": safe_pos_float(raw.get("down_percent"), default=def_down),
         }
 
     def _record_alert_sent(self, symbol: str, alert_type: str):
@@ -444,13 +387,8 @@ class PriceChecker:
         Args:
             interval_seconds: How often to check (for example 60 seconds).
         """
-        if interval_seconds is None or isinstance(interval_seconds, bool):
-            raise ValueError("interval_seconds must be greater than zero")
-        try:
-            iv_f = float(interval_seconds)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("interval_seconds must be greater than zero") from exc
-        if not math.isfinite(iv_f) or iv_f <= 0:
+        iv_f = safe_pos_float(interval_seconds, default=None)
+        if iv_f is None:
             raise ValueError("interval_seconds must be greater than zero")
         if self._running:
             print("[Checker] Already running!")

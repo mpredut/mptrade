@@ -17,7 +17,7 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float
+    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
     import os as _os
@@ -28,7 +28,7 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float
+    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 from providers.base import _clean_single_order_id
 
@@ -67,14 +67,12 @@ class T212Client:
         self._last_order = 0.0
         self._backoff_until = 0.0
         self._fetch_fail: dict[str, float] = {}
-        min_gap_val = safe_float(
+        self._min_gap = _clean_nonneg(
             required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec, 0.0
         )
-        self._min_gap = min_gap_val if min_gap_val is not None and min_gap_val >= 0.0 else 0.0
-        ord_gap_val = safe_float(
+        self._order_min_gap = _clean_nonneg(
             required_float_env("T212_ORDER_MIN_GAP_SEC") if order_min_gap_sec is None else order_min_gap_sec, 0.0
         )
-        self._order_min_gap = ord_gap_val if ord_gap_val is not None and ord_gap_val >= 0.0 else 0.0
         # Brief shared account-level caches coalesce redundant per-asset thread
         # reads. A six-second TTL stays above the approximate five-second limits
         # on portfolio and order endpoints.
@@ -90,17 +88,17 @@ class T212Client:
 
     def notify_rate_limit(self, backoff_sec: float = 5.0) -> None:
         """Pause all subsequent requests across all threads after HTTP 429."""
-        if isinstance(backoff_sec, bool):
-            wait_sec = 5.0
-        else:
-            try:
-                wait_sec = float(backoff_sec)
-            except (TypeError, ValueError, OverflowError):
-                wait_sec = 5.0
-            if not math.isfinite(wait_sec) or wait_sec < 0.0:
-                wait_sec = 5.0
+        wait_sec = _clean_nonneg(backoff_sec, 5.0)
         with self._lock:
             self._backoff_until = max(self._backoff_until, time.monotonic() + wait_sec)
+
+    def _invalidate_order_caches_locked(self) -> None:
+        self._ord_cache = None
+        self._fetch_fail.pop("_ord_cache", None)
+        self._pf_cache = None
+        self._fetch_fail.pop("_pf_cache", None)
+        self._cash_cache = None
+        self._fetch_fail.pop("_cash_cache", None)
 
     def _pace(self) -> None:
         """Enforce at least ``_min_gap`` seconds between calls across all threads,
@@ -221,12 +219,7 @@ class T212Client:
         # rate limit on subsequent active orders reads.
         if status != 429:
             with self._lock:
-                self._ord_cache = None
-                self._fetch_fail.pop("_ord_cache", None)
-                self._pf_cache = None
-                self._fetch_fail.pop("_pf_cache", None)
-                self._cash_cache = None
-                self._fetch_fail.pop("_cash_cache", None)
+                self._invalidate_order_caches_locked()
         return status, data
 
     def place_limit_order(
@@ -244,12 +237,9 @@ class T212Client:
         val_u = str(validity or "").strip().upper() if not isinstance(validity, bool) else ""
         if val_u not in {"DAY", "GOOD_TILL_CANCEL"}:
             raise ValueError(f"invalid T212 timeValidity: {validity!r}")
-        try:
-            qty_f = float(quantity)
-            price_f = float(limit_price)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid limit order numeric parameters: {exc}") from exc
-        if not (math.isfinite(qty_f) and math.isfinite(price_f) and price_f > 0):
+        qty_f = safe_float(quantity, default=None)
+        price_f = safe_pos_float(limit_price, default=None)
+        if qty_f is None or price_f is None:
             raise ValueError("place_limit_order requires finite quantity and positive limit_price")
         qty_r = round(qty_f, 2)
         price_r = round(price_f, 2)
@@ -273,11 +263,8 @@ class T212Client:
             raise ValueError(f"invalid T212 ticker: {ticker!r}")
         if isinstance(quantity, bool):
             raise ValueError("place_market_order quantity cannot be bool")
-        try:
-            qty_f = float(quantity)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid market order quantity: {exc}") from exc
-        if not math.isfinite(qty_f):
+        qty_f = safe_float(quantity, default=None)
+        if qty_f is None:
             raise ValueError("place_market_order requires finite quantity")
         qty_r = round(qty_f, 2)
         if qty_r == 0.0:
@@ -342,13 +329,12 @@ class T212Client:
             raw_price = fill.get("price")
             if isinstance(raw_qty, bool) or isinstance(raw_price, bool):
                 continue
-            try:
-                qty = abs(float(raw_qty or 0.0))
-                price = abs(float(raw_price or 0.0))
-            except (TypeError, ValueError, OverflowError):
+            qf = safe_float(raw_qty if raw_qty is not None else 0.0, default=None)
+            pf = safe_float(raw_price if raw_price is not None else 0.0, default=None)
+            if qf is None or pf is None:
                 continue
-            if not (math.isfinite(qty) and math.isfinite(price)):
-                continue
+            qty = abs(qf)
+            price = abs(pf)
             total_qty += qty
             if price > 0.0 and qty > 0.0:
                 total_cost += qty * price
@@ -361,13 +347,10 @@ class T212Client:
                 raw_tax_qty = tax.get("quantity")
                 if isinstance(raw_tax_qty, bool):
                     continue
-                try:
-                    tax_qty = abs(float(raw_tax_qty or 0.0))
-                except (TypeError, ValueError, OverflowError):
+                tqf = safe_float(raw_tax_qty if raw_tax_qty is not None else 0.0, default=None)
+                if tqf is None:
                     continue
-                if not math.isfinite(tax_qty):
-                    continue
-                total_fee += tax_qty
+                total_fee += abs(tqf)
                 raw_cur = tax.get("currency")
                 currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
                 if currency:
@@ -423,12 +406,7 @@ class T212Client:
             log(f"  ! [T212] cancel order {target_oid} -> HTTP {status}")
         if status != 429:
             with self._lock:
-                self._ord_cache = None   # Order list changed; force a fresh read.
-                self._fetch_fail.pop("_ord_cache", None)
-                self._pf_cache = None
-                self._fetch_fail.pop("_pf_cache", None)
-                self._cash_cache = None
-                self._fetch_fail.pop("_cash_cache", None)
+                self._invalidate_order_caches_locked()
         return ok
 
     def _log_read_fail(self, what: str, status: int) -> None:

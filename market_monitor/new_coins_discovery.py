@@ -5,7 +5,7 @@ import threading
 import requests
 import pandas as pd
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -13,7 +13,7 @@ from collections import defaultdict
 # Repository integrations.
 import log
 import utils as u
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 
 # ============================================
 # Global configuration
@@ -47,10 +47,41 @@ _safe_num = safe_float
 
 
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
-    d = safe_float(days_back, default=None)
-    if d is None or d <= 0:
-        return float(default)
-    return min(d, 3650.0)
+    d = safe_pos_float(days_back, default=None)
+    return min(d, 3650.0) if d is not None else float(default)
+
+
+def _parse_coin_added_at(raw_added, *, utc: bool = False) -> Optional[datetime]:
+    """Normalize heterogeneous source timestamps (epoch s/ms, ISO string, datetime) into a comparable datetime."""
+    if raw_added is None or isinstance(raw_added, bool):
+        return None
+    try:
+        if pd.isna(raw_added):
+            return None
+    except Exception:
+        pass
+    if isinstance(raw_added, (int, float)):
+        val_f = safe_pos_float(raw_added, default=None)
+        if val_f is None:
+            return None
+        sec = val_f / 1000.0 if val_f > 1e11 else val_f
+        try:
+            return datetime.fromtimestamp(sec, tz=timezone.utc) if utc else datetime.fromtimestamp(sec)
+        except (ValueError, OSError, OverflowError):
+            return None
+    if isinstance(raw_added, str) or not hasattr(raw_added, "replace"):
+        try:
+            parsed = pd.to_datetime(raw_added)
+            if parsed is None or pd.isna(parsed):
+                return None
+            raw_added = parsed.to_pydatetime() if hasattr(parsed, "to_pydatetime") else parsed
+        except Exception:
+            return None
+    if not isinstance(raw_added, datetime) and not hasattr(raw_added, "replace"):
+        return None
+    if utc:
+        return raw_added.replace(tzinfo=timezone.utc) if getattr(raw_added, "tzinfo", None) is None else raw_added
+    return raw_added.replace(tzinfo=None) if getattr(raw_added, "tzinfo", None) is not None else raw_added
 
 
 def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
@@ -164,36 +195,14 @@ class CoinMarketCapSource(NewCoinsSource):
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
         if not self._cache:
             self.refresh()
-        from datetime import timezone
         eff_days = _safe_days_back(days_back)
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=eff_days)
-        new_coins = []
-        for coin in self._cache:
-            if not isinstance(coin, dict):
-                continue
-            added_at = coin.get('added_at')
-            if added_at is None or isinstance(added_at, bool) or pd.isna(added_at):
-                continue
-            if isinstance(added_at, (int, float)):
-                if not math.isfinite(float(added_at)) or float(added_at) <= 0:
-                    continue
-                sec = float(added_at) / 1000.0 if float(added_at) > 1e11 else float(added_at)
-                try:
-                    added_at = datetime.fromtimestamp(sec, tz=timezone.utc)
-                except (ValueError, OSError, OverflowError):
-                    continue
-            elif not hasattr(added_at, 'replace') or isinstance(added_at, str):
-                try:
-                    added_at = pd.to_datetime(added_at)
-                except Exception:
-                    continue
-                if added_at is None or pd.isna(added_at):
-                    continue
-            if getattr(added_at, 'tzinfo', None) is None:
-                added_at = added_at.replace(tzinfo=timezone.utc)
-            if added_at >= cutoff_date:
-                new_coins.append(coin)
-        return new_coins
+        return [
+            coin for coin in self._cache
+            if isinstance(coin, dict)
+            and (added_at := _parse_coin_added_at(coin.get('added_at'), utc=True)) is not None
+            and added_at >= cutoff_date
+        ]
 
 # ============================================
 # Source 2: CoinGecko
@@ -325,35 +334,12 @@ class BinanceNewListingsSource(NewCoinsSource):
             return []
         eff_days = _safe_days_back(days_back)
         cutoff_date = datetime.now() - timedelta(days=eff_days)
-        out = []
-        for item in self._new_listings:
-            if not isinstance(item, dict):
-                continue
-            added_at = item.get('added_at')
-            if added_at is None or isinstance(added_at, bool):
-                continue
-            if isinstance(added_at, (int, float)):
-                if not math.isfinite(float(added_at)) or float(added_at) <= 0:
-                    continue
-                sec = float(added_at) / 1000.0 if float(added_at) > 1e11 else float(added_at)
-                try:
-                    added_at = datetime.fromtimestamp(sec)
-                except (ValueError, OSError, OverflowError):
-                    continue
-            elif isinstance(added_at, str):
-                try:
-                    parsed_dt = pd.to_datetime(added_at)
-                    if parsed_dt is None or pd.isna(parsed_dt):
-                        continue
-                    added_at = parsed_dt.to_pydatetime() if hasattr(parsed_dt, 'to_pydatetime') else parsed_dt
-                except Exception:
-                    continue
-            if not isinstance(added_at, datetime):
-                continue
-            cmp_dt = added_at.replace(tzinfo=None) if getattr(added_at, 'tzinfo', None) is not None else added_at
-            if cmp_dt >= cutoff_date:
-                out.append(item)
-        return out
+        return [
+            item for item in self._new_listings
+            if isinstance(item, dict)
+            and (cmp_dt := _parse_coin_added_at(item.get('added_at'), utc=False)) is not None
+            and cmp_dt >= cutoff_date
+        ]
 
 # ============================================
 # Source 4: DexScreener
@@ -429,34 +415,12 @@ class DexScreenerSource(NewCoinsSource):
             return []
         eff_days = _safe_days_back(days_back)
         cutoff_date = datetime.now() - timedelta(days=eff_days)
-        out = []
-        for token in self._cache:
-            if not isinstance(token, dict):
-                continue
-            added_at = token.get('added_at')
-            if added_at is None or isinstance(added_at, bool):
-                continue
-            if isinstance(added_at, (int, float)):
-                if not math.isfinite(float(added_at)) or float(added_at) <= 0:
-                    continue
-                sec = float(added_at) / 1000.0 if float(added_at) > 1e11 else float(added_at)
-                try:
-                    added_at = datetime.fromtimestamp(sec)
-                except (ValueError, OSError, OverflowError):
-                    continue
-            elif isinstance(added_at, str):
-                try:
-                    parsed_dt = pd.to_datetime(added_at)
-                    if parsed_dt is None or pd.isna(parsed_dt):
-                        continue
-                    added_at = parsed_dt.to_pydatetime() if hasattr(parsed_dt, 'to_pydatetime') else parsed_dt
-                except Exception:
-                    continue
-            if not isinstance(added_at, datetime):
-                continue
-            cmp_dt = added_at.replace(tzinfo=None) if getattr(added_at, 'tzinfo', None) is not None else added_at
-            if cmp_dt >= cutoff_date:
-                out.append(token)
+        out = [
+            token for token in self._cache
+            if isinstance(token, dict)
+            and (cmp_dt := _parse_coin_added_at(token.get('added_at'), utc=False)) is not None
+            and cmp_dt >= cutoff_date
+        ]
         return out[:50]
 
 # ============================================
@@ -617,13 +581,7 @@ class NewCoinsMonitor:
 
                 
     def start_monitoring(self, interval_seconds: int = REFRESH_INTERVAL_SECONDS):
-        if (
-            interval_seconds is None
-            or isinstance(interval_seconds, bool)
-            or not isinstance(interval_seconds, (int, float))
-            or not math.isfinite(interval_seconds)
-            or interval_seconds <= 0
-        ):
+        if not isinstance(interval_seconds, (int, float)) or safe_pos_float(interval_seconds, default=None) is None:
             raise ValueError("interval_seconds must be a finite positive number")
         if self._running:
             return

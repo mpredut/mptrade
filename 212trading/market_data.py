@@ -14,12 +14,12 @@ import urllib.parse
 import urllib.request
 
 try:
-    from ipo_common import http_get, log
+    from ipo_common import http_get, log, safe_int, safe_nonneg_float, safe_pos_float
 except ImportError:
     try:
-        from .ipo_common import http_get, log
+        from .ipo_common import http_get, log, safe_int, safe_nonneg_float, safe_pos_float
     except ImportError:
-        from botcore import http_get, log
+        from botcore import http_get, log, safe_int, safe_nonneg_float, safe_pos_float
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
@@ -54,7 +54,7 @@ def fetch_yahoo_candles(
 
     Excludes the forming candle when drop_incomplete is True to prevent lookahead drift.
     """
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+    if not isinstance(timeout, (int, float)) or safe_pos_float(timeout, default=None) is None:
         raise ValueError(f"invalid timeout: {timeout!r}")
     if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         raise ValueError(f"invalid symbol: {symbol!r}")
@@ -184,24 +184,12 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
         vols = q.get("volume") or []
         bars = []
         for i, (t, c) in enumerate(zip(ts, closes)):
-            if t is None or c is None or isinstance(t, bool) or isinstance(c, bool):
-                continue
-            try:
-                t_f = float(t)
-                c_f = float(c)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not (math.isfinite(t_f) and t_f > 0 and math.isfinite(c_f) and c_f > 0):
+            t_f = safe_pos_float(t, default=None)
+            c_f = safe_pos_float(c, default=None)
+            if t_f is None or c_f is None:
                 continue
             raw_v = vols[i] if i < len(vols) else None
-            v_clean = None
-            if raw_v is not None and not isinstance(raw_v, bool):
-                try:
-                    v_f = float(raw_v)
-                    if math.isfinite(v_f) and v_f >= 0:
-                        v_clean = v_f
-                except (TypeError, ValueError, OverflowError):
-                    v_clean = None
+            v_clean = safe_nonneg_float(raw_v, default=None)
             bars.append((int(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
         return meta, bars
     except (ValueError, KeyError, TypeError):
@@ -215,42 +203,37 @@ def get_price_usd(sym: str) -> float | None:
     if bars:
         return bars[-1][1]
     if meta:
-        raw_p = meta.get("regularMarketPrice")
-        if raw_p is not None and not isinstance(raw_p, bool):
-            try:
-                p_f = float(raw_p)
-                if math.isfinite(p_f) and p_f > 0:
-                    return p_f
-            except (TypeError, ValueError, OverflowError):
-                pass
+        return safe_pos_float(meta.get("regularMarketPrice"), default=None)
     return None
+
+
+def compute_ols_slope_pct(closes, bars: int = 12) -> float | None:
+    """Compute short-term OLS trend slope percentage per bar over the last ``bars`` closes."""
+    bars_i = safe_int(bars, default=None)
+    bars_n = max(4, bars_i) if bars_i is not None else 12
+    clean_closes = [
+        cf for c in (closes or ())
+        if (cf := safe_pos_float(c, default=None)) is not None
+    ][-bars_n:]
+    if len(clean_closes) < max(4, bars_n // 2):
+        return None
+    n = len(clean_closes)
+    mx = (n - 1) / 2.0
+    my = sum(clean_closes) / n
+    denom = sum((x - mx) ** 2 for x in range(n))
+    if denom == 0 or my == 0 or not math.isfinite(my):
+        return None
+    slope = sum((i - mx) * (clean_closes[i] - my) for i in range(n)) / denom
+    res = slope / my * 100.0
+    return res if math.isfinite(res) else None
 
 
 def trend_slope_pct(sym: str, bars: int = 12) -> float | None:
     """Return short-term OLS trend slope over the last `bars` five-minute closes.
     Normalize as price percentage PER BAR; negative means downtrend. Return None with
     insufficient data. Used as a DCA gate like Binance/Kraken to avoid falling markets."""
-    if isinstance(bars, bool):
-        bars_n = 12
-    else:
-        try:
-            bars_n = max(4, int(bars))
-        except (TypeError, ValueError, OverflowError):
-            bars_n = 12
     _, bars_rows = _chart(sym)
-    closes = [c for (_, c, _) in bars_rows if not isinstance(c, bool) and math.isfinite(float(c)) and float(c) > 0][-bars_n:]
-    if len(closes) < max(4, bars_n // 2):
-        return None
-    n = len(closes)
-    xs = list(range(n))
-    mx = sum(xs) / n
-    my = sum(closes) / n
-    denom = sum((x - mx) ** 2 for x in xs)
-    if denom == 0 or my == 0 or not math.isfinite(my):
-        return None
-    slope = sum((xs[i] - mx) * (closes[i] - my) for i in range(n)) / denom
-    res = slope / my * 100.0     # percentage of price per five-minute bar
-    return res if math.isfinite(res) else None
+    return compute_ols_slope_pct([c for (_, c, _) in bars_rows], bars=bars)
 
 
 def get_usd_ron() -> float:
@@ -282,36 +265,12 @@ def check_market(sym: str) -> dict | None:
         return None
     meta = meta or {}
 
-    raw_price = meta.get("regularMarketPrice")
-    price = None
-    if raw_price is not None and not isinstance(raw_price, bool):
-        try:
-            p_f = float(raw_price)
-            if math.isfinite(p_f) and p_f > 0:
-                price = p_f
-        except (TypeError, ValueError, OverflowError):
-            price = None
-    raw_vol = meta.get("regularMarketVolume")
-    meta_vol = 0
-    if raw_vol is not None and not isinstance(raw_vol, bool):
-        try:
-            v_f = float(raw_vol)
-            if math.isfinite(v_f) and v_f >= 0:
-                meta_vol = v_f
-        except (TypeError, ValueError, OverflowError):
-            meta_vol = 0
+    price = safe_pos_float(meta.get("regularMarketPrice"), default=None)
+    meta_vol = safe_nonneg_float(meta.get("regularMarketVolume"), default=0)
     raw_state = meta.get("marketState")
     state    = raw_state.strip().upper() if isinstance(raw_state, str) else ""
-    last_ts  = meta.get("regularMarketTime")
-
-    age_sec = None
-    if last_ts is not None and not isinstance(last_ts, bool):
-        try:
-            ts_f = float(last_ts)
-            if math.isfinite(ts_f) and ts_f > 0:
-                age_sec = time.time() - ts_f
-        except (TypeError, ValueError, OverflowError):
-            pass
+    ts_f = safe_pos_float(meta.get("regularMarketTime"), default=None)
+    age_sec = (time.time() - ts_f) if ts_f is not None else None
 
     # --- intraday SERIES signals robust to stale metadata ---
     series_age = series_vol = None

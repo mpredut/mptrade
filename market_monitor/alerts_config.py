@@ -13,8 +13,9 @@ aborts startup instead of silently selecting a trading/alerting policy.
 """
 from __future__ import annotations
 
-import math
 import os
+
+from botcore import _parse_bool_flag, safe_float, safe_pos_float
 
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
 _SETTING_KEYS = {
@@ -35,9 +36,9 @@ def _pair(val: str) -> dict:
     if len(parts) != 2:
         raise ValueError("expected UP / DOWN threshold pair")
     up, down = parts
-    up_v = float(up.strip())
-    down_v = float(down.strip())
-    if not (math.isfinite(up_v) and math.isfinite(down_v) and up_v > 0 and down_v > 0):
+    up_v = safe_pos_float(up.strip(), default=None)
+    down_v = safe_pos_float(down.strip(), default=None)
+    if up_v is None or down_v is None:
         raise ValueError("up/down thresholds must be finite and positive")
     return {"up_percent": up_v, "down_percent": down_v}
 
@@ -73,8 +74,8 @@ def load_config(path: str) -> dict:
                     cfg[key_low] = [norm(x.strip()) for x in val.split(",") if x.strip()]
                 elif key_low in _SETTING_KEYS:
                     typ, where = _SETTING_KEYS[key_low]
-                    fval = float(val)
-                    if not math.isfinite(fval):
+                    fval = safe_float(val, default=None)
+                    if fval is None:
                         raise ValueError("setting must be finite")
                     if typ is int and not fval.is_integer():
                         raise ValueError("integer setting must not have fractional part")
@@ -132,24 +133,7 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
         return per[base.upper()]
     if base and isinstance(per.get(base.lower()), dict):
         return per[base.lower()]
-    if isinstance(is_dynamic, bool):
-        dyn_flag = is_dynamic
-    elif isinstance(is_dynamic, str):
-        s_dyn = is_dynamic.strip().lower()
-        if s_dyn in {"1", "true", "yes", "on"}:
-            dyn_flag = True
-        elif s_dyn in {"0", "false", "no", "off", "none", ""}:
-            dyn_flag = False
-        else:
-            try:
-                f_dyn = float(s_dyn)
-                dyn_flag = bool(f_dyn) if math.isfinite(f_dyn) else False
-            except (TypeError, ValueError, OverflowError):
-                dyn_flag = False
-    elif isinstance(is_dynamic, (int, float)):
-        dyn_flag = bool(is_dynamic) if math.isfinite(float(is_dynamic)) else False
-    else:
-        dyn_flag = False
+    dyn_flag = _parse_bool_flag(is_dynamic, default=False)
     preferred = alert_config.get("dynamic") if dyn_flag else alert_config.get("default")
     if isinstance(preferred, dict):
         return preferred

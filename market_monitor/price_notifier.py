@@ -27,7 +27,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import create_new_coins_checker, NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from alertnotifiers import AlertNotifier
-from botcore import load_env_stack, required_bool_env, required_env
+from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float
 from market_monitor.alerts_config import load_config, resolve
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -123,13 +123,7 @@ def new_coin_alerts_handler(alerts):
         print(f"   📅 Added: {added_at}")
 
         if has_price:
-            raw_px = coin_info.get('price')
-            try:
-                px_val = 0.0 if (raw_px is None or isinstance(raw_px, bool)) else float(raw_px)
-                if not math.isfinite(px_val) or px_val < 0.0:
-                    px_val = 0.0
-            except (TypeError, ValueError, OverflowError):
-                px_val = 0.0
+            px_val = safe_nonneg_float(coin_info.get('price'), default=0.0)
             print(f"   💰 Price: ${px_val:.8f}")
             print(f"   ✅ Auto-added: {auto_added}")
         else:
@@ -218,13 +212,8 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     new_coins_checker.refresh()
 
     auto_added_count = 0
-    eff_max_new = (
-        max(0, int(max_new_coins))
-        if isinstance(max_new_coins, (int, float))
-        and not isinstance(max_new_coins, bool)
-        and math.isfinite(float(max_new_coins))
-        else MAX_NEW_COINS_TO_TRACK
-    )
+    max_new_i = safe_int(max_new_coins, default=None) if isinstance(max_new_coins, (int, float)) else None
+    eff_max_new = max(0, max_new_i) if max_new_i is not None else MAX_NEW_COINS_TO_TRACK
     for source_name, coins in new_coins_checker.all_new_coins.items():
         if source_name.lower() == "coinmarketcap":
             for coin in coins[:eff_max_new]:

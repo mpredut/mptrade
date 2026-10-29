@@ -18,7 +18,8 @@ import log
 import utils as u
 import symbols as sym
 from binance_api import bapi as api
-from botcore import required_env, safe_int
+from botcore import required_env, safe_int, safe_pos_float, safe_pos_int
+from cachepaths import canonical_base_asset, normalize_venue_name
 
 # Import the base classes from cacheManager
 from cacheManager import CacheManagerInterface, CacheFactory, _should_poll_for_manager
@@ -200,11 +201,10 @@ class BinancePricePlatform(PricePlatformInterface):
                 return None
 
             price = self.api_client.get_current_price(symbol=trading_pair)
-            if price is None or isinstance(price, bool):
-                print(f"[BinancePlatform] Could not get price for {trading_pair}")
-                return None
-            price_val = float(price)
-            if not math.isfinite(price_val) or price_val <= 0:
+            price_val = safe_pos_float(price, default=None)
+            if price_val is None:
+                if price is None or isinstance(price, bool):
+                    print(f"[BinancePlatform] Could not get price for {trading_pair}")
                 return None
             print(f"[BinancePlatform] {symbol} -> {trading_pair} = ${price_val}")
             return price_val
@@ -274,11 +274,7 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             if lookup_key not in self._all_mids:
                 print(f"[HyperliquidPlatform] Symbol {symbol} not found")
                 return None
-            raw_px = self._all_mids[lookup_key]
-            if raw_px is None or isinstance(raw_px, bool):
-                return None
-            val = float(raw_px)
-            return val if math.isfinite(val) and val > 0 else None
+            return safe_pos_float(self._all_mids[lookup_key], default=None)
         except Exception as e:
             print(f"[HyperliquidPlatform] Warning for {symbol}: {e}")
             return None
@@ -413,10 +409,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             quote = coin_data.get('quote')
             usd = quote.get('USD') if isinstance(quote, dict) else None
             price = usd.get('price') if isinstance(usd, dict) else None
-            if price is not None and not isinstance(price, bool):
-                val = float(price)
-                if math.isfinite(val) and val > 0:
-                    return val
+            return safe_pos_float(price, default=None)
         return None
     
     def get_price_old(self, symbol: str) -> Optional[float]:
@@ -527,7 +520,7 @@ class StockYahooPricePlatform(PricePlatformInterface):
             if not isinstance(symbol, str) or not symbol.strip():
                 return None
             import urllib.parse
-            sym_y = symbol.strip().upper().split("_")[0]                      # NVDA_US_EQ -> NVDA
+            sym_y = symbol.strip().upper().split("_")[0]
             url = self._YAHOO.format(sym=urllib.parse.quote(sym_y, safe="")) + "?range=1d&interval=5m"
             resp = requests.get(url, headers=self._UA, timeout=10)
             resp.raise_for_status()
@@ -545,24 +538,15 @@ class StockYahooPricePlatform(PricePlatformInterface):
             q = (quote_list or [{}])[0] if isinstance(quote_list, list) else {}
             if not isinstance(q, dict):
                 q = {}
-            closes = []
-            for c in (q.get("close") or []):
-                if c is not None and not isinstance(c, bool):
-                    try:
-                        cf = float(c)
-                        if math.isfinite(cf) and cf > 0:
-                            closes.append(cf)
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+            closes = [
+                cf for c in (q.get("close") or [])
+                if (cf := safe_pos_float(c, default=None)) is not None
+            ]
             if closes:
                 return closes[-1]                      # freshest intraday bar
             meta = result.get("meta")
             price = meta.get("regularMarketPrice") if isinstance(meta, dict) else None  # metadata fallback
-            if price is not None and not isinstance(price, bool):
-                pf = float(price)
-                if math.isfinite(pf) and pf > 0:
-                    return pf
-            return None
+            return safe_pos_float(price, default=None)
         except Exception as e:
             print(f"[YahooPlatform] Warning for {symbol}: {e}")
             return None
@@ -688,13 +672,11 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     raw_added = sym_meta.get("added_time")
                     self.symbol_added_time = (
                         {
-                            str(k): float(v)
+                            str(k): vf
                             for k, v in raw_added.items()
                             if isinstance(k, str)
                             and isinstance(v, (int, float))
-                            and not isinstance(v, bool)
-                            and math.isfinite(float(v))
-                            and float(v) > 0
+                            and (vf := safe_pos_float(v, default=None)) is not None
                         }
                         if isinstance(raw_added, dict)
                         else {}
@@ -719,9 +701,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                         symbol for symbol, added_time in self.symbol_added_time.items()
                         if (
                             symbol in items_map
-                            and isinstance(added_time, (int, float))
-                            and not isinstance(added_time, bool)
-                            and time.time() - added_time <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
+                            and (at_val := safe_pos_float(added_time, default=None)) is not None
+                            and time.time() - at_val <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
                         )
                     ]
                     for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
@@ -777,28 +758,21 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
 
             preferred_source = self.symbol_preferred_source.get(symbol)
             if preferred_source and isinstance(preferred_source, str) and preferred_source.strip():
-                pref_norm = preferred_source.strip().lower()
+                pref_norm = normalize_venue_name(preferred_source) or preferred_source.strip().lower()
                 for platform in self.price_factory._platforms:
-                    if str(platform.platform_name).strip().lower() == pref_norm:
-                        price = platform.get_price(symbol)
-                        if (
-                            price is not None
-                            and not isinstance(price, bool)
-                            and math.isfinite(float(price))
-                            and float(price) > 0
-                        ):
-                            price_val = float(price)
+                    plat_raw = str(platform.platform_name).strip().lower()
+                    plat_norm = normalize_venue_name(plat_raw) or plat_raw
+                    if plat_norm == pref_norm or plat_raw == preferred_source.strip().lower():
+                        price_val = safe_pos_float(platform.get_price(symbol), default=None)
+                        if price_val is not None:
                             timestamp_ms = int(time.time() * 1000)
                             print(f"[Pricefetcher][{symbol}] ${price_val:.4f} (source: {preferred_source} - preferred)")
                             return [[timestamp_ms, price_val]]
                         print(f"[Pricefetcher][{symbol}] Preferred source {preferred_source} failed; trying fallback providers")
                         break
             result = self.price_factory.get_price(symbol)
-            price = result["price"]
-            if price is None or isinstance(price, bool):
-                return []
-            price_val = float(price)
-            if not math.isfinite(price_val) or price_val <= 0:
+            price_val = safe_pos_float(result.get("price") if isinstance(result, dict) else None, default=None)
+            if price_val is None:
                 return []
             platform_used = result["platform"]
             timestamp_ms = int(time.time() * 1000)
@@ -880,20 +854,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             if isinstance(entries, (list, tuple)) and entries:
                 for entry in reversed(entries):
                     if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                        raw_ts, raw_px = entry[0], entry[1]
-                        if (
-                            raw_ts is None
-                            or raw_px is None
-                            or isinstance(raw_ts, bool)
-                            or isinstance(raw_px, bool)
-                        ):
-                            continue
-                        try:
-                            ts_val = float(raw_ts)
-                            px = float(raw_px)
-                        except (TypeError, ValueError, OverflowError):
-                            continue
-                        if math.isfinite(ts_val) and ts_val > 0 and math.isfinite(px) and px > 0:
+                        ts_val = safe_pos_float(entry[0], default=None)
+                        px = safe_pos_float(entry[1], default=None)
+                        if ts_val is not None and px is not None:
                             return px
         return None
 
@@ -922,14 +885,11 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         for entry in entries:
             if not isinstance(entry, (list, tuple)) or len(entry) < 2:
                 continue
-            raw_ts, raw_px = entry[0], entry[1]
-            if isinstance(raw_ts, bool) or isinstance(raw_px, bool):
+            ts_val = safe_pos_float(entry[0], default=None)
+            px_val = safe_pos_float(entry[1], default=None)
+            if ts_val is None or px_val is None:
                 continue
             try:
-                ts_val = float(raw_ts)
-                px_val = float(raw_px)
-                if not (math.isfinite(ts_val) and ts_val > 0 and math.isfinite(px_val) and px_val > 0):
-                    continue
                 ts_sec = ts_val / 1000.0 if ts_val >= 10_000_000_000 else ts_val
                 readable = datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d %H:%M:%S")
             except (TypeError, ValueError, OverflowError, OSError):
@@ -944,7 +904,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         return history
         
     def cleanup_old_prices(self, retention_days: int = PRICE_HISTORY_RETENTION_DAYS):
-        if isinstance(retention_days, bool) or not isinstance(retention_days, (int, float)) or not math.isfinite(retention_days) or retention_days <= 0:
+        if not isinstance(retention_days, (int, float)) or safe_pos_float(retention_days, default=None) is None:
             return
         cutoff_timestamp = (time.time() - retention_days * 24 * 3600) * 1000
         with self.lock:
@@ -983,19 +943,14 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 print(f"[Cleanup] Total: {trimmed_count} entries trimmed beyond the per-symbol limit")
 
     def cleanup_old_symbols(self, max_age_days: int = 7):
-        if isinstance(max_age_days, bool) or not isinstance(max_age_days, (int, float)) or not math.isfinite(max_age_days) or max_age_days <= 0:
+        if not isinstance(max_age_days, (int, float)) or safe_pos_float(max_age_days, default=None) is None:
             return []
         cutoff_time = time.time() - max_age_days * 24 * 3600
         removed_symbols = []
         with self.lock:
             for symbol, added_time in list(self.symbol_added_time.items()):
-                if (
-                    not isinstance(added_time, (int, float))
-                    or isinstance(added_time, bool)
-                    or not math.isfinite(added_time)
-                    or added_time <= 0
-                    or added_time < cutoff_time
-                ):
+                at_val = safe_pos_float(added_time, default=None) if isinstance(added_time, (int, float)) else None
+                if at_val is None or at_val < cutoff_time:
                     removed_symbols.append(symbol)
         for symbol in removed_symbols:
             self.remove_symbol(symbol, reason=f"(older than {max_age_days} days)")
@@ -1064,8 +1019,7 @@ CachePriceMulti = CacheAllPriceFetcherManager
 PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
 
 def _safe_max_symbols(val, default: int = MAX_MONITORED_SYMBOLS) -> int:
-    i = safe_int(val, default=None)
-    return i if (i is not None and i > 0) else default
+    return safe_pos_int(val, default=default)
 
 
 def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbols: Optional[int] = None):

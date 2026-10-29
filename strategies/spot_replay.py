@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 
+from botcore import safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (
     ExecutionModel,
     FeeModel,
@@ -59,15 +60,8 @@ def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
             raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
         if not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)) or h_f < l_f:
             raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
-    if bar_minutes is not None:
-        if isinstance(bar_minutes, bool):
-            raise ValueError("bar_minutes must be finite and positive")
-        try:
-            bm_val = float(bar_minutes)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("bar_minutes must be finite and positive") from exc
-        if not math.isfinite(bm_val) or bm_val <= 0:
-            raise ValueError("bar_minutes must be finite and positive")
+    if bar_minutes is not None and safe_pos_float(bar_minutes, default=None) is None:
+        raise ValueError("bar_minutes must be finite and positive")
     surge_window_enabled = (
         params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
     )
@@ -121,13 +115,8 @@ def run_replay(
     include_decision_trace = _strat._parse_bool_flag(include_decision_trace, False)
     intrabar_high = _strat._parse_bool_flag(intrabar_high, False)
     if initial_cash is not None:
-        if isinstance(initial_cash, bool):
-            raise ValueError("initial_cash must be finite and positive")
-        try:
-            ic_f = float(initial_cash)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("initial_cash must be finite and positive") from exc
-        if not math.isfinite(ic_f) or ic_f <= 0:
+        ic_f = safe_pos_float(initial_cash, default=None)
+        if ic_f is None:
             raise ValueError("initial_cash must be finite and positive")
         initial_cash = ic_f
     model = execution or ExecutionModel()
@@ -189,13 +178,10 @@ def _run_once(
         warmup_step = bar_minutes * 60 if bar_minutes else 1.0
         for index, w_row in enumerate(
                 warmup_ohlc, start=-len(warmup_ohlc)):
-            if not isinstance(w_row, (list, tuple)) or len(w_row) < 4 or isinstance(w_row[3], bool):
+            if not isinstance(w_row, (list, tuple)) or len(w_row) < 4:
                 continue
-            try:
-                close_f = float(w_row[3])
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not math.isfinite(close_f) or close_f <= 0:
+            close_f = safe_pos_float(w_row[3], default=None)
+            if close_f is None:
                 continue
             strategy._shadow_prices.append((index * warmup_step, close_f))
             if strategy._surge_replay_closes is not None:
@@ -264,25 +250,9 @@ def _run_once(
             replay_time = bar_index * bar_step_sec
             strategy.set_simulated_time(replay_time)
             if dca_drop_series is not None and bar_index < len(dca_drop_series):
-                drop_val = dca_drop_series[bar_index]
-                try:
-                    drop_f = None if drop_val is None or isinstance(drop_val, bool) else float(drop_val)
-                except (TypeError, ValueError, OverflowError):
-                    drop_f = None
-                if drop_f is not None and math.isfinite(drop_f) and drop_f > 0.0:
-                    strategy.p.dca_drop_pct = drop_f
-                else:
-                    strategy.p.dca_drop_pct = default_dca_drop
+                strategy.p.dca_drop_pct = safe_pos_float(dca_drop_series[bar_index], default=default_dca_drop)
             if reentry_series is not None and bar_index < len(reentry_series):
-                re_val = reentry_series[bar_index]
-                try:
-                    re_f = None if re_val is None or isinstance(re_val, bool) else float(re_val)
-                except (TypeError, ValueError, OverflowError):
-                    re_f = None
-                if re_f is not None and math.isfinite(re_f) and re_f >= 0.0:
-                    strategy.p.reentry_drop_pct = re_f
-                else:
-                    strategy.p.reentry_drop_pct = default_reentry_drop
+                strategy.p.reentry_drop_pct = safe_nonneg_float(reentry_series[bar_index], default=default_reentry_drop)
 
             orders = strategy.s["orders"]
             if orders:
