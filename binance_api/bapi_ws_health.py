@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_pos_float
 
 ORDER_CACHE_CLASSES = frozenset({"CacheOrder", "CacheOrderManager"})
 TRADE_CACHE_CLASSES = frozenset({"CacheTrade", "CacheTradeManager"})
@@ -45,16 +45,7 @@ def mark_ws_available(value: bool) -> bool:
 def mark_ws_event_received(now: float | None = None) -> float:
     """Record a healthy user-data WebSocket heartbeat or event."""
     global _ws_last_event_ts, _ws_is_healthy
-    ts: float | None = None
-    if now is not None and not isinstance(now, bool):
-        try:
-            cand = float(now)
-            if math.isfinite(cand) and cand > 0:
-                ts = cand
-        except (TypeError, ValueError, OverflowError):
-            pass
-    if ts is None:
-        ts = time.time()
+    ts = safe_pos_float(now, default=None) or time.time()
     with _ws_health_lock:
         _ws_last_event_ts = ts
         _ws_is_healthy = True

@@ -45,7 +45,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     if not isinstance(base, dict):
         raise ValueError("_bt_params requires a dict for base")
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
-    from botcore import parse_dotenv
+    from botcore import parse_dotenv, safe_float, safe_pos_float
     env = dict(parse_dotenv(cfg_path))
     env.update(os.environ)
     p = StratParams.from_env(env=env)
@@ -53,11 +53,9 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     def _pick(keys: tuple[str, ...], default):
         for k in keys:
             if k in base and base[k] is not None:
-                if isinstance(base[k], bool):
-                    raise ValueError(f"boolean not allowed for {k}")
-                val = float(base[k])
-                if val != val or abs(val) == float("inf"):
-                    raise ValueError(f"non-finite value not allowed for {k}")
+                val = safe_float(base[k], default=None)
+                if val is None:
+                    raise ValueError(f"invalid value not allowed for {k}: {base[k]!r}")
                 return val
         return default
 
@@ -74,10 +72,8 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
         reentry_drop_pct=_pick(("reentry_fallback", "reentry_drop", "reentry"), p.reentry_drop_pct),
     )
     raw_interval = base.get("interval") if base.get("interval") is not None else 60
-    if isinstance(raw_interval, bool):
-        raise ValueError("interval cannot be boolean")
-    interval = float(raw_interval)
-    if interval <= 0 or interval != interval or interval == float("inf"):
+    interval = safe_pos_float(raw_interval, default=None)
+    if interval is None:
         raise ValueError(f"invalid interval: {raw_interval!r}")
     if float(interval) != float(p.trend_interval):
         fields.update(

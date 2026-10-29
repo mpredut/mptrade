@@ -11,8 +11,14 @@ import requests
 from collections import defaultdict
 from typing import Dict, Any, List
 
-from botcore import _parse_bool_flag, load_env_stack
+from botcore import _parse_bool_flag, load_env_stack, safe_nonneg_float
 from cachepaths import normalize_venue_name
+from notify_engine.alertnotifiers import (
+    _alert_attr,
+    _external_notifications_disabled,
+    _safe_float,
+    is_fake_alert_text,
+)
 from notify_engine.mailer import (
     is_configured as email_is_configured,
     is_email_mirrored,
@@ -248,15 +254,11 @@ class NotificationServer:
         title = "Alert" if isinstance(title, bool) or title is None else (str(title).strip() or "Alert")
         message = "" if isinstance(message, bool) or message is None else str(message)
         priority = "default" if isinstance(priority, bool) or priority is None else (str(priority).strip() or "default")
-        if any(
-            _parse_bool_flag(os.environ.get(k), False)
-            for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
-        ):
+        if _external_notifications_disabled():
             logging.debug(f"External notifications disabled: would send to {topic_str}: {title}")
             return True
 
-        check_text = f"{title} {message} {topic_str}".upper()
-        if any(fake in check_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+        if is_fake_alert_text(title, message, topic_str):
             logging.info(f"Skipping test/fake alert in _send_ntfy: {title}")
             return True
 
@@ -314,11 +316,8 @@ class NotificationServer:
                     return False
                 retry_after = getattr(resp, "headers", {}).get("Retry-After")
                 if retry_after:
-                    try:
-                        ra_f = float(retry_after)
-                        time.sleep(min(ra_f, 30.0) if (math.isfinite(ra_f) and ra_f >= 0.0) else 1.0)
-                    except (ValueError, TypeError, OverflowError):
-                        time.sleep(1)
+                    ra_f = safe_nonneg_float(retry_after, default=None)
+                    time.sleep(min(ra_f, 30.0) if ra_f is not None else 1.0)
                     resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
             if hasattr(resp, "raise_for_status"):
                 resp.raise_for_status()
@@ -350,8 +349,8 @@ class NotificationServer:
         items = []
         symbols = []
         for a in alerts:
-            sym = a.get("symbol", "N/A") if isinstance(a, dict) else getattr(a, "symbol", "N/A")
-            atype = a.get("alert_type", "") if isinstance(a, dict) else getattr(a, "alert_type", "")
+            sym = _alert_attr(a, "symbol", "N/A")
+            atype = _alert_attr(a, "alert_type", "")
             dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
             if sym and sym != "N/A":
                 if sym not in symbols:
@@ -376,7 +375,7 @@ class NotificationServer:
         count = len(alerts)
         symbols = []
         for a in alerts:
-            sym = a.get("symbol", "N/A") if isinstance(a, dict) else getattr(a, "symbol", "N/A")
+            sym = _alert_attr(a, "symbol", "N/A")
             if sym and sym != "N/A" and sym not in symbols:
                 symbols.append(sym)
         syms_str = ", ".join(symbols)
@@ -391,76 +390,52 @@ class NotificationServer:
         bot_name = "" if isinstance(bot_name, bool) else str(bot_name or "")
 
         first = alerts[0]
+        from notify_engine.alertnotifiers import AlertNotifier
         # Resolve title, body, and source intelligently based on alert payload type
-        if isinstance(first, dict):
-            alert_type = first.get("type")
-            if alert_type == "price_alert" or "alert_type" in first:
-                if len(alerts) == 1:
-                    from notify_engine.alertnotifiers import _safe_float
-                    sym = first.get("symbol", "N/A")
-                    atype = first.get("alert_type", "alert")
-                    pchg = _safe_float(first.get("percent_change", 0.0), 0.0)
-                    dir_str = "▲" if atype == "up" else "▼"
-                    title = f"{sym} {dir_str} {pchg:+.2f}%"
-                else:
-                    title = self._format_price_alerts_batch_title(alerts)
-                from notify_engine.alertnotifiers import AlertNotifier
-                body = AlertNotifier.format_batch_message(alerts)
-                source = first.get("source") or "price_alert"
-            elif alert_type == "new_coin_discovered":
-                if len(alerts) == 1:
-                    sym = first.get("symbol", "N/A")
-                    title = f"New Coin: {sym}"
-                else:
-                    title = self._format_new_coins_batch_title(alerts)
-                from notify_engine.alertnotifiers import AlertNotifier
-                body = AlertNotifier.format_batch_message(alerts)
-                source = first.get("source") or "price_alert"
-            elif alert_type == "bot_event":
-                if len(alerts) == 1:
-                    title = first.get("name") or "Alert"
-                    body = first.get("body") or ""
-                else:
-                    title = f"{first.get('name') or 'Alert'} ({len(alerts)})"
-                    from notify_engine.alertnotifiers import AlertNotifier
-                    body = AlertNotifier.format_batch_message(alerts)
-                source = first.get("source") or ""
-            else:
-                if len(alerts) == 1:
-                    title = first.get("name") or first.get("title") or "Alert"
-                    body = first.get("body") or first.get("message") or first.get("symbol") or ""
-                else:
-                    title = f"{first.get('name') or first.get('title') or 'Alert'} ({len(alerts)})"
-                    from notify_engine.alertnotifiers import AlertNotifier
-                    body = AlertNotifier.format_batch_message(alerts)
-                source = first.get("source") or ""
-        elif isinstance(first, str):
+        if isinstance(first, str):
             title = "Alert" if len(alerts) == 1 else f"Alerts ({len(alerts)})"
             body = "\n".join(str(a) for a in alerts)
             source = "price_alert" if "price" in body.lower() else "system"
         else:
-            if hasattr(first, "alert_type"):
+            alert_type = first.get("type") if isinstance(first, dict) else None
+            has_alert_type = ("alert_type" in first) if isinstance(first, dict) else hasattr(first, "alert_type")
+            if alert_type == "price_alert" or has_alert_type:
                 if len(alerts) == 1:
-                    from notify_engine.alertnotifiers import _safe_float
-                    sym = getattr(first, "symbol", "N/A")
-                    atype = getattr(first, "alert_type", "alert")
-                    pchg = _safe_float(getattr(first, "percent_change", 0.0), 0.0)
+                    sym = _alert_attr(first, "symbol", "N/A")
+                    atype = _alert_attr(first, "alert_type", "alert")
+                    pchg = _safe_float(_alert_attr(first, "percent_change", 0.0), 0.0)
                     dir_str = "▲" if atype == "up" else "▼"
                     title = f"{sym} {dir_str} {pchg:+.2f}%"
                 else:
                     title = self._format_price_alerts_batch_title(alerts)
-                from notify_engine.alertnotifiers import AlertNotifier
                 body = AlertNotifier.format_batch_message(alerts)
-                source = getattr(first, "source", "price_alert")
-            else:
+                source = _alert_attr(first, "source") or "price_alert"
+            elif alert_type == "new_coin_discovered":
                 if len(alerts) == 1:
-                    title = getattr(first, "name", getattr(first, "title", "Alert"))
-                    body = getattr(first, "body", getattr(first, "message", getattr(first, "symbol", "")))
+                    sym = _alert_attr(first, "symbol", "N/A")
+                    title = f"New Coin: {sym}"
                 else:
-                    title = f"{getattr(first, 'name', getattr(first, 'title', 'Alert'))} ({len(alerts)})"
-                    from notify_engine.alertnotifiers import AlertNotifier
+                    title = self._format_new_coins_batch_title(alerts)
+                body = AlertNotifier.format_batch_message(alerts)
+                source = _alert_attr(first, "source") or "price_alert"
+            elif alert_type == "bot_event":
+                base_name = _alert_attr(first, "name") or "Alert"
+                if len(alerts) == 1:
+                    title = base_name
+                    body = _alert_attr(first, "body") or ""
+                else:
+                    title = f"{base_name} ({len(alerts)})"
                     body = AlertNotifier.format_batch_message(alerts)
-                source = getattr(first, "source", "")
+                source = _alert_attr(first, "source") or ""
+            else:
+                base_name = _alert_attr(first, "name") or _alert_attr(first, "title") or "Alert"
+                if len(alerts) == 1:
+                    title = base_name
+                    body = _alert_attr(first, "body") or _alert_attr(first, "message") or _alert_attr(first, "symbol") or ""
+                else:
+                    title = f"{base_name} ({len(alerts)})"
+                    body = AlertNotifier.format_batch_message(alerts)
+                source = _alert_attr(first, "source") or ""
 
         title = "" if isinstance(title, bool) else str(title or "Alert")
         body = "" if isinstance(body, bool) else str(body or "")
@@ -515,9 +490,8 @@ class NotificationServer:
                 full_title = cleaned_title
 
         # Block synthetic/fake test instruments from ever leaking to external topics
-        all_syms = " ".join(str(a.get("symbol") if isinstance(a, dict) else getattr(a, "symbol", "") or "") for a in alerts)
-        full_text = f"{full_title} {body} {all_syms}".upper()
-        if any(fake in full_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+        all_syms = " ".join(str(_alert_attr(a, "symbol", "")) for a in alerts)
+        if is_fake_alert_text(full_title, body, all_syms):
             logging.info(f"Skipping test/fake alert: {full_title}")
             return True
 
@@ -641,7 +615,7 @@ class NotificationServer:
 
         # 2. Check for the [NTFY] prefix shortcut
         if "[NTFY]" in line:
-            if any(fake in line.upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+            if is_fake_alert_text(line):
                 return
             parts = line.split("[NTFY]", 1)
             if len(parts) > 1:
@@ -668,7 +642,7 @@ class NotificationServer:
                 return
 
         # 3. Check Intelligent Rules (Regex)
-        if any(fake in line.upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+        if is_fake_alert_text(line):
             return
         if any(
             internal in line
@@ -686,25 +660,11 @@ class NotificationServer:
                 # Enforce Cooldown
                 rule_key = f"{bot_name}_{rule['name']}"
                 now = time.time()
-                raw_last = self.cooldowns.get(rule_key, 0)
-                last_time = (
-                    float(raw_last)
-                    if isinstance(raw_last, (int, float))
-                    and not isinstance(raw_last, bool)
-                    and math.isfinite(float(raw_last))
-                    else 0.0
-                )
+                last_time = safe_nonneg_float(self.cooldowns.get(rule_key, 0), 0.0)
                 if last_time > now:
                     last_time = 0.0
-                raw_cd = rule.get("cooldown_minutes", 0)
-                cd_min = (
-                    float(raw_cd)
-                    if isinstance(raw_cd, (int, float))
-                    and not isinstance(raw_cd, bool)
-                    and math.isfinite(float(raw_cd))
-                    else 0.0
-                )
-                cooldown_sec = max(0.0, cd_min * 60.0)
+                cd_min = safe_nonneg_float(rule.get("cooldown_minutes", 0), 0.0)
+                cooldown_sec = cd_min * 60.0
                 
                 if now - last_time >= cooldown_sec:
                     topic_cat = rule.get("topic_category", "ERROR").upper()

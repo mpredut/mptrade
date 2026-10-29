@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 from typing import Mapping
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_pos_float
 
 API_URL = "https://api.binance.com/api/v3/klines"
 
@@ -220,24 +220,24 @@ def fetch_ohlc_candles(
             # 11: Ignore
             if not isinstance(item, (list, tuple)) or len(item) < 7:
                 continue
-            if any(isinstance(item[idx], bool) for idx in (0, 1, 2, 3, 4, 6)):
+            ot_f = safe_pos_float(item[0], default=None)
+            ct_f = safe_pos_float(item[6], default=None)
+            o_v = safe_pos_float(item[1], default=None)
+            h_v = safe_pos_float(item[2], default=None)
+            l_v = safe_pos_float(item[3], default=None)
+            c_v = safe_pos_float(item[4], default=None)
+            if (
+                ot_f is None
+                or ct_f is None
+                or o_v is None
+                or h_v is None
+                or l_v is None
+                or c_v is None
+            ):
                 continue
-            try:
-                ot_f = float(item[0])
-                ct_f = float(item[6])
-                if not (math.isfinite(ot_f) and math.isfinite(ct_f)):
-                    continue
-                open_time_ms = int(ot_f)
-                close_time_ms = int(ct_f)
-                o_v = float(item[1])
-                h_v = float(item[2])
-                l_v = float(item[3])
-                c_v = float(item[4])
-            except (TypeError, ValueError, OverflowError):
-                continue
+            open_time_ms = int(ot_f)
+            close_time_ms = int(ct_f)
             if open_time_ms <= 0 or close_time_ms <= 0:
-                continue
-            if not all(math.isfinite(v) and v > 0 for v in (o_v, h_v, l_v, c_v)):
                 continue
             if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
                 continue
@@ -261,14 +261,11 @@ def fetch_ohlc_candles(
 
         last_open_time = None
         for item in reversed(raw):
-            if isinstance(item, (list, tuple)) and len(item) >= 1 and not isinstance(item[0], bool):
-                try:
-                    cand_ot = float(item[0])
-                    if math.isfinite(cand_ot) and cand_ot > 0:
-                        last_open_time = int(cand_ot)
-                        break
-                except (TypeError, ValueError, OverflowError):
-                    continue
+            if isinstance(item, (list, tuple)) and len(item) >= 1:
+                cand_ot = safe_pos_float(item[0], default=None)
+                if cand_ot is not None:
+                    last_open_time = int(cand_ot)
+                    break
         if last_open_time is None:
             break
         next_start = last_open_time + interval_ms

@@ -8,6 +8,7 @@ import time
 
 
 from typing import Optional, Union, Iterable
+from botcore import safe_int
 
 CLIENT_ORDER_ID_MAX_LEN = 36
 
@@ -131,17 +132,7 @@ def _sanitize_name(value, default="unknown"):
 
 def _base36(value):
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    if value is None or isinstance(value, bool):
-        value = 0
-    else:
-        try:
-            value = max(0, int(value))
-        except (TypeError, ValueError, OverflowError):
-            try:
-                f = float(value)
-                value = max(0, int(f)) if math.isfinite(f) and f.is_integer() else 0
-            except (TypeError, ValueError, OverflowError):
-                value = 0
+    value = max(0, safe_int(value, default=0))
     if value == 0:
         return "0"
 

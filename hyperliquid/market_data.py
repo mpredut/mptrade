@@ -34,7 +34,10 @@ def _load_hl_local(name: str):
     return mod
 
 
-log = _load_hl_local("common").log
+_common = _load_hl_local("common")
+log = _common.log
+safe_float = _common.safe_float
+safe_pos_float = _common.safe_pos_float
 HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
@@ -83,31 +86,24 @@ def normalize_closed_candles(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if any(isinstance(row.get(k), bool) for k in ("t", "T", "o", "h", "l", "c")):
-            continue
-        try:
-            t_f = float(row["t"])
-            T_f = float(row["T"])
-            o_val = float(row["o"])
-            h_val = float(row["h"])
-            l_val = float(row["l"])
-            c_val = float(row["c"])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            continue
-        if not (
-            math.isfinite(t_f)
-            and math.isfinite(T_f)
-            and math.isfinite(o_val)
-            and math.isfinite(h_val)
-            and math.isfinite(l_val)
-            and math.isfinite(c_val)
+        t_f = safe_pos_float(row.get("t"), default=None)
+        T_f = safe_pos_float(row.get("T"), default=None)
+        o_val = safe_pos_float(row.get("o"), default=None)
+        h_val = safe_pos_float(row.get("h"), default=None)
+        l_val = safe_pos_float(row.get("l"), default=None)
+        c_val = safe_pos_float(row.get("c"), default=None)
+        if (
+            t_f is None
+            or T_f is None
+            or o_val is None
+            or h_val is None
+            or l_val is None
+            or c_val is None
         ):
             continue
         open_time = int(t_f)
         close_time = int(T_f)
         if open_time <= 0 or close_time < open_time:
-            continue
-        if o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
             continue
         if h_val < l_val or h_val < max(o_val, c_val) or l_val > min(o_val, c_val):
             continue
@@ -228,14 +224,9 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
         for d in data:
             if not isinstance(d, dict):
                 continue
-            if isinstance(d.get("time"), bool) or isinstance(d.get("fundingRate"), bool):
-                continue
-            try:
-                t_f = float(d["time"])
-                rate = float(d["fundingRate"])
-            except (KeyError, TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(t_f) and int(t_f) > 0 and math.isfinite(rate):
+            t_f = safe_pos_float(d.get("time"), default=None)
+            rate = safe_float(d.get("fundingRate"), default=None)
+            if t_f is not None and int(t_f) > 0 and rate is not None:
                 entries.append((int(t_f), rate))
         return sorted(entries, key=lambda x: x[0])
     except Exception as e:  # noqa: BLE001

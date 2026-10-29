@@ -26,6 +26,7 @@ _strat_mod = sys.modules.get("strategy")
 if _strat_mod is not None and os.path.dirname(os.path.abspath(getattr(_strat_mod, "__file__", ""))) != _HERE:
     sys.modules.pop("strategy", None)
 
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from strategy import Strategy, StratParams, HL_FEE_PCT
 from offline.backtests.execution import (
     ExecutionModel,
@@ -41,27 +42,18 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
     Automatically normalises Unix-second timestamps (< 1e10) to milliseconds so
     both direct replay callers (ms) and walk-forward evaluation contexts (s) match.
     """
-    if not fund or isinstance(t_ms, bool):
+    if not fund:
         return 0.0
-    try:
-        t_val = float(t_ms)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(t_val):
+    t_val = safe_float(t_ms, default=None)
+    if t_val is None:
         return 0.0
     clean_fund: list[tuple[float, float]] = []
     for item in fund:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        ts_raw, rate_raw = item[0], item[1]
-        if isinstance(ts_raw, bool) or isinstance(rate_raw, bool):
-            continue
-        try:
-            ts_f = float(ts_raw)
-            rate_f = float(rate_raw)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(ts_f) and math.isfinite(rate_f):
+        ts_f = safe_float(item[0], default=None)
+        rate_f = safe_float(item[1], default=None)
+        if ts_f is not None and rate_f is not None:
             if 0 < ts_f < 10_000_000_000:
                 ts_f *= 1000.0
             clean_fund.append((ts_f, rate_f))
@@ -101,13 +93,7 @@ def run_replay(
             init_cap = float(params.max_budget)
         elif isinstance(params, dict):
             raw_b = params.get("budget") if params.get("budget") is not None else params.get("max_budget", 500.0)
-            if raw_b is not None and not isinstance(raw_b, bool):
-                try:
-                    bf = float(raw_b)
-                    if math.isfinite(bf) and bf > 0:
-                        init_cap = bf
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            init_cap = safe_pos_float(raw_b, default=500.0)
         raw_ccy = (
             getattr(params, "currency", "USDC")
             if isinstance(params, StratParams)
@@ -182,9 +168,10 @@ def _run_once(
         strat_params = StratParams(direction=direction)
 
     if fee_pct is not None:
-        if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(float(fee_pct)) or float(fee_pct) < 0:
+        fee_f = safe_nonneg_float(fee_pct, default=None)
+        if fee_f is None or not isinstance(fee_pct, (int, float)):
             raise ValueError(f"invalid fee_pct: {fee_pct!r}")
-        strat_params.fee_pct = float(fee_pct)
+        strat_params.fee_pct = fee_f
 
     strategy = Strategy(
         client=None,
@@ -225,14 +212,7 @@ def _run_once(
     open_side = "buy" if strategy.sign > 0 else "sell"
     close_side = "sell" if strategy.sign > 0 else "buy"
     order_placed_bar: dict[str, int] = {}
-    valid_bar_minutes: float | None = None
-    if bar_minutes is not None and not isinstance(bar_minutes, bool):
-        try:
-            bm_f = float(bar_minutes)
-            if math.isfinite(bm_f) and bm_f > 0:
-                valid_bar_minutes = bm_f
-        except (TypeError, ValueError, OverflowError):
-            pass
+    valid_bar_minutes = safe_pos_float(bar_minutes, default=None)
     eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
 
     for i in range(len(ohlc)):

@@ -18,7 +18,15 @@ from typing import Any, Optional
 # Import your modules
 import log
 from lock import FileLock
-from botcore import _parse_bool_flag, float_env, int_env, safe_float as _safe_float, safe_int as _safe_int
+from botcore import (
+    _parse_bool_flag,
+    float_env,
+    int_env,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
+    safe_pos_float as _safe_pos_float,
+    safe_pos_int as _safe_pos_int,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -56,6 +64,24 @@ _ERROR_AND_OPS_SOURCES = (
 _TRADE_MARKERS = (
     "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "📝", "🎉",
 )
+_FAKE_ALERT_MARKERS = (
+    "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
+)
+
+
+def is_fake_alert_text(*parts: Any) -> bool:
+    """Return True when any part contains synthetic/test instrument markers."""
+    joined = " ".join("" if isinstance(p, bool) or p is None else str(p) for p in parts).upper()
+    return any(marker in joined for marker in _FAKE_ALERT_MARKERS)
+
+
+def _alert_attr(item: Any, key: str, default: Any = None) -> Any:
+    """Extract an attribute or dict key from an alert payload."""
+    if isinstance(item, dict):
+        val = item.get(key, default)
+    else:
+        val = getattr(item, key, default)
+    return default if val is None else val
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -64,10 +90,15 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def _safe_pos_int(val: Any, default: int = 1) -> int:
-    f = _safe_float(val, default=None)
-    if f is None or not f.is_integer() or f < 1:
-        return default
-    return int(f)
+    f = _safe_pos_float(val, default=None)
+    return int(f) if (f is not None and f.is_integer()) else default
+
+
+def _resolve_gate_now(now: Optional[float]) -> float:
+    nf = _safe_pos_float(now, default=None)
+    if nf is not None and nf < 32503680000.0:
+        return nf
+    return time.time()
 
 
 _as_bool_flag = _parse_bool_flag
@@ -382,15 +413,8 @@ def pass_common_gate(
     3. Synthesizes & concatenates buffered distinct messages into a single bulk payload
        once the 5-minute gate opens.
     """
-    now_ts = time.time()
+    now_ts = _resolve_gate_now(now)
     urgent = _as_bool_flag(urgent, False)
-    if now is not None and not isinstance(now, bool):
-        try:
-            nf = float(now)
-            if math.isfinite(nf) and 0.0 < nf < 32503680000.0:
-                now_ts = nf
-        except (TypeError, ValueError, OverflowError):
-            pass
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -527,15 +551,8 @@ def pop_due_bulk_batch(
     force: bool = False,
 ) -> Optional[tuple[str, str, str, str]]:
     """Pop and synthesize buffered distinct notifications once the 5-minute gate opens."""
-    now_ts = time.time()
+    now_ts = _resolve_gate_now(now)
     force = _as_bool_flag(force, False)
-    if now is not None and not isinstance(now, bool):
-        try:
-            nf = float(now)
-            if math.isfinite(nf) and 0.0 < nf < 32503680000.0:
-                now_ts = nf
-        except (TypeError, ValueError, OverflowError):
-            pass
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     prev_path = path.with_name(path.name + ".previous")
@@ -615,22 +632,22 @@ class AlertNotifier:
 
     
     @staticmethod
-    def format_human_readable_time(value) -> str:
+    def format_human_readable_time(value, fmt: str = "%m-%d %H:%M:%S") -> str:
         if value is None or isinstance(value, bool):
             return "N/A"
         if isinstance(value, (int, float)):
+            vf = _safe_pos_float(value, default=None)
+            if vf is None:
+                return str(value)
             try:
-                vf = float(value)
-                if not math.isfinite(vf) or vf <= 0.0:
-                    return str(value)
                 if vf > 1e11:
                     vf /= 1000.0
-                return datetime.fromtimestamp(vf).strftime("%m-%d %H:%M:%S")
+                return datetime.fromtimestamp(vf).strftime(fmt)
             except Exception:
                 return str(value)
         if hasattr(value, "strftime"):
             try:
-                return value.strftime("%m-%d %H:%M:%S")
+                return value.strftime(fmt)
             except Exception:
                 return str(value)
         return str(value)
@@ -642,9 +659,7 @@ class AlertNotifier:
     @staticmethod
     def alert_symbol(alert: Any) -> str:
         """Return the symbol from either a PriceAlert object or new-coin mapping."""
-        if isinstance(alert, dict):
-            return alert.get("symbol", "N/A")
-        return getattr(alert, "symbol", "N/A")
+        return _alert_attr(alert, "symbol", "N/A")
 
     @staticmethod
     def utf8_header(value: str) -> str:
@@ -661,14 +676,18 @@ class AlertNotifier:
     @staticmethod
     def format_new_coin_message(alert: dict) -> str:
         raw_price = alert.get("price")
-        price_str = "Price: N/A"
-        if raw_price is not None and not isinstance(raw_price, bool):
-            try:
-                px_val = float(raw_price)
-                if math.isfinite(px_val) and px_val > 0.0:
-                    price_str = f"Price: ${px_val:.4f}"
-            except (TypeError, ValueError, OverflowError):
-                price_str = f"Price: {raw_price}"
+        px_val = _safe_pos_float(raw_price, default=None)
+        if px_val is not None:
+            price_str = f"Price: ${px_val:.4f}"
+        elif (
+            isinstance(raw_price, str)
+            and raw_price.strip()
+            and raw_price.strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
+            and _safe_float(raw_price, default=None) is None
+        ):
+            price_str = f"Price: {raw_price}"
+        else:
+            price_str = "Price: N/A"
         lines = [
             f"🆕: {alert.get('symbol', 'N/A')} - {alert.get('name', alert.get('symbol', 'N/A'))}",
             f"Source: {alert.get('source', 'unknown')}",
@@ -691,21 +710,10 @@ class AlertNotifier:
         head = body or str(alert.get("name", alert.get("symbol", "?")))
         parts = [head, str(alert.get("source", "?"))]
         ts = alert.get("added_at")
-        if ts is not None and not isinstance(ts, bool):
-            if hasattr(ts, "strftime"):
-                try:
-                    parts.append(ts.strftime("%m-%d %H:%M"))   # Omit the year.
-                except Exception:  # noqa: BLE001
-                    pass
-            elif isinstance(ts, (int, float)):
-                try:
-                    ts_f = float(ts)
-                    if math.isfinite(ts_f) and ts_f > 0:
-                        if ts_f > 1e11:
-                            ts_f /= 1000.0
-                        parts.append(datetime.fromtimestamp(ts_f).strftime("%m-%d %H:%M"))
-                except Exception:  # noqa: BLE001
-                    pass
+        if ts is not None and not isinstance(ts, bool) and (hasattr(ts, "strftime") or isinstance(ts, (int, float))):
+            formatted = AlertNotifier.format_human_readable_time(ts, fmt="%m-%d %H:%M")
+            if formatted != str(ts):
+                parts.append(formatted)
         return " · ".join(parts)
 
     @staticmethod
@@ -719,22 +727,13 @@ class AlertNotifier:
                 lines.append(AlertNotifier.format_new_coin_message(alert))
                 continue
 
-            if isinstance(alert, dict):
-                alert_type = alert.get("alert_type", "")
-                symbol = alert.get("symbol", "N/A")
-                pct_change = _safe_float(alert.get("percent_change", 0.0), 0.0)
-                current_price = _safe_float(alert.get("current_price", 0.0), 0.0)
-                ref_price = _safe_float(alert.get("reference_price", 0.0), 0.0)
-                ref_time_val = alert.get("reference_time") or alert.get("timestamp")
-                url = alert.get("url")
-            else:
-                alert_type = getattr(alert, "alert_type", "")
-                symbol = getattr(alert, "symbol", "N/A")
-                pct_change = _safe_float(getattr(alert, "percent_change", 0.0), 0.0)
-                current_price = _safe_float(getattr(alert, "current_price", 0.0), 0.0)
-                ref_price = _safe_float(getattr(alert, "reference_price", 0.0), 0.0)
-                ref_time_val = getattr(alert, "reference_time", None) or getattr(alert, "timestamp", None)
-                url = getattr(alert, "url", None)
+            alert_type = _alert_attr(alert, "alert_type", "")
+            symbol = _alert_attr(alert, "symbol", "N/A")
+            pct_change = _safe_float(_alert_attr(alert, "percent_change", 0.0), 0.0)
+            current_price = _safe_float(_alert_attr(alert, "current_price", 0.0), 0.0)
+            ref_price = _safe_float(_alert_attr(alert, "reference_price", 0.0), 0.0)
+            ref_time_val = _alert_attr(alert, "reference_time") or _alert_attr(alert, "timestamp")
+            url = _alert_attr(alert, "url")
 
             direction = "U" if alert_type == "up" else "D"
             reference_time = AlertNotifier.format_human_readable_time(ref_time_val)
@@ -917,8 +916,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     """
     if _external_notifications_disabled():
         return
-    if any(fake in f"{title} {body} {symbol} {source}".upper()
-           for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+    if is_fake_alert_text(title, body, symbol, source):
         return
     alert = {"type": "bot_event", "name": title, "body": body, "source": source, "symbol": symbol}
     if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):

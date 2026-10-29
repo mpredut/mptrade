@@ -41,11 +41,8 @@ def last_error_is_auth_failure() -> bool:
 
 
 def _disabled() -> bool:
-    from botcore import _parse_bool_flag
-    return any(
-        _parse_bool_flag(os.environ.get(k))
-        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
-    )
+    from notify_engine.alertnotifiers import _external_notifications_disabled
+    return _external_notifications_disabled()
 
 
 def load_env() -> None:
@@ -93,17 +90,12 @@ def _config() -> dict | None:
     if missing:
         logging.warning(f"Email not configured (missing: {', '.join(missing)})")
         return None
-    try:
-        port_f = float(cfg["port"])
-        if not port_f.is_integer():
-            raise ValueError("port must be integer")
-        port_i = int(port_f)
-        if not (1 <= port_i <= 65535):
-            raise ValueError("port out of range")
-        cfg["port"] = port_i
-    except (ValueError, OverflowError):
+    from botcore import safe_pos_int
+    port_i = safe_pos_int(cfg["port"], default=None)
+    if port_i is None or port_i > 65535:
         logging.warning(f"Email not configured (SMTP_PORT is not a valid TCP port: {cfg['port']!r})")
         return None
+    cfg["port"] = port_i
     if "gmail" in cfg["server"]:
         # Google shows app passwords in 4-letter groups; the spaces are not part of it.
         cfg["password"] = cfg["password"].replace(" ", "")

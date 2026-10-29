@@ -6,7 +6,7 @@ import math
 import time
 from typing import Any
 
-from botcore import safe_pos_float, safe_pos_int
+from botcore import safe_nonneg_float, safe_pos_float, safe_pos_int
 from providers.base import (
     extract_order_price,
     extract_order_side,
@@ -20,6 +20,49 @@ def _is_positive_finite(val: Any) -> bool:
 
 def _clean_now_ms(now_ms: Any) -> int:
     return safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+
+
+def _normalize_ws_order_id(raw_id: Any, *, strict_float: bool = False) -> int | str | None:
+    if isinstance(raw_id, bool):
+        if strict_float:
+            raise ValueError("boolean Binance order ID")
+        return None
+    if isinstance(raw_id, float):
+        if not math.isfinite(raw_id) or not raw_id.is_integer():
+            if strict_float:
+                raise ValueError("non-integer Binance order ID")
+            return None
+        raw_id = int(raw_id)
+    elif isinstance(raw_id, str):
+        raw_id = raw_id.strip() or None
+        if raw_id is not None and raw_id.endswith(".0") and raw_id[:-2].lstrip("+-").isdigit():
+            raw_id = raw_id[:-2]
+        if raw_id is not None and raw_id.startswith("+") and raw_id[1:].isdigit():
+            raw_id = raw_id[1:]
+        if raw_id is not None and (
+            raw_id.startswith("-")
+            or raw_id in {"0", "+0", "-0"}
+            or raw_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        ):
+            raw_id = None
+    elif not isinstance(raw_id, int):
+        raw_id = None
+    if isinstance(raw_id, int) and raw_id <= 0:
+        raw_id = None
+    return raw_id
+
+
+def _derive_ws_quote_fill_price(event: dict[str, Any], last_quantity: float) -> float:
+    if last_quantity <= 0:
+        return 0.0
+    last_quote = safe_pos_float(event.get("Y"), default=0.0)
+    if last_quote > 0:
+        return last_quote / last_quantity
+    cum_quote = safe_pos_float(event.get("Z"), default=0.0)
+    cum_qty = safe_pos_float(event.get("z"), default=last_quantity)
+    if cum_quote > 0 and cum_qty > 0:
+        return cum_quote / cum_qty
+    return 0.0
 
 
 def parse_order_execution_report(
@@ -63,52 +106,22 @@ def parse_order_execution_report(
                 raw_t = raw_t[:-2]
             if raw_t.startswith("+") and raw_t[1:].isdigit():
                 raw_t = raw_t[1:]
-        if isinstance(raw_i, float):
-            if not math.isfinite(raw_i) or not raw_i.is_integer():
-                raise ValueError("non-integer Binance order ID")
-            raw_i = int(raw_i)
-        elif isinstance(raw_i, str):
-            raw_i = raw_i.strip() or None
-            if raw_i is not None and raw_i.endswith(".0") and raw_i[:-2].lstrip("+-").isdigit():
-                raw_i = raw_i[:-2]
-            if raw_i is not None and raw_i.startswith("+") and raw_i[1:].isdigit():
-                raw_i = raw_i[1:]
-            if raw_i is not None and (
-                raw_i in {"0", "+0", "-0"}
-                or raw_i.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-            ):
-                raw_i = None
-        elif not isinstance(raw_i, int):
-            raw_i = None
-        if raw_i is None or (isinstance(raw_i, int) and raw_i <= 0) or (isinstance(raw_i, str) and raw_i.startswith("-")):
+        raw_i = _normalize_ws_order_id(raw_i, strict_float=True)
+        if raw_i is None:
             raise ValueError("missing or invalid Binance order ID")
         fill_id = int(raw_t)
         if fill_id < 0:
             raise ValueError("missing Binance trade ID")
         side = extract_order_side(event)
-        raw_l = event.get("l")
-        last_quantity = float(raw_l) if _is_positive_finite(raw_l) else 0.0
+        last_quantity = safe_pos_float(event.get("l"), default=0.0)
         if last_quantity <= 0 and event.get("X") == "FILLED":
-            raw_z = event.get("z")
-            raw_q = event.get("q")
-            if _is_positive_finite(raw_z):
-                last_quantity = float(raw_z)
-            elif _is_positive_finite(raw_q):
-                last_quantity = float(raw_q)
-        raw_px = extract_order_price(event, default=0.0)
-        last_price = float(raw_px) if _is_positive_finite(raw_px) else 0.0
+            last_quantity = (
+                safe_pos_float(event.get("z"), default=None)
+                or safe_pos_float(event.get("q"), default=0.0)
+            )
+        last_price = safe_pos_float(extract_order_price(event, default=0.0), default=0.0)
         if last_price <= 0 and last_quantity > 0:
-            raw_y = event.get("Y")
-            last_quote = float(raw_y) if _is_positive_finite(raw_y) else 0.0
-            if last_quote > 0:
-                last_price = last_quote / last_quantity
-            else:
-                raw_cum_quote = event.get("Z")
-                raw_cum_qty = event.get("z")
-                cum_quote = float(raw_cum_quote) if _is_positive_finite(raw_cum_quote) else 0.0
-                cum_qty = float(raw_cum_qty) if _is_positive_finite(raw_cum_qty) else last_quantity
-                if cum_quote > 0 and cum_qty > 0:
-                    last_price = cum_quote / cum_qty
+            last_price = _derive_ws_quote_fill_price(event, last_quantity)
         fallback_ms = _clean_now_ms(now_ms)
         ts_ms = extract_timestamp_ms(event, default=None)
         if ts_ms is None or ts_ms <= 0:
@@ -183,27 +196,7 @@ def parse_trade_execution_report(
     elif raw_trade_id is not None and not isinstance(raw_trade_id, int):
         builtins.print("[cacheManager][WS] rejected Trade report with non-scalar trade ID")
         return None
-    if isinstance(raw_order_id, float):
-        if not math.isfinite(raw_order_id) or not raw_order_id.is_integer():
-            raw_order_id = None
-        else:
-            raw_order_id = int(raw_order_id)
-    elif isinstance(raw_order_id, str):
-        raw_order_id = raw_order_id.strip() or None
-        if raw_order_id is not None and raw_order_id.endswith(".0") and raw_order_id[:-2].lstrip("+-").isdigit():
-            raw_order_id = raw_order_id[:-2]
-        if raw_order_id is not None and raw_order_id.startswith("+") and raw_order_id[1:].isdigit():
-            raw_order_id = raw_order_id[1:]
-        if raw_order_id is not None and (
-            raw_order_id.startswith("-")
-            or raw_order_id in {"0", "+0", "-0"}
-            or raw_order_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
-            raw_order_id = None
-    elif not isinstance(raw_order_id, int):
-        raw_order_id = None
-    if isinstance(raw_order_id, int) and raw_order_id <= 0:
-        raw_order_id = None
+    raw_order_id = _normalize_ws_order_id(raw_order_id, strict_float=False)
     try:
         if raw_trade_id is not None and int(raw_trade_id) < 0:
             builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
@@ -232,17 +225,9 @@ def parse_trade_execution_report(
         if _is_positive_finite(extracted_px):
             raw_price = str(extracted_px)
         elif _is_positive_finite(raw_qty):
-            qty_f = float(raw_qty)
-            raw_y = event.get("Y")
-            if _is_positive_finite(raw_y):
-                raw_price = str(float(raw_y) / qty_f)
-            else:
-                raw_cum_quote = event.get("Z")
-                raw_cum_qty = event.get("z")
-                cum_quote = float(raw_cum_quote) if _is_positive_finite(raw_cum_quote) else 0.0
-                cum_qty = float(raw_cum_qty) if _is_positive_finite(raw_cum_qty) else qty_f
-                if cum_quote > 0 and cum_qty > 0:
-                    raw_price = str(cum_quote / cum_qty)
+            derived_px = _derive_ws_quote_fill_price(event, float(raw_qty))
+            if derived_px > 0:
+                raw_price = str(derived_px)
     trade_item: dict[str, Any] = {
         "symbol": symbol,
         "id": trade_id,
@@ -253,13 +238,8 @@ def parse_trade_execution_report(
         "isBuyer": side == "BUY",
     }
     raw_n = event.get("n")
-    if raw_n is not None and not isinstance(raw_n, bool):
-        try:
-            nf = float(raw_n)
-            if math.isfinite(nf) and nf >= 0:
-                trade_item["commission"] = str(raw_n).strip()
-        except (TypeError, ValueError, OverflowError):
-            pass
+    if safe_nonneg_float(raw_n, default=None) is not None:
+        trade_item["commission"] = str(raw_n).strip()
     raw_N = event.get("N")
     if isinstance(raw_N, str) and raw_N.strip():
         trade_item["commissionAsset"] = raw_N.strip()

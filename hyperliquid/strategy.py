@@ -37,7 +37,8 @@ for _mod_name in ("common", "notify", "hl_client", "market_data", "signals"):
 from common import (
     _parse_bool_flag,
     log, are_close, load_env_stack, required_env, required_float_env,
-    required_int_env, required_bool_env, safe_float, safe_pos_float,
+    required_int_env, required_bool_env, safe_float, safe_int,
+    safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
 from notify import notify
 from providers.base import _clean_single_order_id
@@ -127,14 +128,9 @@ class StratParams:
                 if k in d and d[k] is not None:
                     raw = d[k]
                     break
-            if isinstance(raw, bool):
-                raise ValueError(f"boolean not allowed for {keys[0]}")
-            try:
-                val = float(raw)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid float for {keys[0]}: {raw!r}") from exc
-            if not math.isfinite(val):
-                raise ValueError(f"non-finite float for {keys[0]}: {raw!r}")
+            val = safe_float(raw, default=None)
+            if val is None:
+                raise ValueError(f"invalid float for {keys[0]}: {raw!r}")
             return val
 
         def _i(keys: tuple[str, ...], default: int) -> int:
@@ -257,14 +253,7 @@ class Strategy:
         self.ccy = params.currency
         self.dry_run = dry_run
         self.desktop = desktop
-        if isinstance(leverage, bool) or leverage is None:
-            self.leverage = 1
-        else:
-            try:
-                lev_f = float(leverage)
-                self.leverage = max(1, int(lev_f)) if (math.isfinite(lev_f) and lev_f.is_integer()) else 1
-            except (TypeError, ValueError, OverflowError):
-                self.leverage = 1
+        self.leverage = safe_pos_int(leverage, default=1)
         self.replay_mode = replay_mode
         dir_norm = str(getattr(params, "direction", "long") or "long").strip().lower()
         if dir_norm not in ("long", "short"):
@@ -284,22 +273,13 @@ class Strategy:
             self._save = lambda: None
         self._paper_seq = 0
         default_sz_dec = 4 if replay_mode else 2
-        raw_sz_dec = getattr(params, "sz_decimals", default_sz_dec)
-        if isinstance(raw_sz_dec, bool) or raw_sz_dec is None:
-            self.sz_dec = default_sz_dec
-        else:
-            try:
-                dec_f = float(raw_sz_dec)
-                self.sz_dec = max(0, min(18, int(dec_f))) if (math.isfinite(dec_f) and dec_f.is_integer()) else default_sz_dec
-            except (TypeError, ValueError, OverflowError):
-                self.sz_dec = default_sz_dec
+        dec_i = safe_int(getattr(params, "sz_decimals", default_sz_dec), default=None)
+        self.sz_dec = max(0, min(18, dec_i)) if dec_i is not None else default_sz_dec
         if client is not None:
             try:
-                c_dec = client.sz_decimals(coin)
-                if not isinstance(c_dec, bool) and c_dec is not None:
-                    c_dec_f = float(c_dec)
-                    if math.isfinite(c_dec_f) and c_dec_f.is_integer():
-                        self.sz_dec = max(0, min(18, int(c_dec_f)))
+                c_dec_i = safe_int(client.sz_decimals(coin), default=None)
+                if c_dec_i is not None:
+                    self.sz_dec = max(0, min(18, c_dec_i))
             except Exception:
                 pass
 
@@ -339,18 +319,14 @@ class Strategy:
 
     # -- placement -------------------------------------------------------------
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
-        if (
-            isinstance(sz, bool)
-            or isinstance(px, bool)
-            or not isinstance(sz, (int, float))
-            or not isinstance(px, (int, float))
-            or not (math.isfinite(float(sz)) and math.isfinite(float(px)) and float(px) > 0.0)
-        ):
+        sz_f = safe_pos_float(sz, default=None)
+        px_f = safe_pos_float(px, default=None)
+        if sz_f is None or px_f is None:
             if not self.replay_mode:
                 log("  ! [STRAT] invalid sz/px — sar")
             return
-        sz = round(float(sz), self.sz_dec)
-        px = float(px)
+        sz = round(sz_f, self.sz_dec)
+        px = px_f
         if sz <= 0:
             if not self.replay_mode:
                 log("  ! [STRAT] sz 0 — sar")
@@ -421,21 +397,14 @@ class Strategy:
     def _reconcile_real(self, price: float) -> bool:
         pos_fn = getattr(self.client, "position_strict", None) or self.client.position
         try:
-            szi, entry = pos_fn(self.coin)
+            szi_raw, entry_raw = pos_fn(self.coin)
         except Exception as e:
             log(f"  [STRAT] pozitie indisponibila ({e})")
             return False
-        if isinstance(szi, bool) or isinstance(entry, bool) or szi is None or entry is None:
-            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
-            return False
-        try:
-            szi = float(szi)
-            entry = float(entry)
-        except (TypeError, ValueError, OverflowError):
-            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
-            return False
-        if not (math.isfinite(szi) and math.isfinite(entry)) or entry < 0.0:
-            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
+        szi = safe_float(szi_raw, default=None)
+        entry = safe_nonneg_float(entry_raw, default=None)
+        if szi is None or entry is None:
+            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi_raw}, entry={entry_raw}); skipping step")
             return False
 
         if abs(szi) > 1e-9 and szi * self.sign < 0:
@@ -532,27 +501,14 @@ class Strategy:
         """Return whether an unfilled open limit order has expired and price ran away."""
         if not isinstance(order, dict) or order.get("role") != "open":
             return False
-        raw_px = order.get("px")
-        if raw_px is None or isinstance(raw_px, bool):
-            return False
-        try:
-            ord_px = float(raw_px)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(ord_px) or ord_px <= 0.0:
+        ord_px = safe_pos_float(order.get("px"), default=None)
+        if ord_px is None:
             return False
         if elapsed_min is None:
-            raw_ts = order.get("ts")
-            try:
-                ts_f = 0.0 if (raw_ts is None or isinstance(raw_ts, bool)) else float(raw_ts)
-            except (TypeError, ValueError, OverflowError):
-                ts_f = 0.0
-            elapsed_min = (time.time() - (ts_f if math.isfinite(ts_f) else 0.0)) / 60.0
-        try:
-            el_f = float(elapsed_min)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(el_f) or el_f <= self.p.order_ttl_min:
+            ts_f = safe_float(order.get("ts"), default=0.0)
+            elapsed_min = (time.time() - ts_f) / 60.0
+        el_f = safe_float(elapsed_min, default=None)
+        if el_f is None or el_f <= self.p.order_ttl_min:
             return False
         return self.sign * (price - ord_px) > 0.003 * ord_px
 
@@ -567,14 +523,7 @@ class Strategy:
             self.s["spent"] = round(real_qty * eff_avg, 2)
         else:
             self.s["qty"] += fq; self.s["cost"] += fq * fp
-            amt_f = 0.0
-            if amount is not None and not isinstance(amount, bool):
-                try:
-                    cand_amt = float(amount)
-                    if math.isfinite(cand_amt) and cand_amt > 0.0:
-                        amt_f = cand_amt
-                except (TypeError, ValueError, OverflowError):
-                    amt_f = 0.0
+            amt_f = safe_pos_float(amount, default=0.0)
             self.s["spent"] += amt_f if amt_f > 0.0 else fq * fp
         avg = self._avg()
         tag = "[PAPER] " if self.dry_run else ""
@@ -601,11 +550,7 @@ class Strategy:
                    body=f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
         if real_qty is not None:
-            eff_avg = (
-                float(real_avg)
-                if (real_avg is not None and not isinstance(real_avg, bool) and math.isfinite(float(real_avg)) and float(real_avg) > 0)
-                else avg
-            )
+            eff_avg = safe_pos_float(real_avg, default=avg)
             self.s["qty"] = real_qty
             self.s["cost"] = max(0.0, real_qty * (eff_avg or 0.0))
             if self.s["qty"] > 1e-12:
