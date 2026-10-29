@@ -2618,5 +2618,186 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert eq_intents[0]["age_h"] == pytest.approx(0.5, abs=0.05)
 
 
+def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypatch):
+    """Verify prompt data accuracy across T212 Yahoo fallback, orderbook wall distances,
+    venue-isolated trailing peaks/cycles/orders, realized_net PnL, and clean None formatting."""
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+        AutonomousAIReconciler,
+        GeminiClient,
+        _format_venue_cycle_line,
+        _parse_venue_cycle_state,
+    )
+    from providers.t212_provider import T212Provider
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (tmp_path / "instruments.conf").write_text("", encoding="utf-8")
+
+    # 1. _parse_venue_cycle_state extracts realized_net, uses fallback_prices for dd_pct,
+    #    rounds float noise, and _format_venue_cycle_line omits (None) / dd=None%
+    cyc_ada = _parse_venue_cycle_state(
+        {
+            "qty": 202.0,
+            "cost_usd": 45.4,
+            "entry_price": 0.22928099985954736,
+            "last_buy_price": 0.2248,
+            "last_sell_price": 239.99,
+            "last_exit_kind": None,
+            "dca_buys": 1,
+            "realized_net": -3.194,
+        },
+        "ADAUSD",
+        {},
+        avg_decimals=6,
+        fallback_prices={"ADAUSD": 0.1975},
+    )
+    assert cyc_ada["entry_price"] == 0.229281
+    assert cyc_ada["realized_pnl_usd"] == -3.19
+    assert cyc_ada["dd_pct"] == -12.13
+    fmt_line = _format_venue_cycle_line("kraken", "ADAUSD", cyc_ada)
+    assert "(None)" not in fmt_line
+    assert "dd=-12.13%" in fmt_line
+    assert "realized_pnl=$-3.19" in fmt_line
+
+    # 2. Cross-venue isolation: Hyperliquid HYPEUSDC & TAOUSDC do not inherit Kraken's stale trailing_peak
+    #    or Binance's cache_order.json cost basis, and orderbook wall dist uses ob_mid_price when cur_px diverges
+    krk_dir = tmp_path / "kraken"
+    krk_dir.mkdir(exist_ok=True)
+    (krk_dir / "trailing_state.json").write_text(
+        json.dumps({"HYPE": {"peak": 82.23}, "TAO": {"peak": 290.75}}),
+        encoding="utf-8",
+    )
+    hl_dir = tmp_path / "hyperliquid"
+    hl_dir.mkdir(exist_ok=True)
+    (hl_dir / ".state_TAO_LONG.json").write_text(
+        json.dumps({
+            "qty": 0.0,
+            "cost": 248.46,
+            "entry_price": 248.46,
+            "last_buy_price": 248.46,
+            "last_sell_price": 239.99,
+            "pos_peak": 248.725,
+            "realized_net": -3.19,
+        }),
+        encoding="utf-8",
+    )
+    now_ms = int(time.time() * 1000)
+    (cache_dir / "cache_order.json").write_text(
+        json.dumps({
+            "items": {
+                "TAOUSDC": [
+                    {
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "price": "241.9",
+                        "executedQty": "1.0",
+                        "cummulativeQuoteQty": "241.9",
+                        "time": now_ms - 3600_000,
+                    }
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps({
+            "mid_price": 78.865,
+            "imbalance_ratio": -0.35,
+            "bid_depth_usd": 45000.0,
+            "ask_depth_usd": 93000.0,
+            "largest_bid_wall_price": 78.39,
+            "largest_bid_wall_usd": 36000.0,
+            "largest_ask_wall_price": 79.00,
+            "largest_ask_wall_usd": 90000.0,
+        }),
+        encoding="utf-8",
+    )
+
+    hl_hype = MagicMock(symbol="HYPEUSDC", provider_name="hyperliquid", base="HYPE", quote="USDC", params={})
+    hl_hype._provider.get_current_price.return_value = 93.35
+    hl_hype._provider.free_balance.side_effect = lambda a: 0.0 if a == "HYPE" else 32.5
+    hl_hype._provider.get_orders.return_value = []
+    hl_hype.open_orders.return_value = []
+
+    hl_tao = MagicMock(symbol="TAOUSDC", provider_name="hyperliquid", base="TAO", quote="USDC", params={})
+    hl_tao._provider.get_current_price.return_value = 228.5
+    hl_tao._provider.free_balance.side_effect = lambda a: 0.0 if a == "TAO" else 32.5
+    hl_tao._provider.get_orders.return_value = []
+    hl_tao.open_orders.return_value = []
+
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.load_tradable_instruments.return_value = {"HL_HYPE": hl_hype, "HL_TAO": hl_tao}
+
+    captured_prompts = []
+    auditor = GeminiClient(
+        custom_runner=lambda prompt, model, timeout: (
+            captured_prompts.append(prompt)
+            or json.dumps({"summary": "ok", "market_trading_decisions": []})
+        )
+    )
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir="cachedb",
+        mode="shadow",
+        notify_enabled=False,
+        gemini_auditor=auditor,
+        intent_gateway=mock_gw,
+    )
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    crypto_prompt = captured_prompts[-1]
+
+    # Hyperliquid HYPEUSDC must NOT have Kraken's 82.23 peak or positive dd_from_peak
+    assert "dd_from_peak=13." not in crypto_prompt
+    # Hyperliquid TAOUSDC must use its own cycle anchor (248.46) rather than Binance's 241.9
+    assert "[hyperliquid] TAOUSDC: free_TAO=0.0 ($0.0 USD), free_USDC=$32.5, px=228.5, avg_buy_px=248.46" in crypto_prompt
+    # Orderbook wall distance uses ob_mid_price (78.865) instead of mismatched 93.35 (-16%)
+    assert "bid_wall=78.39 ($36000.0, dist=-0.60%)" in crypto_prompt
+    assert "ask_wall=79.0 ($90000.0, dist=+0.17%)" in crypto_prompt
+    # Missing last_sell formats as Last SELL=none rather than Last SELL=None @ None (age=Noneh)
+    assert "Last SELL=none" in crypto_prompt
+    assert "Last SELL=None @ None" not in crypto_prompt
+
+    # 3. T212 Yahoo Finance 5d/5m chart fallback runs even when T212Provider has inherited ohlc_series,
+    #    and rate-limited free_balance=None falls back to .state_NVDA_US_EQ.json qty
+    t212_dir = tmp_path / "212trading"
+    t212_dir.mkdir(exist_ok=True)
+    (t212_dir / ".state_NVDA_US_EQ.json").write_text(
+        json.dumps({"qty": 0.21, "cost_usd": 42.34, "entry_price": 201.62, "last_buy_price": 201.62, "dca_buys": 0}),
+        encoding="utf-8",
+    )
+    real_t212_prov = T212Provider(client=MagicMock())
+    # Simulate HTTP 429 rate-limit returning None on free_balance("NVDA_US_EQ")
+    monkeypatch.setattr(real_t212_prov, "free_balance", lambda asset: 105.08 if asset == "USD" else None)
+    monkeypatch.setattr(real_t212_prov, "get_current_price", lambda sym: 214.47)
+    nvda_inst = MagicMock(
+        symbol="NVDA_US_EQ",
+        provider_name="t212",
+        base="NVDA_US_EQ",
+        quote="USD",
+        params={},
+        _provider=real_t212_prov,
+    )
+    nvda_inst.open_orders.return_value = []
+    mock_gw.load_tradable_instruments.return_value = {"T212_NVDA": nvda_inst}
+
+    now_s = int(time.time())
+    fake_chart = {
+        "timestamp": [now_s - (20 - i) * 300 for i in range(21)],
+        "indicators": {"quote": [{"close": [200.0 + i * 0.7 for i in range(21)]}]},
+    }
+    import types
+    fake_md = types.ModuleType("market_data")
+    fake_md._chart = lambda sym, rng="5d", interval="5m": fake_chart
+    monkeypatch.setitem(os.sys.modules, "market_data", fake_md)
+
+    reconciler.run_cycle(topic_key="auto_sharetrade_executor")
+    eq_prompt = captured_prompts[-1]
+    assert "free_NVDA_US_EQ=0.21 ($45.04 USD)" in eq_prompt
+    assert "($None USD)" not in eq_prompt
+    assert "24h_range=" in eq_prompt
+    assert "swing_wave(" in eq_prompt
+
+
+
 
 

@@ -579,7 +579,7 @@ def _symbol_trend(
     Consumes the unified MarketRegimeDecision from MarketRegimeService.
     """
     if regime_context is not None:
-        max_age = float(_load_margins()["regime_context_max_age_sec"])
+        max_age = safe_pos_float(_load_margins().get("regime_context_max_age_sec"), 600.0)
         if hasattr(regime_context, "is_valid_for"):
             if regime_context.is_valid_for(
                 symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
@@ -644,13 +644,13 @@ def get_dynamic_window_sec_cfg(
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
 
     m = _load_margins()
-    favorable_h = float(m["dynamic_window_favorable_h"])
-    flat_h = float(m["dynamic_window_flat_h"])
-    adverse_h = float(m["dynamic_window_adverse_h"])
+    favorable_h = safe_pos_float(m.get("dynamic_window_favorable_h"), 2.0)
+    flat_h = safe_pos_float(m.get("dynamic_window_flat_h"), 2.0)
+    adverse_h = safe_pos_float(m.get("dynamic_window_adverse_h"), 2.0)
 
     trend = resolved_trend
     if trend is None and regime_context is not None:
-        max_age = float(m["regime_context_max_age_sec"])
+        max_age = safe_pos_float(m.get("regime_context_max_age_sec"), 600.0)
         if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
             symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
             require_identity=True,
@@ -1022,16 +1022,14 @@ def get_antispam_sec_cfg(provider_name):
     """Return the per-symbol anti-spam pause in seconds from order_guard.conf."""
     m = _load_margins()
     venue = _provider_name(provider_name).strip().lower()
-    key = venue + "_antispam_sec"
-    return float(m.get(key, m["default_antispam_sec"]))
+    return safe_nonneg_float(m.get(venue + "_antispam_sec", m.get("default_antispam_sec")), 30.0)
 
 
 def get_safeback_sec_cfg(provider_name):
     """Return the per-venue historical lookback window in seconds for the profit guard reference."""
     m = _load_margins()
     venue = _provider_name(provider_name).strip().lower()
-    key = venue + "_safeback_sec"
-    return float(m.get(key, m["default_safeback_sec"]))
+    return safe_nonneg_float(m.get(venue + "_safeback_sec", m.get("default_safeback_sec")), 120.0)
 
 
 DAILY_LIMIT_WINDOW_SEC = 86400.0
@@ -1434,7 +1432,7 @@ def check_intelligence_guards(
     m = _load_margins()
     valid_context = False
     if regime_context is not None:
-        max_age = float(m["regime_context_max_age_sec"])
+        max_age = safe_pos_float(m.get("regime_context_max_age_sec"), 600.0)
         if hasattr(regime_context, "is_valid_for"):
             valid_context = regime_context.is_valid_for(
                 symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
@@ -1564,8 +1562,8 @@ def check_intelligence_guards(
     if internal_active and px_clean > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
-        surge_pct = float(m["parabolic_surge_pct"])
-        pullback_pct = float(m["parabolic_pullback_pct"])
+        surge_pct = safe_pos_float(m.get("parabolic_surge_pct"), 4.0)
+        pullback_pct = safe_pos_float(m.get("parabolic_pullback_pct"), 1.0)
         history = price_history
         if history is None:
             try:
@@ -1622,8 +1620,8 @@ def check_intelligence_guards(
         from intelligence.internal.guards.guard_decision import BrakeAction
         from qlimit_order_guard import resolve_cached_gaussian_horizon
         e_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
-        e_scale = float(m["weibull_exhausted_scale"])
-        e_p90 = float(m["weibull_p90_days"])
+        e_scale = safe_nonneg_float(m.get("weibull_exhausted_scale"), 0.5)
+        e_p90 = safe_pos_float(m.get("weibull_p90_days"), 14.0)
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
         explicit_dur = explicit_dur_sec > 0.0
         ctx_rt = (
@@ -1845,7 +1843,7 @@ def check_math_profit_reference(
     if mode == "dynamic":
         trend = None
         if regime_context is not None:
-            max_age = float(_load_margins()["regime_context_max_age_sec"])
+            max_age = safe_pos_float(_load_margins().get("regime_context_max_age_sec"), 600.0)
             if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
                 symbol=symbol, provider=provider_name, max_age_seconds=max_age,
                 require_identity=True,

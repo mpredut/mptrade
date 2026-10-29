@@ -1473,14 +1473,26 @@ class AutonomousAIReconciler:
                             sys.path.insert(0, t212_dir)
                         from market_data import _chart
                         yahoo_sym = sym.split("_", 1)[0]
-                        chart_res = _chart(yahoo_sym, rng="5d", interval="5m") or {}
-                        ts_list = chart_res.get("timestamp") or []
-                        closes = (((chart_res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
-                        pts_5d = [
-                            [int(ts * 1000), float(c)]
-                            for ts, c in zip(ts_list, closes)
-                            if ts and c is not None and float(c) > 0
-                        ]
+                        chart_res = _chart(yahoo_sym, rng="5d", interval="5m")
+                        pts_5d: List[List[Any]] = []
+                        if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
+                            pts_5d = [
+                                [int(float(bar[0]) * 1000), round(float(bar[1]), 4)]
+                                for bar in chart_res[1]
+                                if isinstance(bar, (list, tuple))
+                                and len(bar) >= 2
+                                and bar[0]
+                                and bar[1] is not None
+                                and float(bar[1]) > 0
+                            ]
+                        elif isinstance(chart_res, dict):
+                            ts_list = chart_res.get("timestamp") or []
+                            closes = (((chart_res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
+                            pts_5d = [
+                                [int(ts * 1000), round(float(c), 4)]
+                                for ts, c in zip(ts_list, closes)
+                                if ts and c is not None and float(c) > 0
+                            ]
                         if pts_5d:
                             cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
                             pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
@@ -1869,7 +1881,8 @@ class AutonomousAIReconciler:
                         pos["free_base"] = round(cyc_qty, 6)
                         if pos_px_f > 0:
                             pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
-                _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
+                cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
+                _set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
                 _set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
@@ -2532,6 +2545,13 @@ class AutonomousAIReconciler:
                 aw_px = minfo.get("ask_wall_px")
                 bw_px_f = _parse_finite_float(bw_px, 0.0)
                 aw_px_f = _parse_finite_float(aw_px, 0.0)
+                ob_mid = _parse_finite_float(minfo.get("ob_mid_price"), 0.0)
+                if ob_mid > 0 and (
+                    cur_px <= 0
+                    or (bw_px_f > 0 and cur_px < bw_px_f)
+                    or (aw_px_f > 0 and cur_px > aw_px_f)
+                ):
+                    cur_px = ob_mid
                 bw_dist = (
                     f", dist={(bw_px_f - cur_px) / cur_px * 100.0:+.2f}%"
                     if cur_px > 0 and bw_px_f > 0
@@ -2597,9 +2617,18 @@ class AutonomousAIReconciler:
                         else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
                     )
                     t_extra += f", venue_fee_per_leg={fee_bps}bps"
+                    fb_val = pos.get("free_base")
+                    val_usd = pos.get("value_usd")
+                    fb_str = (
+                        f"{fb_val} (${val_usd} USD)"
+                        if fb_val is not None and val_usd is not None
+                        else (f"{fb_val}" if fb_val is not None else "N/A")
+                    )
+                    fq_val = pos.get("free_quote")
+                    fq_str = f"${fq_val}" if fq_val is not None else "N/A"
                     context_items.append(
-                        f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={pos.get('free_base')} "
-                        f"(${pos.get('value_usd')} USD), free_{pos['quote']}=${pos.get('free_quote')}, "
+                        f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={fb_str}, "
+                        f"free_{pos['quote']}={fq_str}, "
                         f"px={pos.get('price')}{t_extra}"
                     )
             if ps.get("open_orders"):
@@ -2644,16 +2673,29 @@ class AutonomousAIReconciler:
                 ls_ts = _parse_finite_float(ls.get("ts_ms"), 0.0)
                 lb_age_h = round((now_ms - int(lb_ts)) / 3_600_000.0, 1) if lb_ts > 0 else None
                 ls_age_h = round((now_ms - int(ls_ts)) / 3_600_000.0, 1) if ls_ts > 0 else None
-                avg_b_str = f" | Active Cycle Avg BUY={oinfo.get('active_avg_buy_px')}" if oinfo.get("active_avg_buy_px") else ""
+                avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
+                avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
                 r_buys = oinfo.get("recent_buys") or []
                 tranches_str = ""
                 if len(r_buys) > 1:
-                    t_parts = [f"{b.get('qty')}@{b.get('price')}" for b in r_buys if isinstance(b, dict)]
+                    t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
                     tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
+                lb_px = _round_opt_px(lb.get("price"), 6)
+                ls_px = _round_opt_px(ls.get("price"), 6)
+                lb_str = (
+                    f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h)"
+                    if lb_px is not None
+                    else "none"
+                )
+                ls_str = (
+                    f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h)"
+                    if ls_px is not None
+                    else "none"
+                )
                 context_items.append(
                     f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
-                    f"Last BUY={lb.get('qty')} @ {lb.get('price')} (age={lb_age_h}h) | "
-                    f"Last SELL={ls.get('qty')} @ {ls.get('price')} (age={ls_age_h}h)"
+                    f"Last BUY={lb_str} | "
+                    f"Last SELL={ls_str}"
                     f"{avg_b_str}{tranches_str}"
                 )
             if ps.get("active_retry_queue"):
