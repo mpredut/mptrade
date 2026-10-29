@@ -10,7 +10,7 @@ T212_DIR = os.path.join(ROOT, "212trading")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from botcore import parse_dotenv
+from botcore import parse_dotenv, safe_pos_float
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     format_ablation_result,
@@ -136,7 +136,7 @@ def main():
                     bar_minutes=1440.0,  # 1 day
                     warmup_ohlc=warmup_ohlc,
                 )
-                budget = float(params.max_budget) if params.max_budget > 0 else 500.0
+                budget = safe_pos_float(getattr(params, "max_budget", None), default=500.0)
                 row = format_ablation_result(symbol, test_id, variant_name, res, budget)
                 results.append(row)
                 print(

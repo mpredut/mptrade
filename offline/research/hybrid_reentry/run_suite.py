@@ -16,7 +16,10 @@ _KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
 
-from botcore import safe_float as _safe_f, safe_int as _safe_int
+from botcore import safe_float, safe_int, safe_nonneg_int
+
+_safe_f = safe_float
+_safe_int = safe_int
 from strategies import spot_dca as strat
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
@@ -123,11 +126,11 @@ def main():
         runs = [r for r in all_results if isinstance(r, dict) and r.get("test_id") == var and "error" not in r]
         if not runs:
             continue
-        rets = [_safe_f(r.get("total_return_pct"), 0.0) for r in runs]
-        dds = [_safe_f(r.get("max_drawdown_pct"), 0.0) for r in runs]
-        exposures = [_safe_f(r.get("exposure_pct"), 0.0) for r in runs]
-        cycles = [_safe_int(r.get("cycles"), 0) for r in runs]
-        wins = [_safe_int(r.get("wins"), 0) for r in runs]
+        rets = [safe_float(r.get("total_return_pct"), 0.0) for r in runs]
+        dds = [safe_float(r.get("max_drawdown_pct"), 0.0) for r in runs]
+        exposures = [safe_float(r.get("exposure_pct"), 0.0) for r in runs]
+        cycles = [safe_nonneg_int(r.get("cycles"), default=0) for r in runs]
+        wins = [safe_nonneg_int(r.get("wins"), default=0) for r in runs]
         n = len(runs)
         pos_count = sum(1 for ret in rets if ret > 0)
 

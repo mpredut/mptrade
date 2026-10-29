@@ -15,7 +15,7 @@ _safe_f = safe_float
 
 
 def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False) -> str:
-    f = _safe_f(val, None)
+    f = safe_float(val, default=None)
     if f is None:
         return "N/A"
     spec = f"{f:+0.{decimals}f}%" if signed else f"{f:0.{decimals}f}%"
@@ -79,9 +79,9 @@ def generate_markdown_report() -> str:
             s = summary[var]
             md.append(
                 f"| **{var}** | {s.get('name', var)} | {s.get('positive_assets', '0/0')} | "
-                f"**{_safe_f(s.get('median_return_pct'), 0.0):+.2f}%** | {_safe_f(s.get('worst_return_pct'), 0.0):+.2f}% | "
-                f"{_safe_f(s.get('best_return_pct'), 0.0):+.2f}% | {_safe_f(s.get('median_drawdown_pct'), 0.0):.2f}% | "
-                f"{_safe_f(s.get('max_drawdown_pct'), 0.0):.2f}% | {_safe_f(s.get('mean_exposure_pct'), 0.0):.2f}% | "
+                f"**{safe_float(s.get('median_return_pct'), 0.0):+.2f}%** | {safe_float(s.get('worst_return_pct'), 0.0):+.2f}% | "
+                f"{safe_float(s.get('best_return_pct'), 0.0):+.2f}% | {safe_float(s.get('median_drawdown_pct'), 0.0):.2f}% | "
+                f"{safe_float(s.get('max_drawdown_pct'), 0.0):.2f}% | {safe_float(s.get('mean_exposure_pct'), 0.0):.2f}% | "
                 f"{s.get('total_cycles') or 0} | {s.get('total_wins') or 0} |"
             )
 

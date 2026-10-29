@@ -29,7 +29,10 @@ if KRAKEN_DIR not in sys.path:
 
 from strategies.spot_replay import run_replay
 from strategies import spot_engine as strat
-from botcore import safe_float as _safe_f, safe_int as _safe_int
+from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_float
+
+_safe_f = safe_float
+_safe_int = safe_int
 
 
 def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
@@ -135,16 +138,16 @@ def format_ablation_result(
 ) -> dict[str, Any]:
     """Format a replay result dict into the canonical ablation summary row."""
     res_map = res if isinstance(res, dict) else {}
-    total_usd = _safe_f(res_map.get("total"), 0.0)
-    cap_f = _safe_f(capital, 0.0)
+    total_usd = safe_float(res_map.get("total"), 0.0)
+    cap_f = safe_pos_float(capital, 0.0)
     ret_pct = (total_usd / cap_f * 100.0) if cap_f > 0 else 0.0
-    max_dd_pct = _safe_f(res_map.get("max_drawdown_pct"), 0.0)
-    exposure_pct = _safe_f(res_map.get("exposure_pct"), 0.0)
-    cycles = max(0, _safe_int(res_map.get("cycles"), 0))
-    wins = max(0, _safe_int(res_map.get("wins"), 0))
+    max_dd_pct = safe_float(res_map.get("max_drawdown_pct"), 0.0)
+    exposure_pct = safe_float(res_map.get("exposure_pct"), 0.0)
+    cycles = safe_nonneg_int(res_map.get("cycles"), default=0)
+    wins = safe_nonneg_int(res_map.get("wins"), default=0)
     raw_wr = res_map.get("win_rate_pct")
     default_wr = (wins / cycles * 100.0) if cycles > 0 else 0.0
-    win_rate = _safe_f(raw_wr, default_wr) if raw_wr is not None else default_wr
+    win_rate = safe_float(raw_wr, default_wr) if raw_wr is not None else default_wr
     return {
         "asset": asset_name,
         "test_id": test_id,
@@ -156,8 +159,8 @@ def format_ablation_result(
         "cycles": cycles,
         "wins": wins,
         "win_rate": round(win_rate, 1),
-        "profit_factor": round(_safe_f(res_map.get("profit_factor"), 0.0), 2),
-        "fills": max(0, _safe_int(res_map.get("fills"), 0)),
+        "profit_factor": round(safe_float(res_map.get("profit_factor"), 0.0), 2),
+        "fills": safe_nonneg_int(res_map.get("fills"), default=0),
     }
 
 
