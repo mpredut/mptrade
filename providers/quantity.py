@@ -307,6 +307,45 @@ def clamp_notional_to_wallet_balance(
     return True, desired_usd, "Sufficient wallet balance"
 
 
+def round_provider_qty(provider: Any, symbol: str, qty: float) -> float:
+    """Round ``qty`` using the provider's ``round_amount`` or ``round_quantity`` hook when available."""
+    round_fn = getattr(provider, "round_amount", None) or getattr(provider, "round_quantity", None)
+    if callable(round_fn) and qty > 0:
+        try:
+            res_f = safe_nonneg_float(round_fn(symbol, qty), default=None)
+            if res_f is not None:
+                return res_f
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return qty
+
+
+def check_order_filter_refusal(
+    provider: Any,
+    symbol: str,
+    side: str,
+    price: float,
+    qty: float,
+    *,
+    market: bool = False,
+    enforce_business_minimum: bool = True,
+) -> Optional[str]:
+    """Evaluate the provider's ``order_filter_refusal`` hook and return a refusal string if rejected."""
+    filter_check = getattr(provider, "order_filter_refusal", None)
+    if callable(filter_check):
+        refusal = filter_check(
+            symbol,
+            side,
+            price,
+            qty,
+            market=_parse_bool_flag(market, default=False),
+            enforce_business_minimum=_parse_bool_flag(enforce_business_minimum, default=True),
+        )
+        if refusal:
+            return str(refusal)
+    return None
+
+
 def decide_quantity(provider, symbol: str, side: str, price: float,
                     requested_qty: Optional[float], *, base: Optional[str] = None,
                     quote: Optional[str] = None, cancelorders: bool = False,
@@ -351,19 +390,11 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     raw_fee_cap = provider.fee_cap_quantity(symbol, side, price, balance_cap)
     fee_cap = safe_nonneg_float(raw_fee_cap, default=0.0) or 0.0
 
-    round_fn = getattr(provider, "round_amount", None) or getattr(provider, "round_quantity", None)
-
     def _round_qty(q: float) -> float:
-        if callable(round_fn) and q > 0:
-            res_f = safe_nonneg_float(round_fn(symbol, q), default=None)
-            if res_f is not None:
-                return res_f
-        return q
+        return round_provider_qty(provider, symbol, q)
 
     final = _round_qty(min(requested, balance_cap, policy_cap, fee_cap))
-    venue_l = normalize_venue_name(
-        str(getattr(provider, "name", "") or getattr(provider, "provider_name", ""))
-    )
+    venue_l = normalize_venue_name(provider) or normalize_venue_name(getattr(provider, "provider_name", None))
     if side == "SELL" and venue_l == "t212" and final > 0:
         final = _round_qty(t212_adjust_partial_sell_qty(final, balance_cap, price)[0])
 
@@ -394,16 +425,16 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     reason = None if final > 0 else "qty_zero_after_policy"
     # Reject a venue-invalid candidate before it can become a durable retry intent.
     # The provider owns exact step, tick, notional, and market-applicability rules.
-    filter_check = getattr(provider, "order_filter_refusal", None)
     refusal = (
-        filter_check(
-            symbol, side, price, final, market=_parse_bool_flag(market, default=False),
-            enforce_business_minimum=_parse_bool_flag(enforce_business_minimum, default=True))
-        if final > 0 and callable(filter_check) else None
+        check_order_filter_refusal(
+            provider, symbol, side, price, final,
+            market=market, enforce_business_minimum=enforce_business_minimum,
+        )
+        if final > 0 else None
     )
     if refusal:
         return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
-                                0.0, str(refusal), asset,
+                                0.0, refusal, asset,
                                 scale_applied=scale_applied, applied_scale=applied_scale)
     return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
                             final, reason, asset,

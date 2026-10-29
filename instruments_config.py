@@ -114,6 +114,7 @@ def load_tradable_instruments(
     """Load enabled instruments across Binance, Kraken, Hyperliquid, and Trading212 filtered by asset_scope."""
     import os
     from botcore import is_us_rth_open, load_env_file_defaults
+    from cachepaths import normalize_venue_name
 
     ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
     rth_check = is_rth_open_fn or is_us_rth_open
@@ -132,7 +133,7 @@ def load_tradable_instruments(
         return {
             str(getattr(inst, "symbol", "")).upper()
             for inst in active_map.values()
-            if str(getattr(inst, "provider_name", "")).lower() == prov
+            if normalize_venue_name(getattr(inst, "provider_name", "")) == prov
         }
 
     def _bind_inst(
@@ -156,7 +157,7 @@ def load_tradable_instruments(
         for k, inst in raw_map.items():
             if getattr(inst, "enabled", True) is False:
                 continue
-            if scope == "crypto" and str(getattr(inst, "provider_name", "")).lower() == "t212":
+            if scope == "crypto" and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212":
                 continue
             active_map[k] = inst
 

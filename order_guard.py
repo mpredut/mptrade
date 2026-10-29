@@ -1256,11 +1256,7 @@ def _read_cached_price_history(
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
     from cachepaths import cache_symbol_variants
     su_base = _normalize_base_asset(su)
-    safe_su = su.replace("/", "").replace("-", "").replace("_", "")
-    cand_symbols: List[str] = []
-    for c in (safe_su, su, *cache_symbol_variants(symbol), f"{su_base}USDC", f"{su_base}USDT", f"{su_base}USD", su_base):
-        if c and c not in cand_symbols:
-            cand_symbols.append(c)
+    cand_symbols = cache_symbol_variants(symbol, include_base=True)
 
     def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
         if not isinstance(item, (list, tuple)) or len(item) < 2:

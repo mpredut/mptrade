@@ -124,15 +124,8 @@ class Instrument:
                 pass
 
     def _round_provider_qty(self, qty: float) -> float:
-        round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
-        if callable(round_fn) and qty > 0:
-            try:
-                res_f = safe_float(round_fn(self.symbol, qty), default=None)
-                if res_f is not None:
-                    return res_f
-            except (TypeError, ValueError, OverflowError):
-                pass
-        return qty
+        from providers.quantity import round_provider_qty
+        return round_provider_qty(self._provider, self.symbol, qty)
 
     def _resolve_regime_context(self):
         try:
@@ -194,18 +187,18 @@ class Instrument:
         if scale_f is None or app_f is None:
             return qty, applied_scale, None
         if 0.0 < scale_f < app_f:
+            from providers.quantity import check_order_filter_refusal
             ratio = scale_f / app_f
             scaled_qty = self._round_provider_qty(qty_f * ratio)
-            filter_check = getattr(self._provider, "order_filter_refusal", None)
-            refusal = (
-                filter_check(
-                    self.symbol, side_u, price, scaled_qty,
-                    market=is_market, enforce_business_minimum=enforce_business_minimum)
-                if callable(filter_check) else None
+            refusal = check_order_filter_refusal(
+                self._provider, self.symbol, side_u, price, scaled_qty,
+                market=is_market, enforce_business_minimum=enforce_business_minimum,
             )
             if refusal:
                 print(f"[{self.symbol}] {side_u} late-scaled qty {scaled_qty} refused by filter: {refusal}")
-                return 0.0, applied_scale, str(refusal)
+                return 0.0, applied_scale, refusal
+            if scaled_qty <= 0.0:
+                return 0.0, applied_scale, "qty_zero_after_policy"
             print(f"[{self.symbol}] {side_u} late-scaled by intelligence guard: {qty} -> {scaled_qty} (scale={scale_f:.2f})")
             return scaled_qty, scale_f, None
         return qty, applied_scale, None
@@ -727,16 +720,16 @@ class Instrument:
                         if qty <= 0:
                             reason = "medium_trend_qty_zero"
                             return None
-                        filter_check = getattr(self._provider, "order_filter_refusal", None)
-                        if callable(filter_check):
-                            gt2_refusal = filter_check(
-                                self.symbol, side_u, quantity_price if is_market else price, qty,
-                                market=is_market, enforce_business_minimum=enforce_business_minimum,
-                            )
-                            if gt2_refusal:
-                                print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
-                                reason = str(gt2_refusal)
-                                return None
+                        from providers.quantity import check_order_filter_refusal
+                        gt2_refusal = check_order_filter_refusal(
+                            self._provider, self.symbol, side_u,
+                            quantity_price if is_market else price, qty,
+                            market=is_market, enforce_business_minimum=enforce_business_minimum,
+                        )
+                        if gt2_refusal:
+                            print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
+                            reason = gt2_refusal
+                            return None
                         applied_scale = min(float(applied_scale), scale_factor)
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
@@ -1095,14 +1088,9 @@ class Instrument:
         """Return ``consumer.key`` or ``default`` when missing or conversion fails."""
         if isinstance(consumer, bool) or isinstance(key, bool):
             return default
+        from instrument_registry import casefold_get
         k_lookup = f"{str(consumer or '').strip()}.{str(key or '').strip()}"
-        v = self.params.get(k_lookup)
-        if v is None:
-            k_cf = k_lookup.casefold()
-            for pk, pv in self.params.items():
-                if isinstance(pk, str) and pk.casefold() == k_cf:
-                    v = pv
-                    break
+        v = casefold_get(self.params, k_lookup)
         if v is None:
             return default
         if cast is None:

@@ -225,11 +225,18 @@ def step_wols_slope(prices, sample_rate_sec=None, power=None, symbol: str | None
         power: Exponent p (w_k = k^p). Defaults to step_wols_power_for_symbol(symbol).
         symbol: Optional symbol name for per-coin power lookup from instruments.conf.
     """
-    pwr = float(step_wols_power_for_symbol(symbol) if power is None else power)
-    arr = np.asarray(prices, dtype=np.float64)
-    m = len(arr) - 1
-    if m < 1:
+    if prices is None or isinstance(prices, (bool, str, bytes)):
         return 0.0
+    pwr = safe_nonneg_float(power, default=None)
+    if pwr is None:
+        pwr = float(step_wols_power_for_symbol(symbol))
+    try:
+        arr = np.asarray(prices, dtype=np.float64)
+    except (TypeError, ValueError):
+        return 0.0
+    if arr.ndim != 1 or len(arr) < 2 or not np.all(np.isfinite(arr)):
+        return 0.0
+    m = len(arr) - 1
     k = np.arange(1, m + 1, dtype=np.float64)
     w = k ** pwr if pwr != 1.0 else k
     val = safe_float(np.dot(w, np.diff(arr)) / np.sum(w), default=None)
@@ -456,7 +463,9 @@ class IncrementalTrendBuffer:
         if m < 1:
             return 0.0
         p = self.prices
-        pwr = float(step_wols_power_for_symbol(symbol) if power is None else power)
+        pwr = safe_nonneg_float(power, default=None)
+        if pwr is None:
+            pwr = float(step_wols_power_for_symbol(symbol))
         ref_last = float(p[b])
 
         if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (1.0, 2.0, 3.0):
@@ -542,18 +551,20 @@ class IncrementalTrendBuffer:
         if not entries:
             self.clear()
             return
-        if not self.timestamps:
-            for e in entries:
-                if isinstance(e, (list, tuple)) and len(e) >= 2:
-                    self.append(e[1], e[0])
-            return
-        try:
-            first_ts, first_p = int(entries[0][0]), float(entries[0][1])
-        except (TypeError, ValueError, IndexError, OverflowError):
+
+        def _rebuild() -> None:
             self.clear()
             for e in entries:
                 if isinstance(e, (list, tuple)) and len(e) >= 2:
                     self.append(e[1], e[0])
+
+        if not self.timestamps:
+            _rebuild()
+            return
+        try:
+            first_ts, first_p = int(entries[0][0]), float(entries[0][1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            _rebuild()
             return
         if self.timestamps[0] < first_ts:
             trim_idx = bisect_left(self.timestamps, first_ts)
@@ -565,25 +576,16 @@ class IncrementalTrendBuffer:
             or self.prices[0] != first_p
             or len(entries) < len(self.timestamps)
         ):
-            self.clear()
-            for e in entries:
-                if isinstance(e, (list, tuple)) and len(e) >= 2:
-                    self.append(e[1], e[0])
+            _rebuild()
             return
         cur_len = len(self.timestamps)
         try:
             last_ts, last_p = int(entries[cur_len - 1][0]), float(entries[cur_len - 1][1])
         except (TypeError, ValueError, IndexError, OverflowError):
-            self.clear()
-            for e in entries:
-                if isinstance(e, (list, tuple)) and len(e) >= 2:
-                    self.append(e[1], e[0])
+            _rebuild()
             return
         if self.timestamps[-1] != last_ts or self.prices[-1] != last_p:
-            self.clear()
-            for e in entries:
-                if isinstance(e, (list, tuple)) and len(e) >= 2:
-                    self.append(e[1], e[0])
+            _rebuild()
             return
         for idx in range(cur_len, len(entries)):
             e = entries[idx]
@@ -915,43 +917,64 @@ class PriceWindow:
                     break
             return total / count
 
+    def _centroid_index_for(self, target_price):
+        if target_price is not None and target_price > 0:
+            lo = target_price * (200.0 - 0.01) / (200.0 + 0.01) - 1e-12
+            hi = target_price * (200.0 + 0.01) / (200.0 - 0.01) + 1e-12
+            indices = [
+                i for i, price in enumerate(self.prices)
+                if lo <= price <= hi and u.are_close(price, target_price, 0.01)
+            ]
+        else:
+            indices = [i for i, price in enumerate(self.prices) if u.are_close(price, target_price, 0.01)]
+        return sum(indices) / len(indices) if indices else None
+
     def get_min_and_index(self):
         with self._lock:
             if not self.sorted_prices:
                 return None, None
             min_price = self.get_min()
-            if min_price is not None and min_price > 0:
-                lo = min_price * (200.0 - 0.01) / (200.0 + 0.01) - 1e-12
-                hi = min_price * (200.0 + 0.01) / (200.0 - 0.01) + 1e-12
-                min_indices = [
-                    i for i, price in enumerate(self.prices)
-                    if lo <= price <= hi and u.are_close(price, min_price, 0.01)
-                ]
-            else:
-                min_indices = [i for i, price in enumerate(self.prices) if u.are_close(price, min_price, 0.01)]
-            centroid_index = sum(min_indices) / len(min_indices) if min_indices else None
-            return min_price, centroid_index
+            return min_price, self._centroid_index_for(min_price)
 
     def get_max_and_index(self):
         with self._lock:
             if not self.sorted_prices:
                 return None, None
             max_price = self.get_max()
-            if max_price is not None and max_price > 0:
-                lo = max_price * (200.0 - 0.01) / (200.0 + 0.01) - 1e-12
-                hi = max_price * (200.0 + 0.01) / (200.0 - 0.01) + 1e-12
-                max_indices = [
-                    i for i, price in enumerate(self.prices)
-                    if lo <= price <= hi and u.are_close(price, max_price, 0.01)
-                ]
-            else:
-                max_indices = [i for i, price in enumerate(self.prices) if u.are_close(price, max_price, 0.01)]
-            centroid_index = sum(max_indices) / len(max_indices) if max_indices else None
-            return max_price, centroid_index
+            return max_price, self._centroid_index_for(max_price)
 
     def current_window_size(self):
         with self._lock:
             return len(self.prices)
+
+    def _is_trend_buf_synced(self) -> bool:
+        n = len(self.prices)
+        blen = len(self._trend_buf.prices)
+        return (
+            blen >= n
+            and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
+        )
+
+    def _eval_synced_trend_buf(self, eff_power: float | None = None):
+        n = len(self.prices)
+        blen = len(self._trend_buf.prices)
+        if eff_power is None:
+            eff_power = step_wols_power_for_symbol(self.symbol)
+        noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
+        key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
+               _active_estimator(), eff_power, noise_gate_k)
+        if self._cached_eval_key != key or self._cached_eval_val is None:
+            self._cached_eval_val = self._trend_buf.eval_slice(
+                blen - n,
+                blen - 1,
+                sample_rate_sec=self.sample_rate_sec,
+                eps_k=1.0,
+                window_seconds=self.window_seconds,
+                power=eff_power,
+                symbol=self.symbol,
+            )
+            self._cached_eval_key = key
+        return self._cached_eval_val
 
     def get_recent_gradient(self) -> float:
         """Return recent momentum as mean gradient over the latest samples in O(1).
@@ -963,12 +986,8 @@ class PriceWindow:
             n = len(self.prices)
             if n < 2:
                 return 0.0
-            blen = len(self._trend_buf.prices)
-            if (
-                blen >= n
-                and self._trend_buf.prices[blen - n] == self.prices[0]
-                and self._trend_buf.prices[-1] == self.prices[-1]
-            ):
+            if self._is_trend_buf_synced():
+                blen = len(self._trend_buf.prices)
                 p = self._trend_buf.prices
                 a = blen - n
                 b = blen - 1
@@ -992,28 +1011,8 @@ class PriceWindow:
             n = len(self.prices)
             if n < 3:
                 return 0.0
-            blen = len(self._trend_buf.prices)
-            if (
-                blen >= n
-                and self._trend_buf.prices[blen - n] == self.prices[0]
-                and self._trend_buf.prices[-1] == self.prices[-1]
-            ):
-                eff_power = step_wols_power_for_symbol(self.symbol)
-                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator(), eff_power, TREND_NOISE_GATE_K)
-                if self._cached_eval_key == key and self._cached_eval_val is not None:
-                    return float(k_val * self._cached_eval_val[4])
-                res = self._trend_buf.eval_slice(
-                    blen - n,
-                    blen - 1,
-                    sample_rate_sec=self.sample_rate_sec,
-                    eps_k=1.0,
-                    window_seconds=self.window_seconds,
-                    power=eff_power,
-                    symbol=self.symbol,
-                )
-                self._cached_eval_key = key
-                self._cached_eval_val = res
+            if self._is_trend_buf_synced():
+                res = self._eval_synced_trend_buf()
                 return float(k_val * res[4])
             prices = list(self.prices)
         return float(k_val * self._std_of_gradient(prices))
@@ -1042,30 +1041,9 @@ class PriceWindow:
         ``instant_trend_from_prices`` if ``self.prices`` was mutated directly.
         """
         with self._lock:
-            n = len(self.prices)
-            blen = len(self._trend_buf.prices)
             eff_power = step_wols_power_for_symbol(self.symbol)
-            if (
-                blen >= n
-                and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
-            ):
-                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
-                       _active_estimator(), eff_power, TREND_NOISE_GATE_K)
-                if self._cached_eval_key == key and self._cached_eval_val is not None:
-                    final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
-                else:
-                    res = self._trend_buf.eval_slice(
-                        blen - n,
-                        blen - 1,
-                        sample_rate_sec=self.sample_rate_sec,
-                        eps_k=1.0,
-                        window_seconds=self.window_seconds,
-                        power=eff_power,
-                        symbol=self.symbol,
-                    )
-                    self._cached_eval_key = key
-                    self._cached_eval_val = res
-                    final_trend, growth_coefficient, slope_full, gradient_recent, _ = res
+            if self._is_trend_buf_synced():
+                final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._eval_synced_trend_buf(eff_power)
             else:
                 prices_snapshot = list(self.prices)
                 final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
@@ -1099,13 +1077,8 @@ class PriceWindow:
         n_samples = max(int(round(wf / rate)), 3) if wf is not None else None
         with self._lock:
             n_win = len(self.prices)
-            blen = len(self._trend_buf.prices)
-            if (
-                blen >= n_win
-                and n_win > 0
-                and self._trend_buf.prices[blen - n_win] == self.prices[0]
-                and self._trend_buf.prices[-1] == self.prices[-1]
-            ):
+            if n_win > 0 and self._is_trend_buf_synced():
+                blen = len(self._trend_buf.prices)
                 take = min(n_samples, n_win) if n_samples is not None else n_win
                 prices = self._trend_buf.prices[blen - take : blen]
             else:

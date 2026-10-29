@@ -18,14 +18,22 @@ ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian",
          "archive", "rtrade", "force_sell"}
 
 
-def _required(values, key, section):
-    raw = values.get(key) if isinstance(values, dict) else None
-    if raw is None and isinstance(values, dict) and isinstance(key, str):
+def casefold_get(mapping: object, key: object, default=None):
+    """Look up ``key`` in ``mapping`` with an exact check followed by a case-insensitive fallback."""
+    if not isinstance(mapping, dict) or isinstance(key, bool):
+        return default
+    raw = mapping.get(key)
+    if raw is None and isinstance(key, str):
         key_cf = key.casefold()
-        for k, v in values.items():
+        for k, v in mapping.items():
             if isinstance(k, str) and k.casefold() == key_cf:
                 raw = v
                 break
+    return default if raw is None else raw
+
+
+def _required(values, key, section):
+    raw = casefold_get(values, key)
     if isinstance(raw, bool):
         value = "true" if raw else "false"
     else:
@@ -147,9 +155,7 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     if provider is None:
         prov_norm = None
     else:
-        p_raw = getattr(provider, "name", None)
-        p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else str(provider))
-        prov_norm = normalize_venue_name(p_str)
+        prov_norm = normalize_venue_name(provider)
         if not prov_norm:
             raise ValueError(f"Invalid provider: {provider!r}")
     role_norm = str(role or "").strip().casefold() if (role is not None and not isinstance(role, bool)) else None
