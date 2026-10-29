@@ -44,7 +44,7 @@ os.environ["NOTIFICATION_STATE_FILE"] = os.path.join(
     _notification_state_tmp.name, "notification_delivery_state.json"
 )
 os.environ["NOTIFICATION_QUEUE_FILE"] = os.path.join(
-    _notification_state_tmp.name, "notification_queue.jsonl"
+    _notification_state_tmp.name, "notify_queue.json"
 )
 
 _cachedb_tmp = tempfile.TemporaryDirectory(

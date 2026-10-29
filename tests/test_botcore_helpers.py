@@ -303,7 +303,7 @@ class TestCachepaths(unittest.TestCase):
             "overnight_monitor_status.json": "system",
             "dev_regression_status.json": "system",
             "llm_topic_threads.json": "system",
-            "notification_queue.jsonl": "system",
+            "notify_queue.json": "system",
         }
         for filename, expected_domain in cases.items():
             self.assertEqual(

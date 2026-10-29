@@ -152,7 +152,7 @@ class NotificationServer:
         
         # Persistent Queue File
         from cachepaths import cache_path
-        self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or cache_path("notification_queue.jsonl")
+        self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or cache_path("notify_queue.json")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _ensure_environment(self) -> None:
