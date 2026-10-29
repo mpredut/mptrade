@@ -96,6 +96,39 @@ class TestPretProaspat(Base):
         self.feed(chart(price=204.0, meta_vol=1000, meta_age_s=60, series=[]))
         self.assertEqual(md.get_price_usd("NVDA"), 204.0)
 
+    def test_non_list_volume_does_not_drop_series_bars(self):
+        now = int(time.time())
+        body = json.dumps({
+            "chart": {
+                "result": [{
+                    "meta": {"marketState": "REGULAR", "currency": "USD", "regularMarketPrice": 135.0},
+                    "timestamp": [now - 120, now - 30],
+                    "indicators": {"quote": [{"close": [164.0, 168.0], "volume": {"bad": 1}}]},
+                }],
+            },
+        })
+        self.feed(body)
+        self.assertEqual(md.get_price_usd("SPCX"), 168.0)
+
+
+class TestVerifyInstrumentIsin(unittest.TestCase):
+    def test_verify_instrument_isin_handles_match_and_mismatch(self):
+        from types import SimpleNamespace
+        from listing_watcher import verify_instrument_isin
+
+        notified = []
+        client = SimpleNamespace(
+            list_instruments=lambda: [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}]
+        )
+        self.assertTrue(
+            verify_instrument_isin(client, "NVDA_US_EQ", "US67066G1040", notify_fn=lambda **kw: notified.append(kw))
+        )
+        self.assertEqual(notified, [])
+        self.assertFalse(
+            verify_instrument_isin(client, "NVDA_US_EQ", "US0000000000", notify_fn=lambda **kw: notified.append(kw))
+        )
+        self.assertEqual(len(notified), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

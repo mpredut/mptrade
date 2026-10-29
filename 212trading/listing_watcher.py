@@ -35,6 +35,57 @@ except ImportError:
         _md_spec.loader.exec_module(_md_mod)
         check_market = _md_mod.check_market
 
+from providers.t212_provider import _t212_tickers_match
+
+
+def verify_instrument_isin(
+    client,
+    ticker: str,
+    expected_isin: str,
+    *,
+    notify_fn=None,
+    notify_source: str = "T212",
+    verbose: bool = False,
+) -> bool:
+    """Return False only for a proven ISIN mismatch identifying the wrong instrument.
+
+    Otherwise return True best-effort and continue with the explicit ticker if metadata is absent.
+    """
+    if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+        return False
+    if not expected_isin or isinstance(expected_isin, bool) or not str(expected_isin).strip():
+        return True
+    instruments = client.list_instruments()
+    if not instruments or not isinstance(instruments, list):
+        if verbose:
+            log("  ! cannot verify the ISIN (metadata unavailable) — continuing on the explicit ticker")
+        return True
+    match = next(
+        (i for i in instruments if isinstance(i, dict) and _t212_tickers_match(i.get("ticker"), ticker)),
+        None,
+    )
+    if not match:
+        if verbose:
+            log(f"  ! {ticker} does not appear in the T212 metadata yet — continuing (it may be a delay)")
+        return True
+    found_isin = str(match.get("isin") or "").strip()
+    if not found_isin:
+        return True
+    expected_clean = str(expected_isin).strip()
+    if found_isin.upper() != expected_clean.upper():
+        log(f"  ! [{ticker}] ISIN {found_isin} != the expected {expected_clean} — NOT trading")
+        if callable(notify_fn):
+            notify_fn(
+                title=f"⚠ {ticker}: ISIN mismatch",
+                body=f"Found {found_isin}, expected {expected_clean}. Not trading.",
+                source=notify_source,
+                symbol=ticker,
+            )
+        return False
+    if verbose:
+        log(f"  [verify] {ticker} confirmed (isin {expected_clean})")
+    return True
+
 
 def in_market_window() -> bool:
     """Return True during approximate US market hours, 09:00-16:30 ET on weekdays."""

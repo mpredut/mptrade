@@ -54,7 +54,8 @@ def fetch_yahoo_candles(
 
     Excludes the forming candle when drop_incomplete is True to prevent lookahead drift.
     """
-    if not isinstance(timeout, (int, float)) or safe_pos_float(timeout, default=None) is None:
+    to_f = safe_pos_float(timeout, default=None)
+    if to_f is None:
         raise ValueError(f"invalid timeout: {timeout!r}")
     if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
         raise ValueError(f"invalid symbol: {symbol!r}")
@@ -83,7 +84,7 @@ def fetch_yahoo_candles(
         url, headers={"User-Agent": "mptrade/t212-yahoo-fetcher"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=to_f) as response:
             payload = json.loads(response.read())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:300]
@@ -96,14 +97,15 @@ def fetch_yahoo_candles(
     if not isinstance(result, dict) or not result:
         error = chart.get("error")
         raise RuntimeError(f"Yahoo returned no data for {symbol}: {error}")
-    timestamps = result.get("timestamp") or []
+    raw_ts = result.get("timestamp")
+    timestamps = raw_ts if isinstance(raw_ts, list) else []
     indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
     quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
     quote = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
-    opens = quote.get("open") or []
-    highs = quote.get("high") or []
-    lows = quote.get("low") or []
-    closes = quote.get("close") or []
+    opens = quote.get("open") if isinstance(quote.get("open"), list) else []
+    highs = quote.get("high") if isinstance(quote.get("high"), list) else []
+    lows = quote.get("low") if isinstance(quote.get("low"), list) else []
+    closes = quote.get("close") if isinstance(quote.get("close"), list) else []
     series_len = min(len(opens), len(highs), len(lows), len(closes))
     records = []
     for index, timestamp in enumerate(timestamps):
@@ -171,12 +173,13 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
         if not isinstance(result, dict) or not result:
             return None, []
         meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
-        ts = result.get("timestamp") or []
+        raw_ts = result.get("timestamp")
+        ts = raw_ts if isinstance(raw_ts, list) else []
         indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
         quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
         q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
-        closes = q.get("close") or []
-        vols = q.get("volume") or []
+        closes = q.get("close") if isinstance(q.get("close"), list) else []
+        vols = q.get("volume") if isinstance(q.get("volume"), list) else []
         bars = []
         for i, (t, c) in enumerate(zip(ts, closes)):
             t_f = safe_pos_float(t, default=None)

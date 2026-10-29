@@ -98,6 +98,17 @@ def main() -> int:
         _lock_pair = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
         single_instance(f"kraken_bot_{_lock_pair}")
 
+    # --- one-shot commands ---
+    if args.find_pair:
+        return _cmd_find_pair(KrakenClient(), args.find_pair)
+    if args.price:
+        price_pair = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
+        p = get_price(KrakenClient(), price_pair) if price_pair else None
+        log(f"[PRICE] {price_pair} = {p}")
+        return 0 if p else 1
+    if args.balance:
+        return _cmd_balance(_build_client())
+
     client = _build_client()
 
     pair        = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
@@ -107,15 +118,6 @@ def main() -> int:
     observe_only = required_bool_env("KRAKEN_BOT_OBSERVE_ONLY")
     interval    = max(args.interval, 15)
 
-    # --- one-shot commands ---
-    if args.find_pair:
-        return _cmd_find_pair(client, args.find_pair)
-    if args.price:
-        p = get_price(client, pair) if pair else None
-        log(f"[PRICE] {pair} = {p}")
-        return 0 if p else 1
-    if args.balance:
-        return _cmd_balance(client)
     if args.test_strategy:
         test_pair = args.test_strategy.strip().upper()
         log(

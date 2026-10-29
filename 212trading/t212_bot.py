@@ -43,7 +43,7 @@ try:
         required_env, required_float_env, required_bool_env, _parse_bool_flag,
     )
     from .ipo_notify import notify  # noqa: E402
-    from .listing_watcher import wait_for_launch  # noqa: E402
+    from .listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
     from .strategy import Strategy, StratParams  # noqa: E402
     from .t212_client import T212Client  # noqa: E402
 except ImportError:
@@ -52,13 +52,11 @@ except ImportError:
         required_env, required_float_env, required_bool_env, _parse_bool_flag,
     )
     from ipo_notify import notify  # noqa: E402
-    from listing_watcher import wait_for_launch  # noqa: E402
+    from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
     from strategy import Strategy, StratParams  # noqa: E402
     from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
-from providers.t212_provider import _t212_tickers_match  # noqa: E402
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
 STOP = threading.Event()
 
 
@@ -75,28 +73,14 @@ def discover_assets(cfg_dir: str) -> list[tuple[str, str]]:
 def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
     """Return False only for a proven ISIN mismatch identifying the wrong instrument.
     Otherwise return True best-effort and continue with the explicit ticker if metadata is absent."""
-    if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
-        return False
-    if not expected_isin or isinstance(expected_isin, bool) or not str(expected_isin).strip():
-        return True
-    instruments = client.list_instruments()
-    if not instruments or not isinstance(instruments, list):
-        return True
-    match = next(
-        (i for i in instruments if isinstance(i, dict) and _t212_tickers_match(i.get("ticker"), ticker)),
-        None,
+    return verify_instrument_isin(
+        client,
+        ticker,
+        expected_isin,
+        notify_fn=notify,
+        notify_source="T212",
+        verbose=False,
     )
-    if not match:
-        return True
-    found_isin = str(match.get("isin") or "").strip()
-    if not found_isin:
-        return True
-    if found_isin.upper() != str(expected_isin).strip().upper():
-        log(f"  ! [{ticker}] ISIN {found_isin} != the expected {expected_isin} — NOT trading")
-        notify(title=f"⚠ {ticker}: ISIN mismatch", source="T212",
-               body=f"Found {found_isin}, we expected {expected_isin}.", symbol=ticker)
-        return False
-    return True
 
 
 def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_wait: bool) -> None:

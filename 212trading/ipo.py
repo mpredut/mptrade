@@ -51,7 +51,7 @@ try:
         load_t212_environment, log, now_str, float_env, required_env,
         required_float_env, required_bool_env,
     )
-    from .listing_watcher import in_market_window
+    from .listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
     from .market_data import check_market, t212_to_yahoo
     from .t212_client import T212Client
     from .ipo_notify import notify
@@ -62,7 +62,7 @@ except ImportError:
         load_t212_environment, log, now_str, float_env, required_env,
         required_float_env, required_bool_env,
     )
-    from listing_watcher import in_market_window
+    from listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
     try:
         from market_data import check_market, t212_to_yahoo
     except ImportError:
@@ -79,7 +79,6 @@ except ImportError:
     from order_manager import resolve_quantity, place_order_with_retry
     from strategy import Strategy, StratParams
 from credentials import t212_credentials
-from providers.t212_provider import _t212_tickers_match
 
 
 # ---------------------------------------------------------------------------
@@ -88,32 +87,14 @@ from providers.t212_provider import _t212_tickers_match
 def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bool:
     """Best-effort verification that a configured EXPECTED_ISIN matches the ticker.
     Return False only for a proven mismatch identifying the wrong instrument."""
-    if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
-        return False
-    if not expected_isin or isinstance(expected_isin, bool) or not str(expected_isin).strip():
-        return True
-    instruments = client.list_instruments()
-    if not instruments or not isinstance(instruments, list):
-        log("  ! cannot verify the ISIN (metadata unavailable) — continuing on the explicit ticker")
-        return True
-    match = next(
-        (i for i in instruments if isinstance(i, dict) and _t212_tickers_match(i.get("ticker"), ticker)),
-        None,
+    return verify_instrument_isin(
+        client,
+        ticker,
+        expected_isin,
+        notify_fn=notify,
+        notify_source="verify",
+        verbose=True,
     )
-    if not match:
-        log(f"  ! {ticker} does not appear in the T212 metadata yet — continuing (it may be a delay)")
-        return True
-    found_isin = str(match.get("isin") or "").strip()
-    if not found_isin:
-        return True
-    if found_isin.upper() != expected_isin.strip().upper():
-        log(f"  ! ISIN {found_isin} != expected {expected_isin} — STOPPING (wrong instrument).")
-        notify(title=f"⚠ {ticker}: ISIN mismatch!",
-               body=f"Found isin={found_isin}, expected {expected_isin}. Not trading.",
-               source="verify")
-        return False
-    log(f"  [verify] {ticker} confirmed (isin {expected_isin})")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -282,33 +263,13 @@ def main() -> int:
 
 def _wait_for_launch(args, yahoo_symbol, label, interval) -> bool:
     """Wait until the symbol is actually trading; return False if interrupted."""
-    log(f"    Waiting for the launch {label}... (Ctrl+C to stop)")
     try:
-        while True:
-            if args.market_hours_only and not in_market_window():
-                time.sleep(min(interval * 5, 600))
-                continue
-            m = check_market(yahoo_symbol)
-            # 'launched' means the instrument has traded with real volume, even if its
-            # market is currently closed. Existing NVDA starts immediately, while a
-            # zero-volume SPCX IPO placeholder waits for actual trading to begin.
-            if m and m.get("launched"):
-                ts = now_str()
-                now_open = "trading NOW" if m.get("trading") else f"the market is {m.get('state')}"
-                body = (f"{label} e DISPONIBIL pe {m.get('exchange')} ({now_open}).\n"
-                        f"Price: {m['price']} {m.get('currency') or ''}  "
-                        f"(vol {m.get('volume')}, {m.get('state')})\n{ts}")
-                log("############################################")
-                log(f">>> {label} E DISPONIBIL — pornesc tranzactionarea <<<")
-                log(body.replace("\n", " | "))
-                log("############################################")
-                return True
-            if m:
-                log(f"ping - waiting for the launch  |  price={m.get('price')} vol={m.get('volume')} "
-                    f"state={m.get('state')} age={m.get('age_min')}min")
-            else:
-                log("ping - simbol indisponibil pe feed")
-            time.sleep(interval)
+        return wait_for_launch(
+            yahoo_symbol,
+            label,
+            interval,
+            market_hours_only=bool(getattr(args, "market_hours_only", False)),
+        )
     except KeyboardInterrupt:
         log("Stopped manually.")
         return False
