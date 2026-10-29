@@ -372,6 +372,82 @@ class KrakenExecutorContractTest(unittest.TestCase):
             self.assertEqual(series.closes, (10.0, 11.0, 12.0))
             self.assertIsNone(series.last_closed_at)
 
+    def test_usd_equivalent_free_balance_and_auto_funding(self):
+        with self.subTest(msg="free_balance_usd_sums_fiat_and_1to1_stablecoins"):
+            with patch.object(self.fake, "balance", return_value={
+                "ZUSD": "0.0092",
+                "USDC": "2520.03719900",
+                "USDG": "1.75000000",
+            }):
+                self.assertAlmostEqual(
+                    self.p.free_balance("USD"),
+                    0.0092 + 2520.03719900 + 1.75000000,
+                    places=6,
+                )
+                self.assertEqual(
+                    self.p.usd_cash_breakdown(),
+                    {"USD": 0.01, "USDC": 2520.04, "USDG": 1.75},
+                )
+                # Direct asset query still returns only that specific bucket.
+                self.assertAlmostEqual(
+                    self.p.free_balance("USDC"), 2520.03719900, places=6)
+
+        with self.subTest(msg="corrupt_usd_bucket_fails_closed"):
+            with patch.object(self.fake, "balance", return_value={
+                "ZUSD": "10.0",
+                "USDC": True,
+            }):
+                self.assertIsNone(self.p.free_balance("USD"))
+
+        with self.subTest(msg="buy_on_usd_pair_auto_converts_usdc_when_zusd_short"):
+            self.fake.calls.clear()
+            with patch.object(self.fake, "balance", return_value={
+                "ZUSD": "0.01",
+                "USDC": "2520.04",
+            }):
+                oid = self.p.submit_order("HYPEUSD", "buy", 2.0, price=50.0)
+                self.assertEqual(oid, "OABC-123")
+                self.assertEqual(len(self.fake.calls), 2)
+                conv_call, buy_call = self.fake.calls
+                self.assertEqual(conv_call[0], "add_order")
+                self.assertEqual(conv_call[1], "USDCUSD")
+                self.assertEqual(conv_call[2], "sell")
+                self.assertGreaterEqual(conv_call[3], 100.0)
+                self.assertEqual(conv_call[5], "market")
+                self.assertEqual(buy_call[1], "HYPEUSD")
+                self.assertEqual(buy_call[2], "buy")
+
+    def test_ledger_to_fills_ignores_dustsweeping_and_multi_asset_groups(self):
+        from kraken.kraken_cachemanager import _ledger_to_fills
+        ledger = {
+            "L1": {
+                "type": "trade", "subtype": "dustsweeping", "refid": "SWEEP-1",
+                "asset": "HYPE", "amount": "-0.0002315", "fee": "0", "time": 1793288936.0,
+            },
+            "L2": {
+                "type": "trade", "subtype": "dustsweeping", "refid": "SWEEP-1",
+                "asset": "PEPE", "amount": "-5094.26", "fee": "0", "time": 1793288936.0,
+            },
+            "L3": {
+                "type": "trade", "subtype": "dustsweeping", "refid": "SWEEP-1",
+                "asset": "ZUSD", "amount": "1.2900", "fee": "0.0398", "time": 1793288936.0,
+            },
+            "L4": {
+                "type": "trade", "subtype": "", "refid": "REAL-TRADE-1",
+                "asset": "HYPE", "amount": "-27.2", "fee": "0", "time": 1793288800.0,
+            },
+            "L5": {
+                "type": "trade", "subtype": "", "refid": "REAL-TRADE-1",
+                "asset": "ZUSD", "amount": "2537.76", "fee": "6.598", "time": 1793288800.0,
+            },
+        }
+        fills = _ledger_to_fills(ledger)
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0]["symbol"], "HYPEUSD")
+        self.assertAlmostEqual(fills[0]["price"], 93.3, places=4)
+        self.assertEqual(fills[0]["side"], "SELL")
+
+
 
 class _SequentialPairInfoClient:
     def __init__(self, responses):

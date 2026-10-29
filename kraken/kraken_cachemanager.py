@@ -216,25 +216,25 @@ def _ledger_to_fills(ledger):
     for refid, legs in by_ref.items():
         if len(legs) < 2:
             continue                                      # one leg means staking/deposit, not a trade
-        quote = next(
-            (
-                l for l in legs
-                if isinstance(l.get("asset"), str)
-                and l.get("asset").strip().upper() in _QUOTE
-            ),
-            None,
-        )
-        base = next(
-            (
-                l for l in legs
-                if l is not quote
-                and isinstance(l.get("asset"), str)
-                and l.get("asset").strip()
-                and l.get("asset").strip().upper() not in _QUOTE
-            ),
-            None,
-        )
-        if not quote or not base or str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
+        if any(str(l.get("subtype") or "").strip().lower() == "dustsweeping" for l in legs):
+            continue                                      # multi-asset small-balance sweep, not a pair trade
+        quote_legs = [
+            l for l in legs
+            if isinstance(l.get("asset"), str)
+            and l.get("asset").strip().upper() in _QUOTE
+        ]
+        base_legs = [
+            l for l in legs
+            if l not in quote_legs
+            and isinstance(l.get("asset"), str)
+            and l.get("asset").strip()
+            and l.get("asset").strip().upper() not in _QUOTE
+        ]
+        if len(quote_legs) != 1 or len(base_legs) != 1:
+            continue                                      # require 1 base leg and 1 quote leg for valid |qa|/|ba| price
+        quote = quote_legs[0]
+        base = base_legs[0]
+        if str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
             continue
         ba = safe_float(base.get("amount") if isinstance(base, dict) else None, None)
         qa = safe_float(quote.get("amount") if isinstance(quote, dict) else None, None)

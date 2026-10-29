@@ -317,23 +317,98 @@ class KrakenProvider(MarketDataProvider):
             return None
 
     # -- Credentialed account access. -----------------------------------------
+    _USD_EQUIVALENT_BUCKETS = (
+        ("USD", ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F")),
+        ("USDC", ("USDC", "USDC.F", "USDC.S")),
+        ("USDG", ("USDG", "USDG.F", "USDG.S")),
+        ("USDT", ("USDT", "ZUSDT", "USDT.F", "USDT.S")),
+    )
+
+    @staticmethod
+    def _lookup_balance_candidates(bal: dict, candidates: tuple[str, ...] | List[str]) -> tuple[bool, Optional[float]]:
+        for key in candidates:
+            if key in bal:
+                return True, safe_nonneg_float(bal[key], default=None)
+        cands_up = {c.upper() for c in candidates}
+        for k_raw, raw_val in bal.items():
+            if str(k_raw).strip().upper() in cands_up:
+                return True, safe_nonneg_float(raw_val, default=None)
+        return False, 0.0
+
+    def usd_cash_breakdown(self) -> dict[str, float]:
+        """Return non-zero Kraken USD and 1:1 USD-stablecoin balances (USD/ZUSD, USDC, USDG, USDT)."""
+        try:
+            bal = self._client().balance() or {}
+            if not isinstance(bal, dict):
+                return {}
+            out: dict[str, float] = {}
+            for label, keys in self._USD_EQUIVALENT_BUCKETS:
+                found, val = self._lookup_balance_candidates(bal, keys)
+                if found and val is not None and val > 0.0:
+                    out[label] = round(val, 2)
+            return out
+        except Exception:  # noqa: BLE001
+            return {}
+
     def free_balance(self, asset: str) -> Optional[float]:
         if not asset or isinstance(asset, bool) or not str(asset).strip():
             return None
         try:
             bal = self._client().balance() or {}
+            if not isinstance(bal, dict):
+                return None
+            asset_u = str(asset).strip().upper()
+            if asset_u in {"USD", "ZUSD", "XUSD"}:
+                total_usd = 0.0
+                for _label, keys in self._USD_EQUIVALENT_BUCKETS:
+                    found, val = self._lookup_balance_candidates(bal, keys)
+                    if found:
+                        if val is None:
+                            return None
+                        total_usd += val
+                return total_usd
             candidates = _kraken_balance_asset_candidates(asset)
-            for key in candidates:
-                if key in bal:
-                    return safe_nonneg_float(bal[key], default=None)
-            cands_up = {c.upper() for c in candidates}
-            for k_raw, raw_val in bal.items():
-                if str(k_raw).strip().upper() in cands_up:
-                    return safe_nonneg_float(raw_val, default=None)
-            return 0.0
+            found, val = self._lookup_balance_candidates(bal, candidates)
+            return val if found else 0.0
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] balance {asset}: {e}")
             return None
+
+    def _ensure_usd_funding_from_usdc(
+        self,
+        symbol: str,
+        side_norm: str,
+        qty: float,
+        price: Optional[float],
+    ) -> None:
+        """Auto-convert needed USDC -> ZUSD on zero-fee USDCUSD before a live *USD BUY when cash sits in USDC."""
+        if side_norm != "BUY" or _split_kraken_pair(symbol)[1] != "USD":
+            return
+        try:
+            cli = self._client()
+            bal = cli.balance() or {}
+            if not isinstance(bal, dict):
+                return
+            _, zusd = self._lookup_balance_candidates(bal, ("ZUSD", "USD", "XUSD"))
+            _, usdc = self._lookup_balance_candidates(bal, ("USDC",))
+            zusd_f = zusd or 0.0
+            usdc_f = usdc or 0.0
+            if usdc_f < 5.0:
+                return
+            eff_px = safe_pos_float(price, default=None) or safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
+            if eff_px <= 0.0:
+                return
+            req_usd = qty * eff_px * 1.005
+            if req_usd <= zusd_f + 0.01:
+                return
+            shortfall = min(usdc_f, max(5.0, round((req_usd - zusd_f) * 1.002, 2)))
+            print(
+                f"[Kraken][LIVE] auto-converting {shortfall:.2f} USDC -> USD via zero-fee USDCUSD "
+                f"(ZUSD={zusd_f:.2f}, required~={req_usd:.2f}) for BUY {symbol}"
+            )
+            cli.add_order("USDCUSD", "sell", shortfall, None, ordertype="market", validate=False)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Kraken] USDC->USD funding conversion before {symbol} BUY failed: {e}")
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Return own pair orders/fills filtered by side and age, grouped by parent orderId.
@@ -505,6 +580,7 @@ class KrakenProvider(MarketDataProvider):
                 print(f"[Kraken][DRY] validate {symbol}: {e}")
                 return None
         try:
+            self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, submit_price or price)
             print(f"[Kraken][LIVE] {side} {symbol} qty={qty} @ {price}")
             return self._client().add_order(
                 symbol, s, qty, submit_price, ordertype=ordertype, validate=False,
@@ -564,6 +640,7 @@ class KrakenProvider(MarketDataProvider):
             if not self.execution_enabled():
                 raise SubmissionRefused(
                     "KRAKEN_LIVE_ORDERS is not true; real execution is disabled")
+            self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, px_f or price)
             res = self._client().add_order(
                 symbol, s, qty, None if ordertype == "market" else px_f,
                 **order_kwargs) or {}
