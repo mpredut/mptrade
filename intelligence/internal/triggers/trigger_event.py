@@ -8,6 +8,10 @@ import time
 from typing import Any, Dict, Optional
 
 
+from botcore import safe_pos_float
+from providers.base import normalize_side
+
+
 class TriggerAction(str, Enum):
     ENTRY = "ENTRY"
     EXIT = "EXIT"
@@ -44,21 +48,14 @@ class TriggerEvent:
 
     def is_executable(self) -> bool:
         """Return True if this event requests an actual order (BUY or SELL)."""
-        if self.price is None or isinstance(self.price, bool):
-            return False
-        try:
-            px = float(self.price)
-        except (TypeError, ValueError, OverflowError):
+        px = safe_pos_float(self.price, default=None)
+        if px is None:
             return False
         side_norm = (
             self.side.value
             if isinstance(self.side, TriggerSide)
-            else ("" if isinstance(self.side, bool) or self.side is None else str(self.side).strip().upper())
+            else normalize_side(self.side)
         )
-        if side_norm in ("B", "BUY", "BID", "LONG"):
-            side_norm = "BUY"
-        elif side_norm in ("S", "SELL", "ASK", "A", "SHORT"):
-            side_norm = "SELL"
         action_norm = (
             self.action.value
             if isinstance(self.action, TriggerAction)
@@ -66,7 +63,5 @@ class TriggerEvent:
         )
         return (
             side_norm in ("BUY", "SELL")
-            and math.isfinite(px)
-            and px > 0
             and action_norm in ("ENTRY", "EXIT")
         )

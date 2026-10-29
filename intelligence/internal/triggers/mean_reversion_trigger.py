@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import deque
 import math
 from typing import Any, Literal
-from botcore import safe_float as _safe_float, safe_int as _safe_int, safe_pos_int as _safe_pos_int
+from botcore import safe_float, safe_pos_float, safe_pos_int
 from intelligence.internal.triggers.trigger_event import (
     TriggerEvent,
     TriggerAction,
@@ -38,16 +38,15 @@ class MeanReversionTrigger:
     ) -> None:
         mode_norm = str(mode or "").strip().lower() if not isinstance(mode, bool) else ""
         self.mode = mode_norm if mode_norm in {"rsi", "pb", "both"} else "both"
-        self.rsi_period = _safe_pos_int(rsi_period, 14)
-        self.rsi_low = _safe_float(rsi_low, 30.0)
-        self.rsi_high = _safe_float(rsi_high, 70.0)
+        self.rsi_period = safe_pos_int(rsi_period, default=14) or 14
+        self.rsi_low = safe_float(rsi_low, default=30.0) if rsi_low is not None else 30.0
+        self.rsi_high = safe_float(rsi_high, default=70.0) if rsi_high is not None else 70.0
         if self.rsi_low > self.rsi_high:
             self.rsi_low, self.rsi_high = self.rsi_high, self.rsi_low
-        self.bb_period = _safe_pos_int(bb_period, 20)
-        bb_k_f = _safe_float(bb_k, 2.0)
-        self.bb_k = bb_k_f if bb_k_f > 0.0 else 2.0
-        self.pb_low = _safe_float(pb_low, 0.0)
-        self.pb_high = _safe_float(pb_high, 1.0)
+        self.bb_period = safe_pos_int(bb_period, default=20) or 20
+        self.bb_k = safe_pos_float(bb_k, default=2.0) or 2.0
+        self.pb_low = safe_float(pb_low, default=0.0) if pb_low is not None else 0.0
+        self.pb_high = safe_float(pb_high, default=1.0) if pb_high is not None else 1.0
         if self.pb_low > self.pb_high:
             self.pb_low, self.pb_high = self.pb_high, self.pb_low
 
@@ -103,15 +102,9 @@ class MeanReversionTrigger:
 
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
-        ts_clean = _safe_float(timestamp, 0.0)
-        valid_price = False
-        if price is not None and not isinstance(price, bool):
-            try:
-                price = float(price)
-                valid_price = math.isfinite(price) and price > 0
-            except (TypeError, ValueError):
-                valid_price = False
-        if not valid_price:
+        ts_clean = safe_float(timestamp, default=0.0) or 0.0
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             return TriggerEvent(
                 action=TriggerAction.NEUTRAL,
                 side=TriggerSide.HOLD,
@@ -128,6 +121,7 @@ class MeanReversionTrigger:
                     "current_sign": self.current_sign,
                 },
             )
+        price = price_f
         rsi = self._calc_rsi(price)
         pb = self._calc_percent_b(price)
 

@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from botcore import float_env
+from botcore import float_env, safe_float, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 
 
@@ -29,24 +29,8 @@ class KalmanTrend:
     """One-dimensional constant-velocity Kalman filter for level and velocity tracking."""
 
     def __init__(self, qr: float = KALMAN_QR, gap_reset_sec: float = GAP_RESET_SEC):
-        qr_val = KALMAN_QR
-        if qr is not None and not isinstance(qr, bool):
-            try:
-                qf = float(qr)
-                if math.isfinite(qf) and qf > 0.0:
-                    qr_val = qf
-            except (TypeError, ValueError):
-                pass
-        gap_val = GAP_RESET_SEC
-        if gap_reset_sec is not None and not isinstance(gap_reset_sec, bool):
-            try:
-                gf = float(gap_reset_sec)
-                if math.isfinite(gf) and gf > 0.0:
-                    gap_val = gf
-            except (TypeError, ValueError):
-                pass
-        self.qr = qr_val
-        self.gap_reset_sec = gap_val
+        self.qr = safe_pos_float(qr, default=KALMAN_QR) or KALMAN_QR
+        self.gap_reset_sec = safe_pos_float(gap_reset_sec, default=GAP_RESET_SEC) or GAP_RESET_SEC
         self.x = None          # [level, velocity]
         self.P = None          # State covariance
         self._x0 = 0.0
@@ -70,53 +54,26 @@ class KalmanTrend:
 
     def update(self, ts: float, price: float, epsilon: float | None) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
-        if ts is None or price is None or isinstance(ts, bool) or isinstance(price, bool):
+        ts_f = safe_float(ts, default=None)
+        price_f = safe_pos_float(price, default=None)
+        if ts_f is None or price_f is None:
             return {
                 "vel": 0.0,
                 "vel_std": 0.0,
                 "trend": self.trend,
                 "old_trend": self.trend,
             }
-        try:
-            ts = float(ts)
-            price = float(price)
-        except (TypeError, ValueError):
-            return {
-                "vel": 0.0,
-                "vel_std": 0.0,
-                "trend": self.trend,
-                "old_trend": self.trend,
-            }
-        if not (math.isfinite(ts) and math.isfinite(price) and price > 0):
-            return {
-                "vel": 0.0,
-                "vel_std": 0.0,
-                "trend": self.trend,
-                "old_trend": self.trend,
-            }
-        eps = 0.0
-        if epsilon is not None and not isinstance(epsilon, bool):
-            try:
-                eps_f = float(epsilon)
-                if math.isfinite(eps_f):
-                    eps = eps_f
-            except (TypeError, ValueError):
-                eps = 0.0
-        if eps <= 0:
-            eps = max(price * 1e-4, 1e-9)
+        ts, price = ts_f, price_f
+        eps_f = safe_pos_float(epsilon, default=None)
+        eps = eps_f if eps_f is not None else max(price * 1e-4, 1e-9)
         R = eps * eps
 
-        if (
-            self.x is None
-            or self.last_ts is None
-            or isinstance(self.last_ts, bool)
-            or not isinstance(self.last_ts, (int, float))
-            or not math.isfinite(float(self.last_ts))
-        ):
+        last_ts_f = safe_float(self.last_ts, default=None)
+        if self.x is None or last_ts_f is None:
             self._reset_state(price, R, ts)
             return self._out(price, old_trend=self.trend)
 
-        raw_dt = ts - self.last_ts
+        raw_dt = ts - last_ts_f
         if raw_dt > self.gap_reset_sec or raw_dt < -1.0:
             self._reset_state(price, R, ts)
             old_trend = self.trend
