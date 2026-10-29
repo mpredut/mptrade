@@ -7,10 +7,8 @@ Analyzes the top 1-2% of the bid/ask order book:
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,17 +30,9 @@ from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
-
-def _extract_base_asset(symbol: str) -> str:
-    return normalize_cache_base_asset(symbol)
-
-
-def _resolve_binance_lookup_symbol(symbol: str) -> str:
-    return resolve_binance_lookup_symbol(symbol)
-
-
-def _symbol_variants(symbol: str) -> List[str]:
-    return cache_symbol_variants(symbol)
+_extract_base_asset = normalize_cache_base_asset
+_resolve_binance_lookup_symbol = resolve_binance_lookup_symbol
+_symbol_variants = cache_symbol_variants
 
 
 def _clean_dict_float(data: Dict[str, Any], key: str, default: float) -> float:

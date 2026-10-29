@@ -3866,3 +3866,26 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert hl_partial["remaining_qty"] == pytest.approx(6.0)
     assert hl_partial["status"] == "PARTIALLY_FILLED"
 
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+    w_col = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=str(tmp_path))
+    with patch.object(
+        WhalePositioningCollector,
+        "_fetch_latest_json_row",
+        side_effect=[
+            ({"longShortRatio": "1.80", "longAccount": "0.64"}, [{"longShortRatio": "1.80", "longAccount": "0.64"}]),
+            ({"buySellRatio": "1.10", "buyVol": "110.0", "sellVol": "100.0"}, [{"buySellRatio": "1.10", "buyVol": "110.0", "sellVol": "100.0"}]),
+            (
+                {"sumOpenInterest": "1000.0", "sumOpenInterestValue": "80000000.0"},
+                [
+                    {"sumOpenInterest": "990.0", "sumOpenInterestValue": "79000000.0"},
+                    {"sumOpenInterest": "1000.0", "sumOpenInterestValue": "80000000.0"},
+                ],
+            ),
+        ],
+    ):
+        w_snap = w_col.fetch("BTCUSDC", price_1h_change_pct=0.5, allow_network=True, now=1793300000.0)
+    assert w_snap is not None
+    assert w_snap.taker_buy_vol_usd == pytest.approx(8_800_000.0)
+    assert w_snap.taker_sell_vol_usd == pytest.approx(8_000_000.0)
+

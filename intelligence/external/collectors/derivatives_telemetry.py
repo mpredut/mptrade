@@ -6,9 +6,7 @@ Used to detect extreme crowd positioning, leverage exhaustion, and funding squee
 
 from __future__ import annotations
 
-import json
 import logging
-import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 

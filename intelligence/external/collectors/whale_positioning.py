@@ -10,7 +10,6 @@ Fetches public, unauthenticated metrics from Binance Futures:
 from __future__ import annotations
 
 import logging
-import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
@@ -243,10 +242,15 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             taker_buy = max(0.0, _clean_dict_float(latest_taker, "buyVol", 0.0))
             taker_sell = max(0.0, _clean_dict_float(latest_taker, "sellVol", 0.0))
 
-            # 3. Open Interest History (compute 1h change)
+            # 3. Open Interest History (compute 1h change and convert base-coin taker volumes to USD)
             url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=1h&limit=3"
             latest_oi, data_oi = self._fetch_latest_json_row(url_oi, "openInterestHist", lookup_sym)
             latest_oi_usd = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterestValue", 0.0))
+            latest_oi_coins = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterest", 0.0))
+            if latest_oi_usd > 0.0 and latest_oi_coins > 0.0:
+                mark_px = latest_oi_usd / latest_oi_coins
+                taker_buy = round(taker_buy * mark_px, 2)
+                taker_sell = round(taker_sell * mark_px, 2)
             prev_oi_usd = (
                 max(0.0, _clean_dict_float(data_oi[-2], "sumOpenInterestValue", latest_oi_usd))
                 if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict))
