@@ -36,7 +36,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import normalize_venue_name
 
 from lock import FileLock
@@ -325,24 +325,15 @@ def valid_record(rec):
         not isinstance(rec, dict)
         or isinstance(rec.get("id"), bool)
         or isinstance(rec.get("symbol"), bool)
-        or isinstance(rec.get("qty"), bool)
-        or isinstance(rec.get("created_ts"), bool)
-        or isinstance(rec.get("revision"), bool)
     ):
         return False
-    try:
-        qty = float(rec.get("qty"))
-        created = float(rec.get("created_ts"))
-        rev_raw = rec.get("revision", 0)
-        rev_f = float(rev_raw)
-        if not math.isfinite(rev_f) or not rev_f.is_integer():
-            return False
-        revision = int(rev_f)
-    except (TypeError, ValueError, OverflowError):
+    qty = safe_pos_float(rec.get("qty"), default=None)
+    created = safe_pos_float(rec.get("created_ts"), default=None)
+    revision = _rev_int(rec.get("revision", 0), default=-1)
+    if qty is None or created is None or revision < 0:
         return False
     lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
-    lifecycle_ok = lifecycle in {
-        "awaiting_cancel", "submit_pending", "accepted"}
+    lifecycle_ok = lifecycle in {"awaiting_cancel", "submit_pending", "accepted"}
     raw_oid = rec.get("order_id")
     if lifecycle == "accepted" and _clean_retry_order_id(raw_oid) is None:
         lifecycle_ok = False
@@ -350,24 +341,15 @@ def valid_record(rec):
     if lifecycle == "awaiting_cancel" and _clean_retry_order_id(raw_rep_oid) is None:
         lifecycle_ok = False
     if lifecycle == "awaiting_cancel":
-        raw_rep_qty = rec.get("replaces_original_qty")
-        if isinstance(raw_rep_qty, bool):
+        if safe_pos_float(rec.get("replaces_original_qty"), default=None) is None:
             lifecycle_ok = False
-        else:
-            try:
-                original_qty = float(raw_rep_qty)
-                lifecycle_ok = (
-                    lifecycle_ok
-                    and math.isfinite(original_qty)
-                    and original_qty > 0)
-            except (TypeError, ValueError, OverflowError):
-                lifecycle_ok = False
+    side_raw = rec.get("side")
+    side_u = normalize_side(side_raw) if not isinstance(side_raw, bool) else ""
     return bool(
-        str(rec.get("id") or "").strip() and str(rec.get("symbol") or "").strip() and
-        not isinstance(rec.get("side"), bool) and
-        str(rec.get("side") or "").strip().upper() in {"BUY", "SELL"} and
-        math.isfinite(qty) and qty > 0 and
-        math.isfinite(created) and created > 0 and revision >= 0 and lifecycle_ok
+        str(rec.get("id") or "").strip()
+        and str(rec.get("symbol") or "").strip()
+        and side_u in {"BUY", "SELL"}
+        and lifecycle_ok
     )
 
 
@@ -446,24 +428,14 @@ def _has_prior_venue_evidence(rec):
         value = rec.get(key)
         if value in (None, ""):
             continue
-        if isinstance(value, bool):
+        num = safe_float(value, default=None)
+        if num is None or num != 0:
             return True
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError, OverflowError):
-            return True
-        if not math.isfinite(numeric) or numeric != 0:
-            return True
-    try:
-        requested = float(rec.get("requested_qty_total"))
-        remaining = float(rec.get("qty"))
-    except (TypeError, ValueError, OverflowError):
+    requested = safe_float(rec.get("requested_qty_total"), default=None)
+    remaining = safe_float(rec.get("qty"), default=None)
+    if requested is None or remaining is None:
         return rec.get("requested_qty_total") not in (None, "")
-    return (
-        not math.isfinite(requested)
-        or not math.isfinite(remaining)
-        or abs(requested - remaining) > max(1e-12, abs(requested) * 1e-9)
-    )
+    return abs(requested - remaining) > max(1e-12, abs(requested) * 1e-9)
 
 
 def _set_safe_to_discard(rec, eligible):
@@ -527,25 +499,12 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     if lifecycle == "awaiting_cancel" and clean_rep_oid is None:
         return None
     if lifecycle == "awaiting_cancel":
-        if isinstance(replaces_original_qty, bool):
-            return None
-        try:
-            replaces_original_qty = float(replaces_original_qty)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if (not math.isfinite(replaces_original_qty)
-                or replaces_original_qty <= 0):
+        replaces_original_qty = safe_pos_float(replaces_original_qty, default=None)
+        if replaces_original_qty is None:
             return None
     if _producer_lease_sec is not None:
-        if isinstance(_producer_lease_sec, bool):
-            return None
-        try:
-            _producer_lease_sec = float(_producer_lease_sec)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if (lifecycle != "submit_pending"
-                or not math.isfinite(_producer_lease_sec)
-                or _producer_lease_sec <= 0):
+        _producer_lease_sec = safe_pos_float(_producer_lease_sec, default=None)
+        if _producer_lease_sec is None or lifecycle != "submit_pending":
             return None
         producer_pid = os.getpid()
         try:
@@ -575,29 +534,20 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     ):
         return None
     symbol = symbol.strip()
-    now = now if now is not None else time.time()
+    now_f = safe_pos_float(now, default=time.time())
     side_u = normalize_side(side)
-    try:
-        qty = float(qty)
-        now = float(now)
-    except (TypeError, ValueError, OverflowError):
+    qty_f = safe_pos_float(qty, default=None)
+    if not symbol or side_u not in {"BUY", "SELL"} or qty_f is None or now_f is None:
         return None
-    if (not symbol or side_u not in {"BUY", "SELL"} or
-            not math.isfinite(qty) or qty <= 0 or
-            not math.isfinite(now) or now <= 0):
+    qty = qty_f
+    now = now_f
+    cts = safe_pos_float(created_ts, default=now) if created_ts is not None else now
+    attempts_i = _rev_int(attempts, default=-1)
+    last_attempt_f = safe_float(last_attempt_ts, default=None)
+    if cts is None or attempts_i < 0 or last_attempt_f is None:
         return None
-    try:
-        cts = float(created_ts) if created_ts is not None else now
-        att_f = float(attempts)
-        if not math.isfinite(att_f) or not att_f.is_integer():
-            return None
-        attempts = int(att_f)
-        last_attempt_ts = float(last_attempt_ts)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if (not math.isfinite(cts) or cts <= 0 or not math.isfinite(last_attempt_ts) or
-            attempts < 0):
-        return None
+    attempts = attempts_i
+    last_attempt_ts = last_attempt_f
     record_id = uuid.uuid4().hex
     placement = {
         k: (sorted(str(x) for x in v) if isinstance(v, (set, frozenset)) else v)
@@ -635,22 +585,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     if not prefix:
         prefix = "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
-    custom_ttl = None
-    if ttl_sec is not None and not isinstance(ttl_sec, bool):
-        try:
-            custom_ttl = float(ttl_sec)
-        except (TypeError, ValueError, OverflowError):
-            pass
-    elif placement and "ttl_sec" in placement and not isinstance(placement["ttl_sec"], bool):
-        try:
-            custom_ttl = float(placement["ttl_sec"])
-        except (TypeError, ValueError, OverflowError):
-            pass
+    raw_ttl = ttl_sec if ttl_sec is not None else (placement.get("ttl_sec") if placement else None)
+    custom_ttl = safe_pos_float(raw_ttl, default=None)
     if custom_ttl is not None:
-        if math.isfinite(custom_ttl) and custom_ttl > 0:
-            custom_ttl = min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-        else:
-            custom_ttl = None
+        custom_ttl = min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
     requested_price = _clean_opt_finite_float(requested_price)
     ref_price = _clean_opt_finite_float(ref_price)
     rec = {
@@ -815,11 +753,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                 return None
 
             def _created(pair):
-                try:
-                    value = float(pair[1].get("created_ts", 0))
-                    return value if math.isfinite(value) else 0.0
-                except (TypeError, ValueError, OverflowError):
-                    return 0.0
+                return safe_nonneg_float(pair[1].get("created_ts"), default=0.0)
 
             remove_count = len(existing) - RETRY_MAX_QUEUE + 1
             victims = sorted(candidates, key=_created)[:remove_count]
@@ -852,22 +786,16 @@ def enqueue_claimed(
     while the producer is still inside bounded permit, cancellation, or provider
     I/O. The returned snapshot must be finalized with ``complete_claim``.
     """
-    if isinstance(lease_sec, bool):
-        return None
-    try:
-        lease_sec = float(
-            RETRY_INTERVAL_SEC + RETRY_CLAIM_LEASE_SEC
-            if lease_sec is None else lease_sec)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(lease_sec) or lease_sec <= RETRY_INTERVAL_SEC:
+    default_lease = RETRY_INTERVAL_SEC + RETRY_CLAIM_LEASE_SEC
+    lease = safe_pos_float(default_lease if lease_sec is None else lease_sec, default=None)
+    if lease is None or lease <= RETRY_INTERVAL_SEC:
         return None
     return enqueue(
         symbol, side, qty, place_kwargs, requested_price, ref_price,
         now=now, created_ts=created_ts, attempts=attempts,
         last_attempt_ts=last_attempt_ts, failure_reason=failure_reason,
         provider_name=provider_name, intent_id=intent_id, kind=kind,
-        lifecycle="submit_pending", _producer_lease_sec=lease_sec,
+        lifecycle="submit_pending", _producer_lease_sec=lease,
         ttl_sec=ttl_sec)
 
 
@@ -914,15 +842,12 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
                 continue
             record["qty"] = q_val
             record["requested_qty_total"] = q_val
-            if applied_scale is not None and not isinstance(applied_scale, bool):
-                try:
-                    s_val = float(applied_scale)
-                    if math.isfinite(s_val) and 0.0 < s_val < 1.0:
-                        pk = dict(record.get("place_kwargs") or {})
-                        pk["applied_scale"] = s_val
-                        record["place_kwargs"] = pk
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            if applied_scale is not None:
+                s_val = safe_pos_float(applied_scale, default=None)
+                if s_val is not None and s_val < 1.0:
+                    pk = dict(record.get("place_kwargs") or {})
+                    pk["applied_scale"] = s_val
+                    record["place_kwargs"] = pk
             refreshed = dict(record)
             _write_nolock(existing)
             break
@@ -937,21 +862,13 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
     submission state becomes producer_claimed, and the lease is renewed before
     any external provider call. None means the caller must not submit.
     """
-    if not isinstance(claim_snapshot, dict) or isinstance(now, bool) or isinstance(lease_sec, bool):
+    if not isinstance(claim_snapshot, dict):
         return None
-    try:
-        now = float(time.time() if now is None else now)
-        lease_sec = float(
-            RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec)
-    except (TypeError, ValueError, OverflowError):
+    now_f = safe_pos_float(time.time() if now is None else now, default=None)
+    lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
+    if now_f is None or lease_f is None:
         return None
-    if (
-        not math.isfinite(now)
-        or now <= 0
-        or not math.isfinite(lease_sec)
-        or lease_sec <= 0
-    ):
-        return None
+    now, lease_sec = now_f, lease_f
     current_pid = os.getpid()
     try:
         current_start_identity = _process_start_identity(current_pid)
@@ -997,15 +914,12 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
                         record["requested_qty_total"] = q_val
                 except (TypeError, ValueError, OverflowError):
                     pass
-            if applied_scale is not None and not isinstance(applied_scale, bool):
-                try:
-                    s_val = float(applied_scale)
-                    if math.isfinite(s_val) and 0.0 < s_val < 1.0:
-                        pk = dict(record.get("place_kwargs") or {})
-                        pk["applied_scale"] = s_val
-                        record["place_kwargs"] = pk
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            if applied_scale is not None:
+                s_val = safe_pos_float(applied_scale, default=None)
+                if s_val is not None and s_val < 1.0:
+                    pk = dict(record.get("place_kwargs") or {})
+                    pk["applied_scale"] = s_val
+                    record["place_kwargs"] = pk
             refreshed = dict(record)
             _write_nolock(existing)
             break
@@ -1027,21 +941,16 @@ def get_accepted_order_ttl_map() -> dict:
     except Exception:
         return res
     for r in records:
-        ttl = r.get("ttl_sec")
-        if ttl is not None and not isinstance(ttl, bool):
-            try:
-                ttl_val = float(ttl)
-                if math.isfinite(ttl_val) and ttl_val > 0:
-                    oid = _clean_retry_order_id(r.get("order_id"))
-                    if oid:
-                        res[oid] = ttl_val
-                    place_kw = r.get("place_kwargs")
-                    cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
-                    cid = _clean_retry_order_id(cid_raw)
-                    if cid:
-                        res[cid] = ttl_val
-            except (TypeError, ValueError):
-                continue
+        ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
+        if ttl_val is not None:
+            oid = _clean_retry_order_id(r.get("order_id"))
+            if oid:
+                res[oid] = ttl_val
+            place_kw = r.get("place_kwargs")
+            cid_raw = place_kw.get("client_order_id") if isinstance(place_kw, dict) else None
+            cid = _clean_retry_order_id(cid_raw)
+            if cid:
+                res[cid] = ttl_val
     return res
 
 
@@ -1170,11 +1079,7 @@ def consolidate_deferred_streams():
         existing = _read_nolock()
 
         def _created(item):
-            try:
-                value = float(item.get("created_ts", 0))
-                return value if math.isfinite(value) else 0.0
-            except (TypeError, ValueError, OverflowError):
-                return 0.0
+            return safe_nonneg_float(item.get("created_ts"), default=0.0)
 
         kept_deferred = []
         keep_ids = set()
@@ -1461,14 +1366,11 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
                     rec["qty"] = venue_qty
                     rec["requested_qty_total"] = venue_qty
-                elif claimed.get("qty") is not None:
-                    try:
-                        cq = float(claimed["qty"])
-                        if math.isfinite(cq) and cq > 0:
-                            rec["qty"] = cq
-                            rec["requested_qty_total"] = cq
-                    except (TypeError, ValueError, OverflowError):
-                        pass
+                else:
+                    cq = safe_pos_float(claimed.get("qty"), default=None)
+                    if cq is not None:
+                        rec["qty"] = cq
+                        rec["requested_qty_total"] = cq
                 if not _apply_accepted(
                         rec, order, now, provider_name=provider_name):
                     rec["last_failure_reason"] = "response_without_order_id"
@@ -1482,31 +1384,29 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 rec["last_status"] = str(getattr(status, "status", "") or "")
                 rec["venue_status"] = str(
                     getattr(status, "venue_status", "") or "")
-                status_orig = getattr(status, "orig_qty", None)
-                if status_orig is not None and math.isfinite(status_orig) and status_orig > 0:
-                    rec["qty"] = float(status_orig)
-                    rec["requested_qty_total"] = float(status_orig)
-                rec["filled_qty"] = float(
-                    getattr(status, "filled_qty", 0.0) or 0.0)
-                rec["filled_cost"] = float(getattr(status, "cost", 0.0) or 0.0)
-                rec["filled_fee"] = float(getattr(status, "fee", 0.0) or 0.0)
+                status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
+                if status_orig is not None:
+                    rec["qty"] = status_orig
+                    rec["requested_qty_total"] = status_orig
+                rec["filled_qty"] = safe_nonneg_float(getattr(status, "filled_qty", None), default=0.0)
+                rec["filled_cost"] = safe_nonneg_float(getattr(status, "cost", None), default=0.0)
+                rec["filled_fee"] = safe_nonneg_float(getattr(status, "fee", None), default=0.0)
                 rec.pop("status_error", None)
             elif outcome == "status_error" and same_revision:
                 rec["last_status_ts"] = now
                 rec["status_error"] = (str(failure_reason)
                                        if failure_reason is not None else "unknown")
             elif outcome == "retry_terminal" and same_revision:
-                filled_qty = max(0.0, float(
-                    getattr(status, "filled_qty", 0.0) or 0.0))
-                current_qty = float(rec.get("qty") or 0.0)
-                status_orig = getattr(status, "orig_qty", None)
-                if status_orig is not None and math.isfinite(status_orig) and status_orig > 0:
-                    current_qty = float(status_orig)
+                filled_qty = safe_nonneg_float(getattr(status, "filled_qty", None), default=0.0)
+                current_qty = safe_nonneg_float(rec.get("qty"), default=0.0)
+                status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
+                if status_orig is not None:
+                    current_qty = status_orig
                     rec["qty"] = current_qty
                     rec["requested_qty_total"] = current_qty
                 remaining_qty = max(0.0, current_qty - filled_qty)
                 _append_order_history(rec, observed_at=now, status=status)
-                rec["delivered_qty"] = float(rec.get("delivered_qty") or 0.0) + min(
+                rec["delivered_qty"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + min(
                     current_qty, filled_qty)
                 if remaining_qty <= max(1e-12, current_qty * 1e-9):
                     continue

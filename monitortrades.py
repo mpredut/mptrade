@@ -48,6 +48,7 @@ from botcore import (
     required_bool_env,
     required_float_env,
     safe_float as _safe_f,
+    safe_nonneg_float,
     safe_pos_float,
 )
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -463,15 +464,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     buy_orders = buy_orders if isinstance(buy_orders, list) else list(buy_orders or ())
     sell_orders = sell_orders if isinstance(sell_orders, list) else list(sell_orders or ())
 
-    now_val = time.time()
-    if now_ts is not None and not isinstance(now_ts, bool):
-        try:
-            nf = float(now_ts)
-            if math.isfinite(nf) and nf > 0.0:
-                now_val = nf
-        except (TypeError, ValueError):
-            pass
-    now_ts = now_val
+    now_ts = safe_pos_float(now_ts, default=time.time())
     sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
     maxage_f = _safe_f(maxage_trade_s, 0.0) or 0.0
     cache_key = (_api_cache_identity(api), sym_key, maxage_f)
@@ -614,26 +607,16 @@ def _load_mt_state(now_curr: float | None = None):
                 continue
             for s_name, state in raw_map.items():
                 if isinstance(state, dict):
-                    raw_started = state.get("started_at", 0)
-                    if isinstance(raw_started, bool):
-                        continue
-                    try:
-                        started = float(raw_started)
-                    except (TypeError, ValueError):
-                        continue
-                    if not math.isfinite(started) or started <= 0:
+                    started = safe_pos_float(state.get("started_at"), default=None)
+                    if started is None:
                         continue
                     if started > now_curr:
                         state = dict(state)
                         state["started_at"] = now_curr
                         started = now_curr
                     if "last_peak_time" in state:
-                        raw_lpt = state.get("last_peak_time")
-                        try:
-                            lpt = float(raw_lpt) if not isinstance(raw_lpt, bool) else float("nan")
-                        except (TypeError, ValueError):
-                            lpt = float("nan")
-                        if not math.isfinite(lpt) or lpt <= 0 or lpt > now_curr:
+                        lpt = safe_pos_float(state.get("last_peak_time"), default=None)
+                        if lpt is None or lpt > now_curr:
                             state = dict(state)
                             state["last_peak_time"] = now_curr
                     if 0 <= (now_curr - started) < 86400:
@@ -651,26 +634,15 @@ def _load_mt_state(now_curr: float | None = None):
         raw_done_sell = data.get("reentry_done_sell_time")
         if isinstance(raw_done_sell, dict):
             for s_name, s_ts in raw_done_sell.items():
-                try:
-                    if isinstance(s_ts, bool):
-                        continue
-                    s_ts_val = float(s_ts)
-                    if math.isfinite(s_ts_val) and s_ts_val > 0 and 0 <= (now_curr - s_ts_val) < 7 * 86400:
-                        _REENTRY_DONE_SELL_TIME[str(s_name).strip().upper()] = s_ts_val
-                except (TypeError, ValueError):
-                    pass
+                s_ts_val = safe_pos_float(s_ts, default=None)
+                if s_ts_val is not None and 0 <= (now_curr - s_ts_val) < 7 * 86400:
+                    _REENTRY_DONE_SELL_TIME[str(s_name).strip().upper()] = s_ts_val
         raw_pending_stop = data.get("pending_stop_exit")
         if isinstance(raw_pending_stop, dict):
             for s_name, state in raw_pending_stop.items():
                 if isinstance(state, dict):
-                    raw_pts = state.get("time", 0)
-                    if isinstance(raw_pts, bool):
-                        continue
-                    try:
-                        p_ts = float(raw_pts)
-                    except (TypeError, ValueError):
-                        continue
-                    if not math.isfinite(p_ts) or p_ts <= 0:
+                    p_ts = safe_pos_float(state.get("time"), default=None)
+                    if p_ts is None:
                         continue
                     if p_ts > now_curr:
                         state = dict(state)
@@ -681,14 +653,9 @@ def _load_mt_state(now_curr: float | None = None):
         raw_hard_tp = data.get("hard_tp_last")
         if isinstance(raw_hard_tp, dict):
             for s_name, h_ts in raw_hard_tp.items():
-                try:
-                    if isinstance(h_ts, bool):
-                        continue
-                    h_ts_val = float(h_ts)
-                    if math.isfinite(h_ts_val) and h_ts_val > 0 and 0 <= (now_curr - h_ts_val) < 86400:
-                        _hard_tp_last[str(s_name).strip().upper()] = h_ts_val
-                except (TypeError, ValueError):
-                    pass
+                h_ts_val = safe_pos_float(h_ts, default=None)
+                if h_ts_val is not None and 0 <= (now_curr - h_ts_val) < 86400:
+                    _hard_tp_last[str(s_name).strip().upper()] = h_ts_val
     except Exception:
         pass
 
@@ -1008,29 +975,15 @@ def get_available_qty(symbol, api=None):
 #//todo: review 0.5
 def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     """Place only positive quantities meeting the venue minimum; return whether submitted."""
-    if qty is None or isinstance(qty, bool):
+    qty_f = safe_pos_float(qty, default=None)
+    if qty_f is None:
         print(f"[{inst.symbol}] {side} skip: qty={qty}")
         return False
-    try:
-        qty_f = float(qty)
-    except (TypeError, ValueError):
-        print(f"[{inst.symbol}] {side} skip: qty={qty}")
-        return False
-    if not math.isfinite(qty_f) or qty_f <= 0:
-        print(f"[{inst.symbol}] {side} skip: qty={qty}")
-        return False
-    if price is None or isinstance(price, bool):
+    price_f = safe_pos_float(price, default=None)
+    if price_f is None:
         print(f"[{inst.symbol}] {side} skip: price={price}")
         return False
-    try:
-        price_f = float(price)
-    except (TypeError, ValueError):
-        print(f"[{inst.symbol}] {side} skip: price={price}")
-        return False
-    if not math.isfinite(price_f) or price_f <= 0:
-        print(f"[{inst.symbol}] {side} skip: price={price}")
-        return False
-    min_qty_f = _safe_f(min_qty, 0.0) or 0.0
+    min_qty_f = safe_nonneg_float(min_qty, default=0.0)
     if min_qty_f > 0.0 and qty_f < min_qty_f:
         print(f"[{inst.symbol}] {side} skip: qty {qty} < volum minim venue {min_qty}")
         return False
