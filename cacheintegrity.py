@@ -10,6 +10,7 @@ import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
+from botcore import safe_int
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -94,20 +95,22 @@ def trade_records_digest(
 def _strict_int_field(val: Any) -> int:
     if isinstance(val, bool) or val is None:
         raise ValueError("invalid Trade row field type")
-    if isinstance(val, int):
-        return val
     if isinstance(val, float):
         if not math.isfinite(val) or not val.is_integer():
             raise ValueError("invalid Trade row field type")
         return int(val)
     if isinstance(val, str):
         s = val.strip()
-        if not s:
-            raise ValueError("invalid Trade row field type")
-        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
+        if s.endswith(".0"):
             s = s[:-2]
-        return int(s)
-    raise ValueError("invalid Trade row field type")
+        if s.startswith(("+", "-")):
+            s = s[1:]
+        if not s or not s.isdigit():
+            raise ValueError("invalid Trade row field type")
+    parsed = safe_int(val, default=None)
+    if parsed is None:
+        raise ValueError("invalid Trade row field type")
+    return parsed
 
 
 def trade_semantic_signature(item: dict[str, Any]) -> tuple[Any, ...]:

@@ -16,7 +16,7 @@ import re
 import shutil
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float as parse_finite_float
 
 # ---------------------------------------------------------------------------
 # 1. Canonical Taxonomy: Repair Actions, Targets & Issue Categories (SSOT)
@@ -178,17 +178,6 @@ SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 as_bool_flag = _parse_bool_flag
-
-
-def parse_finite_float(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
-    """Parse ``val`` as a finite float, rejecting booleans and NaN/Inf."""
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
 
 
 def clean_json_value(val: Any) -> Any:

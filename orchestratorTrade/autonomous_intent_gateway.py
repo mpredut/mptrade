@@ -88,9 +88,7 @@ class TradeIntentRecord:
 MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
 
 
-def _parse_finite_float(val: Any, default: float) -> float:
-    """Parse ``val`` into a finite float, rejecting booleans, None, and NaN/Inf."""
-    return safe_float(val, default=default)
+_parse_finite_float = safe_float
 
 
 def _extract_intent_notional(data: Dict[str, Any], default: float) -> float:
@@ -170,9 +168,7 @@ def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
     from datetime import datetime, time as dt_time
     from zoneinfo import ZoneInfo
 
-    ts = _parse_finite_float(now_ts, time.time())
-    if ts <= 0:
-        ts = time.time()
+    ts = safe_pos_float(now_ts, time.time())
     try:
         ny_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
     except (ValueError, OverflowError, OSError):
@@ -433,13 +429,7 @@ class AutonomousIntentGateway:
             }
             intent["status"] = "EXECUTED"
             intent["execution_payload"] = exec_payload
-            try:
-                raw_ts = rec.get("ts")
-                rec_ts = float(raw_ts) if raw_ts is not None and not isinstance(raw_ts, bool) else time.time()
-                if not math.isfinite(rec_ts) or rec_ts <= 0:
-                    rec_ts = time.time()
-            except (TypeError, ValueError, OverflowError):
-                rec_ts = time.time()
+            rec_ts = safe_pos_float(rec.get("ts"), time.time())
             _append_intent_history(intent, {
                 "ts": rec_ts,
                 "action": "RECONCILED_EXECUTED",
@@ -739,11 +729,10 @@ class AutonomousIntentGateway:
 
         if raw_bal is None or isinstance(raw_bal, bool) or hasattr(raw_bal, "_mock_name"):
             return True, desired_usd, "Wallet balance check skipped (non-numeric)"
-        try:
-            bal = float(raw_bal)
-        except (TypeError, ValueError, OverflowError):
+        bal = safe_float(raw_bal, None)
+        if bal is None:
             return True, desired_usd, "Wallet balance check skipped (non-numeric)"
-        if not math.isfinite(bal) or bal < 0.0:
+        if bal < 0.0:
             return True, desired_usd, "Wallet balance check skipped (non-finite)"
 
         venue_l = normalize_venue_name(str(getattr(inst, "provider_name", "")))

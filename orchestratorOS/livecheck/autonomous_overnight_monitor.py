@@ -30,7 +30,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from botcore import _parse_bool_flag, parse_dotenv
+from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float, safe_pos_int
 from cachepaths import resolve_cachedb_filepath
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
@@ -90,18 +90,8 @@ class AutonomousOvernightMonitor:
         self.status_file = str(resolve_cachedb_filepath(os.path.join(self.cachedb_dir, "overnight_monitor_status.json")))
 
         self.dev_host = str(dev_host or "192.168.0.138").strip() or "192.168.0.138"
-        if isinstance(dev_port, bool) or dev_port is None:
-            self.dev_port = 32238
-        else:
-            try:
-                p_flt = float(dev_port)
-                if math.isfinite(p_flt) and p_flt.is_integer():
-                    p_int = int(p_flt)
-                    self.dev_port = p_int if 1 <= p_int <= 65535 else 32238
-                else:
-                    self.dev_port = 32238
-            except (TypeError, ValueError, OverflowError):
-                self.dev_port = 32238
+        p_int = safe_pos_int(dev_port, default=32238)
+        self.dev_port = p_int if 1 <= p_int <= 65535 else 32238
         self.dev_user = str(dev_user or "predut").strip() or "predut"
 
     def parse_process_manifest(self) -> List[Dict[str, Any]]:
@@ -321,14 +311,9 @@ class AutonomousOvernightMonitor:
 
     def loop(self, interval_seconds: float = 60.0) -> None:
         """Continuous execution loop."""
-        if (
-            isinstance(interval_seconds, bool)
-            or not isinstance(interval_seconds, (int, float))
-            or not math.isfinite(float(interval_seconds))
-            or float(interval_seconds) <= 0
-        ):
+        sleep_s = safe_pos_float(interval_seconds, default=None)
+        if sleep_s is None:
             raise ValueError("interval_seconds must be a positive finite number")
-        sleep_s = float(interval_seconds)
         logger.info("Starting Autonomous Overnight Monitor (interval=%.0fs)...", sleep_s)
         while True:
             try:

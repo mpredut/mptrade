@@ -1,7 +1,10 @@
 
+from __future__ import annotations
+
 import math
 import time
 from collections import defaultdict
+from typing import Any, Optional
 
 # BINANCE
 from binance.exceptions import BinanceAPIException
@@ -24,6 +27,25 @@ from .bapi import (
     _normalize_side,
     _parse_bool_flag,
 )
+
+
+def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
+    if raw_tid is None or isinstance(raw_tid, bool):
+        return None
+    if isinstance(raw_tid, float):
+        if not math.isfinite(raw_tid) or not raw_tid.is_integer():
+            return None
+        raw_tid = int(raw_tid)
+    elif isinstance(raw_tid, str):
+        s = raw_tid.strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        if s.startswith("+"):
+            s = s[1:]
+        if not s or not s.isdigit():
+            return None
+        raw_tid = s
+    return safe_pos_int(raw_tid, default=None)
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
@@ -81,7 +103,7 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         if len(batch) < limit:          # Final page.
             break
         tail = batch[-1]
-        tid_int = safe_pos_int(tail.get("id") if isinstance(tail, dict) else None, default=None)
+        tid_int = _parse_tail_trade_id(tail.get("id") if isinstance(tail, dict) else None)
         if tid_int is None:
             if strict:
                 raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")

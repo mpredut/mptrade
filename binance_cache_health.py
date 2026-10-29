@@ -16,7 +16,14 @@ import threading
 import time
 from typing import Callable, Optional
 
-from botcore import load_dotenv, required_float_env, safe_pos_int
+from botcore import (
+    load_dotenv,
+    required_float_env,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
 from state_io import atomic_write_json
 
 
@@ -25,12 +32,10 @@ load_dotenv(os.path.join(_ROOT, "config.env"))
 
 
 def _positive_finite(value: float, name: str) -> float:
-    if isinstance(value, bool):
+    parsed = safe_pos_float(value, default=None)
+    if parsed is None:
         raise ValueError(f"{name} must be finite and positive")
-    value = float(value)
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{name} must be finite and positive")
-    return value
+    return parsed
 
 
 MAX_AGE_SEC = _positive_finite(
@@ -118,18 +123,7 @@ def enable_writer(*, path: str = HEALTH_PATH, pid: Optional[int] = None,
     timestamp = _clean_now_ms(now_ms)
     with _writer_lock:
         _writer_path = os.fspath(path)
-        if pid is None or isinstance(pid, bool):
-            writer_pid = os.getpid()
-        else:
-            try:
-                cand_f = float(pid)
-                writer_pid = (
-                    int(cand_f)
-                    if math.isfinite(cand_f) and cand_f.is_integer() and int(cand_f) > 0
-                    else os.getpid()
-                )
-            except (TypeError, ValueError, OverflowError):
-                writer_pid = os.getpid()
+        writer_pid = safe_pos_int(pid, default=None) or os.getpid()
         process_started_at_ms = _pid_started_at_ms(writer_pid)
         if _PROCESS_IDENTITY_REQUIRED and process_started_at_ms is None:
             _writer_enabled = False
@@ -247,40 +241,25 @@ def record_persisted_version(cache_name: str, data_version: str, *,
 
 
 def _positive_int(value, field: str) -> int:
-    if isinstance(value, bool) or value is None:
+    parsed = safe_pos_int(value, default=None)
+    if parsed is None:
         raise ValueError(f"invalid {field}")
-    if isinstance(value, (float, str)):
-        try:
-            f = float(value)
-            if math.isfinite(f) and f.is_integer():
-                value = int(f)
-        except (TypeError, ValueError, OverflowError):
-            pass
-    if not isinstance(value, int) or value <= 0:
-        raise ValueError(f"invalid {field}")
-    return value
+    return parsed
 
 
 def _nonnegative_int(value, field: str) -> int:
-    if isinstance(value, bool) or value is None:
+    parsed = safe_int(value, default=None)
+    if parsed is None or parsed < 0:
         raise ValueError(f"invalid {field}")
-    if isinstance(value, (float, str)):
-        try:
-            f = float(value)
-            if math.isfinite(f) and f.is_integer():
-                value = int(f)
-        except (TypeError, ValueError, OverflowError):
-            pass
-    if not isinstance(value, int) or value < 0:
-        raise ValueError(f"invalid {field}")
-    return value
+    return parsed
 
 
 def _pid_is_alive(pid: int) -> bool:
+    pid_val = safe_pos_int(pid, default=None)
+    if pid_val is None:
+        return False
     try:
-        if isinstance(pid, bool) or int(pid) <= 0:
-            return False
-        os.kill(int(pid), 0)
+        os.kill(pid_val, 0)
     except PermissionError:
         return True
     except (ProcessLookupError, OverflowError, ValueError, TypeError, OSError):
@@ -348,26 +327,10 @@ def inspect_health(*, path: str = HEALTH_PATH,
     if initializing:
         return CacheHealthStatus(False, "account_cache_initializing")
 
-    try:
-        current_ms = _clean_now_ms(now_ms)
-        max_age_val = (
-            float(max_age_sec)
-            if not isinstance(max_age_sec, bool)
-            and math.isfinite(float(max_age_sec))
-            and float(max_age_sec) > 0
-            else MAX_AGE_SEC
-        )
-        future_tolerance_ms = (
-            int(float(future_tolerance_sec) * 1000)
-            if not isinstance(future_tolerance_sec, bool)
-            and math.isfinite(float(future_tolerance_sec))
-            and float(future_tolerance_sec) >= 0
-            else 5_000
-        )
-    except (TypeError, ValueError, OverflowError):
-        current_ms = _now_ms()
-        max_age_val = MAX_AGE_SEC
-        future_tolerance_ms = 5_000
+    current_ms = _clean_now_ms(now_ms)
+    max_age_val = safe_pos_float(max_age_sec, default=MAX_AGE_SEC)
+    tol_sec = safe_nonneg_float(future_tolerance_sec, default=5.0)
+    future_tolerance_ms = int(tol_sec * 1000)
 
     if (order_sync_ms > current_ms + future_tolerance_ms
             or trade_sync_ms > current_ms + future_tolerance_ms):

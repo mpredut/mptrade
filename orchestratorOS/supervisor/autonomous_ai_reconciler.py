@@ -86,11 +86,12 @@ from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
     _extract_intent_notional,
     _is_us_rth_open,
-    _parse_finite_float,
     _parse_notify_enabled_flag,
     extract_current_price_item,
     load_key_value_conf,
 )
+
+_parse_finite_float = safe_float
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 

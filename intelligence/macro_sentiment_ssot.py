@@ -45,7 +45,14 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
-from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_int
+from botcore import (
+    _parse_bool_flag,
+    parse_dotenv,
+    safe_float,
+    safe_int,
+    safe_nonneg_float as safe_nonneg_ts,
+    safe_pos_float,
+)
 from cachepaths import cache_path, resolve_cachedb_filepath
 from providers.base import normalize_side
 
@@ -60,22 +67,10 @@ _CONFIG_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "parser": None}
 # 0. Universal Coercion, Cache Freshness, Attribute & Daemon Primitives
 # ============================================================================
 
-def safe_pos_float(val: Any, default: float = 0.0) -> float:
-    """Safely coerce ``val`` to a strictly positive finite float (> 0.0)."""
-    f = safe_float(val, -1.0)
-    return f if f > 0.0 else default
-
-
 def safe_thresh(val: Any, default: int) -> int:
     """Safely coerce sentiment index/threshold to an integer in [0, 100]."""
     f = safe_float(val, -1.0)
     return int(round(f)) if 0.0 <= f <= 100.0 else default
-
-
-def safe_nonneg_ts(val: Any, default: float = 0.0) -> float:
-    """Safely coerce ``val`` to a non-negative finite float (>= 0.0)."""
-    f = safe_float(val, -1.0)
-    return f if f >= 0.0 else default
 
 
 def clean_scale(

@@ -6,7 +6,7 @@ import os
 import time
 
 import alertnotifiers as alert
-from botcore import load_dotenv, required_float_env, required_int_env
+from botcore import load_dotenv, required_float_env, required_int_env, safe_float
 from providers.base import _clean_single_order_id as _clean_id
 
 
@@ -100,14 +100,10 @@ def complete_accepted_claim(
         qty = None
     if isinstance(px, bool) or (isinstance(px, float) and not math.isfinite(px)):
         px = None
-    val_str = "N/A"
-    if qty is not None and px is not None and not isinstance(qty, bool) and not isinstance(px, bool):
-        try:
-            val_f = float(qty) * float(px)
-            if math.isfinite(val_f):
-                val_str = f"~${val_f:.2f}"
-        except (TypeError, ValueError, OverflowError):
-            val_str = "N/A"
+    qty_f = safe_float(qty, default=None)
+    px_f = safe_float(px, default=None)
+    val_f = (qty_f * px_f) if (qty_f is not None and px_f is not None) else None
+    val_str = f"~${val_f:.2f}" if (val_f is not None and math.isfinite(val_f)) else "N/A"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = (
         f"venue={provider_name} symbol={symbol} side={side} "
