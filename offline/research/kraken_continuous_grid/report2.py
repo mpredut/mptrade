@@ -113,7 +113,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
         live = by.get(("live", "std"), {})
         full = [safe_float(d[a]["full"].get("ret"), float("nan")) for a in assets]
         dd = [safe_float(d[a]["full"].get("dd"), float("nan")) for a in assets]
-        if not all(safe_float(x) is not None for x in full + dd):
+        if not all(safe_float(x, default=None) is not None for x in full + dd):
             return None
         w90_means = []
         w90pos_vals = []

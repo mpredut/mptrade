@@ -70,8 +70,8 @@ def simulate(ohlc, P):
         return default
 
     budget = safe_pos_float(_p_val(("budget", "max_budget"), 500.0), default=500.0)
-    raw_entry = safe_pos_float(_p_val(("entry", "entry_amount"), None))
-    raw_dca = safe_pos_float(_p_val(("dca", "dca_amount"), None))
+    raw_entry = safe_pos_float(_p_val(("entry", "entry_amount"), None), default=None)
+    raw_dca = safe_pos_float(_p_val(("dca", "dca_amount"), None), default=None)
     entry_pct = safe_float(
         P.get("entry_pct"),
         default=((raw_entry / budget * 100.0) if budget > 0 and raw_entry is not None else 10.0),

@@ -60,7 +60,7 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
                 continue
             ret = [safe_float(d[a][fee].get("ret"), default=float("nan")) for a in assets]
             dd = [safe_float(d[a][fee].get("dd"), default=float("nan")) for a in assets]
-            if not all(safe_float(x) is not None for x in ret + dd):
+            if not all(safe_float(x, default=None) is not None for x in ret + dd):
                 continue
             live_cfg = by.get("live", {})
             live = [safe_float((live_cfg.get(a, {}).get(fee) or {}).get("ret"), default=float("-inf")) for a in assets]

@@ -63,7 +63,7 @@ def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
             except (ValueError, IndexError, OverflowError):
                 continue
             if (
-                all(safe_pos_float(x) is not None for x in (o, h, l, c))
+                all(safe_pos_float(x, default=None) is not None for x in (o, h, l, c))
                 and h >= max(o, l, c)
                 and l <= min(o, h, c)
             ):
