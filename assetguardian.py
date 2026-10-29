@@ -22,7 +22,7 @@ import order_guard as _og
 
 import cacheManager as cm
 import symbols as sym
-from instrument_registry import symbols_for
+from instrument_registry import casefold_get, symbols_for
 
 # Load tunable parameters from the versioned, secret-free config before reading
 # environment variables below. load_dotenv does not overwrite real environment.
@@ -301,12 +301,12 @@ def _read_symbol_price_rows(symbol):
     """Copy one symbol's shared 24h price history under the manager lock."""
     try:
         managers = cm.get_cache_manager("24Price", symbols=list(TRACKED_SYMBOLS))
-        manager = managers.get(symbol) if isinstance(managers, dict) else None
+        manager = casefold_get(managers, symbol) if isinstance(managers, dict) else None
         if manager is None:
             print(f"ERROR 24Price manager missing for {symbol}")
             return []
         with manager.lock:
-            rows = list(manager.cache.get(symbol, []))
+            rows = list(casefold_get(manager.cache, symbol, []))
         print(f"[DEBUG] {symbol} 24Price rows loaded: {len(rows)}")
         return rows
     except Exception as e:
@@ -735,7 +735,7 @@ def _load_state_root():
 
 
 def _symbol_campaign(symbol, kind):
-    row = _load_state_root()["symbols"].get(symbol, {})
+    row = casefold_get(_load_state_root()["symbols"], symbol, {})
     campaign = row.get(kind, {}) if isinstance(row, dict) else {}
     return dict(campaign) if isinstance(campaign, dict) else {}
 
@@ -1471,7 +1471,7 @@ def _next_check_seconds():
     sell_mult, buy_mult, _ = _p3b_threshold_multipliers()
     for symbol, evaluation in _last_evaluation.items():
         drawdown = evaluation.get("drawdown")
-        row = root["symbols"].get(symbol, {})
+        row = casefold_get(root["symbols"], symbol, {})
         buy_completed = _completed_tier_values(row.get("buy", {}))
         buy_next = next(
             (_trigger_threshold_for_buy_tier(threshold, buy_mult)

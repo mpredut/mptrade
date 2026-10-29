@@ -196,6 +196,9 @@ def _resolve_tradeall_symbol(symbol, allowed_set=TRADEALL_FIRE_SYMBOLS, *, prese
         return sym_u
     if sym_clean in allowed_set:
         return sym_clean
+    for s in allowed_set:
+        if isinstance(s, str) and s.upper() in (sym_u, sym_clean):
+            return s
     return symbol if preserve_raw else sym_u
 
 
@@ -798,7 +801,13 @@ class TrendCoordinator:
             # Windows and the fast channel live in ``instant_mgr``; subscribe here.
             # Use Cache24 only for its evaluation signal (dirty flag and event).
             if cache24_managers is not None:
-                cache24_managers[symbol].subscribe_price(self)
+                c24 = (
+                    casefold_get(cache24_managers, symbol)
+                    if isinstance(cache24_managers, dict)
+                    else cache24_managers[symbol]
+                )
+                if c24 is not None:
+                    c24.subscribe_price(self)
 
     # Cache24 subscriber signal wakes evaluation.
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
@@ -861,7 +870,7 @@ class TrendCoordinator:
         new_ktrend = None
         if self._kalman_state is not None:
             try:
-                st_prev = self._kalman_state._state.get(symbol)
+                st_prev = casefold_get(self._kalman_state._state, symbol)
                 if st_prev:
                     prev_ktrend = st_prev.get("kalman_trend")
                 kalman_fields = self._kalman_state.update(
