@@ -397,15 +397,10 @@ class CacheShortTrendManager(CacheManagerInterface):
             def _parse_window_map(mapping):
                 out = {}
                 for k, v in (mapping or {}).items():
-                    if isinstance(k, bool) or isinstance(v, bool) or k is None or v is None:
-                        continue
-                    try:
-                        kf = round(float(k), 6)
-                        vf = float(v)
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-                    if math.isfinite(kf) and kf > 0 and math.isfinite(vf):
-                        out[kf] = vf
+                    kf = safe_pos_float(k, default=None)
+                    vf = safe_float(v, default=None)
+                    if kf is not None and vf is not None:
+                        out[round(kf, 6)] = vf
                 return out
 
             per_symbol = (
@@ -427,14 +422,8 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def threshold_for(self, symbol, seconds):
         """Return the percentage threshold for one symbol window."""
-        if seconds is None or isinstance(seconds, bool):
-            sec_val = self.window_seconds[0]
-        else:
-            try:
-                sf = float(seconds)
-                sec_val = round(sf, 6) if (math.isfinite(sf) and sf > 0) else self.window_seconds[0]
-            except (TypeError, ValueError, OverflowError):
-                sec_val = self.window_seconds[0]
+        sf = safe_pos_float(seconds, default=None)
+        sec_val = round(sf, 6) if sf is not None else self.window_seconds[0]
         return self._threshold_fn(symbol, sec_val)
 
     # ── Writer: build windows and subscribe to Cache24 ───────────────────────
@@ -617,16 +606,11 @@ class CacheShortTrendManager(CacheManagerInterface):
             + list(published_cfg or ())
             + active_dyn
         )
-        valid_targets = []
-        for w in raw_targets:
-            if w is None or isinstance(w, bool):
-                continue
-            try:
-                wf = float(w)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(wf) and wf > 0:
-                valid_targets.append(round(wf, 6))
+        valid_targets = [
+            round(wf, 6)
+            for w in raw_targets
+            if (wf := safe_pos_float(w, default=None)) is not None
+        ]
         target_windows = list(dict.fromkeys(valid_targets))
         for window in target_windows:
             dyn = self.get_short_trend_for_window(symbol, window, now=now)
@@ -704,13 +688,8 @@ class CacheShortTrendManager(CacheManagerInterface):
         mapping = mapping or {}
         if seconds is None:
             return mapping.get(self.window_seconds[0])
-        if isinstance(seconds, bool):
-            return None
-        try:
-            key = round(float(seconds), 6)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        return mapping.get(key)
+        sf = safe_float(seconds, default=None)
+        return mapping.get(round(sf, 6)) if sf is not None else None
 
     def get_window(self, symbol, seconds=None):
         """Return the requested window, or the smallest primary window for None."""
@@ -807,14 +786,14 @@ class CacheShortTrendManager(CacheManagerInterface):
                 for entry in items:
                     if not isinstance(entry, (list, tuple)) or len(entry) < 2:
                         continue
-                    if isinstance(entry[0], bool) or isinstance(entry[1], bool):
+                    if isinstance(entry[0], bool):
                         continue
                     try:
                         ts_val = int(entry[0])
-                        price_val = float(entry[1])
                     except (TypeError, ValueError, OverflowError):
                         continue
-                    if ts_val > 0 and math.isfinite(price_val) and price_val > 0:
+                    price_val = safe_pos_float(entry[1], default=None)
+                    if ts_val > 0 and price_val is not None:
                         valid_entries.append([ts_val, price_val])
                 return valid_entries
 
@@ -845,23 +824,16 @@ class CacheShortTrendManager(CacheManagerInterface):
         if n_samples < 3:
             return None
         last_entry = entries[b]
-        if (
-            not isinstance(last_entry, (list, tuple))
-            or len(last_entry) < 2
-            or isinstance(last_entry[0], bool)
-            or isinstance(last_entry[1], bool)
-        ):
+        if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:
             return None
-        try:
-            newest_ts_ms = int(float(last_entry[0]))
-            latest_price = float(last_entry[1])
-        except (TypeError, ValueError, OverflowError):
+        ts_f = safe_pos_float(last_entry[0], default=None)
+        latest_price = safe_pos_float(last_entry[1], default=None)
+        if ts_f is None or latest_price is None:
             return None
+        newest_ts_ms = int(ts_f)
         newest_ts_sec = newest_ts_ms / 1000.0
         age_sec = now_val - newest_ts_sec
         if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
-            return None
-        if not (math.isfinite(latest_price) and latest_price > 0):
             return None
         if check_memo:
             with self._lock:
@@ -1037,24 +1009,13 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
-        if isinstance(window_seconds, bool):
-            return None
-        try:
-            req = float(window_seconds)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if not math.isfinite(req) or req <= 0:
+        req = safe_pos_float(window_seconds, default=None)
+        if req is None:
             return None
         if now is not None:
-            if isinstance(now, bool):
+            now = safe_pos_float(now, default=None)
+            if now is None:
                 return None
-            try:
-                now_f = float(now)
-            except (TypeError, ValueError, OverflowError):
-                return None
-            if not math.isfinite(now_f) or now_f <= 0:
-                return None
-            now = now_f
         min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
         max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
         clamped = min(max(req, min_sec), max_sec)
@@ -1064,26 +1025,14 @@ class CacheShortTrendManager(CacheManagerInterface):
         def _check_fresh(dyn):
             if not isinstance(dyn, dict):
                 return None
-            try:
-                if isinstance(dyn.get("ts"), bool):
-                    return None
-                ts_val = float(dyn["ts"])
-                age = float(now) - ts_val
-            except (KeyError, TypeError, ValueError, OverflowError):
+            ts_val = safe_pos_float(dyn.get("ts"), default=None)
+            if ts_val is None:
                 return None
-            if not (math.isfinite(ts_val) and ts_val > 0 and math.isfinite(age)):
-                return None
-            if not -5.0 <= age <= self.TREND_STALE_SEC:
+            age = float(now) - ts_val
+            if not (math.isfinite(age) and -5.0 <= age <= self.TREND_STALE_SEC):
                 return None
             if "current_price" in dyn and dyn.get("current_price") is not None:
-                cp = dyn.get("current_price")
-                if isinstance(cp, bool):
-                    return None
-                try:
-                    cp_val = float(cp)
-                except (TypeError, ValueError, OverflowError):
-                    return None
-                if not math.isfinite(cp_val) or cp_val <= 0:
+                if safe_pos_float(dyn.get("current_price"), default=None) is None:
                     return None
             return {k: v for k, v in dyn.items() if not k.startswith("_")}
 
@@ -1243,28 +1192,14 @@ class CacheShortTrendManager(CacheManagerInterface):
             "epsilon",
         ):
             val = data.get(key)
-            if val is None:
-                continue
-            if isinstance(val, bool):
-                return False
-            try:
-                fval = float(val)
-            except (TypeError, ValueError, OverflowError):
-                return False
-            if not math.isfinite(fval):
+            if val is not None and safe_float(val, default=None) is None:
                 return False
 
-        raw_eps = data.get("epsilon")
-        eps = float(raw_eps) if raw_eps is not None and float(raw_eps) > 0.0 else 0.0
+        eps = safe_pos_float(data.get("epsilon"), default=0.0)
         scale = 1.0
-        raw_n = data.get("n_samples")
-        if raw_n is not None and not isinstance(raw_n, bool):
-            try:
-                m_steps = float(raw_n) - 1.0
-                if math.isfinite(m_steps) and m_steps > 10.0:
-                    scale = math.sqrt(10.0 / m_steps)
-            except (TypeError, ValueError, OverflowError):
-                scale = 1.0
+        n_f = safe_float(data.get("n_samples"), default=None)
+        if n_f is not None and (n_f - 1.0) > 10.0:
+            scale = math.sqrt(10.0 / (n_f - 1.0))
         noise_floor = eps * CacheShortTrendManager.UPWARD_EPSILON_K * scale
 
         raw_gc = data.get("growth_coefficient")
@@ -1289,13 +1224,8 @@ class CacheShortTrendManager(CacheManagerInterface):
     def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
         """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""
         if window_seconds is not None:
-            if isinstance(window_seconds, bool):
-                return False
-            try:
-                win_sec = float(window_seconds)
-            except (TypeError, ValueError, OverflowError):
-                return False
-            if not math.isfinite(win_sec) or win_sec <= 0:
+            win_sec = safe_pos_float(window_seconds, default=None)
+            if win_sec is None:
                 return False
             if not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6):
                 dyn = self.get_short_trend_for_window(
@@ -1522,33 +1452,16 @@ class CacheShortTrendManager(CacheManagerInterface):
     @staticmethod
     def _snapshot_is_usable(snap, now, max_age_sec):
         """Validate the common full-snapshot price and observation timestamp."""
-        if (
-            not isinstance(snap, dict)
-            or isinstance(now, bool)
-            or isinstance(max_age_sec, bool)
-        ):
+        if not isinstance(snap, dict):
             return False
-        try:
-            if isinstance(snap.get("ts"), bool) or isinstance(snap.get("current_price"), bool):
-                return False
-            now_f = float(now)
-            max_age_f = float(max_age_sec)
-            observed_at = float(snap["ts"])
-            price = float(snap["current_price"])
-            age = now_f - observed_at
-        except (KeyError, TypeError, ValueError, OverflowError):
+        now_f = safe_pos_float(now, default=None)
+        max_age_f = safe_pos_float(max_age_sec, default=None)
+        observed_at = safe_pos_float(snap.get("ts"), default=None)
+        price = safe_pos_float(snap.get("current_price"), default=None)
+        if now_f is None or max_age_f is None or observed_at is None or price is None:
             return False
-        return (
-            math.isfinite(now_f)
-            and now_f > 0
-            and math.isfinite(max_age_f)
-            and max_age_f > 0
-            and math.isfinite(observed_at)
-            and observed_at > 0
-            and math.isfinite(price)
-            and price > 0
-            and -5.0 <= age <= max_age_f
-        )
+        age = now_f - observed_at
+        return math.isfinite(age) and -5.0 <= age <= max_age_f
 
     def is_snapshot_fresh(self, symbol=None, max_age_sec=None):
         """Return whether memory or file state is fresh enough to trust the writer."""
@@ -1643,22 +1556,10 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     # ── Opportunistic-delay gate with informed epsilon ───────────────────────
     def _epsilon(self, snap):
-        eps = snap.get("epsilon")
-        if (
-            isinstance(eps, (int, float))
-            and not isinstance(eps, bool)
-            and math.isfinite(eps)
-            and eps > 0
-        ):
-            return float(eps)
-        raw_price = snap.get("current_price")
-        price = (
-            abs(float(raw_price))
-            if isinstance(raw_price, (int, float))
-            and not isinstance(raw_price, bool)
-            and math.isfinite(raw_price)
-            else 0.0
-        )
+        eps = safe_pos_float(snap.get("epsilon"), default=None)
+        if eps is not None:
+            return eps
+        price = abs(safe_float(snap.get("current_price"), default=0.0))
         return price * self.FAVORABLE_REL_EPS
 
     def get_fresh_snapshot(self, symbol, now=None):
@@ -1887,16 +1788,12 @@ def _start_nonbinance_trend_poller(
                         fetch_deadline_sec,
                         provider_name=bindings[s.upper()],
                     )
-                    if (
-                        p is not None
-                        and not isinstance(p, bool)
-                        and math.isfinite(float(p))
-                        and float(p) > 0
-                    ):
+                    pf = safe_pos_float(p, default=None)
+                    if pf is not None:
                         ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
                         if isinstance(ws_ts_map, dict):
                             ws_ts_map[s] = time.time()
-                        cpm._push_price(s, float(p))
+                        cpm._push_price(s, pf)
                 except _futures.TimeoutError:
                     builtins.print(
                         f"[NB-trend] {s}: fetch BLOCKED >{fetch_deadline_sec}s "

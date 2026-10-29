@@ -40,6 +40,7 @@ from state_io import (
 from cachepaths import (
     EXACT_LEGACY_FILENAMES as _EXACT_LEGACY_FILENAMES,
     PREFIX_LEGACY_FILENAMES as _PREFIX_LEGACY_FILENAMES,
+    canonical_symbol_key,
     legacy_filenames_for as _legacy_filenames_for,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
@@ -79,6 +80,8 @@ from botcore import (
     required_float_env,
     required_int_env,
     safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
     safe_pos_int,
     single_instance,
 )
@@ -2330,14 +2333,9 @@ class CacheManagerInterface(ABC):
     def shutdown(self, timeout=5.0):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""
         self._stop_event.set()
-        eff_timeout = 5.0
-        if timeout is not None and not isinstance(timeout, bool):
-            try:
-                tf = float(timeout)
-                if math.isfinite(tf) and tf >= 0.0:
-                    eff_timeout = tf
-            except (TypeError, ValueError, OverflowError):
-                pass
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        if eff_timeout is None:
+            eff_timeout = 5.0
         thread = self.thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=eff_timeout)
@@ -2854,14 +2852,9 @@ class CacheSparsePriceManager(CacheManagerInterface):
         if not entry:
             return []
         ts_ms, price = entry
-        if price is None or isinstance(ts_ms, bool) or isinstance(price, bool):
-            return []
-        try:
-            ts_val = int(ts_ms)
-            price_val = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if ts_val <= 0 or not math.isfinite(price_val) or price_val <= 0:
+        ts_val = safe_pos_int(ts_ms, default=None)
+        price_val = safe_pos_float(price, default=None)
+        if ts_val is None or price_val is None:
             return []
         with self.lock:
             entries = self.cache.get(symbol)
@@ -2909,14 +2902,9 @@ class Cache24PriceManager(CacheManagerInterface):
         # per-symbol. Store and forward only this instance's symbol.
         if symbol not in self.symbols:
             return
-        try:
-            if isinstance(ts_ms, bool) or isinstance(price, bool):
-                return
-            ts_val = int(ts_ms)
-            price_val = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if ts_val <= 0 or not math.isfinite(price_val) or price_val <= 0:
+        ts_val = safe_pos_int(ts_ms, default=None)
+        price_val = safe_pos_float(price, default=None)
+        if ts_val is None or price_val is None:
             return
         with self.lock:
             entries = self.cache.get(symbol)
@@ -2951,13 +2939,8 @@ class Cache24PriceManager(CacheManagerInterface):
         costs O(k) for returned entries instead of scanning the entire 24-hour buffer.
         This matters for frequent dynamic-window queries.
         """
-        if last_seconds is None or isinstance(last_seconds, bool):
-            return []
-        try:
-            sec_val = float(last_seconds)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(sec_val) or sec_val <= 0:
+        sec_val = safe_pos_float(last_seconds, default=None)
+        if sec_val is None:
             return []
         cutoff_ms = int((time.time() - sec_val) * 1000)
         with self.lock:
@@ -2992,11 +2975,9 @@ class Cache24PriceManager(CacheManagerInterface):
             if not entry or entry[1] is None:
                 return []
             ts_ms, price = entry
-            if isinstance(ts_ms, bool) or isinstance(price, bool):
-                return []
-            ts_val = int(ts_ms)
-            price_val = float(price)
-            if ts_val <= 0 or not math.isfinite(price_val) or price_val <= 0:
+            ts_val = safe_pos_int(ts_ms, default=None)
+            price_val = safe_pos_float(price, default=None)
+            if ts_val is None or price_val is None:
                 return []
             with self.lock:
                 entries = self.cache.get(symbol)
@@ -3091,14 +3072,11 @@ class Cache365PriceManager(Cache24PriceManager):
                                 return {}
                             out = {}
                             for s, v in raw_map.items():
-                                if s not in self.symbols or v is None or isinstance(v, bool):
+                                if s not in self.symbols:
                                     continue
-                                try:
-                                    vf = float(v)
-                                    if math.isfinite(vf) and vf >= 0:
-                                        out[s] = int(vf)
-                                except (TypeError, ValueError, OverflowError):
-                                    continue
+                                vf = safe_nonneg_float(v, default=None)
+                                if vf is not None:
+                                    out[s] = int(vf)
                             return out
 
                         raw_ft = meta_payload.get("fetchtime")
@@ -3376,12 +3354,8 @@ class CacheAssetValueManager(CacheManagerInterface):
             print(f"[{self.cls_name}][Error] Cannot query the total value: {e}")
             return []
 
-        if (
-            isinstance(total_usdc, bool)
-            or not isinstance(total_usdc, (int, float))
-            or not math.isfinite(total_usdc)
-            or total_usdc <= 0
-        ):
+        total_val = safe_pos_float(total_usdc, default=None) if isinstance(total_usdc, (int, float)) else None
+        if total_val is None:
             print(f"[{self.cls_name}][Error] Invalid total value: {total_usdc}")
             return []
             
@@ -3389,7 +3363,7 @@ class CacheAssetValueManager(CacheManagerInterface):
         snapshot = {
             "timestamp": now_sec,
             "datetime_local": datetime.now().isoformat(timespec="seconds"),
-            "total_value_usdc": round(float(total_usdc), 8),
+            "total_value_usdc": round(total_val, 8),
         }
         return [snapshot]
 
@@ -3442,14 +3416,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     @_ws_last_event_ts.setter
     def _ws_last_event_ts(self, value: float) -> None:
-        ts = 0.0
-        if value is not None and not isinstance(value, bool):
-            try:
-                vf = float(value)
-                if math.isfinite(vf) and vf >= 0.0:
-                    ts = vf
-            except (TypeError, ValueError, OverflowError):
-                ts = 0.0
+        ts = safe_nonneg_float(value, default=0.0) or 0.0
         self._ws_last_event_ts_value = ts
         self._ws_default_event_ts = ts
         self._ws_last_event_ts_per_symbol.clear()
@@ -3475,7 +3442,12 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     def provider_name_for(self, symbol: str):
         sym_u = str(symbol or "").strip().upper()
         sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
-        return self._provider_names.get(sym_u) or self._provider_names.get(sym_clean)
+        ck = canonical_symbol_key(symbol)
+        return (
+            self._provider_names.get(sym_u)
+            or self._provider_names.get(sym_clean)
+            or (self._provider_names.get(ck) if ck else None)
+        )
 
     def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
         now = time.time()
@@ -3511,14 +3483,11 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         The polling thread and get_price also use this path; only a real WebSocket event
         in ``on_items_update`` updates ``_ws_last_event_ts``.
         """
-        if price is None or isinstance(price, bool) or isinstance(ts_ms, bool):
+        if isinstance(ts_ms, bool):
             return
-        try:
-            price_val = float(price)
-            ts_val = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not math.isfinite(price_val) or price_val <= 0 or ts_val <= 0:
+        price_val = safe_pos_float(price, default=None)
+        ts_val = safe_pos_int(ts_ms, default=None) if ts_ms is not None else int(time.time() * 1000)
+        if price_val is None or ts_val is None or ts_val <= 0:
             return
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()
@@ -3531,36 +3500,15 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         """Extract ``(price, ts_ms)`` from canonical ``[[ts_ms, price]]`` or ``[ts_ms, price]``."""
         if not items or not isinstance(items, (list, tuple)):
             return None, None
-        first = items[0]
-        if isinstance(first, (list, tuple)):
-            for cand in reversed(items):
-                if not isinstance(cand, (list, tuple)) or len(cand) < 2:
-                    continue
-                raw_ts, raw_price = cand[0], cand[1]
-                if raw_ts is None or raw_price is None or isinstance(raw_ts, bool) or isinstance(raw_price, bool):
-                    continue
-                try:
-                    ts_ms = int(raw_ts)
-                    price = float(raw_price)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if ts_ms > 0 and math.isfinite(price) and price > 0:
-                    return price, ts_ms
-            return None, None
-        elif len(items) >= 2 and items[0] is not None and items[1] is not None:
-            raw_ts, raw_price = items[0], items[1]
-        else:
-            return None, None
-        try:
-            if isinstance(raw_ts, bool) or isinstance(raw_price, bool):
-                return None, None
-            ts_ms = int(raw_ts)
-            price = float(raw_price)
-        except (TypeError, ValueError, OverflowError):
-            return None, None
-        if ts_ms <= 0 or not math.isfinite(price) or price <= 0:
-            return None, None
-        return price, ts_ms
+        candidates = reversed(items) if isinstance(items[0], (list, tuple)) else (items,)
+        for cand in candidates:
+            if not isinstance(cand, (list, tuple)) or len(cand) < 2:
+                continue
+            ts_ms = safe_pos_int(cand[0], default=None)
+            price = safe_pos_float(cand[1], default=None)
+            if ts_ms is not None and price is not None:
+                return price, ts_ms
+        return None, None
 
     def on_items_update(self, symbol: str, items):
         """Handle a real WebSocket event and update WebSocket health only for valid prices."""
@@ -3612,10 +3560,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             else:
                 price = self.market_api.get_current_price(
                     symbol=symbol, provider_name=provider_name)
-            if price is None or isinstance(price, bool):
-                return []
-            price_val = float(price)
-            if not math.isfinite(price_val) or price_val <= 0:
+            price_val = safe_pos_float(price, default=None)
+            if price_val is None:
                 return []
             ts_ms = int(time.time() * 1000)
             return [[ts_ms, price_val]]
@@ -3654,14 +3600,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
         """Return the mean update interval, or ``fallback`` when samples are insufficient."""
-        fb = 1.0
-        if fallback is not None and not isinstance(fallback, bool):
-            try:
-                ff = float(fallback)
-                if math.isfinite(ff) and ff > 0.0:
-                    fb = ff
-            except (TypeError, ValueError, OverflowError):
-                pass
+        fb = safe_pos_float(fallback, default=1.0) or 1.0
         sym_u = str(symbol or "").strip().upper()
         with self.lock:
             dq = (
@@ -3699,13 +3638,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         """Return a fresh cached timestamp and price without fetching."""
-        if isinstance(max_age_sec, bool):
-            raise ValueError("max_age_sec must be finite and positive")
-        try:
-            max_age = float(max_age_sec)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("max_age_sec must be finite and positive") from exc
-        if not math.isfinite(max_age) or max_age <= 0:
+        max_age = safe_pos_float(max_age_sec, default=None)
+        if max_age is None:
             raise ValueError("max_age_sec must be finite and positive")
         sym_u = str(symbol or "").strip().upper()
         sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")

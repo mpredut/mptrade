@@ -33,7 +33,12 @@ from order_retry import (
     propagate_submission_refusal,
 )
 from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
-from botcore import _parse_bool_flag, safe_pos_float as _finite_pos_float
+from botcore import (
+    _parse_bool_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float as _finite_pos_float,
+)
 from cachepaths import cache_path
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,
@@ -61,14 +66,7 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
     """
     global _rtrade_heartbeat_last
     force_flag = _parse_bool_flag(force, default=False)
-    now_val = None
-    if now is not None and not isinstance(now, bool):
-        try:
-            nf = float(now)
-            if math.isfinite(nf):
-                now_val = nf
-        except (TypeError, ValueError, OverflowError):
-            now_val = None
+    now_val = safe_float(now, default=None)
     now = time.monotonic() if now_val is None else now_val
     with _rtrade_heartbeat_lock:
         if not force_flag and now - _rtrade_heartbeat_last < _RTRADE_HEARTBEAT_INTERVAL_SEC:
@@ -285,18 +283,27 @@ class _LivePairVenue:
         return f"rtrade:{pair_id}:{kind}:{str(side).lower()}"
 
     @staticmethod
-    def _limit_kind(revision):
-        if isinstance(revision, bool):
-            raise ValueError("limit revision must be an integer")
+    def _parse_bounded_revision(value, *, int_err: str, range_err: str | None = None) -> int:
+        if isinstance(value, bool):
+            raise ValueError(int_err)
         try:
-            rev_f = float(revision)
+            rev_f = float(value)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("limit revision must be an integer") from exc
+            raise ValueError(int_err) from exc
         if not math.isfinite(rev_f) or not rev_f.is_integer():
-            raise ValueError("limit revision must be an integer")
-        revision = int(rev_f)
-        if not 0 <= revision <= 1_000_000:
-            raise ValueError("limit revision must be between 0 and 1000000")
+            raise ValueError(int_err)
+        rev = int(rev_f)
+        if not 0 <= rev <= 1_000_000:
+            raise ValueError(range_err or int_err)
+        return rev
+
+    @classmethod
+    def _limit_kind(cls, revision):
+        revision = cls._parse_bounded_revision(
+            revision,
+            int_err="limit revision must be an integer",
+            range_err="limit revision must be between 0 and 1000000",
+        )
         return "limit" if revision == 0 else f"limit_{revision}"
 
     @staticmethod
@@ -404,24 +411,10 @@ class _LivePairVenue:
         kind = str(pending.get("kind") or "limit")
         requested_qty = pending.get("requested_qty", pending.get("qty"))
         requested_price = pending.get("requested_price", pending.get("price"))
-        raw_attempt = pending.get("attempt")
-        att_int = 1
-        if raw_attempt is not None and not isinstance(raw_attempt, bool):
-            try:
-                att_f = float(raw_attempt)
-                if math.isfinite(att_f) and att_f >= 1:
-                    att_int = int(att_f)
-            except (TypeError, ValueError, OverflowError):
-                att_int = 1
-        raw_misses = pending.get("lookup_misses")
-        misses_int = 0
-        if raw_misses is not None and not isinstance(raw_misses, bool):
-            try:
-                mf = float(raw_misses)
-                if math.isfinite(mf) and mf >= 0:
-                    misses_int = int(mf)
-            except (TypeError, ValueError, OverflowError):
-                misses_int = 0
+        att_f = safe_float(pending.get("attempt"), default=None)
+        att_int = int(att_f) if (att_f is not None and att_f >= 1) else 1
+        mf = safe_nonneg_float(pending.get("lookup_misses"), default=None)
+        misses_int = int(mf) if mf is not None else 0
         pending.update({
             "intent_id": pending.get("intent_id")
                          or self._intent_id(record["pair_id"], side, kind),
@@ -627,25 +620,15 @@ class _LivePairVenue:
                 merged.get("limit_revisions") or {}).items():
             side_u = str(side).upper()
             if side_u in limit_revisions:
-                if isinstance(value, bool):
-                    raise ValueError(f"invalid {side_u} limit revision: {value!r}")
-                rev_f = float(0 if value is None else value)
-                if not math.isfinite(rev_f) or not rev_f.is_integer():
-                    raise ValueError(f"invalid {side_u} limit revision: {value!r}")
-                revision = int(rev_f)
-                if not 0 <= revision <= 1_000_000:
-                    raise ValueError(f"invalid {side_u} limit revision: {revision}")
-                limit_revisions[side_u] = revision
+                limit_revisions[side_u] = self._parse_bounded_revision(
+                    0 if value is None else value,
+                    int_err=f"invalid {side_u} limit revision: {value!r}",
+                )
         raw_hs_rev = merged.get("hard_stop_revision", 0)
-        if isinstance(raw_hs_rev, bool):
-            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev!r}")
-        hs_rev_f = float(0 if raw_hs_rev is None else raw_hs_rev)
-        if not math.isfinite(hs_rev_f) or not hs_rev_f.is_integer():
-            raise ValueError(f"invalid hard-stop revision: {raw_hs_rev!r}")
-        hard_stop_revision = int(hs_rev_f)
-        if not 0 <= hard_stop_revision <= 1_000_000:
-            raise ValueError(
-                f"invalid hard-stop revision: {hard_stop_revision}")
+        hard_stop_revision = self._parse_bounded_revision(
+            0 if raw_hs_rev is None else raw_hs_rev,
+            int_err=f"invalid hard-stop revision: {raw_hs_rev!r}",
+        )
         recovery_pending = False
         pending_hard_stop = False
 
@@ -801,17 +784,11 @@ class _LivePairVenue:
         fee-cap, precision, preflight, or client-order-ID auditing.
         """
         side = side.upper()
-        if isinstance(revision, bool):
-            raise ValueError("hard-stop revision must be an integer")
-        try:
-            rev_f = float(revision)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("hard-stop revision must be an integer") from exc
-        if not math.isfinite(rev_f) or not rev_f.is_integer():
-            raise ValueError("hard-stop revision must be an integer")
-        revision = int(rev_f)
-        if not 0 <= revision <= 1_000_000:
-            raise ValueError("hard-stop revision must be between 0 and 1000000")
+        revision = self._parse_bounded_revision(
+            revision,
+            int_err="hard-stop revision must be an integer",
+            range_err="hard-stop revision must be between 0 and 1000000",
+        )
         store_kind = "hard_stop" if revision == 0 else f"hard_stop_{revision}"
         self._last_place_failures.pop(side, None)
         if pair_id:
@@ -969,15 +946,9 @@ def _effective_trend_filter_k(snapshot) -> float:
     base_k = float(RTRADE_TREND_FILTER_K)
     if not isinstance(snapshot, dict):
         return base_k
-    raw_n = snapshot.get("n_samples")
-    if raw_n is None or isinstance(raw_n, bool):
-        return base_k
-    try:
-        m_steps = float(raw_n) - 1.0
-        if math.isfinite(m_steps) and m_steps > 10.0:
-            return base_k * math.sqrt(10.0 / m_steps)
-    except (TypeError, ValueError, OverflowError):
-        pass
+    n_f = safe_float(snapshot.get("n_samples"), default=None)
+    if n_f is not None and n_f - 1.0 > 10.0:
+        return base_k * math.sqrt(10.0 / (n_f - 1.0))
     return base_k
 
 
@@ -1040,11 +1011,7 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tu
         if snap is None:
             return False, "no_snapshot"
         ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0)
-        raw_oi = getattr(snap, "open_interest_1h_change_pct", None)
-        try:
-            oi_pct = float(raw_oi) if (raw_oi is not None and not isinstance(raw_oi, bool) and math.isfinite(float(raw_oi))) else 0.0
-        except (TypeError, ValueError, OverflowError):
-            oi_pct = 0.0
+        oi_pct = safe_float(getattr(snap, "open_interest_1h_change_pct", None), default=0.0) or 0.0
         div_regime = getattr(snap, "divergence_regime", None)
         if side_u == "BUY":
             if 0.0 < ratio < 0.80:
@@ -1129,18 +1096,17 @@ def _cancel_order_confirmed(symbol, order_id):
 
 def _remaining_after_canceled_order(status, submitted_qty):
     """Return the unfilled terminal remainder, or ``None`` for invalid state."""
-    try:
-        submitted_qty = float(submitted_qty)
-        filled_qty = float(status.filled_qty)
-    except (AttributeError, TypeError, ValueError, OverflowError):
-        return None
-    if (not math.isfinite(submitted_qty) or submitted_qty <= 0
-            or not math.isfinite(filled_qty) or filled_qty < 0
-            or filled_qty > submitted_qty + max(1e-12, submitted_qty * 1e-9)):
+    sub_f = _finite_pos_float(submitted_qty, default=None)
+    fill_f = safe_nonneg_float(getattr(status, "filled_qty", None), default=None)
+    if (
+        sub_f is None
+        or fill_f is None
+        or fill_f > sub_f + max(1e-12, sub_f * 1e-9)
+    ):
         return None
     if status.fully_filled:
         return 0.0
-    return max(0.0, submitted_qty - filled_qty)
+    return max(0.0, sub_f - fill_f)
 
 
 def _place_failure_backoff(reason):

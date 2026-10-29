@@ -285,25 +285,20 @@ def _not_found_reliability_status(mkt, record, now, provider_name):
         mkt, record.get("symbol"), provider_name)
     if capabilities is None or not capabilities.lookup_by_client_order_id:
         return False, "lookup_unavailable"
-    raw_venue_horizon = getattr(capabilities, "not_found_reliable_for_seconds", None)
-    if raw_venue_horizon is None or isinstance(raw_venue_horizon, bool):
+    venue_horizon = safe_pos_float(
+        getattr(capabilities, "not_found_reliable_for_seconds", None),
+        default=None,
+    )
+    configured_horizon = safe_pos_float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC, default=None)
+    if venue_horizon is None or configured_horizon is None:
         return False, "missing_reconciliation_horizon"
-    if isinstance(now, bool) or isinstance(record.get("created_ts"), bool) or isinstance(record.get("last_attempt_ts"), bool):
+    observed_at = safe_float(now, default=None)
+    created_at = safe_float(record.get("created_ts") or 0.0, default=None)
+    last_attempt_at = safe_float(record.get("last_attempt_ts") or 0.0, default=None)
+    if observed_at is None or created_at is None or last_attempt_at is None:
         return False, "invalid_reference_timestamp"
-    try:
-        venue_horizon = float(raw_venue_horizon)
-        configured_horizon = float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC)
-        observed_at = float(now)
-        created_at = float(record.get("created_ts") or 0.0)
-        last_attempt_at = float(record.get("last_attempt_ts") or 0.0)
-    except (TypeError, ValueError, OverflowError):
-        return False, "invalid_reference_timestamp"
-    if not math.isfinite(venue_horizon) or venue_horizon <= 0:
-        return False, "missing_reconciliation_horizon"
-    if not math.isfinite(configured_horizon) or configured_horizon <= 0:
-        return False, "missing_reconciliation_horizon"
     reference_at = max(created_at, last_attempt_at)
-    if not math.isfinite(reference_at) or reference_at <= 0 or not math.isfinite(observed_at):
+    if reference_at <= 0:
         return False, "invalid_reference_timestamp"
     age = observed_at - reference_at
     if age < 0:
@@ -480,25 +475,12 @@ def process_once(mkt, now=None):
             venue_status = str(status.venue_status or "").upper()
             canceled = venue_status in {"CANCELED", "CANCELLED"}
             if canceled:
-                raw_orig_qty = r.get("replaces_original_qty")
-                raw_filled_qty = getattr(status, "filled_qty", 0.0)
-                if isinstance(raw_orig_qty, bool) or isinstance(raw_filled_qty, bool):
-                    replacement_qty = -1.0
+                orig_f = safe_pos_float(r.get("replaces_original_qty"), default=None)
+                filled_f = safe_nonneg_float(getattr(status, "filled_qty", 0.0) or 0.0, default=None)
+                if orig_f is not None and filled_f is not None:
+                    replacement_qty = max(0.0, orig_f - filled_f)
                 else:
-                    try:
-                        original_qty = float(raw_orig_qty)
-                        filled_qty_val = float(raw_filled_qty or 0.0)
-                        if (
-                            math.isfinite(original_qty)
-                            and original_qty > 0
-                            and math.isfinite(filled_qty_val)
-                            and filled_qty_val >= 0
-                        ):
-                            replacement_qty = max(0.0, original_qty - filled_qty_val)
-                        else:
-                            replacement_qty = -1.0
-                    except (TypeError, ValueError, OverflowError):
-                        replacement_qty = -1.0
+                    replacement_qty = -1.0
                 activation = oq.activate_claimed_replacement(
                     r, replacement_qty, now)
                 if activation == "activated":
@@ -821,12 +803,10 @@ def _resolve_display_assets(symbol):
 
 def _format_ts(ts):
     """Format a POSIX timestamp in local YYYY-MM-DD HH:MM:SS, or N/A."""
-    if ts is None or isinstance(ts, bool):
+    val = safe_pos_float(ts, default=None)
+    if val is None:
         return "N/A"
     try:
-        val = float(ts or 0.0)
-        if not math.isfinite(val) or val <= 0:
-            return "N/A"
         return datetime.fromtimestamp(val).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:  # noqa: BLE001
         return "N/A"
@@ -1037,25 +1017,17 @@ class IncidentDigest:
 
     def __init__(self, path, interval_seconds):
         self.path = os.fspath(path)
-        if isinstance(interval_seconds, bool) or interval_seconds is None:
+        interval = safe_pos_float(interval_seconds, default=None)
+        if interval is None:
             raise ValueError("digest interval must be finite and positive")
-        try:
-            self.interval = float(interval_seconds)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("digest interval must be finite and positive") from exc
-        if not math.isfinite(self.interval) or self.interval <= 0:
-            raise ValueError("digest interval must be finite and positive")
+        self.interval = interval
 
     def collect(self, events, *, now):
         """Return due summaries of events with labels, quantity and sample ID."""
-        if isinstance(now, bool) or now is None:
+        now_f = safe_pos_float(now, default=None)
+        if now_f is None:
             raise ValueError("digest time must be finite and positive")
-        try:
-            now = float(now)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("digest time must be finite and positive") from exc
-        if not math.isfinite(now) or now <= 0:
-            raise ValueError("digest time must be finite and positive")
+        now = now_f
         if (
             not events
             and not os.path.exists(self.path)
@@ -1096,22 +1068,19 @@ class IncidentDigest:
                         or not str(event.get("sample_id") or "").strip()):
                     raise ValueError("invalid notification digest event")
                 labels = event["labels"]
+                quantity = safe_nonneg_float(event.get("quantity"), default=None)
                 raw_attempts = event.get("attempts", 0)
-                if isinstance(raw_attempts, bool):
+                att_f = safe_nonneg_float(0 if raw_attempts is None else raw_attempts, default=None)
+                if (
+                    quantity is None
+                    or att_f is None
+                    or not att_f.is_integer()
+                    or not isinstance(labels, dict)
+                    or not labels
+                    or not all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items())
+                ):
                     raise ValueError("invalid notification digest event")
-                try:
-                    quantity = float(event["quantity"])
-                    att_f = float(0 if raw_attempts is None else raw_attempts)
-                    if not math.isfinite(att_f) or not att_f.is_integer() or int(att_f) < 0:
-                        raise ValueError("invalid notification digest event")
-                    ev_attempts = int(att_f)
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise ValueError("invalid notification digest event") from exc
-                if (not isinstance(labels, dict) or not labels
-                        or not all(isinstance(k, str) and isinstance(v, str)
-                                   for k, v in labels.items())
-                        or not math.isfinite(quantity) or quantity < 0):
-                    raise ValueError("invalid notification digest event")
+                ev_attempts = int(att_f)
                 key = json.dumps(labels, sort_keys=True, separators=(",", ":"))
                 group = groups.setdefault(key, {
                     "labels": labels, "next_at": now, "reported": False,

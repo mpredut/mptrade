@@ -50,32 +50,21 @@ def calculate_difference_percent(val1, val2):
 
     
 def value_diff_to_percent(value1, value2):
-    if any(v is None or isinstance(v, bool) for v in (value1, value2)):
-        return 0.0
-    try:
-        v1 = float(value1)
-        v2 = float(value2)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not (math.isfinite(v1) and math.isfinite(v2)):
+    v1 = botcore.safe_float(value1, default=None)
+    v2 = botcore.safe_float(value2, default=None)
+    if v1 is None or v2 is None:
         return 0.0
     if v1 == 0.0:
         return v2
-    diff = v1 - v2
-    percent = (diff / v1) * 100.0
+    percent = ((v1 - v2) / v1) * 100.0
     return percent if math.isfinite(percent) else 0.0
 
 def slope(val1, idx1, val2, idx2):
-    if any(v is None or isinstance(v, bool) for v in (val1, idx1, val2, idx2)):
-        return 0.0
-    try:
-        v1 = float(val1)
-        i1 = float(idx1)
-        v2 = float(val2)
-        i2 = float(idx2)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not all(math.isfinite(v) for v in (v1, i1, v2, i2)) or i1 == i2:
+    v1 = botcore.safe_float(val1, default=None)
+    i1 = botcore.safe_float(idx1, default=None)
+    v2 = botcore.safe_float(val2, default=None)
+    i2 = botcore.safe_float(idx2, default=None)
+    if v1 is None or i1 is None or v2 is None or i2 is None or i1 == i2:
         return 0.0
     res = (v2 - v1) / (i2 - i1)
     return res if math.isfinite(res) else 0.0
@@ -114,28 +103,18 @@ def are_close(value1, value2, target_tolerance_percent=1.0):
 
 
 def timestampToTime(timestamp_ms):
-    if timestamp_ms is None or isinstance(timestamp_ms, bool):
+    ts_ms = botcore.safe_nonneg_float(timestamp_ms, default=None)
+    if ts_ms is None:
         return "N/A"
     try:
-        timestamp_sec = float(timestamp_ms) / 1000.0
-        if not math.isfinite(timestamp_sec) or timestamp_sec < 0:
-            return "N/A"
-        human_readable_time = datetime.fromtimestamp(timestamp_sec)
-        return human_readable_time.strftime('%Y-%m-%d %H:%M:%S')
+        return datetime.fromtimestamp(ts_ms / 1000.0).strftime('%Y-%m-%d %H:%M:%S')
     except (TypeError, ValueError, OverflowError, OSError):
         return "N/A"
 
 
 def timeMsToHMS(timestamp_ms):
-    if timestamp_ms is None or isinstance(timestamp_ms, bool):
-        return "N/A"
-    try:
-        ts_f = float(timestamp_ms)
-        if not math.isfinite(ts_f) or ts_f < 0:
-            return "N/A"
-        return timeToHMS(ts_f / 1000.0)
-    except (TypeError, ValueError, OverflowError):
-        return "N/A"
+    ts_ms = botcore.safe_nonneg_float(timestamp_ms, default=None)
+    return timeToHMS(ts_ms / 1000.0) if ts_ms is not None else "N/A"
 
 
 from functools import lru_cache
@@ -143,14 +122,11 @@ from functools import lru_cache
 
 @lru_cache(maxsize=256)
 def timeToHMS(timestamp_sec):
-    if timestamp_sec is None or isinstance(timestamp_sec, bool):
+    ts_f = botcore.safe_nonneg_float(timestamp_sec, default=None)
+    if ts_f is None:
         return "N/A"
     try:
-        ts_f = float(timestamp_sec)
-        if not math.isfinite(ts_f) or ts_f < 0:
-            return "N/A"
-        human_readable_time = datetime.fromtimestamp(ts_f)
-        return human_readable_time.strftime('%H:%M:%S')
+        return datetime.fromtimestamp(ts_f).strftime('%H:%M:%S')
     except (TypeError, ValueError, OverflowError, OSError):
         return "N/A"
 
@@ -170,6 +146,16 @@ def secondsToMinutes(max_age_seconds) -> float:
     return _safe_seconds(max_age_seconds, default=0.0) / 60.0
 
 
+def _parse_decay_params(initial_procent, expired_duration, passs, half_life_duration):
+    init_f = botcore.safe_float(initial_procent, default=None)
+    exp_f = botcore.safe_float(expired_duration, default=None)
+    pass_f = botcore.safe_float(passs, default=None)
+    hl_f = botcore.safe_pos_float(half_life_duration, default=None)
+    if init_f is None or exp_f is None or pass_f is None or hl_f is None:
+        return None
+    return init_f, exp_f, pass_f, hl_f
+
+
 def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     """
     Gradually decreases the percentage asymptotically as `passs` increases.
@@ -184,17 +170,10 @@ def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_dura
     :param half_life_duration: The default value after which the percentage is halved (24 hours in seconds)
     :return: The adjusted percentage based on `passs`
     """
-    if any(isinstance(v, bool) or v is None for v in (initial_procent, expired_duration, passs, half_life_duration)):
+    parsed = _parse_decay_params(initial_procent, expired_duration, passs, half_life_duration)
+    if parsed is None:
         return 0.0
-    try:
-        init_f = float(initial_procent)
-        exp_f = float(expired_duration)
-        pass_f = float(passs)
-        hl_f = float(half_life_duration)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not all(math.isfinite(v) for v in (init_f, exp_f, pass_f, hl_f)) or hl_f <= 0:
-        return 0.0
+    init_f, exp_f, pass_f, hl_f = parsed
     if exp_f <= 0 or pass_f <= 0:
         return init_f
     k = exp_f / hl_f  # Calculate the constant k
@@ -203,59 +182,41 @@ def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_dura
 
 def exponential_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     """Decreases the percentage exponentially as `passs` increases."""
-    if any(isinstance(v, bool) or v is None for v in (initial_procent, expired_duration, passs, half_life_duration)):
+    parsed = _parse_decay_params(initial_procent, expired_duration, passs, half_life_duration)
+    if parsed is None:
         return 0.0
-    try:
-        init_f = float(initial_procent)
-        exp_f = float(expired_duration)
-        pass_f = float(passs)
-        hl_f = float(half_life_duration)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not all(math.isfinite(v) for v in (init_f, exp_f, pass_f, hl_f)) or hl_f <= 0:
-        return 0.0
+    init_f, exp_f, pass_f, hl_f = parsed
     if exp_f <= 0 or pass_f <= 0:
         return init_f
     return init_f * math.exp(-(exp_f * pass_f) / hl_f)
     
 def decrese_value_by_increment_exp(increment_factor, value, coeficient=0.05):
-    if any(v is None or isinstance(v, bool) for v in (increment_factor, value, coeficient)):
-        return 0.0, 0.0
-    try:
-        inc_f = float(increment_factor)
-        val_f = float(value)
-        coef_f = float(coeficient)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0, 0.0
-    if not all(math.isfinite(v) for v in (inc_f, val_f, coef_f)):
+    inc_f = botcore.safe_float(increment_factor, default=None)
+    val_f = botcore.safe_float(value, default=None)
+    coef_f = botcore.safe_float(coeficient, default=None)
+    if inc_f is None or val_f is None or coef_f is None:
         return 0.0, 0.0
     denom = 1.0 + coef_f * (inc_f ** 2)
     adjustment_v1 = val_f / denom if (math.isfinite(denom) and denom != 0.0) else 0.0
     exp_arg = max(-700.0, min(700.0, -coef_f * inc_f))
     adjustment_v2 = val_f * math.exp(exp_arg)
-    if not math.isfinite(adjustment_v1):
-        adjustment_v1 = 0.0
-    if not math.isfinite(adjustment_v2):
-        adjustment_v2 = 0.0
-    return adjustment_v1, adjustment_v2
+    return (
+        adjustment_v1 if math.isfinite(adjustment_v1) else 0.0,
+        adjustment_v2 if math.isfinite(adjustment_v2) else 0.0,
+    )
 
 
 def gaussian_weights_from_idx(T, idx: int):
     """
     Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights.
     """
-    if T is None or idx is None or isinstance(T, bool) or isinstance(idx, bool):
+    t_f = botcore.safe_pos_float(T, default=None)
+    idx_f = botcore.safe_float(idx, default=None)
+    if t_f is None or idx_f is None:
         return np.array([]), np.array([])
-    try:
-        t_f = float(T)
-        idx_f = float(idx)
-    except (TypeError, ValueError, OverflowError):
-        return np.array([]), np.array([])
-    if not (math.isfinite(t_f) and math.isfinite(idx_f)):
-        return np.array([]), np.array([])
-    t_steps = min(100000, max(1, int(round(t_f)))) if t_f > 0 else 0
+    t_steps = min(100000, max(1, int(round(t_f))))
     idx_int = max(0, int(idx_f))
-    if idx_int >= t_steps or t_steps <= 0:
+    if idx_int >= t_steps:
         return np.array([]), np.array([])
 
     # Gaussian over the complete T domain.

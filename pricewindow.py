@@ -162,7 +162,10 @@ def _lookup_symbol_param(symbol: str | None, param_map: dict[str, float]) -> flo
     if s_clean in param_map:
         return param_map[s_clean]
     try:
-        from cachepaths import canonical_base_asset
+        from cachepaths import canonical_base_asset, canonical_symbol_key
+        ck = canonical_symbol_key(symbol)
+        if ck and ck in param_map:
+            return param_map[ck]
         c_base = canonical_base_asset(symbol)
         if c_base and c_base in param_map:
             return param_map[c_base]
@@ -659,15 +662,12 @@ class IncrementalTrendBuffer:
 
     def log_return_std(self, a: int, b: int) -> float | None:
         """Return O(1) population std of log returns on slice [a, b] if all prices > 0."""
-        if isinstance(a, bool) or isinstance(b, bool):
-            return None
-        try:
-            a = int(a)
-            b = int(b)
-        except (TypeError, ValueError, OverflowError):
+        a = safe_nonneg_int(a, default=None)
+        b = safe_nonneg_int(b, default=None)
+        if a is None or b is None:
             return None
         n = b - a + 1
-        if a < 0 or b >= len(self.prices) or n < 20:
+        if b >= len(self.prices) or n < 20:
             return None
         np_before = self.nonpos[a - 1] if a > 0 else (self.nonpos[0] - (1 if self.prices[0] <= 0.0 else 0))
         if (self.nonpos[b] - np_before) > 0:
@@ -990,14 +990,7 @@ class PriceWindow:
         """Noise threshold INFORMED by the volatility of the window:
         epsilon = k * stddev(np.gradient(prices)).
         It adapts by symbol and over time to distinguish real movement from noise."""
-        k_val = 1.0
-        if k is not None and not isinstance(k, bool):
-            try:
-                kf = float(k)
-                if math.isfinite(kf) and kf > 0.0:
-                    k_val = kf
-            except (TypeError, ValueError, OverflowError):
-                k_val = 1.0
+        k_val = safe_pos_float(k, default=1.0) or 1.0
         with self._lock:
             n = len(self.prices)
             if n < 3:
