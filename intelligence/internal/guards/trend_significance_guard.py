@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import math
 from typing import Any, Optional, Sequence
+from botcore import safe_float, safe_nonneg_float
 from intelligence.internal.guards.guard_decision import (
     BrakeAction,
     GuardDecision,
     normalize_guard_side,
-    safe_guard_float as _safe_float,
     snap_attr,
 )
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
@@ -38,9 +38,8 @@ class TrendSignificanceGuard:
                          Higher values indicate trend slope is indistinguishable from random noise.
             min_hurst: If specified (e.g. 0.50), requires Hurst exponent >= min_hurst for trend entries.
         """
-        mp = _safe_float(max_p_value, 0.05)
-        self.max_p_value = mp if (mp is not None and mp >= 0.0) else 0.05
-        self.min_hurst = _safe_float(min_hurst, None)
+        self.max_p_value = safe_nonneg_float(max_p_value, default=0.05) or 0.05
+        self.min_hurst = safe_float(min_hurst, default=None)
 
     def evaluate(
         self,

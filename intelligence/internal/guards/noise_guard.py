@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from typing import Optional
 
+from botcore import safe_float, safe_nonneg_float
 from intelligence.internal.guards.guard_decision import GuardDecision
 
 
@@ -11,15 +12,7 @@ class NoiseFloorGuard:
     """Noise floor guard preventing orders when market movement is indistinguishable from noise."""
 
     def __init__(self, min_strength_ratio: float = 1.0):
-        ratio = 1.0
-        if min_strength_ratio is not None and not isinstance(min_strength_ratio, bool):
-            try:
-                rf = float(min_strength_ratio)
-                if math.isfinite(rf) and rf >= 0.0:
-                    ratio = rf
-            except (TypeError, ValueError):
-                pass
-        self.min_strength_ratio = ratio
+        self.min_strength_ratio = safe_nonneg_float(min_strength_ratio, default=1.0)
 
     def check(
         self,
@@ -29,20 +22,11 @@ class NoiseFloorGuard:
         epsilon: float,
     ) -> GuardDecision:
         """Evaluate if the instantaneous gradient exceeds the statistical noise floor."""
-        if (
-            gradient is None
-            or epsilon is None
-            or isinstance(gradient, bool)
-            or isinstance(epsilon, bool)
-        ):
+        g_val = safe_float(gradient, default=None)
+        e_val = safe_float(epsilon, default=None)
+        if g_val is None or e_val is None:
             return GuardDecision.allow("NoiseFloorGuard", "non_finite_signal_allowed")
-        try:
-            gradient = float(gradient)
-            epsilon = float(epsilon)
-        except (TypeError, ValueError):
-            return GuardDecision.allow("NoiseFloorGuard", "non_finite_signal_allowed")
-        if not math.isfinite(gradient) or not math.isfinite(epsilon):
-            return GuardDecision.allow("NoiseFloorGuard", "non_finite_signal_allowed")
+        gradient, epsilon = g_val, e_val
 
         abs_g = abs(gradient)
         eps = abs(epsilon)

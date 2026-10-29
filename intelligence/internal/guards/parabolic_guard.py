@@ -4,11 +4,11 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple
 
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     clean_guard_symbol_key,
     normalize_guard_side,
-    safe_pos_guard_float,
 )
 
 
@@ -27,10 +27,10 @@ class ParabolicSurgeGuard:
         window_seconds: float = 7200.0,  # 2 hours
         vol_multiplier: float = 3.0,
     ):
-        self.surge_threshold_pct = safe_pos_guard_float(surge_threshold_pct, 4.0)
-        self.pullback_required_pct = safe_pos_guard_float(pullback_required_pct, 1.5, allow_zero=True)
-        self.window_seconds = safe_pos_guard_float(window_seconds, 7200.0)
-        self.vol_multiplier = safe_pos_guard_float(vol_multiplier, 3.0, allow_zero=True)
+        self.surge_threshold_pct = safe_pos_float(surge_threshold_pct, default=4.0) or 4.0
+        self.pullback_required_pct = safe_nonneg_float(pullback_required_pct, default=1.5)
+        self.window_seconds = safe_pos_float(window_seconds, default=7200.0) or 7200.0
+        self.vol_multiplier = safe_nonneg_float(vol_multiplier, default=3.0)
 
         # symbol -> {"peak": float, "surge_active": bool, "surge_start_px": float, "ts": float}
         self._states: Dict[str, dict] = {}
@@ -49,23 +49,12 @@ class ParabolicSurgeGuard:
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
 
-        if current_price is None or isinstance(current_price, bool):
+        current_price_f = safe_pos_float(current_price, default=None)
+        if current_price_f is None:
             return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
-        try:
-            current_price = float(current_price)
-        except (TypeError, ValueError):
-            return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
-        if not math.isfinite(current_price) or current_price <= 0:
-            return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
+        current_price = current_price_f
 
-        ts_now = 0.0
-        if now is not None and not isinstance(now, bool):
-            try:
-                nf = float(now)
-                if math.isfinite(nf) and nf > 0:
-                    ts_now = nf
-            except (TypeError, ValueError):
-                pass
+        ts_now = safe_pos_float(now, default=0.0) or 0.0
         history_seq = (
             list(price_history)
             if price_history is not None
@@ -77,24 +66,13 @@ class ParabolicSurgeGuard:
             for item in reversed(history_seq):
                 if not isinstance(item, (list, tuple)) or len(item) < 2:
                     continue
-                try:
-                    raw_last_ts = item[0]
-                    if not isinstance(raw_last_ts, bool):
-                        hf = float(raw_last_ts)
-                        if math.isfinite(hf) and hf > 0:
-                            ts_now = max(ts_now, hf)
-                except (TypeError, ValueError, IndexError):
-                    continue
+                hf = safe_pos_float(item[0], default=None)
+                if hf is not None:
+                    ts_now = max(ts_now, hf)
 
         # Dynamic threshold based on volatility if available
-        threshold = self.surge_threshold_pct
-        if volatility_1h_pct is not None and not isinstance(volatility_1h_pct, bool):
-            try:
-                vol_f = float(volatility_1h_pct)
-                if math.isfinite(vol_f) and vol_f > 0:
-                    threshold = max(self.surge_threshold_pct, vol_f * self.vol_multiplier)
-            except (TypeError, ValueError):
-                pass
+        vol_f = safe_pos_float(volatility_1h_pct, default=None)
+        threshold = max(self.surge_threshold_pct, vol_f * self.vol_multiplier) if vol_f is not None else self.surge_threshold_pct
 
         sym_norm = clean_guard_symbol_key(symbol)
         state_key = sym_norm if side_u == "BUY" else f"{sym_norm}:SELL"
@@ -110,24 +88,9 @@ class ParabolicSurgeGuard:
             self._states[state_key] = st
         else:
             st = raw_st
-            try:
-                pk_f = float(st.get("peak")) if not isinstance(st.get("peak"), bool) else 0.0
-                if not (math.isfinite(pk_f) and pk_f > 0):
-                    st["peak"] = current_price
-                else:
-                    st["peak"] = pk_f
-            except (TypeError, ValueError):
-                st["peak"] = current_price
-            try:
-                ts_f = float(st.get("ts")) if not isinstance(st.get("ts"), bool) else 0.0
-                st["ts"] = ts_f if (math.isfinite(ts_f) and ts_f >= 0.0) else 0.0
-            except (TypeError, ValueError):
-                st["ts"] = 0.0
-            try:
-                dp_f = float(st.get("disarmed_peak_ts")) if not isinstance(st.get("disarmed_peak_ts"), bool) else 0.0
-                st["disarmed_peak_ts"] = dp_f if (math.isfinite(dp_f) and dp_f >= 0.0) else 0.0
-            except (TypeError, ValueError):
-                st["disarmed_peak_ts"] = 0.0
+            st["peak"] = safe_pos_float(st.get("peak"), default=current_price) or current_price
+            st["ts"] = safe_nonneg_float(st.get("ts"), default=0.0) or 0.0
+            st["disarmed_peak_ts"] = safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0
             st["surge_active"] = bool(st.get("surge_active", False))
 
         # Reset clock-skewed future timestamps
@@ -162,17 +125,10 @@ class ParabolicSurgeGuard:
             for item in history_seq:
                 if not isinstance(item, (list, tuple)) or len(item) < 2:
                     continue
-                try:
-                    raw_t = item[0]
-                    raw_p = item[1]
-                    if isinstance(raw_t, bool) or isinstance(raw_p, bool):
-                        continue
-                    t_f = float(raw_t)
-                    p_f = float(raw_p)
-                    if math.isfinite(t_f) and math.isfinite(p_f) and p_f > 0 and window_start_ts <= t_f <= max_allowed_ts:
-                        window_pts.append((t_f, p_f))
-                except (TypeError, ValueError, IndexError):
-                    continue
+                t_f = safe_float(item[0], default=None)
+                p_f = safe_pos_float(item[1], default=None)
+                if t_f is not None and p_f is not None and window_start_ts <= t_f <= max_allowed_ts:
+                    window_pts.append((t_f, p_f))
             if len(window_pts) > 1:
                 window_pts.sort(key=lambda x: x[0])
             if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):
