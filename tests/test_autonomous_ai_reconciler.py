@@ -2799,6 +2799,158 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     assert "swing_wave(" in eq_prompt
 
 
+def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_path) -> None:
+    """Verify Volume Profile (POC/VAH/VAL), symmetric LONG/SHORT Liquidation Clusters, and Maker/Taker/Spread/Limits telemetry."""
+    from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+        AutonomousAIReconciler,
+        GeminiClient,
+        compute_liquidation_clusters,
+        compute_volume_profile_metrics,
+        resolve_venue_fee_and_limits,
+    )
+
+    # 1. Volume Profile (POC, VAL, VAH, symmetric % distances, and regime)
+    now_ms = int(time.time() * 1000)
+    # Build a 24h series heavily concentrated around $80,500 (POC), spanning $79,200 to $81,800, ending at $81,600
+    vp_series = []
+    for i in range(60):
+        tms = now_ms - (60 - i) * 60_000
+        if i < 10:
+            px = 79_200.0 + i * 100.0
+        elif i < 50:
+            px = 80_400.0 + (i % 5) * 50.0
+        else:
+            px = 81_200.0 + (i - 50) * 60.0
+        vp_series.append([tms, px, 100.0 if 10 <= i < 50 else 20.0])
+
+    vp = compute_volume_profile_metrics(vp_series)
+    assert vp["val_px"] <= vp["poc_px"] <= vp["vah_px"]
+    assert 80_200.0 <= vp["poc_px"] <= 80_800.0
+    assert vp["va_regime"] in ("ABOVE_VAH", "INSIDE_VA_UPPER")
+    assert vp["poc_dist_pct"] > 0.0
+
+    # 2. Symmetric Liquidation Clusters (LONG downside & SHORT upside)
+    pinfo_btc = {
+        "price": 80_500.0,
+        "low_24h": 79_600.0,
+        "high_24h": 81_500.0,
+        "val_px": vp["val_px"],
+        "vah_px": vp["vah_px"],
+        "poc_px": vp["poc_px"],
+        "swing_low_px": 77_500.0,
+        "swing_high_px": 83_800.0,
+        "vol_1h_pct": 1.2,
+    }
+    minfo_btc = {
+        "ob_mid_price": 80_500.0,
+        "oi_usd": 600_000_000.0,
+        "whale_long_pct": 0.44,
+        "funding_rate": -0.0001,
+        "oi_1h_chg_pct": 2.5,
+        "bid_wall_px": 79_650.0,
+        "ask_wall_px": 81_450.0,
+    }
+    liq = compute_liquidation_clusters(pinfo_btc, minfo_btc)
+    assert liq["long_liq_deep_px"] < liq["long_liq_px"] < 80_500.0 < liq["short_liq_px"] < liq["short_liq_deep_px"]
+    assert liq["long_liq_dist_pct"] < 0.0 < liq["short_liq_dist_pct"]
+    assert liq["short_liq_usd"] > liq["long_liq_usd"] > 0.0
+    assert liq["liq_magnet_bias"] == "SHORT_SQUEEZE_MAGNET_UP"
+
+    # 3. OrderbookSnapshot spread_bps and resolve_venue_fee_and_limits across venues
+    ob_snap = OrderbookSnapshot.from_dict({
+        "symbol": "BTCUSDC",
+        "mid_price": 80_500.0,
+        "best_bid": 80_480.0,
+        "best_ask": 80_520.0,
+        "bid_depth_usd": 500_000.0,
+        "ask_depth_usd": 450_000.0,
+        "imbalance_ratio": 0.53,
+        "largest_bid_wall_usd": 150_000.0,
+        "largest_bid_wall_price": 79_650.0,
+        "largest_ask_wall_usd": 200_000.0,
+        "largest_ask_wall_price": 81_450.0,
+        "ts": time.time(),
+    })
+    assert ob_snap.spread_bps == pytest.approx(4.97, abs=0.05)
+
+    hl_specs = resolve_venue_fee_and_limits(
+        "hyperliquid", "HYPEUSDC", price=60.0, free_quote=500.0, free_base=10.0, spread_bps=3.2
+    )
+    assert hl_specs["fee_tier"] == "SPOT_TIER0"
+    assert hl_specs["maker_fee_bps"] == 4.0
+    assert hl_specs["taker_fee_bps"] == 7.0
+    assert hl_specs["spread_bps"] == 3.2
+    assert hl_specs["effective_max_buy_usd"] == 497.5
+    assert hl_specs["effective_max_sell_usd"] == 600.0
+
+    krk_specs = resolve_venue_fee_and_limits(
+        "kraken", "HYPEUSD", price=60.0, free_quote=100.0, free_base=5.0, spread_bps=12.5
+    )
+    assert krk_specs["fee_tier"] == "PRO_TIER0"
+    assert krk_specs["maker_fee_bps"] == 16.0
+    assert krk_specs["taker_fee_bps"] == 26.0
+    assert krk_specs["maker_rebate_edge_bps"] == 10.0
+
+    # 4. End-to-end prompt integration in Section 3A, 3B, 3C
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (tmp_path / "order_guard.conf").write_text("supervisor_mode = shadow\nsupervisor_notify = false\n", encoding="utf-8")
+    (tmp_path / "config.env").write_text("ntfy_topic_guard=test_topic\n", encoding="utf-8")
+    (tmp_path / "instruments.conf").write_text("BTCUSDC = binance\n", encoding="utf-8")
+    (cache_dir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[pt[0], pt[1]] for pt in vp_series]}}),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps(ob_snap.to_dict()),
+        encoding="utf-8",
+    )
+    (cache_dir / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps({"funding_rate": -0.0001, "predicted_funding_rate": -0.0001, "open_interest_usd": 600_000_000.0}),
+        encoding="utf-8",
+    )
+    (cache_dir / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({
+            "top_traders_long_pct": 0.44,
+            "top_traders_long_ratio": 0.79,
+            "taker_buy_sell_ratio": 1.15,
+            "open_interest_1h_change_pct": 2.5,
+            "divergence_regime": "bullish_accumulation",
+        }),
+        encoding="utf-8",
+    )
+
+    btc_inst = MagicMock(symbol="BTCUSDC", provider_name="binance", base="BTC", quote="USDC", params={})
+    btc_inst._provider.get_current_price.return_value = 81_740.0
+    btc_inst._provider.free_balance.side_effect = lambda a: 0.05 if a == "BTC" else 1000.0
+    btc_inst.open_orders.return_value = []
+    mock_gw = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    mock_gw.load_tradable_instruments.return_value = {"BIN_BTC": btc_inst}
+
+    prompts: list[str] = []
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=str(tmp_path),
+        cache_dir="cachedb",
+        mode="shadow",
+        notify_enabled=False,
+        gemini_auditor=GeminiClient(
+            custom_runner=lambda p, m, t: prompts.append(p) or json.dumps({"summary": "ok", "market_trading_decisions": []})
+        ),
+        intent_gateway=mock_gw,
+    )
+    reconciler.run_cycle(topic_key="auto_cryptotrade_executor")
+    full_prompt = prompts[-1]
+    assert "vol_profile(POC=" in full_prompt
+    assert "liq_clusters(long_liq=$" in full_prompt
+    assert "short_liq=$" in full_prompt
+    assert "spread=4.97bps (bid=80480.0/ask=80520.0)" in full_prompt
+    assert "venue_fee_per_leg=10bps (tier=VIP0, maker=10bps/taker=10bps, spread=4.97bps)" in full_prompt
+    assert "limits(min_notional=$5, min_qty=" in full_prompt
+    assert "max_buy=$995.0, max_sell=$2000.0" in full_prompt
+
+
+
 
 
 

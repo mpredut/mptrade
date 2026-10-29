@@ -698,9 +698,9 @@ _CLOCK_TS_RE = re.compile(r"^\.*\[?(\d{2}):(\d{2}):(\d{2})\b")
 @dataclass
 class LogEventSummary:
     """Summary of log anomalies and guard interventions collected within the lookback window."""
-    total_scanned_files: int
-    error_count: int
-    warning_count: int
+    total_scanned_files: int = 0
+    error_count: int = 0
+    warning_count: int = 0
     critical_events: List[str] = field(default_factory=list)
     guard_interventions: List[str] = field(default_factory=list)
     persistent_errors: List[Dict[str, Any]] = field(default_factory=list)
@@ -1433,6 +1433,64 @@ def default_supervisor_fallback_plan(spec: Any, logs: Any) -> Dict[str, Any]:
         ],
         "venue_actions": [],
     }
+
+
+def parse_supervisor_config(
+    conf: Dict[str, str],
+    *,
+    mode: Optional[str] = None,
+    notify_enabled: Optional[bool] = None,
+) -> Tuple[str, bool, str, str, str, str, str]:
+    """Validate and parse (mode, notify_enabled, ntfy_url, ntfy_topic_guard, ntfy_topic_server, ntfy_topic_error, ntfy_token)."""
+    from botcore import parse_notify_enabled_flag
+
+    if mode is not None:
+        if isinstance(mode, bool):
+            raise ValueError(f"Invalid supervisor_mode {mode!r}; must be one of ['enforce', 'off', 'shadow']")
+        raw_mode = mode
+    else:
+        if "supervisor_mode" not in conf:
+            raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
+        raw_mode = conf["supervisor_mode"]
+    norm_mode = str(raw_mode).strip().lower()
+    if norm_mode not in ("off", "shadow", "enforce"):
+        raise ValueError(f"Invalid supervisor_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']")
+
+    notify_flag = parse_notify_enabled_flag(notify_enabled, conf, "supervisor_notify")
+    ntfy_url = conf.get("phone_alert_url", "")
+    if "ntfy_topic_guard" not in conf:
+        raise KeyError("Missing required 'ntfy_topic_guard' in config.env")
+    ntfy_topic_guard = conf["ntfy_topic_guard"]
+    ntfy_topic_server = conf.get("ntfy_topic_server") or ntfy_topic_guard
+    ntfy_topic_error = conf.get("ntfy_topic_error") or ntfy_topic_server
+    ntfy_token = conf.get("ntfy_token", "")
+    return (
+        norm_mode,
+        notify_flag,
+        ntfy_url,
+        ntfy_topic_guard,
+        ntfy_topic_server,
+        ntfy_topic_error,
+        ntfy_token,
+    )
+
+
+def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Collect fleet process status via FleetHealthMonitor and Linux OS / VPN / DNS / config audit telemetry."""
+    from dataclasses import asdict
+
+    fleet_processes: List[Dict[str, Any]] = []
+    base_res: Dict[str, Any] = {}
+    try:
+        from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+
+        monitor = FleetHealthMonitor(workspace_dir=workspace_dir)
+        fleet_processes = [asdict(p) for p in monitor.check_processes()]
+        base_res = dict(monitor.gather_system_resources() or {})
+    except Exception:
+        base_res = {}
+    system_and_vpn = gather_system_and_vpn_telemetry(workspace_dir, base_resources=base_res)
+    return fleet_processes, system_and_vpn
 
 
 

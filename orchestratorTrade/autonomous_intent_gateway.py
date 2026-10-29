@@ -128,8 +128,10 @@ from providers.execution_audit import (
     generate_unique_intent_id,
     normalize_intent_fields,
     parse_intent_confidence as _parse_intent_confidence,
+    parse_intent_gateway_config,
     reconcile_intents_from_execution_audit,
     record_shadow_intent_observation,
+    resolve_intent_execution_price,
     resolve_intent_topic_tag,
     validate_and_build_intent_dict,
 )
@@ -155,39 +157,18 @@ class AutonomousIntentGateway:
         self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents_state.json")
 
         conf = self._load_conf()
-
-        raw_mode = _conf_or_override(conf, "autonomous_trading_mode", mode)
-        self.mode = "" if isinstance(raw_mode, bool) else str(raw_mode).strip().lower()
-        if self.mode not in ("off", "shadow", "enforce"):
-            raise ValueError(
-                f"Invalid autonomous_trading_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']"
-            )
-
-        raw_min = _conf_or_override(conf, "autonomous_trading_min_notional_usd")
-        min_usd = safe_pos_float(raw_min, default=None)
-        if min_usd is None:
-            raise ValueError(f"Invalid autonomous_trading_min_notional_usd {raw_min!r}")
-        self.min_notional_usd = min_usd
-
-        raw_max = _conf_or_override(conf, "autonomous_trading_max_notional_usd", max_notional_usd)
-        max_usd = safe_pos_float(raw_max, default=None)
-        if max_usd is None or max_usd < self.min_notional_usd:
-            raise ValueError(
-                f"Invalid autonomous_trading_max_notional_usd {raw_max!r}; "
-                f"must be >= autonomous_trading_min_notional_usd ({self.min_notional_usd})"
-            )
-        self.max_notional_usd = max_usd
-
-        raw_conf = _conf_or_override(conf, "autonomous_trading_min_confidence", min_confidence)
-        conf_val = safe_nonneg_float(raw_conf, default=None)
-        if conf_val is None or conf_val > 1.0:
-            raise ValueError(
-                f"Invalid autonomous_trading_min_confidence {raw_conf!r}; must be in [0.0, 1.0]"
-            )
-        self.min_confidence = conf_val
-
-        self.notify_enabled = _parse_notify_enabled_flag(
-            notify_enabled, conf, "autonomous_trading_notify"
+        (
+            self.mode,
+            self.min_notional_usd,
+            self.max_notional_usd,
+            self.min_confidence,
+            self.notify_enabled,
+        ) = parse_intent_gateway_config(
+            conf,
+            mode=mode,
+            max_notional_usd=max_notional_usd,
+            min_confidence=min_confidence,
+            notify_enabled=notify_enabled,
         )
 
     def _load_conf(self) -> Dict[str, str]:
@@ -371,34 +352,17 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        order_type = _extract_intent_order_type(intent)
-        limit_px = _extract_intent_limit_price(intent, default=None)
-        is_limit = bool(order_type == "LIMIT" and limit_px is not None and limit_px > 0)
-        if is_limit:
-            if limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
-                logger.warning(
-                    "[INTENT GATEWAY] Intent %s rejected: limit_price $%.4g out of [0.5x, 2.0x] bounds vs live $%.4g for %s",
-                    intent_id, limit_px, live_price, symbol,
-                )
-                intent["status"] = "REJECTED_INVALID_LIMIT_PRICE"
-                _append_intent_history(intent, {
-                    "ts": now,
-                    "action": "REJECTED_INVALID_LIMIT_PRICE",
-                    "limit_price": limit_px,
-                    "live_price": live_price,
-                })
-                return intent
-            if decision == "BUY" and limit_px > live_price:
-                price = live_price
-            elif decision == "SELL" and limit_px < live_price:
-                price = live_price
-            else:
-                price = limit_px
-            intent["order_type"] = "LIMIT"
-            intent["limit_price"] = price
-        else:
-            price = live_price
-            intent["order_type"] = "MARKET"
+        px_ok, price, is_limit = resolve_intent_execution_price(
+            intent,
+            intent_id=intent_id,
+            decision=decision,
+            symbol=symbol,
+            live_price=live_price,
+            now_ts=now,
+            log=logger,
+        )
+        if not px_ok:
+            return intent
 
         if mode == "enforce" and _parse_bool_flag(intent.get("replace_open_orders"), default=False):
             canceled_ids = self._cancel_existing_ai_open_orders(inst, decision)

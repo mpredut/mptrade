@@ -492,10 +492,13 @@ def prewarm_trend_series(
     warmup_i = max(0, int(w_f)) if w_f is not None else 40
     if len(ohlc) <= warmup_i:
         return
-    p = align_spot_interval_params(
-        _strat.StratParams.from_env() if params is None else params,
-        bm_f,
-    )
+    try:
+        raw_params = _strat.StratParams.from_env() if params is None else params
+    except Exception:
+        raw_params = None
+    if raw_params is None:
+        return
+    p = align_spot_interval_params(raw_params, bm_f)
     run_replay(
         ohlc[warmup_i:],
         p,

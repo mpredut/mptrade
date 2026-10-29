@@ -67,7 +67,9 @@ from intelligence.sentiment.guards.high_stake_guard import (
     compute_7d_range_metrics as _compute_7d_range_metrics,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
+    compute_liquidation_clusters,
     compute_swing_wave_metrics as _compute_swing_wave_metrics,
+    compute_volume_profile_metrics,
     enrich_24h_and_microstructure,
     enrich_cross_venue_trends,
     extract_current_price_item,
@@ -76,6 +78,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     harvest_initial_prices_and_trends,
     harvest_kraken_xstocks as _harvest_kraken_xstocks,
     harvest_macro_and_news_sensors,
+    harvest_portfolio_and_venue_cycles,
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles as _harvest_venue_cycles,
@@ -83,6 +86,8 @@ from intelligence.sentiment.guards.high_stake_guard import (
     load_symbol_price_series,
     load_venue_trailing_maps,
     parse_venue_cycle_state as _parse_venue_cycle_state,
+    populate_market_and_portfolio_snapshot,
+    resolve_venue_fee_and_limits,
     set_pos_anchor as _set_pos_anchor,
     sync_sibling_symbol_telemetry,
 )
@@ -105,9 +110,11 @@ from orchestratorOS.lib.technical_repair_ssot import (
     audit_workspace_configs,
     build_system_admin_command,
     clean_json_value,
+    default_supervisor_fallback_plan,
     execute_venue_or_fleet_repair_action,
     format_supervisor_ntfy_notification,
     gather_system_and_vpn_telemetry,
+    harvest_fleet_and_system_telemetry,
     harvest_heartbeats_and_state_files,
     harvest_log_anomalies_from_dirs,
     is_bot_or_code_error_report,
@@ -115,6 +122,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     is_system_os_error_report,
     normalize_error_signature,
     normalize_repair_action,
+    parse_supervisor_config,
     persist_supervisor_audit_artifact,
     read_json_recovering,
     recent_log_lines,
@@ -217,28 +225,16 @@ class AutonomousAIReconciler:
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = self._load_decoupled_conf()
-        if mode is not None:
-            if isinstance(mode, bool):
-                raise ValueError(f"Invalid supervisor_mode {mode!r}; must be one of ['enforce', 'off', 'shadow']")
-            raw_mode = mode
-        else:
-            if "supervisor_mode" not in conf:
-                raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
-            raw_mode = conf["supervisor_mode"]
-        self.mode = str(raw_mode).strip().lower()
-        if self.mode not in ("off", "shadow", "enforce"):
-            raise ValueError(f"Invalid supervisor_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']")
-
-        self.notify_enabled = _parse_notify_enabled_flag(notify_enabled, conf, "supervisor_notify")
-
-        self.ntfy_url = conf.get("phone_alert_url", "")
-        if "ntfy_topic_guard" not in conf:
-            raise KeyError("Missing required 'ntfy_topic_guard' in config.env")
-        self.ntfy_topic_guard = conf["ntfy_topic_guard"]
-        self.ntfy_topic_server = conf.get("ntfy_topic_server") or self.ntfy_topic_guard
-        self.ntfy_topic_error = conf.get("ntfy_topic_error") or self.ntfy_topic_server
+        (
+            self.mode,
+            self.notify_enabled,
+            self.ntfy_url,
+            self.ntfy_topic_guard,
+            self.ntfy_topic_server,
+            self.ntfy_topic_error,
+            self.ntfy_token,
+        ) = parse_supervisor_config(conf, mode=mode, notify_enabled=notify_enabled)
         self.ntfy_topic = self.ntfy_topic_server
-        self.ntfy_token = conf.get("ntfy_token", "")
 
         # Per-topic artifact paths are set by run_cycle(topic_key=...).
         self.state_file = ""
@@ -268,229 +264,27 @@ class AutonomousAIReconciler:
         now_ts = time.time()
         _read_json = read_json_recovering
 
-        # 5–6. Heartbeat sensors and bot state files
         snapshot.active_heartbeats, snapshot.state_files = harvest_heartbeats_and_state_files(
             self.cache_dir, self.workspace_dir, now_ts, _read_json
         )
-
-        # 10. Fleet processes health, Linux OS resources, internet/DNS, VPN tunnel state, and config audit (SSOT)
         if include_fleet:
-            base_res: Dict[str, Any] = {}
-            try:
-                from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
-                monitor = FleetHealthMonitor(workspace_dir=self.workspace_dir)
-                snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
-                base_res = dict(monitor.gather_system_resources() or {})
-            except Exception:
-                base_res = {}
-            snapshot.system_and_vpn = gather_system_and_vpn_telemetry(
-                self.workspace_dir,
-                base_resources=base_res,
+            snapshot.fleet_processes, snapshot.system_and_vpn = harvest_fleet_and_system_telemetry(
+                self.workspace_dir
             )
-
         if not include_market_portfolio:
             return snapshot
 
-        # 1–4. Macro, Geopolitical & Breaking News sensors
-        macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(
-            self.cache_dir, now_ts, _read_json
+        return populate_market_and_portfolio_snapshot(
+            snapshot,
+            cache_dir=self.cache_dir,
+            workspace_dir=self.workspace_dir,
+            logs_dirs=self.logs_dirs,
+            intent_gateway=self.intent_gateway,
+            scope=scope,
+            now_ts=now_ts,
+            read_json_fn=_read_json,
+            log=logger,
         )
-        for attr, val in macro_sensors.items():
-            setattr(snapshot, attr, val)
-
-        # 7. Live market prices, short/long/Weibull trend, 1s 24trend windows, 7d range, and Kalman velocity
-        prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
-        trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
-        long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
-        priceanalysis_data = _read_json(os.path.join(self.cache_dir, "priceanalysis.json"))
-        t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
-        kalman_data = _read_json(os.path.join(self.cache_dir, "cache_kalman_trend.json"))
-        watcher_all_price_data = _read_json(os.path.join(self.cache_dir, "cache_watcher_all_price.json"))
-        trailing_map, trailing_by_venue = load_venue_trailing_maps(
-            self.cache_dir, self.workspace_dir, _read_json
-        )
-        long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
-        t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
-        snapshot.prices_and_trends = harvest_initial_prices_and_trends(
-            self.cache_dir, prices_data, trends_data, _read_json
-        )
-
-        # 7B. Discover all enabled tradable instruments & real spot wallet balances (when workspace has instruments.conf)
-        tradable_positions: List[Dict[str, Any]] = []
-        open_orders_list: List[Dict[str, Any]] = []
-        venue_quote_cash: Dict[str, Dict[str, Any]] = {}
-        inst_by_sym: Dict[str, Any] = {}
-        load_tradable_fn = getattr(self.intent_gateway, "load_tradable_instruments", None)
-        has_inst_source = (
-            os.path.exists(os.path.join(self.workspace_dir, "instruments.conf"))
-            or os.path.exists(os.path.join(self.workspace_dir, "kraken", "config.env"))
-            or os.path.exists(os.path.join(self.workspace_dir, "hyperliquid", "config.env"))
-            or (scope == "equities" and os.path.isdir(os.path.join(self.workspace_dir, "212trading")))
-        )
-        if callable(load_tradable_fn) and has_inst_source:
-            try:
-                try:
-                    inst_map = load_tradable_fn(
-                        only_workspace_conf=(scope != "equities"),
-                        include_closed_rth=(scope == "equities"),
-                        asset_scope=scope,
-                    )
-                except TypeError:
-                    inst_map = load_tradable_fn(only_workspace_conf=True)
-            except Exception as exc:
-                logger.debug("Could not load tradable instruments for telemetry: %s", exc)
-                inst_map = {}
-
-            tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = (
-                harvest_tradable_positions_and_orders(
-                    inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue
-                )
-            )
-
-        if tradable_positions:
-            snapshot.portfolio_summary["tradable_positions"] = tradable_positions
-        if open_orders_list:
-            snapshot.portfolio_summary["open_orders"] = open_orders_list
-        if venue_quote_cash:
-            snapshot.portfolio_summary["venue_quote_cash"] = venue_quote_cash
-        if trailing_map:
-            snapshot.portfolio_summary["trailing_peaks"] = trailing_map
-
-        # Enrich every symbol (including Kraken/Hyperliquid/T212 pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
-        watcher_price_items = (
-            watcher_all_price_data.get("items", {}) if isinstance(watcher_all_price_data, dict) else {}
-        )
-        enrich_cross_venue_trends(
-            snapshot.prices_and_trends,
-            trends_data,
-            kalman_data,
-            long_items,
-            priceanalysis_data,
-            t_trend_map,
-            watcher_price_items,
-        )
-
-        # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
-        cur_p_items = (
-            prices_data.get("items", {})
-            if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict)
-            else {}
-        )
-        enrich_24h_and_microstructure(
-            self.cache_dir,
-            self.workspace_dir,
-            snapshot.prices_and_trends,
-            snapshot.microstructure,
-            cur_p_items,
-            inst_by_sym,
-            now_ts,
-            _read_json,
-        )
-
-        # 8A. Symmetric cross-venue & sibling symbol synchronization (Binance <-> Kraken <-> Hyperliquid <-> T212/xStocks)
-        sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure)
-
-        # 9. Portfolio value, Kraken cycle states, cross-venue snapshot, recent orders/fills & autonomous intents
-        last_av = _read_last_jsonl_dict(os.path.join(self.cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
-        if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
-            snapshot.portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
-
-        # 9B. Active DCA cycle states on Kraken, Hyperliquid, and Trading212 (.state_*.json)
-        cycle_fallback_prices = build_cycle_fallback_prices(
-            snapshot.microstructure, watcher_price_items
-        )
-        kraken_cycles, hyperliquid_cycles, all_t212_cycles = _harvest_venue_cycles(
-            self.workspace_dir,
-            snapshot.prices_and_trends,
-            cycle_fallback_prices,
-            _read_json,
-        )
-        if kraken_cycles:
-            snapshot.portfolio_summary["kraken_cycles"] = kraken_cycles
-        if hyperliquid_cycles:
-            snapshot.portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
-
-        has_active_t212 = any(
-            str(getattr(inst, "provider_name", "")).lower() == "t212"
-            for inst in inst_by_sym.values()
-        )
-        t212_cycles = dict(all_t212_cycles) if has_active_t212 else {}
-        if t212_cycles:
-            snapshot.portfolio_summary["t212_cycles"] = t212_cycles
-
-        # 9B-xStocks. Kraken xStocks state & cross-venue link with Trading212 (SPCXx.T <-> SPCX_US_EQ)
-        xst_summary = _harvest_kraken_xstocks(
-            os.path.join(self.workspace_dir, "kraken"),
-            snapshot.prices_and_trends,
-            all_t212_cycles,
-            _read_json,
-        )
-        if xst_summary:
-            snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
-
-        # 9B-CrossMarket. Build raw cross-market Crypto <-> US Equities telemetry before scope filtering
-        cross_market_ctx = _build_cross_market_context(
-            snapshot.prices_and_trends,
-            snapshot.microstructure,
-            all_t212_cycles,
-        )
-        if cross_market_ctx:
-            snapshot.portfolio_summary["cross_market_context"] = cross_market_ctx
-
-        # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid spot/perp equity summary)
-        for l_dir in self.logs_dirs:
-            last_ps = _read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096)
-            if isinstance(last_ps, dict):
-                if isinstance(last_ps.get("hl"), dict):
-                    snapshot.portfolio_summary["hyperliquid_readonly"] = last_ps["hl"]
-                break
-
-        # 9D. Recent fills across Binance (cache_order.json), Kraken (cache_trade_kraken.json), and Hyperliquid
-        recent_orders = harvest_recent_orders_and_enrich_positions(
-            self.cache_dir,
-            inst_by_sym,
-            snapshot.portfolio_summary.get("tradable_positions", []),
-            snapshot.prices_and_trends,
-            kraken_cycles,
-            hyperliquid_cycles,
-            t212_cycles,
-            _read_json,
-        )
-        if recent_orders:
-            snapshot.portfolio_summary["recent_orders"] = recent_orders
-
-        intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents_state.json"))
-        if isinstance(intents_data, list) and intents_data:
-            reconcile_fn = getattr(self.intent_gateway, "reconcile_intents", None)
-            if callable(reconcile_fn):
-                try:
-                    if reconcile_fn(intents_data):
-                        save_fn = getattr(self.intent_gateway, "save_all_intents", None)
-                        if callable(save_fn):
-                            save_fn(intents_data)
-                except Exception:
-                    pass
-            recent_intents_out = summarize_recent_ai_intents(
-                intents_data, scope, now_ts, _extract_intent_notional
-            )
-            if recent_intents_out:
-                snapshot.portfolio_summary["recent_ai_intents"] = recent_intents_out
-
-        # 9E. Active queued retry orders, monitortrades active states, assetguardian, and smart_stop_loss states
-        snapshot.portfolio_summary.update(
-            harvest_bot_runtime_states(self.cache_dir, now_ts, _read_json)
-        )
-
-        snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
-            snapshot.prices_and_trends,
-            snapshot.microstructure,
-            snapshot.portfolio_summary,
-            scope,
-            inst_by_sym,
-            t212_cycles,
-        )
-
-        return snapshot
 
     def _audit_workspace_configs(self) -> Dict[str, Any]:
         """Audits workspace configuration files via the technical repair SSOT."""
@@ -545,23 +339,7 @@ class AutonomousAIReconciler:
 
         if not resp or not isinstance(resp, dict):
             logger.warning("Gemini supervisor query failed. Falling back to default baseline.")
-            if not spec.can_self_heal:
-                return {
-                    "summary": "Autonomous trade evaluation completed: holding posture.",
-                    "market_trading_decisions": [],
-                }
-            return {
-                "summary": "Autonomous audit completed: telemetry sensors active and bots healthy.",
-                "diagnosed_issues": [
-                    {
-                        "severity": "INFO",
-                        "category": "HEALTHY",
-                        "description": f"Audited {logs.total_scanned_files} log files. {logs.error_count} errors, {logs.warning_count} warnings.",
-                        "root_cause": "System operational within expected tolerances.",
-                    }
-                ],
-                "venue_actions": [],
-            }
+            return default_supervisor_fallback_plan(spec, logs)
 
         return resp
 

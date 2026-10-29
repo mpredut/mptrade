@@ -54,6 +54,157 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return (tf * 1000.0 if tf < 1e11 else tf), pf
 
 
+def compute_volume_profile_metrics(
+    series: list,
+    *,
+    num_bins: int = 24,
+    value_area_pct: float = 0.70,
+    decimals: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Compute realized session Volume Profile (Point of Control POC, Value Area High VAH, Value Area Low VAL, symmetric % distances, VA position, and regime)."""
+    if not isinstance(series, list) or len(series) < 4:
+        return {}
+    try:
+        samples: list[Tuple[float, float]] = []
+        prev_px: Optional[float] = None
+        for row in series:
+            if isinstance(row, (list, tuple)) and len(row) >= 2:
+                px_f = safe_pos_float(row[1], 0.0)
+                if px_f <= 0.0:
+                    continue
+                vol_w = safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0
+                if vol_w <= 0.0:
+                    if prev_px is not None and prev_px > 0.0:
+                        vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0)
+                    else:
+                        vol_w = 1.0
+                prev_px = px_f
+                samples.append((px_f, vol_w))
+            else:
+                px_f = safe_pos_float(row, 0.0)
+                if px_f > 0.0:
+                    vol_w = (
+                        1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0)
+                        if prev_px is not None and prev_px > 0.0
+                        else 1.0
+                    )
+                    prev_px = px_f
+                    samples.append((px_f, vol_w))
+        if len(samples) < 4:
+            return {}
+
+        # Downsample very dense tick arrays (>4000 pts) uniformly to keep latency <0.3 ms
+        if len(samples) > 4000:
+            step = max(1, len(samples) // 2000)
+            downsampled = samples[::step]
+            if downsampled[-1][0] != samples[-1][0]:
+                downsampled.append(samples[-1])
+            samples = downsampled
+
+        cur_px = samples[-1][0]
+        low_px = min(p for p, _ in samples)
+        high_px = max(p for p, _ in samples)
+        if high_px <= low_px or low_px <= 0.0:
+            return {}
+
+        n_bins = max(8, min(64, int(num_bins)))
+        bin_w = (high_px - low_px) / float(n_bins)
+        if bin_w <= 0.0:
+            return {}
+
+        bin_vols = [0.0] * n_bins
+        bin_px_sums = [0.0] * n_bins
+        total_vol = 0.0
+        for px_v, w_v in samples:
+            b_idx = int((px_v - low_px) / bin_w)
+            if b_idx < 0:
+                b_idx = 0
+            elif b_idx >= n_bins:
+                b_idx = n_bins - 1
+            bin_vols[b_idx] += w_v
+            bin_px_sums[b_idx] += px_v * w_v
+            total_vol += w_v
+
+        if total_vol <= 0.0:
+            return {}
+
+        poc_idx = max(range(n_bins), key=lambda i: bin_vols[i])
+        poc_raw = (
+            bin_px_sums[poc_idx] / bin_vols[poc_idx]
+            if bin_vols[poc_idx] > 0.0
+            else (low_px + (poc_idx + 0.5) * bin_w)
+        )
+
+        va_ratio = max(0.50, min(0.90, float(value_area_pct)))
+        target_vol = total_vol * va_ratio
+        acc_vol = bin_vols[poc_idx]
+        val_idx = poc_idx
+        vah_idx = poc_idx
+
+        while acc_vol < target_vol and (val_idx > 0 or vah_idx < n_bins - 1):
+            down_vol = bin_vols[val_idx - 1] if val_idx > 0 else -1.0
+            up_vol = bin_vols[vah_idx + 1] if vah_idx < n_bins - 1 else -1.0
+            if up_vol > down_vol:
+                vah_idx += 1
+                acc_vol += up_vol
+            elif down_vol > up_vol:
+                val_idx -= 1
+                acc_vol += down_vol
+            else:
+                if (poc_idx - val_idx) <= (vah_idx - poc_idx) and val_idx > 0:
+                    val_idx -= 1
+                    acc_vol += down_vol
+                elif vah_idx < n_bins - 1:
+                    vah_idx += 1
+                    acc_vol += up_vol
+                else:
+                    break
+
+        val_raw = min(poc_raw, low_px + val_idx * bin_w)
+        vah_raw = max(poc_raw, low_px + (vah_idx + 1) * bin_w)
+        eff_dec = (
+            decimals
+            if decimals is not None
+            else (2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6))
+        )
+        poc_px = round(poc_raw, eff_dec)
+        val_px = round(val_raw, eff_dec)
+        vah_px = round(vah_raw, eff_dec)
+        if vah_px <= val_px:
+            vah_px = round(high_px, eff_dec)
+            val_px = round(low_px, eff_dec)
+
+        poc_dist_pct = round(((cur_px / poc_px) - 1.0) * 100.0, 2) if poc_px > 0 else 0.0
+        vah_dist_pct = round(((cur_px / vah_px) - 1.0) * 100.0, 2) if vah_px > 0 else 0.0
+        val_dist_pct = round(((cur_px / val_px) - 1.0) * 100.0, 2) if val_px > 0 else 0.0
+        va_pos_pct = (
+            round(((cur_px - val_px) / (vah_px - val_px)) * 100.0, 1)
+            if vah_px > val_px > 0
+            else 50.0
+        )
+        if cur_px > vah_px:
+            va_regime = "ABOVE_VAH"
+        elif cur_px < val_px:
+            va_regime = "BELOW_VAL"
+        elif cur_px >= poc_px:
+            va_regime = "INSIDE_VA_UPPER"
+        else:
+            va_regime = "INSIDE_VA_LOWER"
+
+        return {
+            "poc_px": poc_px,
+            "vah_px": vah_px,
+            "val_px": val_px,
+            "poc_dist_pct": poc_dist_pct,
+            "vah_dist_pct": vah_dist_pct,
+            "val_dist_pct": val_dist_pct,
+            "va_pos_pct": va_pos_pct,
+            "va_regime": va_regime,
+        }
+    except Exception:
+        return {}
+
+
 def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
     """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
     if not isinstance(series, list) or len(series) < 2:
@@ -130,6 +281,9 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     tape_pts.append(f"{lbl}:{px_m:.6g}")
             if len(tape_pts) >= 3:
                 out["recent_tape_15m"] = tape_pts
+        vp_metrics = compute_volume_profile_metrics(series)
+        if vp_metrics:
+            out.update(vp_metrics)
         return out
     except Exception:
         return {}
@@ -734,6 +888,19 @@ def load_symbol_microstructure(
         ob_mid = safe_pos_float(ob.get("mid_price"), default=None)
         if ob_mid is not None:
             m_info["ob_mid_price"] = ob_mid
+        best_bid = safe_pos_float(ob.get("best_bid"), default=None)
+        best_ask = safe_pos_float(ob.get("best_ask"), default=None)
+        if best_bid is not None:
+            m_info["best_bid"] = best_bid
+        if best_ask is not None:
+            m_info["best_ask"] = best_ask
+        spread_bps = safe_pos_float(ob.get("spread_bps"), default=None)
+        if spread_bps is None and best_bid is not None and best_ask is not None and best_ask >= best_bid:
+            eff_mid = ob_mid if ob_mid is not None and ob_mid > 0 else (best_bid + best_ask) / 2.0
+            if eff_mid > 0:
+                spread_bps = round(((best_ask - best_bid) / eff_mid) * 10000.0, 2)
+        if spread_bps is not None:
+            m_info["spread_bps"] = round(spread_bps, 2)
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"),
             ("ask_depth_usd", "ask_depth_usd"),
@@ -757,6 +924,316 @@ def load_symbol_microstructure(
         m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
         m_info["divergence_regime"] = whale.get("divergence_regime")
     return m_info
+
+
+def compute_liquidation_clusters(
+    pinfo: Optional[Dict[str, Any]],
+    minfo: Optional[Dict[str, Any]],
+    *,
+    decimals: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Compute symmetric LONG (downside) and SHORT (upside) liquidation heatmap clusters and magnet bias.
+
+    Synthesizes open interest (`oi_usd`), top-trader positioning (`whale_long_pct`),
+    perpetual funding rate (`funding_rate`), 1h OI change (`oi_1h_chg_pct`), realized
+    1h volatility (`vol_1h_pct`), and structural liquidity/stop pools (`val_px`/`vah_px`,
+    `low_24h`/`high_24h`, `bid_wall_px`/`ask_wall_px`, `swing_low_px`/`swing_high_px`).
+    """
+    if not isinstance(minfo, dict):
+        return {}
+    p_dict = pinfo if isinstance(pinfo, dict) else {}
+    cur_px = safe_pos_float(p_dict.get("price"), default=None) or safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
+    ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or 0.0
+    bw_px = safe_pos_float(minfo.get("bid_wall_px"), default=0.0) or 0.0
+    aw_px = safe_pos_float(minfo.get("ask_wall_px"), default=0.0) or 0.0
+    if ob_mid > 0 and (
+        cur_px <= 0
+        or (bw_px > 0 and cur_px < bw_px)
+        or (aw_px > 0 and cur_px > aw_px)
+    ):
+        cur_px = ob_mid
+    if cur_px <= 0.0:
+        return {}
+
+    oi_usd = safe_pos_float(minfo.get("oi_usd"), default=0.0) or 0.0
+    if oi_usd <= 0.0:
+        b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
+        a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
+        if (b_depth + a_depth) > 0.0:
+            oi_usd = (b_depth + a_depth) * 12.0
+    if oi_usd <= 0.0:
+        return {}
+
+    raw_long_pct = safe_float(minfo.get("whale_long_pct"), default=0.50)
+    if raw_long_pct is None:
+        raw_long_pct = 0.50
+    elif raw_long_pct > 1.0:
+        raw_long_pct = raw_long_pct / 100.0
+    long_share = min(0.85, max(0.15, float(raw_long_pct)))
+
+    funding = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
+    funding_tilt = max(-0.30, min(0.30, funding * 1500.0))
+    eff_long_share = min(0.88, max(0.12, long_share + funding_tilt * 0.5))
+    eff_short_share = 1.0 - eff_long_share
+
+    vol_1h = max(0.35, min(6.0, safe_pos_float(p_dict.get("vol_1h_pct"), default=1.2) or 1.2))
+    near_band_pct = max(1.2, min(4.5, vol_1h * 1.65))
+    deep_band_pct = max(near_band_pct * 1.85, min(10.0, vol_1h * 3.4))
+
+    base_long_near = cur_px * (1.0 - near_band_pct / 100.0)
+    base_short_near = cur_px * (1.0 + near_band_pct / 100.0)
+
+    # Symmetric structural stop/liquidity pool anchors for nearest (25x-50x) cluster
+    long_near_cands: list[float] = []
+    for raw_lvl, pad in (
+        (p_dict.get("val_px"), 0.996),
+        (p_dict.get("low_24h"), 0.997),
+        (minfo.get("bid_wall_px"), 0.997),
+    ):
+        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
+        if lvl > 0.0:
+            swept = lvl * pad
+            dist_ratio = (cur_px - swept) / cur_px
+            if 0.005 <= dist_ratio <= 0.065:
+                long_near_cands.append(swept)
+
+    short_near_cands: list[float] = []
+    for raw_lvl, pad in (
+        (p_dict.get("vah_px"), 1.004),
+        (p_dict.get("high_24h"), 1.003),
+        (minfo.get("ask_wall_px"), 1.003),
+    ):
+        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
+        if lvl > 0.0:
+            swept = lvl * pad
+            dist_ratio = (swept - cur_px) / cur_px
+            if 0.005 <= dist_ratio <= 0.065:
+                short_near_cands.append(swept)
+
+    long_near_raw = (
+        0.5 * base_long_near + 0.5 * (sum(long_near_cands) / len(long_near_cands))
+        if long_near_cands
+        else base_long_near
+    )
+    short_near_raw = (
+        0.5 * base_short_near + 0.5 * (sum(short_near_cands) / len(short_near_cands))
+        if short_near_cands
+        else base_short_near
+    )
+
+    # Symmetric structural anchors for secondary deep cascade (10x-20x) cluster
+    base_long_deep = min(cur_px * (1.0 - deep_band_pct / 100.0), long_near_raw * 0.978)
+    base_short_deep = max(cur_px * (1.0 + deep_band_pct / 100.0), short_near_raw * 1.022)
+
+    long_deep_cands: list[float] = []
+    for raw_lvl, pad in (
+        (p_dict.get("swing_low_px"), 0.995),
+        (p_dict.get("low_7d"), 0.996),
+    ):
+        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
+        if lvl > 0.0:
+            swept = lvl * pad
+            dist_ratio = (cur_px - swept) / cur_px
+            if 0.022 <= dist_ratio <= 0.14 and swept < long_near_raw * 0.99:
+                long_deep_cands.append(swept)
+
+    short_deep_cands: list[float] = []
+    for raw_lvl, pad in (
+        (p_dict.get("swing_high_px"), 1.005),
+        (p_dict.get("high_7d"), 1.004),
+    ):
+        lvl = safe_pos_float(raw_lvl, default=0.0) or 0.0
+        if lvl > 0.0:
+            swept = lvl * pad
+            dist_ratio = (swept - cur_px) / cur_px
+            if 0.022 <= dist_ratio <= 0.14 and swept > short_near_raw * 1.01:
+                short_deep_cands.append(swept)
+
+    long_deep_raw = min(
+        long_near_raw * 0.985,
+        0.5 * base_long_deep + 0.5 * (sum(long_deep_cands) / len(long_deep_cands))
+        if long_deep_cands
+        else base_long_deep,
+    )
+    short_deep_raw = max(
+        short_near_raw * 1.015,
+        0.5 * base_short_deep + 0.5 * (sum(short_deep_cands) / len(short_deep_cands))
+        if short_deep_cands
+        else base_short_deep,
+    )
+
+    eff_dec = (
+        decimals
+        if decimals is not None
+        else (2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6))
+    )
+    long_liq_px = round(long_near_raw, eff_dec)
+    short_liq_px = round(short_near_raw, eff_dec)
+    long_liq_deep_px = round(long_deep_raw, eff_dec)
+    short_liq_deep_px = round(short_deep_raw, eff_dec)
+
+    oi_chg_1h = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
+    oi_heat_mult = min(1.25, max(0.85, 1.0 + (oi_chg_1h / 100.0) * 1.5))
+
+    long_liq_usd = round(oi_usd * eff_long_share * 0.014 * oi_heat_mult, 0)
+    short_liq_usd = round(oi_usd * eff_short_share * 0.014 * oi_heat_mult, 0)
+    long_liq_deep_usd = round(oi_usd * eff_long_share * 0.024 * oi_heat_mult, 0)
+    short_liq_deep_usd = round(oi_usd * eff_short_share * 0.024 * oi_heat_mult, 0)
+
+    long_liq_dist_pct = round(((long_liq_px - cur_px) / cur_px) * 100.0, 2)
+    short_liq_dist_pct = round(((short_liq_px - cur_px) / cur_px) * 100.0, 2)
+    long_liq_deep_dist_pct = round(((long_liq_deep_px - cur_px) / cur_px) * 100.0, 2)
+    short_liq_deep_dist_pct = round(((short_liq_deep_px - cur_px) / cur_px) * 100.0, 2)
+
+    short_gravity = short_liq_usd / max(0.35, abs(short_liq_dist_pct))
+    long_gravity = long_liq_usd / max(0.35, abs(long_liq_dist_pct))
+    if short_gravity > long_gravity * 1.18:
+        liq_magnet_bias = "SHORT_SQUEEZE_MAGNET_UP"
+    elif long_gravity > short_gravity * 1.18:
+        liq_magnet_bias = "LONG_SWEEP_MAGNET_DOWN"
+    else:
+        liq_magnet_bias = "BALANCED_LIQ_MAGNET"
+
+    return {
+        "long_liq_px": long_liq_px,
+        "long_liq_usd": long_liq_usd,
+        "long_liq_dist_pct": long_liq_dist_pct,
+        "short_liq_px": short_liq_px,
+        "short_liq_usd": short_liq_usd,
+        "short_liq_dist_pct": short_liq_dist_pct,
+        "long_liq_deep_px": long_liq_deep_px,
+        "long_liq_deep_usd": long_liq_deep_usd,
+        "long_liq_deep_dist_pct": long_liq_deep_dist_pct,
+        "short_liq_deep_px": short_liq_deep_px,
+        "short_liq_deep_usd": short_liq_deep_usd,
+        "short_liq_deep_dist_pct": short_liq_deep_dist_pct,
+        "liq_magnet_bias": liq_magnet_bias,
+    }
+
+
+def resolve_venue_fee_and_limits(
+    venue: str,
+    symbol: str,
+    inst: Any = None,
+    *,
+    price: float = 0.0,
+    free_quote: Optional[float] = None,
+    free_base: Optional[float] = None,
+    spread_bps: Optional[float] = None,
+    gateway_max_usd: float = 2000.0,
+) -> Dict[str, Any]:
+    """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
+    v_norm = normalize_venue_name(venue)
+    if v_norm == "binance":
+        fee_tier = "VIP0"
+        maker_bps = 10.0
+        taker_bps = 10.0
+        min_notional = 5.0
+    elif v_norm == "kraken":
+        fee_tier = "PRO_TIER0"
+        maker_bps = 16.0
+        taker_bps = 26.0
+        min_notional = 1.0
+    elif v_norm == "hyperliquid":
+        fee_tier = "SPOT_TIER0"
+        maker_bps = 4.0
+        taker_bps = 7.0
+        min_notional = 10.0
+    elif v_norm == "t212":
+        fee_tier = "INVEST_RTH"
+        maker_bps = 15.0
+        taker_bps = 15.0
+        min_notional = 1.0
+    else:
+        fee_tier = "STANDARD"
+        maker_bps = 15.0
+        taker_bps = 15.0
+        min_notional = 5.0
+
+    px_f = safe_pos_float(price, default=0.0) or 0.0
+    default_step = 0.001 if v_norm == "t212" else (0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01))
+    default_tick = 0.01 if (v_norm == "t212" or px_f >= 10.0) else (0.001 if px_f >= 1.0 else 0.0001)
+    min_qty = default_step
+    step_size = default_step
+    tick_size = default_tick
+
+    params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
+    if params.get("fee_tier"):
+        fee_tier = str(params["fee_tier"]).strip()
+    if safe_nonneg_float(params.get("maker_fee_bps"), default=None) is not None:
+        maker_bps = float(safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps))
+    if safe_nonneg_float(params.get("taker_fee_bps"), default=None) is not None:
+        taker_bps = float(safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps))
+    if safe_pos_float(params.get("min_notional"), default=None) is not None:
+        min_notional = float(safe_pos_float(params.get("min_notional"), default=min_notional))
+    if safe_pos_float(params.get("min_qty"), default=None) is not None:
+        min_qty = float(safe_pos_float(params.get("min_qty"), default=min_qty))
+    if safe_pos_float(params.get("step_size"), default=None) is not None:
+        step_size = float(safe_pos_float(params.get("step_size"), default=step_size))
+    if safe_pos_float(params.get("tick_size"), default=None) is not None:
+        tick_size = float(safe_pos_float(params.get("tick_size"), default=tick_size))
+
+    # Non-blocking inspection of already-cached provider metadata (Kraken / Hyperliquid / Binance)
+    prov = getattr(inst, "_provider", None) if inst is not None else None
+    if v_norm == "kraken" and prov is not None:
+        client = getattr(prov, "_client", None)
+        cache_dict = getattr(client, "_CACHE", None)
+        if isinstance(cache_dict, dict):
+            cached_pair = cache_dict.get(f"pair:{symbol}")
+            p_meta = cached_pair[1] if isinstance(cached_pair, tuple) and len(cached_pair) >= 2 else None
+            if isinstance(p_meta, dict):
+                fees_m = p_meta.get("fees_maker")
+                fees_t = p_meta.get("fees")
+                if isinstance(fees_m, list) and fees_m and isinstance(fees_m[0], (list, tuple)) and len(fees_m[0]) >= 2:
+                    m_v = safe_nonneg_float(fees_m[0][1], default=None)
+                    if m_v is not None:
+                        maker_bps = round(m_v * 100.0, 2)
+                if isinstance(fees_t, list) and fees_t and isinstance(fees_t[0], (list, tuple)) and len(fees_t[0]) >= 2:
+                    t_v = safe_nonneg_float(fees_t[0][1], default=None)
+                    if t_v is not None:
+                        taker_bps = round(t_v * 100.0, 2)
+                ord_min = safe_pos_float(p_meta.get("ordermin"), default=None)
+                if ord_min is not None:
+                    min_qty = ord_min
+                cost_min = safe_pos_float(p_meta.get("costmin"), default=None)
+                if cost_min is not None:
+                    min_notional = cost_min
+                lot_dec = safe_nonneg_float(p_meta.get("lot_decimals"), default=None)
+                if lot_dec is not None:
+                    step_size = round(10.0 ** (-int(lot_dec)), 8)
+                pair_dec = safe_nonneg_float(p_meta.get("pair_decimals"), default=None)
+                if pair_dec is not None:
+                    tick_size = round(10.0 ** (-int(pair_dec)), 8)
+    elif v_norm == "hyperliquid" and prov is not None:
+        meta_cache = getattr(prov, "_meta_cache", None)
+        if isinstance(meta_cache, dict):
+            base_tok = canonical_base_asset(symbol)
+            sz_dec = safe_nonneg_float((meta_cache.get(base_tok) or {}).get("szDecimals") if isinstance(meta_cache.get(base_tok), dict) else None, default=None)
+            if sz_dec is not None:
+                step_size = round(10.0 ** (-int(sz_dec)), 8)
+                min_qty = step_size
+
+    out: Dict[str, Any] = {
+        "fee_tier": fee_tier,
+        "maker_fee_bps": round(maker_bps, 2),
+        "taker_fee_bps": round(taker_bps, 2),
+        "maker_rebate_edge_bps": round(taker_bps - maker_bps, 2),
+        "exchange_min_notional_usd": round(min_notional, 2),
+        "min_qty": min_qty,
+        "step_size": step_size,
+        "tick_size": tick_size,
+        "buy_buffer_pct": 99.5,
+    }
+    sp_f = safe_nonneg_float(spread_bps, default=None)
+    if sp_f is not None:
+        out["spread_bps"] = round(sp_f, 2)
+    fq_f = safe_nonneg_float(free_quote, default=None)
+    if fq_f is not None:
+        out["effective_max_buy_usd"] = round(min(float(gateway_max_usd), fq_f * 0.995), 2)
+    fb_f = safe_nonneg_float(free_base, default=None)
+    if fb_f is not None and px_f > 0.0:
+        out["effective_max_sell_usd"] = round(min(float(gateway_max_usd), fb_f * px_f), 2)
+    return out
 
 
 def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
@@ -1035,7 +1512,8 @@ def build_cross_market_context(
     raw_horizon_keys = (
         "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
         "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
-        "chg_7d_pct", "pos_24h_pct", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
+        "chg_7d_pct", "pos_24h_pct", "poc_px", "vah_px", "val_px", "va_regime",
+        "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
     )
 
     crypto_bellwethers: Dict[str, Any] = {}
@@ -1056,7 +1534,10 @@ def build_cross_market_context(
                 None,
             )
         if isinstance(m_info, dict):
-            for mk_copy in ("ob_imbalance", "whale_long_pct", "funding_rate", "oi_1h_chg_pct"):
+            for mk_copy in (
+                "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
+                "long_liq_px", "long_liq_usd", "short_liq_px", "short_liq_usd", "liq_magnet_bias",
+            ):
                 if m_info.get(mk_copy) is not None:
                     cb_entry[mk_copy] = m_info.get(mk_copy)
         crypto_bellwethers[b_canon] = cb_entry
@@ -1265,6 +1746,16 @@ def harvest_tradable_positions_and_orders(
             if params.get("mt.gain") or params.get("mt.lost"):
                 pos_entry["mt_gain_pct"] = params.get("mt.gain")
                 pos_entry["mt_lost_pct"] = params.get("mt.lost")
+            pos_entry.update(
+                resolve_venue_fee_and_limits(
+                    venue,
+                    sym,
+                    inst,
+                    price=px_f,
+                    free_quote=quote_free,
+                    free_base=base_free,
+                )
+            )
             tradable_positions.append(pos_entry)
 
             open_fn = getattr(inst, "open_orders", None)
@@ -1483,7 +1974,11 @@ def enrich_24h_and_microstructure(
                     pts_5d: List[List[Any]] = []
                     if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
                         pts_5d = [
-                            [int(ts_f * 1000), round(px_f, 4)]
+                            (
+                                [int(ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                                if len(bar) >= 3
+                                else [int(ts_f * 1000), round(px_f, 4)]
+                            )
                             for bar in chart_res[1]
                             if isinstance(bar, (list, tuple))
                             and len(bar) >= 2
@@ -1492,10 +1987,16 @@ def enrich_24h_and_microstructure(
                         ]
                     elif isinstance(chart_res, dict):
                         ts_list = chart_res.get("timestamp") or []
-                        closes = (((chart_res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
+                        q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
+                        closes = q_obj.get("close") or []
+                        vols = q_obj.get("volume") or []
                         pts_5d = [
-                            [int(ts_f * 1000), round(c_f, 4)]
-                            for ts, c in zip(ts_list, closes)
+                            [
+                                int(ts_f * 1000),
+                                round(c_f, 4),
+                                safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
+                            ]
+                            for idx, (ts, c) in enumerate(zip(ts_list, closes))
                             if (ts_f := safe_pos_float(ts, default=None)) is not None
                             and (c_f := safe_pos_float(c, default=None)) is not None
                         ]
@@ -1537,6 +2038,11 @@ def enrich_24h_and_microstructure(
 
         m_info = load_symbol_microstructure(cache_dir, sym, _rj)
         if m_info:
+            liq_info = compute_liquidation_clusters(prices_and_trends.get(sym), m_info)
+            if liq_info:
+                m_info.update(liq_info)
+            if m_info.get("spread_bps") is not None and isinstance(prices_and_trends.get(sym), dict):
+                prices_and_trends[sym]["spread_bps"] = m_info["spread_bps"]
             microstructure[sym] = m_info
 
     if os.path.isdir(cache_dir):
@@ -1556,6 +2062,17 @@ def enrich_24h_and_microstructure(
         for msym in ref_micro_syms:
             m_info_ref = load_symbol_microstructure(cache_dir, msym, _rj)
             if m_info_ref:
+                p_ref = next(
+                    (
+                        prices_and_trends[c]
+                        for c in cache_symbol_variants(msym, include_original=True, include_base=True)
+                        if isinstance(prices_and_trends.get(c), dict)
+                    ),
+                    None,
+                )
+                liq_ref = compute_liquidation_clusters(p_ref, m_info_ref)
+                if liq_ref:
+                    m_info_ref.update(liq_ref)
                 microstructure[msym] = m_info_ref
 
 
@@ -1569,6 +2086,7 @@ def sync_sibling_symbol_telemetry(
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
+        "poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime",
     }
     for sym, pinfo in list(prices_and_trends.items()):
         if not isinstance(pinfo, dict):
@@ -1602,6 +2120,39 @@ def sync_sibling_symbol_telemetry(
                     for mk, mv in sib_micro.items():
                         if microstructure[sym].get(mk) is None and mv is not None:
                             microstructure[sym][mk] = mv
+        p_cur = safe_pos_float(pinfo.get("price"), default=0.0) or 0.0
+        poc_v = safe_pos_float(pinfo.get("poc_px"), default=0.0) or 0.0
+        val_v = safe_pos_float(pinfo.get("val_px"), default=0.0) or 0.0
+        vah_v = safe_pos_float(pinfo.get("vah_px"), default=0.0) or 0.0
+        if p_cur > 0.0 and poc_v > 0.0 and val_v > 0.0 and vah_v > val_v:
+            pinfo["poc_dist_pct"] = round(((p_cur / poc_v) - 1.0) * 100.0, 2)
+            pinfo["val_dist_pct"] = round(((p_cur / val_v) - 1.0) * 100.0, 2)
+            pinfo["vah_dist_pct"] = round(((p_cur / vah_v) - 1.0) * 100.0, 2)
+            pinfo["va_pos_pct"] = round(((p_cur - val_v) / (vah_v - val_v)) * 100.0, 1)
+            pinfo["va_regime"] = (
+                "ABOVE_VAH"
+                if p_cur > vah_v
+                else ("BELOW_VAL" if p_cur < val_v else ("INSIDE_VA_UPPER" if p_cur >= poc_v else "INSIDE_VA_LOWER"))
+            )
+
+    for msym, minfo in list(microstructure.items()):
+        if not isinstance(minfo, dict):
+            continue
+        p_match = prices_and_trends.get(msym)
+        if not isinstance(p_match, dict):
+            p_match = next(
+                (
+                    prices_and_trends[c]
+                    for c in cache_symbol_variants(msym, include_original=True, include_base=True)
+                    if isinstance(prices_and_trends.get(c), dict)
+                ),
+                None,
+            )
+        liq_clusters = compute_liquidation_clusters(p_match, minfo)
+        if liq_clusters:
+            minfo.update(liq_clusters)
+        if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
+            p_match.setdefault("spread_bps", minfo["spread_bps"])
 
 
 def harvest_recent_orders_and_enrich_positions(
@@ -1720,6 +2271,26 @@ def harvest_recent_orders_and_enrich_positions(
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
+        sym_spread = next(
+            (
+                prices_and_trends[c].get("spread_bps")
+                for c in p_variants
+                if isinstance(prices_and_trends.get(c), dict)
+                and prices_and_trends[c].get("spread_bps") is not None
+            ),
+            pos.get("spread_bps"),
+        )
+        pos.update(
+            resolve_venue_fee_and_limits(
+                p_venue,
+                p_sym,
+                inst_by_sym.get(p_sym),
+                price=pos_px_f,
+                free_quote=safe_nonneg_float(pos.get("free_quote"), default=None),
+                free_base=safe_nonneg_float(pos.get("free_base"), default=None),
+                spread_bps=safe_nonneg_float(sym_spread, default=None),
+            )
+        )
     return recent_orders
 
 
@@ -1948,6 +2519,232 @@ def build_cycle_fallback_prices(
     return cycle_fallback_prices
 
 
+def harvest_portfolio_and_venue_cycles(
+    cache_dir: str,
+    workspace_dir: str,
+    logs_dirs: List[str],
+    portfolio_summary: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    watcher_price_items: Any,
+    inst_by_sym: Dict[str, Any],
+    read_json_fn: Any = None,
+) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
+    from state_io import read_last_jsonl_dict
+
+    _rj = read_json_fn or read_json_cached
+    last_av = read_last_jsonl_dict(os.path.join(cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
+    if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
+        portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
+
+    cycle_fallback_prices = build_cycle_fallback_prices(microstructure, watcher_price_items)
+    kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
+        workspace_dir,
+        prices_and_trends,
+        cycle_fallback_prices,
+        _rj,
+    )
+    if kraken_cycles:
+        portfolio_summary["kraken_cycles"] = kraken_cycles
+    if hyperliquid_cycles:
+        portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
+
+    has_active_t212 = any(
+        str(getattr(inst, "provider_name", "")).lower() == "t212"
+        for inst in inst_by_sym.values()
+    )
+    t212_cycles = dict(all_t212_cycles) if has_active_t212 else {}
+    if t212_cycles:
+        portfolio_summary["t212_cycles"] = t212_cycles
+
+    xst_summary = harvest_kraken_xstocks(
+        os.path.join(workspace_dir, "kraken"),
+        prices_and_trends,
+        all_t212_cycles,
+        _rj,
+    )
+    if xst_summary:
+        portfolio_summary["kraken_xstocks"] = xst_summary
+
+    cross_market_ctx = build_cross_market_context(
+        prices_and_trends,
+        microstructure,
+        all_t212_cycles,
+    )
+    if cross_market_ctx:
+        portfolio_summary["cross_market_context"] = cross_market_ctx
+
+    for l_dir in logs_dirs:
+        last_ps = read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096)
+        if isinstance(last_ps, dict):
+            if isinstance(last_ps.get("hl"), dict):
+                portfolio_summary["hyperliquid_readonly"] = last_ps["hl"]
+            break
+
+    return kraken_cycles, hyperliquid_cycles, t212_cycles
+
+
+def populate_market_and_portfolio_snapshot(
+    snapshot: Any,
+    *,
+    cache_dir: str,
+    workspace_dir: str,
+    logs_dirs: List[str],
+    intent_gateway: Any,
+    scope: str,
+    now_ts: float,
+    read_json_fn: Any = None,
+    log: Optional[Any] = None,
+) -> Any:
+    """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
+    from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
+
+    _rj = read_json_fn or read_json_cached
+
+    macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
+    for attr, val in macro_sensors.items():
+        setattr(snapshot, attr, val)
+
+    prices_data = _rj(os.path.join(cache_dir, "cache_current_price.json"))
+    trends_data = _rj(os.path.join(cache_dir, "cache_short_trend.json"))
+    long_trends_data = _rj(os.path.join(cache_dir, "cache_long_trend.json"))
+    priceanalysis_data = _rj(os.path.join(cache_dir, "priceanalysis.json"))
+    t_trend_data = _rj(os.path.join(cache_dir, "cache_T_trend.json"))
+    kalman_data = _rj(os.path.join(cache_dir, "cache_kalman_trend.json"))
+    watcher_all_price_data = _rj(os.path.join(cache_dir, "cache_watcher_all_price.json"))
+    trailing_map, trailing_by_venue = load_venue_trailing_maps(cache_dir, workspace_dir, _rj)
+    long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
+    t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
+    snapshot.prices_and_trends = harvest_initial_prices_and_trends(cache_dir, prices_data, trends_data, _rj)
+
+    tradable_positions: List[Dict[str, Any]] = []
+    open_orders_list: List[Dict[str, Any]] = []
+    venue_quote_cash: Dict[str, Dict[str, Any]] = {}
+    inst_by_sym: Dict[str, Any] = {}
+    load_tradable_fn = getattr(intent_gateway, "load_tradable_instruments", None)
+    has_inst_source = (
+        os.path.exists(os.path.join(workspace_dir, "instruments.conf"))
+        or os.path.exists(os.path.join(workspace_dir, "kraken", "config.env"))
+        or os.path.exists(os.path.join(workspace_dir, "hyperliquid", "config.env"))
+        or (scope == "equities" and os.path.isdir(os.path.join(workspace_dir, "212trading")))
+    )
+    if callable(load_tradable_fn) and has_inst_source:
+        try:
+            try:
+                inst_map = load_tradable_fn(
+                    only_workspace_conf=(scope != "equities"),
+                    include_closed_rth=(scope == "equities"),
+                    asset_scope=scope,
+                )
+            except TypeError:
+                inst_map = load_tradable_fn(only_workspace_conf=True)
+        except Exception as exc:
+            if log:
+                log.debug("Could not load tradable instruments for telemetry: %s", exc)
+            inst_map = {}
+
+        tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = (
+            harvest_tradable_positions_and_orders(
+                inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue
+            )
+        )
+
+    if tradable_positions:
+        snapshot.portfolio_summary["tradable_positions"] = tradable_positions
+    if open_orders_list:
+        snapshot.portfolio_summary["open_orders"] = open_orders_list
+    if venue_quote_cash:
+        snapshot.portfolio_summary["venue_quote_cash"] = venue_quote_cash
+    if trailing_map:
+        snapshot.portfolio_summary["trailing_peaks"] = trailing_map
+
+    watcher_price_items = (
+        watcher_all_price_data.get("items", {}) if isinstance(watcher_all_price_data, dict) else {}
+    )
+    enrich_cross_venue_trends(
+        snapshot.prices_and_trends,
+        trends_data,
+        kalman_data,
+        long_items,
+        priceanalysis_data,
+        t_trend_map,
+        watcher_price_items,
+    )
+
+    cur_p_items = (
+        prices_data.get("items", {})
+        if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict)
+        else {}
+    )
+    enrich_24h_and_microstructure(
+        cache_dir,
+        workspace_dir,
+        snapshot.prices_and_trends,
+        snapshot.microstructure,
+        cur_p_items,
+        inst_by_sym,
+        now_ts,
+        _rj,
+    )
+
+    sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure)
+
+    kraken_cycles, hyperliquid_cycles, t212_cycles = harvest_portfolio_and_venue_cycles(
+        cache_dir,
+        workspace_dir,
+        logs_dirs,
+        snapshot.portfolio_summary,
+        snapshot.prices_and_trends,
+        snapshot.microstructure,
+        watcher_price_items,
+        inst_by_sym,
+        _rj,
+    )
+
+    recent_orders = harvest_recent_orders_and_enrich_positions(
+        cache_dir,
+        inst_by_sym,
+        snapshot.portfolio_summary.get("tradable_positions", []),
+        snapshot.prices_and_trends,
+        kraken_cycles,
+        hyperliquid_cycles,
+        t212_cycles,
+        _rj,
+    )
+    if recent_orders:
+        snapshot.portfolio_summary["recent_orders"] = recent_orders
+
+    intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+    if isinstance(intents_data, list) and intents_data:
+        reconcile_fn = getattr(intent_gateway, "reconcile_intents", None)
+        if callable(reconcile_fn):
+            try:
+                if reconcile_fn(intents_data):
+                    save_fn = getattr(intent_gateway, "save_all_intents", None)
+                    if callable(save_fn):
+                        save_fn(intents_data)
+            except Exception:
+                pass
+        recent_intents_out = summarize_recent_ai_intents(
+            intents_data, scope, now_ts, extract_intent_notional
+        )
+        if recent_intents_out:
+            snapshot.portfolio_summary["recent_ai_intents"] = recent_intents_out
+
+    snapshot.portfolio_summary.update(harvest_bot_runtime_states(cache_dir, now_ts, _rj))
+
+    snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
+        snapshot.prices_and_trends,
+        snapshot.microstructure,
+        snapshot.portfolio_summary,
+        scope,
+        inst_by_sym,
+        t212_cycles,
+    )
+    return snapshot
+
+
 def collect_pretrade_telemetry(
     symbol: str,
     regime_context: Optional[Any] = None,
@@ -2069,6 +2866,28 @@ def collect_pretrade_telemetry(
             if m24.get("recent_tape_15m"):
                 rng_str += f", tape_15m=[{', '.join(m24['recent_tape_15m'])}]"
             telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
+            if m24.get("poc_px") is not None:
+                telemetry["24h Volume Profile (POC / Value Area)"] = (
+                    f"POC=${m24.get('poc_px')} ({float(m24.get('poc_dist_pct', 0.0)):+.2f}%), "
+                    f"VAL=${m24.get('val_px')} ({float(m24.get('val_dist_pct', 0.0)):+.2f}%), "
+                    f"VAH=${m24.get('vah_px')} ({float(m24.get('vah_dist_pct', 0.0)):+.2f}%), "
+                    f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}"
+                )
+            cur_m_info = load_symbol_microstructure(cachedb_dir, symbol)
+            if cur_m_info:
+                if cur_m_info.get("spread_bps") is not None:
+                    telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
+                cur_px_est = safe_pos_float(alt_series_24h[-1][1], default=0.0) if alt_series_24h else 0.0
+                p_est = dict(m24)
+                if cur_px_est and cur_px_est > 0:
+                    p_est["price"] = cur_px_est
+                liq_c = compute_liquidation_clusters(p_est, cur_m_info)
+                if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
+                    telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
+                        f"LONG liq=${liq_c['long_liq_px']} (${liq_c.get('long_liq_usd', 0):,.0f}, {float(liq_c.get('long_liq_dist_pct', 0.0)):+.2f}%), "
+                        f"SHORT liq=${liq_c['short_liq_px']} (${liq_c.get('short_liq_usd', 0):,.0f}, {float(liq_c.get('short_liq_dist_pct', 0.0)):+.2f}%), "
+                        f"magnet={liq_c.get('liq_magnet_bias')}"
+                    )
 
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
                 btc_series_24h, _ = load_symbol_price_series(

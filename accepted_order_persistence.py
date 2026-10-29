@@ -28,6 +28,13 @@ if not 0 < ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC <= 5:
 
 
 
+def _claim_client_order_id(record) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    pk = record.get("place_kwargs")
+    return _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+
+
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     """Recognize a first attempt that committed before reporting an I/O error."""
     try:
@@ -35,15 +42,13 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
             return False
         claim_id = _clean_id(claim.get("id"))
         expected_order_id = _clean_id(order_retry_module.order_id_from_response(order))
-        pk = claim.get("place_kwargs")
-        expected_client_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+        expected_client_id = _claim_client_order_id(claim)
         if claim_id is None or expected_order_id is None or expected_client_id is None:
             return False
         for record in (order_retry_module.load_all() or ()):
             if not isinstance(record, dict) or _clean_id(record.get("id")) != claim_id:
                 continue
-            rpk = record.get("place_kwargs")
-            current_client_id = _clean_id(rpk.get("client_order_id")) if isinstance(rpk, dict) else None
+            current_client_id = _claim_client_order_id(record)
             current_order_id = _clean_id(record.get("order_id"))
             return (
                 str(record.get("lifecycle") or "").strip().lower() == "accepted"
@@ -90,8 +95,7 @@ def complete_accepted_claim(
     except Exception:
         order_id = None
     claim_dict = claim if isinstance(claim, dict) else {}
-    pk = claim_dict.get("place_kwargs")
-    client_order_id = _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+    client_order_id = _claim_client_order_id(claim_dict)
     qty = claim_dict.get("qty")
     px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
     qty_f = safe_float(qty, default=None)
@@ -100,8 +104,8 @@ def complete_accepted_claim(
         qty = None
     if isinstance(px, (bool, float)) and px_f is None:
         px = None
-    val_f = (qty_f * px_f) if (qty_f is not None and px_f is not None) else None
-    val_str = f"~${val_f:.2f}" if safe_float(val_f, default=None) is not None else "N/A"
+    val_f = safe_float(qty_f * px_f, default=None) if (qty_f is not None and px_f is not None) else None
+    val_str = f"~${val_f:.2f}" if val_f is not None else "N/A"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = (
         f"venue={provider_name} symbol={symbol} side={side} "

@@ -87,16 +87,11 @@ def check_external_order_guards(
 
     sym_norm = clean_symbol_key(symbol)
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
-    if margins is None:
-        m = _load_margins()
-    else:
-        m = margins
+    from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
+    m = _load_margins() if margins is None else margins
 
-    if "intelligence_guards_mode" in m:
-        master_mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
-        if master_mode == "off":
-            return True, "intelligence_guards_off", 1.0
+    if is_intelligence_master_off(m):
+        return True, "intelligence_guards_off", 1.0
 
     ext_mode = "enforce"
     if "external_guard_mode" in m:

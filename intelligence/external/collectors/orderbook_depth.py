@@ -214,6 +214,9 @@ class OrderbookSnapshot:
     largest_ask_wall_usd: float
     largest_ask_wall_price: float
     ts: float
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+    spread_bps: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -224,9 +227,17 @@ class OrderbookSnapshot:
             data = {}
         raw_sym = data.get("symbol")
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
+        mid_price = max(0.0, _clean_dict_float(data, "mid_price", 0.0))
+        best_bid = max(0.0, _clean_dict_float(data, "best_bid", 0.0))
+        best_ask = max(0.0, _clean_dict_float(data, "best_ask", 0.0))
+        spread_bps = max(0.0, _clean_dict_float(data, "spread_bps", 0.0))
+        if spread_bps <= 0.0 and best_bid > 0.0 and best_ask >= best_bid:
+            eff_mid = mid_price if mid_price > 0.0 else (best_bid + best_ask) / 2.0
+            if eff_mid > 0.0:
+                spread_bps = round(((best_ask - best_bid) / eff_mid) * 10000.0, 2)
         return cls(
             symbol=sym_str,
-            mid_price=max(0.0, _clean_dict_float(data, "mid_price", 0.0)),
+            mid_price=mid_price,
             bid_depth_usd=max(0.0, _clean_dict_float(data, "bid_depth_usd", 0.0)),
             ask_depth_usd=max(0.0, _clean_dict_float(data, "ask_depth_usd", 0.0)),
             imbalance_ratio=min(1.0, max(0.0, _clean_dict_float(data, "imbalance_ratio", 0.5))),
@@ -235,6 +246,9 @@ class OrderbookSnapshot:
             largest_ask_wall_usd=max(0.0, _clean_dict_float(data, "largest_ask_wall_usd", 0.0)),
             largest_ask_wall_price=max(0.0, _clean_dict_float(data, "largest_ask_wall_price", 0.0)),
             ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            spread_bps=spread_bps,
         )
 
 
@@ -357,6 +371,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
             total_depth = bid_depth_usd + ask_depth_usd
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5
+            spread_bps = round(((best_ask - best_bid) / mid) * 10000.0, 2) if mid > 0 else 0.0
 
             snapshot = OrderbookSnapshot(
                 symbol=symbol,
@@ -369,6 +384,9 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 largest_ask_wall_usd=round(max_ask_usd, 2),
                 largest_ask_wall_price=max_ask_px,
                 ts=now,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                spread_bps=spread_bps,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:

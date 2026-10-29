@@ -53,7 +53,7 @@ def _clean_id(val) -> str | None:
 def _first(row: dict, *names):
     for name in names:
         value = row.get(name)
-        if value is None or isinstance(value, (bool, dict, list, tuple, set)):
+        if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
             continue
         if isinstance(value, float) and safe_float(value, default=None) is None:
             continue
@@ -63,6 +63,15 @@ def _first(row: dict, *names):
                 continue
         return value
     return None
+
+
+def _resolve_symbol_and_venue(payload: dict, inherited: dict, owner: str) -> tuple[str | None, str]:
+    symbol = (_first(payload, "symbol", "ticker", "pair")
+              or _first(inherited, "symbol", "ticker", "pair"))
+    raw_venue = (_first(payload, "provider_name", "venue") or _first(inherited, "venue")
+                 or owner.split("_", 1)[0])
+    venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
+    return (None if symbol is None else str(symbol), str(venue))
 
 
 def _intent_row(row: dict, *, owner: str, source: str, location: str,
@@ -94,16 +103,12 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
             status = str(ts_val).strip().lower()
     if status in _TERMINAL:
         return None
-    symbol = (_first(row, "symbol", "ticker", "pair")
-              or _first(inherited, "symbol", "ticker", "pair"))
-    raw_venue = (_first(row, "provider_name", "venue") or _first(inherited, "venue")
-                 or owner.split("_", 1)[0])
-    venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
+    symbol, venue = _resolve_symbol_and_venue(row, inherited, owner)
     return {
         "intent_id": str(intent_id),
         "owner": owner,
-        "venue": str(venue),
-        "symbol": None if symbol is None else str(symbol),
+        "venue": venue,
+        "symbol": symbol,
         "side": side_str,
         "kind": _first(row, "kind", "motivation"),
         "status": status,
@@ -172,19 +177,15 @@ def _extract_exposure(payload: dict, *, owner: str, source: str,
         return None
     cost_val = safe_nonneg_float(_first(payload, "cost_usd", "cost", "spent_cash", "spent"), default=None)
     entry_price_val = safe_pos_float(payload.get("entry_price"), default=None)
-    symbol = (_first(payload, "symbol", "ticker", "pair")
-              or _first(inherited, "symbol", "ticker", "pair"))
-    raw_venue = (_first(payload, "provider_name", "venue") or inherited.get("venue")
-                 or owner.split("_", 1)[0])
-    venue = normalize_venue_name(str(raw_venue)) or str(raw_venue)
+    symbol, venue = _resolve_symbol_and_venue(payload, inherited, owner)
     return {
         "owner": owner,
-        "venue": str(venue),
-        "symbol": None if symbol is None else str(symbol),
+        "venue": venue,
+        "symbol": symbol,
         "qty": qty_val,
         "cost": cost_val,
         "entry_price": entry_price_val,
-        "entry_ts": payload.get("entry_ts"),
+        "entry_ts": _first(payload, "entry_ts"),
         "source": source,
     }
 

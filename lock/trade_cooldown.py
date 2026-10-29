@@ -22,7 +22,7 @@ import time
 import contextlib
 import configparser
 
-from botcore import exact_pos_int
+from botcore import exact_pos_int, safe_pos_float
 from .cooldown import Cooldown
 from providers.base import (
     _clean_single_order_id,

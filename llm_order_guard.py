@@ -40,6 +40,21 @@ _GEO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
 # GLLM1: Live Pre-Trade High-Stake LLM Guard (>= 700 USD)
 # ============================================================================
 
+def _get_cached_gemini_field(
+    regime_context: Any,
+    valid_context: bool,
+    cache_key: Tuple[Any, ...],
+    entry_for_key: Dict[str, Any],
+    entry_field: str,
+    context_attr: str,
+) -> Any:
+    if entry_field in entry_for_key:
+        return entry_for_key.get(entry_field)
+    if valid_context and getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
+        return getattr(regime_context, context_attr, None)
+    return None
+
+
 def evaluate_high_stake_order_guard(
     *,
     symbol: str,
@@ -61,13 +76,13 @@ def evaluate_high_stake_order_guard(
     from guard_hierarchy import GUARD_REGISTRY
     from intelligence.internal.guards.guard_decision import BrakeAction
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
-    from order_guard import resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
+    from order_guard import is_intelligence_master_off, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
     side = _normalize_side(side)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    if "intelligence_guards_mode" in margins and validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+    if is_intelligence_master_off(margins):
         return True, "ok", 1.0
     skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
@@ -81,13 +96,12 @@ def evaluate_high_stake_order_guard(
     computed_notional = comp_notional
 
     decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
-    entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}
-    if "gemini_notional" in entry_for_key:
-        prev_notional = entry_for_key.get("gemini_notional")
-    elif valid_context and getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
-        prev_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
-    else:
-        prev_notional = None
+    raw_entry = decisions_map.get(cache_key) if isinstance(decisions_map, dict) else None
+    entry_for_key = raw_entry if isinstance(raw_entry, dict) else {}
+    prev_notional = _get_cached_gemini_field(
+        regime_context, valid_context, cache_key, entry_for_key,
+        "gemini_notional", "_gemini_evaluated_notional",
+    )
     if prev_notional is None and fallback_notional is not None and not (isinstance(decisions_map, dict) and cache_key in decisions_map):
         prev_notional = fallback_notional
 
@@ -178,12 +192,10 @@ def evaluate_high_stake_order_guard(
                 return True, g_dec.reason, g_scale
         return True, "ok", 1.0
 
-    if "gemini_decision" in entry_for_key:
-        cached_g_dec = entry_for_key.get("gemini_decision")
-    elif valid_context and getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
-        cached_g_dec = getattr(regime_context, "_gemini_decision", None)
-    else:
-        cached_g_dec = None
+    cached_g_dec = _get_cached_gemini_field(
+        regime_context, valid_context, cache_key, entry_for_key,
+        "gemini_decision", "_gemini_decision",
+    )
     if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
         g_allowed, g_reason, raw_g_scale = cached_g_dec
         g_scale = _clean_scale(raw_g_scale)
@@ -211,10 +223,10 @@ def check_geopolitical_order_guards(
         return True, "not_buy_side", 1.0
 
     from intelligence.internal.guards.guard_decision import BrakeAction
-    from order_guard import _load_margins, validate_guard_mode_cfg
+    from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
-    if "intelligence_guards_mode" in m and validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
+    if is_intelligence_master_off(m):
         return True, "intelligence_guards_off", 1.0
 
     geo_mode = validate_guard_mode_cfg(m["geopolitical_guard_mode"], "geopolitical_guard_mode")
@@ -303,12 +315,11 @@ def check_llm_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _is_valid_regime_context, _load_margins, validate_guard_mode_cfg
+    from order_guard import _is_valid_regime_context, _load_margins, is_intelligence_master_off
     m = _load_margins() if margins is None else margins
 
-    if "intelligence_guards_mode" in m:
-        if validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode") == "off":
-            return True, "intelligence_guards_off", 1.0
+    if is_intelligence_master_off(m):
+        return True, "intelligence_guards_off", 1.0
 
     effective_scale = 1.0
     active_reason = "ok"

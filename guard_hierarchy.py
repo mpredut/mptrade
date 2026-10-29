@@ -18,6 +18,23 @@ from abc import ABC
 from typing import Any
 
 
+_CATEGORY_SHORTCUTS: dict[str, str] = {
+    "go": "operational",
+    "gt": "trend",
+    "g_qlimit": "qlimit",
+    "gf": "financial",
+    "gi": "intelligence",
+    "microstructure": "intelligence",
+    "gllm": "llm",
+}
+
+_GLLM1_SPECIFIC_ALIASES: frozenset[str] = frozenset({"gllm1", "llm_high_stake", "high_stake", "ai"})
+
+
+def _is_llm_category_bypass(tokens: set[str]) -> bool:
+    return "gllm" in tokens or ("llm" in tokens and not bool(tokens.intersection(_GLLM1_SPECIFIC_ALIASES)))
+
+
 class BaseGuard(ABC):
     """Abstract base class for all order placement guards."""
 
@@ -226,12 +243,10 @@ class LLMGuard(BaseGuard):
         low = self._coerce_bypass_set(bypassed_guards)
         if not low:
             return False
-        gllm1_specific = {"gllm1", "llm_high_stake", "high_stake", "ai"}
-        llm_cat = "gllm" in low or ("llm" in low and not bool(low.intersection(gllm1_specific)))
         return bool(
             "all" in low
             or "*" in low
-            or llm_cat
+            or _is_llm_category_bypass(low)
             or self.code.lower() in low
             or self.canonical in low
             or bool(low.intersection(self.aliases))
@@ -358,22 +373,10 @@ def normalize_bypassed_guards(
             _add_guard_tokens(g)
 
     # Distinguish category-wide 'llm' / 'gllm' from GLLM1's 'llm' alias when re-normalizing
-    gllm1_specific = {"gllm1", "llm_high_stake", "high_stake", "ai"}
-    llm_category_requested = "gllm" in bypassed or (
-        "llm" in bypassed and not bool(bypassed.intersection(gllm1_specific))
-    )
+    llm_category_requested = _is_llm_category_bypass(bypassed)
 
     # Expand category groups and short prefixes
-    category_shortcuts = {
-        "go": "operational",
-        "gt": "trend",
-        "g_qlimit": "qlimit",
-        "gf": "financial",
-        "gi": "intelligence",
-        "microstructure": "intelligence",
-        "gllm": "llm",
-    }
-    for sc, cat_name in category_shortcuts.items():
+    for sc, cat_name in _CATEGORY_SHORTCUTS.items():
         if sc in bypassed:
             bypassed.add(cat_name)
 
@@ -398,6 +401,12 @@ def normalize_bypassed_guards(
             _add_guard_tokens(g)
 
     return bypassed
+
+
+def is_category_bypassed(category: str, bypassed: set[str]) -> bool:
+    """Return True when every guard in the given category is bypassed."""
+    guards = GUARD_CATEGORIES.get(category)
+    return bool(guards) and all(g.is_bypassed(bypassed) for g in guards)
 
 
 _RAW_INTEL_CACHE_CODES: tuple[str, ...] = (

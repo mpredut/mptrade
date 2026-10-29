@@ -196,6 +196,13 @@ def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
     return _validate_discrete_cfg(val, VALID_GUARD_MODES, key_name)
 
 
+def is_intelligence_master_off(margins: Dict[str, Any], *, require_key: bool = False) -> bool:
+    """Return True when intelligence_guards_mode is set to 'off'."""
+    if not require_key and "intelligence_guards_mode" not in margins:
+        return False
+    return validate_guard_mode_cfg(margins["intelligence_guards_mode"], "intelligence_guards_mode") == "off"
+
+
 def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
     """Validate discrete mode and policy values in order_guard.conf at load time."""
     for key in _GUARD_MODE_KEYS:
@@ -1396,7 +1403,7 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
+    from guard_hierarchy import GUARD_REGISTRY, is_category_bypassed, make_intel_cache_key, normalize_bypassed_guards
     from intelligence.macro_sentiment_ssot import resolve_order_notional
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
@@ -1405,8 +1412,7 @@ def check_intelligence_guards(
     m = _load_margins()
     valid_context = _is_valid_regime_context(regime_context, symbol, provider, margins=m, now=now)
 
-    mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
-    if mode == "off":
+    if is_intelligence_master_off(m, require_key=True):
         return True, "intelligence_guards_off", 1.0
 
     side = _normalize_side_token(order_type)
@@ -1593,14 +1599,13 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+    from guard_hierarchy import GUARD_REGISTRY, is_category_bypassed, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
-    mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
-    if mode == "off":
+    if is_intelligence_master_off(m, require_key=True):
         return True, "intelligence_guards_off", 1.0
 
     side = _normalize_side_token(order_type)
@@ -1638,12 +1643,7 @@ def _evaluate_intelligence_guards_raw(
             active_reason = int_reason
 
     # 2. External Microstructure & Derivatives Guards (GI_OBOOK, GI_WHALE, GI_FUNDING)
-    skip_external = (
-        GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed)
-        and GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed)
-        and GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed)
-    )
-    if not skip_external:
+    if not is_category_bypassed("intelligence", bypassed):
         from external_order_guard import check_external_order_guards
         ext_ok, ext_reason, ext_scale = check_external_order_guards(
             symbol=symbol,
@@ -1662,12 +1662,7 @@ def _evaluate_intelligence_guards_raw(
             active_reason = ext_reason
 
     # 3. LLM Guards (GLLM1 High-Stake + GLLM2 Sentiment + GLLM3 Geopolitical)
-    skip_intel = (
-        GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed)
-        and GUARD_REGISTRY["GLLM2"].is_bypassed(bypassed)
-        and GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed)
-    )
-    if not skip_intel:
+    if not is_category_bypassed("llm", bypassed):
         from llm_order_guard import check_llm_order_guards
         intel_ok, intel_reason, intel_scale = check_llm_order_guards(
             provider=provider,

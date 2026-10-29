@@ -112,13 +112,11 @@ def check_qlimit2_order_guards(
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
+    from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
-    if "intelligence_guards_mode" in m:
-        master_mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
-        if master_mode == "off":
-            return True, "intelligence_guards_off", 1.0
+    if is_intelligence_master_off(m):
+        return True, "intelligence_guards_off", 1.0
     mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
     if mode == "off":
         return True, "intelligence_guards_off", 1.0

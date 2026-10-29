@@ -21,6 +21,7 @@ from botcore import (
     _parse_bool_flag,
     float_env,
     safe_float,
+    safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
 )
@@ -1077,6 +1078,94 @@ def cancel_existing_ai_open_orders(
         if log:
             log.debug("Open order scan failed before replacement: %s", e)
     return canceled_ids
+
+
+def parse_intent_gateway_config(
+    conf: dict[str, str],
+    *,
+    mode: Optional[str] = None,
+    max_notional_usd: Optional[float] = None,
+    min_confidence: Optional[float] = None,
+    notify_enabled: Optional[bool] = None,
+) -> tuple[str, float, float, float, bool]:
+    """Validate and parse (mode, min_notional_usd, max_notional_usd, min_confidence, notify_enabled) from config."""
+    from botcore import conf_or_override, parse_notify_enabled_flag
+
+    raw_mode = conf_or_override(conf, "autonomous_trading_mode", mode)
+    norm_mode = "" if isinstance(raw_mode, bool) else str(raw_mode).strip().lower()
+    if norm_mode not in ("off", "shadow", "enforce"):
+        raise ValueError(
+            f"Invalid autonomous_trading_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']"
+        )
+
+    raw_min = conf_or_override(conf, "autonomous_trading_min_notional_usd")
+    min_usd = safe_pos_float(raw_min, default=None)
+    if min_usd is None:
+        raise ValueError(f"Invalid autonomous_trading_min_notional_usd {raw_min!r}")
+
+    raw_max = conf_or_override(conf, "autonomous_trading_max_notional_usd", max_notional_usd)
+    max_usd = safe_pos_float(raw_max, default=None)
+    if max_usd is None or max_usd < min_usd:
+        raise ValueError(
+            f"Invalid autonomous_trading_max_notional_usd {raw_max!r}; "
+            f"must be >= autonomous_trading_min_notional_usd ({min_usd})"
+        )
+
+    raw_conf = conf_or_override(conf, "autonomous_trading_min_confidence", min_confidence)
+    conf_val = safe_nonneg_float(raw_conf, default=None)
+    if conf_val is None or conf_val > 1.0:
+        raise ValueError(
+            f"Invalid autonomous_trading_min_confidence {raw_conf!r}; must be in [0.0, 1.0]"
+        )
+
+    notify_flag = parse_notify_enabled_flag(notify_enabled, conf, "autonomous_trading_notify")
+    return norm_mode, min_usd, max_usd, conf_val, notify_flag
+
+
+def resolve_intent_execution_price(
+    intent: dict[str, Any],
+    *,
+    intent_id: str,
+    decision: str,
+    symbol: str,
+    live_price: float,
+    now_ts: float,
+    log: Optional[Any] = None,
+) -> tuple[bool, float, bool]:
+    """Validate and resolve MARKET or LIMIT execution price against live_price.
+
+    Returns ``(ok, effective_price, is_limit)``. When ``ok`` is False, mutates ``intent``
+    with ``status='REJECTED_INVALID_LIMIT_PRICE'`` and appends history.
+    """
+    order_type = extract_intent_order_type(intent)
+    limit_px = extract_intent_limit_price(intent, default=None)
+    is_limit = bool(order_type == "LIMIT" and limit_px is not None and limit_px > 0)
+    if is_limit:
+        if limit_px < live_price * 0.50 or limit_px > live_price * 2.00:
+            if log:
+                log.warning(
+                    "[INTENT GATEWAY] Intent %s rejected: limit_price $%.4g out of [0.5x, 2.0x] bounds vs live $%.4g for %s",
+                    intent_id, limit_px, live_price, symbol,
+                )
+            intent["status"] = "REJECTED_INVALID_LIMIT_PRICE"
+            append_intent_history(intent, {
+                "ts": now_ts,
+                "action": "REJECTED_INVALID_LIMIT_PRICE",
+                "limit_price": limit_px,
+                "live_price": live_price,
+            })
+            return False, live_price, True
+        if decision == "BUY" and limit_px > live_price:
+            price = live_price
+        elif decision == "SELL" and limit_px < live_price:
+            price = live_price
+        else:
+            price = limit_px
+        intent["order_type"] = "LIMIT"
+        intent["limit_price"] = price
+        return True, price, True
+    intent["order_type"] = "MARKET"
+    return True, live_price, False
 
 
 
