@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import float_env
+from botcore import int_env
 if HERE not in sys.path:
     sys.path.append(HERE)
 
@@ -61,7 +61,7 @@ if __name__ == "__main__":
             canon_todo.append((a, c))
         canon_groups[k].append(c)
     done_count = 0
-    workers = int(float_env("WORKERS") or (os.cpu_count() or 4))
+    workers = int_env("WORKERS") or (os.cpu_count() or 4)
     with Pool(workers) as pool, open(os.path.join(EXP, "results3.jsonl"), "w") as fh:
         for r in pool.imap_unordered(task, canon_todo):
             cfg_entry = grid2.ALL.get(r.get("cfg"))

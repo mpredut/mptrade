@@ -20,7 +20,7 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import float_env
+from botcore import int_env
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 _orig_sys_path = list(sys.path)
 try:
@@ -244,7 +244,7 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((profile, variant, asset))
         canon_groups[k].append((profile, variant))
-    workers = int(float_env("WORKERS") or (os.cpu_count() or 4))
+    workers = int_env("WORKERS") or (os.cpu_count() or 4)
     print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
