@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-import math
 from typing import Any, Dict, Optional
 
 from botcore import safe_float
@@ -32,7 +31,8 @@ def normalize_guard_mode(val: Any, default: str = "enforce") -> str:
     if val is True:
         return "enforce"
     if isinstance(val, (int, float)) and not isinstance(val, bool):
-        return default if not math.isfinite(float(val)) else ("off" if float(val) == 0.0 else "enforce")
+        f = safe_float(val, default=None)
+        return default if f is None else ("off" if f == 0.0 else "enforce")
     raw_m = str(val if val is not None else default).strip().lower()
     if raw_m in ("0", "0.0", "false", "no", "off", "disabled"):
         return "off"

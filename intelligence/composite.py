@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import math
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -43,13 +42,11 @@ from intelligence.macro_sentiment_ssot import (
 
 
 def _opt_finite(val: object) -> Optional[float]:
-    f = safe_float(val, float("nan"))
-    return f if math.isfinite(f) else None
+    return safe_float(val, default=None)
 
 
 def _opt_pos_finite(val: object) -> Optional[float]:
-    f = safe_pos_float(val, -1.0)
-    return f if f > 0.0 else None
+    return safe_pos_float(val, default=None)
 
 
 @dataclass(frozen=True)

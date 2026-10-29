@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
@@ -28,8 +27,8 @@ from intelligence.macro_sentiment_ssot import (
 
 def _format_age(seconds: Any) -> str:
     """Format duration in human-readable string."""
-    sec_f = safe_float(seconds, float("nan"))
-    if not math.isfinite(sec_f):
+    sec_f = safe_float(seconds, default=None)
+    if sec_f is None:
         return "unknown"
     if sec_f < 0:
         return "now"
@@ -47,7 +46,8 @@ def _stamp_age(data: Dict[str, Any], now: float, *, include_seconds: bool = True
     ts = safe_float(raw_ts, 0.0)
     age = (now - ts) if ts > 0.0 else float("inf")
     if include_seconds:
-        data["age_seconds"] = round(age, 1) if math.isfinite(age) else None
+        age_f = safe_float(age, default=None)
+        data["age_seconds"] = round(age_f, 1) if age_f is not None else None
     data["age_formatted"] = _format_age(age)
     return data
 

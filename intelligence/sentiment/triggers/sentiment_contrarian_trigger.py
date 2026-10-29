@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import time
 from typing import Optional, Tuple
 
@@ -51,8 +50,8 @@ class SentimentContrarianTrigger:
         price_f = safe_pos_float(price, 0.0)
         if snapshot is None or price_f <= 0.0:
             return None, None
-        val_f = safe_float(obj_attr(snapshot, "value", None), float("nan"))
-        if not math.isfinite(val_f):
+        val_f = safe_float(obj_attr(snapshot, "value", None), default=None)
+        if val_f is None:
             return None, None
         price = price_f
         now = resolve_now_ts(ts)
@@ -65,9 +64,9 @@ class SentimentContrarianTrigger:
         if val <= self.extreme_fear_entry:
             history = obj_attr(snapshot, "historical_values", None)
             if isinstance(history, (list, tuple)) and len(history) >= 2:
-                h0 = safe_float(history[0], float("nan"))
-                h1 = safe_float(history[1], float("nan"))
-                if math.isfinite(h0) and math.isfinite(h1) and (h1 - h0) > 10:
+                h0 = safe_float(history[0], default=None)
+                h1 = safe_float(history[1], default=None)
+                if h0 is not None and h1 is not None and (h1 - h0) > 10:
                     return None, None
 
             strength = round(max(0.60, min(1.0, 1.0 - (val / 100.0))), 2)

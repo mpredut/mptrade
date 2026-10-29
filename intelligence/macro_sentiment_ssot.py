@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
-import math
 import os
 import re
 import threading
@@ -258,7 +257,7 @@ def sanitize_heartbeat_status(status: Any) -> Tuple[float, Dict[str, Any]]:
     raw = status if isinstance(status, dict) else {}
     hb_ts = safe_pos_float(raw.get("ts"), time.time())
     safe_status = {
-        k: (hb_ts if k == "ts" else (None if isinstance(v, float) and not math.isfinite(v) else v))
+        k: (hb_ts if k == "ts" else (None if isinstance(v, float) and safe_float(v, default=None) is None else v))
         for k, v in raw.items()
     }
     return hb_ts, safe_status
@@ -307,7 +306,7 @@ def inspect_daemon_heartbeat(
             "running": is_alive and age < max_alive_age_sec,
             "pid": pid,
             "status": status_str,
-            "age_seconds": round(age, 1) if math.isfinite(age) else None,
+            "age_seconds": round(safe_float(age, default=None), 1) if safe_float(age, default=None) is not None else None,
             "intervals": data.get("intervals") if isinstance(data.get("intervals"), dict) else {},
             "last_run": data.get("last_run") if isinstance(data.get("last_run"), dict) else {},
         }

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
@@ -109,8 +108,6 @@ def block_slopes(ts, px, window_h, step_h):
     if w_h <= 0.0 or s_h <= 0.0:
         return np.array(out_t), np.array(out_s)
     w, s = w_h * 3600.0, s_h * 3600.0
-    if not (math.isfinite(w) and w > 0.0 and math.isfinite(s) and s > 0.0):
-        return np.array(out_t), np.array(out_s)
     t = float(ts[0]) + w
     t_end = float(ts[-1])
     while t <= t_end:

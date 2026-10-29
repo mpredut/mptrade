@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import time
 import urllib.request
@@ -297,8 +296,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             best_ask = asks[0][0]
             if best_bid <= 0 or best_ask <= 0 or best_bid > best_ask:
                 return None
-            mid = (best_bid + best_ask) / 2.0
-            if not math.isfinite(mid) or mid <= 0:
+            mid = safe_pos_float((best_bid + best_ask) / 2.0, default=None)
+            if mid is None:
                 return None
 
             bid_lower_bound = mid * (1.0 - self.depth_band_pct / 100.0)

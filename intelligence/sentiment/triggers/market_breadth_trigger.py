@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import time
 from typing import Optional, Tuple
 
@@ -55,9 +54,9 @@ class MarketBreadthTrigger:
         price_f = safe_pos_float(price, 0.0)
         if snapshot is None or price_f <= 0.0:
             return None, None
-        adv_r = safe_float(obj_attr(snapshot, "advance_ratio", None), float("nan"))
-        med_c = safe_float(obj_attr(snapshot, "median_change_pct", None), float("nan"))
-        if not (math.isfinite(adv_r) and math.isfinite(med_c)):
+        adv_r = safe_float(obj_attr(snapshot, "advance_ratio", None), default=None)
+        med_c = safe_float(obj_attr(snapshot, "median_change_pct", None), default=None)
+        if adv_r is None or med_c is None:
             return None, None
         raw_regime = obj_attr(snapshot, "regime", None)
         regime = str(raw_regime).strip() if (isinstance(raw_regime, str) and raw_regime.strip()) else "NEUTRAL"
@@ -69,8 +68,8 @@ class MarketBreadthTrigger:
             adv_r <= self.washout_advance_threshold
             and med_c <= self.washout_median_threshold
         ):
-            a24 = safe_float(asset_24h_change_pct, float("nan"))
-            relative_strength = bool(math.isfinite(a24) and a24 > med_c)
+            a24 = safe_float(asset_24h_change_pct, default=None)
+            relative_strength = bool(a24 is not None and a24 > med_c)
 
             strength = round(min(0.95, 0.70 + (1.0 - adv_r) * 0.25), 2)
             event = TriggerEvent(

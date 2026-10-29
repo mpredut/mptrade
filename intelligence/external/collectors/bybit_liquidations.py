@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import threading
 import time
 from collections import deque
@@ -18,7 +17,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 import websockets
 
-from botcore import safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.external.collectors.orderbook_depth import _symbol_variants
 from providers.base import normalize_side
 
@@ -208,7 +207,7 @@ class BybitLiquidationCollector:
             dq = self._events.setdefault(sym_norm, deque())
             dq.append((now, side_norm, notional))
             cutoff = now - self._retention
-            while dq and (not math.isfinite(dq[0][0]) or dq[0][0] < cutoff):
+            while dq and (safe_float(dq[0][0], default=None) is None or dq[0][0] < cutoff):
                 dq.popleft()
 
     def get_summary(
@@ -235,7 +234,7 @@ class BybitLiquidationCollector:
                         break
 
         for ts, side, notional in items:
-            if not (math.isfinite(ts) and math.isfinite(notional) and notional > 0.0):
+            if safe_float(ts, default=None) is None or safe_pos_float(notional, default=None) is None:
                 continue
             if ts < cutoff or ts > (now_ts + 5.0):
                 continue

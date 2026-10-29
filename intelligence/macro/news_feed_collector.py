@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
-import math
 import os
 import re
 import time
@@ -12,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 from cachepaths import cache_path, resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
     ACUTE_SHOCK_PHRASES,
@@ -224,9 +223,8 @@ class NewsFeedCollector:
             for k, v in self._aggregated_pool.items()
             if isinstance(v, tuple)
             and len(v) == 2
-            and not isinstance(v[0], bool)
             and isinstance(v[0], (int, float))
-            and math.isfinite(float(v[0]))
+            and safe_float(v[0], default=None) is not None
             and float(v[0]) >= cutoff
             and hasattr(v[1], "title")
         }
@@ -266,9 +264,8 @@ class NewsFeedCollector:
             for v in self._aggregated_pool.values()
             if isinstance(v, tuple)
             and len(v) == 2
-            and not isinstance(v[0], bool)
             and isinstance(v[0], (int, float))
-            and math.isfinite(float(v[0]))
+            and safe_float(v[0], default=None) is not None
             and cutoff <= float(v[0]) <= (now + 5.0)
             and hasattr(v[1], "title")
             and hasattr(v[1], "is_high_severity")
