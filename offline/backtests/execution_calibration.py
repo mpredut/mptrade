@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import math
 import re
 import statistics
-from botcore import _parse_bool_flag
+from typing import Iterable
 
-
-def _f(val: object, default: float = 0.0) -> float:
-    if val is None or isinstance(val, bool):
-        return default
-    try:
-        res = float(val)
-    except (TypeError, ValueError):
-        return default
-    return res if math.isfinite(res) else default
+from botcore import _parse_bool_flag, safe_float as _f
+from cachepaths import normalize_venue_name
+from providers.base import normalize_side
 
 
 def _ts_sec(val: object, default: float = 0.0) -> float:
@@ -35,32 +28,28 @@ _CLIENT_ORDER_ID_PATTERNS = {
 
 def _client_order_id_valid(venue: object, client_order_id: object) -> bool | None:
     """Validate only supported venues; T212/unknown do not enter the gate."""
-    pattern = _CLIENT_ORDER_ID_PATTERNS.get(str(venue or "").strip().lower())
+    raw_v = "" if isinstance(venue, bool) else str(venue or "")
+    norm_venue = normalize_venue_name(raw_v) or raw_v.strip().lower()
+    pattern = _CLIENT_ORDER_ID_PATTERNS.get(norm_venue)
     if pattern is None:
         return None
     return bool(pattern.fullmatch(str(client_order_id or "")))
 
 
+def _clean_finite_floats(values: Iterable[object] | None) -> list[float]:
+    if not values:
+        return []
+    return [vf for value in values if (vf := _f(value, default=None)) is not None]
+
+
 def _percentile(values: list[float], percentile: float) -> float | None:
-    if not values or isinstance(percentile, bool):
+    if not values:
         return None
-    try:
-        pct = float(percentile)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(pct):
+    pct = _f(percentile, default=None)
+    if pct is None:
         return None
     pct = min(100.0, max(0.0, pct))
-    clean: list[float] = []
-    for value in values:
-        if value is None or isinstance(value, bool):
-            continue
-        try:
-            vf = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(vf):
-            clean.append(vf)
+    clean = _clean_finite_floats(values)
     if not clean:
         return None
     ordered = sorted(clean)
@@ -74,16 +63,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 
 def distribution(values: list[float]) -> dict:
-    clean_values: list[float] = []
-    for value in (values or ()):
-        if value is None or isinstance(value, bool):
-            continue
-        try:
-            vf = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(vf):
-            clean_values.append(vf)
+    clean_values = _clean_finite_floats(values)
     return {
         "count": len(clean_values),
         "min": min(clean_values) if clean_values else None,
@@ -144,9 +124,8 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             for row in status_rows if qty > 0 and row[1] > 0
         ]
         avg_fill = cost / filled if filled > 0 and cost > 0 else None
-        raw_side = requested.get("side")
-        side = "" if isinstance(raw_side, bool) or raw_side is None else str(raw_side).strip().lower()
-        direction = 1.0 if side in ("buy", "long") else (-1.0 if side in ("sell", "short") else 0.0)
+        side_norm = normalize_side(requested.get("side"))
+        direction = 1.0 if side_norm == "BUY" else (-1.0 if side_norm == "SELL" else 0.0)
         requested_price = requested.get("price")
         deviation_bps = None
         if requested_price is not None and avg_fill is not None and direction != 0.0:

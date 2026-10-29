@@ -24,7 +24,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
-from botcore import safe_float as _safe_float
+from botcore import safe_float as _safe_float, safe_nonneg_float, safe_pos_float
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -82,6 +82,13 @@ class BacktestStats:
     sentiment_downscales: int = 0
 
 
+def _req_pos_num(val: object, name: str) -> float:
+    fval = safe_pos_float(val, default=None) if isinstance(val, (int, float)) else None
+    if fval is None:
+        raise ValueError(f"{name} must be finite and > 0")
+    return fval
+
+
 def _precompute_intelligence_tape(
     symbol: str,
     sampled: List[Tuple[float, float]],
@@ -89,12 +96,9 @@ def _precompute_intelligence_tape(
     parabolic_surge_pct: float,
 ) -> List[dict]:
     """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
-    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
-        raise ValueError("step_seconds must be finite and > 0")
-    if isinstance(parabolic_surge_pct, bool) or not isinstance(parabolic_surge_pct, (int, float)) or not math.isfinite(parabolic_surge_pct) or parabolic_surge_pct <= 0:
-        raise ValueError("parabolic_surge_pct must be finite and > 0")
-    step_seconds = max(1, int(round(float(step_seconds))))
-    parabolic_surge_pct = float(parabolic_surge_pct)
+    step_f = _req_pos_num(step_seconds, "step_seconds")
+    parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
+    step_seconds = max(1, int(round(step_f)))
     kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
     mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
     parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
@@ -106,13 +110,9 @@ def _precompute_intelligence_tape(
     tape: List[dict] = []
 
     for raw_t, raw_p in sampled:
-        if isinstance(raw_t, bool) or isinstance(raw_p, bool):
-            continue
-        try:
-            t, p = float(raw_t), float(raw_p)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not (math.isfinite(t) and math.isfinite(p) and p > 0.0):
+        t = _safe_float(raw_t, default=None)
+        p = safe_pos_float(raw_p, default=None)
+        if t is None or p is None:
             continue
         if trend_start_ts is None:
             trend_start_ts = t
@@ -170,18 +170,14 @@ def run_intelligence_backtest(
     fee_pct: float = 0.001,  # 0.1% taker fee
 ) -> Dict[str, BacktestStats]:
     """Run comparative backtest across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite."""
-    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
-        raise ValueError("step_seconds must be finite and > 0")
-    if isinstance(initial_balance, bool) or not isinstance(initial_balance, (int, float)) or not math.isfinite(initial_balance) or initial_balance <= 0:
-        raise ValueError("initial_balance must be finite and > 0")
-    if isinstance(parabolic_surge_pct, bool) or not isinstance(parabolic_surge_pct, (int, float)) or not math.isfinite(parabolic_surge_pct) or parabolic_surge_pct <= 0:
-        raise ValueError("parabolic_surge_pct must be finite and > 0")
-    if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(fee_pct) or not (0.0 <= float(fee_pct) < 1.0):
+    step_f = _req_pos_num(step_seconds, "step_seconds")
+    initial_balance = _req_pos_num(initial_balance, "initial_balance")
+    parabolic_surge_pct = _req_pos_num(parabolic_surge_pct, "parabolic_surge_pct")
+    fee_f = safe_nonneg_float(fee_pct, default=None) if isinstance(fee_pct, (int, float)) else None
+    if fee_f is None or fee_f >= 1.0:
         raise ValueError("fee_pct must be in [0, 1)")
-    step_seconds = max(1, int(round(float(step_seconds))))
-    initial_balance = float(initial_balance)
-    parabolic_surge_pct = float(parabolic_surge_pct)
-    fee_pct = float(fee_pct)
+    step_seconds = max(1, int(round(step_f)))
+    fee_pct = fee_f
     if cache_path is None:
         cache_path = resolve_cache_path(f"cache_sparse_price_{symbol}.jsonl")
 

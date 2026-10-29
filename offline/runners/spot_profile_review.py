@@ -19,6 +19,7 @@ import subprocess
 from unittest.mock import patch
 
 from dotenv import dotenv_values
+from botcore import safe_pos_float
 from strategies import spot_engine as _strat
 from strategies.spot_replay import run_replay
 from strategies.spot_engine import StratParams
@@ -48,13 +49,8 @@ def revision_params(spec: str) -> StratParams:
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:
-    if cash is None or isinstance(cash, bool):
-        raise ValueError("cash must be a finite positive number")
-    try:
-        cash_f = float(cash)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("cash must be a finite positive number") from exc
-    if not math.isfinite(cash_f) or cash_f <= 0:
+    cash_f = safe_pos_float(cash, default=None)
+    if cash_f is None:
         raise ValueError("cash must be a finite positive number")
     cash = cash_f
     records = validate_dataset(load_dataset(DEFAULT_DATASET), interval_minutes=240)

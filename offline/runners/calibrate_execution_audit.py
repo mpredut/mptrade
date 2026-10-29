@@ -13,6 +13,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from botcore import safe_float  # noqa: E402
+from cachepaths import normalize_venue_name  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
 )
@@ -29,9 +31,16 @@ def _paths(inputs: list[Path]) -> list[Path]:
     return sorted(set(paths))
 
 
+def _norm_audit_venue(val: object) -> str:
+    if isinstance(val, bool) or val is None:
+        return ""
+    raw = str(val).strip().lower()
+    return normalize_venue_name(raw) or raw
+
+
 def _load(paths: list[Path], venue: str | None) -> list[dict]:
     events = []
-    norm_venue = "" if isinstance(venue, bool) or venue is None else str(venue).strip().lower()
+    norm_venue = _norm_audit_venue(venue)
     for path in paths:
         with path.open(encoding="utf-8") as handle:
             for line_number, raw in enumerate(handle, start=1):
@@ -43,23 +52,15 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
                     raise ValueError(f"{path}:{line_number}: JSON invalid") from error
                 if not isinstance(event, dict):
                     raise ValueError(f"{path}:{line_number}: JSON invalid")
-                if norm_venue:
-                    raw_ev_venue = event.get("venue")
-                    ev_venue = "" if isinstance(raw_ev_venue, bool) or raw_ev_venue is None else str(raw_ev_venue).strip().lower()
-                    if ev_venue != norm_venue:
-                        continue
+                if norm_venue and _norm_audit_venue(event.get("venue")) != norm_venue:
+                    continue
                 events.append(event)
     return events
 
 
 def _fmt(value) -> str:
-    if value is None or isinstance(value, bool):
-        return "n/a"
-    try:
-        fval = float(value)
-    except (TypeError, ValueError):
-        return "n/a"
-    return f"{fval:.3f}" if math.isfinite(fval) else "n/a"
+    fval = safe_float(value, default=None)
+    return f"{fval:.3f}" if fval is not None else "n/a"
 
 
 def markdown_report(report: dict, paths: list[Path]) -> str:

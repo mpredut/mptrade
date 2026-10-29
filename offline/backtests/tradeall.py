@@ -31,6 +31,8 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # monitortrades — see UNIFIED_BACKTEST_PLAN.md §7/§8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5). The
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from providers.base import normalize_side
 from providers.replay_clock import SimClock as _SimClock  # noqa: F401
 from state_io import atomic_write_json, read_recovering_previous
 from cachepaths import cache_path, legacy_filenames_for, migrate_legacy_filename_if_needed
@@ -75,15 +77,8 @@ class BacktestBroker:
         # from the main loop). trend_gate=None => OFF (the old behaviour).
         self.trend_gate = trend_gate
         self.trend_gate_timeout_sec = trend_gate_timeout_sec
-        _max_wait = 3600.0
-        if trend_gate_max_wait_sec is not None and not isinstance(trend_gate_max_wait_sec, bool):
-            try:
-                _mw = float(trend_gate_max_wait_sec)
-                if math.isfinite(_mw) and _mw >= 0.0:
-                    _max_wait = _mw
-            except (TypeError, ValueError):
-                pass
-        self.trend_gate_max_wait_sec = _max_wait
+        _mw = safe_nonneg_float(trend_gate_max_wait_sec, default=None)
+        self.trend_gate_max_wait_sec = _mw if _mw is not None else 3600.0
         self.pending = []          # [{side, symbol, qty_arg, motivation, deadline}]
         self.n_waited = 0          # How many orders were delayed (and then executed).
         self._log_f = None
@@ -98,26 +93,16 @@ class BacktestBroker:
 
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
         """The real P&L accounting (no gate) — used directly or after waiting."""
-        order_type = str(order_type or "").strip().upper()
+        order_type = normalize_side(order_type)
         if order_type not in ("BUY", "SELL"):
             return None
-        if isinstance(price, bool):
-            return None
-        try:
-            price = float(price)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(price) or price <= 0.0:
+        price = safe_pos_float(price, default=None)
+        if price is None:
             return None
         if qty is None:
             qty = BACKTEST_NOTIONAL_USD / price
-        if isinstance(qty, bool):
-            return None
-        try:
-            qty = float(qty)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(qty) or qty <= 0.0:
+        qty = safe_pos_float(qty, default=None)
+        if qty is None:
             return None
         self.last_price = price
         if order_type == "BUY":
@@ -143,7 +128,7 @@ class BacktestBroker:
         return {"orderId": -1, "backtest": True}   # A truthy object, as in logic()'s "if order:".
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
-        order_type = str(order_type or "").strip().upper()
+        order_type = normalize_side(order_type)
         if order_type not in ("BUY", "SELL"):
             return None
         if order_type != "BUY" and self.pos_qty <= 1e-12:
@@ -222,6 +207,25 @@ _TICK_SLICE_CACHE = {}
 _FILE_TICKS_CACHE = {}
 
 
+def _parse_tick_pair(item):
+    if not isinstance(item, (list, tuple)) or len(item) < 2:
+        return None
+    ts_ms = safe_float(item[0], default=None)
+    price = safe_pos_float(item[1], default=None)
+    if ts_ms is None or price is None:
+        return None
+    return ts_ms / 1000.0, price
+
+
+def _resolve_existing_cache_file(path):
+    migrate_legacy_filename_if_needed(path)
+    if not os.path.exists(path):
+        for legacy_path in legacy_filenames_for(path):
+            if os.path.exists(legacy_path):
+                return legacy_path
+    return path
+
+
 def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
     try:
         st = os.stat(path)
@@ -251,18 +255,9 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
                     continue
                 if not isinstance(rec, dict) or rec.get("s") != symbol:
                     continue
-                item = rec.get("i")
-                if not isinstance(item, (list, tuple)) or len(item) < 2:
-                    continue
-                if isinstance(item[0], bool) or isinstance(item[1], bool):
-                    continue
-                try:
-                    ts_ms, price = float(item[0]), float(item[1])
-                except (TypeError, ValueError):
-                    continue
-                if not (math.isfinite(ts_ms) and math.isfinite(price) and price > 0.0):
-                    continue
-                full_ticks.append((ts_ms / 1000.0, price))
+                parsed = _parse_tick_pair(rec.get("i"))
+                if parsed is not None:
+                    full_ticks.append(parsed)
         if len(_FILE_TICKS_CACHE) >= 4:
             _FILE_TICKS_CACHE.clear()
         _FILE_TICKS_CACHE[file_key] = full_ticks
@@ -280,13 +275,7 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
 def load_ticks_history(symbol, start_ts, end_ts):
     """Reads cache_sparse_price_{symbol}.jsonl — a long history, SPARSE."""
-    path = cache_path(f"cache_sparse_price_{symbol}.jsonl")
-    migrate_legacy_filename_if_needed(path)
-    if not os.path.exists(path):
-        for legacy_path in legacy_filenames_for(path):
-            if os.path.exists(legacy_path):
-                path = legacy_path
-                break
+    path = _resolve_existing_cache_file(cache_path(f"cache_sparse_price_{symbol}.jsonl"))
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
     yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
@@ -301,19 +290,11 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         path = cache_path(f"cache_24_price_{symbol}.json")
         migrate_legacy_filename_if_needed(path)
         if not os.path.exists(path) and not os.path.exists(f"{path}.previous"):
-            alt_jsonl = cache_path(f"cache_365_price_{symbol}.jsonl")
-            migrate_legacy_filename_if_needed(alt_jsonl)
-            for cand in (alt_jsonl, *legacy_filenames_for(alt_jsonl)):
-                if os.path.exists(cand):
-                    path = cand
-                    break
+            alt_jsonl = _resolve_existing_cache_file(cache_path(f"cache_365_price_{symbol}.jsonl"))
+            if os.path.exists(alt_jsonl):
+                path = alt_jsonl
     if str(path).endswith(".jsonl"):
-        migrate_legacy_filename_if_needed(path)
-        if not os.path.exists(path):
-            for legacy_path in legacy_filenames_for(path):
-                if os.path.exists(legacy_path):
-                    path = legacy_path
-                    break
+        path = _resolve_existing_cache_file(path)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
         yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
@@ -323,17 +304,10 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     data = read_recovering_previous(path, json.loads, default=None)
     entries = data.get("items", {}).get(symbol, []) if isinstance(data, dict) else []
     for entry in entries:
-        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+        parsed = _parse_tick_pair(entry)
+        if parsed is None:
             continue
-        if isinstance(entry[0], bool) or isinstance(entry[1], bool):
-            continue
-        try:
-            ts_ms, price = float(entry[0]), float(entry[1])
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(ts_ms) and math.isfinite(price) and price > 0.0):
-            continue
-        ts = ts_ms / 1000.0
+        ts, price = parsed
         if ts < start_ts:
             continue
         if end_ts is not None and ts > end_ts:
@@ -459,6 +433,19 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         last_state = None
         slope = slope_big = gradient = _gc = _sf = _gr = 0.0
         fast_kalman_only = bool(kalman_primary and speed == "fast" and quiet)
+        def _persist_analysis_state(cur_px, cur_ts, cur_shadow):
+            try:
+                state_obj = {symbol: {
+                    "current_price": cur_px, "final_trend": gradient,
+                    "growth_coefficient": _gc, "slope_full": _sf,
+                    "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
+                    "epsilon": window_small.get_noise_epsilon(), "ts": cur_ts,
+                    **cur_shadow,
+                }}
+                atomic_write_json(os.path.join(out_dir, "analysis_state.json"), state_obj)
+            except Exception:
+                pass
+
         with open(price_path, "a", encoding="utf-8") as price_f, \
              open(broker.path, "a", encoding="utf-8") as outcome_f, \
              open(decision_path, "a", encoding="utf-8") as decision_f:
@@ -527,19 +514,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     
                 n += 1
                 if speed != "fast" and n % 100 == 0:
-                    # Simulated analysis state — read by tradeall_observe.py (chart hover),
-                    # the same content as live's cache_short_trend.json.
-                    try:
-                        last_state = {symbol: {
-                            "current_price": price, "final_trend": gradient,
-                            "growth_coefficient": _gc, "slope_full": _sf,
-                            "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
-                            "epsilon": window_small.get_noise_epsilon(), "ts": ts,
-                            **shadow_fields,
-                        }}
-                        atomic_write_json(os.path.join(out_dir, "analysis_state.json"), last_state)
-                    except Exception:
-                        pass
+                    _persist_analysis_state(price, ts, shadow_fields)
                 if n % 5000 == 0:
                     # sys.stderr.write, not print(): in --quiet mode, print() is suppressed globally
                     # (log.disable_print()) — OUR progress messages still have to be visible.
@@ -561,16 +536,9 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                         "adapt_reentry_pct": adapt_re,
                         "adapt_dca_pct": adapt_dca,
                     }
-                last_state = {symbol: {
-                    "current_price": price, "final_trend": gradient,
-                    "growth_coefficient": _gc, "slope_full": _sf,
-                    "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
-                    "epsilon": window_small.get_noise_epsilon(), "ts": ts,
-                    **shadow_fields,
-                }}
-                atomic_write_json(os.path.join(out_dir, "analysis_state.json"), last_state)
             except Exception:
                 pass
+            _persist_analysis_state(price, ts, shadow_fields)
     
         pnl = broker.pnl_summary()
         if first_price and broker.last_price:

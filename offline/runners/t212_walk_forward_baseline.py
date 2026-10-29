@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 import importlib.util
 
-from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float  # noqa: E402
 _orig_sys_path = list(sys.path)
 try:
     if str(T212_DIR) not in sys.path:
@@ -73,13 +73,8 @@ from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
 def periods_per_year(interval_minutes: int) -> float:
-    if isinstance(interval_minutes, bool):
-        raise ValueError("interval_minutes must be positive")
-    try:
-        im = float(interval_minutes)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("interval_minutes must be positive") from exc
-    if not math.isfinite(im) or im <= 0:
+    im = safe_pos_float(interval_minutes, default=None)
+    if im is None:
         raise ValueError("interval_minutes must be positive")
     # Regular US session: 6.5h and roughly 252 trading days per year.
     if im >= 1440:

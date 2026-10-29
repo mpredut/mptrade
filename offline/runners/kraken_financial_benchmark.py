@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
+from botcore import parse_dotenv, safe_float, safe_int, safe_pos_float  # noqa: E402
 from kraken.kraken_common import load_dotenv  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -100,7 +101,6 @@ def strat_params_from_dict(values: dict) -> StratParams:
 
 
 def _load_params(args) -> StratParams:
-    from botcore import parse_dotenv
     cfg: dict[str, str] = {}
     for path_str in (args.config_file, args.env_file):
         p = Path(path_str)
@@ -179,11 +179,7 @@ def build_report(
         raise ValueError(
             f"hash dataset diferit: {digest} != {expected.get('sha256')}"
         )
-    raw_bars = expected.get("bars", -1)
-    try:
-        expected_bars = -1 if isinstance(raw_bars, bool) or raw_bars is None else int(float(raw_bars))
-    except (TypeError, ValueError, OverflowError):
-        expected_bars = -1
+    expected_bars = safe_int(expected.get("bars"), default=-1)
     if len(records) != expected_bars:
         raise ValueError(f"different bar count: {len(records)} != {expected.get('bars')}")
 
@@ -250,13 +246,8 @@ def build_report(
 
 
 def _format(value, *, signed: bool = False) -> str:
-    if value is None or isinstance(value, bool):
-        return "n/a"
-    try:
-        fval = float(value)
-    except (TypeError, ValueError):
-        return "n/a"
-    if not math.isfinite(fval):
+    fval = safe_float(value, default=None)
+    if fval is None:
         return "n/a"
     return f"{fval:+.3f}" if signed else f"{fval:.3f}"
 
@@ -307,17 +298,9 @@ def markdown_report(report: dict) -> str:
         lines.extend(["## Promotion gate", "", f"Verdict: **{verdict}**", ""])
     first_scen = next(iter((report.get("scenarios") or {}).values()), None)
     raw_tb = ((first_scen or {}).get("aggregate") or {}).get("total_test_bars") if isinstance(first_scen, dict) and isinstance(first_scen.get("aggregate"), dict) else 0
-    try:
-        total_bars = 0 if isinstance(raw_tb, bool) or raw_tb is None else int(float(raw_tb))
-    except (TypeError, ValueError, OverflowError):
-        total_bars = 0
+    total_bars = safe_int(raw_tb, default=0)
     raw_wfi = (report.get("walk_forward") or {}).get("interval_minutes") if isinstance(report.get("walk_forward"), dict) else 240.0
-    try:
-        wf_interval = 240.0 if isinstance(raw_wfi, bool) or raw_wfi is None else float(raw_wfi)
-        if not math.isfinite(wf_interval) or wf_interval <= 0:
-            wf_interval = 240.0
-    except (TypeError, ValueError, OverflowError):
-        wf_interval = 240.0
+    wf_interval = safe_pos_float(raw_wfi, default=240.0) or 240.0
     lines.extend([
         "## Interpretation", "",
         "- `Mean USD/fold` uses the same initial budget in every TEST window.",

@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
+from botcore import safe_float  # noqa: E402
 import kraken_financial_benchmark as benchmark  # noqa: E402
 from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
@@ -110,16 +111,7 @@ def build_comparison(args) -> dict:
     }
 
 
-def _fmt(value: float | None, *, signed: bool = False) -> str:
-    if value is None or isinstance(value, bool):
-        return "n/a"
-    try:
-        fval = float(value)
-    except (TypeError, ValueError):
-        return "n/a"
-    if not math.isfinite(fval):
-        return "n/a"
-    return f"{fval:+.3f}" if signed else f"{fval:.3f}"
+_fmt = benchmark._format
 
 
 def markdown_report(report: dict) -> str:
@@ -138,13 +130,8 @@ def markdown_report(report: dict) -> str:
             risk = dual["defensive_gate"]["scenarios"][scenario_name]
             wtl = gate["wins_ties_losses"]
             dd_wtl = risk["drawdown_wins_ties_losses"]
-            calmar_delta = risk["median_calmar_improvement_ratio"]
-            calmar_pct_val = None
-            if calmar_delta is not None and not isinstance(calmar_delta, bool):
-                try:
-                    calmar_pct_val = float(calmar_delta) * 100.0
-                except (TypeError, ValueError, OverflowError):
-                    calmar_pct_val = None
+            calmar_delta = safe_float(risk["median_calmar_improvement_ratio"], default=None)
+            calmar_pct_val = calmar_delta * 100.0 if calmar_delta is not None else None
             calmar_fmt = _fmt(calmar_pct_val, signed=True)
             calmar_cell = f"{calmar_fmt}%" if calmar_fmt != "n/a" else "n/a"
             lines.append(

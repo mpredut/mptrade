@@ -24,6 +24,7 @@ if str(RUNNER_DIR) not in sys.path:
     sys.path.append(str(RUNNER_DIR))
 
 from botcore import _parse_bool_flag, safe_float
+from cachepaths import normalize_venue_name
 from offline.backtests.comparison import (
     dominates as _dominates,
     format_comparison_markdown,
@@ -95,15 +96,15 @@ _safe_f = safe_float
 
 
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
-    if cli_venue is not None and not isinstance(cli_venue, bool):
-        cv = str(getattr(cli_venue, "name", cli_venue) or "").strip().lower()
-        if cv:
-            return cv
-    raw_rep_venue = report.get("venue") if isinstance(report, dict) else None
-    if raw_rep_venue is not None and not isinstance(raw_rep_venue, bool):
-        rv = str(raw_rep_venue).strip().lower()
-        if rv:
-            return rv
+    for raw in (
+        cli_venue if not isinstance(cli_venue, bool) else None,
+        report.get("venue") if isinstance(report, dict) and not isinstance(report.get("venue"), bool) else None,
+    ):
+        if raw is not None:
+            v_str = str(getattr(raw, "name", raw) or "").strip().lower()
+            if v_str:
+                norm = normalize_venue_name(v_str) or v_str
+                return "trading212" if norm == "t212" else norm
     purpose = str((report.get("purpose") if isinstance(report, dict) else None) or "").lower()
     if "binance" in purpose:
         return "binance"
@@ -152,6 +153,16 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             return ROOT / p
         return p
 
+    def _load_and_verify_frozen(raw_path: str | Path, expected_hash: object, interval: int) -> list[dict]:
+        path = _resolve_frozen_file(raw_path)
+        records = load_frozen_dataset(path)
+        actual_hash = dataset_sha256(records)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
+            )
+        return records
+
     if isinstance(report.get("intervals"), dict) and report["intervals"]:
         for interval_text, section in report["intervals"].items():
             try:
@@ -161,14 +172,11 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
                 interval = parse_interval_minutes(str(interval_text))
             if not isinstance(section, dict) or not isinstance(section.get("dataset"), dict):
                 raise ValueError(f"missing dataset metadata for {interval}m")
-            path = _resolve_frozen_file(section["dataset"]["frozen_file"])
-            records = load_frozen_dataset(path)
-            actual_hash = dataset_sha256(records)
-            expected_hash = section["dataset"]["sha256"]
-            if actual_hash != expected_hash:
-                raise ValueError(
-                    f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
-                )
+            records = _load_and_verify_frozen(
+                section["dataset"]["frozen_file"],
+                section["dataset"]["sha256"],
+                interval,
+            )
             raw_ws = section.get("window_sizes") or section.get("windows")
             window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
             warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
@@ -206,14 +214,7 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
                 frozen_spec = source.split("frozen file: ", 1)[1].strip()
         if not frozen_spec:
             raise ValueError(f"could not determine frozen dataset file path for {interval}m")
-        path = _resolve_frozen_file(frozen_spec)
-        records = load_frozen_dataset(path)
-        actual_hash = dataset_sha256(records)
-        expected_hash = dataset_meta["sha256"]
-        if actual_hash != expected_hash:
-            raise ValueError(
-                f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
-            )
+        records = _load_and_verify_frozen(frozen_spec, dataset_meta["sha256"], interval)
         raw_ws = report.get("windows") or report.get("window_sizes")
         window_sizes = raw_ws if isinstance(raw_ws, dict) else {}
         warmup = max(0, int(_safe_f(window_sizes.get("signal_warmup_bars"), float(warmup_bars))))
@@ -221,64 +222,56 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
     return datasets
 
 
-def _load_hl_replay():
+_SPOT_PARAM_DEFAULTS = {
+    "currency": "USDC",
+    "entry_amount": 50.0,
+    "entry_discount_pct": 0.2,
+    "dca_amount": 30.0,
+    "dca_drop_pct": 2.0,
+    "check_minutes": 60.0,
+    "takeprofit_pct": 5.0,
+    "max_budget": 500.0,
+    "max_dca_buys": 10,
+    "enable_takeprofit": True,
+    "order_ttl_min": 120.0,
+}
+
+
+def _load_venue_replay_module(subdir: str, module_name: str):
     import importlib.util
-    hl_dir = ROOT / "hyperliquid"
+    venue_dir = ROOT / subdir
     orig_sys_path = list(sys.path)
     try:
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
-        if str(hl_dir) not in sys.path:
-            sys.path.append(str(hl_dir))
-        spec = importlib.util.spec_from_file_location("hl_wf_replay", str(hl_dir / "replay.py"))
+        if str(venue_dir) not in sys.path:
+            sys.path.append(str(venue_dir))
+        spec = importlib.util.spec_from_file_location(module_name, str(venue_dir / "replay.py"))
         mod = importlib.util.module_from_spec(spec)
-        sys.modules["hl_wf_replay"] = mod
+        sys.modules[module_name] = mod
         spec.loader.exec_module(mod)
         return mod
     finally:
         sys.path[:] = orig_sys_path
+
+
+def _load_hl_replay():
+    return _load_venue_replay_module("hyperliquid", "hl_wf_replay")
 
 
 def _load_t212_replay():
-    import importlib.util
-    t212_dir = ROOT / "212trading"
-    orig_sys_path = list(sys.path)
-    try:
-        if str(ROOT) not in sys.path:
-            sys.path.insert(0, str(ROOT))
-        if str(t212_dir) not in sys.path:
-            sys.path.append(str(t212_dir))
-        spec = importlib.util.spec_from_file_location("t212_wf_replay", str(t212_dir / "replay.py"))
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["t212_wf_replay"] = mod
-        spec.loader.exec_module(mod)
-        return mod
-    finally:
-        sys.path[:] = orig_sys_path
+    return _load_venue_replay_module("212trading", "t212_wf_replay")
 
 
 def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
     """Return (base_params, base_fee, evaluate_segment_fn)."""
-    norm_venue = str(venue or "").strip().lower()
+    raw_v = str(venue or "").strip().lower()
+    norm_venue = normalize_venue_name(raw_v) or raw_v
     raw_sp = source_report.get("strategy_params") if isinstance(source_report, dict) else None
     raw_params = raw_sp if isinstance(raw_sp, dict) else {}
 
-    spot_defaults = {
-        "currency": "USDC",
-        "entry_amount": 50.0,
-        "entry_discount_pct": 0.2,
-        "dca_amount": 30.0,
-        "dca_drop_pct": 2.0,
-        "check_minutes": 60.0,
-        "takeprofit_pct": 5.0,
-        "max_budget": 500.0,
-        "max_dca_buys": 10,
-        "enable_takeprofit": True,
-        "order_ttl_min": 120.0,
-    }
-
     if norm_venue in ("kraken", "binance"):
-        base_params = StratParams.from_dict(raw_params, defaults=spot_defaults)
+        base_params = StratParams.from_dict(raw_params, defaults=dict(_SPOT_PARAM_DEFAULTS))
         raw_fee = source_report.get("fee_pct_per_leg") if isinstance(source_report, dict) else None
         base_fee = max(0.0, _safe_f(raw_fee, 0.26 if norm_venue == "kraken" else 0.10))
         return base_params, base_fee, _segment_result
@@ -294,20 +287,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         base_fee = max(0.0, _safe_f(raw_fee, 0.035))
 
         if engine == "spot":
-            defaults = {
-                "currency": "USDC",
-                "entry_amount": 50.0,
-                "entry_discount_pct": 0.2,
-                "dca_amount": 30.0,
-                "dca_drop_pct": 2.0,
-                "check_minutes": 60.0,
-                "takeprofit_pct": 5.0,
-                "max_budget": 500.0,
-                "max_dca_buys": 10,
-                "enable_takeprofit": True,
-                "order_ttl_min": 120.0,
-            }
-            base_params = StratParams.from_dict(raw_params, defaults=defaults)
+            base_params = StratParams.from_dict(raw_params, defaults=dict(_SPOT_PARAM_DEFAULTS))
 
             def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
                 adapter = hl_replay.make_hyperliquid_replay_adapter(
