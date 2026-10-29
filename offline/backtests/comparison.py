@@ -156,14 +156,13 @@ def format_comparison_markdown(
     ]
     candidates_raw = report.get("candidates")
     candidates = candidates_raw if isinstance(candidates_raw, Mapping) else {}
-    ordered = sorted(
-        candidates.items(),
-        key=lambda item: (
-            item[0] != "live",
-            -(_finite_float(((item[1].get("summary") if isinstance(item[1], Mapping) else None) or {}).get("mean_return_pct") if isinstance((item[1].get("summary") if isinstance(item[1], Mapping) else None), Mapping) else None) or 0.0),
-            item[0],
-        ),
-    )
+    def _sort_key(item: tuple[str, Any]) -> tuple[bool, float, str]:
+        cand_name, cand_val = item
+        summary = cand_val.get("summary") if isinstance(cand_val, Mapping) else {}
+        mean_ret = safe_float(summary.get("mean_return_pct") if isinstance(summary, Mapping) else None, 0.0)
+        return (cand_name != "live", -mean_ret, cand_name)
+
+    ordered = sorted(candidates.items(), key=_sort_key)
     for name, item in ordered:
         item_dict = item if isinstance(item, Mapping) else {}
         summary = item_dict.get("summary") if isinstance(item_dict.get("summary"), Mapping) else {}

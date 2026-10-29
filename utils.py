@@ -155,39 +155,19 @@ def timeToHMS(timestamp_sec):
         return "N/A"
 
 
-def _safe_seconds(max_age_seconds) -> float:
-    return botcore.safe_float(max_age_seconds, default=0.0)
+_safe_seconds = botcore.safe_nonneg_float
 
 
-# Convert seconds to days.
-def secondsToDays(max_age_seconds):
-    # Seconds per day.
-    seconds_in_a_day = 86400  # 24 hours * 60 minutes * 60 seconds
-    
-    # Calculate the number of days.
-    days = _safe_seconds(max_age_seconds) / seconds_in_a_day
-    
-    return days
+def secondsToDays(max_age_seconds) -> float:
+    return _safe_seconds(max_age_seconds, default=0.0) / 86400.0
 
-# Convert seconds to hours.
-def secondsToHours(max_age_seconds):
-    # Seconds per hour.
-    seconds_in_an_hour = 3600  # 60 minutes * 60 seconds
-    
-    # Calculate the number of hours.
-    hours = _safe_seconds(max_age_seconds) / seconds_in_an_hour
-    
-    return hours
 
-# Convert seconds to minutes.
-def secondsToMinutes(max_age_seconds):
-    # Seconds per minute.
-    seconds_in_a_minute = 60  # 60 seconds
-    
-    # Calculate the number of minutes.
-    minutes = _safe_seconds(max_age_seconds) / seconds_in_a_minute
-    
-    return minutes
+def secondsToHours(max_age_seconds) -> float:
+    return _safe_seconds(max_age_seconds, default=0.0) / 3600.0
+
+
+def secondsToMinutes(max_age_seconds) -> float:
+    return _safe_seconds(max_age_seconds, default=0.0) / 60.0
 
 
 def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):

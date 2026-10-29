@@ -40,11 +40,12 @@ from botcore import (
     _parse_bool_flag,
     safe_float,
     safe_nonneg_float,
-    safe_nonneg_float as _safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
+
+_safe_nonneg_float = safe_nonneg_float
 
 
 def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:
