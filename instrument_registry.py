@@ -10,6 +10,7 @@ import configparser
 import re
 
 from botcore import safe_float
+from cachepaths import normalize_venue_name
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
@@ -103,7 +104,6 @@ def load_registry(path=None):
         values = dict(cp.items(name))
         core = {key: _required(values, key, name) for key in sorted(CORE)}
         core["enabled"] = _boolean(core["enabled"], "enabled", name)
-        from cachepaths import normalize_venue_name
         core["provider"] = normalize_venue_name(core["provider"]) or core["provider"].casefold()
         for key, allowed in (("isolation", {"own_ledger", "dedicated"}),
                              ("market_hours", {"24x7", "rth"})):
@@ -147,7 +147,6 @@ def select_instruments(provider=None, role=None, *, path=None, only_enabled=True
     if provider is None:
         prov_norm = None
     else:
-        from cachepaths import normalize_venue_name
         p_raw = getattr(provider, "name", None)
         p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else str(provider))
         prov_norm = normalize_venue_name(p_str)
