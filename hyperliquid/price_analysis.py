@@ -117,7 +117,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
-    if cur is None or not math.isfinite(cur) or cur == 0.0:
+    if not cur:
         return None
     current_sign = float(np.sign(cur))
 

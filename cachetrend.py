@@ -511,15 +511,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                 dq = (getattr(self.current_price_mgr, "_update_timestamps", None) or {}).get(symbol)
                 samples = list(dq) if dq else []
             if len(samples) >= 2 and (samples[-1] - samples[0]) >= 5.0:
-                actual_rate = self.current_price_mgr.get_sample_rate(symbol, fallback=None)
-                if (
-                    isinstance(actual_rate, (int, float))
-                    and not isinstance(actual_rate, bool)
-                    and math.isfinite(actual_rate)
-                    and actual_rate >= 0.1
-                ):
+                actual_rate = safe_pos_float(self.current_price_mgr.get_sample_rate(symbol, fallback=None), default=None)
+                if actual_rate is not None and actual_rate >= 0.1:
                     for w in wins.values():
-                        w.set_sample_rate(float(actual_rate))
+                        w.set_sample_rate(actual_rate)
         except Exception:
             pass
 
@@ -1028,7 +1023,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             if ts_val is None:
                 return None
             age = float(now) - ts_val
-            if not (math.isfinite(age) and -5.0 <= age <= self.TREND_STALE_SEC):
+            if not (-5.0 <= age <= self.TREND_STALE_SEC):
                 return None
             if "current_price" in dyn and dyn.get("current_price") is not None:
                 if safe_pos_float(dyn.get("current_price"), default=None) is None:
@@ -1460,7 +1455,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         if now_f is None or max_age_f is None or observed_at is None or price is None:
             return False
         age = now_f - observed_at
-        return math.isfinite(age) and -5.0 <= age <= max_age_f
+        return -5.0 <= age <= max_age_f
 
     def is_snapshot_fresh(self, symbol=None, max_age_sec=None):
         """Return whether memory or file state is fresh enough to trust the writer."""

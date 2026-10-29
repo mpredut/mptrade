@@ -870,19 +870,12 @@ class MarketRegimeService:
         expected = {"asset_short", "asset_long", "benchmark_short", "benchmark_long"}
         if set(raw_weights) != expected:
             raise ValueError(f"composite weights must contain exactly {sorted(expected)}")
-        if any(isinstance(value, bool) for value in raw_weights.values()):
+        normalized = {name: safe_nonneg_float(value, default=None) for name, value in raw_weights.items()}
+        if any(v is None for v in normalized.values()) or not math.isclose(sum(normalized.values()), 1.0, abs_tol=1e-9):
             raise ValueError("composite weights must be finite, non-negative, and sum to 1")
-        normalized = {name: float(value) for name, value in raw_weights.items()}
-        if (any(not math.isfinite(value) or value < 0 for value in normalized.values()) or
-                not math.isclose(sum(normalized.values()), 1.0, abs_tol=1e-9)):
-            raise ValueError("composite weights must be finite, non-negative, and sum to 1")
-        if isinstance(strength_cap, bool) or isinstance(directional_threshold, bool):
-            raise ValueError("invalid composite strength cap or threshold")
-        strength_cap = float(strength_cap)
-        directional_threshold = float(directional_threshold)
-        if (not math.isfinite(strength_cap) or strength_cap <= 0 or
-                not math.isfinite(directional_threshold) or
-                not 0 <= directional_threshold <= 1):
+        strength_cap = safe_pos_float(strength_cap, default=None)
+        directional_threshold = safe_nonneg_float(directional_threshold, default=None)
+        if strength_cap is None or directional_threshold is None or directional_threshold > 1.0:
             raise ValueError("invalid composite strength cap or threshold")
 
         if isinstance(benchmarks, (str, bytes, bool)):
@@ -1254,9 +1247,8 @@ class MarketRegimeService:
         if cached is not None:
             return cached
 
-        for value in values:
-            if not math.isfinite(value) or value <= 0:
-                return self.evaluator.unknown("non_finite_ohlc")
+        if any(safe_pos_float(value, default=None) is None for value in values):
+            return self.evaluator.unknown("non_finite_ohlc")
 
         base = values[0]
         inv_base = 1.0 / base

@@ -37,16 +37,16 @@ def remaining_average_cost(fills, held_qty):
         for row in fills:
             if not isinstance(row, dict):
                 return None
-            fields = ("timestamp", "qty", "price", "base_fee", "quote_fee")
-            if any(isinstance(row[key], bool) for key in fields):
+            identity = _clean_fill_id(row.get("id"))
+            side = normalize_side(row.get("side"))
+            if not identity or identity in seen or side not in {"BUY", "SELL"}:
                 return None
-            ts, amount, price, base_fee, quote_fee = (float(row[key]) for key in fields)
-            identity = _clean_fill_id(row["id"])
-            side = normalize_side(row["side"])
-            if (not identity or identity in seen or side not in {"BUY", "SELL"}
-                    or not all(math.isfinite(v) for v in (ts, amount, price, base_fee, quote_fee))
-                    or ts <= 0 or ts < last_ts or amount <= 0 or price <= 0
-                    or min(base_fee, quote_fee) < 0):
+            ts = safe_pos_float(row.get("timestamp"), default=None)
+            amount = safe_pos_float(row.get("qty"), default=None)
+            price = safe_pos_float(row.get("price"), default=None)
+            base_fee = safe_nonneg_float(row.get("base_fee"), default=None)
+            quote_fee = safe_nonneg_float(row.get("quote_fee"), default=None)
+            if ts is None or amount is None or price is None or base_fee is None or quote_fee is None or ts < last_ts:
                 return None
             seen.add(identity)
             last_ts = ts
