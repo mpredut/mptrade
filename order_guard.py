@@ -30,6 +30,7 @@ from botcore import (
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from intelligence.macro_sentiment_ssot import resolve_order_notional
+from instrument_registry import casefold_get
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 from providers.base import (
     extract_order_price,
@@ -1159,7 +1160,7 @@ def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
         if not isinstance(all_items, dict):
             return None
         for cand in (symbol, symbol.upper(), *cache_symbol_variants(symbol)):
-            items = all_items.get(cand)
+            items = casefold_get(all_items, cand)
             if items and isinstance(items, list):
                 return items
         su_base = _normalize_base_asset(symbol)
@@ -1278,7 +1279,7 @@ def _read_cached_price_history(
         if not isinstance(mapping, dict):
             return None
         for cand in cand_symbols:
-            items = mapping.get(cand)
+            items = casefold_get(mapping, cand)
             if items:
                 return items
         for k, v in mapping.items():

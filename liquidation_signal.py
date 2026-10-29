@@ -62,7 +62,8 @@ STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up th
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
 from botcore import safe_pos_float
-from cachepaths import canonical_base_asset, canonical_symbol_key
+from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key
+from instrument_registry import casefold_get
 from providers.base import normalize_side
 
 _safe_pos_float = safe_pos_float
@@ -238,18 +239,14 @@ class LiquidationSignal:
         long_n = short_n = 0
         last_ts = 0.0
         with self._lock:
-            items = list(self._events.get(sym_clean) or self._events.get(symbol) or ())
+            items = list(casefold_get(self._events, sym_clean) or casefold_get(self._events, symbol) or ())
             if not items and symbol:
-                canon_key = canonical_symbol_key(symbol)
-                canon_base = canonical_base_asset(symbol)
-                for cand in (
-                    canon_key,
-                    f"{canon_base}USDT" if canon_base else "",
-                    f"{canon_base}USDC" if canon_base else "",
-                    f"{canon_base}USD" if canon_base else "",
+                for cand in cache_symbol_variants(
+                    symbol, include_original=True, quotes=("USDT", "USDC", "USD")
                 ):
-                    if cand and cand in self._events:
-                        items = list(self._events[cand])
+                    cand_items = casefold_get(self._events, cand)
+                    if cand_items:
+                        items = list(cand_items)
                         break
         for ts, side, notional in items:
             if ts < cutoff:
