@@ -1,5 +1,12 @@
-import os
 import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from state_io import atomic_write_json, atomic_write_text, load_json_state
 
 # Initial coin list (top 10).
 # coins = [
@@ -37,19 +44,16 @@ coins = [
 ]
 
 # File that stores the latest configuration.
-import os
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "last_watch_config.json")
 
 def citeste_config_anterioara():
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"watch_list": [], "repeat_count": 0}
+    data = load_json_state(CONFIG_FILE, default=None)
+    if isinstance(data, dict):
+        return data
+    return {"watch_list": [], "repeat_count": 0}
 
 def salveaza_config_actuala(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f)
+    atomic_write_json(CONFIG_FILE, config)
 
 def trebuie_sa_scoata_sunet():
     config_anterioara = citeste_config_anterioara()
@@ -169,8 +173,7 @@ def generate_html(coins, refresh_interval=10, base_url="https://5499-85-122-194-
 
 # Save output.
 def save_html(html, file_name="index.html"):
-    with open(file_name, "w", encoding="utf-8") as f:
-        f.write(html)
+    atomic_write_text(file_name, html)
     print(f"File {file_name} was generated successfully!")
 
 # Generate and save.
